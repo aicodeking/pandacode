@@ -58,7 +58,8 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
         }
         queued.map(|_| ("queued", "Queued behind the running turn"))
     } else {
-        crate::send_prompt(app.clone(), state.clone(), schedule.session_id.clone(), text, None).await.map(|_| ("started", "Started a turn"))
+        // Run coverage (R0509): the turn is this schedule's (`HookRun.scheduleId`).
+        crate::extensions::runtime_harness_coverage::within(crate::extensions::runtime_harness_coverage::LaunchOrigin::schedule(&schedule.id), crate::send_prompt(app.clone(), state.clone(), schedule.session_id.clone(), text, None)).await.map(|_| ("started", "Started a turn"))
     };
     let run = {
         let store = state.store.lock().map_err(|e| e.to_string())?;

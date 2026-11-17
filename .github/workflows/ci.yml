@@ -315,6 +315,12 @@ jobs:
       - name: Hooks declared, attached and observed (WebKit)
         env: { PW_PORT: '16312', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-hook-registration.spec.ts --workers=1
+      - name: Run coverage and harness capabilities (Chromium)
+        env: { PW_PORT: '16411', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-harness-coverage.spec.ts --workers=1
+      - name: Run coverage and harness capabilities (WebKit)
+        env: { PW_PORT: '16412', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-harness-coverage.spec.ts --workers=1
       - name: Prompt context, result rewrites and compaction answers (Chromium)
         env: { PW_PORT: '16401', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-hook-context.spec.ts --workers=1

@@ -741,7 +741,8 @@ pub(crate) async fn handle(app: &tauri::AppHandle, from: &str, message: &Value) 
     });
     let call = admitted.and_then(|full_access| parse(true, method, &message["params"]).map(|call| plain_budget(call, message["z"] == 1)).and_then(|call| cap_mode(call, full_access)).map(|call| (call, full_access)));
     let result = match call {
-        Ok((call, full_access)) => run(app, from, call, full_access).await,
+        // Run coverage (R0509): a turn this request starts is a paired device's (`HookRun.deviceId`).
+        Ok((call, full_access)) => crate::extensions::runtime_harness_coverage::within(crate::extensions::runtime_harness_coverage::LaunchOrigin::remote(from), run(app, from, call, full_access)).await,
         Err(error) => Err(error),
     };
     Some(response(id, result))
@@ -2336,11 +2337,13 @@ where
     let mut done = entry.result.subscribe();
     if fresh {
         let entry = entry.clone();
+        // Run coverage (R0509): the spawned start is still the paired device's.
+        let origin = crate::extensions::runtime_harness_coverage::LaunchOrigin::remote(from);
         tauri::async_runtime::spawn(async move {
             // A panic (or the task being dropped) below still settles the start.
             let settle = Settle(entry.clone());
             // A cancel is refused once the task is being made, so a made task is never unseen.
-            let result = run(entry.cancel.clone()).await;
+            let result = crate::extensions::runtime_harness_coverage::within(origin, run(entry.cancel.clone())).await;
             if let Err(error) = &result {
                 super::diagnostics::record("start.failed", error.chars().take(200).collect::<String>());
             }

@@ -266,6 +266,8 @@ process.stdin.on('data', chunk => {
               refreshLimits: options => rpc('limitsRefresh', options === undefined || options === null ? {} : { ...options }),
               // Makes another account of a harness the active one (R0805, credentials.use for that account): a host operation, no credential crosses.
               switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
+              // The capability report per harness, mode and run kind (R0509, harnesses.inventory): qualified cells, never a yes/no.
+              list: options => rpc('harnessesList', options === undefined || options === null ? {} : { ...options }),
               // Harness consoles and command-center actions (R0408): the host resolves the target and asks the user once per round.
               console: Object.freeze({ open: options => rpc('harnessConsole', { ...(options ?? {}), op: 'open' }) }),
               commands: Object.freeze({

@@ -681,7 +681,25 @@ export interface ServiceHooks {
 /** `harnesses.console` and `harnesses.commands` (R0408, `harness.console`): the user's own harness console and slash commands, per project grant. A task that is running answers `Busy` to `console.open`; a package harness has no console (`UnsupportedCapability`). See docs/extensions/runtime-harness-console.md. */
 export interface HarnessConsoleApi { open(options: { taskId: string } | { harness: string; projectId: string }): Promise<null> }
 export interface HarnessCommandsApi { list(options: { harness: string }): Promise<readonly { readonly id: string; readonly title: string }[]>; run(options: { taskId: string; command: string; arguments?: string }): Promise<null> }
-export interface ServiceHarnesses { refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null>; readonly console: HarnessConsoleApi; readonly commands: HarnessCommandsApi }
+/** R0509: what each cell is known from. `installedQualified` only with an authorized capture on an installed harness. */
+export type CapabilityQualification = 'sourceFeasible' | 'recorded' | 'installedQualified' | 'unsupported';
+export type HookSource = 'companion' | 'askAtHost' | 'permissionRequest' | 'hostTool' | 'activity';
+export type HookCoverage = 'everyCall' | 'askedCalls' | 'escalationsOnly' | 'afterOnly' | 'none';
+/** The `run` of every hook payload: `kind` is what `match.runs` filters on, `trigger` what started the turn. */
+export interface HookRun { readonly kind: 'task' | 'worker' | 'bot' | 'schedule' | 'remote'; readonly trigger: 'user' | 'package' | 'tool' | 'team' | 'council' | 'bot' | 'schedule' | 'remote' | 'cloud' | 'mirror'; readonly executor: 'desktop' | 'headless' | 'cloud' | 'remote'; readonly parentTaskId?: string; readonly workerId?: string; readonly lens?: string; readonly botId?: string; readonly scheduleId?: string; readonly deviceId?: string; readonly hostId?: string; readonly tool?: string; readonly package?: string }
+export interface ToolBeforeCell { readonly source: 'permissionRequest' | null; readonly coverage: HookCoverage; readonly can: readonly string[]; readonly sourceCan: readonly string[]; readonly qualification: CapabilityQualification; readonly feasible: readonly { readonly source: HookSource; readonly coverage: HookCoverage; readonly qualification: CapabilityQualification }[] }
+/** One harness row of `panda.harnesses.list` (see docs/extensions/runtime-harness-coverage.md). */
+export interface HarnessCapabilities {
+  readonly schemaVersion: 1; readonly id: string; readonly name: string; readonly kind: 'builtin' | 'package'; readonly owner?: string; readonly installed: 'Installed' | 'Absent' | 'Unknown';
+  readonly modes: readonly string[]; readonly evidence: 'frame' | 'spike' | 'documentation';
+  readonly toolServers: { readonly value: boolean; readonly qualification: CapabilityQualification };
+  readonly compact: { readonly how: 'request' | 'command' | 'none'; readonly qualification: CapabilityQualification };
+  readonly denyReason: 'answer' | 'steer' | 'none'; readonly rewriteInput: boolean;
+  readonly companion: { readonly state: 'sourceFeasible' | 'unknown' | 'none'; readonly mechanism: string | null; readonly qualification: CapabilityQualification };
+  readonly hooks: { readonly toolBefore: Readonly<Record<string, ToolBeforeCell>>; readonly toolAfter: Json; readonly hostTools: Json; readonly promptSubmit: Json; readonly turn: Json; readonly compaction: Json };
+}
+export interface HarnessCoverageReport { readonly schemaVersion: 1; readonly decisions: 'observeOnly'; readonly harnesses: readonly HarnessCapabilities[]; readonly runs: readonly { readonly kind: HookRun['kind']; readonly paths: readonly Json[]; readonly counters: Json }[] }
+export interface ServiceHarnesses { list(options?: { harness?: string; includeModels?: false }): Promise<HarnessCoverageReport>; refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null>; readonly console: HarnessConsoleApi; readonly commands: HarnessCommandsApi }
 export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
 export interface ServiceContext { query(options: { resource: ContextResource | ContentResource | UsageResource; taskId?: string; harness?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }
 /** Browser sign-in (`auth.signIn`, service only; see docs/extensions/runtime-sign-in.md): the host opens the system browser, listens on a loopback address for the redirect and returns the whole redirected address (it carries the authorization code, so keep it in the service). `{redirect_uri}` in `authorizeUrl` is replaced by the encoded listening address. At most one flow per package; a taken port or a second flow answers `Conflict`, a missing browser `HostUnavailable` unless `manual` is true. */

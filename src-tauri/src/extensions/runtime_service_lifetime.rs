@@ -837,6 +837,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.tasks.start` (R0401, tasks.start): the grant, the project and the harness are resolved natively per call.
             if request.method == "tasksStart" { return super::runtime_tasks_start::serve(app, request).await; }
             // `panda.hooks.on` / dispose and `panda.hooks.input` (R0503): declaration and `harness.hooks.observe` checked natively.
+            // `panda.harnesses.list` (R0509, harnesses.inventory): the grant is checked natively per call.
+            if request.method == "harnessesList" { return super::runtime_harness_coverage::serve(app, request).await; }
             if matches!(request.method.as_str(), "hooks" | "hooksInput") { return super::runtime_hook_registration::serve(app, request).await; }
             // Messages, notes and the revisioned queue (R0402, tasks.message): the grant and the task are resolved natively per call.
             if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }

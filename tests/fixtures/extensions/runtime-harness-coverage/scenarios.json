@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "about": "R0509 one scenario per traced launch path. `facts` is what the store says about the run when its turn starts (team worker and its seat, the bot whose workspace holds the task, a cloud machine, the package that started it, the executor), `origin` the launch scope a seam put around the launch (schedule firing, an agent's pandacode_* tool, a request from a paired device), `expect` the HookRun every payload of the turn carries. Each scenario then replays one turn with one permission request, its tool call and a successful end; the mirror scenario replays a task that runs on another computer as this desktop sees it (approvals and tool rows mirrored, no companion). `counters` is what the capability report must count afterwards, per run kind. Synthetic, shaped like the B5 fake agent; not a harness capture.",
+  "provenance": "synthetic",
+  "scenarios": [
+    { "id": "task-user", "seam": "send", "facts": { "executor": "desktop" }, "origin": null, "expect": { "kind": "task", "trigger": "user", "executor": "desktop" } },
+    { "id": "task-package", "seam": "tasksStart", "facts": { "executor": "desktop", "package": "sample.starter" }, "origin": null, "expect": { "kind": "task", "trigger": "package", "executor": "desktop", "package": "sample.starter" } },
+    { "id": "task-tool", "seam": "agentTool", "facts": { "executor": "desktop" }, "origin": { "tool": { "parent": "t-lead", "tool": "pandacode_start_task" } }, "expect": { "kind": "task", "trigger": "tool", "executor": "desktop", "parentTaskId": "t-lead", "tool": "pandacode_start_task" } },
+    { "id": "worker-team", "seam": "teamWorker", "facts": { "executor": "desktop", "worker": true, "parent": "t-lead", "workerId": "w-1" }, "origin": null, "expect": { "kind": "worker", "trigger": "team", "executor": "desktop", "parentTaskId": "t-lead", "workerId": "w-1" } },
+    { "id": "worker-council", "seam": "teamWorker", "facts": { "executor": "desktop", "worker": true, "parent": "t-lead", "workerId": "w-2", "councilLens": "security" }, "origin": null, "expect": { "kind": "worker", "trigger": "council", "executor": "desktop", "parentTaskId": "t-lead", "workerId": "w-2", "lens": "security" } },
+    { "id": "bot", "seam": "botWorkspace", "facts": { "executor": "desktop", "bot": "bot-1" }, "origin": null, "expect": { "kind": "bot", "trigger": "bot", "executor": "desktop", "botId": "bot-1" } },
+    { "id": "bot-remote", "seam": "remoteRequest", "facts": { "executor": "headless", "bot": "bot-1" }, "origin": { "remote": { "device": "phone-1" } }, "expect": { "kind": "bot", "trigger": "remote", "executor": "headless", "botId": "bot-1", "deviceId": "phone-1" } },
+    { "id": "schedule", "seam": "scheduleFiring", "facts": { "executor": "desktop" }, "origin": { "schedule": { "schedule": "s-1" } }, "expect": { "kind": "schedule", "trigger": "schedule", "executor": "desktop", "scheduleId": "s-1" } },
+    { "id": "remote-desktop-host", "seam": "remoteRequest", "facts": { "executor": "desktop" }, "origin": { "remote": { "device": "laptop-2" } }, "expect": { "kind": "remote", "trigger": "remote", "executor": "desktop", "deviceId": "laptop-2" } },
+    { "id": "remote-headless", "seam": "remoteStart", "facts": { "executor": "headless" }, "origin": { "remote": { "device": "desk-1" } }, "expect": { "kind": "remote", "trigger": "remote", "executor": "headless", "deviceId": "desk-1" } },
+    { "id": "cloud", "seam": "cloudRun", "facts": { "executor": "desktop", "cloud": true }, "origin": null, "expect": { "kind": "remote", "trigger": "cloud", "executor": "cloud" } }
+  ],
+  "mirror": {
+    "task": "t-mirror",
+    "host": "host-7",
+    "expect": { "kind": "remote", "trigger": "mirror", "executor": "remote", "hostId": "host-7" },
+    "events": [
+      { "sessionId": "t-mirror", "kind": "status", "text": "running", "requestId": null, "data": null },
+      { "sessionId": "t-mirror", "kind": "approval", "text": "Run ls", "requestId": "run:r9", "data": { "name": "Bash", "input": { "command": "ls" } } },
+      { "sessionId": "t-mirror", "kind": "tool", "text": "", "requestId": null, "data": null, "tool": { "id": "m1", "name": "Bash", "status": "completed", "input": "{\"command\":\"ls\"}", "output": "a.ts" } },
+      { "sessionId": "t-mirror", "kind": "tool", "text": "", "requestId": null, "data": null, "tool": { "id": "compaction:1", "name": "Compact context", "status": "completed", "input": "", "output": "Conversation context compacted." } },
+      { "sessionId": "t-other", "kind": "approval", "text": "Not mirrored here", "requestId": "run:r10", "data": { "name": "Bash", "input": { "command": "pwd" } } }
+    ],
+    "delivered": ["prompt.submit", "turn.start", "tool.before", "tool.after", "compaction", "turn.finish", "task.idle"]
+  },
+  "counters": {
+    "task": { "launches": 3, "triggers": { "user": 1, "package": 1, "tool": 1 }, "events": { "prompt.submit": { "host": 3 }, "turn.start": { "host": 3 }, "tool.before": { "permissionRequest": 3 }, "tool.after": { "permissionRequest": 3 }, "turn.finish": { "host": 3 }, "task.idle": { "host": 3 } } },
+    "worker": { "launches": 2, "triggers": { "team": 1, "council": 1 }, "events": { "prompt.submit": { "host": 2 }, "turn.start": { "host": 2 }, "tool.before": { "permissionRequest": 2 }, "tool.after": { "permissionRequest": 2 }, "turn.finish": { "host": 2 }, "task.idle": { "host": 2 } } },
+    "bot": { "launches": 2, "triggers": { "bot": 1, "remote": 1 }, "events": { "prompt.submit": { "host": 2 }, "turn.start": { "host": 2 }, "tool.before": { "permissionRequest": 2 }, "tool.after": { "permissionRequest": 2 }, "turn.finish": { "host": 2 }, "task.idle": { "host": 2 } } },
+    "schedule": { "launches": 1, "triggers": { "schedule": 1 }, "events": { "prompt.submit": { "host": 1 }, "turn.start": { "host": 1 }, "tool.before": { "permissionRequest": 1 }, "tool.after": { "permissionRequest": 1 }, "turn.finish": { "host": 1 }, "task.idle": { "host": 1 } } },
+    "remote": { "launches": 4, "triggers": { "remote": 2, "cloud": 1, "mirror": 1 }, "events": { "prompt.submit": { "host": 4 }, "turn.start": { "host": 4 }, "tool.before": { "permissionRequest": 4 }, "tool.after": { "permissionRequest": 3, "activity": 1 }, "compaction": { "host": 1 }, "turn.finish": { "host": 4 }, "task.idle": { "host": 4 } } }
+  }
+}

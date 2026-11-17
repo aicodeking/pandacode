@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.coverage-reader",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "harnesses.inventory", "harness.hooks.observe"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.coverage-reader/control", "title": "Coverage reader control", "action": { "kind": "runCommand" } }
+    ],
+    "hooks": [
+      { "id": "sample.coverage-reader/start", "event": "turn.start" },
+      { "id": "sample.coverage-reader/before", "event": "tool.before" },
+      { "id": "sample.coverage-reader/after", "event": "tool.after" }
+    ]
+  }
+}

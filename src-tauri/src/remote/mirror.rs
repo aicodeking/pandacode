@@ -90,6 +90,8 @@ pub(crate) async fn send(app: &tauri::AppHandle, state: &AppState, local: &str, 
     let device = of(&*lock(state)?, local)?.ok_or("That task does not run on another computer.")?.device;
     let image_ids = super::images::send(app, &device, image_ids).await?;
     route(app, state, local, "task.send", json!({"text": text, "imageIds": image_ids})).await?;
+    // Hooks (R0509): a turn of a task on another computer, as this desktop sends it.
+    crate::extensions::runtime_harness_coverage::mirror_sent(app, local, &device, &text);
     Ok(())
 }
 
@@ -433,6 +435,8 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
         let mut inner = state.lock();
         events.iter().for_each(|event| inner.viewer.card(event));
     }
+    // Hooks (R0509): mirrored approvals and tool rows (no companion runs for a task on another computer).
+    crate::extensions::runtime_harness_coverage::mirror_events(app, from, &events);
     for mut event in events {
         local_event(&mut event);
         let _ = app.emit("agent-event", event);
@@ -667,6 +671,8 @@ pub(super) fn finish_once(store: &Store, local: &str, successful: bool, stopped:
 fn finish(app: &tauri::AppHandle, local: &str, successful: bool, stopped: bool, text: &str) {
     // The window drops a turn's cards when it ends.
     remote(app).lock().viewer.cards.remove(local);
+    // Hooks (R0509): the mirrored turn ends here (a no-op when no hook observed it).
+    crate::extensions::runtime_harness_coverage::mirror_ended(local, successful, stopped);
     match lock(&app.state::<AppState>()).and_then(|store| finish_once(&store, local, successful, stopped)) {
         Ok(true) => {}
         Ok(false) => return,

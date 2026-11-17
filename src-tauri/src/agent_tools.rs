@@ -834,13 +834,17 @@ async fn dispatch(
             } else {
                 None
             };
-            crate::launch_task_in_project(
-                app.clone(),
-                state,
-                target.id.clone(),
-                text,
-                None,
-                Some(current.project_id),
+            // Run coverage (R0509): the turn is started by this task's agent tool (`HookRun.parentTaskId`).
+            crate::extensions::runtime_harness_coverage::within(
+                crate::extensions::runtime_harness_coverage::LaunchOrigin::tool(sid, name),
+                crate::launch_task_in_project(
+                    app.clone(),
+                    state,
+                    target.id.clone(),
+                    text,
+                    None,
+                    Some(current.project_id),
+                ),
             )
             .await?;
             json!({"taskId":target.id,"started":true})

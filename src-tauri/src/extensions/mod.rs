@@ -36,6 +36,7 @@ pub(crate) mod runtime_hook_fixtures;
 pub(crate) mod runtime_hook_payload;
 pub mod runtime_hook_registration;
 pub mod runtime_hook_context;
+pub mod runtime_harness_coverage;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;

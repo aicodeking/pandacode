@@ -284,6 +284,8 @@ pub type Gate = Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync
 pub type Deliver = Arc<dyn Fn(&str, Value) -> Result<(), &'static str> + Send + Sync>;
 /// Builds the `HookCall` of a recorded call: `runtime_hook_payload::hook_call` in the app and the tests.
 pub type CallPayload<'a> = &'a dyn Fn(&Value, &str) -> Result<Value, &'static str>;
+/// Sees every occurrence the registry reports (the run coverage counters of R0509).
+pub type Observer = Arc<dyn Fn(&Occurrence) + Send + Sync>;
 
 struct Attached { version: String, declaration: Declaration, handlers: u32 }
 struct Run {
@@ -323,6 +325,7 @@ pub struct HookRegistry {
     inner: Mutex<Inner>,
     gate: Mutex<Option<Gate>>,
     deliver: Mutex<Option<Deliver>>,
+    observer: Mutex<Option<Observer>>,
     /// Any hook attached: the app's reports are free when this is off.
     active: AtomicBool,
     /// The app's registry also switches complete-input recording of built-in runs (`runtime_hook_payload::observed`).
@@ -335,6 +338,8 @@ impl HookRegistry {
     pub fn set_deliver(&self, deliver: Deliver) { if let Ok(mut slot) = self.deliver.lock() { *slot = Some(deliver); } }
     fn gate(&self) -> Option<Gate> { self.gate.lock().ok().and_then(|slot| slot.clone()) }
     fn deliverer(&self) -> Option<Deliver> { self.deliver.lock().ok().and_then(|slot| slot.clone()) }
+    pub fn set_observer(&self, observer: Observer) { if let Ok(mut slot) = self.observer.lock() { *slot = Some(observer); } }
+    fn observe(&self, occurrence: &Occurrence) { if let Some(observer) = self.observer.lock().ok().and_then(|slot| slot.clone()) { observer(occurrence); } }
     /// Whether any hook is attached.
     pub fn active(&self) -> bool { self.active.load(Ordering::Acquire) }
     /// Called with the lock held after every change of the attached set.
@@ -394,6 +399,7 @@ impl HookRegistry {
     /// Hands an occurrence to every attached hook of its event whose filter accepts it and whose grant reaches the
     /// run's project. Never waits, never fails the reporter.
     pub fn publish(&self, occurrence: &Occurrence) -> Published {
+        self.observe(occurrence);
         let targets: Vec<(String, String, Declaration)> = self.lock().attached.iter()
             .filter(|((_, event), _)| event == occurrence.event)
             .map(|((owner, _), entry)| (owner.clone(), entry.version.clone(), entry.declaration.clone())).collect();
@@ -422,6 +428,8 @@ impl HookRegistry {
         let gate = self.gate();
         let (reached, filtered): (Vec<Target>, Vec<Target>) = attached.into_iter().partition(|target| matches(&target.declaration.matcher, occurrence) && gate.as_ref().is_some_and(|gate| gate(&target.owner, &target.version, permission_of(occurrence.event), Some(&occurrence.project))));
         self.lock().counters.filtered += filtered.len() as u64;
+        // An occurrence an awaited chain delivers is not published again (R0504): it is observed here once.
+        if !reached.is_empty() { self.observe(occurrence); }
         reached
     }
     /// Whether `owner` holds `permission` for `project`, by the same gate deliveries use.
@@ -624,6 +632,8 @@ fn install(app: &tauri::AppHandle) {
     use tauri::Manager;
     let gated = app.clone();
     REGISTRY.set_gate(Arc::new(move |owner, version, permission, project| gated.try_state::<super::runtime_grants::RuntimeGrants>().is_some_and(|grants| holds(&grants, owner, version, permission, project))));
+    // Run coverage counters (R0509): every occurrence while a hook is attached.
+    REGISTRY.set_observer(super::runtime_harness_coverage::observer());
 }
 
 /// The declarations and version of an enabled, trusted package outside safe mode (the only packages whose service
@@ -685,6 +695,8 @@ pub fn run_began(app: &tauri::AppHandle, session_id: &str, cwd: &std::path::Path
     // With no hook attached only a compaction recorded while no turn ran needs this turn's index.
     if !REGISTRY.active() && !REGISTRY.pending_compaction(session_id) { return; }
     let Some(facts) = facts_of(app, session_id, Some(cwd), prompt, worker) else { return };
+    // Run coverage (R0509): the launch, by run kind and trigger, while a hook is attached.
+    if REGISTRY.active() { super::runtime_harness_coverage::launched(&facts.run); }
     REGISTRY.turn_started(facts);
 }
 /// The facts of a run of `session_id` about to begin; `cwd` defaults to the task's checkout (R0504 asks before the
@@ -702,10 +714,12 @@ pub fn facts_of(app: &tauri::AppHandle, session_id: &str, cwd: Option<&std::path
         let cursor = count("SELECT COUNT(*) FROM messages WHERE session_id=?1 AND role NOT IN ('tool','changes') AND id < COALESCE((SELECT MAX(id) FROM messages WHERE session_id=?1 AND role='user'), 0)");
         let origin = super::runtime_tasks_start::origins(app).and_then(|ledger| ledger.get(session_id));
         let started_by = match origin { Some(origin) => json!({"package": origin.owner}), None if worker => json!("team"), None => json!("user") };
+        // The `HookRun` of every launch path (R0509): store facts and the launch scope of the seam that started it.
+        let run = super::runtime_harness_coverage::hook_run(app, &store, session_id, &task.project_id, worker);
         RunFacts {
             task_id: session_id.to_owned(), project_id: task.project_id, project_root: root, cwd: cwd.to_string_lossy().into_owned(),
             harness: task.provider, model: Some(task.model).filter(|model| !model.is_empty()), mode: task.mode,
-            run: json!({"kind": if worker { "worker" } else { "task" }}), index, text: prompt.unwrap_or_default().to_owned(),
+            run, index, text: prompt.unwrap_or_default().to_owned(),
             attachments: vec![], started_by, transcript_cursor: cursor,
         }
     };
