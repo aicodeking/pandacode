@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-acp",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.upstream-acp/agent",
+      "name": "Upstream ACP agent",
+      "models": [
+        { "id": "quick", "name": "Quick", "efforts": [], "contextWindow": 128000 },
+        {
+          "id": "deep", "name": "Deep", "efforts": ["low", "high"], "contextWindow": 200000,
+          "speedTiers": [
+            { "id": "standard", "name": "Standard", "description": "Default speed." },
+            { "id": "fast", "name": "Fast", "description": "Lower latency, higher cost." }
+          ]
+        }
+      ],
+      "metadata": {
+        "modes": ["ask"],
+        "teams": false,
+        "authentication": "Offline fixture: the declared fake ACP agent needs no sign-in or API key. Replace the launch command with your CLI's ACP entry point.",
+        "readiness": { "state": "ready", "reason": "Ready through its declared ACP launch." },
+        "usage": { "context": true, "limitsReason": "The fake agent reports context tokens, not subscription limits." }
+      },
+      "launch": {
+        "protocol": "acp",
+        "command": ["{node}", "__FAKE_AGENT__"],
+        "env": { "FAKE_AGENT_LOG": "{data}/frames.log" }
+      }
+    }]
+  }
+}

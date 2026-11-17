@@ -343,6 +343,12 @@ jobs:
       - name: Provider speed tiers (WebKit preview)
         env: { PW_PORT: '16062', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/upstream-speed-extensions.spec.ts --workers=1
+      - name: ACP provider as an author package (Chromium)
+        env: { PW_PORT: '16111', PW_PROD: '1' }
+        run: npx playwright test tests/upstream-acp-example.spec.ts --workers=1
+      - name: ACP provider as an author package (WebKit)
+        env: { PW_PORT: '16112', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/upstream-acp-example.spec.ts --workers=1
 
       # Absolute ceilings and leak/order gates always apply; the relative M0 comparison is reported as
       # incomparable on a shared runner (different machine from the frozen population), never as a pass.
