@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-speed",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "ui.customize"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "activationEvents": ["sample.upstream-speed/tiers"] },
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.upstream-speed/tiers",
+      "name": "Speed tiers harness",
+      "metadata": { "teams": false, "modes": ["ask"], "authentication": "Offline fixture; no sign-in or API key required.", "readiness": { "state": "ready", "reason": "Ready offline through the recorded adapter." } },
+      "models": [
+        { "id": "tiered-model", "name": "Tiered model", "efforts": ["low", "high"], "contextWindow": 32000, "speedTiers": [
+          { "id": "fast", "name": "Fast", "description": "Faster output at a higher price." },
+          { "id": "ultra", "name": "Ultra fast", "description": "Experimental tier." },
+          { "id": "batch", "name": "Batch", "description": "Slower and cheaper." }
+        ] },
+        { "id": "plain-model", "name": "Plain model", "efforts": [] }
+      ]
+    }]
+  }
+}

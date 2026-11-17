@@ -52,7 +52,8 @@ fn catalog(definition: &Value) -> Vec<ModelInfo> {
     definition["models"].as_array().into_iter().flatten().map(|model| ModelInfo {
         id: model["id"].as_str().unwrap_or_default().into(), name: model["name"].as_str().unwrap_or_default().into(), description: String::new(),
         reasoning_efforts: model["efforts"].as_array().into_iter().flatten().filter_map(Value::as_str).map(|effort| ReasoningEffortInfo { id: effort.into(), name: effort.into(), description: String::new() }).collect(),
-        default_reasoning_effort: None, context_window: model["contextWindow"].as_u64(), speed_tiers: Vec::new(),
+        default_reasoning_effort: None, context_window: model["contextWindow"].as_u64(),
+        speed_tiers: model["speedTiers"].as_array().into_iter().flatten().map(|tier| ReasoningEffortInfo { id: tier["id"].as_str().unwrap_or_default().into(), name: tier["name"].as_str().unwrap_or_default().into(), description: tier["description"].as_str().unwrap_or_default().into() }).collect(),
     }).collect()
 }
 pub(crate) fn discover() -> Vec<ProviderInfo> {

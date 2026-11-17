@@ -4,7 +4,7 @@ import type { ExtensionSnapshot } from './manager';
 import { defaultProviderMetadata, type ProviderMetadata } from './provider-state.ts';
 import type { DiscoveryRoot } from './provider-discovery.ts';
 
-export type HarnessContribution = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: DiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number }[] };
+export type HarnessContribution = { apiVersion: 1; id: string; name: string; metadata?: ProviderMetadata; discovery?: DiscoveryRoot[]; models: { id: string; name: string; efforts: string[]; contextWindow?: number; speedTiers?: { id: string; name: string; description?: string }[] }[] };
 /** Catalog metadata only. The native host separately admits executable content. */
 export function packageHarnesses(snapshot: ExtensionSnapshot, placement: 'desktop' | 'workspace' = 'desktop'): Provider[] {
   if (snapshot.safeMode) return [];
@@ -13,7 +13,7 @@ export function packageHarnesses(snapshot: ExtensionSnapshot, placement: 'deskto
     return (contributions.providers ?? []).map(provider => ({
       id: parseProviderId(provider.id)!, name: provider.name, installed: (provider.metadata?.readiness.state ?? 'ready') === 'ready', path: null, version: item.manifest.version,
       metadata: provider.metadata ?? defaultProviderMetadata(),
-      models: provider.models.map(model => ({ id: model.id, name: model.name, description: '', reasoningEfforts: model.efforts.map(id => ({ id, name: id, description: '' })), defaultReasoningEffort: null, contextWindow: model.contextWindow ?? null })),
+      models: provider.models.map(model => ({ id: model.id, name: model.name, description: '', reasoningEfforts: model.efforts.map(id => ({ id, name: id, description: '' })), defaultReasoningEffort: null, contextWindow: model.contextWindow ?? null, speedTiers: (model.speedTiers ?? []).map(tier => ({ id: tier.id, name: tier.name, description: tier.description ?? '' })) })),
     }));
   });
 }

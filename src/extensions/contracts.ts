@@ -280,7 +280,7 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       const models = provider.models as ObjectValue[];
       // Core storage and launcher validate UTF-8 bytes, not schema character counts.
       if (models.some(model => new TextEncoder().encode(String(model.id)).length > 200)) error('LimitExceeded', `${path}/contributes/providers/models`);
-      if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length)) error('DuplicateId', path, [id]);
+      if (new Set(models.map(model => model.id)).size !== models.length || models.some(model => new Set(model.efforts as Json[]).size !== (model.efforts as Json[]).length) || models.some(model => { const tiers = ((model.speedTiers ?? []) as ObjectValue[]).map(tier => tier.id); return new Set(tiers).size !== tiers.length; })) error('DuplicateId', path, [id]);
     }
     // A background service takes its commands from the service itself, so activationEvents may be left out (R0201);
     // when listed they still have to match the package's executable commands.

@@ -303,7 +303,8 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
                 let efforts = strings(&model["efforts"]);
                 // Match core storage's byte bound even for multibyte model IDs.
                 if text(model, "id").len() > 200 { return Err(fail("LimitExceeded", &format!("{path}/contributes/providers/models"), vec![])); }
-                if !models.insert(text(model, "id")) || efforts.iter().collect::<BTreeSet<_>>().len() != efforts.len() { return Err(fail("DuplicateId", &path, vec![])); }
+                let tiers: Vec<&str> = items(model, "speedTiers").iter().map(|tier| text(tier, "id")).collect();
+                if !models.insert(text(model, "id")) || efforts.iter().collect::<BTreeSet<_>>().len() != efforts.len() || tiers.iter().collect::<BTreeSet<_>>().len() != tiers.len() { return Err(fail("DuplicateId", &path, vec![])); }
             }
         }
         let events = strings(&manifest["runtime"]["activationEvents"]);

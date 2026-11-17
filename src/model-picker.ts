@@ -4,6 +4,7 @@ import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
+import { speedChoices, speedStale, type SpeedChoice, type SpeedView } from './extensions/upstream-speed-core';
 
 /** A named agent team from Settings, offered beside the models. `detail` is one line ("lead · N workers"); `roster` its harnesses. */
 export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
@@ -19,6 +20,8 @@ type ModelPickerOptions = {
   onEffortSelect?: (effort: string | null) => Promise<void>;
   /** A speed tier from the model's `speedTiers`; null is the standard speed. */
   onSpeedSelect?: (tier: string | null) => Promise<void>;
+  /** The user's arrangement of a model's speed tiers (hide, reorder, restore); without it the picker lists every tier as upstream does. */
+  speedView?: (provider: ProviderId, model: string, tiers: SpeedChoice[], chosen: string | null) => SpeedView;
   /** `onFresh` hears what became of a refresh behind a stale list that was answered first: the newer list, or why it failed. */
   loadModels?: (provider: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
@@ -101,6 +104,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   /** Effort saves in flight and the latest one's number: choices never wait on each other, only the latest one's outcome shows. */
   let effortSaves = 0, effortSeq = 0;
   let pendingSpeed: string | null | undefined;
+  /** The speed list as last drawn: a click on an older list is refused once the arrangement or the model changed. */
+  let speedDrawn: { provider: string; model: string; revision: string } | undefined;
+  /** The user's speed arrangement (hide, reorder, restore): loaded with the picker; until then, and without a package, the upstream list. */
+  let liveView: ModelPickerOptions['speedView'] = options.speedView;
+  if (!liveView) void import('./extensions/upstream-speed').then(module => { if (closed) return; liveView = module.liveSpeedView; renderSettings(); }).catch(() => undefined);
   let hoveredChoice: { kind: Kind; id: string | null } | undefined;
   let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
@@ -405,6 +413,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     ? (pendingEffort !== undefined ? pendingEffort : saved('effort'))
     : (pendingSpeed !== undefined ? pendingSpeed : saved('speed'));
 
+  function speedFor(providerId: ProviderId, model: ProviderModel): SpeedView {
+    const tiers = (model.speedTiers ?? []) as SpeedChoice[], chosen = chosenOf('speed');
+    return liveView ? liveView(providerId, model.id, tiers, chosen) : { choices: speedChoices(tiers, chosen), hidden: [], revision: '' };
+  }
+
   function segmentRow(kind: Kind, label: string, choices: Choice[], modelDefault?: string | null): string {
     return `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-${kind}">${label}</span><div class="model-menu-effort" data-kind="${kind}" role="radiogroup" aria-labelledby="${uid}-${kind}">${choices.map(choice => `<button type="button" role="radio" data-${kind}="${escape(choice.id)}" title="${escape(choice.description || choice.name)}"${choice.id && choice.id === modelDefault ? ' data-model-default=""' : ''}>${escape(choice.name)}</button>`).join('')}</div></div>`;
   }
@@ -413,6 +426,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const { provider, model } = currentModel();
     const efforts = withSaved(model.reasoningEfforts ?? [], chosenOf('effort'));
     const tiers = model.speedTiers ?? [];
+    const speedChosen = speedFor(current.provider, model);
+    speedDrawn = { provider: current.provider, model: model.id, revision: speedChosen.revision };
     const canSetEffort = Boolean(onEffortSelect && efforts.length);
     const canSetSpeed = Boolean(onSpeedSelect && tiers.length) && !teamSelected;
     settings.hidden = !canSetEffort && !canSetSpeed && !teamSelected;
@@ -420,7 +435,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
     const choices: Record<Kind, Choice[]> = {
       effort: [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts],
-      speed: [{ id: '', name: 'Standard', description: "The model's standard speed." }, ...withSaved(tiers, chosenOf('speed'))],
+      speed: speedChosen.choices,
     };
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
@@ -473,6 +488,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     if (id !== null && !supported.some(choice => choice.id === id)) {
       if (id === saved(kind)) return;
       error.textContent = kind === 'effort' ? 'This reasoning effort is no longer available. Choose another level.' : 'This speed is no longer available. Choose another speed.';
+      error.hidden = false;
+      renderSettings();
+      return;
+    }
+    if (kind === 'speed' && speedDrawn && model && speedStale({ provider: speedDrawn.provider, model: speedDrawn.model, tier: id, revision: speedDrawn.revision }, { provider: provider.id, model: model.id, revision: speedFor(provider.id, model).revision })) {
+      error.textContent = 'The speed options changed. Choose a speed again.';
       error.hidden = false;
       renderSettings();
       return;
