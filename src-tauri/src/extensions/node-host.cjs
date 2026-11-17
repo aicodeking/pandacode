@@ -191,6 +191,8 @@ process.stdin.on('data', chunk => {
               // Makes another account of a harness the active one (R0805, credentials.use for that account): a host operation, no credential crosses.
               switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
             }),
+            // Starts an attributed task (R0401, tasks.start): defaults, worktree and target are resolved by the host; no option pairs a machine.
+            tasks: Object.freeze({ start: options => rpc('tasksStart', options === undefined || options === null ? {} : { ...options }) }),
             // Publishes what is true for the package's own providers (R0806, ui.dynamic): readiness, account, models, limits.
             providers: Object.freeze({ update: (id, state) => rpc('providerUpdate', { id, state }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.
@@ -270,7 +272,7 @@ process.stdin.on('data', chunk => {
       const waiter = pending.get(value.id); if (!waiter) return process.exit(2);
       pending.delete(value.id);
       if (value.reply?.ok) waiter.resolve(value.reply.value);
-      else waiter.reject(new Error(value.reply?.error?.code || 'HostUnavailable'));
+      else { const failure = new Error(value.reply?.error?.code || 'HostUnavailable'); failure.code = failure.message; failure.ids = Array.isArray(value.reply?.error?.ids) ? value.reply.error.ids : []; waiter.reject(failure); }
     }
   }
 });

@@ -949,6 +949,11 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   });
   // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
   void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
+  // Tasks a package started (R0401): the window answers the user's defaults and marks each task with its package.
+  void import('./extensions/runtime-tasks-start').then(tasks => {
+    void tasks.startRuntimeTaskStart({ catalog: () => ({ providers: state.providers, defaultProvider: state.defaultProvider, rememberedModel: id => rememberedModel(id as ProviderId), initialMode: id => initialProviderMode(id as ProviderId) as import('./extensions/runtime-tasks-start').Mode }) });
+    void tasks.mountTaskOrigins();
+  });
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and

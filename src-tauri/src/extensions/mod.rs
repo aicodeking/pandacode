@@ -25,6 +25,7 @@ pub mod runtime_native_consents;
 pub mod runtime_family_consents;
 pub mod runtime_platform_qualification;
 pub(crate) mod runtime_provider_launch;
+pub mod runtime_tasks_start;
 pub(crate) mod runtime_hook_fixtures;
 pub mod providers;
 pub(crate) mod placement;

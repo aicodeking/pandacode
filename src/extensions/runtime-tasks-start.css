@@ -1,0 +1,6 @@
+/* The package label on tasks a package started (docs/extensions/runtime-tasks-start.md): a small chip after the title in the
+ * sidebar rows and a line in the thread header. Only tokens, no literal colors; it never changes layout size on hover. */
+.runtime-task-origin { flex: none; max-width: 40%; overflow: hidden; padding: 0 6px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--muted); font-size: var(--text-xs); line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+.runtime-task-origin-header { flex: none; margin-inline-start: var(--space-2); overflow: hidden; color: var(--muted); font-size: var(--text-xs); white-space: nowrap; text-overflow: ellipsis; }
+@media (prefers-contrast: more) { .runtime-task-origin { border-color: var(--border); color: var(--text); } }
+@media (forced-colors: active) { .runtime-task-origin { border-color: CanvasText; background: Canvas; color: CanvasText; } .runtime-task-origin-header { color: CanvasText; } }

@@ -18,6 +18,7 @@ import { DynamicItems, serve as serveItems, type Scope } from './runtime-dynamic
 import { Notices, serve as serveNotices, type NoticeSnapshot } from './runtime-notifications';
 import { query as queryContent, settingsGet, settingsRevision, type Gate as ContentGate, type SettingsPackage, type Store } from './runtime-content-resources';
 import { query as queryUsage, type World as UsageWorld } from './runtime-usage-resources';
+import { TaskStarter, PERMISSION as TASKS_START_PERMISSION, type StartWorld } from './runtime-tasks-start';
 import { WorkspaceEvents, eventFrame, type Envelope } from './runtime-workspace-events';
 
 /** Every report of this runner is of this column; the receipt keeps preview, native fixtures and installed apart. */
@@ -67,6 +68,8 @@ export interface PreviewPanda {
     showDialog(dialog: DialogDefinition): Promise<DialogAnswer>;
     reveal(target: unknown): Promise<null>;
   };
+  /** `panda.tasks.start` (R0401): refusals are the frozen ones and create no task. */
+  readonly tasks: { start(options: unknown): Promise<unknown> };
   readonly daemon: {
     request(op: string, params?: unknown): Promise<unknown>;
     subscribe(topic: string, handler: (frame: { event: string; seq: number; data: unknown }) => void): Promise<Disposer>;
@@ -100,6 +103,8 @@ export interface PreviewOptions {
   usage?: UsageWorld;
   daemon?: DaemonFactory;
   reveal?: Pick<RevealWorld, 'views' | 'settingsPages' | 'taskExists' | 'projectDir' | 'fileExists'>;
+  /** The world a `tasks.start` runs in (projects, catalog, worktrees, paired targets); absent: every start is `UnsupportedCapability`. */
+  tasksStart?: StartWorld;
   scopes?: { tasks: readonly string[]; projects: readonly string[] };
   enabled?: boolean;
   safeMode?: boolean;
@@ -118,6 +123,7 @@ export class RuntimePreview {
   readonly notices = new Notices();
   readonly items = new DynamicItems();
   readonly dialogs = new DialogSlots();
+  readonly starter: TaskStarter | null;
   readonly steps: Step[] = [];
   readonly revealed: RevealTarget[] = [];
   readonly status: { text?: string; tone?: string } = {};
@@ -139,6 +145,7 @@ export class RuntimePreview {
   constructor(options: PreviewOptions) {
     this.options = options;
     this.grantsMap = options.grants;
+    this.starter = options.tasksStart ? new TaskStarter(options.tasksStart) : null;
     this.events.setGate((_owner, _version, project) => this.holds(EVENTS_PERMISSION, project));
   }
 
@@ -346,6 +353,10 @@ export class RuntimePreview {
           return null;
         }),
       },
+      tasks: { start: options => this.call('tasks.start', () => {
+        if (!this.starter) throw new PandaError('UnsupportedCapability');
+        return unwrap(this.starter.start(owner, { granted: project => this.holds(TASKS_START_PERMISSION, project), package: this.packageName }, options));
+      }) },
       daemon: {
         request: (op, params) => this.call('daemon.request', () => {
           if (!this.daemonCore) throw new PandaError('HostUnavailable');
