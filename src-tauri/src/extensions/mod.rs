@@ -27,6 +27,7 @@ pub mod runtime_family_consents;
 pub mod runtime_platform_qualification;
 pub(crate) mod runtime_provider_launch;
 pub mod runtime_tasks_control;
+pub mod runtime_tasks_flow;
 pub mod runtime_tasks_start;
 pub mod runtime_tasks_messages;
 pub mod runtime_tasks_drafts;

@@ -299,6 +299,10 @@ process.stdin.on('data', chunk => {
               setMode: (taskId, mode) => rpc('tasksControl', { action: 'setMode', taskId, mode, source: hookScope.getStore() ? 'hook' : 'service' }),
               configure: (taskId, change) => rpc('tasksControl', { action: 'configure', taskId, change, source: hookScope.getStore() ? 'hook' : 'service' }),
               compact: taskId => rpc('tasksControl', { action: 'compact', taskId, source: hookScope.getStore() ? 'hook' : 'service' }),
+              // Councils, workers and usage-limit pauses (R0404B, tasks.control): the same grant, refusals and label as the calls above.
+              council: (taskId, decision) => rpc('tasksFlow', { action: 'council', taskId, decision, source: hookScope.getStore() ? 'hook' : 'service' }),
+              worker: (taskId, workerId, action) => rpc('tasksFlow', { action: 'worker', taskId, workerId, op: action, source: hookScope.getStore() ? 'hook' : 'service' }),
+              limit: (taskId, action, options) => rpc('tasksFlow', { action: 'limit', taskId, op: action, ...(options === undefined ? {} : { options }), source: hookScope.getStore() ? 'hook' : 'service' }),
             }),
             // Virtual machine, simulator and browser guests (R0410, guests.control): the host checks the grant per call; a capture is a file in the package's data directory.
             guests: Object.freeze({

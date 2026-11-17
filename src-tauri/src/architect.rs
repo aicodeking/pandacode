@@ -12,6 +12,9 @@ pub(crate) mod internal_turns;
 pub(crate) mod profiles;
 mod routing;
 pub(crate) mod watchdog;
+// Stop, skip, retry or resume one worker on request of a package (runtime slice R0404B); a child module so it reaches the private team rules.
+#[path = "extensions/runtime_tasks_flow_workers.rs"]
+pub(crate) mod flow_workers;
 
 pub use council::{CouncilConfig, CouncilSeat, CouncilStatus};
 

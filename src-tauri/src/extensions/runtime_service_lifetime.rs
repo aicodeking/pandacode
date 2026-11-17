@@ -858,6 +858,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.workspace.projects|worktrees|branches|tasks|pulls.*` and `panda.projects.checks.run` (R0405, workspace.manage and projects.checks.run): the grant is checked natively per call.
             if request.method == "workspaceProjects" { return super::runtime_workspace_projects::serve(app, request).await; }
             if request.method == "tasksControl" { return super::runtime_tasks_control::serve(app, request).await; }
+            // `panda.tasks.council`, `worker` and `limit` (R0404B): `tasks.control` is checked natively per call.
+            if request.method == "tasksFlow" { return super::runtime_tasks_flow::serve(app, request).await; }
             if request.method == "tasksDraft" { return super::runtime_tasks_drafts::serve(app, request).await; }
             // `panda.terminals.*` (R0409): `terminals.read` and `terminals.write` are checked natively per call.
             if request.method == "terminals" { return super::runtime_terminals::serve(app, request).await; }

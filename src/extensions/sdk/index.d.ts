@@ -554,6 +554,12 @@ export interface TasksApi {
   configure(taskId: string, change: TasksConfigureChange): Promise<null>;
   /** UnsupportedCapability when the harness has no compaction; `task.compacted` is emitted when it completes. */
   compact(taskId: string): Promise<null>;
+  /** Permission `tasks.control`, per project (R0404B). The strip's Accept and finish, its close button and its Keep fixing. `keepFixing` waits for an idle lead (Conflict). See docs/extensions/runtime-tasks-flow.md. */
+  council(taskId: string, decision: 'accept' | 'dismiss' | 'keepFixing'): Promise<null>;
+  /** One worker of a team: `stop`, `skip` (abandon, as the lead's cancel), `retry` (a failed worker) and `resume` (a stopped one). A paused team takes its own Resume. A reviewer is never retried. */
+  worker(taskId: string, workerId: string, action: 'retry' | 'resume' | 'skip' | 'stop'): Promise<null>;
+  /** The banner's Continue (on another connection of the task's harness when `connection` names one), Resume at reset and dismissal. `harness` may only be the task's own. */
+  limit(taskId: string, action: 'continue' | 'resume' | 'dismiss', options?: { connection?: string; harness?: string }): Promise<null>;
 }
 /** `workspace.settings` (global): the app's own settings, by the frozen keys `sidebar.sort`, `sidebar.filter`, `sidebar.scope`, `sidebar.order`, `view.open`, `tiles.layout`, `find.query`, `projects.search`, `tokenSaver`, `council`, `bot:<id>`, `channel:<id>`, `team.profiles`, `widgets`, `machines.orchestration`, `appearance.compact` and `appearance.theme`. An unknown key (telemetry, routing, the GitHub switch, safe mode, updates, trust, pairing and remote access are not keys) answers `NotFound`; a `revision` that is not the current one answers `StaleContext`. A fixed key nobody has written reads `null` at revision 0. See docs/extensions/runtime-workspace-settings.md. */
 /** `workspace.manage` (global): bots as the New bot form makes them. `update` is a patch; `remove` deletes the bot and its channel connections (its workspace folder stays) and asks the host first unless the user turned that off for the package. See docs/extensions/runtime-workspace-automation.md. */
