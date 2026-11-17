@@ -201,6 +201,12 @@ jobs:
       - name: Task start attributed to a package (WebKit)
         env: { PW_PORT: '16202', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-start.spec.ts --workers=1
+      - name: Task messages, notes and queue (Chromium)
+        env: { PW_PORT: '16241', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-tasks-messages.spec.ts --workers=1
+      - name: Task messages, notes and queue (WebKit)
+        env: { PW_PORT: '16242', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-messages.spec.ts --workers=1
       - name: Rich panels mounted in host surfaces (Chromium)
         env: { PW_PORT: '16191', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-rich-mount.spec.ts --workers=1

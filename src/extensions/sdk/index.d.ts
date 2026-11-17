@@ -492,7 +492,22 @@ export interface ServiceLifetime {
 /** The service's host object in this release: owned command handlers registered here live in the service's shared state. */
 /** `tasks.start` (project scoped): starts a task as the user would, attributed to the package. `harness`, `model`, `effort` and `mode` default to the user's; `worktree` is `current` (default), `new` or an existing branch; `target` is a machine that is already paired (pairing and remote access are not package operations). No grant, a narrowed project: `PermissionDenied`; unknown project, harness or target: `NotFound`; a signed-out or missing harness: `HostUnavailable` with the readiness state in `ids`. A refusal creates no task. */
 export interface TasksStartOptions { readonly projectId: string; readonly prompt: string; readonly harness?: string; readonly model?: string; readonly effort?: string; readonly mode?: 'ask' | 'auto' | 'review' | 'plan' | 'full'; readonly title?: string; readonly worktree?: 'current' | 'new' | string; readonly target?: string; readonly attachments?: readonly string[] }
-export interface TasksApi { start(options: TasksStartOptions): Promise<{ readonly id: string; readonly projectId: string; readonly worktree: string | null }> }
+export interface TasksMessage { readonly text?: string; readonly attachments?: readonly string[]; readonly delivery?: 'queue' | 'steer' }
+export interface QueueEntry { readonly id: string; readonly position: number; readonly text: string; readonly truncated: boolean; readonly attachments: number; readonly createdAt: number; readonly updatedAt: number; readonly package?: string; readonly changedBy?: string }
+export interface TasksQueueApi {
+  list(taskId: string): Promise<{ readonly revision: number; readonly entries: readonly QueueEntry[] }>;
+  update(taskId: string, entryId: string, change: { text: string; revision?: number }): Promise<null>;
+  remove(taskId: string, entryId: string): Promise<null>;
+  reorder(taskId: string, entryIds: readonly string[]): Promise<null>;
+  sendNow(taskId: string, entryId: string): Promise<null>;
+  resume(taskId: string): Promise<null>;
+}
+export interface TasksApi {
+  start(options: TasksStartOptions): Promise<{ readonly id: string; readonly projectId: string; readonly worktree: string | null }>;
+  message(taskId: string, message: TasksMessage): Promise<{ readonly id: string; readonly delivery: 'sent' | 'queued' | 'steered' }>;
+  note(taskId: string, note: { text: string; forModel?: boolean }): Promise<{ readonly id: string }>;
+  readonly queue: TasksQueueApi;
+}
 export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi }
 /** What the user answered a service's dialog (R0206). A dialog that was closed, or whose service ended, is `cancelled`. */
 export type DialogAnswer = { readonly status: 'confirmed'; readonly values: Readonly<Record<string, string | boolean | readonly string[]>> } | { readonly status: 'cancelled' };

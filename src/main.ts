@@ -954,6 +954,11 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     void tasks.startRuntimeTaskStart({ catalog: () => ({ providers: state.providers, defaultProvider: state.defaultProvider, rememberedModel: id => rememberedModel(id as ProviderId), initialMode: id => initialProviderMode(id as ProviderId) as import('./extensions/runtime-tasks-start').Mode }) });
     void tasks.mountTaskOrigins();
   });
+  // Messages a package queues (R0402): Resume from a package releases the hold like the Resume button; queued rows carry the package name.
+  void import('./extensions/runtime-tasks-messages').then(messages => {
+    void messages.startRuntimeTasksMessages({ resume: id => { const task = state.sessions.find(item => item.id === id); if (!task) return; state.queueHolds.delete(id); refreshComposer(task); void dispatchQueue(id); } });
+    void messages.mountMessageOrigins();
+  });
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and

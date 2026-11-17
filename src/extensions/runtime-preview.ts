@@ -19,6 +19,7 @@ import { Notices, serve as serveNotices, type NoticeSnapshot } from './runtime-n
 import { query as queryContent, settingsGet, settingsRevision, type Gate as ContentGate, type SettingsPackage, type Store } from './runtime-content-resources';
 import { query as queryUsage, type World as UsageWorld } from './runtime-usage-resources';
 import { TaskStarter, PERMISSION as TASKS_START_PERMISSION, type StartWorld } from './runtime-tasks-start';
+import { TaskMessenger, type MessengerWorld } from './runtime-tasks-messages';
 import { WorkspaceEvents, eventFrame, type Envelope } from './runtime-workspace-events';
 
 /** Every report of this runner is of this column; the receipt keeps preview, native fixtures and installed apart. */
@@ -69,7 +70,15 @@ export interface PreviewPanda {
     reveal(target: unknown): Promise<null>;
   };
   /** `panda.tasks.start` (R0401): refusals are the frozen ones and create no task. */
-  readonly tasks: { start(options: unknown): Promise<unknown> };
+  readonly tasks: {
+    start(options: unknown): Promise<unknown>;
+    message(taskId: string, message: unknown): Promise<unknown>;
+    note(taskId: string, note: unknown): Promise<unknown>;
+    queue: {
+      list(taskId: string): Promise<unknown>; update(taskId: string, entryId: string, change: unknown): Promise<unknown>; remove(taskId: string, entryId: string): Promise<unknown>;
+      reorder(taskId: string, entryIds: readonly string[]): Promise<unknown>; sendNow(taskId: string, entryId: string): Promise<unknown>; resume(taskId: string): Promise<unknown>;
+    };
+  };
   readonly daemon: {
     request(op: string, params?: unknown): Promise<unknown>;
     subscribe(topic: string, handler: (frame: { event: string; seq: number; data: unknown }) => void): Promise<Disposer>;
@@ -105,6 +114,9 @@ export interface PreviewOptions {
   reveal?: Pick<RevealWorld, 'views' | 'settingsPages' | 'taskExists' | 'projectDir' | 'fileExists'>;
   /** The world a `tasks.start` runs in (projects, catalog, worktrees, paired targets); absent: every start is `UnsupportedCapability`. */
   tasksStart?: StartWorld;
+  /** The world 	asks.message, 
+ote and queue run in; absent: they are UnsupportedCapability. */
+  tasksMessages?: MessengerWorld;
   scopes?: { tasks: readonly string[]; projects: readonly string[] };
   enabled?: boolean;
   safeMode?: boolean;
@@ -124,6 +136,7 @@ export class RuntimePreview {
   readonly items = new DynamicItems();
   readonly dialogs = new DialogSlots();
   readonly starter: TaskStarter | null;
+  readonly messenger: TaskMessenger | null;
   readonly steps: Step[] = [];
   readonly revealed: RevealTarget[] = [];
   readonly status: { text?: string; tone?: string } = {};
@@ -146,6 +159,7 @@ export class RuntimePreview {
     this.options = options;
     this.grantsMap = options.grants;
     this.starter = options.tasksStart ? new TaskStarter(options.tasksStart) : null;
+    this.messenger = options.tasksMessages ? new TaskMessenger(options.tasksMessages) : null;
     this.events.setGate((_owner, _version, project) => this.holds(EVENTS_PERMISSION, project));
   }
 
@@ -158,6 +172,8 @@ export class RuntimePreview {
   private step(step: string, code?: string, detail?: string) { this.steps.push({ column: COLUMN, at: this.now(), step, ...(code ? { code } : {}), ...(detail ? { detail } : {}) }); }
 
   /** Does the package hold `permission` (for `project`; `null` asks whether it holds it at all)? Rechecked on every call. */
+  private messaging(): TaskMessenger { if (!this.messenger) throw new PandaError('UnsupportedCapability'); return this.messenger; }
+  private messageChecks() { return { granted: (permission: string, project: string) => this.holds(permission, project), package: this.packageName }; }
   holds(permission: string, project: string | null = null): boolean {
     if (this.options.safeMode || this.options.enabled === false) return false;
     const grant = this.grantsMap.get(permission);
@@ -353,10 +369,22 @@ export class RuntimePreview {
           return null;
         }),
       },
-      tasks: { start: options => this.call('tasks.start', () => {
-        if (!this.starter) throw new PandaError('UnsupportedCapability');
-        return unwrap(this.starter.start(owner, { granted: project => this.holds(TASKS_START_PERMISSION, project), package: this.packageName }, options));
-      }) },
+      tasks: {
+        start: options => this.call('tasks.start', () => {
+          if (!this.starter) throw new PandaError('UnsupportedCapability');
+          return unwrap(this.starter.start(owner, { granted: project => this.holds(TASKS_START_PERMISSION, project), package: this.packageName }, options));
+        }),
+        message: (taskId, message) => this.call('tasks.message', () => unwrap(this.messaging().message(owner, this.messageChecks(), { taskId, message }))),
+        note: (taskId, note) => this.call('tasks.note', () => unwrap(this.messaging().note(owner, this.messageChecks(), { taskId, note }))),
+        queue: {
+          list: taskId => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'list', taskId }))),
+          update: (taskId, entryId, change) => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'update', taskId, entryId, change }))),
+          remove: (taskId, entryId) => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'remove', taskId, entryId }))),
+          reorder: (taskId, entryIds) => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'reorder', taskId, entryIds }))),
+          sendNow: (taskId, entryId) => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'sendNow', taskId, entryId }))),
+          resume: taskId => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'resume', taskId }))),
+        },
+      },
       daemon: {
         request: (op, params) => this.call('daemon.request', () => {
           if (!this.daemonCore) throw new PandaError('HostUnavailable');

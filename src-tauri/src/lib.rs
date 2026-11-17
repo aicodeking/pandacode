@@ -777,6 +777,7 @@ async fn delete_session_with_attachment_cleanup(
         extensions::runtime_service_lifetime::runtime_workspace_events::forget_task(removed);
         extensions::runtime_dynamic_items::scope_gone(&app, &extensions::runtime_dynamic_items::Scope::Task(removed.clone()));
         extensions::runtime_tasks_start::task_removed(&app, removed);
+        extensions::runtime_tasks_messages::task_removed(&app, removed);
         if let Some(project) = &project { extensions::runtime_service_lifetime::runtime_workspace_events::task_removed(&app, removed, project); }
     }
     match app.path().app_data_dir() {
@@ -4871,6 +4872,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_dialog_navigation::DialogSlots::default());
     app.manage(extensions::runtime_tasks_start::TaskOrigins::open(&dir));
     app.manage(extensions::runtime_tasks_start::StartSlots::default());
+    app.manage(extensions::runtime_tasks_messages::TaskMessages::open(&dir));
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
     extensions::runtime_service_lifetime::reconcile_app(app.handle());
@@ -5353,6 +5355,7 @@ pub fn run() {
                 extensions::runtime_notifications::extensions_runtime_notice_recorder,
                 extensions::runtime_tasks_start::extensions_runtime_task_defaults_answer,
                 extensions::runtime_tasks_start::extensions_runtime_task_origins,
+                extensions::runtime_tasks_messages::extensions_runtime_message_origins,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialog_answer,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialogs,
                 usage_ledger::usage_ledger,

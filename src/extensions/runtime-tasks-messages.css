@@ -1,0 +1,5 @@
+/* The package label on queued messages a package added (docs/extensions/runtime-tasks-messages.md): a small chip after the
+ * queued text. Only tokens, no literal colors; it never changes the row's size on hover. */
+.runtime-queue-origin { flex: none; max-width: 40%; overflow: hidden; padding: 0 6px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--muted); font-size: var(--text-xs); line-height: 16px; white-space: nowrap; text-overflow: ellipsis; }
+@media (prefers-contrast: more) { .runtime-queue-origin { border-color: var(--border); color: var(--text); } }
+@media (forced-colors: active) { .runtime-queue-origin { border-color: CanvasText; background: Canvas; color: CanvasText; } }

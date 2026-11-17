@@ -48,6 +48,8 @@ export async function subscribe(name: 'extensions-runtime-dialog-close', callbac
 export async function subscribe(name: 'extensions-runtime-reveal', callback: (event: { owner: string; target: import('./extensions/runtime-dialog-navigation').RevealTarget }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-task-defaults', callback: (event: { id: string; owner: string; projectId: string; harness?: string; model?: string; effort?: string; mode?: import('./extensions/runtime-tasks-start').Mode; target?: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-task-origins', callback: (event: number) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-runtime-message-origins', callback: (event: number) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-runtime-queue-resume', callback: (event: { taskId: string; owner: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-provider-state', callback: (event: unknown) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {

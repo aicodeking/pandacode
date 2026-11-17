@@ -192,7 +192,20 @@ process.stdin.on('data', chunk => {
               switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
             }),
             // Starts an attributed task (R0401, tasks.start): defaults, worktree and target are resolved by the host; no option pairs a machine.
-            tasks: Object.freeze({ start: options => rpc('tasksStart', options === undefined || options === null ? {} : { ...options }) }),
+            tasks: Object.freeze({
+              start: options => rpc('tasksStart', options === undefined || options === null ? {} : { ...options }),
+              // Messages, notes and the revisioned queue (R0402, tasks.message; a note for the model also needs harness.hooks.context).
+              message: (taskId, message) => rpc('tasksMessage', { taskId, message }),
+              note: (taskId, note) => rpc('tasksNote', { taskId, note }),
+              queue: Object.freeze({
+                list: taskId => rpc('tasksQueue', { op: 'list', taskId }),
+                update: (taskId, entryId, change) => rpc('tasksQueue', { op: 'update', taskId, entryId, change }),
+                remove: (taskId, entryId) => rpc('tasksQueue', { op: 'remove', taskId, entryId }),
+                reorder: (taskId, entryIds) => rpc('tasksQueue', { op: 'reorder', taskId, entryIds }),
+                sendNow: (taskId, entryId) => rpc('tasksQueue', { op: 'sendNow', taskId, entryId }),
+                resume: taskId => rpc('tasksQueue', { op: 'resume', taskId }),
+              }),
+            }),
             // Publishes what is true for the package's own providers (R0806, ui.dynamic): readiness, account, models, limits.
             providers: Object.freeze({ update: (id, state) => rpc('providerUpdate', { id, state }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.

@@ -360,6 +360,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   // No service runs in the preview: no dialog is pending; answers are recorded for the spec (runtime-dialog-navigation.ts).
   // No service starts a task in the preview: no label exists; the defaults answers are recorded for the spec (runtime-tasks-start.ts).
   if (command === 'extensions_runtime_task_origins') return { revision: 0, origins: {} };
+  // No service queues a message in the preview: no entry is labelled (the spec drives runtime-tasks-messages.ts directly).
+  if (command === 'extensions_runtime_message_origins') return { revision: 0, entries: {} };
   if (command === 'extensions_runtime_task_defaults_answer') { ((window as unknown as { __runtimeTaskDefaultsAnswers?: unknown[] }).__runtimeTaskDefaultsAnswers ??= []).push(args); return null; }
   if (command === 'extensions_runtime_dialogs') return [];
   if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }

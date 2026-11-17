@@ -801,6 +801,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.ui.notify` and `panda.ui.withdraw` (R0207): `ui.notify` is checked natively per call.
             // `panda.tasks.start` (R0401, tasks.start): the grant, the project and the harness are resolved natively per call.
             if request.method == "tasksStart" { return super::runtime_tasks_start::serve(app, request).await; }
+            // Messages, notes and the revisioned queue (R0402, tasks.message): the grant and the task are resolved natively per call.
+            if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
