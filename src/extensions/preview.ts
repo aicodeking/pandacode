@@ -22,6 +22,7 @@ import { createSignInPreview } from './runtime-sign-in';
 import { createConnectionAdaptersPreview, type Transport } from './runtime-connection-adapters';
 import { createHeldCredentialsPreview } from './runtime-held-credentials';
 import { createProviderStatePreview, setProviderStates } from './runtime-provider-state';
+import { createSpeedPreview } from './runtime-provider-speed';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -178,6 +179,26 @@ function reconcileSignIns(): void {
 }
 // Dynamic provider state (R0806): a labelled stand-in of the native overlay; the service's `providers.update` comes from a test hook only.
 const previewProviderState = createProviderStatePreview();
+// Speed tiers and warm spares (R0807): a labelled stand-in; the preview starts no process, so a "spare" is only a record.
+const previewSpeed = createSpeedPreview();
+function speedProjection(): unknown {
+  const snapshot = read();
+  for (const item of snapshot.packages) if (snapshot.safeMode || !item.enabled || !item.executable?.trusted) previewSpeed.discardOwner(item.manifest.id);
+  return previewSpeed.projection(snapshot.packages as never);
+}
+function speedOptIn(args: Record<string, unknown>): unknown {
+  const snapshot = read(), id = String(args.id ?? '');
+  if (args.enabled === true) {
+    if (snapshot.safeMode) throw new Error('PermissionDenied');
+    const found = snapshot.packages.find(item => item.manifest.id === id && item.enabled);
+    if (!found) throw new Error('NotFound');
+    const providers = (found.manifest.contributes as { providers?: { launch?: { warmSpare?: boolean } }[] } | undefined)?.providers ?? [];
+    if (!providers.some(provider => provider.launch?.warmSpare === true)) throw new Error('UnsupportedCapability: this extension declares no warm-spare harness.');
+    if (!found.executable?.trusted) throw new Error('ExecutableTrustRequired');
+    previewSpeed.setOptIn(id, found.executable.digest);
+  } else previewSpeed.setOptIn(id, null);
+  return speedProjection();
+}
 if (new URLSearchParams(location.search).has('provider-state')) (window as unknown as { __extensionProviderState?: unknown }).__extensionProviderState = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
 function providerStateService(args: Record<string, unknown>): unknown {
   const owner = String(args.id ?? ''), snapshot = read(), found = snapshot.packages.find(item => item.manifest.id === owner);
@@ -261,6 +282,8 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
   if (command === 'extensions_provider_state') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileProviderState(); return previewProviderState.projection(); }
   if (command === 'extensions_provider_state_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return providerStateService(args); }
+  if (command === 'extensions_provider_speed') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return speedProjection(); }
+  if (command === 'extensions_provider_speed_optin') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return speedOptIn(args); }
   if (command === 'extensions_provider_action') {
     if (windowLabel !== 'main') throw new Error('PermissionDenied');
     const provider = String(args.provider), action = String(args.action), owner = provider.split('/')[0], found = read().packages.find(item => item.manifest.id === owner && item.enabled);

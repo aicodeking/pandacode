@@ -103,6 +103,13 @@ pub(crate) struct State {
     /// Readiness states in the order they were observed, consecutive duplicates collapsed.
     pub readiness: Vec<String>,
     pub last_error: Option<String>,
+    /// Every process started for this package, by a send or as a warm spare (R0807).
+    pub spawns: u64,
+    /// Warm spares of an opted-in package (R0807): started ahead, adopted by a send, discarded unused, failed to start.
+    pub warm_started: u64,
+    pub warm_adopted: u64,
+    pub warm_discarded: u64,
+    pub warm_failed: u64,
 }
 type Shared = Arc<Mutex<State>>;
 fn registry() -> &'static Mutex<BTreeMap<String, Shared>> {
@@ -113,6 +120,10 @@ fn registry() -> &'static Mutex<BTreeMap<String, Shared>> {
 pub(crate) fn shared(owner: &str) -> Shared {
     registry().lock().unwrap_or_else(|poisoned| poisoned.into_inner()).entry(owner.to_owned()).or_default().clone()
 }
+/// A copy of the package's state (the one state every run and every warm spare of the package shares).
+pub(crate) fn current(owner: &str) -> State { with(&shared(owner), |state| state.clone()) }
+/// Changes the package's one state; the closure must be short and must not wait.
+pub(crate) fn update(owner: &str, change: impl FnOnce(&mut State)) { with(&shared(owner), change); }
 /// Records whether the package also declares a background service (`runtime.service`).
 pub(crate) fn mark_service(owner: &str, service: bool) { with(&shared(owner), |state| state.service = service); }
 /// A copy of the package's state, and how many states exist for it (always one once used).
@@ -171,6 +182,15 @@ pub(crate) fn facts(packages: &super::packages::Packages, owner: &str, provider:
         // The package's code folder joins here once `runtime.files` is materialized (slice R0105).
         package: None,
     })
+}
+
+/// The installed packages as JSON (the same snapshot the grants and the manager read), without waiting for the package
+/// lock: a busy lock is `HostUnavailable`. Used by the warm-spare opt-in (R0807), which lives outside `extensions`.
+pub(crate) fn package_snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
+    use tauri::Manager;
+    let packages = app.state::<super::packages::ExtensionPackages>();
+    let packages = packages.0.try_lock().map_err(|_| "HostUnavailable".to_owned())?;
+    serde_json::to_value(packages.snapshot()).map_err(|_| "MalformedData".to_owned())
 }
 
 /// The explicit readiness error of an installed launch provider whose executable content is not trusted.
@@ -249,32 +269,46 @@ pub(crate) fn structured_question(request: &Value) -> bool {
         || options.iter().any(|option| option["optionId"].as_str().and_then(|id| id.strip_prefix('q')).and_then(|id| id.split_once("_opt_")).is_some_and(|(number, _)| number.parse::<usize>().is_ok()))
 }
 
-/// Starts the declared command and speaks ACP until the prompt completes, fails or is stopped.
-/// `event` and `input` are the core conversation's (see `dynamic_harness::Conversation`).
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn drive(
-    owner: &str,
-    resolved: Resolved,
-    cwd: &Path,
-    prompt: &str,
-    resume_id: Option<&str>,
-    event: impl Fn(Value) -> Result<Value, String>,
-    input: impl Fn(RunInput) -> Option<Value>,
-    mut inputs: tokio::sync::mpsc::Receiver<RunInput>,
-    cancel: Arc<AtomicBool>,
-) -> Result<(), String> {
+/// A started harness process with its pipes: what a send owns while it talks, and what a warm spare (R0807) holds
+/// after `initialize` until a send adopts it.
+pub(crate) struct Started {
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: BufReader<tokio::process::ChildStdout>,
+    stderr_task: tokio::task::JoinHandle<()>,
+    diagnostics: Arc<Mutex<String>>,
+}
+impl Started {
+    /// Whether the process is still running (a warm spare that exited is never adopted).
+    pub(crate) fn alive(&mut self) -> bool { matches!(self.child.try_wait(), Ok(None)) }
+    /// The operating-system process id (tests end a spare with it).
+    #[allow(dead_code)]
+    pub(crate) fn pid(&self) -> Option<u32> { self.child.id() }
+    /// Ends the process: stdin EOF, a bounded wait, then a kill. Never called with a lock held.
+    pub(crate) async fn end(self) {
+        let Started { mut child, stdin, stderr_task, .. } = self;
+        drop(stdin);
+        let waited = tokio::time::timeout(STOP_GRACE, child.wait()).await;
+        if waited.is_err() { let _ = child.kill().await; let _ = child.wait().await; }
+        let _ = stderr_task.await;
+    }
+}
+
+/// Starts the resolved command with piped stdio (a hidden window on Windows). The environment is the app's own plus
+/// the manifest's fixed `env`; no held credential is placed in it (ADR-0006).
+pub(crate) fn spawn_process(owner: &str, resolved: &Resolved, cwd: &Path) -> Result<Started, String> {
     let state = shared(owner);
-    let (_run, _token) = Run::begin(state.clone());
     let mut command = tokio::process::Command::new(&resolved.program);
     command.args(&resolved.arguments).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     for (name, value) in &resolved.env { command.env(name, value); }
     #[cfg(windows)]
     command.creation_flags(0x08000000);
     let mut child = command.spawn().map_err(|error| { observe(&state, "unavailable", Some("spawn")); format!("ExecutableMissing: the declared harness could not start ({})", error.kind()) })?;
+    with(&state, |state| state.spawns += 1);
     #[cfg(windows)]
     if let Some(pid) = child.id() { crate::providers::windows_job::register(pid); }
-    let mut stdin = child.stdin.take().ok_or("HostUnavailable")?;
-    let mut stdout = BufReader::new(child.stdout.take().ok_or("HostUnavailable")?);
+    let stdin = child.stdin.take().ok_or("HostUnavailable")?;
+    let stdout = BufReader::new(child.stdout.take().ok_or("HostUnavailable")?);
     let mut stderr = child.stderr.take().ok_or("HostUnavailable")?;
     let diagnostics = Arc::new(Mutex::new(String::new()));
     let drain = diagnostics.clone();
@@ -286,6 +320,87 @@ pub(crate) async fn drive(
             if text.len() < 4096 { text.push_str(&String::from_utf8_lossy(&buffer[..count])); }
         }
     });
+    Ok(Started { child, stdin, stdout, stderr_task, diagnostics })
+}
+
+fn frame_bytes(value: &Value) -> Vec<u8> {
+    let mut line = serde_json::to_vec(value).unwrap_or_default();
+    line.push(b'\n');
+    line
+}
+fn initialize_frame() -> Value { json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":ACP_VERSION,"clientCapabilities":{}}}) }
+
+/// Starts the command and completes `initialize` within `limit`: a warm spare (runtime slice R0807). The reply is kept
+/// for the send that adopts the process, which replays it instead of sending `initialize` again. Nothing here holds a
+/// lock; the caller owns the process.
+pub(crate) async fn start_initialized(owner: &str, resolved: &Resolved, cwd: &Path, limit: Duration) -> Result<(Started, Value), String> {
+    let mut started = spawn_process(owner, resolved, cwd)?;
+    let outcome = tokio::time::timeout(limit, async {
+        started.stdin.write_all(&frame_bytes(&initialize_frame())).await.map_err(|_| "HostUnavailable".to_owned())?;
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match started.stdout.read_until(b'\n', &mut line).await {
+                Ok(0) | Err(_) => return Err("The declared harness exited before it answered initialize.".to_owned()),
+                Ok(_) => {
+                    if line.len() > MAX_LINE { return Err("LimitExceeded: a harness frame was too large.".to_owned()); }
+                    let Ok(frame) = serde_json::from_slice::<Value>(&line) else { continue };
+                    if frame["id"] == 1 && frame.get("method").is_none() {
+                        if frame.get("error").is_some() { return Err(rpc_error(&frame, "initialize")); }
+                        if frame["result"]["protocolVersion"] != ACP_VERSION { return Err("This harness does not support ACP protocol v1.".to_owned()); }
+                        return Ok(frame);
+                    }
+                }
+            }
+        }
+    }).await;
+    match outcome {
+        Ok(Ok(reply)) => Ok((started, reply)),
+        Ok(Err(error)) => { started.end().await; Err(error) }
+        Err(_) => { started.end().await; Err("Agent initialization timed out: the declared harness did not answer initialize.".into()) }
+    }
+}
+
+/// Starts the declared command and speaks ACP until the prompt completes, fails or is stopped.
+/// `event` and `input` are the core conversation's (see `dynamic_harness::Conversation`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn drive(
+    owner: &str,
+    resolved: Resolved,
+    cwd: &Path,
+    prompt: &str,
+    resume_id: Option<&str>,
+    event: impl Fn(Value) -> Result<Value, String>,
+    input: impl Fn(RunInput) -> Option<Value>,
+    inputs: tokio::sync::mpsc::Receiver<RunInput>,
+    cancel: Arc<AtomicBool>,
+) -> Result<(), String> {
+    drive_adopted(owner, resolved, cwd, prompt, resume_id, event, input, inputs, cancel, None, None).await
+}
+
+/// `drive`, optionally on an adopted warm spare (R0807) and with the selection `_meta` of `session/new`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn drive_adopted(
+    owner: &str,
+    resolved: Resolved,
+    cwd: &Path,
+    prompt: &str,
+    resume_id: Option<&str>,
+    event: impl Fn(Value) -> Result<Value, String>,
+    input: impl Fn(RunInput) -> Option<Value>,
+    mut inputs: tokio::sync::mpsc::Receiver<RunInput>,
+    cancel: Arc<AtomicBool>,
+    adopted: Option<(Started, Value)>,
+    meta: Option<Value>,
+) -> Result<(), String> {
+    let state = shared(owner);
+    let (_run, _token) = Run::begin(state.clone());
+    // A warm spare (R0807) is already initialized: its reply is replayed as the first frame instead of asking again.
+    let (started, mut replay) = match adopted {
+        Some((started, reply)) => (started, Some(reply)),
+        None => (spawn_process(owner, &resolved, cwd)?, None),
+    };
+    let Started { mut child, mut stdin, mut stdout, stderr_task, diagnostics } = started;
     let write = |value: Value| {
         let mut line = serde_json::to_vec(&value).unwrap_or_default();
         line.push(b'\n');
@@ -297,7 +412,7 @@ pub(crate) async fn drive(
     let mut cancelled_sent = false;
     let mut stop_deadline: Option<tokio::time::Instant> = None;
     let started = tokio::time::Instant::now();
-    stdin.write_all(&write(json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":ACP_VERSION,"clientCapabilities":{}}}))).await.map_err(|_| "HostUnavailable")?;
+    if replay.is_none() { stdin.write_all(&write(initialize_frame())).await.map_err(|_| "HostUnavailable")?; }
     let mut outcome: Result<(), String> = Ok(());
     let mut line = Vec::new();
     'frames: loop {
@@ -311,9 +426,8 @@ pub(crate) async fn drive(
             outcome = Err("Agent initialization timed out after 60 s: the declared harness did not open a session.".into());
             break;
         }
-        line.clear();
         let wait = stop_deadline.map_or(Duration::from_millis(100), |deadline| deadline.saturating_duration_since(tokio::time::Instant::now()).min(Duration::from_millis(100)));
-        let frame = tokio::select! {
+        let frame = if let Some(reply) = replay.take() { Some(reply) } else { line.clear(); tokio::select! {
             read = stdout.read_until(b'\n', &mut line) => match read {
                 Ok(0) | Err(_) => { if !cancel.load(Ordering::Acquire) { let note = diagnostics.lock().map(|text| text.trim().chars().take(300).collect::<String>()).unwrap_or_default(); outcome = Err(format!("The declared harness exited before it finished.{}", if note.is_empty() { String::new() } else { format!(" {note}") })); } break 'frames; }
                 Ok(_) => {
@@ -342,7 +456,7 @@ pub(crate) async fn drive(
                 None
             },
             _ = tokio::time::sleep(wait) => { if stop_deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) { break 'frames; } None }
-        };
+        } };
         let Some(frame) = frame else { continue };
         if frame.get("error").is_some() && frame.get("id").is_some() && frame.get("method").is_none() {
             let stage = match frame["id"].as_u64() { Some(1) => "initialize", Some(2) => "session creation", Some(3) => "session/prompt", _ => "request" };
@@ -379,6 +493,8 @@ pub(crate) async fn drive(
                 with(&state, |state| state.handshakes += 1);
                 let capabilities = &frame["result"]["agentCapabilities"];
                 let mut params = json!({"cwd":cwd.to_string_lossy(),"mcpServers":[]});
+                // The selected model, effort and speed tier travel in the ACP extension point (`_meta`), attributed to the package (R0807).
+                if let Some(meta) = &meta { params["_meta"] = json!({"pandacode": meta}); }
                 let method = match resume_id.filter(|id| !id.is_empty()) {
                     None => "session/new",
                     Some(id) => {
@@ -411,6 +527,22 @@ pub(crate) async fn drive(
     let _ = stderr_task.await;
     if let Err(error) = &outcome { observe(&state, "ready", Some(error)); }
     outcome
+}
+
+/// Package-store helpers for tests that live outside `extensions` (the warm-spare tests of R0807), where the store's
+/// install, trust and enable steps are not visible.
+#[cfg(test)]
+pub(crate) mod support {
+    use super::super::packages::ExtensionPackages;
+    pub(crate) fn install(packages: &ExtensionPackages, archive: &[u8]) { packages.0.lock().unwrap().install(archive).unwrap(); }
+    pub(crate) fn digest(packages: &ExtensionPackages) -> String { serde_json::to_value(packages.0.lock().unwrap().snapshot()).unwrap()["packages"][0]["executable"]["digest"].as_str().unwrap().to_owned() }
+    pub(crate) fn trust_and_enable(packages: &ExtensionPackages, id: &str) {
+        let guard = packages.0.lock().unwrap();
+        let digest = serde_json::to_value(guard.snapshot()).unwrap()["packages"][0]["executable"]["digest"].as_str().unwrap().to_owned();
+        guard.trust(id, &digest, true).unwrap();
+        guard.enable(id, true).unwrap();
+    }
+    pub(crate) fn disable(packages: &ExtensionPackages, id: &str) { packages.0.lock().unwrap().enable(id, false).unwrap(); }
 }
 
 #[cfg(test)]

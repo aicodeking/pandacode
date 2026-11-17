@@ -18,6 +18,8 @@ impl Drop for RunLease {
     }
 }
 pub(crate) fn configure(packages: &Arc<Mutex<Packages>>, directory: Option<PathBuf>) {
+    // The user's warm-spare opt-ins (R0807) live in a file next to the grants; nothing starts from loading them.
+    crate::providers::speed_adapter::configure(directory.as_deref());
     let _ = HOST.set(Host { packages: Arc::downgrade(packages), directory });
 }
 #[derive(Clone)]
@@ -56,6 +58,24 @@ fn catalog(definition: &Value) -> Vec<ModelInfo> {
         default_reasoning_effort: None, context_window: model["contextWindow"].as_u64(),
         speed_tiers: model["speedTiers"].as_array().into_iter().flatten().map(|tier| ReasoningEffortInfo { id: tier["id"].as_str().unwrap_or_default().into(), name: tier["name"].as_str().unwrap_or_default().into(), description: tier["description"].as_str().unwrap_or_default().into() }).collect(),
     }).collect()
+}
+/// What a warm spare needs (R0807), read and checked in one place: the provider is registered (so its package is
+/// enabled and trusted, not in safe mode), declares `launch.warmSpare`, is ready, and its command resolves.
+pub(crate) struct WarmContext { pub owner: String, pub digest: String, pub resolved: launch::Resolved, pub key: String }
+/// Short and blocking (it reads the package list): call it off the async runtime, with no lock held.
+pub(crate) fn warm_context(provider: &str, cwd: &std::path::Path) -> Result<WarmContext, String> {
+    let registration = resolve(provider)?;
+    let owner = crate::extensions::providers::extension_owner(provider).ok_or("InvalidIdentity")?;
+    let spec = launch::declared(&registration.definition).ok_or("UnsupportedCapability: this provider declares no launch.")?;
+    if spec["warmSpare"] != true { return Err("UnsupportedCapability: this harness does not declare warmSpare.".into()); }
+    let packages = HOST.get().and_then(|host| host.packages.upgrade()).ok_or("HostUnavailable")?;
+    let trusted = packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, provider)).is_some_and(|facts| facts.trusted);
+    if !trusted { return Err(launch::TRUST_REQUIRED.into()); }
+    let metadata = metadata(&registration.definition);
+    if metadata["readiness"]["state"] != "ready" { return Err(metadata["readiness"]["reason"].as_str().unwrap_or("Provider unavailable").into()); }
+    let resolved = launch::resolve(spec, &launch_places(owner, provider))?;
+    let key = crate::providers::speed_adapter::key(provider, &registration.digest, &resolved, cwd);
+    Ok(WarmContext { owner: owner.to_owned(), digest: registration.digest.clone(), resolved, key })
 }
 pub(crate) fn discover() -> Vec<ProviderInfo> {
     discover_placement(crate::headless::active())
@@ -167,6 +187,8 @@ pub(crate) fn validate_effort(id: &str, effort: Option<&str>) -> Result<(), Stri
     else { Err("Unsupported provider effort".into()) }
 }
 pub(crate) fn stop(owner: Option<&str>) {
+    // Disable, uninstall, trust loss, rollback and safe mode also end the package's warm spares (R0807).
+    crate::providers::speed_adapter::discard_owner(owner);
     if let Ok(runs) = RUNS.lock() { for (id, cancel) in runs.values() { if owner.is_none_or(|owner| owner == id) { cancel.store(true, Ordering::Release); } } }
 }
 
@@ -274,6 +296,7 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
         let model = models.iter().find(|model| model.id == config.model).ok_or("Unsupported provider model")?;
         if config.reasoning_effort.as_ref().is_some_and(|effort| !model.reasoning_efforts.iter().any(|entry| &entry.id == effort)) { return Err("Unsupported provider effort".into()); }
     }
+    let selection = crate::providers::speed_adapter::selection(&config, &models);
     let cancel = Arc::new(AtomicBool::new(false));
     let key = uuid::Uuid::new_v4().to_string();
     {
@@ -303,7 +326,12 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
         // Every run of the package shares its one launch state; the service flag joins a declared background service.
         if let Some(facts) = packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, &config.provider)) { launch::mark_service(owner, facts.service); }
         let (events, answers) = (handler.clone(), handler.clone());
-        launch::drive(owner, resolved, &config.cwd, &config.prompt, config.resume_id.as_deref(), move |value| events.event(value), move |value| answers.input(value), inputs, cancel.clone()).await
+        // An opted-in package may hold one initialized spare for exactly this launch (R0807); anything else starts cold, here.
+        let spare_key = crate::providers::speed_adapter::key(&config.provider, &registration.digest, &resolved, &config.cwd);
+        let adopted = crate::providers::speed_adapter::take(&config.session_id, owner, &spare_key);
+        crate::providers::speed_adapter::record_launch(owner, &config.provider, &config.session_id, &selection, adopted.is_some());
+        let meta = crate::providers::speed_adapter::meta(owner, &selection);
+        launch::drive_adopted(owner, resolved, &config.cwd, &config.prompt, config.resume_id.as_deref(), move |value| events.event(value), move |value| answers.input(value), inputs, cancel.clone(), adopted.map(|spare| (spare.started, spare.reply)), Some(meta)).await
     } else {
     let runtime = runtime.expect("a handler provider has its runtime"); let receiver = receiver.expect("a handler provider has its receiver");
     supervisor::run_owned_async(&runtime, &registration.source, context, cancel.clone(), &config.cwd, Duration::from_secs(3600), move |method, params| {

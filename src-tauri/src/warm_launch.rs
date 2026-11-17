@@ -50,7 +50,7 @@ fn eligible(session: &Session) -> bool {
         && session.remote_device.is_none()
         && session.cloud.is_none()
         && !cloud_agents::transport::is_cloud(&session.id)
-        && (session.provider == "claude" || providers::handshake_warm_provider(&session.provider))
+        && (session.provider == "claude" || providers::handshake_warm_provider(&session.provider) || providers::speed_adapter::participates(&session.provider))
 }
 
 /// Move the task's recorded warm agent to its new settings. Codex and ACP start afresh (a spare
@@ -63,8 +63,12 @@ fn plan_rewarm(session: &Session) -> Option<FreshWarm> {
         return None;
     }
     let retargeted = providers::retarget_warm_agent(session);
+    // A package harness takes part only when the user opted it in (R0807, default off); any other task drops a leftover spare.
+    let package = providers::speed_adapter::participates(&session.provider);
+    if !package { providers::speed_adapter::discard_session(&session.id, "switched"); }
     let fresh = (providers::handshake_warm_provider(&session.provider) && !providers::handshake_spare_kept(&session.id, &session.provider))
-        || (session.provider == "claude" && !retargeted);
+        || (session.provider == "claude" && !retargeted)
+        || (package && !providers::speed_adapter::present(&session.id));
     if !(fresh && eligible(session)) {
         // Every pick supersedes a start still pending from an earlier one (say, a quick flip to
         // Codex and back): it must not start, nor stop the agent this pick kept.
@@ -118,6 +122,9 @@ fn rewarm(app: &tauri::AppHandle, session_id: &str, debounce: bool) {
                 local_launch(&store, &session)
             };
             let Some(config) = config else { return Ok(None) };
+            if providers::speed_adapter::participates(&config.provider) {
+                return Ok(Some((config, Default::default())));
+            }
             // The ACP agents get their tools at session start, not on their command line. A
             // Codex spare loads the task's thread ahead, serving its catalog (`codex_preload`).
             if providers::handshake_warms(&config) && config.provider != "codex" {
@@ -133,7 +140,12 @@ fn rewarm(app: &tauri::AppHandle, session_id: &str, debounce: bool) {
         })
         .await;
         if let Ok(Some((config, (tools, approvals)))) = planned {
-            let _ = providers::prewarm_reserved(plan.ticket, config, tools, approvals, plan.launch).await;
+            if providers::speed_adapter::participates(&config.provider) {
+                // An opted-in package harness (R0807): its own spare, no lock of the upstream warm code is taken.
+                let _ = providers::speed_adapter::prewarm(config).await;
+            } else {
+                let _ = providers::prewarm_reserved(plan.ticket, config, tools, approvals, plan.launch).await;
+            }
         }
         // Whatever happened, this ticket's start is over: a waiting send stops waiting for it.
         providers::release_warm_ticket(&id, plan.ticket);

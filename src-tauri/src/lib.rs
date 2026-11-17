@@ -5215,6 +5215,8 @@ pub fn run() {
                 extensions::runtime_sign_in::extensions_sign_in_cancel,
                 extensions::runtime_sign_in::extensions_sign_in_paste,
                 extensions::runtime_provider_state::extensions_provider_state,
+                providers::speed_adapter::extensions_provider_speed,
+                providers::speed_adapter::extensions_provider_speed_optin,
                 extensions::runtime_provider_state::extensions_provider_action,
                 extensions::packages::extensions_settings_get,
                 extensions::packages::extensions_settings_set,

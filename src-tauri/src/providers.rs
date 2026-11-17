@@ -22,6 +22,9 @@ mod attachments;
 mod builtin_adapter;
 #[path = "extensions/dynamic_harness.rs"]
 pub(crate) mod dynamic_adapter;
+// Speed tiers and opted-in warm spares of declared package harnesses (R0807); declared here so the extensions module list stays untouched.
+#[path = "extensions/runtime_provider_speed.rs"]
+pub(crate) mod speed_adapter;
 mod goals;
 mod host_inputs;
 mod host_tools;
@@ -128,7 +131,8 @@ pub fn has_warm_agent(session: &crate::storage::Session) -> bool {
     warm::pending_ticket(&session.id)
         || match session.provider.as_str() {
             "claude" => warm::present(&session.id),
-            provider => handshake_warm::provider(provider) && handshake_warm::present(&session.id),
+            provider => (handshake_warm::provider(provider) && handshake_warm::present(&session.id))
+                || (crate::providers::speed_adapter::participates(provider) && crate::providers::speed_adapter::present(&session.id)),
         }
 }
 
@@ -159,6 +163,8 @@ pub(crate) fn warm_record_for_test(config: &RunConfig) {
 pub fn discard_all_warm_agents() {
     warm::discard_all();
     handshake_warm::discard_all();
+    // Opted-in package harness spares (R0807) follow the same user setting; its own lock only.
+    crate::providers::speed_adapter::discard_all();
 }
 
 /// Drop every warm agent a task has (its folder changed, or it was deleted).

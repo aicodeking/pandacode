@@ -250,7 +250,27 @@ pub(super) async fn set_task_preference(
     if terminal::harness_running(&state.terminals, &session_id)? {
         return Err("Close this task's harness console before changing its settings here.".into());
     }
-    if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
+    let (provider, model) = {
+        let current = state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?;
+        (current.provider, current.model)
+    };
+    if crate::extensions::providers::extension_owner(&provider).is_some() {
+        // A declared package harness stores the tier its model publishes (R0807); the launch receives it with the next send.
+        let tier = match request {
+            TaskPreference::Speed { tier } => tier,
+            TaskPreference::Fast { enabled } => enabled.then(|| "fast".to_string()),
+            TaskPreference::Plan { .. } => return Err("UnsupportedCapability: this extension harness has no plan switch.".into()),
+        };
+        let tier = crate::providers::speed_adapter::validated_tier(&provider, &model, tier)?;
+        let delta = json!({"serviceTier": tier});
+        let session = {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            save_preference(&store, &session_id, &delta)?
+        };
+        crate::providers::speed_adapter::record_pick(&provider, &session_id, &model, tier.as_deref());
+        return Ok(session);
+    }
+    if provider == "claude" {
         // Claude reads fast mode at launch, so the choice applies from the next turn.
         let delta = json!({"serviceTier": claude_tier(request)?});
         let session = {
