@@ -194,6 +194,7 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-tasks-flow.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime tasks flow:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-terminals.spec.ts'];
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-internal-unstable.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime terminals:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-guests.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions runtime guests:`);

@@ -5340,6 +5340,7 @@ pub fn run() {
                 extensions::runtime_family_consents::extensions_family_consents,
                 extensions::runtime_private_secrets::extensions_private_secrets,
                 extensions::runtime_service_lifetime::runtime_held_credentials::extensions_credential_activity,
+                extensions::runtime_internal_unstable::extensions_internal_activity,
                 extensions::runtime_sign_in::extensions_sign_in,
                 extensions::runtime_sign_in::extensions_sign_in_cancel,
                 extensions::runtime_sign_in::extensions_sign_in_paste,

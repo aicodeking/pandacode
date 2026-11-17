@@ -381,6 +381,31 @@ process.stdin.on('data', chunk => {
                 return Object.freeze({ dispose: stop });
               },
             }),
+            // The unstable internal interface (R1301, internal.unstable; NO compatibility promise): the host checks the grant per call; a listener is pumped like terminals.onOutput.
+            internal: Object.freeze({
+              invoke: (command, args) => rpc('internal', { op: 'invoke', command, ...(args === undefined ? {} : { args }) }),
+              listen(event, handler) {
+                if (typeof handler !== 'function') throw new TypeError('internal.listen needs a function');
+                let live = true, id = null, timer = null;
+                const stop = () => { live = false; if (timer) clearTimeout(timer); timer = null; if (id) { const gone = id; id = null; rpc('internal', { op: 'unlisten', listenerId: gone }).catch(() => {}); } };
+                const tick = async () => {
+                  timer = null;
+                  if (!live) return;
+                  let answer;
+                  try { answer = await rpc('internal', { op: 'poll', listenerId: id }); } catch { stop(); return; }
+                  if (!live) return;
+                  for (const payload of answer?.events ?? []) { try { await handler(freeze(payload)); } catch { /* a failing handler never stops the stream */ } }
+                  if (!live) return;
+                  timer = setTimeout(tick, Math.max(10, Number(answer?.retryMs) || 100));
+                };
+                rpc('internal', { op: 'listen', event }).then(result => {
+                  if (!live) { rpc('internal', { op: 'unlisten', listenerId: result.listenerId }).catch(() => {}); return; }
+                  id = result.listenerId;
+                  timer = setTimeout(tick, 0);
+                }).catch(() => { live = false; });
+                return Object.freeze({ dispose: stop });
+              },
+            }),
             // Projects, worktrees, branches, tasks and pull requests (R0405, workspace.manage) and the project check (projects.checks.run): the host checks the grant per call; irreversible removals confirm by default.
             projects: Object.freeze({ checks: Object.freeze({ run: input => rpc('workspaceProjects', { call: 'projects.checks.run', input }) }) }),
             // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.

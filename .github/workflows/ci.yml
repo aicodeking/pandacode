@@ -249,6 +249,12 @@ jobs:
       - name: Terminals read and write (WebKit)
         env: { PW_PORT: '16362', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-terminals.spec.ts --workers=1
+      - name: Unstable internal interface (Chromium)
+        env: { PW_PORT: '16711', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-internal-unstable.spec.ts --workers=1
+      - name: Unstable internal interface (WebKit)
+        env: { PW_PORT: '16712', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-internal-unstable.spec.ts --workers=1
       - name: Guest control (Chromium)
         env: { PW_PORT: '16371', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-guests.spec.ts --workers=1

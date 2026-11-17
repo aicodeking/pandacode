@@ -298,6 +298,7 @@ export function previewExtensions(command: string, args: Record<string, unknown>
     if (!command || !contributes?.commands?.some(item => item.id === command)) throw new Error('NotFound');
     return { provider, action, command, owner };
   }
+  if (command === 'extensions_internal_activity') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { schemaVersion: 1, package: String(args.id), stability: 'unstable', items: [] }; }
   if (command === 'extensions_credential_activity') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewHeld.activity(String(args.id)); }
   if (command === 'extensions_held_credentials_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return heldService(args); }
   if (command === 'extensions_connection_adapters_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return connectionAdaptersCall(args); }
