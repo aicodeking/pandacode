@@ -502,7 +502,23 @@ export interface TasksQueueApi {
   sendNow(taskId: string, entryId: string): Promise<null>;
   resume(taskId: string): Promise<null>;
 }
+/** `tasks.draft` / `tasks.attachments` (R0403): a composer target is exactly one of `taskId` or `windowId`. Editing never sends. See docs/extensions/runtime-tasks-drafts.md. */
+export type DraftTarget = { readonly taskId: string; readonly windowId?: never } | { readonly windowId: string; readonly taskId?: never }
+export interface DraftAttachment { readonly id: string; readonly kind: string; readonly name: string }
+export interface TasksDraftApi {
+  get(target: DraftTarget): Promise<{ readonly text: string; readonly attachments: readonly DraftAttachment[]; readonly revision: number }>;
+  set(options: DraftTarget & { text: string; revision?: number }): Promise<{ readonly revision: number }>;
+  insert(options: DraftTarget & { text: string }): Promise<{ readonly revision: number }>;
+  suggest(options: DraftTarget & { text: string }): Promise<null>;
+  attach(options: DraftTarget & { path: string }): Promise<{ readonly id: string }>;
+  detach(options: DraftTarget & { attachmentId: string }): Promise<null>;
+}
+/** One page of at most 256 KiB decoded; `data` is base64 and `nextCursor` is the byte cursor of the next page, `null` at the end. */
+export interface AttachmentChunk { readonly schemaVersion: 1; readonly mime: string; readonly name: string; readonly bytes: number; readonly data: string; readonly nextCursor: number | null }
+export interface TasksAttachmentsApi { read(options: { taskId: string; attachmentId: string; cursor?: number }): Promise<AttachmentChunk> }
 export interface TasksApi {
+  readonly draft: TasksDraftApi;
+  readonly attachments: TasksAttachmentsApi;
   start(options: TasksStartOptions): Promise<{ readonly id: string; readonly projectId: string; readonly worktree: string | null }>;
   message(taskId: string, message: TasksMessage): Promise<{ readonly id: string; readonly delivery: 'sent' | 'queued' | 'steered' }>;
   note(taskId: string, note: { text: string; forModel?: boolean }): Promise<{ readonly id: string }>;

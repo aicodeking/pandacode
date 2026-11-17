@@ -27,6 +27,7 @@ pub mod runtime_platform_qualification;
 pub(crate) mod runtime_provider_launch;
 pub mod runtime_tasks_start;
 pub mod runtime_tasks_messages;
+pub mod runtime_tasks_drafts;
 pub(crate) mod runtime_hook_fixtures;
 pub(crate) mod runtime_hook_payload;
 pub mod providers;

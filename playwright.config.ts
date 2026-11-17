@@ -130,6 +130,7 @@ config.testMatch.push('**/extensions-runtime-dialog-navigation.spec.ts');
 config.testMatch.push('**/extensions-runtime-notifications.spec.ts');
 config.testMatch.push('**/extensions-runtime-tasks-start.spec.ts');
 config.testMatch.push('**/extensions-runtime-tasks-messages.spec.ts');
+config.testMatch.push('**/extensions-runtime-tasks-drafts.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-settings.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-state.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-speed.spec.ts');

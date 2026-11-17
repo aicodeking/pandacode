@@ -366,6 +366,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   // No service queues a message in the preview: no entry is labelled (the spec drives runtime-tasks-messages.ts directly).
   if (command === 'extensions_runtime_message_origins') return { revision: 0, entries: {} };
   if (command === 'extensions_runtime_task_defaults_answer') { ((window as unknown as { __runtimeTaskDefaultsAnswers?: unknown[] }).__runtimeTaskDefaultsAnswers ??= []).push(args); return null; }
+  if (command === 'extensions_runtime_draft_answer') { ((window as unknown as { __runtimeDraftAnswers?: unknown[] }).__runtimeDraftAnswers ??= []).push(args); return null; }
+  if (command === 'extensions_runtime_draft_allowed') return ((args.ghosts as unknown[]) ?? []).map(() => true);
   if (command === 'extensions_runtime_dialogs') return [];
   if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }
   if (command === 'extensions_family_consents')return previewFamilyConsents.call(args, snapshot);

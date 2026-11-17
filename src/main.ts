@@ -959,6 +959,24 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     void messages.startRuntimeTasksMessages({ resume: id => { const task = state.sessions.find(item => item.id === id); if (!task) return; state.queueHolds.delete(id); refreshComposer(task); void dispatchQueue(id); } });
     void messages.mountMessageOrigins();
   });
+  // Drafts and attachments a package edits without sending (R0403): the window answers each round from the composer itself.
+  void import('./extensions/runtime-tasks-drafts').then(drafts => drafts.mountRuntimeDrafts({
+    windowId: 'main',
+    shown: () => state.sessionId || null,
+    project: taskId => state.sessions.find(item => item.id === taskId)?.projectId || undefined,
+    stored: taskId => state.drafts.get(taskId),
+    store: (taskId, text) => state.drafts.set(taskId, text),
+    attachments: taskId => attachments.list(taskId).map(item => ({ id: item.id, kind: item.kind, name: item.name })),
+    attach: async (taskId, path) => { const item = await attachments.attachPath(taskId, path); return { id: item.id, kind: item.kind, name: item.name }; },
+    detach: (taskId, attachmentId) => { if (!attachments.find(taskId, attachmentId)) return false; attachments.remove(taskId, attachmentId); return true; },
+    attachment: (taskId, attachmentId) => {
+      const item = attachments.find(taskId, attachmentId);
+      if (!item) return undefined;
+      if (item.kind === 'document') return { name: item.name, mime: 'text/plain', path: item.path, text: item.text };
+      if (item.kind === 'folder') return { name: item.name, mime: 'text/plain', path: item.path, text: item.listing };
+      return { name: item.name, mime: 'image/*', path: item.path };
+    },
+  }));
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // The app's own settings a package with `workspace.settings` reads and changes (R0407): the window publishes its values and applies the package's changes.

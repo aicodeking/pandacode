@@ -336,6 +336,8 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
     super::runtime_provider_state::sweep_app(&app);
     // A revoked ui.richViews destroys the package's panels and separate windows (R0301).
     super::rich_views::runtime_rich_mount::sweep_app(&app);
+    // A revoked tasks.draft grant empties the package's draft ghosts and pending asks (R0403).
+    super::runtime_tasks_drafts::sweep_app(&app);
     Ok(grants.projection())
 }
 

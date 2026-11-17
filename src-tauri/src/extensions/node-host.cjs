@@ -205,6 +205,9 @@ process.stdin.on('data', chunk => {
                 sendNow: (taskId, entryId) => rpc('tasksQueue', { op: 'sendNow', taskId, entryId }),
                 resume: taskId => rpc('tasksQueue', { op: 'resume', taskId }),
               }),
+              // Composer drafts and attachments, never sent (R0403, tasks.draft); the target is { taskId } or { windowId }.
+              draft: Object.freeze(Object.fromEntries(['get', 'set', 'insert', 'suggest', 'attach', 'detach'].map(op => [op, options => rpc('tasksDraft', { ...(options ?? {}), op })]))),
+              attachments: Object.freeze({ read: options => rpc('tasksAttachmentsRead', options === undefined || options === null ? {} : { ...options }) }),
             }),
             // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.
             workspace: Object.freeze({ settings: Object.freeze({

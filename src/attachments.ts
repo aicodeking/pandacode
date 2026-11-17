@@ -230,6 +230,13 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     attachPaths,
     attachFiles,
     addImage,
+    /** One path attached to a given task (an extension's `tasks.draft.attach`, R0403): a folder, an image or a document, as a picker would. Throws what the picker would report. */
+    async attachPath(taskId: string, path: string): Promise<PromptAttachment> {
+      if (IMAGE_EXTENSIONS.test(path)) return addImage(taskId, { path, origin: 'file' });
+      try { await addFolder(taskId, path); }
+      catch (error) { if (String(error instanceof Error ? error.message : error).includes('not a folder')) await addDocument(taskId, path); else throw error; }
+      return list(taskId)[list(taskId).length - 1];
+    },
     find: (taskId: string, attachmentId: string) => list(taskId).find(a => a.id === attachmentId),
     clear: (taskId: string): void => { items.delete(taskId); },
     remove(taskId: string, attachmentId: string): void { set(taskId, list(taskId).filter(a => a.id !== attachmentId)); host.rerender(taskId); },

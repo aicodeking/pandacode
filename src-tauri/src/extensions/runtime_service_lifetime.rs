@@ -767,7 +767,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_provider_state::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_provider_state::service_stopped(&app, owner); })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -810,6 +810,9 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if request.method == "workspaceSettings" {
                 return tauri::async_runtime::spawn_blocking(move || runtime_workspace_settings::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
+            // `panda.tasks.draft.*` (R0403, tasks.draft) and `panda.tasks.attachments.read` (tasks.transcript.read): the grant is checked natively per call.
+            if request.method == "tasksDraft" { return super::runtime_tasks_drafts::serve(app, request).await; }
+            if request.method == "tasksAttachmentsRead" { return super::runtime_tasks_drafts::serve_attachment(app, request).await; }
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }

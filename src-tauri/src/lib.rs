@@ -4873,6 +4873,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_tasks_start::TaskOrigins::open(&dir));
     app.manage(extensions::runtime_service_lifetime::runtime_workspace_settings::WorkspaceSettings::open(&dir));
     app.manage(extensions::runtime_tasks_start::StartSlots::default());
+    app.manage(extensions::runtime_tasks_drafts::DraftSlots::default());
     app.manage(extensions::runtime_tasks_messages::TaskMessages::open(&dir));
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
@@ -5204,6 +5205,8 @@ pub fn run() {
                 extensions::packages::extensions_snapshot,
                 extensions::runtime_grants::extensions_runtime_grants,
                 extensions::runtime_grants::extensions_runtime_grant,
+                extensions::runtime_tasks_drafts::extensions_runtime_draft_answer,
+                extensions::runtime_tasks_drafts::extensions_runtime_draft_allowed,
                 extensions::runtime_service_lifetime::extensions_service_lifetime,
                 extensions::runtime_service_lifetime::runtime_service_status::extensions_service_status,
                 extensions::runtime_service_lifetime::runtime_executor_placement::extensions_executor_services,
