@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "label": "synthetic: scripted B5 fake-agent scenarios for the Command guard (sample.guard); the fake agent executes nothing",
+  "agent": {
+    "script": "tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs",
+    "provider": "sample.launch-agent/fake",
+    "env": { "FAKE_AGENT_PANDACODE": "reason,updatedInput", "PANDA_GUARD_TEST": "1" },
+    "note": "FAKE_AGENT_PANDACODE makes the fake agent read the reason and updatedInput of a permission answer (R0502); PANDA_GUARD_TEST turns on the guard-test commands of main.cjs."
+  },
+  "scenarios": [
+    {
+      "id": "denied",
+      "behavior": 1,
+      "script": [
+        { "say": "Resetting the checkout." },
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "git reset --hard" } }, "ask": true },
+        { "say": "Carrying on." }
+      ],
+      "expect": { "prompt": false, "agentHears": "denied: ...git.reset-hard...", "toolRow": "Denied by Command guard", "attribution": "sample.guard", "turnContinues": true }
+    },
+    {
+      "id": "permitted",
+      "behavior": 2,
+      "script": [
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "git status" } }, "ask": true },
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "rm -rf ./build" } }, "ask": true },
+        { "say": "Done." }
+      ],
+      "expect": { "prompt": true, "decidedBy": null, "approvedByPackage": false, "afterUserApproves": "ran: {\"command\":\"git status\"}" }
+    },
+    {
+      "id": "rewritten",
+      "behavior": 12,
+      "script": [
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "git push --force origin main" } }, "ask": true },
+        { "say": "Pushed." }
+      ],
+      "expect": { "prompt": false, "agentRuns": "ran: {\"command\":\"git push --force-with-lease origin main\"}", "toolRow": "Args rewritten (guard)", "originalAndNewInRow": true, "withoutRewriteInput": "denied: ...git.push-force..." }
+    },
+    {
+      "id": "slow",
+      "behavior": 9,
+      "script": [
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "guard-test sleep 60" } }, "ask": true },
+        { "say": "Back." }
+      ],
+      "expect": { "budgetMs": 2000, "prompt": true, "note": "Command guard did not answer (Timeout). Decide yourself.", "approvedByPackage": false, "turnContinues": true }
+    },
+    {
+      "id": "unchecked",
+      "behavior": 11,
+      "script": [
+        { "tool": { "name": "Bash", "kind": "shell", "input": { "command": "rm -rf ../outside" } }, "ask": false },
+        { "say": "Ran." }
+      ],
+      "expect": { "ranWithoutCheck": true, "notice": "A command ran without a check on <harness> (<mode> mode).", "status": "not enforced for <harness> in <mode> mode", "coverageFrom": "panda.harnesses.list (R0509)", "companion": "pending — companions deferred (user decision 2026-11-17)" }
+    }
+  ]
+}

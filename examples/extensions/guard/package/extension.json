@@ -1,0 +1,47 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.guard",
+  "version": "1.0.0",
+  "name": "Command guard",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "harness.hooks.observe", "harness.hooks.decide", "ui.dynamic", "ui.notify", "ui.presentation", "harnesses.inventory", "storage.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.guard/explain", "title": "Explain a command", "action": { "kind": "runCommand" } },
+      { "id": "sample.guard/open-log", "title": "Open the guard log", "action": { "kind": "openView", "view": "sample.guard/log" } }
+    ],
+    "slashCommands": [
+      { "id": "sample.guard/explain-slash", "name": "/guard-explain", "description": "Explain the guard's verdict for a command", "command": "sample.guard/explain" }
+    ],
+    "menus": [
+      { "id": "sample.guard/level", "location": "panda.status.items", "command": "sample.guard/open-log", "presentation": "status", "text": "Guard" }
+    ],
+    "views": [
+      { "id": "sample.guard/log", "title": "Guard log", "text": "No decisions yet.", "controls": [{ "kind": "table", "label": "Decisions", "columns": ["Time", "Verdict", "Rule", "Command"], "rows": [] }] }
+    ],
+    "settings": [
+      { "id": "sample.guard/policy", "title": "Command guard", "fields": [
+        { "id": "level", "kind": "text", "label": "Level (standard, strict or paranoid)", "value": "standard", "required": true },
+        { "id": "rules", "kind": "textarea", "label": "Custom rules (JSON list of { command, blockArgs, reason })", "value": "[]", "rows": 4 }
+      ] }
+    ],
+    "hooks": [
+      { "id": "sample.guard/before", "event": "tool.before", "match": { "toolKinds": ["shell", "write", "edit"] }, "onFailure": "ask", "budgetMs": 2000 },
+      { "id": "sample.guard/after", "event": "tool.after", "match": { "toolKinds": ["shell"] }, "onFailure": "continue", "budgetMs": 2000 }
+    ],
+    "toolRows": [
+      {
+        "id": "sample.guard/shell-row",
+        "title": "Shell commands, with the guard's decision",
+        "selector": { "kind": "shell" },
+        "row": { "sentence": "{name}: {target}" },
+        "signals": [
+          { "id": "denied", "risk": "destructive", "label": "Denied by Command guard", "when": "hook-deny" },
+          { "id": "rewritten", "risk": "notice", "label": "Args rewritten (guard)", "when": "hook-rewrite" }
+        ]
+      }
+    ]
+  }
+}

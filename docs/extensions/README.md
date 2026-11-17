@@ -87,6 +87,7 @@ anything at extension run time, contacts a network service or changes PandaCode 
 | [service-consumer](../../examples/extensions/service-consumer/) | Calling another package's service through the broker | yes | **Call public greeting** |
 | [acp-recorded](../../examples/extensions/acp-recorded/) | A harness (provider) replaying recorded ACP frames offline | yes | Select **Recorded ACP** in the model picker |
 | [live-board](../../examples/extensions/live-board/) | A background service: a tracker daemon read live into a status item and a table, a Retry button, a dialog ([guide](examples/live-board.md)) | yes | Install, trust, enable and grant; the **Work board** status item |
+| [guard](../../examples/extensions/guard/) | Harness hooks: a command guard that denies destructive shell commands with a reason and rewrites a force push ([guide](examples/guard.md)) | yes | Install, trust, enable and grant; the **Guard** status item and **Explain a command** |
 
 Every family of host surface also has a small installable reference manifest next to its tests in
 `tests/fixtures/extensions/<family>/extension.json`; the family documents below say which one.

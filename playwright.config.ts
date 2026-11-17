@@ -175,6 +175,7 @@ config.testMatch.push('**/upstream-speed-extensions.spec.ts');
 config.testMatch.push('**/upstream-acp-example.spec.ts');
 config.testMatch.push('**/upstream-api-tools-example.spec.ts');
 config.testMatch.push('**/extensions-example-live-board.spec.ts');
+config.testMatch.push('**/extensions-example-guard.spec.ts');
 config.testMatch.push('**/extensions-example-monitor.spec.ts');
 config.testMatch.push('**/extensions-example-inbox.spec.ts');
 config.testMatch.push('**/extensions-example-signin.spec.ts');

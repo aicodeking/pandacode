@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "package": "sample.guard",
+  "label": "Evidence columns of the Command guard example (R1204). Every column is prepared, not run; nothing here is an observation.",
+  "columns": [
+    {
+      "id": "preview-chromium",
+      "state": "prepared, not run (deferred to the final test phase)",
+      "port": 16631,
+      "command": "npx playwright test tests/extensions-example-guard.spec.ts --workers=1",
+      "covers": "analyser table (78 commands, 3 paths), deny with reason and rule, permitted work, force-push rewrite, slow and throwing handler, levels and policy, log of 50, audit redaction, unchecked notice, disable"
+    },
+    {
+      "id": "preview-webkit",
+      "state": "prepared, not run (deferred to the final test phase)",
+      "port": 16632,
+      "command": "npx playwright test -c playwright.webkit.config.ts tests/extensions-example-guard.spec.ts --workers=1",
+      "covers": "the same tests; the grep is 'command guard preview:'"
+    },
+    {
+      "id": "native",
+      "state": "prepared, not run (deferred to the final test phase)",
+      "command": "scenarios.json driven through the real approval path with the B5 fake agent (denied, permitted, rewritten, slow, unchecked); no Rust acceptance test was written in this task",
+      "covers": "behaviors 1, 2, 9, 11 and 12 on the R0505 decision path; hooks removed on disable and in safe mode; PermissionDenied for a decision without harness.hooks.decide"
+    },
+    {
+      "id": "installed-windows",
+      "state": "prepared, not run (deferred to the final test phase)",
+      "command": "install the package through Settings, Extensions, Install local package; run the five scenarios against the B5 provider sample.launch-agent/fake on a dedicated profile",
+      "covers": "the installed main.cjs (data directory, audit file, policy files) and the visible tool row; no real harness is run"
+    }
+  ],
+  "companions": {
+    "state": "pending — companions deferred (user decision 2026-11-17)",
+    "reason": "The R06 companion line (R0601 to R0606) was skipped in this run. Default-mode coverage is reported from R0509 and R0505 (askedCalls, escalationsOnly, none, and the ask-at-host scoped full mode); a companion source and target version are not named here and nothing is claimed for them."
+  }
+}
