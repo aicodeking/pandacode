@@ -1,0 +1,41 @@
+{
+  "provenance": "synthetic",
+  "note": "Shared by runtime_document_editors::tests (native) and tests/extensions-runtime-document-editors.spec.ts (preview twin). A refusal case starts from the `sample.notebook/sql` editor of extension.json: `set` changes fields, `drop` removes them, `extra` adds editors derived from the changed one, `count` replaces the list with that many valid editors. The string \"{pad:N}\" stands for N characters. `permissions` replaces the manifest permissions; `noFiles` drops runtime.files.",
+  "refusals": [
+    { "id": "reserved-id", "set": { "id": "panda.sql" }, "expect": { "code": "ReservedId", "at": "contributes/editors", "ids": ["panda.sql"] } },
+    { "id": "foreign-id", "set": { "id": "other.pkg/sql" }, "expect": { "code": "InvalidId", "at": "contributes/editors", "ids": ["other.pkg/sql"] } },
+    { "id": "duplicate-id", "extra": [{ "set": {} }], "expect": { "code": "DuplicateId", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "title-missing", "drop": ["title"], "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "title-too-long", "set": { "title": "{pad:81}" }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "no-extensions", "set": { "extensions": [] }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "seventeen-extensions", "set": { "extensions": [".a1", ".a2", ".a3", ".a4", ".a5", ".a6", ".a7", ".a8", ".a9", ".b1", ".b2", ".b3", ".b4", ".b5", ".b6", ".b7", ".b8"] }, "expect": { "code": "LimitExceeded", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "extension-without-dot", "set": { "extensions": ["sql"] }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "extension-uppercase", "set": { "extensions": [".SQL"] }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "extension-too-long", "set": { "extensions": [".abcdefghijklmnopq"] }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "extension-repeated", "set": { "extensions": [".sql", ".sql"] }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "priority-unknown", "set": { "priority": "always" }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "encoding-unknown", "set": { "encoding": "utf16" }, "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "rich-missing", "drop": ["rich"], "expect": { "code": "InvalidShape", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "rich-folder-not-shipped", "set": { "rich": { "folder": "elsewhere", "entry": "index.html" } }, "expect": { "code": "UnknownReference", "at": "contributes/editors", "ids": ["sample.notebook/sql"] } },
+    { "id": "seventeen-editors", "count": 17, "expect": { "code": "LimitExceeded", "at": "contributes/editors", "ids": ["sample.notebook"] } },
+    { "id": "without-the-documents-editors-grant", "permissions": ["ui.contribute"], "expect": { "code": "PermissionDenied", "at": "permissions", "ids": ["sample.notebook"] } }
+  ],
+  "selection": [
+    { "id": "no-editor-for-the-type", "extension": ".txt", "packages": ["notebook"], "expect": { "editor": "builtin", "reason": "builtin", "options": [] } },
+    { "id": "one-default", "extension": ".sql", "packages": ["notebook"], "expect": { "editor": "sample.notebook/sql", "reason": "default", "options": ["sample.notebook/sql"] } },
+    { "id": "option-is-offered-not-opened", "extension": ".csv", "packages": ["notebook"], "expect": { "editor": "builtin", "reason": "builtin", "options": ["sample.notebook/table"] } },
+    { "id": "two-options-open-nothing", "extension": ".csv", "packages": ["notebook", "rival"], "expect": { "editor": "builtin", "reason": "builtin", "options": ["sample.notebook/table", "sample.rival/csv"] } },
+    { "id": "two-defaults-ask-the-user", "extension": ".sql", "packages": ["notebook", "rival"], "expect": { "editor": "builtin", "reason": "conflict", "ask": ["sample.notebook/sql", "sample.rival/sql"], "options": ["sample.notebook/sql", "sample.rival/sql"] } },
+    { "id": "remembered-editor-wins", "extension": ".sql", "packages": ["notebook", "rival"], "remembered": "sample.rival/sql", "expect": { "editor": "sample.rival/sql", "reason": "remembered", "options": ["sample.notebook/sql", "sample.rival/sql"] } },
+    { "id": "remembered-built-in-wins", "extension": ".sql", "packages": ["notebook"], "remembered": "builtin", "expect": { "editor": "builtin", "reason": "remembered", "options": ["sample.notebook/sql"] } },
+    { "id": "remembered-option-opens", "extension": ".csv", "packages": ["notebook"], "remembered": "sample.notebook/table", "expect": { "editor": "sample.notebook/table", "reason": "remembered", "options": ["sample.notebook/table"] } },
+    { "id": "stale-remembered-falls-back", "extension": ".sql", "packages": ["notebook"], "remembered": "sample.gone/editor", "expect": { "editor": "sample.notebook/sql", "reason": "default", "options": ["sample.notebook/sql"] } }
+  ],
+  "chunks": [
+    { "id": "empty-text", "encoding": "text", "bytes": 0, "expectChunks": 1 },
+    { "id": "one-chunk", "encoding": "text", "bytes": 196608, "expectChunks": 1 },
+    { "id": "one-byte-over", "encoding": "text", "bytes": 196609, "expectChunks": 2 },
+    { "id": "four-mib-text", "encoding": "text", "bytes": 4194304, "expectChunks": 22 },
+    { "id": "sixteen-mib-bytes", "encoding": "bytes", "bytes": 16777216, "expectChunks": 86 }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rival",
+  "name": "Rival editor",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "documents.editors"],
+  "runtime": { "kind": "node", "files": ["editor"] },
+  "contributes": {
+    "editors": [
+      { "id": "sample.rival/sql", "title": "Rival SQL", "extensions": [".sql"], "priority": "default", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } },
+      { "id": "sample.rival/csv", "title": "Rival CSV", "extensions": [".csv"], "priority": "option", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } }
+    ]
+  }
+}

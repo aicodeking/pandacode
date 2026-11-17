@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.notebook",
+  "name": "SQL notebook",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "documents.editors"],
+  "runtime": { "kind": "node", "files": ["editor"] },
+  "contributes": {
+    "editors": [
+      { "id": "sample.notebook/sql", "title": "SQL notebook", "extensions": [".sql"], "priority": "default", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } },
+      { "id": "sample.notebook/table", "title": "Table view", "extensions": [".csv", ".tsv"], "priority": "option", "encoding": "text", "rich": { "folder": "editor", "entry": "index.html" } },
+      { "id": "sample.notebook/hex", "title": "Hex view", "extensions": [".bin"], "priority": "default", "encoding": "bytes", "rich": { "folder": "editor", "entry": "index.html" } }
+    ]
+  }
+}
