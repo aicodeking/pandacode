@@ -201,11 +201,31 @@ export class RuntimePreview {
   }
   /** A panel's proxied call (never a service-only one: the channel refused those) on the service's own panda. */
   private async callByPath(path: string, args: readonly unknown[]): Promise<unknown> {
-    if (!this.panda || this.state !== 'running') throw new PandaError('HostUnavailable');
-    let target: unknown = this.panda;
+    // R0305: a package without a service has no process; its panels' calls run on the page panda.
+    const panda = this.options.manifest.runtime?.service?.start === 'onEnable' ? (this.state === 'running' ? this.panda : null) : this.pagePanda();
+    if (!panda) throw new PandaError('HostUnavailable');
+    let target: unknown = panda;
     for (const part of path.split('.')) target = target && typeof target === 'object' && Object.hasOwn(target, part) ? (target as Record<string, unknown>)[part] : undefined;
     if (typeof target !== 'function') throw new ChannelError(`UnsupportedCapability: ${path} is not a call of the package SDK in a panel in this release.`);
     return (target as (...values: unknown[]) => unknown)(...args);
+  }
+  /** R0305: the page panda of a package without a service, built at its first call and gone with `endPage`. */
+  private page: PreviewPanda | null = null;
+  private pagePanda(): PreviewPanda {
+    if (this.options.safeMode || this.options.enabled === false) throw new PandaError('PermissionDenied');
+    if (!this.page) { this.page = this.buildPanda(); this.step('page'); }
+    return this.page;
+  }
+  private pageLive() { return !!this.page && !this.options.safeMode && this.options.enabled !== false; }
+  /** R0305: a panel's proxied call for a package without a service. No process starts: `starts` stays 0. */
+  pageCall(path: string, args: readonly unknown[]): Promise<unknown> { return this.callByPath(path, args); }
+  /** R0305: the page's work ends (lifecycle end): its dialogs, live items and notices go, as at a service's stop. */
+  endPage(reason: string): boolean {
+    if (!this.page) return false;
+    this.page = null;
+    this.dialogs.cancelOwner(this.owner); this.items.clear(this.owner); this.notices.clear(this.owner, 'panel-ended');
+    this.step('page-end', undefined, reason);
+    return true;
   }
 
   get owner() { return this.options.manifest.id; }
@@ -234,12 +254,13 @@ export class RuntimePreview {
     if (keep) this.grantsMap.set(permission, keep); else this.grantsMap.delete(permission);
     this.step('revoke', undefined, permission);
     if (permission === SERVICE_PERMISSION && !this.holds(SERVICE_PERMISSION)) { await this.stop('trust'); return; }
+    if (permission === PANELS_PERMISSION && !this.holds(PANELS_PERMISSION)) this.endPage('revoke');
     this.sweep();
   }
   grant(permission: string, to: true | ReadonlySet<string> = true) { this.grantsMap.set(permission, to); this.step('grant', undefined, permission); }
   /** Disable, enable and safe mode follow the same rule as the native owner: a service never outlives its package state. */
-  async setEnabled(enabled: boolean): Promise<void> { this.options.enabled = enabled; if (!enabled) await this.stop('disable'); }
-  async setSafeMode(on: boolean): Promise<void> { this.options.safeMode = on; if (on) await this.stop('safeMode'); }
+  async setEnabled(enabled: boolean): Promise<void> { this.options.enabled = enabled; if (!enabled) { await this.stop('disable'); this.endPage('disable'); } }
+  async setSafeMode(on: boolean): Promise<void> { this.options.safeMode = on; if (on) { await this.stop('safeMode'); this.endPage('safeMode'); } }
   /** Drops what a permission the package no longer holds had produced. */
   private sweep() {
     if (!this.holds(NOTIFY_PERMISSION)) this.notices.sweep(() => false, 'revoked-or-disabled');
@@ -346,7 +367,7 @@ export class RuntimePreview {
 
   // ---- the service's panda --------------------------------------------------------------------------------------
 
-  private requireRunning() { if (this.state !== 'running') throw new PandaError('HostUnavailable'); }
+  private requireRunning() { if (this.state !== 'running' && !this.pageLive()) throw new PandaError('HostUnavailable'); }
   private call<T>(name: string, run: () => T): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       try { this.requireRunning(); const value = run(); this.step(name); resolve(value); } catch (error) { this.step(name, error instanceof PandaError ? error.code : 'HostUnavailable'); reject(error); }

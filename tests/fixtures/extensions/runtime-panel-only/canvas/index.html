@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sketch</title>
+  <style>canvas{display:block;border:1px solid #888;touch-action:none}button{margin:2px}</style>
+</head>
+<body>
+  <canvas id="canvas" width="300" height="120" tabindex="0" aria-label="Sketch canvas"></canvas>
+  <p id="instance">instance: none</p>
+  <p id="restored">restored: none</p>
+  <p id="strokes">strokes: 0</p>
+  <p id="focus">focused: none</p>
+  <p id="notified">notified: none</p>
+  <p id="status">status: none</p>
+  <p id="message">message: none</p>
+  <p id="directory">directory: none</p>
+  <button id="stroke" type="button">Add stroke</button>
+  <button id="clear" type="button">Clear</button>
+  <button id="notify" type="button">Notify</button>
+  <button id="register" type="button">Show strokes in the status bar</button>
+  <button id="post" type="button">Message a service</button>
+  <button id="data" type="button">Ask for the data directory</button>
+  <button id="fail" type="button">Fail</button>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

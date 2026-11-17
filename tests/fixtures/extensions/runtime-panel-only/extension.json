@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.panel-only",
+  "version": "1.0.0",
+  "name": "Panel-only sketch",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "ui.notify", "ui.dynamic", "storage.private"],
+  "contributes": {
+    "views": [
+      { "id": "sample.panel-only/sketch", "title": "Sketch", "text": "Host-rendered sketch: the canvas panel draws here once the package may show panels.", "rich": { "folder": "canvas", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } }
+    ],
+    "commands": [
+      { "id": "sample.panel-only/open", "title": "Open sketch", "action": { "kind": "openView", "view": "sample.panel-only/sketch" } }
+    ],
+    "menus": [
+      { "id": "sample.panel-only/header", "location": "panda.workspace.header.actions", "command": "sample.panel-only/open", "presentation": "button" }
+    ]
+  }
+}

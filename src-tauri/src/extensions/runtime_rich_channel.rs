@@ -276,6 +276,8 @@ impl Channel {
     }
     pub fn state(&self, label: &str) -> Option<Value> { self.live(label).ok().and_then(|instance| instance.state.clone()) }
     pub fn set_focus(&mut self, label: &str, focused: bool) -> Result<(), String> { self.live_mut(label)?.focused = focused; Ok(()) }
+    /// R0305: whether the live instance of mount `label` has the keyboard (its shell's last `focus` report).
+    pub fn focused(&self, label: &str) -> bool { self.live(label).is_ok_and(|instance| instance.focused) }
     /// A message of a panel for its service: the bounds, then the host call's parameters.
     pub fn from_panel(&mut self, label: &str, message: Value, now: Instant) -> Result<(String, Value), String> {
         let size = bytes(&message);
@@ -433,6 +435,8 @@ pub fn serve_post(app: &tauri::AppHandle, label: &str, session: &str, origin: Or
         Request::Call { id, path, args } => {
             let origin = match with(|channel| Some(channel.call(label, &path))).unwrap_or_else(|| Err(CLOSED.into())) { Ok(origin) => origin, Err(error) => return refusal(&error) };
             let (method, params) = match route(&path, &args) { Ok(routed) => routed, Err(error) => return refusal(&error) };
+            // R0305: a page of a package without a service made host work, which ends with its panel authority.
+            super::runtime_panel_only::note_call(&origin.owner, &origin.version);
             let (app, label, session) = (app.clone(), label.to_owned(), session.to_owned());
             tauri::async_runtime::spawn(async move {
                 // The same server as the service's requests: grants are checked per call for the package.
@@ -499,6 +503,8 @@ pub fn set_theme(app: &tauri::AppHandle, theme: Value) -> Result<(), String> {
 /// Every teardown of a mount (`runtime_rich_mount::forget` and the window paths).
 pub fn detach(app: &tauri::AppHandle, label: &str, keep: bool) { deliver(app, with(|channel| channel.detach(label, keep))); }
 pub fn visibility(app: &tauri::AppHandle, label: &str, visible: bool) { deliver(app, with(|channel| channel.set_visible(label, visible))); }
+/// R0305: whether the live instance of mount `label` has the keyboard (read before a mount ends).
+pub fn focused(label: &str) -> bool { with(|channel| channel.focused(label)) }
 /// After every lifecycle change: closed instances of packages that may no longer show panels lose their state.
 pub fn reconcile(app: &tauri::AppHandle) {
     use tauri::Manager;

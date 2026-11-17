@@ -20,7 +20,8 @@ import { appearanceSnapshot, richViewDocument, type RichAssets } from './rich-vi
 import { createRuntimeGrantsPreview, type SyncSnapshot } from './runtime-grants';
 import { ASSET_RELOADABLE, assetEndedNote, assetRefusalNote, previewServedUrl, servedSource } from './runtime-rich-assets';
 import { followTheme, previewPanelHost } from './runtime-rich-channel';
-import { bindPanelFocus, enterNative, forgetParked, fromFrame, minSize, parkNative, resumeNative, visibleBox } from './runtime-rich-focus';
+import { bindPanelFocus, enterNative, forgetParked, fromFrame, minSize, parkNative, restoreFocus, resumeNative, visibleBox } from './runtime-rich-focus';
+import { endPreviewPage, ensurePreviewPage, lifecycleRefusal } from './runtime-panel-only';
 import type { RegisteredView } from './views-state';
 
 export type MountTechnique = 'browser-iframe' | 'native-webview';
@@ -97,6 +98,8 @@ async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (
   const served = !!servedSource(entry.view.rich);
   const load = PREVIEW_ASSETS[entry.view.id];
   if (!load && !served) throw new Refusal('UnsupportedRuntime');
+  // R0305: a package without a service gets the preview's page host for its panels' SDK calls (no process).
+  if (served) await ensurePreviewPage(entry, () => previewAuthority(entry) === 'ok');
   const id = `extension-panel-${crypto.randomUUID()}`;
   // R0302: a folder or remote view is the shell of its package origin (its own storage); a legacy view a composed document.
   const html = served || !load ? '' : await richViewDocument(entry, await load(), id);
@@ -249,12 +252,23 @@ export function mountRichPanel(slot: HTMLElement, entry: RegisteredView): () => 
   slot.replaceChildren(surface, note, reload);
   const clear = () => { teardown?.(); teardown = undefined; surface.replaceChildren(); };
   const say = (text: string, canReload: boolean) => { note.textContent = text; reload.hidden = !canReload; };
+  // R0305: whether the keyboard is in this panel, so an end that removes it (a failure, a lifecycle end, the view
+  // going away) gives it back to the app control that had it before. Nothing moves when it was elsewhere.
+  let holding = false;
+  slot.addEventListener('focusin', () => { holding = true; }, { signal });
+  slot.addEventListener('focusout', event => { if (!(event.relatedTarget instanceof Node && slot.contains(event.relatedTarget))) holding = false; }, { signal });
+  const releasing = () => {
+    const had = holding || slot.contains(document.activeElement), id = slot.dataset.mountId ?? '';
+    return () => { holding = false; if (had && (!document.activeElement || document.activeElement === document.body)) restoreFocus(id); };
+  };
   const report = (ticket: number) => (event: Report) => {
     if (signal.aborted || ticket !== generation) return;
     if (event.kind === 'mounted') { state = 'mounted'; slot.dataset.mountId = event.id; say('', true); return; }
+    const done = releasing();
     clear(); delete slot.dataset.mountId; state = RELOADABLE.has(event.reason) ? 'failed' : 'refused';
     slot.dataset.richState = event.reason;
     say(endedNote(event.reason), RELOADABLE.has(event.reason));
+    done();
   };
   const start = () => {
     if (signal.aborted) return;
@@ -274,12 +288,22 @@ export function mountRichPanel(slot: HTMLElement, entry: RegisteredView): () => 
     if (signal.aborted) return;
     if (preview) {
       const authority = previewAuthority(entry);
-      if (authority !== 'ok' && (state === 'mounted' || state === 'loading')) { generation++; clear(); delete slot.dataset.mountId; state = 'refused'; slot.dataset.richState = authority; say(refusalNote(authority, entry.owner), false); return; }
+      // R0305: a lifecycle end restores the slot of a failed panel too (no reload), ends the page's work and gives
+      // the keyboard back.
+      if (authority !== 'ok' && (state === 'mounted' || state === 'loading' || state === 'failed')) {
+        const done = releasing();
+        generation++; clear(); delete slot.dataset.mountId; state = 'refused'; slot.dataset.richState = authority; say(refusalNote(authority, entry.owner), false);
+        endPreviewPage(authority); done();
+        return;
+      }
       if (authority === 'ok' && state === 'refused') start();
       return;
     }
     // Native: the host ends a mount it no longer allows (`extensions-rich-mount-ended`); a refused one may now open.
-    if (state === 'refused') start();
+    if (state === 'refused') { start(); return; }
+    // R0305: a failed panel whose package was disabled, untrusted or put in safe mode is no longer offered a reload.
+    const gone = state === 'failed' ? lifecycleRefusal(extensionsSnapshot(), entry.owner, entry.version) : undefined;
+    if (gone) { state = 'refused'; slot.dataset.richState = gone; say(endedNote(gone), false); }
   };
   const unsubscribe = onExtensionChanged(entry.owner, recheck);
   window.addEventListener(GRANTS_CHANGED, recheck, { signal });
@@ -289,9 +313,11 @@ export function mountRichPanel(slot: HTMLElement, entry: RegisteredView): () => 
   queueMicrotask(start);
   // R0304: leaving the screen (a tab or task switch) parks a mounted installed panel instead of closing it.
   return () => {
+    const done = releasing();
     controller.abort(); generation++; unsubscribe();
     const dispose = teardown; teardown = undefined; dispose?.(state === 'mounted');
     surface.replaceChildren(); slot.replaceChildren();
+    done();
   };
 }
 

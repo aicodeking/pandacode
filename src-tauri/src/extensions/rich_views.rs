@@ -19,6 +19,9 @@ pub mod runtime_rich_channel;
 // R0304: panel focus, forwarded keys, kept-alive hidden panels and minimum size (`rich_views::runtime_rich_focus`).
 #[path = "runtime_rich_focus.rs"]
 pub mod runtime_rich_focus;
+// R0305: a package with panels and no service: its page work and the keyboard of an ending panel (`rich_views::runtime_panel_only`).
+#[path = "runtime_panel_only.rs"]
+pub mod runtime_panel_only;
 use runtime_rich_assets::Source;
 
 const CHANNEL: &str = include_str!("../../../src/extensions/rich-view-channel.js");
@@ -182,6 +185,8 @@ pub fn reconcile(app: &tauri::AppHandle) {
     runtime_rich_mount::reconcile(app);
     // R0303: closed panel instances of packages that may no longer show panels lose their state.
     runtime_rich_channel::reconcile(app);
+    // R0305: the work of pages of packages without a service ends with their panel authority, even if a panel failed.
+    runtime_panel_only::reconcile(app);
 }
 
 #[cfg(test)]

@@ -136,6 +136,8 @@ export class PanelChannel {
     this.live(label).state = structuredClone(value);
   }
   setFocus(label: string, focused: boolean) { this.live(label).focused = focused; }
+  /** R0305: whether the live instance of mount `label` has the keyboard (twin of `Channel::focused`). */
+  focused(label: string): boolean { try { return this.live(label).focused; } catch { return false; } }
   fromPanel(label: string, message: Json, now: number): { owner: string; params: ServiceParams } {
     const size = bytes(message);
     if (size > MESSAGE_LIMIT) throw new ChannelError(tooLarge('A panel message', size));

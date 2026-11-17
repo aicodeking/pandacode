@@ -279,6 +279,12 @@ jobs:
       - name: Rich panel focus, keys and size (WebKit)
         env: { PW_PORT: '16382', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-rich-focus.spec.ts --workers=1
+      - name: Panels without a service (Chromium)
+        env: { PW_PORT: '16421', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-panel-only.spec.ts --workers=1
+      - name: Panels without a service (WebKit)
+        env: { PW_PORT: '16422', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-panel-only.spec.ts --workers=1
       - name: Harness consoles and commands (Chromium)
         env: { PW_PORT: '16351', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-harness-console.spec.ts --workers=1

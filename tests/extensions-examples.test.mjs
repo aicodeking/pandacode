@@ -31,11 +31,13 @@ function declaredFiles(manifest) {
   const declared = new Set(['extension.json']);
   if (manifest.runtime) declared.add(manifest.runtime.entrypoint);
   for (const icon of manifest.contributes?.icons ?? []) declared.add(icon.asset);
-  for (const view of manifest.contributes?.views ?? []) if (view.rich) for (const key of ['html', 'css', 'script']) declared.add(view.rich[key]);
+  for (const view of manifest.contributes?.views ?? []) if (view.rich) for (const key of ['html', 'css', 'script']) if (typeof view.rich[key] === 'string') declared.add(view.rich[key]);
   return [...declared].sort();
 }
 /** `true` when `file` lies inside a declared code folder (`runtime.files`, R0105): any file type is package code there. */
 const inCodeFolder = (manifest, file) => (manifest.runtime?.files ?? []).some(folder => file.startsWith(`${folder}/`) && file.length > folder.length + 1);
+/** `true` when `file` lies inside a declared panel folder (`rich.folder`, R0302; contract G4, R0305): the installer declares every file there. */
+const inPanelFolder = (manifest, file) => (manifest.contributes?.views ?? []).some(view => typeof view.rich?.folder === 'string' && file.startsWith(`${view.rich.folder}/`) && file.length > view.rich.folder.length + 1);
 /** A relative specifier into a declared code folder (`./lib/x.cjs`), resolved from the code directory. */
 const relativeCode = (manifest, specifier) => specifier.startsWith('./') && inCodeFolder(manifest, specifier.slice(2));
 const CODE_FOLDERS = 'tests/fixtures/extensions/runtime-code-folders';
@@ -80,7 +82,7 @@ test('extension examples: each package validates and carries only declared files
     assert.equal(result.ok, true, `${example.dir}: ${JSON.stringify(result.error)}`);
     assert.deepEqual(result.diagnostics, [], example.dir);
     const root = `${EXAMPLES}/${example.dir}/package`;
-    assert.deepEqual(files(root).filter(file => !inCodeFolder(manifest, file)), declaredFiles(manifest), example.dir);
+    assert.deepEqual(files(root).filter(file => !inCodeFolder(manifest, file) && !inPanelFolder(manifest, file)), declaredFiles(manifest), example.dir);
     for (const file of files(root).filter(file => file.endsWith('.svg'))) {
       const svg = read(join(root, file)).trim();
       assert.match(svg, /^<svg[\s>]/); assert.doesNotMatch(svg, /<script|\son\w+=|href=|<foreignObject/i);
@@ -191,7 +193,7 @@ test('extension examples: archive corpus matches the author pre-check of declare
     if (change.omit === 'extension.json') { assert.equal(change.error, 'Missing extension.json.'); continue; }
     const declared = declaredFiles(manifest);
     const unsafe = present.some(file => file.split('/').some(part => part === '..' || part === ''));
-    const undeclared = present.filter(file => !declared.includes(file) && !inCodeFolder(manifest, file));
+    const undeclared = present.filter(file => !declared.includes(file) && !inCodeFolder(manifest, file) && !inPanelFolder(manifest, file));
     const missing = declared.filter(file => !present.includes(file));
     assert.ok(unsafe || undeclared.length || missing.length, change.name);
     if (unsafe) assert.equal(change.error, 'Unsafe archive entry.');
@@ -207,6 +209,14 @@ test('extension examples: archive corpus matches the author pre-check of declare
   const bare = structuredClone(manifest); delete bare.runtime.files;
   assert.deepEqual(present.filter(file => !declaredFiles(bare).includes(file) && !inCodeFolder(bare, file)), ['lib/esm.mjs', 'lib/helper.cjs', 'lib/shared.mjs', 'lib/worker.cjs', 'wasm/add.wasm']);
   assert.equal(inCodeFolder(manifest, 'other/x.cjs') || inCodeFolder(manifest, 'lib/') || inCodeFolder(manifest, 'LIB/helper.cjs'), false);
+  // G4 (R0305): the pre-check learns the panel folders too. Every file of the panel-only fixture is declared through
+  // `rich.folder`; a file outside every declared folder stays undeclared (retained, the same predictability).
+  const panels = JSON.parse(read('tests/fixtures/extensions/runtime-panel-only/extension.json'));
+  const shipped = files('tests/fixtures/extensions/runtime-panel-only');
+  assert.deepEqual(shipped, ['canvas/app.js', 'canvas/index.html', 'extension.json']);
+  assert.deepEqual(shipped.filter(file => !declaredFiles(panels).includes(file) && !inPanelFolder(panels, file)), []);
+  assert.deepEqual(declaredFiles(panels), ['extension.json']);
+  assert.equal(inPanelFolder(panels, 'other/x.js') || inPanelFolder(panels, 'canvas/') || inPanelFolder(panels, 'CANVAS/app.js'), false);
 });
 
 function sdkUnion(name, member) {

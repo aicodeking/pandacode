@@ -280,6 +280,8 @@ fn tick(app: &tauri::AppHandle) -> bool {
     true
 }
 fn end(app: &tauri::AppHandle, label: &str, kind: Kind, reason: &str) {
+    // R0305: a panel that had the keyboard gives it back to the main window (a lifecycle end or a failure).
+    rich_views::runtime_panel_only::release_focus(app, label);
     // R0303: a failed panel keeps its instance's state for the reload; a lifecycle end drops it.
     forget_keeping(app, label, matches!(reason, "unresponsive" | "error" | "timeout" | "origin"));
     match kind {

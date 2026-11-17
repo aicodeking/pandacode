@@ -166,6 +166,7 @@ config.testMatch.push('**/extensions-runtime-rich-mount.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-assets.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-channel.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-focus.spec.ts');
+config.testMatch.push('**/extensions-runtime-panel-only.spec.ts');
 config.testMatch.push('**/extensions-runtime-harness-console.spec.ts');
 export default defineConfig(config, {
   // Project read coverage is explicit, like every experimental extension surface.
