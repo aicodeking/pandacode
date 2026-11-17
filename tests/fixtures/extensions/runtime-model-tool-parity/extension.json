@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.parity",
+  "name": "Parity",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "tools.model", "credentials.use"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["server"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.parity/control", "title": "Parity control", "action": { "kind": "runCommand" } }
+    ],
+    "modelTools": [
+      {
+        "id": "sample.parity/recall", "name": "recall",
+        "description": "Recall what this package knows about a query.",
+        "inputSchema": {
+          "type": "object", "required": ["query"], "additionalProperties": false,
+          "properties": { "query": { "type": "string", "maxLength": 200 } }
+        }
+      },
+      { "id": "sample.parity/quiet", "name": "quiet", "description": "A tool declared without a prompt.", "inputSchema": { "type": "object" }, "approval": "never" },
+      { "id": "sample.parity/big_dump", "name": "big_dump", "description": "Answers a result past 64 KiB.", "inputSchema": { "type": "object" }, "approval": "never" }
+    ],
+    "toolServers": [
+      { "id": "sample.parity/local", "title": "Parity local", "transport": "stdio", "command": ["{node}", "{package}/server/index.mjs"] },
+      { "id": "sample.parity/hosted", "title": "Parity hosted", "transport": "http", "url": "http://127.0.0.1:8765/mcp" },
+      { "id": "sample.parity/secured", "title": "Parity secured", "transport": "http", "url": "https://docs.example.com/mcp", "authentication": "bearer", "credential": { "source": "held", "id": "provider:glm" } },
+      { "id": "sample.parity/keyed", "title": "Parity keyed", "transport": "http", "url": "https://keyed.example.com/mcp?team=blue", "authentication": "header", "credential": { "source": "held", "id": "connection:docs", "header": "X-Docs-Key" } }
+    ]
+  }
+}

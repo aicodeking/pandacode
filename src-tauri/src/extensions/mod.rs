@@ -44,6 +44,7 @@ pub mod runtime_hook_registration;
 pub mod runtime_hook_context;
 pub mod runtime_model_tools;
 pub mod runtime_tool_servers;
+pub mod runtime_model_tool_parity;
 pub mod runtime_cli_intent;
 pub mod runtime_document_editors;
 pub mod runtime_document_save;

@@ -401,6 +401,12 @@ jobs:
       - name: Tool servers started and attached per run (WebKit)
         env: { PW_PORT: '16532', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tool-servers.spec.ts --workers=1
+      - name: Package tools across provider paths (Chromium)
+        env: { PW_PORT: '16611', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-model-tool-parity.spec.ts --workers=1
+      - name: Package tools across provider paths (WebKit)
+        env: { PW_PORT: '16612', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-model-tool-parity.spec.ts --workers=1
       - name: Command-line tool intent rules (Chromium)
         env: { PW_PORT: '16551', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-cli-intent.spec.ts --workers=1

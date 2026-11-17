@@ -1,0 +1,41 @@
+{
+  "sentinel": "SENTINEL-HELD-7f3a91c2-must-never-leak",
+  "synthetic": true,
+  "held": {
+    "provider:glm": "SENTINEL-HELD-7f3a91c2-glm-token",
+    "connection:docs": "SENTINEL-HELD-7f3a91c2-docs-key"
+  },
+  "paths": [
+    { "id": "task-user", "kind": "task", "trigger": "user", "harness": "claude", "mode": "ask", "expect": "served" },
+    { "id": "task-package", "kind": "task", "trigger": "package", "harness": "codex", "mode": "ask", "expect": "served" },
+    { "id": "task-tool", "kind": "task", "trigger": "tool", "harness": "kimi", "mode": "full", "expect": "served" },
+    { "id": "worker-team", "kind": "worker", "trigger": "team", "harness": "glm", "mode": "ask", "expect": "served" },
+    { "id": "worker-council", "kind": "worker", "trigger": "council", "harness": "codex", "mode": "plan", "expect": "denied" },
+    { "id": "bot-bot", "kind": "bot", "trigger": "bot", "harness": "alibaba", "mode": "auto", "expect": "served" },
+    { "id": "schedule-schedule", "kind": "schedule", "trigger": "schedule", "harness": "claude", "mode": "full", "expect": "served" },
+    { "id": "remote-remote", "kind": "remote", "trigger": "remote", "harness": "codex", "mode": "ask", "expect": "served" },
+    { "id": "remote-cloud", "kind": "remote", "trigger": "cloud", "harness": "opencode", "mode": "ask", "expect": "served" }
+  ],
+  "mirror": { "kind": "remote", "trigger": "mirror", "harness": "claude" },
+  "capabilities": [
+    { "harness": "claude", "family": "claude", "package": false, "shape": "claude", "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "supported", "qualification": "sourceFeasible" } },
+    { "harness": "glm", "family": "claude", "package": false, "shape": "claude", "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "supported", "qualification": "sourceFeasible" } },
+    { "harness": "codex", "family": "codex", "package": false, "shape": "codex", "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "supported", "qualification": "sourceFeasible" } },
+    { "harness": "kimi", "family": "acp", "package": false, "shape": "acp", "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "supported", "qualification": "sourceFeasible" } },
+    { "harness": "opencode", "family": "acp", "package": false, "shape": "acp", "modelTools": { "support": "supported", "qualification": "sourceFeasible" }, "toolServers": { "support": "supported", "qualification": "sourceFeasible" } },
+    { "harness": "pi", "family": "pi", "package": false, "shape": null, "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "unsupported", "qualification": "unsupported" } },
+    { "harness": "muse", "family": "muse", "package": false, "shape": null, "modelTools": { "support": "supported", "qualification": "sourceFeasible" }, "toolServers": { "support": "unsupported", "qualification": "unsupported" } },
+    { "harness": "zcode", "family": "zcode", "package": false, "shape": null, "modelTools": { "support": "unsupported", "qualification": "unsupported" }, "toolServers": { "support": "unsupported", "qualification": "unsupported" } },
+    { "harness": "acme.provider/local", "family": "package", "package": true, "shape": null, "modelTools": { "support": "supported", "qualification": "recorded" }, "toolServers": { "support": "unsupported", "qualification": "unsupported" } },
+    { "harness": "mystery", "family": "unknown", "package": false, "shape": null, "modelTools": { "support": "unsupported", "qualification": "unsupported" }, "toolServers": { "support": "unsupported", "qualification": "unsupported" } }
+  ],
+  "serverRows": [
+    { "id": "completed-with-output", "row": { "status": "completed", "output": "secret-output" }, "status": "completed", "executed": "yes", "succeeded": true },
+    { "id": "truncated-by-the-harness", "row": { "status": "completed", "output": "secret-output", "truncated": true }, "status": "truncated", "executed": "yes", "succeeded": false },
+    { "id": "completed-without-its-result", "row": { "status": "completed" }, "status": "interrupted", "executed": "unknown", "succeeded": false },
+    { "id": "completed-with-a-null-result", "row": { "status": "completed", "output": null }, "status": "interrupted", "executed": "unknown", "succeeded": false },
+    { "id": "failed", "row": { "status": "failed" }, "status": "failed", "executed": "unknown", "succeeded": false },
+    { "id": "reconnected-while-running", "row": { "status": "running", "reconnected": true }, "status": "interrupted", "executed": "unknown", "succeeded": false },
+    { "id": "cancelled", "row": { "status": "cancelled" }, "status": "interrupted", "executed": "unknown", "succeeded": false }
+  ]
+}

@@ -155,6 +155,7 @@ config.testMatch.push('**/extensions-runtime-hook-decisions.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-resolution.spec.ts');
 config.testMatch.push('**/extensions-runtime-model-tools.spec.ts');
 config.testMatch.push('**/extensions-runtime-tool-servers.spec.ts');
+config.testMatch.push('**/extensions-runtime-model-tool-parity.spec.ts');
 config.testMatch.push('**/extensions-runtime-cli-intent.spec.ts');
 config.testMatch.push('**/extensions-runtime-model-call.spec.ts');
 config.testMatch.push('**/extensions-runtime-protected-presentation.spec.ts');
