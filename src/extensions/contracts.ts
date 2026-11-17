@@ -4,6 +4,7 @@ import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
 import { contrast, parseHex } from '../color.ts';
 import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
+import { checkAll as checkPresentations, checkConversationProvider } from './runtime-transcript-presentation.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 type ObjectValue = { [key: string]: Json };
@@ -127,6 +128,11 @@ function shape(value: Json, schema: Schema, path: string, diagnostics: Diagnosti
     case 'boolean': if (typeof value !== 'boolean') error('InvalidShape', path); break;
     case 'integer':
       if (typeof value !== 'number' || !Number.isSafeInteger(value)) error('InvalidShape', path);
+      if (value < Number(schema.minimum ?? -Infinity) || value > Number(schema.maximum ?? Infinity)) error('LimitExceeded', path);
+      break;
+    case 'number':
+      // R1002 (C06): the first fractional field (presentations opacity); finite, with the schema bounds.
+      if (typeof value !== 'number' || !Number.isFinite(value)) error('InvalidShape', path);
       if (value < Number(schema.minimum ?? -Infinity) || value > Number(schema.maximum ?? Infinity)) error('LimitExceeded', path);
       break;
     case 'array':
@@ -351,6 +357,13 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (action.kind === 'openView') reference('views', action.view, 'commands');
       if (action.kind === 'showDialog') dialogFields(action.dialog as ObjectValue, `${path}/contributes/commands`);
     }
+    // R1002: selectable presentations and the conversation transcript need `ui.presentation`; each entry meets its bounds and sources.
+    const presentations = (contributions.presentations ?? []) as ObjectValue[];
+    const conversation = ((contributions.components ?? []) as ObjectValue[]).filter(provider => provider.slot === 'panda.transcript' && provider.presentation === 'conversation');
+    if ((presentations.length || conversation.length) && !(manifest.permissions as string[]).includes('ui.presentation')) error('PermissionDenied', `${path}/permissions`, [id]);
+    const presentationFailure = checkPresentations(presentations, ((contributions.views ?? []) as ObjectValue[]).map(view => String(view.id)), ((contributions.icons ?? []) as ObjectValue[]).map(icon => String(icon.asset)));
+    if (presentationFailure) error(presentationFailure, `${path}/contributes/presentations`, presentations.map(item => String(item.id)));
+    for (const provider of conversation) if (checkConversationProvider(provider)) error('InvalidShape', `${path}/contributes/components`, [String(provider.id)]);
     for (const view of (contributions.views ?? []) as ObjectValue[]) {
       if (view.rich && !(manifest.permissions as string[]).includes('ui.richViews')) error('PermissionDenied', `${path}/permissions`, [id]);
       // R0301/R1001 (C04): the schema admits heights from 24. A view in `panda.composer.band` is 24 to 96 with no `placement`

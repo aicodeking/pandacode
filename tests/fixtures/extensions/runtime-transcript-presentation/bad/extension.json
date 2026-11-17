@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.look-bad",
+  "version": "1.0.0",
+  "name": "Out of bounds look",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.presentation"],
+  "contributes": {
+    "presentations": [
+      { "id": "sample.look-bad/one-frame", "title": "One frame", "kind": "working-indicator", "frames": ["·"], "intervalMs": 240 }
+    ]
+  }
+}

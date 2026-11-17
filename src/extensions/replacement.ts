@@ -3,6 +3,7 @@ import { escape } from '../dom';
 import { extensionsSnapshot, extensionIdentity } from './manager';
 import { createComponentSelection, createComponentSlot, type ComponentProvider, type SlotProps, type SlotAction, type SlotId } from './component-slot';
 import { runningFirst } from './roster-core';
+import { conversationAllowed, holdsPresentation } from './runtime-transcript-presentation';
 
 export const componentSelection = createComponentSelection(localStorage);
 const faults = new Set<string>();
@@ -498,13 +499,16 @@ export function applyTranscriptPresentation(host: HTMLElement, qualify = () => {
   if (host.id !== 'transcript') throw new Error('Unsupported transcript host');
 }): void {
   delete host.dataset.componentProvider;
-  host.classList.remove('component-timeline');
+  host.classList.remove('component-timeline', 'component-conversation');
   const status = host.parentElement?.querySelector<HTMLElement>(':scope > [data-transcript-presentation-status]');
   if (status) { status.hidden = true; status.textContent = ''; }
   const provider = componentSelection.resolve('panda.transcript', componentProviders());
   if (!provider) return;
   const owner = extensionsSnapshot().packages.find(item => item.manifest.id === provider.id.split('/')[0]);
-  const missing = ['tasks.transcript.read', 'tasks.tools.read'].filter(permission => !owner?.manifest.permissions?.includes(permission));
+  // R1002: the `conversation` recipe delivers no transcript or tool content to the package (the host hides the tool steps itself), so
+  // its one permission is `ui.presentation`, rechecked with the live grant. The `timeline` recipe below keeps its two read permissions.
+  const conversation = provider.presentation === 'conversation';
+  const missing = conversation ? (conversationAllowed(extensionsSnapshot(), provider.id.split('/')[0], holdsPresentation) ? [] : ['ui.presentation']) : ['tasks.transcript.read', 'tasks.tools.read'].filter(permission => !owner?.manifest.permissions?.includes(permission));
   const unavailable = (message: string) => {
     if (!host.parentElement) return;
     const notice = status ?? document.createElement('p');
@@ -515,7 +519,7 @@ export function applyTranscriptPresentation(host: HTMLElement, qualify = () => {
   };
   if (missing.length) { unavailable(`Unsupported replacement — content redacted (${missing.join(', ')} not granted). Built-in transcript remains active.`); return; }
   if (faults.has(identity(provider))) { unavailable('Transcript replacement failed. Built-in transcript remains active.'); return; }
-  try { qualify(); host.classList.add('component-timeline'); host.dataset.componentProvider = provider.id; }
+  try { qualify(); host.classList.add(conversation ? 'component-conversation' : 'component-timeline'); host.dataset.componentProvider = provider.id; }
   catch { faults.add(identity(provider)); unavailable('Transcript replacement failed. Built-in transcript remains active.'); }
 }
 /** Host-only fault boundary. The optional painter supports controlled conformance faults. */

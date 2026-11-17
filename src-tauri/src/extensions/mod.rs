@@ -16,6 +16,7 @@ mod runtime_grants_manager;
 pub mod runtime_service_lifetime;
 pub mod runtime_dynamic_items;
 pub mod runtime_composer_band;
+pub mod runtime_transcript_presentation;
 pub mod runtime_notifications;
 pub mod runtime_dialog_navigation;
 pub mod runtime_private_secrets;

@@ -119,6 +119,13 @@ fn shape(value: &Value, schema: &Value, path: &str, diagnostics: &mut Vec<Value>
             // Canonicalize 1.0 to the same integer JSON representation used in the frontend.
             return Ok(json!(number as i64));
         }
+        // R1002 (C06): the first fractional field (presentations opacity); finite, with the schema bounds.
+        "number" => {
+            let number = value.as_f64().filter(|number| number.is_finite()).ok_or_else(|| invalid(path))?;
+            if number < schema["minimum"].as_f64().unwrap_or(f64::NEG_INFINITY) || number > schema["maximum"].as_f64().unwrap_or(f64::INFINITY) {
+                return Err(fail("LimitExceeded", path, vec![]));
+            }
+        }
         "array" => {
             let array = value.as_array().ok_or_else(|| invalid(path))?;
             let length = array.len() as u64;
@@ -367,6 +374,16 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             if command.get("icon").is_some() { reference(contributions, "icons", &command["icon"], &format!("{path}/contributes/commands"))?; }
             if command["action"]["kind"] == "openView" { reference(contributions, "views", &command["action"]["view"], &format!("{path}/contributes/commands"))?; }
             if command["action"]["kind"] == "showDialog" { dialog_fields(&command["action"]["dialog"], &format!("{path}/contributes/commands"))?; }
+        }
+        // R1002: selectable presentations and the conversation transcript need `ui.presentation`; each entry meets its bounds and sources.
+        let presentations = items(contributions, "presentations");
+        let conversation: Vec<&Value> = items(contributions, "components").iter().filter(|provider| provider["slot"] == "panda.transcript" && provider["presentation"] == "conversation").collect();
+        if (!presentations.is_empty() || !conversation.is_empty()) && !strings(&manifest["permissions"]).contains(&"ui.presentation".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
+        {
+            let view_ids: Vec<&str> = items(contributions, "views").iter().filter_map(|view| view["id"].as_str()).collect();
+            let icon_assets: Vec<&str> = items(contributions, "icons").iter().filter_map(|icon| icon["asset"].as_str()).collect();
+            if let Some(code) = super::runtime_transcript_presentation::check_all(presentations, &view_ids, &icon_assets) { return Err(fail(code, &format!("{path}/contributes/presentations"), presentations.iter().filter_map(|item| item["id"].as_str().map(str::to_owned)).collect())); }
+            for provider in conversation { if let Some(code) = super::runtime_transcript_presentation::check_conversation_provider(provider) { return Err(fail(code, &format!("{path}/contributes/components"), vec![provider["id"].as_str().unwrap_or_default().to_owned()])); } }
         }
         for view in items(contributions, "views") {
             if view.get("rich").is_some() && !strings(&manifest["permissions"]).contains(&"ui.richViews".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }

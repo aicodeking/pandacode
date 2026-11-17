@@ -795,3 +795,10 @@ export interface PrivateSecrets {
   list(): Promise<{ readonly keys: readonly string[] }>;
 }
 export type Service = (panda: ServicePandaCode, lifetime: ServiceLifetime) => void | Promise<void>;
+/** `contributes.presentations[]` (R1002, `ui.presentation`, at most 16, ids unique): what the user may pick in the Look menu beside the thread. Nothing changes until they choose. See docs/extensions/runtime-transcript-presentation.md. */
+export interface WorkingIndicatorPresentation { readonly id: string; readonly title: string; readonly kind: 'working-indicator'; /** 2 to 16 text frames of at most 16 characters. */ readonly frames: readonly string[]; /** 80 to 1000; with reduced motion the first frame is shown still. */ readonly intervalMs: number }
+export interface BackdropImagePresentation { readonly id: string; readonly title: string; readonly kind: 'backdrop'; /** An `assets/` SVG that `contributes.icons` also lists. */ readonly image: string; /** 0 to 0.5. */ readonly opacity: number }
+export interface BackdropViewPresentation { readonly id: string; readonly title: string; readonly kind: 'backdrop'; /** The id of one of the package's own rich views. */ readonly view: string; /** 0 to 0.5. */ readonly opacity: number }
+export type PresentationDefinition = WorkingIndicatorPresentation | BackdropImagePresentation | BackdropViewPresentation;
+/** A transcript replacement that keeps the text of the turns and hides the tool steps (`ui.presentation`; no transcript or tool read needed). `capabilities` must include `streaming`, `stop-resume` and `host-history`. */
+export interface ConversationTranscriptComponent { readonly id: string; readonly title: string; readonly slot: 'panda.transcript'; readonly contractVersion: 1; readonly presentation: 'conversation'; readonly capabilities: readonly ('streaming' | 'tool-output' | 'questions' | 'approvals' | 'team-progress' | 'usage' | 'stop-resume' | 'host-history')[] }

@@ -189,6 +189,12 @@ jobs:
       - name: Composer band (WebKit)
         env: { PW_PORT: '16392', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-composer-band.spec.ts --workers=1
+      - name: Transcript and working presentations (Chromium)
+        env: { PW_PORT: '16461', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-transcript-presentation.spec.ts --workers=1
+      - name: Transcript and working presentations (WebKit)
+        env: { PW_PORT: '16462', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-transcript-presentation.spec.ts --workers=1
       - name: Dialog answers and navigation (Chromium)
         env: { PW_PORT: '16131', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-dialog-navigation.spec.ts --workers=1

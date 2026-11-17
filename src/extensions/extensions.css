@@ -127,3 +127,15 @@ button.composer-band-main:disabled { opacity: .5; cursor: default; }
 :root:not([data-ready]) .composer-band-progress-fill { transition: none; }
 @media (prefers-reduced-motion: reduce) { .composer-band-progress-fill { transition: none; } }
 @media (forced-colors: active) { .composer-band-segment, .composer-band-more { border-color: CanvasText; } .composer-band-progress-fill { background: Highlight; } }
+/* Selectable presentations (ui.presentation, runtime-transcript-presentation.md): the working indicator and the Look button beside the thread, a static backdrop behind it and the conversation-only transcript. Always loaded with this sheet so the first draw is styled. Tokens only; the indicator swaps text on a timer (none with reduced motion) and nothing animates layout. */
+.presentation-strip { display: flex; align-items: center; gap: 8px; width: 100%; max-width: 950px; margin: 0 auto; padding: 0 30px 4px; min-height: 20px; box-sizing: border-box; flex-shrink: 0; position: relative; z-index: 1; }
+.presentation-strip[hidden], .presentation-indicator[hidden], .presentation-picker[hidden] { display: none; }
+.presentation-indicator { margin-right: auto; min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--ds-text-chip); white-space: pre; font-variant-numeric: tabular-nums; }
+.presentation-picker { margin-left: auto; flex: none; padding: 0 8px; border: 1px solid var(--ds-border); border-radius: 999px; background: var(--ds-raised); color: var(--text); font: inherit; font-size: var(--ds-text-chip); cursor: pointer; }
+.presentation-picker:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.conversation-pane[data-presentation-backdrop] { position: relative; isolation: isolate; }
+.presentation-backdrop { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; opacity: var(--presentation-opacity, 0); }
+.presentation-backdrop > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.presentation-backdrop .extension-rich-panel-surface { width: 100%; height: 100%; min-height: 0 !important; }
+#transcript.component-conversation .turn-activity { display: none; }
+@media (forced-colors: active) { .presentation-backdrop { display: none; } .presentation-picker { border-color: CanvasText; } }

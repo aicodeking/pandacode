@@ -1,6 +1,6 @@
 /** ComponentSlot v1: JSON-only presentation; core objects and operations stay in the host. */
 export type SlotId = 'panda.actionDock' | 'panda.roster' | 'panda.status' | 'panda.sidebar' | 'panda.settings' | 'panda.machines' | 'panda.cloud' | 'panda.moodboards' | 'panda.worktree' | 'panda.pull' | 'panda.githubHub' | 'panda.board' | 'panda.btw' | 'panda.projects' | 'panda.files' | 'panda.composer' | 'panda.transcript' | 'panda.documents' | 'panda.changes' | 'panda.search' | 'panda.browser' | 'panda.terminal' | 'panda.simulator' | 'panda.vm' | 'panda.design';
-export type ComponentProvider = { id: string; title: string; slot: SlotId; contractVersion: number; presentation: 'tabs-first' | 'review-first' | 'composer-first' | 'cards' | 'list' | 'toolbar-first' | 'timeline' | 'viewer-first' | 'commit-first' | 'results-first' | 'controls-below' | 'tabs-below' | 'controls-first' | 'comments-first' | 'actions-first' | 'filter-first' | 'running-first' | 'details-first'; capabilities?: string[] };
+export type ComponentProvider = { id: string; title: string; slot: SlotId; contractVersion: number; presentation: 'tabs-first' | 'review-first' | 'composer-first' | 'cards' | 'list' | 'toolbar-first' | 'timeline' | 'conversation' | 'viewer-first' | 'commit-first' | 'results-first' | 'controls-below' | 'tabs-below' | 'controls-first' | 'comments-first' | 'actions-first' | 'filter-first' | 'running-first' | 'details-first'; capabilities?: string[] };
 export const DOCK_CAPABILITIES = ['host-groups', 'host-workers', 'original-actions'] as const;
 export const ROSTER_CAPABILITIES = ['host-rows', 'host-lineage', 'original-actions'] as const;
 export const STATUS_CAPABILITIES = ['host-usage', 'host-feedback', 'original-actions'] as const;
@@ -23,6 +23,8 @@ export const SEARCH_CAPABILITIES = ['host-query', 'host-results', 'original-acti
 export const CHANGES_CAPABILITIES = ['host-diff', 'host-commit', 'original-actions'] as const;
 export const DOCUMENT_CAPABILITIES = ['host-tabs', 'host-viewer', 'original-actions'] as const;
 export const COMPOSER_CAPABILITIES = ['host-input', 'attachments', 'model-mode', 'queue-steer', 'send-stop', 'approvals'] as const;
+/** R1002: what the host keeps running under a `conversation` transcript (the rest of the vocabulary is optional there). */
+export const CONVERSATION_CAPABILITIES = ['streaming', 'stop-resume', 'host-history'] as const;
 export const TRANSCRIPT_CAPABILITIES = ['streaming', 'tool-output', 'questions', 'approvals', 'team-progress', 'usage', 'stop-resume', 'host-history'] as const;
 export function componentIncompatibility(provider: ComponentProvider): string | undefined {
   if (provider.contractVersion !== 1) return 'Incompatible slot version';
@@ -115,8 +117,9 @@ export function componentIncompatibility(provider: ComponentProvider): string | 
     if (COMPOSER_CAPABILITIES.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required composer capabilities';
     if (provider.capabilities?.some(capability => !COMPOSER_CAPABILITIES.includes(capability as typeof COMPOSER_CAPABILITIES[number]))) return 'Unsupported composer capability';
   } else if (provider.slot === 'panda.transcript') {
-    if (provider.presentation !== 'timeline') return 'Unsupported transcript presentation';
-    if (TRANSCRIPT_CAPABILITIES.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required transcript capabilities';
+    if (provider.presentation !== 'timeline' && provider.presentation !== 'conversation') return 'Unsupported transcript presentation';
+    const required: readonly string[] = provider.presentation === 'conversation' ? CONVERSATION_CAPABILITIES : TRANSCRIPT_CAPABILITIES;
+    if (required.some(capability => !provider.capabilities?.includes(capability))) return 'Missing required transcript capabilities';
     if (provider.capabilities?.some(capability => !TRANSCRIPT_CAPABILITIES.includes(capability as typeof TRANSCRIPT_CAPABILITIES[number]))) return 'Unsupported transcript capability';
   } else if (!['cards', 'list'].includes(provider.presentation)) return 'Unsupported list presentation';
 }

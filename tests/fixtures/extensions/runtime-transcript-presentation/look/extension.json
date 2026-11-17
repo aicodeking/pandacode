@@ -1,0 +1,35 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.look",
+  "version": "1.0.0",
+  "name": "Conversation look",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "ui.presentation"],
+  "contributes": {
+    "icons": [
+      { "id": "sample.look/sky-art", "asset": "assets/sky.svg" }
+    ],
+    "components": [
+      {
+        "id": "sample.look/conversation", "title": "Conversation only", "slot": "panda.transcript",
+        "contractVersion": 1, "presentation": "conversation",
+        "capabilities": ["streaming", "questions", "approvals", "stop-resume", "host-history"]
+      }
+    ],
+    "views": [
+      {
+        "id": "sample.look/aurora-panel",
+        "title": "Aurora",
+        "text": "Aurora backdrop panel",
+        "rich": { "html": "assets/aurora.html", "css": "assets/aurora.css", "script": "assets/aurora.js", "minSize": { "width": 160, "height": 160 } }
+      }
+    ],
+    "presentations": [
+      { "id": "sample.look/dots", "title": "Dots", "kind": "working-indicator", "frames": ["·", "··", "···"], "intervalMs": 240 },
+      { "id": "sample.look/bar", "title": "Bar", "kind": "working-indicator", "frames": ["[=   ]", "[ =  ]", "[  = ]", "[   =]"], "intervalMs": 120 },
+      { "id": "sample.look/sky", "title": "Night sky", "kind": "backdrop", "image": "assets/sky.svg", "opacity": 0.2 },
+      { "id": "sample.look/aurora", "title": "Aurora", "kind": "backdrop", "view": "sample.look/aurora-panel", "opacity": 0.3 }
+    ]
+  }
+}

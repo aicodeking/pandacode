@@ -954,6 +954,12 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     area: $('#composer-area'), onContextChanged, notify,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, generation: state.generation }; },
   }));
+  // Selectable presentations (ui.presentation): the working indicator, the backdrop and the Look menu beside the thread, and the grant
+  // probe of the conversation-only transcript. Additive: the built-in thread is the default and returns when nothing is chosen.
+  void import('./extensions/runtime-transcript-presentation').then(presentations => presentations.mountPresentations({
+    pane: $('.conversation-pane'), transcript: $('#transcript'), onContextChanged, notify, resync: syncTranscriptPresentation,
+    state: () => ({ task: session()?.id || undefined, running: isRunning(), generation: state.generation }),
+  }));
   // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
   void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
   // Tasks a package started (R0401): the window answers the user's defaults and marks each task with its package.
