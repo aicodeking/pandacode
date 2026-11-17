@@ -3,6 +3,7 @@ import { BOX_HEIGHT, DIP, HALF_WIDTH, PANDA_SIZE, PERCH_OFFSET_D, REST_GAP, SINK
 import { lerp, smooth } from '../mobile/src/ui/brand/motion-curves.ts';
 import { answer, canTrick, letter, moving, nextWake, passTimes, perchGlow, PERCH_LETTER, pose, SHOW_END, TRICK_S, trick, type Pose } from '../mobile/src/ui/brand/panda-motion.ts';
 import { BEAT_END, flight, glide, HANDOFF_MS, introPose, LAND, LAUNCH, launchLetter, letterOpacity, letterRise, letterTimes, letterTone, WORD_SCALE, type Point } from '../mobile/src/ui/splash/timeline.ts';
+import { onWindowFocus, windowFocused } from './window-focus.ts';
 
 const WORD = 'PandaCode';
 const SCALE = 0.7;
@@ -36,6 +37,14 @@ export function desktopBrandFlight(h: number, rest: Point, target: (Point & { sc
 const IDLE_AFTER_MS = 120_000;
 /** A still moment after the startup show and its breaths, where only rest blinks remain. */
 const REST_FROM = SHOW_END + 8;
+
+/** Someone is using the in-app browser: the window has focus but the page does not, because the browser panel's native
+ * child webview holds it. Its pointer and key events never reach this document, so this stands in for them. */
+function browserInUse(): boolean {
+  const panel = document.getElementById('browser-panel');
+  if (!panel || panel.hidden || document.hasFocus() || !windowFocused()) return false;
+  return typeof panel.checkVisibility === 'function' ? panel.checkVisibility() : panel.getClientRects().length > 0;
+}
 
 let markId = 0;
 function makeMark() {
@@ -248,8 +257,9 @@ export function mountDesktopBrand(host: HTMLElement): void {
       drawHeader(mark, layout, time, trickAt);
       if (!moving(time) && trickAt === 0) {
         // At rest with no input for a while: sleep until the next pointer or key instead of blinking on.
-        // Focus can leave the app from inside its own child webview or a frame, which fires no blur here: read it again.
-        if (!focused || !document.hasFocus()) { focused = false; return; }
+        // Focus can leave the app from inside its own child webview or a frame, which fires no blur here: ask the window.
+        if (!focused || !windowFocused()) { focused = false; return; }
+        if (browserInUse()) lastInput = now;
         if (now - lastInput >= idleAfterMs) { dormant = true; return; }
         const next = nextWake(time);
         timer = window.setTimeout(() => { time = next; wake(); }, (next - time) * 1000);
@@ -309,14 +319,17 @@ export function mountDesktopBrand(host: HTMLElement): void {
     else if (frame) return;
     stop();
   };
-  // A blur also fires when focus moves into the app's own in-app browser (a native child webview) or a frame; the
-  // document still has focus then (as in file-explorer.ts), so read it once the move has landed and keep blinking.
-  window.addEventListener('blur', () => { window.setTimeout(() => { if (!document.hasFocus()) blurred(); }, 0); });
-  window.addEventListener('focus', () => { focused = true; lastInput = performance.now(); dormant = false; if (!frame && !timer) wake(); });
   const active = () => {
     lastInput = performance.now();
     if (dormant) { dormant = false; wake(); }
   };
+  const focusedAgain = () => { focused = true; lastInput = performance.now(); dormant = false; if (!frame && !timer) wake(); };
+  // A blur also fires when focus moves into the app's own in-app browser (a native child webview) or a frame. The window
+  // keeps focus then (the page's document.hasFocus() may not), so ask the window once the move has landed: still focused
+  // means keep blinking, and a click into the browser counts as input. Leaving the app is also reported by the window.
+  window.addEventListener('blur', () => { window.setTimeout(() => { if (!windowFocused()) blurred(); else if (browserInUse()) active(); }, 0); });
+  window.addEventListener('focus', focusedAgain);
+  onWindowFocus(now => { if (now) focusedAgain(); else blurred(); });
   for (const event of ['pointerdown', 'pointermove', 'keydown', 'wheel', 'touchstart']) window.addEventListener(event, active, { capture: true, passive: true });
   if (!('__TAURI_INTERNALS__' in window)) {
     // Preview only: specs count frames and shorten the no-input stretch.

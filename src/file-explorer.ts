@@ -1,6 +1,7 @@
 import './file-explorer.css';
 import { escape, isImeKey } from './dom';
 import type { openChoiceMenu } from './choice-menu';
+import { onWindowFocus, windowFocused } from './window-focus';
 
 type Context = { projectId: string; sessionId?: string };
 type Deps = {
@@ -62,7 +63,8 @@ export function noteFilePollActivity(): void { poll?.activity(); }
 function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   // Read, never assumed: a window launched in the background starts unfocused, and focus that leaves the app from inside
   // one of its frames fires no blur here (the window blurred when the frame took focus), so each tick reads it again too.
-  let timer = 0, period = 0, focused = document.hasFocus(), mounted = pollMounted, unchanged = 0, active = Date.now(), soon = 0;
+  // The window's focus, not the page's: the in-app browser (a native child webview) takes the page's focus, not the window's.
+  let timer = 0, period = 0, focused = windowFocused(), mounted = pollMounted, unchanged = 0, active = Date.now(), soon = 0;
   const settled = (): boolean => unchanged >= SETTLE_READS || Date.now() - active >= SETTLE_IDLE_MS;
   const sync = (): void => {
     const next = document.hidden || !mounted ? 0 : busy() || focused && !settled() ? POLL_MS : SLOW_POLL_MS;
@@ -80,7 +82,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   };
   // Named so a test can tell this interval from the app's others.
   function filePollTick(): void {
-    const now = document.hasFocus();
+    const now = windowFocused();
     if (now !== focused) { focused = now; sync(); if (!now) return; }
     sync();
     if (watchedVisible()) run();
@@ -88,12 +90,14 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   // Only a settled, focused poll has a rate to restore, so input costs a timestamp otherwise.
   const input = (): void => { active = Date.now(); if (unchanged || period === SLOW_POLL_MS && focused) wake(); };
   for (const type of INPUT_EVENTS) window.addEventListener(type, input, { capture: true, passive: true });
-  window.addEventListener('focus', () => { focused = true; wake(); run(); });
-  // A blur also fires when focus moves into one of the app's own frames (the browser panel, a preview); the document
-  // still has focus then, so read it once the move has landed rather than trusting the event.
-  window.addEventListener('blur', () => { window.setTimeout(() => { focused = document.hasFocus(); sync(); }, 0); });
+  const focusedAgain = (): void => { focused = true; wake(); run(); };
+  window.addEventListener('focus', focusedAgain);
+  // A blur also fires when focus moves into one of the app's own frames or its in-app browser; the window still has
+  // focus then, so read it once the move has landed rather than trusting the event. Leaving the app is reported too.
+  window.addEventListener('blur', () => { window.setTimeout(() => { focused = windowFocused(); sync(); }, 0); });
+  onWindowFocus(now => { if (now === focused) return; if (now) focusedAgain(); else { focused = false; sync(); } });
   document.addEventListener('visibilitychange', () => {
-    focused = document.hasFocus();
+    focused = windowFocused();
     if (document.hidden) sync(); else { wake(); run(); }
   });
   sync();

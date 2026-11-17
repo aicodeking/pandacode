@@ -234,17 +234,37 @@ test('file explorer: a window that starts unfocused polls at the 8 s rate', asyn
   // Launched in the background: the document never had focus, and no blur ever fires to say so.
   await page.addInitScript(() => { document.hasFocus = () => false; });
   const polls = await countPolls(page);
-  const shownAt = Date.now();
+  // The 8 s interval starts with the explorer, early in boot, not when the tree first shows: a slow boot (WebKit) puts its
+  // first tick inside a quiet stretch timed from the tree. Time the stretch from one of the poll's own reads instead.
+  let from = await polls();
+  await expect.poll(polls, { timeout: 10_000, intervals: [100], message: 'an unfocused window reads within one slow beat' }).toBeGreaterThan(from);
+  const readAt = Date.now();
   await expectQuiet(page, polls, 'no 2 s poll in a window that started unfocused');
-  const from = await polls();
+  from = await polls();
   await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'an unfocused, visible window still polls' }).toBeGreaterThan(from);
-  expect(Date.now() - shownAt, 'the first poll of a window that started unfocused').toBeGreaterThan(5000);
+  expect(Date.now() - readAt, 'the gap between two reads of a window that started unfocused').toBeGreaterThan(7000);
   // Focus arriving brings the 2 s poll back, refreshing at once.
   const focusedFrom = await polls();
   await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
   await expect.poll(polls, { timeout: 500, message: 'focus refreshes at once' }).toBeGreaterThan(focusedFrom);
   const after = await polls();
   await expect.poll(polls, { timeout: 3500, intervals: [100], message: 'focused again, it polls every 2 s' }).toBeGreaterThan(after);
+});
+
+test('file explorer: focus in the in-app browser keeps the focused rate; the window losing focus slows it', async ({ page }) => {
+  test.setTimeout(45_000);
+  const periods = await trackPollTimer(page);
+  await countPolls(page);
+  expect(await periods()).toEqual([2000]);
+  // The browser panel's native child webview takes the page's focus; the window (the preview's stand-in) keeps it.
+  await page.evaluate(() => { (window as any).__windowFocus.set(true); document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
+  await page.waitForTimeout(300);
+  expect(await periods(), 'page unfocused, window focused').toEqual([2000]);
+  // Another app takes focus: the window reports it.
+  await page.evaluate(() => (window as any).__windowFocus.set(false));
+  expect(await periods(), 'window unfocused').toEqual([8000]);
+  await page.evaluate(() => (window as any).__windowFocus.set(true));
+  expect(await periods(), 'window focused again').toEqual([2000]);
 });
 
 /** Tracks the Files poll's live interval (named `filePollTick` in file-explorer.ts) by its period, so a test can read the

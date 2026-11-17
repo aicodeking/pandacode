@@ -259,11 +259,35 @@ const glass = (page: Page) => page.evaluate(() => {
   return { filter: style.backdropFilter, background: style.backgroundColor, solid, blurred };
 });
 
+/** Background alpha of other glass surfaces (progress pip, Agents dock, goal banner, Codex activity, sidebar row actions),
+ * probed with stand-ins placed in the workspace, where their fill tokens are defined. */
+const SURFACES = ['button.pp-pill', 'div.pp-card', 'div.agents-dock-popover', 'div.agents-dock-window-panel', 'div.goal-banner', 'div.jev-activity>button', 'div.skill-manager-float'];
+const surfaceAlphas = (page: Page) => page.evaluate(specs => {
+  const host = document.querySelector('.workspace') ?? document.body;
+  const alpha = (color: string): number => {
+    const parts = color.match(/[\d.]+/g)?.map(Number) ?? [];
+    if (color.startsWith('color(')) return parts.length > 3 ? parts[parts.length - 1] : 1;
+    return parts.length > 3 ? parts[3] : parts.length === 3 ? 1 : 0;
+  };
+  return Object.fromEntries(specs.map(spec => {
+    const [outer, inner] = spec.split('>');
+    const make = (tagged: string) => { const [tag, cls] = tagged.split('.'); return Object.assign(document.createElement(tag), { className: cls }); };
+    const probe = make(outer);
+    const target = inner ? probe.appendChild(make(inner)) : probe;
+    host.append(probe);
+    const value = alpha(getComputedStyle(target).backgroundColor);
+    probe.remove();
+    return [spec, value];
+  }));
+}, SURFACES);
+
 test('sustained costly paints turn the glass solid, and cheap ones bring it back', async ({ page }) => {
   test.setTimeout(60_000);
   await open(page);
   await setIdleAfter(page, 1e9);
   const before = await glass(page);
+  const seeThrough = await surfaceAlphas(page);
+  for (const spec of ['button.pp-pill', 'div.agents-dock-popover']) expect(seeThrough[spec], `${spec} is see-through glass on a cheap renderer`).toBeLessThan(1);
   expect(before.filter, 'the glass blurs on a cheap renderer').toContain('blur');
   expect(before.background).not.toBe(before.solid);
   expect(await costlyPaint(page)).toBe(false);
@@ -274,12 +298,15 @@ test('sustained costly paints turn the glass solid, and cheap ones bring it back
   expect(costly.filter, 'no blur while paint is costly').toBe('none');
   expect(costly.background, 'the solid reduced-transparency fill').toBe(costly.solid);
   expect(costly.blurred, 'elements still blurring their backdrop').toBe(0);
+  const opaque = await surfaceAlphas(page);
+  for (const spec of SURFACES) expect(opaque[spec], `${spec} takes a solid fill while paint is costly`).toBe(1);
   // The pace and rates of a cheap renderer are untouched by this: the rate governor is checked above.
   await forceFrameMs(page, 1);
   await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(false);
   const back = await glass(page);
   expect(back.filter).toContain('blur');
   expect(back.background).toBe(before.background);
+  expect(await surfaceAlphas(page), 'the glass surfaces are see-through again').toEqual(seeThrough);
 });
 
 test('cheap paints never set costly paint, and the probe goes quiet once settled, sampling a burst now and then', async ({ page }) => {

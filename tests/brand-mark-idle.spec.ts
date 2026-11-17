@@ -35,7 +35,14 @@ const watchEyes = (page: Page) => page.evaluate(() => {
  * frame leaves it true, and the mark keeps blinking). */
 const blurApp = (page: Page) => page.evaluate(() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); });
 const focusApp = (page: Page) => page.evaluate(() => { delete (document as any).hasFocus; window.dispatchEvent(new Event('focus')); });
-const OPEN_EYES = 'translate(0 10.3) scale(1 1) translate(0 -10.3)';
+/** Focus moves into the in-app browser (a native child webview): the page loses focus and sees a blur, while the native
+ * window (`__windowFocus`, the preview's stand-in for Tauri's window focus) stays focused. */
+const focusInBrowser = (page: Page) => page.evaluate(() => {
+  (window as any).__windowFocus.set(true);
+  document.hasFocus = () => false;
+  window.dispatchEvent(new Event('blur'));
+});
+const OPEN_EYES ='translate(0 10.3) scale(1 1) translate(0 -10.3)';
 const eyeScale = (value: string) => Number(/scale\(1 ([\d.e-]+)\)/.exec(value)?.[1] ?? NaN);
 
 async function open(page: Page): Promise<void> {
@@ -84,6 +91,46 @@ test.describe('brand mark at idle', () => {
     // Rest blinks come about every 5 s.
     await expect.poll(() => page.evaluate(() => ((window as any).__eyes as string[]).map(v => Number(/scale\(1 ([\d.e-]+)\)/.exec(v)?.[1])).some(n => n < .4)), { timeout: 20_000 }).toBe(true);
     await expect.poll(() => brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
+  });
+
+  test('keeps blinking past the no-input threshold while the in-app browser holds focus (the window is focused, the page is not)', async ({ page }) => {
+    await open(page);
+    await setIdleAfter(page, 1e9);
+    await page.getByRole('button', { name: 'Open browser', exact: true }).click();
+    await expect(page.locator('#browser-panel')).toBeVisible({ timeout: 20_000 });
+    await untilRestBlinks(page);
+    // The browser panel's native child webview takes the page's focus and all its input; the native window keeps focus.
+    await focusInBrowser(page);
+    expect(await page.evaluate(() => document.hasFocus())).toBe(false);
+    await setIdleAfter(page, 2000);
+    // Well past the threshold with no input reaching the page.
+    await page.waitForTimeout(4000);
+    expect((await read(page)).dormant, 'dormant while the in-app browser is in use').toBe(false);
+    await watchEyes(page);
+    // Rest blinks come about every 5 s.
+    await expect.poll(() => page.evaluate(() => ((window as any).__eyes as string[]).map(v => Number(/scale\(1 ([\d.e-]+)\)/.exec(v)?.[1])).some(n => n < .4)), { timeout: 20_000 }).toBe(true);
+    await expect.poll(() => brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
+    expect((await read(page)).dormant).toBe(false);
+  });
+
+  test('with the in-app browser open, a window that truly loses focus still stops and resumes on focus', async ({ page }) => {
+    await open(page);
+    await setIdleAfter(page, 1e9);
+    await page.getByRole('button', { name: 'Open browser', exact: true }).click();
+    await expect(page.locator('#browser-panel')).toBeVisible({ timeout: 20_000 });
+    await untilRestBlinks(page);
+    await focusInBrowser(page);
+    // Then another app takes focus: the native window reports the blur (the page saw its own blur already).
+    await page.evaluate(() => (window as any).__windowFocus.set(false));
+    // A rest blink already in flight finishes first.
+    await page.waitForTimeout(1000);
+    const from = await frames(page), raf = await page.evaluate(() => (window as any).__brandRaf as number);
+    await page.waitForTimeout(7000);
+    expect(await frames(page), 'brand frames while the window is blurred').toBe(from);
+    expect(await page.evaluate(() => (window as any).__brandRaf as number), 'brand rAF while the window is blurred').toBe(raf);
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform'), 'eyes rest open while blurred').toBe(OPEN_EYES);
+    await page.evaluate(() => (window as any).__windowFocus.set(true));
+    await expect.poll(() => frames(page), { timeout: 10_000 }).toBeGreaterThan(from);
   });
 
   test('a blur and then a resize during a finishing blink never leave the eyes half-closed', async ({ page }) => {
