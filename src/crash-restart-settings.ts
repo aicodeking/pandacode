@@ -4,7 +4,10 @@
  * `set_crash_restart_enabled` (then tells a showing crash notice, `crashRestartChanged`), and puts itself back with the error shown when either call fails.
  * The button asks `crash_report_reveal` to show a report in the file manager: the one of this launch's crash notice, else the newest. */
 import { call } from './bridge';
-import { crashRestartChanged } from './crash-recovery';
+import { crashExtrasChanged, crashRestartChanged } from './crash-recovery';
+import { escape } from './dom';
+import { hideExtra, loadRecoveryExtras, moveExtra, onRecoveryExtrasChanged, quitLine, restoreAllExtras, restoreExtra } from './extensions/upstream-recovery';
+import { loadServiceStatus, RUNNING_REFRESH_MS } from './extensions/runtime-service-status';
 import { DRAFT_MAX_AGE } from './launch-restore';
 
 export const CRASH_RESTART_TITLE = 'Restart automatically after a crash';
@@ -71,6 +74,7 @@ export function mountCrashRestartSettings(host: HTMLElement, clearDrafts?: () =>
   if (clear) clear.hidden = !clearDrafts;
   clear?.addEventListener('click', clearSaved);
   const stopKeep = mountKeepDrafts(host, keepDrafts);
+  const stopNotes = mountExtensionNotes(host);
   // Until the stored value is known the switch shows no state, so a user who turned restarts off never sees it flash on.
   const loaded = (value: boolean) => { saved = value; input.checked = value; input.removeAttribute('aria-disabled'); input.removeAttribute('aria-busy'); };
   // Still focusable while it loads (Crash settings lands on it), but a click or Space changes nothing.
@@ -83,7 +87,7 @@ export function mountCrashRestartSettings(host: HTMLElement, clearDrafts?: () =>
     loaded(true);
     showError(`Could not read the automatic restart setting: ${reason(error)}`);
   });
-  return () => { disposed = true; input.removeEventListener('click', hold); input.removeEventListener('change', change); clear?.removeEventListener('click', clearSaved); stopKeep(); stopReveal(); };
+  return () => { disposed = true; input.removeEventListener('click', hold); input.removeEventListener('change', change); clear?.removeEventListener('click', clearSaved); stopKeep(); stopNotes(); stopReveal(); };
 }
 
 /** The Keep unsent drafts switch; the note under it says what happens to unsent text in either state. */
@@ -123,4 +127,65 @@ function mountRevealReports(host: HTMLElement, showError: (text: string) => void
   };
   button.addEventListener('click', reveal);
   return () => { window.clearTimeout(clearTimer); button.removeEventListener('click', reveal); };
+}
+
+/* Extension notes in the crash notice (src/extensions/upstream-recovery.ts). Present only while a package contributes one;
+ * with none, in safe mode or disabled this adds nothing to the group, which is exactly upstream's. Each note has Move up,
+ * Move down and Hide / Show again, native buttons in Tab order that keep focus on the same control after a change; Restore
+ * all notes undoes every hide and reorder. The user's choice is a local UI preference, never a package value. The same block
+ * says what the quit question will name, read from the one native quit account (the service status's `quit` list). */
+export const NOTES_HEADING = 'Notes from extensions in the crash notice';
+export const RESTORE_NOTES = 'Restore all notes';
+
+function mountExtensionNotes(host: HTMLElement): () => void {
+  let block: HTMLElement | undefined, lastHtml = "", disposed = false, running = 0, focus = '', timer: number | undefined;
+  const status = host.querySelector<HTMLElement>('.crash-reports-status');
+  const draw = async () => {
+    const mine = ++running;
+    let loaded: Awaited<ReturnType<typeof loadRecoveryExtras>> = { all: [], arrangement: { hidden: [], order: [] } };
+    let quit = '';
+    try { loaded = await loadRecoveryExtras(); } catch { /* No package notes: nothing to show. */ }
+    try { const state = await loadServiceStatus(); if (state.available) quit = quitLine(state.quit); } catch { /* The quit sentence is optional. */ }
+    if (disposed || mine !== running) return;
+    const { all, arrangement } = loaded;
+    if (!all.length && !quit) { block?.remove(); block = undefined; lastHtml = ""; return; }
+    if (!block) {
+      block = document.createElement('div');
+      block.className = 'crash-extras';
+      block.setAttribute('data-crash-extras', '');
+      host.insertBefore(block, status ?? null);
+      block.addEventListener('click', onClick);
+    }
+    const owners = all.filter(extra => !arrangement.hidden.includes(extra.owner)).map(extra => extra.owner);
+    const rows = all.map((extra, index) => {
+      const hidden = arrangement.hidden.includes(extra.owner), key = escape(extra.owner), name = escape(extra.name);
+      const edge = (up: boolean) => hidden || (up ? owners.indexOf(extra.owner) === 0 : owners.indexOf(extra.owner) === owners.length - 1);
+      return `<li data-crash-extra="${key}" data-hidden="${hidden}"><span class="crash-extra-text"><strong>${name}</strong> <small>${escape(extra.text)}</small></span>`
+        + `<button type="button" class="ds-btn" data-crash-act="up" data-owner="${key}" aria-label="Move ${name} note up" ${edge(true) ? 'aria-disabled="true"' : ''}>Move up</button>`
+        + `<button type="button" class="ds-btn" data-crash-act="down" data-owner="${key}" aria-label="Move ${name} note down" ${edge(false) ? 'aria-disabled="true"' : ''}>Move down</button>`
+        + `<button type="button" class="ds-btn" data-crash-act="toggle" data-owner="${key}" aria-label="${hidden ? 'Show' : 'Hide'} ${name} note in the crash notice">${hidden ? 'Show again' : 'Hide'}</button></li>`;
+    });
+    const custom = arrangement.hidden.length > 0 || arrangement.order.length > 0;
+    const html = `${all.length ? `<div class="setting-row"><div><strong>${NOTES_HEADING}</strong><small>Each is labelled with its extension. Hiding one only hides its line; the notice itself and the restart switch stay yours.</small></div></div><ul class="crash-extra-list" role="list">${rows.join('')}</ul>${custom ? `<button type="button" class="ds-btn" data-crash-act="restore">${RESTORE_NOTES}</button>` : ''}` : ''}${quit ? `<small class="settings-group-note" data-recovery-quit>${escape(quit)}</small>` : ''}`;
+    if (html === lastHtml) { focus = ""; return; }
+    lastHtml = html; block.innerHTML = html;
+    if (focus) { const target = [...block.querySelectorAll<HTMLElement>('[data-crash-act]')].find(node => `${node.dataset.crashAct}:${node.dataset.owner ?? ''}` === focus); (target ?? block.querySelector<HTMLElement>('[data-crash-act]'))?.focus({ preventScroll: true }); focus = ''; }
+  };
+  const onClick = (event: Event) => {
+    const button = (event.target as Element).closest<HTMLElement>('[data-crash-act]');
+    if (!button || button.getAttribute('aria-disabled') === 'true') return;
+    const act = button.dataset.crashAct!, owner = button.dataset.owner ?? '';
+    focus = `${act}:${owner}`;
+    const current = [...block!.querySelectorAll<HTMLElement>('li[data-hidden="false"]')].map(node => node.dataset.crashExtra!);
+    if (act === 'up' || act === 'down') moveExtra(current, owner, act === 'up' ? -1 : 1);
+    else if (act === 'toggle') { if ((button.closest('li') as HTMLElement).dataset.hidden === 'true') restoreExtra(owner); else hideExtra(owner); }
+    else if (act === 'restore') { restoreAllExtras(); }
+    crashExtrasChanged();
+    void draw();
+  };
+  const stop = onRecoveryExtrasChanged(() => { void draw(); });
+  void draw();
+  // The quit sentence follows the native account while Settings is open, as the Running list does.
+  timer = window.setInterval(() => { void draw(); }, RUNNING_REFRESH_MS * 2);
+  return () => { disposed = true; stop(); window.clearInterval(timer); block?.removeEventListener('click', onClick); block?.remove(); block = undefined; };
 }

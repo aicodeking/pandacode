@@ -16,7 +16,8 @@
  * changes (`crashRestartChanged`: on, the restarts-off sentence and Crash settings go). The report stays on this
  * computer; revealing it only opens the file manager. A failing call never affects startup: it is
  * logged and nothing is shown. Once a crash notice is on screen the page calls `crash_recovery_shown`. */
-import { call } from './bridge';
+import { call, preview } from './bridge';
+import { captureExtras, extrasText, loadRecoveryExtras, onRecoveryExtrasChanged, visibleExtras, type RecoveryExtra } from './extensions/upstream-recovery';
 import { OPEN_THREAD, resumesAt, WINDOW_RELOADED_LINE, crashNotice, interruptedByCrash, openThreadName, reloadNotice, parseCrashRecovery, untilNextDay, type CrashRecovery, type WindowDeath } from './crash-recovery-model';
 import type { Session } from './types';
 
@@ -63,6 +64,12 @@ let onHeldBackOpened: (() => void) | undefined;
 let onTasksChanged: (() => void) | undefined;
 /** Set while a crash notice is up; see crashRestartChanged. */
 let onRestartChanged: ((enabled: boolean) => void) | undefined;
+/** Set while a crash notice is up; see crashExtrasChanged. */
+let onExtrasChanged: (() => void) | undefined;
+let stopExtras: (() => void) | undefined;
+
+/** The user hid, restored or reordered the extension notes, or a package saved its note (Settings → General → Crash recovery): a showing notice is rewritten, unannounced. */
+export function crashExtrasChanged(): void { onExtrasChanged?.(); }
 
 /** The Settings switch was saved (crash-restart-settings.ts): a notice that says restarts are off,
  * or would now, is written again, unannounced. */
@@ -114,9 +121,15 @@ export async function showCrashRecovery(host: CrashRecoveryHost, now = Date.now)
   // with (the guard's answer alone), there is nothing to watch or open: it stays, in its plain form.
   const watching = anyInterrupted(host.tasks());
   const interrupted = () => Boolean(interruptedAtFirst) && (!watching || anyInterrupted(host.tasks()));
+  // Extension notes (src/extensions/upstream-recovery.ts): empty without a package, in safe mode and while a read fails, so the
+  // notice is then upstream's own text and buttons. They are loaded after the first write and rewrite it in place.
+  let extras: RecoveryExtra[] = [];
+  let capture = captureExtras(extras, recovery?.crashedAt, text => host.notify(text, [], 6000));
   const write = () => {
     const held = host.heldBack(), nothingOpened = host.nothingOpened();
-    return recovery ? crashNotice(recovery, now(), { restartsOff: off, interrupted: interrupted(), agentsHidden: !watching, heldBack: held?.title, notLast: held?.notLast, nothingOpened }) : { text: reloadNotice(held?.title, death, nothingOpened, held?.notLast), showReport: false, showSettings: false };
+    if (!recovery) return { text: reloadNotice(held?.title, death, nothingOpened, held?.notLast), showReport: false, showSettings: false };
+    const notice = crashNotice(recovery, now(), { restartsOff: off, interrupted: interrupted(), agentsHidden: !watching, heldBack: held?.title, notLast: held?.notLast, nothingOpened });
+    return extras.length ? { ...notice, text: `${notice.text} ${extrasText(extras)}` } : notice;
   };
   const report = write().showReport;
   /** Without the kept-closed thread, the notice still has something to say: the report's button,
@@ -130,7 +143,18 @@ export async function showCrashRecovery(host: CrashRecoveryHost, now = Date.now)
       ...report ? [{ label: SHOW_REPORT, keep: true, quiet: !thread, run: () => revealReport(host) }] : [],
       // Settings covers the notice while it is open; it is there again, unannounced, after.
       ...settings ? [{ label: CRASH_SETTINGS, name: CRASH_SETTINGS_NAME, keep: true, quiet: true, run: () => host.openCrashSettings() }] : [],
+      // A package's checklist: run through its captured context; a stale one only rewrites the notice.
+      ...extras.filter(extra => extra.command).map(extra => { const mine = capture; return { label: `${extra.name} checklist`, name: `${extra.name} checklist, from an extension`, keep: true, quiet: true, run: () => { if (!mine.run(extra.owner, crypto.randomUUID()).ok) { void refreshExtras(); lasting.refresh?.(); } } }; }),
     ];
+  };
+  /** Reads the packages' notes again; rewrites the notice only when what it shows changed. */
+  const refreshExtras = async () => {
+    if (!recovery) return;
+    let next: RecoveryExtra[] = [];
+    try { const loaded = await loadRecoveryExtras(); next = visibleExtras(loaded.all, loaded.arrangement); } catch { next = []; }
+    if (JSON.stringify(next) === JSON.stringify(extras)) return;
+    capture.close(); extras = next; capture = captureExtras(extras, recovery.crashedAt, text => host.notify(text, [], 6000));
+    lasting.refresh?.();
   };
   /** Its button: a thread gone since the notice was written only rewrites the notice. */
   const openHeld = (id: string) => {
@@ -153,6 +177,13 @@ export async function showCrashRecovery(host: CrashRecoveryHost, now = Date.now)
   onHeldBackOpened = () => { if (remains()) lasting.refresh?.(); else lasting.close?.(); };
   keepUntilClosed(lasting);
   onTasksChanged = () => lasting.rewrite?.();
+  if (recovery) {
+    // Install, enable, disable, grant changes, uninstall and safe mode reach here; so do the user's hide/reorder/restore and note edits.
+    stopExtras = onRecoveryExtrasChanged(() => { void refreshExtras(); });
+    onExtrasChanged = () => { void refreshExtras(); };
+    void refreshExtras();
+    if (preview) (window as unknown as { __upstreamRecovery?: unknown }).__upstreamRecovery = { run: (owner: string, requestId: string) => capture.run(owner, requestId), capture: () => capture, refresh: refreshExtras, owners: () => extras.map(extra => extra.owner) };
+  }
   // Its buttons change with the sentence, so it is written whole (still unannounced); off screen it is written afresh on its return.
   if (recovery && off !== undefined) onRestartChanged = enabled => { off = !enabled; lasting.refresh?.(); };
   // On screen now: the guard stops repeating it (until this, a page that died first gets it again).
@@ -228,7 +259,7 @@ function keepUntilClosed(notice: Lasting): void {
   // Not showing (another toast has the slot): it is written afresh when it comes back.
   notice.refresh = () => { if (!done && ours && !toast.hidden) present(true); };
   notice.rewrite = rewrite;
-  notice.end = () => { done = true; clearTimeout(timer); clearTimeout(changeTimer); observer.disconnect(); onHeldBackOpened = undefined; onTasksChanged = undefined; onRestartChanged = undefined; };
+  notice.end = () => { done = true; clearTimeout(timer); clearTimeout(changeTimer); observer.disconnect(); onHeldBackOpened = undefined; onTasksChanged = undefined; onRestartChanged = undefined; onExtrasChanged = undefined; stopExtras?.(); stopExtras = undefined; };
   notice.close = () => {
     const showing = !done && ours && !toast.hidden;
     notice.end?.();

@@ -319,3 +319,14 @@ export function anyInterruptedByCrash(tasks: readonly TaskLike[], crashedAt: num
 export function interruptedByCrash(recovery: CrashRecovery, tasks: readonly TaskLike[]): boolean {
   return recovery.agentsInterrupted ?? anyInterruptedByCrash(tasks, recovery.crashedAt);
 }
+
+/** Extension notes added after upstream's crash notice (src/extensions/upstream-recovery.ts): none without a package, so the notice is upstream's text exactly. */
+export type RecoveryNote = { text: string };
+/** A note is cut here, and at most this many are shown; a hidden note is not counted. */
+export const NOTE_LIMIT = 160;
+export const EXTRAS_LIMIT = 3;
+/** One note as the notice says it, labelled with the package's name. */
+export function extrasLine(name: string, text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return `From ${name}: ${clean.length > NOTE_LIMIT ? `${clean.slice(0, NOTE_LIMIT - 1).trimEnd()}…` : clean}`;
+}

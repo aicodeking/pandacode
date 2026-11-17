@@ -55,6 +55,7 @@ import githubHubManifest from '../../tests/fixtures/extensions/github-hub/extens
 import pullManifest from '../../tests/fixtures/extensions/pull/extension.json';
 import worktreeManifest from '../../tests/fixtures/extensions/worktree/extension.json';
 import settingsCoreManifest from '../../tests/fixtures/extensions/settings-core/extension.json';
+import upstreamRecoveryManifest from '../../tests/fixtures/extensions/upstream-recovery/manifest.json';
 import sidebarManifest from '../../tests/fixtures/extensions/sidebar/extension.json';
 import dockManifest from '../../tests/fixtures/extensions/action-dock/extension.json';
 import upstreamWorkersManifest from '../../tests/fixtures/extensions/upstream-workers/manifest.json';
@@ -350,6 +351,12 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
     localStorage.setItem(storageKey, JSON.stringify(args.values)); return null;
   }
   if (command === 'extensions_install') {
+    // S0608: the crash-recovery adapter fixture is an executable package (service half): it installs untrusted and disabled like any other.
+    if (new URLSearchParams(location.search).has('upstream-recovery')) {
+      if (snapshot.packages.some(item => item.manifest.id === upstreamRecoveryManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: upstreamRecoveryManifest as unknown as ExtensionPackage['manifest'], icons: {}, enabled: false, executable: { digest: 'preview-upstream-recovery-a', trusted: false } });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     if (new URLSearchParams(location.search).has('machines-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === machinesManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: machinesManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });

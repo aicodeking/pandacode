@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-recovery",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.upstream-recovery/checklist", "title": "Recovery checklist", "action": { "kind": "showMessage", "message": "Recovery checklist: review git status, then reopen the thread you were working in." } }
+    ],
+    "settings": [
+      { "id": "sample.upstream-recovery/crash-recovery", "title": "Crash recovery note", "section": "general", "fields": [
+        { "id": "show", "kind": "switch", "label": "Show my note in the crash notice", "value": true },
+        { "id": "note", "kind": "text", "label": "Note", "value": "Review the recovery checklist before you resume." }
+      ] }
+    ]
+  }
+}

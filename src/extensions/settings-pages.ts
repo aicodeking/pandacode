@@ -7,6 +7,8 @@ import { settingsDefaults, validSettingsValues, type SettingsPageDefinition } fr
 import { TEXT_LIMIT, type DialogValues } from './dialog-state';
 import { primitiveLimit } from './contracts';
 type SettingsControl = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement;
+/** Fired on `window` after a package's settings page was saved; the crash notice's extension notes (upstream-recovery.ts) read it. */
+export const SETTINGS_SAVED_EVENT = 'pandacode:extension-settings-saved';
 
 /** A package's settings pages are a management surface: available while it is enabled, whatever the active project. */
 function enabledSettingsPages() {
@@ -51,7 +53,7 @@ export function mountExtensionSettingsPage(host: HTMLElement, owner: string, pag
     }));
     if (!validSettingsValues(page, values)) { status.textContent = 'Check the declared field values.'; return; }
     pending = true; save.disabled = true;
-    try { await call('extensions_settings_set', { id: owner, page: page.id, values }); if (!disposed) { status.setAttribute('role', 'status'); status.textContent = 'Extension settings saved.'; } }
+    try { await call('extensions_settings_set', { id: owner, page: page.id, values }); dispatchEvent(new CustomEvent(SETTINGS_SAVED_EVENT, { detail: { owner, page: page.id } })); if (!disposed) { status.setAttribute('role', 'status'); status.textContent = 'Extension settings saved.'; } }
     catch (error) { if (!disposed) { status.setAttribute('role', 'alert'); status.textContent = `Settings not saved: ${String(error)}`; } }
     finally { pending = false; if (!disposed) save.disabled = false; }
   };
