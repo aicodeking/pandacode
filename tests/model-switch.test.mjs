@@ -18,12 +18,12 @@ const switcher = await import('../src/model-switch.ts');
 
 const tasks = new Map();
 /** Named teams by task, the notices shown, and the tasks whose account binding was released. */
-const teams = new Map(), notices = [], releases = [];
+const teams = new Map(), notices = [], releases = [], remembered = [];
 switcher.initModelSwitch({
   setBusy() {}, pickerOpening: () => false, notify: text => notices.push(text), task: id => tasks.get(id), put: task => tasks.set(task.id, task),
-  team: id => teams.get(id), teamChanged: event => { if (event.removed) teams.delete(event.sessionId); },
+  team: id => teams.get(id), teamChanged: event => { if (event.removed) teams.delete(event.sessionId); else teams.set(event.sessionId, event.config); },
   autoTeam: base => Promise.resolve(base), releaseAccount: id => { releases.push(id); return Promise.resolve(); },
-  label: task => task.model, effortName: task => task.reasoningEffort ?? '', pickerShown: () => false, remember() {},
+  label: task => task.model, effortName: task => task.reasoningEffort ?? '', pickerShown: () => false, remember: choice => remembered.push(choice),
 });
 const stored = (id, values = {}) => ({ id, provider: 'claude', model: 'sonnet', reasoningEffort: 'low', codexSettings: null, contextUsage: null, mode: 'ask', title: 'Task', ...values });
 const ui = { show() {}, repaint() {} };
@@ -476,7 +476,7 @@ test('model pick, refused permission pick, model pick: native gets them in order
   assert.deepEqual([tasks.get('mx').model, tasks.get('mx').mode], ['haiku', 'ask']);
   assert.equal(switcher.saving('mx'), false);
   assert.equal(switcher.modeBusy('mx'), false);
-  assert.deepEqual(await switcher.settledChange('mx'), { what: 'permissions', reason: 'Approvals are locked.' });
+  assert.deepEqual(await switcher.settledChange('mx'), { what: 'permissions', reason: 'Approvals are locked.', still: 'still ask' });
 });
 
 test('an older pick out of a named team that saved, then a newer one refused: the refusal says the task left it', async () => {
@@ -491,4 +491,135 @@ test('an older pick out of a named team that saved, then a newer one refused: th
   await reply('configure_session', new Error('Busy.'));
   assert.equal(await second, false);
   assert.match(notices.at(-1), /still on opus; the task left team Writers/);
+});
+
+/* ----- A saved permission pick, replaced picks that still save, deleted tasks, one notice for a held send ----- */
+const modeUi = { warm: false, paint() {}, name: mode => mode, trigger: () => null };
+
+test('a listing read before a permission pick saved, landing after it, keeps the picked permissions', async () => {
+  tasks.set('pa', stored('pa', { mode: 'ask' }));
+  const saving = switcher.pickMode('pa', 'full', modeUi);
+  await whileReading(async stale => {
+    await reply('update_session', () => null);
+    assert.equal(await saving, true);
+    // The read began before native stored Full access: it must not put Ask back.
+    assert.equal(stale.hold(stored('pa', { mode: 'ask' })).mode, 'full');
+  });
+  await whileReading(read => assert.equal(read.hold(stored('pa', { mode: 'plan' })).mode, 'plan', 'a read after the save is believed'));
+});
+
+test('a replaced pick that saves runs no settle side effects; only the final pick does, against the harness native started on', async () => {
+  tasks.set('rb', stored('rb', { provider: 'codex', model: 'astra' }));
+  teams.set('rb', { auto: true, rosterOnly: false, workers: [] });
+  releases.length = 0; remembered.length = 0;
+  const harnesses = [];
+  const track = { show() {}, repaint: (saved, harness) => harnesses.push([saved, harness]) };
+  const first = switcher.pickModel('rb', { provider: 'claude', model: 'opus', warm: false, local: true }, track);
+  const second = switcher.pickModel('rb', { provider: 'claude', model: 'haiku', warm: false, local: true }, track);
+  await reply('configure_session', args => stored('rb', { provider: args.provider, model: args.model }));
+  assert.equal(await first, true);
+  await ticks();
+  assert.deepEqual([releases, remembered, pending('architect_configure').length], [[], [], 0], 'the replaced pick settles nothing while the newer one saves');
+  assert.deepEqual(harnesses, [[true, false]], 'the replaced pick does not ask for a harness reload');
+  await reply('configure_session', args => stored('rb', { provider: args.provider, model: args.model }));
+  await reply('architect_configure', () => ({ sessionId: 'rb', config: { auto: true, rosterOnly: false, workers: [] } }));
+  assert.equal(await second, true);
+  assert.deepEqual(releases, ['rb'], 'native left Codex over the two picks: the binding goes once');
+  assert.deepEqual(remembered.map(choice => choice.model), ['haiku']);
+  assert.deepEqual(harnesses.at(-1), [true, true]);
+  teams.delete('rb');
+});
+
+test('a replaced pick that saved, then a refused newer pick: the saved one is remembered and settled, not a skipped one', async () => {
+  tasks.set('rc', stored('rc', { provider: 'codex', model: 'astra' }));
+  releases.length = 0; remembered.length = 0;
+  const harnesses = [];
+  const track = { show() {}, repaint: (saved, harness) => harnesses.push([saved, harness]) };
+  const picks = [
+    switcher.pickModel('rc', { provider: 'claude', model: 'opus', warm: false, local: true }, track),
+    switcher.pickModel('rc', { provider: 'codex', model: 'nova', warm: false, local: true }, track),
+    switcher.pickModel('rc', { provider: 'claude', model: 'haiku', warm: false, local: true }, track),
+  ];
+  await reply('configure_session', args => stored('rc', { provider: args.provider, model: args.model }));
+  await reply('configure_session', new Error('Busy.'));
+  assert.deepEqual(await Promise.all(picks), [true, false, false]);
+  assert.equal(tasks.get('rc').model, 'opus');
+  assert.deepEqual(remembered.map(choice => choice.model), ['opus'], 'the last pick native confirmed');
+  assert.deepEqual(releases, ['rc']);
+  assert.deepEqual(harnesses.at(-1), [false, true], 'native changed harness: the final pick says so');
+});
+
+test('a task deleted mid-pick is not put back by the late reply, and forgetTasks drops its pick state', async () => {
+  tasks.set('da', stored('da'));
+  const saving = switcher.pickModel('da', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const mode = switcher.pickMode('da', 'full', modeUi);
+  tasks.delete('da');
+  switcher.forgetTasks(['da']);
+  assert.equal(switcher.remembersTask('da'), false);
+  await reply('configure_session', args => stored('da', { model: args.model }));
+  assert.equal(tasks.has('da'), false, 'a configure reply for a deleted task is not added back');
+  // The permission pick queued behind it is dropped with the task: it never reaches native.
+  assert.deepEqual(await Promise.all([saving, mode]), [true, false]);
+  assert.equal(pending('update_session').length, 0);
+  assert.equal(tasks.has('da'), false, 'nor a refusal’s restore');
+  assert.equal(switcher.remembersTask('da'), false);
+  tasks.set('db', stored('db'));
+  const refused = switcher.pickModel('db', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  tasks.delete('db'); switcher.forgetTasks(['db']);
+  await reply('configure_session', new Error('No such task.'));
+  assert.equal(await refused, false);
+  assert.equal(tasks.has('db'), false);
+});
+
+test('a refusal holding a send is said once by the send, still naming what stays', async () => {
+  tasks.set('ha', stored('ha'));
+  notices.length = 0;
+  const saving = switcher.pickModel('ha', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const held = switcher.holdSend('ha', () => null);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await saving, false);
+  const unchanged = await held;
+  assert.deepEqual(notices, [], 'the held send says it instead');
+  assert.equal(unchanged.still, 'still on sonnet');
+  assert.equal(switcher.unchangedText(unchanged), 'the model wasn’t changed (Busy.); still on sonnet');
+  // Without a held send, the refusal says it itself.
+  tasks.set('hb', stored('hb', { mode: 'ask' }));
+  const mode = switcher.pickMode('hb', 'full', modeUi);
+  const heldMode = switcher.holdSend('hb', () => null);
+  await reply('update_session', new Error('Locked.'));
+  assert.equal(await mode, false);
+  assert.equal(switcher.unchangedText(await heldMode), 'the permissions weren’t changed (Locked.); still ask');
+  assert.deepEqual(notices, []);
+  const alone = switcher.pickMode('hb', 'full', modeUi);
+  await reply('update_session', new Error('Locked.'));
+  assert.equal(await alone, false);
+  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.']);
+});
+
+test('a refused effort holding a send is said once by the send', async () => {
+  tasks.set('hc', stored('hc'));
+  notices.length = 0;
+  const saving = switcher.pickEffort('hc', 'high', { warm: false, paint() {} });
+  const held = switcher.holdSend('hc', () => null);
+  await reply('set_reasoning_effort', new Error('No.'));
+  await assert.rejects(saving);
+  assert.equal(switcher.unchangedText(await held), 'the effort wasn’t changed (No.); still low');
+  assert.deepEqual(notices, []);
+});
+
+test('a refusal kept back for a held send is said when a newer pick replaces it before the send’s wait ends', async () => {
+  tasks.set('hd', stored('hd', { mode: 'ask' }));
+  notices.length = 0;
+  const mode = switcher.pickMode('hd', 'full', modeUi);
+  const model = switcher.pickModel('hd', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const held = switcher.holdSend('hd', () => null);
+  await reply('update_session', new Error('Locked.'));
+  assert.equal(await mode, false);
+  assert.deepEqual(notices, [], 'kept back for the held send');
+  const again = switcher.pickMode('hd', 'plan', modeUi);
+  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.'], 'said once the newer pick replaces it');
+  await reply('configure_session', args => stored('hd', { model: args.model }));
+  await reply('update_session', () => null);
+  assert.deepEqual([await model, await again, await held], [true, true, null]);
+  assert.equal(notices.length, 1);
 });

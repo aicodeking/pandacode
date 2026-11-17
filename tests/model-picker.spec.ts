@@ -580,7 +580,8 @@ for (const control of ['Model', 'Permissions']) test(`startup refresh during one
   // Let the native startup completion paint before releasing this one press.
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
   await page.mouse.up();
-  await expect(page.getByRole('dialog', { name: control === 'Model' ? 'Harness and model' : 'Permissions', exact: true })).toBeVisible();
+  // The page's first open of either menu loads its module cold.
+  await expect(page.getByRole('dialog', { name: control === 'Model' ? 'Harness and model' : 'Permissions', exact: true })).toBeVisible({ timeout: FIRST_OPEN_MS });
   if (control === 'Model') await expect(search(page)).toBeFocused();
   await expect(page.locator('#prompt')).toBeEnabled();
 });
@@ -1086,7 +1087,7 @@ test('a refused effort change keeps held sends and their draft, with one notice'
   await prompt.press('Enter');
   await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
   await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(page.locator('#toast')).toHaveText('Not sent — the effort wasn’t changed (Preview refused the effort.). Your draft is still there.');
+  await expect(page.locator('#toast')).toHaveText('Not sent — the effort wasn’t changed (Preview refused the effort.); still Default. Your draft is still there.');
   await expect(prompt).toHaveValue('keep this effort draft');
   await expect(trigger(page).locator('.model-effort')).toBeHidden();
   await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
@@ -1119,7 +1120,7 @@ for (const failed of [false, true]) test(`a model queued after a refused effort 
   await expect(page.locator('#toast')).not.toContainText('Preview refused the effort.');
   await releaseCall(page, 'configure_session', failed ? 'Preview refused the newer model.' : undefined);
   if (failed) {
-    await expect(page.locator('#toast')).toHaveText('Not sent — the model wasn’t changed (Preview refused the newer model.). Your draft is still there.');
+    await expect(page.locator('#toast')).toHaveText(/^Not sent — the model wasn’t changed \(Preview refused the newer model\.\); still on .+\. Your draft is still there\.$/);
     await expect(prompt).toHaveValue('after the newer model');
     await expect(trigger(page).locator('.model-effort')).toHaveText('Low');
     await page.waitForTimeout(200);
@@ -1410,7 +1411,7 @@ test('a send held by a refused permissions change is not sent, says why and keep
   await page.locator('#prompt').fill('after the permissions change');
   await page.locator('#prompt').press('Enter');
   await releaseCall(page, 'update_session', 'Preview refused the permissions.');
-  await expect(page.locator('#toast')).toHaveText('Not sent — the permissions weren’t changed (Preview refused the permissions.). Your draft is still there.');
+  await expect(page.locator('#toast')).toHaveText(/^Not sent — the permissions weren’t changed \(Preview refused the permissions\.\); still .+\. Your draft is still there\.$/);
   await expect(page.locator('#prompt')).toHaveValue('after the permissions change');
   await page.waitForTimeout(200);
   expect(await sent(page)).toBe(0);
@@ -1482,11 +1483,31 @@ test('several held presses of Enter show one notice for one refused change', asy
   await page.locator('#prompt').press('Enter');
   await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('Not sent — the model wasn’t changed (Preview refused the switch.).');
+  await expect(page.locator('#toast')).toContainText('Not sent — the model wasn’t changed (Preview refused the switch.); still on ');
   await page.waitForTimeout(300);
   expect(await page.evaluate(() => (window as any).__notSent)).toBe(1);
   await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
   await expect(page.locator('#prompt')).toHaveValue('one notice please');
+});
+
+test('a refused switch holding a send shows one notice that still names the model it stays on', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.evaluate(() => {
+    const toast = document.querySelector('#toast')!; const w = window as any; w.__toasts = [];
+    new MutationObserver(() => { const text = toast.textContent ?? ''; if (text && text !== w.__toasts.at(-1)) w.__toasts.push(text); }).observe(toast, { childList: true, characterData: true, subtree: true });
+  });
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await page.locator('#prompt').fill('one combined notice');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
+  const restored = async () => (await trigger(page).getAttribute('aria-label'))!.replace(/^Model: /, '');
+  await expect(trigger(page)).not.toContainText('GPT-6-Astra');
+  await expect(page.locator('#toast')).toHaveText(`Not sent — the model wasn’t changed (Preview refused the switch.); still on ${await restored()}. Your draft is still there.`);
+  await page.waitForTimeout(300);
+  const toasts: string[] = await page.evaluate(() => (window as any).__toasts);
+  expect(toasts.filter(text => /not changed|wasn’t changed/.test(text)), 'one notice, not the refusal then the held send').toHaveLength(1);
 });
 
 test('a board start held by a refused change is not started and says why', async ({ page }) => {
@@ -1500,7 +1521,7 @@ test('a board start held by a refused change is not started and says why', async
     document.body.append(start); start.click(); start.remove();
   });
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toHaveText('Not started — the model wasn’t changed (Preview refused the switch.).');
+  await expect(page.locator('#toast')).toHaveText(/^Not started — the model wasn’t changed \(Preview refused the switch\.\); still on .+\.$/);
   await page.waitForTimeout(200);
   expect(await starts()).toBe(0);
 });
@@ -1517,7 +1538,7 @@ for (const [label, query, reads] of [['within a harness', 'opus', 0], ['to anoth
     const sideReads = () => page.evaluate(() => (window as any).__callArgs.filter(([name, args]: [string, any]) => name === 'get_messages' && args?.sessionId && args.sessionId !== 'session-1').length);
     const sideModel = panel.locator('.model-picker');
     await sideModel.click();
-    await expect(picker(page)).toBeVisible();
+    await expect(picker(page)).toBeVisible({ timeout: FIRST_OPEN_MS });
     await holdCall(page, 'configure_session');
     const before = await sideReads();
     await search(page).fill(query);
@@ -1799,4 +1820,20 @@ test('the Speed row lists a model\'s tiers and saves the choice', async ({ page 
   await expect(picker(page)).toBeVisible();
   await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
   await expect(speed(page)).toHaveCount(0);
+});
+
+test('a team turned on while a model change saves waits for it, then turns on', async ({ page }) => {
+  await loadHeld(page, '/');
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(picker(page)).toHaveCount(0);
+  const team = page.locator('#team-trigger');
+  await team.click();
+  await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click({ timeout: FIRST_OPEN_MS });
+  await page.waitForTimeout(150);
+  expect(await page.evaluate(() => (window as any).__calls.includes('architect_configure')), 'the team waits for the model').toBe(false);
+  await releaseCall(page, 'configure_session');
+  await expect.poll(() => team.getAttribute('data-on')).toBe('');
+  const order: string[] = await page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'configure_session' || c === 'architect_configure'));
+  expect(order.indexOf('configure_session')).toBeLessThan(order.indexOf('architect_configure'));
 });

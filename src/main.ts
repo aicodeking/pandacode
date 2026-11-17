@@ -269,7 +269,8 @@ modelSwitch.initModelSwitch({
   pickerOpening: () => Boolean(modelPickerCleanup || pendingMenuOpen?.anchor.matches('.model-picker')),
   notify: text => notify(text),
   task: id => state.sessions.find(task => task.id === id),
-  put: task => applyHeldPickerChoice(task.id, () => upsertSession(task)),
+  // Replace only: a pick's reply or refusal landing after the task was deleted must not add it back.
+  put: task => applyHeldPickerChoice(task.id, () => replaceSession(task)),
   team: id => teams.get(id)?.config,
   teamChanged: event => applyHeldPickerChoice(event.sessionId, () => onArchitect(event)),
   autoTeam: async base => {
@@ -578,6 +579,9 @@ const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${t
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
+  // A model, effort or permission change still saving: wait for it (a refusal is already said), then go on if the task
+  // is still open and nothing else is configuring it.
+  if (modelSwitch.saving(task.id) && (!await modelSwitch.settled(task.id) || !state.sessions.some(item => item.id === task.id))) return false;
   if (configuringSessions.has(task.id)) return false;
   teamToggles.add(task.id); configuringSessions.add(task.id);
   try {
@@ -6741,6 +6745,13 @@ function paintTaskChoice(id: string, inPanel: boolean): void {
   refreshModelLabels();
   syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
 }
+/** A picker row (a team, a speed) chosen while the task's model, effort or permission change saves: waits for it, and
+ *  throws `<refused> — <what> wasn't changed` (shown in the picker) when that change was refused. */
+async function afterPickerChoiceSaved(id: string, refused: string): Promise<void> {
+  if (!modelSwitch.saving(id)) return;
+  const unchanged = await modelSwitch.settledChange(id);
+  if (unchanged) { modelSwitch.announce(unchanged); throw new Error(`${refused} — ${modelSwitch.unchangedText(unchanged)}.`); }
+}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -6799,7 +6810,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (modelSwitch.saving(selected.id)) throw new Error('Wait for the current choice to save before selecting an agent team.');
+      await afterPickerChoiceSaved(selected.id, 'The agent team wasn’t selected');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
@@ -6826,8 +6837,10 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
-      if (modelSwitch.saving(selected.id)) throw new Error('Wait for the current choice to save before changing its speed.');
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      await afterPickerChoiceSaved(selected.id, 'The speed wasn’t changed');
+      // The model saved meanwhile may be one without speeds (another harness).
+      const now = state.sessions.find(item => item.id === selected.id);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || !now || !['codex', 'claude'].includes(now.provider)) throw new Error('Select the task again to change its speed.');
       configuringSessions.add(selected.id);
       try {
         const updated = await taskCall<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
@@ -6867,13 +6880,15 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       let changed = false;
       const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
         show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
+        // `nativeHarness`: native's harness changed over the run of picks, told only by the last of them (a refused
+        // last pick may still follow an earlier one native stored on another harness).
         repaint: (saved, nativeHarness) => {
-          changed = saved && nativeHarness;
+          changed = nativeHarness;
           if (!saved || harness || nativeHarness || inPanel) paint(harness || nativeHarness, changed);
           else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
         },
       });
-      void saving.then(saved => saved && changed ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
+      void saving.then(() => changed ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
       return { saved: saving };
     },
   });
