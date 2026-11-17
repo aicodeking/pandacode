@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rows-bad",
+  "version": "1.0.0",
+  "name": "Unknown token",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.presentation"],
+  "contributes": {
+    "toolRows": [
+      { "id": "sample.rows-bad/shell", "title": "Leaks", "selector": { "kind": "shell" }, "row": { "sentence": "{env} {target}" } }
+    ]
+  }
+}

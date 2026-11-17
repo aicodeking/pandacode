@@ -138,4 +138,18 @@ button.composer-band-main:disabled { opacity: .5; cursor: default; }
 .presentation-backdrop > img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .presentation-backdrop .extension-rich-panel-surface { width: 100%; height: 100%; min-height: 0 !important; }
 #transcript.component-conversation .turn-activity { display: none; }
+/* Tool row replacement (ui.presentation, runtime-tool-row-replacement.md): the host draws the package's sentence beside the lead icon; the built-in sentence parts stay in the page, hidden, and return when the package's nodes go. The destructive badge, exit status and chevron are never hidden. Tokens only; nothing animates. */
+.tool-trace[data-row-replacement] :is(summary, .tool-trace-summary) > :is(.tool-trace-verb, .tool-trace-object, .tool-trace-chip, .tool-trace-quote, .tool-trace-reason, .tool-trace-join, .tool-trace-more-steps, .tool-trace-delta, .tool-trace-produced) { display: none; }
+.tool-replacement { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.tool-replacement-credit { flex: none; margin-left: 6px; color: var(--muted); font-size: var(--ds-text-chip); }
+.tool-replacement-chip, .tool-replacement-decision { flex: none; margin-left: 6px; padding: 0 6px; border: 1px solid var(--ds-border); border-radius: 999px; background: var(--ds-raised); color: var(--text); font-size: var(--ds-text-chip); white-space: nowrap; }
+.tool-replacement-chip[data-risk="caution"] { color: var(--ds-warning, var(--text)); }
+.tool-replacement-chip[data-risk="destructive"] { color: var(--ds-danger, var(--text)); }
+.tool-replacement-decision[data-state="denied"] { color: var(--ds-danger, var(--text)); }
+.tool-replacement-card { display: grid; gap: 4px; margin-bottom: 6px; padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: 8px; background: var(--ds-card-inner); }
+.tool-replacement-card-title { color: var(--muted); font-size: var(--ds-text-chip); }
+.tool-replacement-field { display: flex; gap: 8px; min-width: 0; }
+.tool-replacement-label { flex: none; color: var(--muted); }
+.tool-replacement-value { min-width: 0; overflow-wrap: anywhere; }
+@media (forced-colors: active) { .tool-replacement-chip, .tool-replacement-decision, .tool-replacement-card { border-color: CanvasText; } }
 @media (forced-colors: active) { .presentation-backdrop { display: none; } .presentation-picker { border-color: CanvasText; } }

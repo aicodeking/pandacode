@@ -1,0 +1,38 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rows",
+  "version": "1.0.0",
+  "name": "Calm rows",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.presentation", "tasks.tools.read", "harness.hooks.decide"],
+  "contributes": {
+    "toolRows": [
+      {
+        "id": "sample.rows/shell",
+        "title": "Shell commands",
+        "selector": { "kind": "shell" },
+        "row": { "sentence": "Shell: {target}" },
+        "card": { "title": "Command", "fields": [{ "label": "Status", "value": "{status}" }, { "label": "Output", "value": "{output}" }] },
+        "signals": [
+          { "id": "denied", "risk": "destructive", "label": "Denied by Calm rows", "when": "hook-deny" },
+          { "id": "asked", "risk": "caution", "label": "Needs a look", "when": "hook-ask" },
+          { "id": "rewritten", "risk": "notice", "label": "Arguments rewritten", "when": "hook-rewrite" },
+          { "id": "failed", "risk": "caution", "label": "Failed", "when": "failed" }
+        ]
+      },
+      {
+        "id": "sample.rows/bash",
+        "title": "Bash only",
+        "selector": { "kind": "shell", "name": "Bash" },
+        "row": { "sentence": "Bash ran {target}" }
+      },
+      {
+        "id": "sample.rows/mcp-docs",
+        "title": "Docs server",
+        "selector": { "server": "docs" },
+        "row": { "sentence": "Docs lookup: {target}" }
+      }
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "note": "Recorded-shape rows (the fields the renderer puts on a row as data-tool-*), not a real harness capture.",
+  "rows": {
+    "bash-status": { "kind": "shell", "name": "Bash", "family": "", "server": "", "status": "completed", "target": "git status", "output": "nothing to commit", "failed": false, "blocked": false, "secret": false, "builtinDestructive": false },
+    "bash-wipe": { "kind": "shell", "name": "Bash", "family": "", "server": "", "status": "failed", "target": "rm -rf build", "output": "", "failed": true, "blocked": false, "secret": false, "builtinDestructive": true },
+    "bash-secret": { "kind": "shell", "name": "Bash", "family": "", "server": "", "status": "completed", "target": "export TOKEN=abc123", "output": "abc123", "failed": false, "blocked": false, "secret": true, "builtinDestructive": false },
+    "docs-search": { "kind": "mcp", "name": "mcp__docs__search", "family": "mcp", "server": "docs", "status": "completed", "target": "tokens", "output": "3 results", "failed": false, "blocked": false, "secret": false, "builtinDestructive": false },
+    "read-file": { "kind": "read", "name": "Read", "family": "", "server": "", "status": "completed", "target": "a.txt", "output": "", "failed": false, "blocked": false, "secret": false, "builtinDestructive": false }
+  }
+}

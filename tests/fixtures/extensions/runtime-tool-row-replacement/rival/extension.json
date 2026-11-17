@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rows-rival",
+  "version": "1.0.0",
+  "name": "Rival rows",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.presentation"],
+  "contributes": {
+    "toolRows": [
+      { "id": "sample.rows-rival/shell", "title": "Shell too", "selector": { "kind": "shell" }, "row": { "sentence": "Rival: {target}" } }
+    ]
+  }
+}
