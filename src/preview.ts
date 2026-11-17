@@ -241,7 +241,7 @@ const providers: Provider[] = [
   { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
 /* Mirrors the native list_providers contract: install state at once, each version the cached one or '' until probed;
- * the probe reports by `provider-versions` shortly after (force clears the cache). Tests: `window.__previewHoldVersions
+ * the probe reports by `provider-versions` ({ versions, done }) shortly after (force clears the cache). Tests: `window.__previewHoldVersions
  * = true` (before load) keeps each report until `window.__previewReleaseVersions()`. */
 const PREVIEW_VERSION_PROBE_MS = 400;
 let previewVersionsProbed = false;
@@ -252,7 +252,8 @@ function listPreviewProviders(force: boolean): Provider[] {
   if (!previewVersionsProbed && previewVersionProbe === undefined) {
     const report = () => {
       previewVersionProbe = undefined; previewVersionsProbed = true;
-      emit('provider-versions', { versions: Object.fromEntries(providers.filter(p => p.installed).map(p => [p.id, p.version])) });
+      // Like the native probe round: every installed harness reported (a failed probe as ''), then done.
+      emit('provider-versions', { versions: Object.fromEntries(providers.filter(p => p.installed).map(p => [p.id, p.version])), done: true });
     };
     const w = window as typeof window & { __previewHoldVersions?: boolean; __previewReleaseVersions?: () => void };
     if (w.__previewHoldVersions) { previewVersionProbe = -1; w.__previewReleaseVersions = report; }

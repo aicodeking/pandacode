@@ -31,6 +31,11 @@ const watchEyes = (page: Page) => page.evaluate(() => {
   new MutationObserver(records => { for (const r of records) w.__eyes.push((r.target as Element).getAttribute('transform')); })
     .observe(eye, { attributes: true, attributeFilter: ['transform'] });
 });
+/** The window loses focus to another app: `document.hasFocus()` reads false (a blur into the app's own browser panel or a
+ * frame leaves it true, and the mark keeps blinking). */
+const blurApp = (page: Page) => page.evaluate(() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); });
+const focusApp = (page: Page) => page.evaluate(() => { delete (document as any).hasFocus; window.dispatchEvent(new Event('focus')); });
+const OPEN_EYES = 'translate(0 10.3) scale(1 1) translate(0 -10.3)';
 const eyeScale = (value: string) => Number(/scale\(1 ([\d.e-]+)\)/.exec(value)?.[1] ?? NaN);
 
 async function open(page: Page): Promise<void> {
@@ -55,7 +60,7 @@ test.describe('brand mark at idle', () => {
     await open(page);
     await setIdleAfter(page, 1e9);
     if (phase === 'rest blinks') await untilRestBlinks(page);
-    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await blurApp(page);
     // A rest blink already in flight finishes first; the startup show skips straight to rest.
     await page.waitForTimeout(1000);
     const before = await page.evaluate(() => (window as any).__brandRaf as number);
@@ -63,8 +68,73 @@ test.describe('brand mark at idle', () => {
     await page.waitForTimeout(7000);
     expect(await frames(page), 'brand frames while blurred').toBe(from);
     expect(await page.evaluate(() => (window as any).__brandRaf as number), 'brand rAF while blurred').toBe(before);
-    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform'), 'eyes rest open while blurred').toBe('translate(0 10.3) scale(1 1) translate(0 -10.3)');
-    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform'), 'eyes rest open while blurred').toBe(OPEN_EYES);
+    await focusApp(page);
+    await expect.poll(() => frames(page), { timeout: 10_000 }).toBeGreaterThan(from);
+  });
+
+  test('keeps blinking when focus moves into the app\'s own browser panel or a frame (document.hasFocus() stays true)', async ({ page }) => {
+    await open(page);
+    await setIdleAfter(page, 1e9);
+    await untilRestBlinks(page);
+    // The in-app browser is a native child webview: focusing it blurs the window while the document keeps focus.
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    expect(await page.evaluate(() => document.hasFocus())).toBe(true);
+    await watchEyes(page);
+    // Rest blinks come about every 5 s.
+    await expect.poll(() => page.evaluate(() => ((window as any).__eyes as string[]).map(v => Number(/scale\(1 ([\d.e-]+)\)/.exec(v)?.[1])).some(n => n < .4)), { timeout: 20_000 }).toBe(true);
+    await expect.poll(() => brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
+  });
+
+  test('a blur and then a resize during a finishing blink never leave the eyes half-closed', async ({ page }) => {
+    await open(page);
+    await setIdleAfter(page, 1e9);
+    await untilRestBlinks(page);
+    // On the first half-closed write: the window loses focus, then (once the blur has landed) it resizes.
+    await page.evaluate(() => {
+      const w = window as any, eye = document.querySelector('.brand-name [data-part="eyeL"]')!;
+      w.__hit = false;
+      const observer = new MutationObserver(() => {
+        const scale = Number(/scale\(1 ([\d.e-]+)\)/.exec(eye.getAttribute('transform') ?? '')?.[1]);
+        if (!(scale < .9)) return;
+        observer.disconnect();
+        w.__hit = true;
+        document.hasFocus = () => false;
+        window.dispatchEvent(new Event('blur'));
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 0);
+      });
+      observer.observe(eye, { attributes: true, attributeFilter: ['transform'] });
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).__hit as boolean), { timeout: 20_000 }).toBe(true);
+    await page.waitForTimeout(1500);
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform'), 'eyes after blur plus resize').toBe(OPEN_EYES);
+    const from = await frames(page);
+    await page.waitForTimeout(2000);
+    expect(await frames(page), 'no frames while blurred').toBe(from);
+    // A second resize while blurred changes nothing either.
+    await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+    await page.waitForTimeout(300);
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
+    await focusApp(page);
+    await expect.poll(() => frames(page), { timeout: 10_000 }).toBeGreaterThan(from);
+  });
+
+  test('a blur during the launch flight ends the show at the rest pose and plays nothing unseen', async ({ page }) => {
+    await instrument(page);
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await expect(brand(page)).toHaveAttribute('data-brand-launch', '', { timeout: 20_000 });
+    await page.waitForFunction(() => (window as any).__brand !== undefined);
+    await blurApp(page);
+    await expect(brand(page)).not.toHaveAttribute('data-brand-launch', { timeout: 2000 });
+    await expect(page.locator('.desktop-brand-launch')).toHaveCount(0);
+    expect(await page.evaluate(() => { const b = (window as any).__brand; return b.time >= b.restFrom; }), 'header at its rest pose').toBe(true);
+    await page.waitForTimeout(500);
+    const from = await frames(page), raf = await page.evaluate(() => (window as any).__brandRaf as number);
+    await page.waitForTimeout(3000);
+    expect(await frames(page), 'brand frames after a blur in the launch').toBe(from);
+    expect(await page.evaluate(() => (window as any).__brandRaf as number), 'brand rAF after a blur in the launch').toBe(raf);
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
+    await focusApp(page);
     await expect.poll(() => frames(page), { timeout: 10_000 }).toBeGreaterThan(from);
   });
 
@@ -77,7 +147,7 @@ test.describe('brand mark at idle', () => {
     expect(await frames(page), 'brand frames when dormant').toBe(from);
     expect(await page.evaluate(() => (window as any).__brandRaf as number), 'brand rAF when dormant').toBe(raf);
     // The eyes rest open while the mark sleeps.
-    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe('translate(0 10.3) scale(1 1) translate(0 -10.3)');
+    expect(await brand(page).locator('[data-part="eyeL"]').getAttribute('transform')).toBe(OPEN_EYES);
     await setIdleAfter(page, 1e9);
     await page.keyboard.press('Shift');
     await expect.poll(async () => (await read(page)).dormant).toBe(false);
@@ -130,7 +200,7 @@ test.describe('brand mark at idle', () => {
       await setIdleAfter(page, Number(process.env.BRAND_IDLE_AFTER_MS));
       await expect.poll(async () => (await read(page)).dormant, { timeout: 20_000 }).toBe(true);
     }
-    if (process.env.BRAND_IDLE_BLUR) await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    if (process.env.BRAND_IDLE_BLUR) await blurApp(page);
     const count = () => page.evaluate(() => ({ brand: (window as any).__brandRaf as number, all: (window as any).__allRaf as number }));
     await page.evaluate(() => {
       const w = window as any; w.__brandWrites = 0;

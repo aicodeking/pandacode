@@ -14,14 +14,18 @@ type Deps = {
   created(context: Context, parent: string): void;
   /** Re-reads the tree and the open file; true when the tree changed. */
   refresh(): Promise<boolean>;
+  /** Whether the open thread's agent is working: its edits land without any input, so the poll keeps the quick rate. */
+  busy(): boolean;
   notify(text: string): void;
   report(error: unknown): void;
 };
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** How often the open tree and the file on screen are re-read while someone can see them: every 2 s while the window is
- * focused and in use, every 8 s once it settles (three unchanged reads in a row, or 30 s without input) or while it is
- * shown but another app has focus (PandaCode beside an editor still shows the edits). */
+ * focused and in use or the open thread's agent is working, every 8 s once it settles (three unchanged reads in a row, or
+ * 30 s without input) or while it is shown but another app has focus (PandaCode beside an editor still shows the edits). */
 const POLL_MS = 2000, SLOW_POLL_MS = 8000;
+/** An agent's tool or file event is followed by one read this soon (ms), batching a burst of events into one. */
+const ACTIVITY_READ_MS = 400;
 /** Unchanged reads in a row, and ms without input, after which a focused window polls at SLOW_POLL_MS. */
 const SETTLE_READS = 3, SETTLE_IDLE_MS = 30_000;
 /** What the poll keeps fresh: the Files tree in the inspector, and the open-file panel (tabs or a floating window). */
@@ -40,26 +44,28 @@ function watchedVisible(): boolean {
 
 /** One refresh: true when it changed what is shown, false when it read the same, undefined when it did not run. */
 type PollRefresh = () => Promise<boolean | undefined>;
-type Poll = { watch(mounted: boolean): void; changed(): void };
+type Poll = { watch(mounted: boolean): void; changed(): void; activity(): void };
 let poll: Poll | undefined;
 /** Whether a Files tree or an open file tab exists; the interval runs only while one does. Safe before the explorer exists. */
 let pollMounted = false;
 export function setFilePollMounted(mounted: boolean): void { pollMounted = mounted; poll?.watch(mounted); }
 /** Something on a watched surface changed outside the poll (an open file reloaded): back to the quick rate. */
 export function noteFilePollChange(): void { poll?.changed(); }
+/** The open thread's agent used a tool or changed files: back to the quick rate, and one read shortly after. */
+export function noteFilePollActivity(): void { poll?.activity(); }
 
 /** The poll (`list_files` for the tree, `workspace_file_stamp` for the file on screen): every POLL_MS while the window is
  * focused and in use, every SLOW_POLL_MS once it settles or while it is shown without focus, and none while it is hidden or
  * no tree or file tab is mounted, so an idle window costs no timer and no IPC at all. Each tick skips the refresh unless
  * the Files tree or an open file is visible. Coming back (focus, or the document shown again) refreshes at once; focus,
  * input and a change restart the quick rate. */
-function startPolling(refresh: PollRefresh): Poll {
+function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   // Read, never assumed: a window launched in the background starts unfocused, and focus that leaves the app from inside
   // one of its frames fires no blur here (the window blurred when the frame took focus), so each tick reads it again too.
-  let timer = 0, period = 0, focused = document.hasFocus(), mounted = pollMounted, unchanged = 0, active = Date.now();
+  let timer = 0, period = 0, focused = document.hasFocus(), mounted = pollMounted, unchanged = 0, active = Date.now(), soon = 0;
   const settled = (): boolean => unchanged >= SETTLE_READS || Date.now() - active >= SETTLE_IDLE_MS;
   const sync = (): void => {
-    const next = document.hidden || !mounted ? 0 : focused && !settled() ? POLL_MS : SLOW_POLL_MS;
+    const next = document.hidden || !mounted ? 0 : busy() || focused && !settled() ? POLL_MS : SLOW_POLL_MS;
     if (next === period) return;
     if (timer) { window.clearInterval(timer); timer = 0; }
     period = next;
@@ -94,6 +100,11 @@ function startPolling(refresh: PollRefresh): Poll {
   return {
     watch(next) { if (next === mounted) return; mounted = next; if (next) wake(); else sync(); },
     changed: wake,
+    activity() {
+      wake();
+      if (soon || !period) return;
+      soon = window.setTimeout(() => { soon = 0; if (watchedVisible()) run(); }, ACTIVITY_READ_MS);
+    },
   };
 }
 
@@ -156,6 +167,6 @@ export function createFileExplorer(deps: Deps) {
       } else edit(context, action, path, directory);
     } });
   }
-  poll = startPolling(() => refresh().catch(error => { deps.report(error); return undefined; }));
+  poll = startPolling(() => refresh().catch(error => { deps.report(error); return undefined; }), deps.busy);
   return { menu, edit };
 }

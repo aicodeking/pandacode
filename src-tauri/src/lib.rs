@@ -3050,31 +3050,39 @@ async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: O
     if let Some(remote) = remote::catalog::providers(&app, device_id, force).await? {
         return Ok(remote);
     }
-    serde_json::to_value(listed_providers(app, force).await).map_err(|e| e.to_string())
+    serde_json::to_value(listed_providers(force).await).map_err(|e| e.to_string())
 }
 /// This computer's harnesses for the app, from path lookups only: each version is the
-/// remembered one, else "". Unknown versions are probed in the background and arrive as the
-/// `provider-versions` event, `{ versions: { [providerId]: string } }`.
-async fn listed_providers(app: tauri::AppHandle, force: bool) -> Vec<providers::ProviderInfo> {
+/// remembered one, else "". Versions unknown or due for a check are probed in the background and
+/// arrive as the `provider-versions` event, `{ versions: { [providerId]: string }, done: bool }`
+/// ('' for a failed or timed-out probe; `done` once no round is pending), announced by
+/// `announce_provider_versions`.
+async fn listed_providers(force: bool) -> Vec<providers::ProviderInfo> {
     forget_provider_details(force);
-    tauri::async_runtime::spawn_blocking(move || {
-        providers::discover_now(move |versions| {
-            // Called by the probe thread with no lock held.
-            if let Err(error) = app.emit("provider-versions", serde_json::json!({ "versions": versions })) {
-                eprintln!("PandaCode: could not announce CLI versions: {error}");
-            }
-        })
-    })
-    .await
-    .unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(providers::discover_now).await.unwrap_or_default()
 }
-/// This computer's harnesses with every version answered (waits for `--version` probes; the
-/// saved cache usually answers). For callers that cannot hear `provider-versions`.
+/// This computer's harnesses with every version answered (joins the background probe and waits
+/// up to 8 s for versions never asked; the saved cache usually answers). For callers that show
+/// versions but cannot hear `provider-versions`.
 pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo> {
     forget_provider_details(force);
     tauri::async_runtime::spawn_blocking(providers::discover)
         .await
         .unwrap_or_default()
+}
+/// This computer's harnesses for callers that never show a version: remembered versions only,
+/// never waits on or starts a `--version` probe.
+pub(crate) async fn installed_providers() -> Vec<providers::ProviderInfo> {
+    tauri::async_runtime::spawn_blocking(providers::discover_installed).await.unwrap_or_default()
+}
+/// Sends every CLI version round's report to the webview as `provider-versions`.
+fn announce_provider_versions(app: tauri::AppHandle) {
+    providers::set_version_announcer(move |report| {
+        // Called by the probe thread with no lock held.
+        if let Err(error) = app.emit("provider-versions", &report) {
+            eprintln!("PandaCode: could not announce CLI versions: {error}");
+        }
+    });
 }
 /// `force` drops the cached ACP catalogs and CLI versions (failures included).
 fn forget_provider_details(force: bool) {
@@ -4441,6 +4449,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     secret_store::setup(&dir);
     providers::load_version_cache(&dir);
+    announce_provider_versions(app.handle().clone());
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
     connections::setup(&dir)?;

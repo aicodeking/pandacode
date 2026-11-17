@@ -30,7 +30,8 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * stopped instead of handing it the whole wait in one 16 ms frame.
  * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms, and a second one
  * halves the rest and idle rates where a painted frame stays costly (`rateSample`: a CPU-composited WebKit, where one
- * costs ~40 ms of main-thread work), at the same scene pace; streaming, wind and pointer rates are never touched. */
+ * costs ~40 ms of main-thread work), at the same scene pace; streaming, wind and pointer rates are never touched. Paints
+ * that stay costly for ~10 s also set `html[data-costly-paint]`, which turns the glass solid (`paintVerdict`). */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
   wanted(): boolean;
@@ -83,13 +84,19 @@ const FIXED_DT = 1 / 60;
  * to LOW_SCALE; it goes back up only after QUIET_MS of averages under half the budget. */
 const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000;
 /** The rate governor (#348, #351): on a CPU-composited renderer (WebKitGTK without GPU compositing, some Intel Macs) one
- * painted frame costs ~40 ms of main-thread work, so the 8 fps rest is ~32% of a core and a 6 fps idle ~24%. Each quiet
- * frame (no run, wind or pointer) is measured — its `paint()` call plus the rendering update that composites it, timed
+ * painted frame costs ~40 ms of main-thread work, so the 8 fps rest is ~32% of a core and a 6 fps idle ~24%. Quiet
+ * frames (no run, wind or pointer) are measured in bursts (RESAMPLE_MS) — its `paint()` call plus the rendering update that composites it, timed
  * from a rAF callback to a message posted from it, with no GPU readback — and when the median of the last RATE_SAMPLE
  * stays above RATE_BUDGET_MS the rest and idle rates halve (never below RATE_FLOOR_FPS, or FAST_FLOOR_FPS for a scene whose
  * idle rate is the full rest rate: rain's drops would jump at 2), at the same REST_PACE; a median under half the budget
  * restores them. A GPU-composited frame costs well under a millisecond, so there nothing changes. */
 const RATE_SAMPLE = 8, RATE_BUDGET_MS = 16, RATE_FLOOR_FPS = 2, FAST_FLOOR_FPS = 4;
+/** Costly paint (#348, #351): when the rolling median has stayed over RATE_BUDGET_MS for COSTLY_PAINT_MS, the main sky
+ * sets `html[data-costly-paint]` and every glass takes its solid reduced-transparency fill (src/motion.css), since each
+ * blur re-blurs its backdrop on every canvas frame; a median under half the budget for CHEAP_PAINT_MS clears it. Once the
+ * verdict is settled (no change pending) the probe stops and takes RATE_SAMPLE fresh frames every RESAMPLE_MS, so a
+ * GPU-composited machine pays one burst of 8 probes every 30 s and never sees the attribute. */
+const COSTLY_PAINT_MS = 10_000, CHEAP_PAINT_MS = 30_000, RESAMPLE_MS = 30_000;
 /** `__sky.gpuMs` (preview) is the mean of this many GPU timer results. */
 const GPU_SAMPLE = 10;
 /** The precompile waits this long after the last input, and polls a parallel compile this often. */
@@ -184,6 +191,12 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   // The rate governor (`rateSample`): the last RATE_SAMPLE quiet frames' costs, whether the rates are halved, whether a
   // probe is in flight (one at a time), and `__sky.forceFrameMs` (preview: specs feed it made-up frame costs).
   let frameCosts: readonly number[] = [], costly = false, probing = false, forceFrameMs: number | null = null;
+  // Costly paint (`rateSample`): whether this instance set `html[data-costly-paint]` (only the main sky does, `ownsPaint`),
+  // since when the median has read costly or cheap (0: not now), when the paused probe samples again, and the samples taken
+  // so far (preview: specs check the probe goes quiet once settled).
+  const ownsPaint = !options.tileRoot;
+  let costlyPaint = false, costlySince = 0, cheapSince = 0, resampleAt = 0, samples = 0;
+  let costlyPaintMs = COSTLY_PAINT_MS, cheapPaintMs = CHEAP_PAINT_MS, resampleMs = RESAMPLE_MS;
   const probe = new MessageChannel();
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
   let idle = 0, idleTimer = 0, inputAt = 0;
@@ -474,6 +487,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
    * composites it — from a rAF callback (the start of that update) to a message posted from it (which runs once the update
    * is done). One probe at a time; the canvas has just changed, so the rAF asks for no frame that would not happen anyway. */
   function measureFrame(paintMs: number): void {
+    // Settled: no probe (no rAF callback, no message) until the next periodic burst.
+    if (performance.now() < resampleAt) return;
     if (forceFrameMs !== null) { rateSample(forceFrameMs); return; }
     if (probing) return;
     probing = true;
@@ -486,12 +501,36 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   /** One frame-cost sample: the median of the last RATE_SAMPLE above RATE_BUDGET_MS halves the quiet rates, under half of
    * it restores them (the hysteresis keeps a borderline machine from flapping). The next scheduled wait reads it. */
   function rateSample(ms: number): void {
+    samples++;
     frameCosts = [...frameCosts.slice(1 - RATE_SAMPLE), ms];
     if (frameCosts.length < RATE_SAMPLE) return;
     const sorted = [...frameCosts].sort((a, b) => a - b), mid = RATE_SAMPLE / 2;
     const median = (sorted[mid - 1] + sorted[mid]) / 2;
     if (!costly && median > RATE_BUDGET_MS) costly = true;
     else if (costly && median < RATE_BUDGET_MS / 2) costly = false;
+    paintVerdict(median, performance.now());
+  }
+  /** Costly paint: a median over the budget sustained for `costlyPaintMs` sets `html[data-costly-paint]`, one under half
+   * of it for `cheapPaintMs` clears it (a borderline machine never flaps). While a change is pending the probe keeps
+   * sliding its window; otherwise it pauses for `resampleMs` and starts over with a fresh burst. */
+  function paintVerdict(median: number, now: number): void {
+    const dear = median > RATE_BUDGET_MS, cheap = median < RATE_BUDGET_MS / 2;
+    costlySince = dear ? costlySince || now : 0;
+    cheapSince = cheap ? cheapSince || now : 0;
+    if (!costlyPaint && costlySince && now - costlySince >= costlyPaintMs) setCostlyPaint(true);
+    else if (costlyPaint && cheapSince && now - cheapSince >= cheapPaintMs) setCostlyPaint(false);
+    const pending = costlyPaint ? cheapSince !== 0 : costlySince !== 0;
+    if (pending) return;
+    frameCosts = [];
+    resampleAt = now + resampleMs;
+  }
+  function setCostlyPaint(on: boolean): void {
+    costlyPaint = on;
+    if (ownsPaint) document.documentElement.toggleAttribute('data-costly-paint', on);
+  }
+  /** Measurement starts over (a spec's made-up cost): a fresh burst now, with no verdict carried across. */
+  function resample(): void {
+    frameCosts = []; resampleAt = 0; costlySince = 0; cheapSince = 0;
   }
   /** The open scene's idle rate (fps) for the clock it last painted, kept within SLOW_FPS..IDLE_FPS. */
   function idleRate(): number {
@@ -681,7 +720,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     set idleAfterMs(ms: number) { idleAfterMs = ms; },
     // The rate governor: whether the quiet rates are halved, the costs it holds, and made-up frame costs (null: measure).
     get rateHalved() { return costly; }, get frameCosts() { return [...frameCosts]; },
-    set forceFrameMs(ms: number | null) { forceFrameMs = ms; frameCosts = []; },
+    set forceFrameMs(ms: number | null) { forceFrameMs = ms; resample(); },
+    // Costly paint: whether it is set, the samples taken (they stop while settled), when the next burst is due, and
+    // shorter sustain/hysteresis/resample spans for specs.
+    get costlyPaint() { return costlyPaint; }, get samples() { return samples; }, get resampleIn() { return Math.max(0, resampleAt - performance.now()); },
+    set costlyPaintMs(ms: number) { costlyPaintMs = ms; }, set cheapPaintMs(ms: number) { cheapPaintMs = ms; }, set resampleMs(ms: number) { resampleMs = ms; },
     set forcePaintMs(ms: number | null) { forcePaintMs = ms; costs = []; }, set quietMs(ms: number) { quietMs = ms; } } });
   refresh();
 
@@ -691,6 +734,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     dispose(): void {
       disposed = true;
       stop();
+      if (costlyPaint) setCostlyPaint(false);
       probe.port1.close(); probe.port2.close();
       if (idle) cancelIdleCallback(idle);
       window.clearTimeout(idleTimer);

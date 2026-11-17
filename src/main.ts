@@ -111,7 +111,7 @@ import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
-import { createFileExplorer, noteFilePollChange, setFilePollMounted } from './file-explorer';
+import { createFileExplorer, noteFilePollActivity, noteFilePollChange, setFilePollMounted } from './file-explorer';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
@@ -697,6 +697,8 @@ const fileTabs = createFileTabs({
   changed: () => {
     // Every redraw of the tabs (an open file reloaded from disk included) is a change the poll keeps up with.
     syncFilePoll(); noteFilePollChange();
+    // An open text tab mounts the editor, which needs the diff engine.
+    if (fileTabs.count) preloadDiffsAfterPaint();
     const toggle = $('#file-editor-toggle'); toggle.hidden = !fileTabs.count;
     toggle.classList.toggle('active', fileTabs.visible); toggle.setAttribute('aria-expanded', String(fileTabs.visible));
   },
@@ -720,6 +722,7 @@ const fileExplorer = createFileExplorer({
   created: (context, parent) => { if (parent && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId) state.openFolders.add(parent); },
   hasChanges: (context, path) => fileTabs.hasChanges(context, path),
   refresh: async () => { fileTabs.reload(); return refreshExplorerFiles(); },
+  busy: () => Boolean(state.sessionId) && isRunning(state.sessionId),
   notify, report,
 });
 document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('contextmenu', event => {
@@ -4065,11 +4068,14 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   else {
     const harness = pickHarness(await providersForChoice());
     if (!harness) throw new Error('Open Settings to check your installed agents.');
+    // Read before the await: the real list may land while the task is being created.
+    const provisional = !providersKnown;
     saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
-    noteProvisional(saved);
+    noteProvisional(saved, provisional);
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
   if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved;
+  checkProvisionalTasks();
   if (saved.id === state.sessionId) fullTaskDescription = { id: saved.id, value: saved.taskDescription ?? '' };
   const current = form.isConnected && document.querySelector<HTMLDialogElement>('#dialog')!.open && generation === state.generation;
   if (current) closeModal();
@@ -5184,6 +5190,15 @@ async function sendDraft(): Promise<void> {
   clearRemoteStart(s.id);
   const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
+  // A task made from the last launch's list is checked against the real one before it first goes; a corrected task is
+  // sent from the start again, with its new harness (it is no longer provisional, so this runs once).
+  if (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id)) {
+    configuringSessions.add(s.id);
+    let ready = false;
+    try { ready = await provisionalReadyToSend(s); } finally { configuringSessions.delete(s.id); }
+    if (ready && state.sessionId === s.id) await sendDraft();
+    return;
+  }
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
   // Enter meanwhile; a failure is shown, and the message still goes.
   if (!s.remoteDevice && !state.messages.length && !bot) {
@@ -5651,6 +5666,9 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
 }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** Agent events that start or end a run: the Files poll takes the quick rate while the open thread's agent works. A tool
+ *  or a turn's changes may have changed files, and also reads them shortly after. */
+const RUN_STATE_EVENTS = new Set<AgentEvent['kind']>(['turn_start', 'status', 'done']);
 function onAgent(event: AgentEvent): void {
   remoteStartAttached(event.sessionId);
   queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
@@ -5677,6 +5695,12 @@ function onAgent(event: AgentEvent): void {
     return;
   }
   onAccountPoolSwitch(event);
+  // The open thread's agent at work: the Files tree and open file follow its edits within a poll tick, input or not.
+  // After this event is handled, so a run it starts already counts as working (isRunning) when the poll picks its rate.
+  if (event.sessionId === state.sessionId) {
+    if (event.kind === 'tool' || event.kind === 'turn_changes') queueMicrotask(noteFilePollActivity);
+    else if (RUN_STATE_EVENTS.has(event.kind)) queueMicrotask(noteFilePollChange);
+  }
   if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
   if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }
@@ -6183,7 +6207,9 @@ function drawInspector(): void {
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
-  if (visible && (state.inspectorTab === 'changes' || state.selectedKind)) preloadDiffsAfterPaint();
+  // The Files tree is a file about to be opened in the editor, which shares the diff engine: warming it here keeps the
+  // first open from waiting seconds on a cold start (the editor shows "Opening editor…" until the engine is up).
+  if (visible && (state.inspectorTab === 'changes' || state.inspectorTab === 'files' || state.selectedKind)) preloadDiffsAfterPaint();
   const inspector = $('#inspector');
   // Opening: the column appears at once and the panel slides in. Closing: the panel fades in its
   // column and the column snaps shut after (`inspector-closed`), so the thread never rewraps under a
@@ -6654,10 +6680,12 @@ async function startTask(projectId: string): Promise<void> {
     // A settled draft (its worktree removed) is never reopened.
     const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
     if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
+    const provisional = !providersKnown;
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
-    noteProvisional(created);
+    noteProvisional(created, provisional);
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
+  checkProvisionalTasks();
   if (generation !== state.generation) { renderNavigation(); return; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
 }
@@ -6681,8 +6709,9 @@ async function createChat(from?: Session): Promise<void> {
     if (generation !== state.generation) return;
     if (!harness) { notify('Open Settings to check your installed agents.'); return; }
     if (!from) leaveDraft('');
+    const provisional = !from && !providersKnown;
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
-    if (!from) noteProvisional(created);
+    noteProvisional(created, provisional);
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
@@ -6692,6 +6721,7 @@ async function createChat(from?: Session): Promise<void> {
   } finally { creatingTask = false; }
   // chat_create announces the new row, so the refresh may already have listed it.
   upsertSession(created);
+  checkProvisionalTasks();
   if (from) {
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
     const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
@@ -7080,7 +7110,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
     settingsView = mountSettings(host, {
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
-      theme: currentTheme(), preview, section, discover: discoverSettingsProviders, versionsPending: providerVersionsPending,
+      theme: currentTheme(), preview, section, discover: discoverSettingsProviders, versionPending: providerVersionPending, listPending: providerListPending,
       projects: { list: userProjects, remove: removeProject },
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
@@ -8693,8 +8723,12 @@ function providersForChoice(): Promise<Provider[]> | Provider[] {
   if (now) return now;
   return Promise.race([providersReady, providersOverdueNow.then(() => providersForChoiceNow() ?? providersReady)]);
 }
-/** Marks a task made from the last launch's list, so the real list can correct its harness before its first Send. */
-function noteProvisional(task: Session): void { if (!providersKnown) provisionalTasks.add(task.id); }
+/** Marks a task made from the last launch's list, so the real list can correct its harness before its first Send.
+ *  `provisional` is `!providersKnown` read before the create call was awaited: when the real list landed meanwhile, its
+ *  correction pass has already run, so the caller checks again (checkProvisionalTasks) once the task is listed. */
+function noteProvisional(task: Session, provisional: boolean): void { if (provisional) provisionalTasks.add(task.id); }
+/** After a task joins state.sessions: one made from the last launch's list is checked now if the real list is in. */
+function checkProvisionalTasks(): void { if (providersKnown && provisionalTasks.size) run(correctProvisionalTasks()); }
 /** The real harness list, for anything that enumerates what is installed (team rosters, import sources). It waits for
  *  `list_providers` through boot's retries and never answers with the last launch's list, which may name CLIs removed
  *  since; it rejects when every boot attempt failed and no Settings refresh has answered. */
@@ -8719,9 +8753,13 @@ function keepProviderCatalog(providers: Provider[]): void {
 const realVersions = new Map<ProviderId, string>();
 /** Versions `provider-versions` reported since the last list request, for a list answer that arrives after them. */
 let reportedVersions = new Map<ProviderId, string>();
+/** When the current probe round stops counting as pending: `done` from `provider-versions`, or the patience running out. */
 let versionsPendingUntil = 0;
-/** Whether Settings should say "Checking…" for an installed harness with no version yet. */
-function providerVersionsPending(): boolean { return Date.now() < versionsPendingUntil; }
+/** Whether a harness's version is still being probed: a round is out and has not reported this harness yet (a failed or
+ *  timed-out probe reports ''). Settings says "Checking…" for an installed harness with no version only then. */
+function providerVersionPending(id: ProviderId): boolean { return Date.now() < versionsPendingUntil && !reportedVersions.has(id); }
+/** Before the real list lands, Settings shows the last launch's installed harnesses as pending, not as missing. */
+function providerListPending(): boolean { return !providersKnown; }
 /** Records a version; true when it replaces a different real one (a '' on either side never counts). */
 function versionReplaced(id: ProviderId, version: string): boolean {
   if (!version) return false;
@@ -8735,12 +8773,14 @@ function askingProviderList(): void {
   versionsPendingUntil = Date.now() + PROVIDER_VERSIONS_PATIENCE_MS;
   window.setTimeout(() => settingsView?.providersChanged(state.providers), PROVIDER_VERSIONS_PATIENCE_MS + 50);
 }
-/** A landed list, merged: versions reported meanwhile fill its blanks; models found this launch stay unless `keep` says
- *  otherwise or the harness's version really changed. New objects throughout. */
+/** A landed list, merged: versions reported meanwhile fill its blanks, and a harness at the same path keeps the version
+ *  shown until its probe reports (a refresh never blanks it); models found this launch stay unless `keep` says otherwise
+ *  or the harness's version really changed. New objects throughout. */
 function mergeProviderList(found: Provider[], keep: (entry: Provider, previous: Provider) => boolean): Provider[] {
   return found.map(entry => {
-    const version = entry.version || reportedVersions.get(entry.id) || '';
     const previous = provider(entry.id);
+    const samePath = Boolean(entry.path && previous?.path === entry.path);
+    const version = entry.version || reportedVersions.get(entry.id) || (samePath ? previous!.version : '') || '';
     if (versionReplaced(entry.id, version)) { modelCatalogs.delete(entry.id); return { ...entry, version, models: [] }; }
     return { ...entry, version, models: previous && keep(entry, previous) ? previous.models : entry.models };
   });
@@ -8748,11 +8788,13 @@ function mergeProviderList(found: Provider[], keep: (entry: Provider, previous: 
 /** `provider-versions`: fills versions in place (Settings rows, no redraw, so open menus stay open) and drops the cached
  *  models of a harness whose real version changed. */
 function providerVersionsReported(event: unknown): void {
-  const versions = event && typeof event === 'object' ? (event as { versions?: unknown }).versions : undefined;
+  const payload = event && typeof event === 'object' ? event as { versions?: unknown; done?: unknown } : undefined;
+  const versions = payload?.versions;
   if (!versions || typeof versions !== 'object' || Array.isArray(versions)) return;
   const reported = Object.entries(versions as Record<string, unknown>).filter((pair): pair is [ProviderId, string] => typeof pair[1] === 'string');
   reportedVersions = new Map([...reportedVersions, ...reported]);
-  versionsPendingUntil = 0;
+  // Each reported harness (a failed probe as '') stops pending on its own; `done` ends the round for the rest.
+  if (payload?.done === true) versionsPendingUntil = 0;
   const byId = new Map(reported), dropped: ProviderId[] = [];
   state.providers = state.providers.map(entry => {
     // A probe that found nothing keeps the version already shown.
@@ -8819,13 +8861,30 @@ async function correctProvisionalTasks(): Promise<void> {
   const ids = [...provisionalTasks]; provisionalTasks.clear();
   for (const id of ids) {
     const task = state.sessions.find(s => s.id === id);
-    if (!task || task.lastPromptAt != null || isRunning(id) || provider(task.provider)?.installed) continue;
-    const harness = pickHarness(state.providers);
-    if (!harness?.installed) { notify('Open Settings to check your installed agents.'); continue; }
-    const updated = await call<Session>('configure_session', { sessionId: id, provider: harness.id, model: rememberedModel(harness.id) });
-    state.sessions = state.sessions.map(s => s.id === id ? updated : s);
-    if (id === state.sessionId) { renderComposer(); renderHeader(); }
+    // Created but not listed yet (its creator is still finishing): it is checked once listed (checkProvisionalTasks).
+    if (!task) { if (!deletedSessions.has(id)) provisionalTasks.add(id); continue; }
+    if (task.lastPromptAt != null || isRunning(id)) continue;
+    if (await correctProvisionalTask(task) === 'missing') notify('Open Settings to check your installed agents.');
   }
+}
+/** Checks one provisional task against the real list: 'ok' when its harness is installed (or it moved to the harness a
+ *  New task would pick now), 'missing' when no installed harness is left to move it to. */
+async function correctProvisionalTask(task: Session): Promise<'ok' | 'missing'> {
+  if (provider(task.provider)?.installed) return 'ok';
+  const harness = pickHarness(state.providers);
+  if (!harness?.installed) return 'missing';
+  const updated = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+  state.sessions = state.sessions.map(s => s.id === task.id ? updated : s);
+  if (task.id === state.sessionId) { renderComposer(); renderHeader(); }
+  return 'ok';
+}
+/** Before a first Send: a task still provisional whose harness the real list says is missing moves to an installed one,
+ *  or the send stops with the install note. Until the real list lands the last launch's choice is the best known one. */
+async function provisionalReadyToSend(s: Session): Promise<boolean> {
+  if (!providersKnown || !provisionalTasks.delete(s.id)) return true;
+  if (await correctProvisionalTask(s) === 'ok') return true;
+  showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
+  return false;
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));

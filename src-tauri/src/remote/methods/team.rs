@@ -147,7 +147,8 @@ pub(crate) fn auto_config(harnesses: &[Harness], last: Option<&TeamConfig>) -> T
 /// Installed harnesses that can work in a team, each with its models: the harness's discovered
 /// list, or its built-in one when discovery fails.
 async fn installed_harnesses(discover: bool) -> Vec<Harness> {
-    let providers = crate::local_providers(false).await;
+    // Ids, names and models only: no version, so no `--version` probe is waited on or started.
+    let providers = crate::installed_providers().await;
     let mut harnesses = Vec::new();
     for provider in providers.into_iter().filter(|p| p.installed && architect::HARNESSES.contains(&p.id.as_str())) {
         let models = if discover {

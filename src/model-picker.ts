@@ -30,6 +30,8 @@ type ModelPickerOptions = {
 const RECENT_LIMIT = 5;
 const WIDTH = 520;
 const HEIGHT = 440;
+/** The harness list row while `loadProviders` is out; the search field then says "Loading models…". */
+const PROVIDERS_LOADING = 'Loading…';
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
   try {
@@ -77,7 +79,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const anchorAction = anchor.dataset.action;
   const originalExpanded = anchor.getAttribute('aria-expanded');
   let pending = false;
-  let providersStatus = options.loadProviders ? 'Loading…' : '';
+  let providersStatus = options.loadProviders ? PROVIDERS_LOADING : '';
   let closed = false;
   let activeKey = '';
   let positionFrame = 0;
@@ -240,7 +242,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const groupMatches = includes([group.provider.id, group.provider.name, group.name], normalized);
       hits.set(group.key, models(group).filter(model => groupMatches || includes([model.id, model.name], normalized)).map(model => ({ group, model })));
     }
-    search.placeholder = `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
+    // While the harness list loads there is nothing to count yet ("Search 0 models, 0 harnesses…").
+    search.placeholder = providersStatus === PROVIDERS_LOADING ? 'Loading models…' : `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
 
     // Rail: a tab per view; while searching it is a hit map.
     const inUse = (key: string) => !teamSelected && key === `h:${current.provider}`;

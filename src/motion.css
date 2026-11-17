@@ -128,6 +128,20 @@ html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--ac
   dialog .settings-group{background:var(--panel)}
   dialog .settings-tabs{background:var(--raised)}
 }
+/* Costly paint (#348, #351): the sky (sky-window.ts `paintVerdict`) sets html[data-costly-paint] after ~10 s of costly
+   canvas frames on a CPU-composited renderer, where every blur re-blurs its backdrop on each frame. The glass then takes
+   its reduced-transparency solid fill (mirrored from those rules, tokens only); a GPU-composited machine never sets it. */
+html[data-costly-paint] *,html[data-costly-paint] *::before,html[data-costly-paint] *::after{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+html[data-costly-paint] :is(.dialog-plate,.toast,.tip-bubble){background:var(--panel)}
+html[data-costly-paint] dialog .settings-group{background:var(--panel)}
+html[data-costly-paint] dialog .settings-tabs{background:var(--raised)}
+html[data-costly-paint][data-theme] body .floating-menu{background:var(--panel)}
+html[data-costly-paint] .workspace .action-dock:not(:is(.board-view,.github-view) *),html[data-costly-paint] .workspace :is(.action-dock-tip,.agents-flyout){background:var(--panel)}
+html[data-costly-paint][data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg)}
+html[data-costly-paint] .workspace :is(.thread-tile-bar,.thread-mirror-composer){background:var(--panel,var(--bg))}
+html[data-costly-paint] .file-window{background:var(--panel-surface,var(--bg))}
+html[data-costly-paint] .desktop-brand-launch::before{background:var(--bg)}
+html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger:not(:hover){background:var(--bg)}
 @media(prefers-contrast:more){
   .dialog-plate,.toast{border:1px solid var(--border)}
   [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){outline:1px solid var(--text);outline-offset:-1px}

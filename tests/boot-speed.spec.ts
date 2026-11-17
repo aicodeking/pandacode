@@ -6,10 +6,11 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[] };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
- *  window.__releaseProviders()); the page records when, and any install note it shows. */
+ *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
+ *  create_session waits for window.__releaseDraft(); configure_session calls are recorded in `__configured`. */
 async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -21,7 +22,8 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         window.__providersAsked = performance.now();
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
-      }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1;');
+      }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
+      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider });');
     await route.fulfill({ response, body: previewBody(body) });
   });
   await page.addInitScript(saved => {
@@ -107,6 +109,9 @@ test('the model picker opened before list_providers answers shows Loading, then 
   await expect(menu).toBeVisible({ timeout: 10_000 });
   await expect(menu.locator('.model-menu-list')).toHaveText(/Loading…/);
   await expect(menu.locator('.model-menu-rail [role="tab"][data-view^="h:"]')).toHaveCount(0);
+  // Nothing to count yet: the search field says so instead of "Search 0 models, 0 harnesses…".
+  const search = menu.locator('input').first();
+  await expect(search).toHaveAttribute('placeholder', 'Loading models…');
   expect(await answered(page), 'still waiting for list_providers').toBeNull();
   await release(page);
   await expect.poll(() => answered(page), { timeout: PROVIDERS_DELAY + 5_000 }).not.toBeNull();
@@ -115,6 +120,7 @@ test('the model picker opened before list_providers answers shows Loading, then 
   await expect(menu.locator('.model-menu-rail [data-view="h:claude"]')).toBeVisible();
   await expect(menu.locator('.model-menu-list')).not.toHaveText(/^Loading…$/);
   await expect(menu.locator('.model-menu-list [role="option"]:not([disabled])').first()).toBeVisible();
+  await expect(search).toHaveAttribute('placeholder', /^Search [1-9]\d* models, [1-9]\d* harnesses…$/);
   await expect(page.locator('#transcript .agent-message .message-meta strong').first()).toHaveText('Claude Code');
 });
 
@@ -198,22 +204,83 @@ test('versions fill in after provider-versions without closing an open menu or r
   await page.keyboard.press('Escape');
   await expect(menu).toBeHidden();
 
-  // Settings → Agents refreshes (versions cleared), says Checking… and fills in the open row in place.
+  // Settings → Agents refreshes the list (its versions come back blank and are probed again), but a harness at the same
+  // path keeps the version shown through the refresh: no blank, no Checking…, then the new report fills in place.
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   const row = settings.locator('.provider-diagnostic[data-provider="claude"]');
   const version = row.locator('.settings-provider-version');
-  await expect(version).toHaveText('Checking…', { timeout: 10_000 });
+  await expect(version).toHaveText('Sample provider', { timeout: 10_000 });
+  await row.evaluate(el => {
+    const seen = new Set<string>(); (el as HTMLElement & { __seen?: Set<string> }).__seen = seen;
+    new MutationObserver(() => seen.add(el.querySelector('.settings-provider-version')!.textContent ?? '')).observe(el, { subtree: true, childList: true, characterData: true });
+  });
+  await expect.poll(() => page.evaluate(() => typeof (window as VersionsWindow).__previewReleaseVersions), { timeout: 10_000, message: 'the refresh started a new probe' }).toBe('function');
+  await expect(version).toHaveText('Sample provider');
   await row.locator('summary').click();
-  await expect(version).toBeVisible();
   await row.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
   await releaseVersions(page);
+  await page.waitForTimeout(300);
   await expect(version).toHaveText('Sample provider');
   await expect(row).toHaveAttribute('open', '');
   expect(await row.evaluate(el => Boolean((el as HTMLElement & { __kept?: boolean }).__kept))).toBe(true);
+  const seen = await row.evaluate(el => [...(el as HTMLElement & { __seen?: Set<string> }).__seen!]);
+  expect(seen, 'the version never blanked or said Checking… through the refresh').not.toContain('Checking…');
+  expect(seen).not.toContain('');
   // A harness that is not installed reports no version, not Checking….
   await expect(settings.locator('.provider-diagnostic[data-provider="antigravity"] .settings-provider-version')).toHaveText('Not reported');
+});
+
+test('Settings says Checking… per harness until its version is reported, and done ends the round', async ({ page }) => {
+  test.setTimeout(45_000);
+  await heldVersions(page);
+  await page.goto('/');
+  await threadPainted(page);
+  // The boot probe is still out: no installed harness has a version yet.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  const versionOf = (id: string) => settings.locator(`.provider-diagnostic[data-provider="${id}"] .settings-provider-version`);
+  await expect(versionOf('claude')).toHaveText('Checking…', { timeout: 10_000 });
+  await expect(versionOf('codex')).toHaveText('Checking…');
+  await expect(versionOf('cursor')).toHaveText('Checking…');
+  await expect(versionOf('antigravity')).toHaveText('Not reported');
+  const row = settings.locator('.provider-diagnostic[data-provider="claude"]');
+  await row.locator('summary').click();
+  await row.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
+  const emit = (event: unknown) => page.evaluate(payload => (window as VersionsWindow).__previewEmit!('provider-versions', payload), event);
+  // One harness reported: only its row fills; the others are still being probed.
+  await emit({ versions: { claude: 'Claude Code 1.2.3 (sample)' } });
+  await expect(versionOf('claude')).toHaveText('Claude Code 1.2.3 (sample)');
+  await expect(versionOf('codex')).toHaveText('Checking…');
+  // A failed or timed-out probe is reported as '': that row stops checking.
+  await emit({ versions: { codex: '' } });
+  await expect(versionOf('codex')).toHaveText('Not reported');
+  await expect(versionOf('cursor')).toHaveText('Checking…');
+  // done: nothing is pending any more, so a harness never reported stops checking too.
+  await emit({ versions: {}, done: true });
+  await expect(versionOf('cursor')).toHaveText('Not reported');
+  await expect(row).toHaveAttribute('open', '');
+  expect(await row.evaluate(el => Boolean((el as HTMLElement & { __kept?: boolean }).__kept))).toBe(true);
+});
+
+test('Settings before the list answers shows the last launch\'s installed harness as pending, not missing', async ({ page }) => {
+  test.setTimeout(30_000);
+  await slowProviders(page, [{ id: 'claude', name: 'Claude Code', installed: true, models: [] }, { id: 'codex', name: 'Codex', installed: false, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  const claude = settings.locator('.provider-diagnostic[data-provider="claude"]');
+  await expect(claude.locator('code')).toHaveText('Checking…', { timeout: 10_000 });
+  await expect(claude.locator('.settings-provider-version')).toHaveText('Checking…');
+  // The last launch knew this one as missing, so it may say so.
+  await expect(settings.locator('.provider-diagnostic[data-provider="codex"] code')).toHaveText('Install the agent, then refresh.');
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+  await release(page);
+  await expect(claude.locator('code')).toHaveText('/sample/bin/claude', { timeout: 10_000 });
 });
 
 test('a version filling in keeps cached models; a real version change drops them', async ({ page }) => {
@@ -268,4 +335,55 @@ test('a New task press while the list is out shows busy and makes exactly one dr
   await expect(button).not.toHaveAttribute('aria-busy', 'true');
   await page.waitForTimeout(500);
   expect(await page.evaluate(() => (window as BootWindow).__drafts ?? 0)).toBe(1);
+});
+
+test('a ⌘N press while the list is out shows the same busy state as the button, pulsing its icon', async ({ page }) => {
+  test.setTimeout(30_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  const button = page.locator('.sidebar-actions .new-task-button');
+  await page.locator('#prompt').click();
+  await page.keyboard.press('ControlOrMeta+n');
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await expect(button.locator('.icon').first()).toHaveCSS('animation-name', 'state-pulse');
+  await release(page);
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  await expect(button).not.toHaveAttribute('aria-busy', 'true');
+  await expect(button.locator('.icon').first()).toHaveCSS('animation-name', 'none');
+});
+
+test('reduced motion: a busy New task button holds its icon dimmed instead of pulsing', async ({ page }) => {
+  test.setTimeout(30_000);
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  const button = page.locator('.sidebar-actions .new-task-button');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await expect(button.locator('.icon').first()).toHaveCSS('animation-name', 'none');
+  await expect(button.locator('.icon').first()).toHaveCSS('opacity', '0.45');
+  await release(page);
+});
+
+test('a New task drafted from the last launch\'s list is corrected when the real list lands during its creation', async ({ page }) => {
+  test.setTimeout(45_000);
+  // The last launch knew only a harness the real list reports as missing.
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await page.evaluate(() => { (window as BootWindow).__holdDraft = true; });
+  // Past the wait for the real list, a New task uses the last launch's list (provisional).
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseDraft), { timeout: 10_000, message: 'create_session is out' }).toBe('function');
+  // The real list lands while create_session is awaited; then the draft is created.
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await page.evaluate(() => (window as BootWindow).__releaseDraft!());
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const draft = await page.locator('#prompt').getAttribute('data-session-id');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__configured ?? []), { timeout: 10_000, message: 'the draft moved to an installed harness' })
+    .toEqual([{ sessionId: draft, provider: 'claude' }]);
 });

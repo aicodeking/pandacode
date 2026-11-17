@@ -47,8 +47,10 @@ interface SettingsOptions {
   turnChecks: boolean;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
-  /** True while the harnesses' versions are still being probed: an installed one with no version says "Checking…". */
-  versionsPending?(): boolean;
+  /** True while this harness's version is still being probed: installed with no version, it says "Checking…". */
+  versionPending?(id: Provider['id']): boolean;
+  /** True until the real harness list has answered: rows are the last launch's, so none is called missing yet. */
+  listPending?(): boolean;
   /** Mounts the optional GitHub row; returns its cleanup. */
   github?(host: HTMLElement): () => void;
   /** Projects listed under General; remove() rejects with the native refusal text. */
@@ -239,9 +241,13 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
       row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
-      const version = row.querySelector('.settings-provider-version')!, versionText = provider.version || (provider.installed && options.versionsPending?.() ? 'Checking…' : 'Not reported');
+      // The last launch's installed harness, before the real list answers: pending, never "Install the agent".
+      const listing = provider.installed && !provider.path && Boolean(options.listPending?.());
+      const version = row.querySelector('.settings-provider-version')!;
+      const versionText = provider.version || (provider.installed && (listing || options.versionPending?.(provider.id)) ? 'Checking…' : 'Not reported');
       if (version.textContent !== versionText) version.textContent = versionText;
-      row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
+      const location = row.querySelector('code')!, locationText = provider.path || (listing ? 'Checking…' : 'Install the agent, then refresh.');
+      if (location.textContent !== locationText) location.textContent = locationText;
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
     }

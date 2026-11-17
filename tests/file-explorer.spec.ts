@@ -323,3 +323,31 @@ test('file explorer: a change on disk shows within one settled tick and restores
   await expect(item(page, 'appeared.txt')).toBeVisible({ timeout: 9000 });
   expect(await periods(), 'a change brings the quick rate back').toEqual([2000]);
 });
+
+test('file explorer: while the open thread\'s agent works the poll keeps the 2 s rate, and a tool event reads at once', async ({ page }) => {
+  test.setTimeout(60_000);
+  const periods = await trackPollTimer(page);
+  const polls = await countPolls(page);
+  // Shown beside another app (unfocused) and settled: the slow rate.
+  await page.evaluate(() => { document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
+  await expect.poll(periods, { timeout: 5000, message: 'an unfocused window polls every 8 s' }).toEqual([8000]);
+  const sessionId = await page.locator('#prompt').getAttribute('data-session-id');
+  const agent = (kind: string, extra: Record<string, unknown> = {}) => page.evaluate(event => (window as any).__previewEmit('agent-event', event), { sessionId, kind, text: '', ...extra });
+  // The agent starts: its edits land with no input, so the quick rate holds, unfocused or settled.
+  await agent('status', { text: 'Working' });
+  await expect.poll(periods, { timeout: 2000, message: 'a working agent brings the 2 s rate back' }).toEqual([2000]);
+  const from = await polls();
+  await expect.poll(polls, { timeout: 3000, intervals: [100], message: 'and it reads on that beat' }).toBeGreaterThan(from);
+  await page.waitForTimeout(6500);
+  expect(await periods(), 'unchanged reads do not slow it while the agent works').toEqual([2000]);
+  // A tool event (an edit, say) reads well before the next 2 s tick: sent just after a tick, it is read within a second.
+  const ticked = await polls();
+  await expect.poll(polls, { timeout: 3000, intervals: [50] }).toBeGreaterThan(ticked);
+  await page.waitForTimeout(100);
+  const before = await polls();
+  await agent('tool', { text: 'Edit', tool: { id: 'poll-tool', name: 'Edit', status: 'completed', input: 'README.md', output: '' } });
+  await expect.poll(polls, { timeout: 1000, intervals: [50], message: 'a tool event reads within the activity delay' }).toBeGreaterThan(before);
+  // The run ends: back to the slow rate once it settles.
+  await agent('done');
+  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'with the agent done, the unfocused poll slows again' }).toEqual([8000]);
+});

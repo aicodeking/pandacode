@@ -235,3 +235,78 @@ test('cheap frames keep the shipped rest and idle rates', async ({ page }) => {
   expect(idle.fps, `${idle.fps.toFixed(1)} fps at a cheap idle`).toBeLessThanOrEqual(4);
   expect(await halved(page)).toBe(false);
 });
+
+/** Costly paint (src/sky-window.ts `paintVerdict`, #348/#351): frame costs that stay over budget set
+ * `html[data-costly-paint]`, and the glass (src/motion.css) takes its solid reduced-transparency fill; cheap ones clear it
+ * after a hysteresis. Once settled, the probe stops and samples a fresh burst of 8 frames every 30 s. `__sky.costlyPaintMs`,
+ * `cheapPaintMs` and `resampleMs` (preview only) shorten those spans. */
+const setSky = (page: Page, values: Record<string, number>) => page.evaluate(entries => { Object.assign((window as any).__sky, entries); }, values);
+const costlyPaint = (page: Page) => page.evaluate(() => document.documentElement.hasAttribute('data-costly-paint'));
+/** A glass tooltip (`.tip-bubble`), and what the panel token resolves to: the solid fill it takes when paint is costly. */
+const glass = (page: Page) => page.evaluate(() => {
+  let tip = document.querySelector<HTMLElement>('#costly-paint-tip');
+  if (!tip) {
+    tip = Object.assign(document.createElement('div'), { id: 'costly-paint-tip', className: 'tip-bubble', textContent: 'Tip' });
+    document.body.append(tip);
+  }
+  const panel = document.createElement('div');
+  panel.style.background = 'var(--panel)';
+  document.body.append(panel);
+  const solid = getComputedStyle(panel).backgroundColor;
+  panel.remove();
+  const style = getComputedStyle(tip);
+  const blurred = [...document.querySelectorAll('*')].filter(el => getComputedStyle(el).backdropFilter !== 'none').length;
+  return { filter: style.backdropFilter, background: style.backgroundColor, solid, blurred };
+});
+
+test('sustained costly paints turn the glass solid, and cheap ones bring it back', async ({ page }) => {
+  test.setTimeout(60_000);
+  await open(page);
+  await setIdleAfter(page, 1e9);
+  const before = await glass(page);
+  expect(before.filter, 'the glass blurs on a cheap renderer').toContain('blur');
+  expect(before.background).not.toBe(before.solid);
+  expect(await costlyPaint(page)).toBe(false);
+  await setSky(page, { costlyPaintMs: 1500, cheapPaintMs: 1500 });
+  await forceFrameMs(page, 40);
+  await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(true);
+  const costly = await glass(page);
+  expect(costly.filter, 'no blur while paint is costly').toBe('none');
+  expect(costly.background, 'the solid reduced-transparency fill').toBe(costly.solid);
+  expect(costly.blurred, 'elements still blurring their backdrop').toBe(0);
+  // The pace and rates of a cheap renderer are untouched by this: the rate governor is checked above.
+  await forceFrameMs(page, 1);
+  await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(false);
+  const back = await glass(page);
+  expect(back.filter).toContain('blur');
+  expect(back.background).toBe(before.background);
+});
+
+test('cheap paints never set costly paint, and the probe goes quiet once settled, sampling a burst now and then', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    (window as any).__costlyPaintSeen = false;
+    new MutationObserver(() => { if (document.documentElement.hasAttribute('data-costly-paint')) (window as any).__costlyPaintSeen = true; })
+      .observe(document.documentElement, { attributes: true, attributeFilter: ['data-costly-paint'] });
+  });
+  await open(page);
+  await setIdleAfter(page, 1e9);
+  const samples = () => page.evaluate(() => (window as any).__sky.samples as number);
+  const settled = () => page.evaluate(() => (window as any).__sky.resampleIn as number > 0);
+  // The renderer's own costs settle as well (logged only: a loaded box can make a real frame look costly).
+  await page.waitForTimeout(1500);
+  console.log(`measured frame costs: ${(await page.evaluate(() => (window as any).__sky.frameCosts as number[])).map(ms => ms.toFixed(1)).join(', ')}; settled: ${await settled()}`);
+  await setSky(page, { resampleMs: 3000 });
+  await forceFrameMs(page, 2);
+  await expect.poll(settled, { timeout: 10_000 }).toBe(true);
+  const from = await samples(), paintsFrom = await frames(page);
+  await page.waitForTimeout(1500);
+  expect(await frames(page), 'the sky keeps painting').toBeGreaterThan(paintsFrom);
+  expect(await samples(), 'no samples while settled').toBe(from);
+  // The next burst: 8 fresh frames, then quiet again.
+  await expect.poll(samples, { timeout: 10_000 }).toBe(from + 8);
+  await expect.poll(settled).toBe(true);
+  expect(await samples()).toBe(from + 8);
+  expect(await page.evaluate(() => (window as any).__costlyPaintSeen as boolean), 'costly paint on a cheap renderer').toBe(false);
+  expect(await costlyPaint(page)).toBe(false);
+});

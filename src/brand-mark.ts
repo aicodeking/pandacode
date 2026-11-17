@@ -192,9 +192,18 @@ export function mountDesktopBrand(host: HTMLElement): void {
     delete host.dataset.brandLaunch;
   };
   const canRun = () => ready && shown && focused && !dormant && host.isConnected && !document.hidden && !staticMotion();
+  /** Stopping mid-motion snaps the header to its rest pose: eyes open, feet down, never frozen half-way through a blink. */
+  const settle = () => {
+    if (!ready || !shown || staticMotion() || (trickAt === 0 && time >= REST_FROM && !moving(time))) return;
+    trickAt = 0;
+    if (time < REST_FROM) time = REST_FROM;
+    // A rest blink's window is a fraction of a second: step past it to the still moment after.
+    for (let i = 0; i < 100 && moving(time); i++) time += .05;
+    drawHeader(mark, layout, time);
+  };
   const wake = () => {
     stop();
-    if (!launch && !canRun()) return;
+    if (!launch && !canRun()) { settle(); return; }
     last = performance.now();
     frame = requestAnimationFrame(tick);
   };
@@ -239,7 +248,8 @@ export function mountDesktopBrand(host: HTMLElement): void {
       drawHeader(mark, layout, time, trickAt);
       if (!moving(time) && trickAt === 0) {
         // At rest with no input for a while: sleep until the next pointer or key instead of blinking on.
-        if (!focused) return;
+        // Focus can leave the app from inside its own child webview or a frame, which fires no blur here: read it again.
+        if (!focused || !document.hasFocus()) { focused = false; return; }
         if (now - lastInput >= idleAfterMs) { dormant = true; return; }
         const next = nextWake(time);
         timer = window.setTimeout(() => { time = next; wake(); }, (next - time) * 1000);
@@ -254,6 +264,8 @@ export function mountDesktopBrand(host: HTMLElement): void {
     gate.disconnect();
     syncLayout();
     if (staticMotion() || document.hidden) { host.dataset.brandReady = ''; return; }
+    // Nothing plays unseen: a window that lost focus before the show starts at its rest pose.
+    if (!focused) { host.dataset.brandReady = ''; settle(); return; }
     const el = document.createElement('div');
     el.className = 'desktop-brand-launch';
     el.setAttribute('aria-hidden', 'true');
@@ -288,15 +300,18 @@ export function mountDesktopBrand(host: HTMLElement): void {
   const preference = () => { endLaunch(); stop(); time = staticMotion() ? 0 : REST_FROM; trickAt = 0; syncLayout(); wake(); };
   motion.addEventListener('change', preference);
   forced.addEventListener('change', preference);
-  // A rest blink in flight finishes and stops at rest; the startup show or a trick skips to the rest pose instead of
-  // playing on (or freezing mid-air) behind another window. A pending rest timer is simply dropped.
-  window.addEventListener('blur', () => {
+  // A rest blink in flight finishes and stops at rest; the startup show (its launch flight too) or a trick skips to the
+  // rest pose instead of playing on (or freezing mid-air) behind another window. A pending rest timer is simply dropped.
+  const blurred = () => {
     focused = false;
-    if (launch) return;
+    if (launch) { endLaunch(); syncLayout(); }
     if (frame && (trickAt > 0 || time < REST_FROM)) { trickAt = 0; time = REST_FROM; drawHeader(mark, layout, time); }
     else if (frame) return;
     stop();
-  });
+  };
+  // A blur also fires when focus moves into the app's own in-app browser (a native child webview) or a frame; the
+  // document still has focus then (as in file-explorer.ts), so read it once the move has landed and keep blinking.
+  window.addEventListener('blur', () => { window.setTimeout(() => { if (!document.hasFocus()) blurred(); }, 0); });
   window.addEventListener('focus', () => { focused = true; lastInput = performance.now(); dormant = false; if (!frame && !timer) wake(); });
   const active = () => {
     lastInput = performance.now();
