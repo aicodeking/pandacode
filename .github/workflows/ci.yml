@@ -657,6 +657,12 @@ jobs:
       - name: Arcade example, panel-only package (WebKit preview)
         env: { PW_PORT: '16642', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-arcade.spec.ts --workers=1
+      - name: Project memory example, model tool, recall and capture (Chromium preview)
+        env: { PW_PORT: '16661', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-example-memory.spec.ts --workers=1
+      - name: Project memory example, model tool, recall and capture (WebKit preview)
+        env: { PW_PORT: '16662', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-memory.spec.ts --workers=1
 
       # Absolute ceilings and leak/order gates always apply; the relative M0 comparison is reported as
       # incomparable on a shared runner (different machine from the frozen population), never as a pass.

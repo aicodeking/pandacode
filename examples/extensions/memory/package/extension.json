@@ -1,0 +1,50 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.memory",
+  "version": "1.0.0",
+  "name": "Project memory",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "tools.model", "harness.hooks.context", "harness.hooks.observe", "models.call", "tasks.transcript.read", "tasks.tools.read", "ui.richViews", "storage.private", "harnesses.inventory"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.memory/open", "title": "Open project memory", "action": { "kind": "openView", "view": "sample.memory/memories" } },
+      { "id": "sample.memory/control", "title": "Project memory control", "action": { "kind": "runCommand" } }
+    ],
+    "modelTools": [
+      {
+        "id": "sample.memory/memory", "name": "memory",
+        "description": "Add, search, list and forget memories of this project. Modes: add {content}, search {query, limit?, scope?}, list {limit?}, forget {id}. Text inside <private> tags is never stored.",
+        "inputSchema": {
+          "type": "object", "required": ["mode"], "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["add", "search", "list", "forget"] },
+            "content": { "type": "string", "maxLength": 4000 },
+            "query": { "type": "string", "maxLength": 1000 },
+            "id": { "type": "string", "maxLength": 64 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 20 },
+            "scope": { "enum": ["project", "all-projects"] }
+          }
+        },
+        "approval": "never"
+      }
+    ],
+    "hooks": [
+      { "id": "sample.memory/recall", "event": "prompt.submit", "budgetMs": 2000 },
+      { "id": "sample.memory/finish", "event": "turn.finish" },
+      { "id": "sample.memory/idle", "event": "task.idle" }
+    ],
+    "views": [
+      { "id": "sample.memory/memories", "title": "Memory", "text": "Starting the memory service.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } }
+    ],
+    "settings": [
+      { "id": "sample.memory/settings", "title": "Project memory", "fields": [
+        { "id": "inject", "kind": "text", "label": "Recall at send: first (first message of a task, and after a compaction) or always", "value": "first" },
+        { "id": "count", "kind": "text", "label": "Memories recalled per message (1 to 10)", "value": "3" },
+        { "id": "debounce", "kind": "text", "label": "Capture after the turn, wait in milliseconds", "value": "10000" },
+        { "id": "capture", "kind": "text", "label": "Capture turns: on or off", "value": "on" }
+      ] }
+    ]
+  }
+}

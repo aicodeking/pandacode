@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "synthetic": true,
+  "note": "Scripted transcript and tool rows the spec's stand-in host serves to `panda.context.query`, and the scripted answers of `panda.models.call` (the `#reply` form of the B5 fake agent). Nothing here came from a real harness.",
+  "projects": { "p1": "project one", "p2": "project two" },
+  "seed": [
+    { "project": "p1", "text": "The team uses pnpm and Node 22 for every script." },
+    { "project": "p1", "text": "Database migrations live in db/migrations and run before the tests." },
+    { "project": "p1", "text": "Deploys go through the staging branch first." },
+    { "project": "p1", "text": "Frontend tests need the dev server on port 3000." },
+    { "project": "p2", "text": "Another project keeps its secrets in vault paths only." }
+  ],
+  "tasks": {
+    "t1": {
+      "projectId": "p1",
+      "transcript": [
+        { "id": "r1", "turn": 1, "role": "user", "text": "Why do the migrations fail on CI?" },
+        { "id": "r2", "turn": 1, "role": "assistant", "text": "The runner skipped the db/migrations step; I added it before the test job." }
+      ],
+      "tools": [
+        { "callId": "c1", "turn": 1, "tool": { "kind": "edit", "name": "write_file" }, "input": "ci.yml", "status": "completed" }
+      ],
+      "summary": "CI failed because the migrations step was missing before the test job; it was added to the workflow."
+    },
+    "t-private": {
+      "projectId": "p1",
+      "transcript": [
+        { "id": "r1", "turn": 1, "role": "user", "text": "<private>my token is abc-123 and the plan is confidential</private>" },
+        { "id": "r2", "turn": 1, "role": "assistant", "text": "<private>noted</private>" }
+      ],
+      "tools": [],
+      "summary": "should never be asked"
+    },
+    "t-dup": {
+      "projectId": "p1",
+      "transcript": [
+        { "id": "r1", "turn": 1, "role": "user", "text": "Which package manager do we use?" },
+        { "id": "r2", "turn": 1, "role": "assistant", "text": "The team uses pnpm and Node 22 for every script." }
+      ],
+      "tools": [],
+      "summary": "The team uses pnpm and Node 22 for every script."
+    }
+  }
+}

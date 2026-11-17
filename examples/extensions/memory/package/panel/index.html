@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Project memory</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-rows: auto auto 1fr; height: 100vh; }
+    header { padding: 8px 10px; display: grid; gap: 6px; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    #search { width: 100%; box-sizing: border-box; padding: 4px 6px; }
+    #summary { font-weight: 600; }
+    #states { padding: 6px 10px; display: grid; gap: 2px; font-size: 12px; }
+    #states .warn { color: darkorange; }
+    ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+    li { padding: 6px 10px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent); }
+    li .text { overflow-wrap: anywhere; }
+    li .tags { opacity: .7; font-size: 12px; }
+    #empty { padding: 10px; opacity: .7; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="summary">Waiting for the memory service</span>
+    <input id="search" type="search" placeholder="Search memories" aria-label="Search memories">
+  </header>
+  <div id="states" role="status"></div>
+  <ul id="list" aria-label="Memories"></ul>
+  <div id="empty" hidden>No memories yet.</div>
+  <script src="./app.js"></script>
+</body>
+</html>
