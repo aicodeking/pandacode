@@ -247,7 +247,7 @@
       "src/about-settings.ts": {"disposition": "adapter", "by": ["settingsCoverage"]},
       "src/agent-updates.ts": {"disposition": "adapter", "by": ["dialogCoverage"]},
       "src/agent-usage.ts": {"disposition": "adapter", "by": ["statusCoverage"]},
-      "src/agents-dock-window.ts": {"disposition": "adapter", "by": ["windowCoverage"], "actions": {"dismiss-error": {"disposition": "open", "missing": "S0607 (S0605 owns the file): grouped error dismissal in the agents dock window."}}},
+      "src/agents-dock-window.ts": {"disposition": "adapter", "by": ["windowCoverage"], "actions": {"dismiss-error": {"disposition": "protected", "by": ["windowCoverage"], "reason": "Dismissing a built-in failure stays host-owned like the thread's grouped errors; the window captures the shown failure by the thread's errorKey and a revision, so a dismissal only clears the one it was shown for (src/extensions/upstream-workers.ts, docs/extensions/upstream-workers.md).", "evidence": ["tests/upstream-workers-extensions.spec.ts", "docs/extensions/upstream-workers.md"]}}},
       "src/agents-dock.ts": {"disposition": "adapter", "by": ["rosterCoverage"]},
       "src/approval-bar.ts": {"disposition": "protected", "by": ["panda.actionDock.protected"], "reason": "Approve/deny stays host authorization (panda.actionDock.protected approvals)."},
       "src/attachments.ts": {"disposition": "adapter", "by": ["panda.composer.attachments"]},
@@ -369,8 +369,7 @@
       "src/main.ts#dismiss-failover-error": "S0607: dismiss the provider failover notice shown with grouped errors.",
       "src/main.ts#toggle-error": "S0607: expand or collapse a grouped thread error row.",
       "src/bots.ts#dismiss-error": "S0607: grouped bot error dismissal, same contract as the thread.",
-      "src/bots.ts#models-retry": "S0607 (records it, no new file): retry control on bot settings; visibility and order with the bots family, the retry itself stays host-run.",
-      "src/agents-dock-window.ts#dismiss-error": "S0607 (S0605 owns the file): grouped error dismissal in the agents dock window."
+      "src/bots.ts#models-retry": "S0607 (records it, no new file): retry control on bot settings; visibility and order with the bots family, the retry itself stays host-run."
     }
   },
   "controlsAudit": {

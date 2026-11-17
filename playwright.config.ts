@@ -125,6 +125,7 @@ config.testMatch.push('**/extensions-runtime-usage-resources.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-launch.spec.ts');
 config.testMatch.push('**/extensions-runtime-service-status.spec.ts');
 config.testMatch.push('**/upstream-semantic-remote-images.spec.ts');
+config.testMatch.push('**/upstream-workers-extensions.spec.ts');
 config.testMatch.push('**/upstream-menu-usage-extensions.spec.ts');
 export default defineConfig(config, {
   // Project read coverage is explicit, like every experimental extension surface.

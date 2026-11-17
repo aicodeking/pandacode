@@ -56,6 +56,7 @@ import worktreeManifest from '../../tests/fixtures/extensions/worktree/extension
 import settingsCoreManifest from '../../tests/fixtures/extensions/settings-core/extension.json';
 import sidebarManifest from '../../tests/fixtures/extensions/sidebar/extension.json';
 import dockManifest from '../../tests/fixtures/extensions/action-dock/extension.json';
+import upstreamWorkersManifest from '../../tests/fixtures/extensions/upstream-workers/manifest.json';
 import composerControlsManifest from '../../tests/fixtures/extensions/composer-controls/extension.json';
 import composerPanelsManifest from '../../tests/fixtures/extensions/composer-panels/extension.json';
 import composerAttachManifest from '../../tests/fixtures/extensions/composer-attach/extension.json';
@@ -422,6 +423,11 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
     if (new URLSearchParams(location.search).has('composer-controls')) {
       if (snapshot.packages.some(item => item.manifest.id === composerControlsManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: composerControlsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('upstream-workers')) {
+      if (snapshot.packages.some(item => item.manifest.id === upstreamWorkersManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: upstreamWorkersManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('dock-coverage')) {

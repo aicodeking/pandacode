@@ -8,6 +8,7 @@ import './theme';
 import { palette } from './palette';
 import { renderAgentRows, startElapsedTick, subscribeDockEvent, type AgentsDockSnapshot } from './agents-dock';
 import { mountAuxiliaryExtensions } from './extensions/windows';
+import { createDockErrorState } from './extensions/upstream-workers';
 
 palette.refresh();
 document.body.classList.add('agents-dock-window');
@@ -80,11 +81,15 @@ const onPointerDown = (event: PointerEvent) => {
   void getWindow().then(window => window.startDragging()).catch(() => undefined);
 };
 let said = '';
+// The failure on show, captured by the thread's grouping key and a revision: a dismissal only clears the one it was shown for.
+const errors = createDockErrorState();
 /** Shows a failed action in the panel; a later success clears it. The live region (the text only, not the Dismiss button) is always in the DOM (empty it takes
  * no room) and is rewritten only when the text changes, so assistive tech announces each failure once. */
 function say(text = ''): void {
   if (text === said) return;
   said = text;
+  const shown = errors.show(text);
+  if (shown) { alertRow.dataset.errorKey = shown.key; alertRow.dataset.errorRevision = String(shown.revision); } else { delete alertRow.dataset.errorKey; delete alertRow.dataset.errorRevision; }
   alertText.textContent = text;
   alertRow.classList.toggle('is-open', text !== '');
   for (const node of alertRow.querySelectorAll<HTMLElement>('.agents-dock-window-error-icon, button')) node.hidden = text === '';
@@ -99,7 +104,9 @@ const onClick = async (event: MouseEvent) => {
     return;
   }
   if (target.closest('[data-action="dismiss-error"]')) {
-    say();
+    // A pointer dismisses the failure on show, as before; a request naming a failure that is gone or replaced does nothing.
+    const shown = errors.current();
+    errors.dismiss(shown && { ...shown, requestId: crypto.randomUUID() }, () => say());
     (list.querySelector<HTMLElement>('[data-agent-id]') ?? panel.querySelector<HTMLElement>('[data-action="collapse"]'))?.focus();
     return;
   }
