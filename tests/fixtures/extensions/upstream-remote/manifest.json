@@ -1,0 +1,9 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-remote",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["tasks.start", "tasks.message", "tasks.control", "connections.summary"],
+  "contributes": {}
+}
