@@ -698,6 +698,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     const task = state.sessions.find(task => task.id === id);
     return task ? { revision: state.generation, projectId: task.projectId, sessionId: id } : undefined;
   }, notify);
+  // Tool rows and result cards: one marker each, only while a package asks for them (docs/extensions/upstream-tool-rows.md).
+  (await import('./extensions/upstream-tool-rows')).mountToolRowActions({ root: $('.workspace'), session: () => state.sessionId || undefined });
   const inspectorListeners = new Set<() => void>();
   refreshExtensionInspectorActions = () => inspectorListeners.forEach(listener => listener());
   for (const view of ['files', 'changes', 'search'] as const) {

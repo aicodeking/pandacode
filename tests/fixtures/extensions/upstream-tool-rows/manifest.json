@@ -1,0 +1,74 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-tool-rows",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "id": "sample.upstream-tool-rows/row-notes",
+        "title": "Row notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Row notes",
+            "successMessage": "Row notes kept.",
+            "cancelMessage": "The tool call stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Row tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      },
+      {
+        "id": "sample.upstream-tool-rows/row-flag",
+        "title": "Row flag",
+        "action": { "kind": "showMessage", "message": "Row flagged. The tool call stays with PandaCode." }
+      },
+      {
+        "id": "sample.upstream-tool-rows/card-notes",
+        "title": "Card notes",
+        "action": {
+          "kind": "showDialog",
+          "dialog": {
+            "title": "Card notes",
+            "successMessage": "Card notes kept.",
+            "cancelMessage": "The tool result stays with PandaCode.",
+            "fields": [{ "id": "tags", "kind": "select", "label": "Card tags", "async": true, "options": [{ "value": "alpha", "label": "Alpha" }] }]
+          }
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.upstream-tool-rows/row-notes",
+        "command": "sample.upstream-tool-rows/row-notes",
+        "location": "panda.thread.trace.actions",
+        "presentation": "button",
+        "text": "Row notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "tool-row" }
+      },
+      {
+        "id": "sample.upstream-tool-rows/row-flag",
+        "command": "sample.upstream-tool-rows/row-flag",
+        "location": "panda.thread.trace.actions",
+        "presentation": "button",
+        "text": "Row flag",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "tool-row" }
+      },
+      {
+        "id": "sample.upstream-tool-rows/card-notes",
+        "command": "sample.upstream-tool-rows/card-notes",
+        "location": "panda.thread.trace.actions",
+        "presentation": "button",
+        "text": "Card notes",
+        "visible": { "op": "eq", "key": "selection.kind", "value": "tool-card" }
+      }
+    ]
+  }
+}

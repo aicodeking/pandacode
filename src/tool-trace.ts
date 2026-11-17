@@ -24,6 +24,32 @@ export {
   toolPreview, type ListItem,
 } from './tool-trace-cards.ts';
 
+/** The extension seam of a tool row and its result card (docs/extensions/upstream-tool-rows.md). The renderer draws
+ *  both exactly as before; the adapter (extensions/upstream-tool-rows.ts) reads these facts from the row's own
+ *  `data-tool-*` attributes and places one host marker per row and per card. A target names the call (its key, tool
+ *  name, kind and, for an MCP call, the server) and an `identity` that changes when the row's outcome changes, so an
+ *  action captured against an earlier outcome is never replayed on a later one. Never the input, output or a path. */
+export type ToolRowPart = 'row' | 'card';
+export type ToolRowFacts = {
+  key: string; name: string; kind: string; status: string; family?: string;
+  failed?: boolean; blocked?: boolean; interrupted?: boolean; quiet?: boolean;
+};
+export type ToolRowTarget = { selectionKind: 'tool-row' | 'tool-card'; ids: string[]; identity: string };
+const TARGET_ID_LIMIT = 256;
+/** The server of an MCP call (`mcp__server__tool` or `Server \u00b7 tool`); '' for any other tool. */
+export function toolRowServer(name: string): string {
+  const prefixed = /^mcp__(.+?)__/.exec(name);
+  if (prefixed) return prefixed[1];
+  const at = name.indexOf(' \u00b7 ');
+  return at > 0 ? name.slice(0, at) : '';
+}
+export function toolRowTarget(part: ToolRowPart, facts: ToolRowFacts): ToolRowTarget {
+  const server = toolRowServer(facts.name);
+  const ids = [facts.key, facts.name, facts.kind, server].filter(id => id !== '').map(id => id.slice(0, TARGET_ID_LIMIT));
+  const flags = [facts.failed && 'failed', facts.blocked && 'blocked', facts.interrupted && 'interrupted', facts.quiet && 'quiet'].filter(Boolean).join('+');
+  return { selectionKind: part === 'row' ? 'tool-row' : 'tool-card', ids, identity: [part, facts.key, facts.name, facts.kind, facts.status, flags].join('|') };
+}
+
 /** Sentence-style tool traces: `Verb [chip] object` rows, result cards and group summaries. Pure and escaped. */
 export type TraceKind = 'shell' | 'read' | 'image' | 'edit' | 'write' | 'search' | 'web' | 'fetch' | 'todo' | 'agent' | 'skill' | 'mcp' | 'tool';
 /** `svg` is a brand mark (trusted markup from trace-brands), the only mark drawn inside the chip. */

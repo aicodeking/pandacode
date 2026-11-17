@@ -258,6 +258,11 @@ export type ThreadExtrasAdmission = { readonly ok: true } | { readonly ok: false
  * message's chips), `find` (ids = [task]; never the query), `turn-changes` (ids = [<turn change set>, …changed paths],
  * at most 99 paths) and `usage-limit` (ids = [<harness>]). */
 export type ThreadExtrasSelectionKind = 'message-attachment' | 'find' | 'turn-changes' | 'usage-limit';
+/** Experimental tool rows and result cards (docs/extensions/upstream-tool-rows.md). A menu at `panda.thread.trace.actions`
+ * whose `visible` condition names one of these kinds gets an action slot on every tool row (`tool-row`, on the summary
+ * line) or result card (`tool-card`, under the disclosed result). `selection.ids` = [<tool call key>, <tool name>, <tool
+ * kind>, <MCP server, when the call names one>]; never the input, output, a path or a thumbnail. */
+export type ToolRowSelectionKind = 'tool-row' | 'tool-card';
 /** Experimental thread tiles (owner: the selected `panda.transcript` provider) and draft project picker (owner: the
  * selected `panda.composer` provider). A tile bar's controls and the picker's entries reorder and hide on the original
  * nodes; actions run the original handlers. Input to a tile, tile layout, the draft and moving it stay host-owned. */

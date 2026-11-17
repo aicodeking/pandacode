@@ -178,6 +178,8 @@ config.testMatch = [...config.testMatch as string[], '**/upstream-menu-usage-ext
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream menu usage:`);
 config.testMatch = [...config.testMatch as string[], '**/upstream-explorer-extensions.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream explorer:`);
+config.testMatch = [...config.testMatch as string[], '**/upstream-recovery-extensions.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream recovery:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Tiles picker extension:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Thread extras extension:`);
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer attach extension:`);
@@ -185,6 +187,8 @@ config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source :
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|Composer controls extension:`);
 config.testMatch = [...config.testMatch as string[], '**/upstream-remote-extensions.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream remote`);
+config.testMatch = [...config.testMatch as string[], '**/upstream-tool-rows-extensions.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|upstream tool rows:`);
 export default defineConfig(config, {
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts', '**/agents-dock.spec.ts', '**/generative-ui.spec.ts'],
   grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions project reads|extensions inventory|extensions context|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|extensions dialogs|extensions view actions|extensions thread actions|extensions settings actions|extensions windows|menu bar popover|the widget stays|running agents widget|Escape closes the header popover|the working ring|the pinned window|toggling the widget setting|overlay copies live Markdown|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse|Antigravity installation|resource usage lives|the command palette|Model routing is its|settings open on Recommended|settings deep links`),
