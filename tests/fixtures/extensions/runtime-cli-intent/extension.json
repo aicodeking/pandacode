@@ -1,0 +1,26 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.tracker",
+  "name": "Tracker",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["tools.model"],
+  "contributes": {
+    "cliIntents": [
+      { "id": "sample.tracker/version", "command": "tracker", "words": ["version"], "intent": { "kind": "system", "verb": "Checked version of", "label": "tracker" } },
+      { "id": "sample.tracker/list", "command": "tracker", "words": ["list"], "intent": { "kind": "list", "verb": "Listed", "label": "issues" } },
+      { "id": "sample.tracker/ready", "command": "tracker", "words": ["ready"], "intent": { "kind": "list", "verb": "Listed", "label": "ready issues" } },
+      { "id": "sample.tracker/blocked", "command": "tracker", "words": ["blocked"], "intent": { "kind": "list", "verb": "Listed", "label": "blocked issues" } },
+      { "id": "sample.tracker/show", "command": "tracker", "words": ["show"], "intent": { "kind": "read", "verb": "Read", "label": "issue" } },
+      { "id": "sample.tracker/create", "command": "tracker", "words": ["create"], "intent": { "kind": "file", "verb": "Created", "label": "issue" } },
+      { "id": "sample.tracker/update", "command": "tracker", "words": ["update"], "intent": { "kind": "file", "verb": "Edited", "label": "issue" } },
+      { "id": "sample.tracker/claim", "command": "tracker", "words": ["claim"], "intent": { "kind": "process", "verb": "Started", "label": "issue" } },
+      { "id": "sample.tracker/close", "command": "tracker", "words": ["close"], "intent": { "kind": "process", "verb": "Closed", "label": "issue" } },
+      { "id": "sample.tracker/close-reason", "command": "tracker", "words": ["close"], "flags": ["--reason"], "intent": { "kind": "process", "verb": "Closed", "label": "issue", "object": "with a reason" } },
+      { "id": "sample.tracker/reopen", "command": "tracker", "words": ["reopen"], "intent": { "kind": "process", "verb": "Reopened", "label": "issue" } },
+      { "id": "sample.tracker/dep-add", "command": "tracker", "words": ["dep", "add"], "intent": { "kind": "file", "verb": "Linked", "label": "dependency" } },
+      { "id": "sample.tracker/comment", "command": "tracker", "words": ["comment"], "intent": { "kind": "file", "verb": "Commented on", "label": "issue" } }
+    ]
+  }
+}

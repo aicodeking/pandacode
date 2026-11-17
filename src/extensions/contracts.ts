@@ -6,6 +6,8 @@ import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
 import { checkModelToolDeclarations } from './runtime-model-tools.ts';
 import { policy as dialogPolicy } from './runtime-protected-presentation.ts';
+import { checkCliIntentDeclarations } from './runtime-cli-intent.ts';
+import { checkEditorDeclarations } from './runtime-document-editors.ts';
 import { checkAll as checkPresentations, checkConversationProvider } from './runtime-transcript-presentation.ts';
 import { checkAll as checkToolRows } from './runtime-tool-row-replacement.ts';
 
@@ -317,6 +319,12 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // Model tools (R0701): the rules the schema cannot say, shared with contracts.rs (runtime_model_tools::check).
     const modelTools = checkModelToolDeclarations(manifest);
     if (!modelTools.ok) error(modelTools.refusal.code, `${path}/${modelTools.refusal.at}`, modelTools.refusal.ids);
+    // Command-line tool intent rules (R0705), shared with contracts.rs (runtime_cli_intent::check).
+    const cliIntents = checkCliIntentDeclarations(manifest);
+    if (!cliIntents.ok) error(cliIntents.refusal.code, `${path}/${cliIntents.refusal.at}`, cliIntents.refusal.ids);
+    // Custom editors (R0901): the rules the schema cannot say, shared with contracts.rs (runtime_document_editors::check).
+    const editors = checkEditorDeclarations(manifest);
+    if (!editors.ok) error(editors.refusal.code, `${path}/${editors.refusal.at}`, editors.refusal.ids);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;

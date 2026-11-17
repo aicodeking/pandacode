@@ -337,6 +337,10 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         if let Err(refusal) = super::runtime_hook_registration::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
         // Model tools (R0701): the rules the schema cannot say, shared with contracts.ts (checkModelToolDeclarations).
         if let Err(refusal) = super::runtime_model_tools::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
+        // Command-line tool intent rules (R0705): shared with contracts.ts (checkCliIntentDeclarations).
+        if let Err(refusal) = super::runtime_cli_intent::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
+        // Custom editors (R0901): the rules the schema cannot say, shared with contracts.ts (checkEditorDeclarations).
+        if let Err(refusal) = super::runtime_document_editors::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
         let mut owned = BTreeSet::new();
         let mut tool_commands = BTreeSet::new();
         for service in items(contributions, "services") {

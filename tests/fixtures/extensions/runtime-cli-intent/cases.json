@@ -1,0 +1,36 @@
+{
+  "provenance": "synthetic",
+  "note": "Shared by runtime_cli_intent::tests (native) and tests/extensions-runtime-cli-intent.spec.ts (preview twin). The operations are those of the B2 fake command-line tool (PLAN-examples.md, S07C inventory) under the program name `tracker`. A refusal case starts from the first rule of extension.json: `set` changes fields, `drop` removes them, `duplicate` adds a second rule derived from the changed one, `permissions` replaces the manifest permissions.",
+  "refusals": [
+    { "name": "reserved-id", "set": { "id": "panda.tracker/list" }, "code": "ReservedId" },
+    { "name": "foreign-id", "set": { "id": "other.pkg/list" }, "code": "InvalidId" },
+    { "name": "duplicate-id", "duplicate": {}, "code": "DuplicateId" },
+    { "name": "duplicate-match", "duplicate": { "id": "sample.tracker/version-again" }, "code": "DuplicateId" },
+    { "name": "command-with-path", "set": { "command": "bin/tracker" }, "code": "InvalidShape" },
+    { "name": "missing-intent", "drop": ["intent"], "code": "InvalidShape" },
+    { "name": "unknown-kind", "set": { "intent": { "kind": "root", "verb": "Ran" } }, "code": "InvalidShape" },
+    { "name": "blank-verb", "set": { "intent": { "kind": "read", "verb": "  " } }, "code": "InvalidShape" },
+    { "name": "extra-intent-field", "set": { "intent": { "kind": "read", "verb": "Read", "destructive": false } }, "code": "InvalidShape" },
+    { "name": "bad-flag", "set": { "flags": ["reason"] }, "code": "InvalidShape" },
+    { "name": "five-words", "set": { "words": ["a", "b", "c", "d", "e"] }, "code": "InvalidShape" },
+    { "name": "no-permission", "permissions": ["ui.contribute"], "code": "PermissionDenied" }
+  ],
+  "classify": [
+    { "command": "tracker list", "status": "Matched", "rule": "sample.tracker/list" },
+    { "command": "tracker --json list --status=open", "status": "Matched", "rule": "sample.tracker/list" },
+    { "command": "TRACKER.EXE Ready", "status": "Matched", "rule": "sample.tracker/ready" },
+    { "command": "C:\\tools\\tracker.cmd show --id=7", "status": "Matched", "rule": "sample.tracker/show" },
+    { "command": "FAKE_CLI_DELAY_MS=5 tracker claim --id=7 --actor=bob", "status": "Matched", "rule": "sample.tracker/claim" },
+    { "command": "tracker close --id=7", "status": "Matched", "rule": "sample.tracker/close" },
+    { "command": "tracker close --id=7 --reason=done", "status": "Matched", "rule": "sample.tracker/close-reason" },
+    { "command": "tracker dep add 7 8", "status": "Matched", "rule": "sample.tracker/dep-add" },
+    { "command": "tracker comment 7 \"close it && list\"", "status": "Matched", "rule": "sample.tracker/comment" },
+    { "command": "cd repo && tracker reopen --id=7", "status": "Matched", "rule": "sample.tracker/reopen" },
+    { "command": "tracker dep", "status": "Unmatched", "rule": null },
+    { "command": "tracker", "status": "Unmatched", "rule": null },
+    { "command": "tracker purge --all", "status": "Unmatched", "rule": null },
+    { "command": "git status", "status": "NoRule", "rule": null },
+    { "command": "tracker comment 7 \"unterminated", "status": "Unparseable", "rule": null },
+    { "command": "", "status": "Unparseable", "rule": null }
+  ]
+}
