@@ -11,6 +11,9 @@ pub(crate) mod guard;
 pub(crate) mod schedule;
 pub(crate) mod shared_channels;
 mod secrets;
+
+/// A channel's token, for the host to attach to a request a package asked for (`credentials.use`, item `bot:<id>`). Never returned to a package.
+pub(crate) fn held_token(channel_id: &str) -> Option<String> { secrets::get(channel_id, "token") }
 #[cfg(test)]
 mod tests;
 pub(crate) mod tools;

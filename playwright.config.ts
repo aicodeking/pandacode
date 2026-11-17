@@ -116,6 +116,7 @@ config.testMatch.push('**/extensions-runtime-private-secrets.spec.ts');
 config.testMatch.push('**/upstream-remote-extensions.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-events.spec.ts');
 config.testMatch.push('**/extensions-runtime-connection-adapters.spec.ts');
+config.testMatch.push('**/extensions-runtime-held-credentials.spec.ts');
 config.testMatch.push('**/extensions-runtime-sign-in.spec.ts');
 config.testMatch.push('**/extensions-runtime-code-folders.spec.ts');
 config.testMatch.push('**/extensions-runtime-service-supervision.spec.ts');

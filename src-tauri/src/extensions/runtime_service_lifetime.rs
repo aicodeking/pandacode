@@ -38,6 +38,9 @@ pub mod runtime_content_resources;
 // Usage per turn, limits, accounts and metrics, served to the service natively (R0204).
 #[path = "runtime_usage_resources.rs"]
 pub mod runtime_usage_resources;
+// Held credentials used without being read, the activity list and account switching (R0805).
+#[path = "runtime_held_credentials.rs"]
+pub mod runtime_held_credentials;
 // Crash restart with backoff, parking, the start state and memory measurement (R0106).
 #[path = "runtime_service_supervision.rs"]
 pub mod runtime_service_supervision;
@@ -772,6 +775,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
                     let op = params.as_object_mut().and_then(|object| object.remove("op")).and_then(|op| op.as_str().map(str::to_owned)).unwrap_or_default();
                     super::runtime_connection_adapters::serve(&app, &request.owner, request.handle.as_deref(), &format!("connections.{op}"), &params)
                 }).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
+            // `panda.harnesses.switchAccount` (R0805): `credentials.use` for the account's item is checked natively per call.
+            if request.method == "accountSwitch" {
+                return tauri::async_runtime::spawn_blocking(move || runtime_held_credentials::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
             // `panda.settings.get` and the task content reads: answered from the grants file, no captured context needed.
             if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {

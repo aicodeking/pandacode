@@ -105,8 +105,21 @@ fn persist(runtime: &mut Runtime, next: Snapshot) -> Result<()> {
 /// An assignment left from another provider is ignored.
 pub fn for_task(session_id: &str, provider: &str) -> Option<Connection> {
     let runtime = CONFIG.get()?.lock().ok()?;
-    let id = runtime.data.tasks.get(session_id)?;
-    runtime.data.connections.iter().find(|c| &c.id == id && c.provider == provider).cloned()
+    // A task without an assignment of its own launches with the account a package switched the harness to (R0805,
+    // `panda.harnesses.switchAccount`); without one, with the harness's own setup as always.
+    let id = match runtime.data.tasks.get(session_id) {
+        Some(id) => id.clone(),
+        None => crate::extensions::runtime_service_lifetime::runtime_held_credentials::active_account(provider)?,
+    };
+    runtime.data.connections.iter().find(|c| c.id == id && c.provider == provider).cloned()
+}
+
+/// The secret a saved connection holds, for the host to attach to a request a package asked for (`credentials.use`,
+/// ADR-0006, item `connection:<id>`): the first of its secret variables. Never returned to a package.
+pub(crate) fn held_secret(id: &str) -> Option<String> {
+    let connection = get(id)?;
+    let name = connection.secret_env.first()?;
+    crate::secret_store::get(SERVICE, &secret_account(&connection.id, name))
 }
 
 /// A saved connection by id, for on-demand checks such as usage.

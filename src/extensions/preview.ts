@@ -20,6 +20,7 @@ import * as serviceSupervision from './runtime-service-supervision';
 import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { createSignInPreview } from './runtime-sign-in';
 import { createConnectionAdaptersPreview, type Transport } from './runtime-connection-adapters';
+import { createHeldCredentialsPreview } from './runtime-held-credentials';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -166,11 +167,37 @@ function signInService(args: Record<string, unknown>): unknown {
 function reconcileSignIns(): void {
   for (const flow of previewSignIn.projection().flows) if (signInGrant(flow.id) !== 'ok') previewSignIn.revoke(flow.id);
 }
+// Held credentials used without being read, the activity list and account switching (R0805): a labelled stand-in; the
+// credentials are seeded by a test, the grant is checked per item on every use and while a request runs.
+const previewHeld = createHeldCredentialsPreview();
+if (new URLSearchParams(location.search).has('held-credentials')) (window as unknown as { __extensionHeldCredentials?: unknown }).__extensionHeldCredentials = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function heldGrants(): ReturnType<typeof runtimeGrants.createRuntimeGrantsPreview> | null {
+  const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (snapshot.safeMode) return null;
+  grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  return grants;
+}
+function heldService(args: Record<string, unknown>): unknown {
+  const id = String(args.id ?? '');
+  switch (args.op) {
+    case 'seed': previewHeld.seed(String(args.item), args.value === null ? null : String(args.value)); return null;
+    case 'switch': {
+      const snapshot = read(), grants = heldGrants(), found = snapshot.packages.find(item => item.manifest.id === id), version = found?.manifest.version ?? '';
+      const entry = grants?.projection().packages.find(item => item.id === id && item.version === version && item.authorized);
+      const holds = !!entry && entry.grants.some(grant => grant.permission === 'credentials.use');
+      return previewHeld.switchAccount(holds, item => grants?.check(id, version, 'credentials.use', { item }) ?? 'PermissionDenied', id, version, args.caller === 'panel' ? 'panel' : 'service', args.params);
+    }
+    case 'accounts': { const harness = typeof args.harness === 'string' ? args.harness : undefined; return { items: previewHeld.accounts(harness), revision: previewHeld.revision(harness) }; }
+    case 'active': return previewHeld.active(String(args.harness));
+    default: throw new Error('InvalidArguments');
+  }
+}
 // Declared connection requests (R0804): the same rules over a transport the test supplies (a real loopback call from
 // the test process); the preview has no network of its own. Package secrets come from the private-secrets stand-in.
 const previewConnectionAdapters = createConnectionAdaptersPreview({
   transport: request => { const transport = (window as unknown as { __connectionTransport?: Transport }).__connectionTransport; if (!transport) throw new Error('HostUnavailable'); return transport(request); },
   secret: (id, name) => previewPrivateSecrets.attach(id, name),
+  held: previewHeld.adaptersHeld((id, version, item) => heldGrants()?.check(id, version, 'credentials.use', { item }) === 'ok'),
 });
 if (new URLSearchParams(location.search).has('connection-adapters')) (window as unknown as { __extensionConnectionAdapters?: unknown }).__extensionConnectionAdapters = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
 function connectionAdaptersCall(args: Record<string, unknown>): unknown {
@@ -194,8 +221,10 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_sign_in_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return signInService(args); }
   if (command === 'extensions_sign_in_cancel') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { cancelled: previewSignIn.cancel(String(args.id)) }; }
   if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
+  if (command === 'extensions_credential_activity') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return previewHeld.activity(String(args.id)); }
+  if (command === 'extensions_held_credentials_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return heldService(args); }
   if (command === 'extensions_connection_adapters_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return connectionAdaptersCall(args); }
-  if (command === 'extensions_uninstall') { previewPrivateSecrets.removePackage(String(args.id)); previewConnectionAdapters.forget(String(args.id)); }
+  if (command === 'extensions_uninstall') { previewPrivateSecrets.removePackage(String(args.id)); previewConnectionAdapters.forget(String(args.id)); previewHeld.removePackage(String(args.id)); }
   if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceSupervision.decorate(previewServiceLifetime.projection()); }
   if (command === 'extensions_service_supervision_preview') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return serviceSupervisionPreview(args); }
   // Enable is the retry of a parked, restarting or never-settled service (native `runtime::retry`).

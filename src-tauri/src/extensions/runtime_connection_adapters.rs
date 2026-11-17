@@ -15,13 +15,14 @@
 //!   following: the grant names the credential and the place it is sent together, so a redirect would send it elsewhere.
 //! - `start` takes `body` (only for an operation that declares `"body": "json"`, at most 256 KiB) and `query` (at most 16
 //!   pairs). A package secret named by the manifest is attached by the host; a held credential needs the `credentials.use`
-//!   grant for that item (R0805 resolves its value).
+//!   grant for that item (R0805): the host attaches it from its own store, writes the use (item, address, package) to the
+//!   package's activity list and never returns the value.
 //! - Bounded outcomes: `InvalidShape` (not JSON, a field the contract does not know), `LimitExceeded` (answer over
 //!   `maxResponseBytes`, a body or query over its limit, too many requests), `Timeout`, `Cancelled`, `PermissionDenied`,
 //!   `UnsupportedCapability` (an authentication, adapter or method this build does not run), `NotFound` (a credential
 //!   PandaCode does not hold) and `HostUnavailable` (the transport failed). No remote text, header or transport
 //!   diagnostic ever crosses; a credential found in a JSON answer is replaced by `[redacted]`.
-use super::{runtime_grants::{RuntimeGrants, Target}, runtime_private_secrets::PrivateSecrets};
+use super::{runtime_grants::{RuntimeGrants, Target}, runtime_service_lifetime::runtime_held_credentials::{self as held_credentials, HeldUse}, runtime_private_secrets::PrivateSecrets};
 use serde_json::{json, Map, Value};
 use std::{collections::BTreeMap, sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::Duration};
 
@@ -258,12 +259,12 @@ impl Registry {
 
 /// Native owner of the requests started through the duplex channel. Managed as Tauri state.
 #[derive(Default)]
-pub struct ConnectionAdapters(Arc<Mutex<Registry>>);
+pub struct ConnectionAdapters(Arc<Mutex<Registry>>, Option<Arc<HeldUse>>);
 
-/// The app's one registry of started requests.
+/// The app's one registry of started requests, with the host's own credential stores behind `source: "held"`.
 pub fn shared() -> &'static ConnectionAdapters {
     static SHARED: std::sync::OnceLock<ConnectionAdapters> = std::sync::OnceLock::new();
-    SHARED.get_or_init(ConnectionAdapters::default)
+    SHARED.get_or_init(|| ConnectionAdapters::with_held(held_credentials::shared()))
 }
 
 /// The duplex channel's entry (`runtime_service_lifetime::app_dispatch`): resolves the caller's installed package and,
@@ -295,6 +296,10 @@ fn fields<'a>(params: &'a Value, allowed: &[&str]) -> Result<&'a Map<String, Val
 fn text<'a>(map: &'a Map<String, Value>, name: &str) -> Result<&'a str> { map.get(name).and_then(Value::as_str).filter(|value| !value.is_empty() && value.len() <= 256).ok_or("InvalidShape") }
 
 impl ConnectionAdapters {
+    /// A registry that can attach held credentials (`credentials.use`): the stores and the activity list it is given.
+    /// Without one, a held source is a credential PandaCode does not hold (`NotFound`).
+    pub fn with_held(held: Arc<HeldUse>) -> Self { Self(Arc::default(), Some(held)) }
+
     /// The one entry of the dispatcher. `id` and `version` are the caller's identity, and `manifest` the manifest of
     /// that same installed package; none of them is read from `params`. `project` is the project captured by the
     /// command invocation the request was made from, when there is one.
@@ -318,15 +323,18 @@ impl ConnectionAdapters {
             _ => {
                 let map = fields(params, if operation == "connections.start" { &["connection", "operation", "credential", "body", "query"][..] } else { &["connection", "operation"][..] })?;
                 let planned = plan(manifest, None, text(map, "connection")?, text(map, "operation")?)?;
-                let held = match &planned.source { Source::Held(item) => { grants.check(id, version, "credentials.use", &Target::item(item)).map_err(code)?; true } _ => false };
-                // The credential comes from the host side only: a package secret it owns, or (R0805) a credential PandaCode holds.
-                let secret = match (&planned.auth, &planned.source) {
+                // A held credential needs the grant for that item, registered as work so a revoke or narrowing ends the request.
+                let held_item = match (&planned.source, &planned.auth) { (Source::Held(item), auth) if *auth != Auth::None => Some(item.clone()), _ => None };
+                let held_work = match &held_item { Some(item) => Some(grants.begin(id, version, held_credentials::PERMISSION, &Target::item(item)).map_err(code)?), None => None };
+                // The credential comes from the host side only: a package secret it owns, or a credential PandaCode holds.
+                let mut secret = match (&planned.auth, &planned.source) {
                     (Auth::None, _) => None,
                     (_, Source::Secret(key)) => Some(secrets.attach(id, key).ok_or("NotFound")?),
                     (_, Source::Host) | (_, Source::Held(_)) => None,
                 };
                 if operation == "connections.status" {
-                    let connected = matches!(planned.auth, Auth::None) || secret.is_some();
+                    let held_here = held_item.as_ref().is_some_and(|item| self.1.as_ref().is_some_and(|held| held.has(item)));
+                    let connected = matches!(planned.auth, Auth::None) || secret.is_some() || held_here;
                     return Ok(json!({"schemaVersion":1,"state":if connected {"connected"} else {"disconnected"},"credential":Value::Null}));
                 }
                 // Start options per credential source: a host handle only for `host`; never for the others.
@@ -336,7 +344,11 @@ impl ConnectionAdapters {
                     _ => return Err("InvalidShape"),
                 }
                 let prepared = prepare(&planned, map.get("body"), map.get("query"))?;
-                if held { return Err("NotFound"); }
+                // The use is written to the package's activity list (item, address, package; never the value) before the value leaves the store.
+                if let Some(item) = &held_item {
+                    let held = self.1.as_ref().ok_or("NotFound")?;
+                    secret = Some(held.use_credential(id, version, item, &held_credentials::address_of(&planned.url))?);
+                }
                 if matches!((&planned.auth, &planned.source), (Auth::Bearer | Auth::Header(_) | Auth::Query(_), Source::Host)) { return Err("NotFound"); }
                 let request_id = uuid::Uuid::new_v4().to_string();
                 let cancel = Arc::new(AtomicBool::new(false));
@@ -347,7 +359,7 @@ impl ConnectionAdapters {
                     registry.order.push(request_id.clone());
                 }
                 let registry = self.0.clone(); let finished = request_id.clone();
-                let stopped: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || work.is_cancelled());
+                let stopped: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || work.is_cancelled() || held_work.as_ref().is_some_and(|held| held.is_cancelled()));
                 tauri::async_runtime::spawn(async move {
                     let result = execute(&planned, prepared, secret, cancel, stopped).await;
                     if let Ok(mut registry) = registry.lock() { registry.settle(&finished, result); }
@@ -745,5 +757,39 @@ mod tests {
         let garbage = rig.finish(&rig.start("sample.connection-adapters/cloud", "usage", json!({})).unwrap()).await;
         assert_eq!(garbage["error"], "InvalidShape", "an answer that is not JSON: {garbage}");
         assert!(!usage.to_string().contains(&key) && !chat.to_string().contains(&key));
+    }
+
+    struct FakeHeld(BTreeMap<String, String>);
+    impl held_credentials::Held for FakeHeld { fn value(&self, item: &str) -> Option<String> { self.0.get(item).cloned() } }
+
+    #[tokio::test]
+    async fn a_held_credential_is_attached_by_the_host_recorded_without_its_value_and_denied_for_another_item_or_after_revoke() {
+        let api = Api::start().await;
+        let mut rig = rig(manifest(api.port));
+        let files = held_credentials::Files::open(&rig._dir.0);
+        let values = FakeHeld(BTreeMap::from([("provider:glm".to_owned(), canary())]));
+        rig.adapters = ConnectionAdapters::with_held(Arc::new(HeldUse::new(Box::new(values), files.clone())));
+        const HELD: &str = "sample.connection-adapters/held";
+        let status = rig.call(A, "connections.status", json!({"connection":HELD,"operation":"get"})).unwrap();
+        assert_eq!(status["state"], "connected");
+        assert!(files.activity(A).is_empty(), "a status is not a use");
+        let done = rig.finish(&rig.start(HELD, "get", json!({})).unwrap()).await;
+        assert_eq!(done["state"], "completed", "{done}");
+        assert_eq!(api.requests().last().unwrap().header("authorization"), Some(format!("Bearer {}", canary()).as_str()), "attached on the wire");
+        assert!(!done.to_string().contains(&canary()) && !status.to_string().contains(&canary()));
+        let entries = files.activity(A);
+        assert_eq!(entries.len(), 1);
+        assert_eq!((entries[0].item.as_str(), entries[0].package.as_str()), ("provider:glm", A));
+        assert_eq!(entries[0].address.as_deref(), Some(format!("http://127.0.0.1:{}/open", api.port).as_str()));
+        assert!(!serde_json::to_string(&entries).unwrap().contains(&canary()));
+        // Another item in the grant: denied, nothing sent, nothing written.
+        let sent = api.requests().len();
+        rig.grants.narrow(A, "credentials.use", Scope { items: Some(["provider:other".to_owned()].into()), ..Scope::default() }).unwrap();
+        assert_eq!(rig.start(HELD, "get", json!({})).unwrap_err(), "PermissionDenied");
+        assert_eq!((api.requests().len(), files.activity(A).len()), (sent, 1));
+        // Revoked: denied too, status included.
+        rig.grants.revoke(A, "credentials.use").unwrap();
+        assert_eq!(rig.start(HELD, "get", json!({})).unwrap_err(), "PermissionDenied");
+        assert_eq!(rig.call(A, "connections.status", json!({"connection":HELD,"operation":"get"})).unwrap_err(), "PermissionDenied");
     }
 }

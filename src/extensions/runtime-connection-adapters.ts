@@ -151,6 +151,12 @@ export type ConnectionsPreviewOptions = {
   transport: Transport;
   /** The package-secret stand-in's value for a key; `null` when the package holds none. */
   secret: (id: string, key: string) => string | null;
+  /**
+   * The host's held credentials (`credentials.use`, R0805): whether one is held, the value for one use (written to the
+   * package's activity list first; `null` when none is held), and whether the grant still covers the item (rechecked while
+   * a request runs). Nothing here is ever returned to a package.
+   */
+  held?: { has(item: string): boolean; use(id: string, version: string, item: string, address: string): string | null; granted(id: string, version: string, item: string): boolean };
 };
 export type GrantCheck = 'ok' | string;
 
@@ -221,13 +227,16 @@ export function createConnectionAdaptersPreview(options: ConnectionsPreviewOptio
       const plan = planOperation(manifest, text(map, 'connection'), text(map, 'operation'));
       const heldItem = plan.source.kind === 'held' ? plan.source.id : null;
       if (heldItem !== null) { const answer = held(heldItem); if (answer !== 'ok') refuse('PermissionDenied'); }
-      const secret = plan.auth.kind === 'none' ? null : plan.source.kind === 'secret' ? options.secret(id, plan.source.key) ?? refuse('NotFound') : null;
-      if (method === 'connections.status') return { schemaVersion: 1, state: plan.auth.kind === 'none' || secret !== null ? 'connected' : 'disconnected', credential: null };
+      let secret = plan.auth.kind === 'none' ? null : plan.source.kind === 'secret' ? options.secret(id, plan.source.key) ?? refuse('NotFound') : null;
+      const heldUse = plan.auth.kind !== 'none' ? heldItem : null;
+      if (method === 'connections.status') return { schemaVersion: 1, state: plan.auth.kind === 'none' || secret !== null || heldUse !== null && !!options.held?.has(heldUse) ? 'connected' : 'disconnected', credential: null };
       const handle = map.credential;
       const accepted = plan.auth.kind === 'none' ? handle === undefined : plan.source.kind === 'host' ? typeof handle === 'string' : handle === undefined;
       if (!accepted) refuse('InvalidShape');
       const prepared = prepareRequest(plan, map.body, map.query);
-      if (heldItem !== null || plan.auth.kind !== 'none' && plan.source.kind === 'host') refuse('NotFound');
+      // The use is written to the package's activity list (item, address, package; never the value) before the value is used.
+      if (heldUse !== null) secret = options.held?.use(id, version, heldUse, plan.url.origin + plan.url.pathname) ?? refuse('NotFound');
+      if (plan.auth.kind !== 'none' && plan.source.kind === 'host') refuse('NotFound');
       const running = [...pending.values()].filter(item => item.owner === id && item.result === null).length;
       if (running >= MAX_RUNNING) refuse('Conflict');
       if (pending.size >= MAX_STORED) {
@@ -237,7 +246,7 @@ export function createConnectionAdaptersPreview(options: ConnectionsPreviewOptio
       }
       const request = `request-${++serial}`, cancel = { stopped: false };
       pending.set(request, { owner: id, version, cancel, result: null }); order.push(request);
-      void run(plan, prepared, secret, cancel, () => check !== 'ok').then(result => settle(request, result));
+      void run(plan, prepared, secret, cancel, () => check !== 'ok' || heldUse !== null && options.held?.granted(id, version, heldUse) === false).then(result => settle(request, result));
       return dto(request);
     },
     /** Revoking the grant ends what runs: its output is dropped. */

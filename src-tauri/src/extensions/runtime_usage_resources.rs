@@ -185,9 +185,11 @@ impl Facts for Live<'_> {
     fn accounts(&self, harness: Option<&str>) -> Vec<Value> {
         let mut rows = Vec::new();
         for id in harness_ids(harness) {
-            rows.push(account_row(id, "default", true, None, crate::agent_usage::peek(id).as_ref()));
+            // The active account is the one a package switched to (R0805, `credentials.use`), else the harness's own setup.
+            let active = crate::extensions::runtime_service_lifetime::runtime_held_credentials::active_account(id);
+            rows.push(account_row(id, "default", active.is_none(), None, crate::agent_usage::peek(id).as_ref()));
             for connection in crate::connections::pool_members(id) {
-                rows.push(account_row(id, &connection.id, false, Some(&connection.name), crate::agent_usage::peek_connection(&connection.id, connection.revision).as_ref()));
+                rows.push(account_row(id, &connection.id, active.as_deref() == Some(connection.id.as_str()), Some(&connection.name), crate::agent_usage::peek_connection(&connection.id, connection.revision).as_ref()));
             }
         }
         rows
@@ -303,7 +305,7 @@ fn refresh_targets(params: &Value, cached: impl Fn(&str) -> bool) -> Result<Vec<
 }
 
 /// The installed version of `owner` while it is enabled and safe mode is off.
-fn enabled_version(packages: &crate::extensions::packages::Packages, owner: &str) -> Option<String> {
+pub(crate) fn enabled_version(packages: &crate::extensions::packages::Packages, owner: &str) -> Option<String> {
     let snapshot = packages.snapshot();
     if snapshot.safe_mode { return None; }
     snapshot.packages.iter().find(|package| package.enabled && package.manifest["id"] == owner).and_then(|package| package.manifest["version"].as_str().map(str::to_owned))

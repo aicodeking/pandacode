@@ -111,6 +111,12 @@ jobs:
       - name: Connection adapters (WebKit)
         env: { PW_PORT: '15912', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-connection-adapters.spec.ts --workers=1
+      - name: Held credentials (Chromium)
+        env: { PW_PORT: '15991', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-held-credentials.spec.ts --workers=1
+      - name: Held credentials (WebKit)
+        env: { PW_PORT: '15992', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-held-credentials.spec.ts --workers=1
       - name: Workspace events (Chromium)
         env: { PW_PORT: '15901', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-events.spec.ts --workers=1

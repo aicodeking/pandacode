@@ -32,6 +32,8 @@ export interface World {
   readonly connections: readonly Connection[];
   readonly app: { readonly coreRssBytes?: number; readonly activeAgents?: number; readonly activeTerminals?: number; readonly databaseBytes?: number };
   readonly services: readonly Service[];
+  /** The account of a harness a package switched to (`panda.harnesses.switchAccount`, R0805); absent: its own setup. */
+  readonly active?: Readonly<Record<string, string>>;
 }
 /** The grants file: `project` is `null` for a global permission. */
 export type Gate = (owner: string, version: string, permission: string, project: string | null) => boolean;
@@ -133,8 +135,9 @@ export function limitsOf(world: World, harness: string | null): Json[] {
 export function accountsOf(world: World, harness: string | null): Json[] {
   const rows: Json[] = [];
   for (const id of harnessIds(harness)) {
-    rows.push(accountRow(id, 'default', true, undefined, world.readings[id]));
-    for (const connection of world.connections.filter(item => item.harness === id)) rows.push(accountRow(id, connection.id, false, connection.name, world.connectionReadings[`${connection.id}#${connection.revision}`]));
+    const active = world.active?.[id];
+    rows.push(accountRow(id, 'default', active === undefined || active === 'default', undefined, world.readings[id]));
+    for (const connection of world.connections.filter(item => item.harness === id)) rows.push(accountRow(id, connection.id, active === connection.id, connection.name, world.connectionReadings[`${connection.id}#${connection.revision}`]));
   }
   return rows;
 }

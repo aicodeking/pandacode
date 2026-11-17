@@ -112,8 +112,8 @@ pub(super) fn call(app: &tauri::AppHandle, handle: &str, raw: Value, host_ui: bo
                         (Some(grant.credential.clone()), None, grant.revoked.clone())
                     }
                     (_, Source::Secret(key), None) => (None, Some(app.state::<super::runtime_private_secrets::PrivateSecrets>().attach(&scope.owner, key).ok_or("NotFound")?), Arc::new(AtomicBool::new(false))),
-                    // A credential PandaCode holds is attached by R0805; until its resolver exists none is held.
-                    (_, Source::Held(_), None) => return Err("NotFound"),
+                    // A credential PandaCode holds is attached by the host under `credentials.use` for that item, and the use is recorded.
+                    (_, Source::Held(item), None) => (None, Some(super::runtime_service_lifetime::runtime_held_credentials::use_from_app(app, &scope.owner, &scope.version, item, &planned.url)?), Arc::new(AtomicBool::new(false))),
                     _ => return Err("InvalidShape"),
                 };
                 let secret = match (secret, handle) { (Some(secret), _) => Some(secret), (None, Some(handle)) => Some(crate::secret_store::get(SERVICE, &handle).ok_or("PermissionDenied")?), (None, None) => None };

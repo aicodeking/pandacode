@@ -463,7 +463,14 @@ export type ContentResource = 'tasks' | 'transcript' | 'tools' | 'changes';
 /** The one-shot reads of usage and host figures: `tasks.usage.read` (per project, the last report of each turn), `harnesses.limits.read`, `harnesses.accounts.read` (never a credential value) and `metrics.read` (measured figures only; unmeasured ones are absent and named in `unmeasured`). */
 export type UsageResource = 'usage' | 'limits' | 'accounts' | 'metrics';
 /** `refreshLimits` needs `harnesses.limits.read` and is admitted once per harness per 60 s (`LimitExceeded` before that); it resolves to `null`. */
-export interface ServiceHarnesses { refreshLimits(options?: { harness?: string }): Promise<null> }
+/**
+ * `switchAccount` makes `account` (an `id` of the `accounts` resource: `default`, or a saved connection of the harness) the
+ * active account of `harness`. It needs `credentials.use` for that account's item (`provider:<harness>` for `default`,
+ * `connection:<id>`); another item, a revoked grant or a stale version answers `PermissionDenied`, an unknown harness or
+ * account `NotFound`. It resolves to `null`: the host does the switch, no credential is returned or replaced (ADR-0006), and
+ * the `accounts` resource shows the new `active` flags under a new revision. Each switch is written to the package's activity list.
+ */
+export interface ServiceHarnesses { refreshLimits(options?: { harness?: string }): Promise<null>; switchAccount(options: { harness: string; account: string }): Promise<null> }
 export interface ResourcePage { readonly schemaVersion: 1; readonly state: 'Ready'; readonly revision: string; readonly items: readonly Json[]; readonly nextCursor: number | null }
 export interface ServiceContext { query(options: { resource: ContextResource | ContentResource | UsageResource; taskId?: string; harness?: string; limit?: number; cursor?: number; revision?: string }): Promise<SummaryPage | ResourcePage> }
 /** Browser sign-in (`auth.signIn`, service only; see docs/extensions/runtime-sign-in.md): the host opens the system browser, listens on a loopback address for the redirect and returns the whole redirected address (it carries the authorization code, so keep it in the service). `{redirect_uri}` in `authorizeUrl` is replaced by the encoded listening address. At most one flow per package; a taken port or a second flow answers `Conflict`, a missing browser `HostUnavailable` unless `manual` is true. */

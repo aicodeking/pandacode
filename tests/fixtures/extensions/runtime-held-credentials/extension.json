@@ -1,0 +1,145 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.held-credentials",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "runtime.service",
+    "connections.request",
+    "credentials.use",
+    "harnesses.accounts.read"
+  ],
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "main.cjs",
+    "activationEvents": [
+      "sample.held-credentials/use",
+      "sample.held-credentials/switch"
+    ],
+    "service": {
+      "start": "onEnable"
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "sample.held-credentials/use",
+        "title": "Use held credentials",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.held-credentials/switch",
+        "title": "Switch account",
+        "action": {
+          "kind": "runCommand"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "sample.held-credentials/provider",
+        "command": "sample.held-credentials/use",
+        "title": "Provider usage (header)",
+        "authentication": "header",
+        "headerName": "x-api-key",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/usage"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "provider:glm"
+        }
+      },
+      {
+        "id": "sample.held-credentials/account",
+        "command": "sample.held-credentials/use",
+        "title": "Account usage (bearer)",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/mirror"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "connection:work"
+        }
+      },
+      {
+        "id": "sample.held-credentials/bot",
+        "command": "sample.held-credentials/use",
+        "title": "Bot report (query)",
+        "authentication": "query",
+        "queryName": "key",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/query"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "bot:alerts"
+        }
+      },
+      {
+        "id": "sample.held-credentials/other",
+        "command": "sample.held-credentials/use",
+        "title": "Another item (bearer)",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/usage"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "provider:deepseek"
+        }
+      },
+      {
+        "id": "sample.held-credentials/cloud",
+        "command": "sample.held-credentials/use",
+        "title": "Fake cloud usage (header)",
+        "authentication": "header",
+        "headerName": "x-api-key",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "usage",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/v1/usage"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "provider:glm"
+        }
+      }
+    ]
+  }
+}

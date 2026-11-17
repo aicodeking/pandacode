@@ -179,7 +179,11 @@ process.stdin.on('data', chunk => {
             // The package's own settings pages (R0203): the owner is the connection's, never the request's.
             settings: Object.freeze({ get: options => rpc('settingsGet', options === undefined || options === null ? {} : { ...options }) }),
             // Reads the usage windows again (R0204): needs harnesses.limits.read, once per harness per 60 s, resolves to null.
-            harnesses: Object.freeze({ refreshLimits: options => rpc('limitsRefresh', options === undefined || options === null ? {} : { ...options }) }),
+            harnesses: Object.freeze({
+              refreshLimits: options => rpc('limitsRefresh', options === undefined || options === null ? {} : { ...options }),
+              // Makes another account of a harness the active one (R0805, credentials.use for that account): a host operation, no credential crosses.
+              switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
+            }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
             // Declared connection requests (R0804): the host builds, authenticates and runs them; the grant is checked per call.
