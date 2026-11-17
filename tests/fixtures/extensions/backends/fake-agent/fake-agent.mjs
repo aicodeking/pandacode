@@ -41,6 +41,14 @@ export async function startAgent({ input, output, logFile, diagnostics = process
       }
       return tools;
     };
+    // One host request (permission or structured question) that waits for its response or the turn's cancellation.
+    const ask = params => new Promise((resolve, reject) => {
+      const id = ++requestSerial;
+      const abort = () => { pending.delete(id); reject(signal.reason); };
+      signal.addEventListener('abort', abort, { once: true });
+      pending.set(id, { resolve(value) { signal.removeEventListener('abort', abort); resolve(value); }, reject });
+      write({ id, method: 'session/request_permission', params: { sessionId: frame.params.sessionId, ...params } });
+    });
     try {
       await runScenario(text, {
         check: () => signal.throwIfAborted(),
@@ -51,18 +59,22 @@ export async function startAgent({ input, output, logFile, diagnostics = process
             update({ sessionUpdate: event.status === 'pending' ? 'tool_call' : 'tool_call_update', toolCallId: `tool-${toolSerial}`, title: event.tool.name, kind: event.tool.kind === 'shell' ? 'execute' : event.tool.kind, status: event.status === 'denied' ? 'failed' : event.status, rawInput: event.tool.input, ...(event.output === undefined ? {} : { content: [{ type: 'content', content: { type: 'text', text: event.output } }] }) });
           } else if (event.kind === 'usage') update({ sessionUpdate: 'usage_update', used: event.usedTokens, size: event.contextWindow, _meta: { fixtureUsage: event } });
         },
-        permission: tool => new Promise((resolve, reject) => {
-          const id = ++requestSerial;
-          const abort = () => { pending.delete(id); reject(signal.reason); };
-          signal.addEventListener('abort', abort, { once: true });
-          pending.set(id, { resolve(value) {
-            signal.removeEventListener('abort', abort);
-            const outcome = value.result?.outcome;
-            resolve({ approved: outcome?.outcome === 'selected' && outcome.optionId === 'allow', reason: outcome?.reason ?? value.result?._meta?.fixture?.reason, input: value.result?._meta?.fixture?.input });
-          }, reject });
-          write({ id, method: 'session/request_permission', params: { sessionId: frame.params.sessionId, toolCall: { toolCallId: `tool-${toolSerial}`, title: tool.name, kind: tool.kind === 'shell' ? 'execute' : tool.kind, rawInput: tool.input }, options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Reject once', kind: 'reject_once' }] } });
-        }),
-        question: async () => { throw new Error('UnsupportedCapability: ACP v1 has no question frame'); },
+        permission: async tool => {
+          const value = await ask({ toolCall: { toolCallId: `tool-${toolSerial}`, title: tool.name, kind: tool.kind === 'shell' ? 'execute' : tool.kind, rawInput: tool.input }, options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Reject once', kind: 'reject_once' }] });
+          const outcome = value.result?.outcome;
+          return { approved: outcome?.outcome === 'selected' && outcome.optionId === 'allow', reason: outcome?.reason ?? value.result?._meta?.fixture?.reason, input: value.result?._meta?.fixture?.input };
+        },
+        // ACP v1 has no question frame. Opt-in `transport: "acp-permission"` sends the question the way ACP harnesses
+        // do in practice: a permission request whose options are the answers (`q0_opt_<n>`, plus `q0_skip`).
+        question: async question => {
+          if (question?.transport !== 'acp-permission') throw new Error('UnsupportedCapability: ACP v1 has no question frame');
+          const labels = Array.isArray(question.options) ? question.options.map(String) : [];
+          const value = await ask({ toolCall: { toolCallId: `question-${question.id ?? 'q'}`, title: String(question.question ?? 'Question'), kind: 'other' }, options: [...labels.map((name, index) => ({ optionId: `q0_opt_${index}`, name, kind: 'allow_once' })), { optionId: 'q0_skip', name: 'Skip', kind: 'reject_once' }] });
+          const outcome = value.result?.outcome;
+          if (outcome?.outcome !== 'selected') return { cancelled: true };
+          const index = /^q0_opt_(\d+)$/.exec(outcome.optionId ?? '')?.[1];
+          return index === undefined || labels[Number(index)] === undefined ? { skipped: true } : labels[Number(index)];
+        },
         compact: async () => { throw new Error('UnsupportedCapability: ACP v1 has no compaction frame'); },
         listTools: catalog,
         async callTool(name, arguments_) {
@@ -110,6 +122,9 @@ export async function startAgent({ input, output, logFile, diagnostics = process
     log.push({ transport: 'stdio', frame });
     if (logFile) appendFileSync(logFile, `${JSON.stringify(frame)}\n`);
     if (pending.has(frame.id) && !frame.method) { pending.get(frame.id).resolve(frame); pending.delete(frame.id); return; }
+    // A response to a request that is no longer pending (answered, cancelled or never sent) is a late answer: it is
+    // recorded and ignored, never answered and never applied.
+    if (!frame.method && frame.id !== undefined && frame.id !== null && ('result' in frame || 'error' in frame)) { log.push({ transport: 'stdio', late: frame.id }); return; }
     const kind = fault && Date.now() < fault.until ? fault.kind : null;
     if (kind === 'stall') return;
     if (kind === 'refuse') { if (frame.id !== undefined) write({ id: frame.id, error: { code: -32000, message: 'Fixture refusal' } }); return; }

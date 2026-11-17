@@ -29,7 +29,14 @@ It lets tests prove the shared interpreter echoes `denied: <reason>` and
 
 ACP question and compact steps fail with `UnsupportedCapability`; ACP v1 has
 no corresponding frame in the characterized transport. The shared interpreter
-supports them through injected adapters. Usage emits `usage_update {used,size}`
+supports them through injected adapters. Opt-in exception (R0501): a question
+step with `"transport":"acp-permission"` and `options:[labels]` is sent the way
+ACP harnesses ask in practice, as `session/request_permission` with options
+`q0_opt_<n>` (allow_once, one per label) and `q0_skip` (reject_once); a selected
+answer echoes `answer: <label>`, skip `answer: {"skipped":true}` and a
+cancelled outcome `answer: {"cancelled":true}`. A response to a request that is
+no longer pending (a late answer) is logged as `{transport:"stdio",late:<id>}`
+in `/control/log` and otherwise ignored: never answered, never applied. Usage emits `usage_update {used,size}`
 with the original report in `_meta.fixtureUsage`; actual host normalization
 still needs its runtime slice. echoPrompt echoes the entire received text.
 

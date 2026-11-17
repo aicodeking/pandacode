@@ -241,6 +241,14 @@ fn permission_choice<'a>(options: &'a [Value], approved: bool) -> Option<&'a Val
     options.iter().find(|option| option["kind"] == wanted).or_else(|| options.iter().find(|option| option["kind"] == fallback))
 }
 
+/// Whether a `session/request_permission` is a structured question rather than a tool approval: more than one allow
+/// option, or answer ids of the `q<N>_opt_<M>` form (the rule of the built-in ACP harnesses in `providers.rs`).
+pub(crate) fn structured_question(request: &Value) -> bool {
+    let options = request["params"]["options"].as_array().map(Vec::as_slice).unwrap_or_default();
+    options.iter().filter(|option| option["kind"] == "allow_once").count() > 1
+        || options.iter().any(|option| option["optionId"].as_str().and_then(|id| id.strip_prefix('q')).and_then(|id| id.split_once("_opt_")).is_some_and(|(number, _)| number.parse::<usize>().is_ok()))
+}
+
 /// Starts the declared command and speaks ACP until the prompt completes, fails or is stopped.
 /// `event` and `input` are the core conversation's (see `dynamic_harness::Conversation`).
 #[allow(clippy::too_many_arguments)]
@@ -347,6 +355,11 @@ pub(crate) async fn drive(
                 "session/update" => for value in update_events(&frame["params"]["update"]) {
                     if let Err(error) = event(value) { if !cancel.load(Ordering::Acquire) { outcome = Err(format!("The harness sent an event core refused: {error}")); } break 'frames; }
                 },
+                // A structured question is not a tool approval: approving it would silently pick its first answer.
+                // Like the built-in ACP harnesses, decline it as cancelled (normalized questions are slice R0502).
+                "session/request_permission" if frame.get("id").is_some() && structured_question(&frame) => {
+                    let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":frame["id"],"result":{"outcome":{"outcome":"cancelled"}}}))).await;
+                }
                 "session/request_permission" if frame.get("id").is_some() => {
                     let title = frame["params"]["toolCall"]["title"].as_str().unwrap_or("The agent asks to run a tool.");
                     let text: String = title.chars().take(2_000).collect();
@@ -468,6 +481,16 @@ mod tests {
         assert_eq!(permission_choice(&options, true).unwrap()["optionId"], "a");
         assert_eq!(permission_choice(&options, false).unwrap()["optionId"], "r");
         assert!(permission_choice(&[], true).is_none());
+    }
+
+    #[test]
+    fn structured_questions_are_never_tool_approvals() {
+        let request = |options: Value| json!({"jsonrpc":"2.0","id":7,"method":"session/request_permission","params":{"options":options}});
+        assert!(structured_question(&request(json!([{"optionId":"q0_opt_0","kind":"allow_once","name":"Postgres"},{"optionId":"q0_skip","kind":"reject_once"}]))));
+        assert!(structured_question(&request(json!([{"optionId":"a","kind":"allow_once"},{"optionId":"b","kind":"allow_once"}]))));
+        assert!(!structured_question(&request(json!([{"optionId":"allow","kind":"allow_once"},{"optionId":"deny","kind":"reject_once"}]))));
+        assert!(!structured_question(&request(json!([{"optionId":"quick_opt","kind":"allow_once"}]))));
+        assert!(!structured_question(&json!({"method":"session/request_permission"})));
     }
 
     /// A really installed package (archive, trust, enable) with an empty model list launches the Node fake agent

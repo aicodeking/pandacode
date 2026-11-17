@@ -129,6 +129,7 @@ config.testMatch.push('**/extensions-runtime-dialog-navigation.spec.ts');
 config.testMatch.push('**/extensions-runtime-notifications.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-state.spec.ts');
 config.testMatch.push('**/extensions-runtime-preview.spec.ts');
+config.testMatch.push('**/extensions-runtime-hook-fixtures.spec.ts');
 config.testMatch.push('**/upstream-semantic-remote-images.spec.ts');
 config.testMatch.push('**/upstream-tool-images-extensions.spec.ts');
 config.testMatch.push('**/upstream-workers-extensions.spec.ts');

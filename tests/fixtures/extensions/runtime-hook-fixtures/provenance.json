@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "kinds": {
+    "harness-capture": "Frames a real, installed harness wrote. Only these can qualify a harness. A file captured in this folder lives under live/ and names its authorization; a transcription of an older recording names its origin.",
+    "sdk-derived": "Frames written by hand from a harness SDK's transport source or documentation. They shape the implementation and never qualify a harness.",
+    "synthetic": "Frames produced by the Node fake agent (B5) or written to match it. They prove PandaCode's side of the protocol and never qualify a harness."
+  },
+  "inputs": [
+    {
+      "id": "claude-settings-hook-frames",
+      "provenance": "harness-capture",
+      "harness": "claude-code",
+      "location": "src-tauri/src/providers/claude_stream_tests.rs",
+      "marker": "\"hook_started\"",
+      "covers": ["system.hook_started", "system.hook_response"],
+      "capture": {
+        "form": "transcribed",
+        "recordings": ["hook.log", "hook2.log"],
+        "origin": "Pre-existing repository recording of a settings-file UserPromptSubmit hook (claude_stream_tests.rs, a_slow_prompt_hook_counts_as_the_owed_turn_starting). Not made in this run."
+      }
+    },
+    {
+      "id": "claude-sdk-hook-callback",
+      "provenance": "sdk-derived",
+      "harness": "claude-code",
+      "location": "tests/fixtures/extensions/runtime-hook-fixtures/sdk-derived/claude-hook-callback.jsonl",
+      "covers": ["initialize.hooks", "hook_callback", "control_response.hookSpecificOutput"],
+      "source": "anthropics/claude-agent-sdk-python src/claude_agent_sdk/_internal/query.py"
+    },
+    {
+      "id": "fake-agent-acp-frames",
+      "provenance": "synthetic",
+      "harness": "fake-agent",
+      "location": "tests/fixtures/extensions/runtime-hook-fixtures/synthetic/fake-agent-acp.jsonl",
+      "covers": ["session/request_permission", "structured-question"],
+      "source": "tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs"
+    },
+    {
+      "id": "fake-agent-scenarios",
+      "provenance": "synthetic",
+      "harness": "fake-agent",
+      "location": "tests/fixtures/extensions/runtime-hook-fixtures/synthetic/scenarios.json",
+      "covers": ["approval", "denial", "structured-question", "cancelled-tool", "late-answer"],
+      "source": "tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs"
+    }
+  ],
+  "gates": [
+    {
+      "id": "claude-hook-callback-capture",
+      "harness": "claude-code",
+      "alsoBlocks": ["glm", "mimo"],
+      "requires": ["initialize.hooks", "hook_callback"],
+      "status": "pending",
+      "authorization": null,
+      "reason": "Recording Claude Code's initialize.hooks registration and one hook_callback needs a live run of the installed harness, which needs the user's separate, explicit authorization. It has not been given, so Claude-specific hook qualification stays pending. Implementation proceeds against SDK-derived and synthetic frames.",
+      "procedure": "docs/extensions/runtime-hook-fixtures.md#claude-hook-callback-capture-gate"
+    }
+  ]
+}

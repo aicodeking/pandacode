@@ -1,0 +1,41 @@
+{
+  "_fixture": {
+    "provenance": "synthetic",
+    "liveCapture": false,
+    "harness": "fake-agent",
+    "source": "tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs (B5) over core/scenario.mjs",
+    "note": "Scripted fake-agent scenarios run through PandaCode's declared ACP transport (runtime_provider_launch::drive) by src-tauri/src/extensions/runtime_hook_fixtures.rs on Windows, and over plain stdio by tests/extensions-runtime-hook-fixtures.spec.ts."
+  },
+  "scenarios": [
+    {
+      "id": "approval-allow",
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"echo fixture\"}},\"ask\":true,\"output\":\"fixture\"},{\"say\":\"after-allow\"}]",
+      "host": ["approve"],
+      "expect": { "texts": ["ran: {\"command\":\"echo fixture\"}", "after-allow"], "toolStatus": "completed", "stop": "end_turn" }
+    },
+    {
+      "id": "approval-deny",
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"git reset --hard\"}},\"ask\":true},{\"say\":\"after-deny\"}]",
+      "host": ["deny"],
+      "expect": { "texts": ["denied: permission rejected (ACP supplied no reason)", "after-deny"], "toolStatus": "failed", "stop": "end_turn" }
+    },
+    {
+      "id": "structured-question",
+      "prompt": "#script [{\"question\":{\"id\":\"db\",\"question\":\"Choose a database\",\"options\":[\"Postgres\",\"SQLite\"],\"transport\":\"acp-permission\"}},{\"say\":\"after-question\"}]",
+      "host": ["none"],
+      "expect": { "texts": ["answer: {\"cancelled\":true}", "after-question"], "neverTexts": ["answer: Postgres", "answer: SQLite"], "noApproval": true, "stop": "end_turn" }
+    },
+    {
+      "id": "cancel-pending-tool",
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"rm -rf fixture\"}},\"ask\":true},{\"say\":\"never-after-cancel\"}]",
+      "host": ["stop"],
+      "expect": { "neverTexts": ["never-after-cancel"], "noSelectedAnswer": true, "stop": "cancelled" }
+    },
+    {
+      "id": "late-answer",
+      "prompt": "#script [{\"tool\":{\"name\":\"Read\",\"kind\":\"read\",\"input\":{\"path\":\"fixture\"}},\"ask\":true},{\"sleep\":800},{\"say\":\"after-late\"}]",
+      "host": ["approve", "approve-again"],
+      "expect": { "texts": ["ran: {\"path\":\"fixture\"}", "after-late"], "responsesToPermission": 1, "stop": "end_turn" }
+    }
+  ]
+}
