@@ -1,6 +1,6 @@
 /** Source-profile OpenCode configuration and hook semantics. Native code owns resources and credentials. */
-import { CompanionError, negotiateCompanion } from './runtime-companion-lifetime';
-import type { CompanionProfile, InstalledCompanionApi } from './runtime-companion-lifetime';
+import { CompanionError, negotiateCompanion } from './runtime-companion-lifetime.ts';
+import type { CompanionProfile, InstalledCompanionApi } from './runtime-companion-lifetime.ts';
 export type Generation = 'v1' | 'v2';
 export const OPENCODE_V2_SOURCE = 'c5e741e787594e8c18fa70ab3a4705db1c927793';
 export function opencodeProfile(installed: InstalledCompanionApi): CompanionProfile | null {

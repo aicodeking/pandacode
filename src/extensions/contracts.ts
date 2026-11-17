@@ -6,6 +6,7 @@ import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
 import { checkModelToolDeclarations } from './runtime-model-tools.ts';
 import { checkToolServerDeclarations } from './runtime-tool-servers.ts';
+import { checkCompanionDeclarations } from './runtime-package-companions.ts';
 import { policy as dialogPolicy } from './runtime-protected-presentation.ts';
 import { checkCliIntentDeclarations } from './runtime-cli-intent.ts';
 import { checkEditorDeclarations } from './runtime-document-editors.ts';
@@ -35,7 +36,7 @@ function deepFreeze<T>(value: T): T {
   if (value && typeof value === 'object') { Object.values(value).forEach(deepFreeze); Object.freeze(value); }
   return value;
 }
-const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers', 'slashCommands'];
+const knownContributions = ['commands', 'icons', 'menus', 'views', 'layouts', 'settings', 'keybindings', 'dialogExtras', 'themes', 'components', 'tools', 'connections', 'services', 'providers', 'slashCommands', 'companions'];
 // The decided vocabulary: ten existing, nine extended and thirty-one new names. There is no `credentials.read` (ADR-0006).
 const capabilities = ['btw.content', 'btw.taskControl', 'services.call', 'connections.request', 'tools.execute', 'ui.contribute', 'ui.customize', 'ui.richViews', 'storage.private', 'projects.summary', 'tasks.summary', 'harnesses.inventory', 'connections.summary', 'jobs.summary', 'projects.files.metadata', 'projects.files.read', 'projects.git.read', 'tasks.transcript.read', 'tasks.tools.read', 'runtime.service', 'events.workspace', 'ui.dynamic', 'ui.notify', 'ui.presentation', 'tasks.start', 'tasks.message', 'tasks.draft', 'tasks.control', 'tasks.usage.read', 'harnesses.limits.read', 'harnesses.accounts.read', 'harness.hooks.observe', 'harness.hooks.decide', 'harness.hooks.context', 'harness.companions', 'harness.console', 'tools.model', 'models.call', 'secrets.private', 'credentials.use', 'auth.signIn', 'documents.editors', 'workspace.manage', 'workspace.settings', 'terminals.read', 'terminals.write', 'guests.control', 'projects.checks.run', 'metrics.read', 'internal.unstable'];
 /** Every manifest permission/capability this validator accepts; author documentation is checked against it. */
@@ -311,7 +312,8 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // A background service takes its commands from the service itself, so activationEvents may be left out (R0201);
     // when listed they still have to match the package's executable commands.
     const runtime = manifest.runtime as ObjectValue | undefined;
-    const serviceWithoutEvents = Boolean(runtime?.service) && runtime?.activationEvents === undefined;
+    const companionCodeOnly = ((contributions.companions ?? []) as Json[]).length > 0 && executable.length === 0 && runtime?.activationEvents === undefined;
+    const serviceWithoutEvents = (Boolean(runtime?.service) && runtime?.activationEvents === undefined) || companionCodeOnly;
     if (!serviceWithoutEvents && (manifest.runtime && (!executable.length || events?.length !== new Set(events).size || events.some(event => !executable.includes(event))) || executable.some(id => !events?.includes(id)))) error('UnsupportedRuntime', path, [id]);
     // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
     if ((manifest.runtime as ObjectValue | undefined)?.service && !((manifest.permissions ?? []) as Json[]).includes('runtime.service')) error('PermissionDenied', `${path}/permissions`, [id]);
@@ -333,6 +335,8 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // Tool servers (R0702): shared with contracts.rs (runtime_tool_servers::check).
     const toolServers = checkToolServerDeclarations(manifest);
     if (!toolServers.ok) error(toolServers.refusal.code, `${path}/${toolServers.refusal.at}`, toolServers.refusal.ids);
+    const companions = checkCompanionDeclarations(manifest);
+    if (!companions.ok) error(companions.refusal.code, `${path}/${companions.refusal.at}`, companions.refusal.ids);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;
@@ -444,7 +448,7 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       for (const rule of rules) for (const target of [rule.id, rule.target]) if (!(target.startsWith(`${layout.location}/`) || ((contributions.menus ?? []) as ObjectValue[]).some(menu => menu.id === target && menu.location === layout.location))) error('UnknownReference', `${path}/contributes/layouts`, [target]);
       try { proposalOrder([], rules); } catch (cause) { if (cause instanceof OrderingCycle) error('OrderingCycle', `${path}/contributes/layouts`, cause.ids); else throw cause; }
     }
-    if (knownContributions.some(kind => ((contributions[kind] ?? []) as Json[]).length) && !(manifest.permissions as string[]).includes('ui.contribute')) error('PermissionDenied', `${path}/permissions`, [id]);
+    if (knownContributions.some(kind => kind !== 'companions' && ((contributions[kind] ?? []) as Json[]).length) && !(manifest.permissions as string[]).includes('ui.contribute')) error('PermissionDenied', `${path}/permissions`, [id]);
   }
   const dependencies: [string, string][] = [];
   for (const [index, manifest] of packages.entries()) for (const [id, range] of Object.entries((manifest.dependencies ?? {}) as ObjectValue).sort(([a], [b]) => compareText(a, b))) {

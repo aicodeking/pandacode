@@ -1,7 +1,7 @@
 /** Kilo is independently negotiated; only its pinned V1 callback contract is shared. */
-import { CompanionError, negotiateCompanion } from './runtime-companion-lifetime';
-import type { CompanionProfile, InstalledCompanionApi } from './runtime-companion-lifetime';
-import { opencodeInline, v1Hooks } from './runtime-opencode-companion';
+import { CompanionError, negotiateCompanion } from './runtime-companion-lifetime.ts';
+import type { CompanionProfile, InstalledCompanionApi } from './runtime-companion-lifetime.ts';
+import { opencodeInline, v1Hooks } from './runtime-opencode-companion.ts';
 export { v1Hooks as kiloHooks };
 export const KILO_SOURCE = '37b2900fcb6223fec33c2bd5f59263e93682c670';
 export function kiloProfile(installed: InstalledCompanionApi): CompanionProfile | null {

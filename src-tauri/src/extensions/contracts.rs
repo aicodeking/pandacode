@@ -12,7 +12,7 @@ type Result<T> = std::result::Result<T, Value>;
 pub fn primitive_limit(family: &str, name: &str) -> u64 {
     SCHEMA["x-primitives"]["families"][family]["limits"][name]["value"].as_u64().expect("declared primitive limit")
 }
-const CONTRIBUTIONS: [&str; 15] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers", "slashCommands"];
+const CONTRIBUTIONS: [&str; 16] = ["commands", "icons", "menus", "views", "layouts", "settings", "keybindings", "dialogExtras", "themes", "components", "tools", "connections", "services", "providers", "slashCommands", "companions"];
 static PACKAGE_ID: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^[a-z][a-z0-9-]*\.[a-z][a-z0-9-]*$").unwrap());
 static ASSET_PATH: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^assets/[a-zA-Z0-9_./-]+\.(svg|png|webp)$").unwrap());
 
@@ -329,7 +329,8 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         let events = strings(&manifest["runtime"]["activationEvents"]);
         // A background service takes its commands from the service itself, so activationEvents may be left out (R0201);
         // when listed they still have to match the package's executable commands.
-        let service_without_events = manifest["runtime"].get("service").is_some() && manifest["runtime"].get("activationEvents").is_none();
+        let companion_code_only = !items(contributions, "companions").is_empty() && executable.is_empty() && manifest["runtime"].get("activationEvents").is_none();
+        let service_without_events = (manifest["runtime"].get("service").is_some() && manifest["runtime"].get("activationEvents").is_none()) || companion_code_only;
         if !service_without_events && (manifest.get("runtime").is_some() && (executable.is_empty() || events.iter().collect::<BTreeSet<_>>().len() != events.len() || events.iter().any(|event| !executable.contains(event))) || executable.iter().any(|id| !events.contains(id))) { return Err(fail("UnsupportedRuntime", &path, vec![id])); }
         // A background service is a named permission: it must be declared to be granted (runtime-service-lifetime.md).
         if manifest["runtime"].get("service").is_some() && !strings(&manifest["permissions"]).contains(&"runtime.service".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
@@ -345,6 +346,7 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
         if let Err(refusal) = super::runtime_new_file_templates::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
         // Tool servers (R0702): shared with contracts.ts (checkToolServerDeclarations).
         if let Err(refusal) = super::runtime_tool_servers::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
+        if let Err(refusal) = super::runtime_package_companions::check(manifest) { return Err(fail(refusal.code, &format!("{path}/{}", refusal.at), refusal.ids)); }
         let mut owned = BTreeSet::new();
         let mut tool_commands = BTreeSet::new();
         for service in items(contributions, "services") {
@@ -454,7 +456,7 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             }
             order_graph(edges.iter().flat_map(|(a, b)| [a.clone(), b.clone()]).collect(), &edges, "OrderingCycle", &format!("{path}/contributes/layouts"), |a, b| a.cmp(b))?;
         }
-        if CONTRIBUTIONS.iter().any(|kind| !items(contributions, kind).is_empty()) && !strings(&manifest["permissions"]).contains(&"ui.contribute".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
+        if CONTRIBUTIONS.iter().any(|kind| *kind != "companions" && !items(contributions, kind).is_empty()) && !strings(&manifest["permissions"]).contains(&"ui.contribute".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id])); }
     }
     let mut dependencies = vec![];
     for (index, manifest) in packages.iter().enumerate() {

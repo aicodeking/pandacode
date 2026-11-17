@@ -1,0 +1,10 @@
+{
+  "provenance": "synthetic package archive and V1 loader, source-derived API profiles",
+  "liveCapture": false,
+  "preview": "tests written, not run",
+  "native": "real package validator, trust store, grants and code cache tests written, not run",
+  "recordedCompanionFrames": "none",
+  "installedWindows": "not authorized or qualified",
+  "installedMacOS": "UnsupportedRuntime: no platform evidence",
+  "installedLinux": "UnsupportedRuntime: no platform evidence"
+}

@@ -65,3 +65,4 @@ pub(crate) mod supervisor;
 pub mod runtime_codex_companion;
 pub mod runtime_opencode_companion;
 pub mod runtime_kilo_companion;
+pub mod runtime_package_companions;

@@ -179,6 +179,11 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         // ADR-0001 (R0301): HTML or script is code, so a package with a rich view needs the same executable trust.
         Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
     } else { None };
+    for companion in contributions["companions"].as_array().into_iter().flatten() {
+        let file = companion["file"].as_str().ok_or("Invalid companion file.")?;
+        let (name, _) = files.get(&file.to_ascii_lowercase()).ok_or("Missing declared companion file.")?;
+        if name != file { return Err("Companion file path case mismatch.".into()); }
+    }
     for icon in contributions["icons"].as_array().into_iter().flatten() {
         let asset = icon["asset"].as_str().unwrap();
         if !asset.ends_with(".svg") { return Err("This delivery supports static SVG icons only.".into()); }
@@ -593,6 +598,53 @@ mod tests {
         assert_eq!(packages.snapshot().packages.iter().filter(|p| p.enabled).count(), 2);
         packages.enable("sample.service-provider", false).unwrap();
         assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == "sample.service-provider").unwrap().enabled);
+    }
+    #[test]
+    fn package_companions_use_installed_trusted_archive_and_cancel_with_authority() {
+        use super::super::{runtime_package_companions as companions, runtime_grants::{RuntimeGrants, Scope}, runtime_companion_lifetime::InstalledApi};
+        const ID: &str = "sample.package-companion";
+        let manifest = include_bytes!("../../../tests/fixtures/extensions/runtime-package-companions/extension.json");
+        let main = include_bytes!("../../../tests/fixtures/extensions/runtime-package-companions/main.cjs");
+        let entry = include_bytes!("../../../tests/fixtures/extensions/runtime-package-companions/companions/opencode.mjs");
+        let storage = Storage::new(); let packages = storage.packages(false);
+        assert!(packages.install(&archive(&[("extension.json", manifest), ("main.cjs", main)])).is_err());
+        assert!(packages.install(&archive(&[("extension.json", manifest), ("main.cjs", main), ("companions/OpenCode.mjs", entry)])).is_err());
+        packages.install(&archive(&[("extension.json", manifest), ("main.cjs", main), ("companions/opencode.mjs", entry)])).unwrap();
+        assert!(packages.enable(ID, true).is_err());
+        let digest = packages.snapshot().packages[0].executable.as_ref().unwrap().digest.clone();
+        packages.trust(ID, &digest, true).unwrap(); packages.enable(ID, true).unwrap();
+        let grants = RuntimeGrants::open(&storage.0);
+        let installed = InstalledApi { harness: "opencode".into(), version: Some("v1.19.5".into()), apis: vec!["opencode.plugin.v1".into()] };
+        assert!(companions::selected(&packages, &grants, "A", &installed).is_empty());
+        grants.grant(ID, companions::PERMISSION, Scope::default()).unwrap();
+        let rows = companions::selected(&packages, &grants, "A", &installed);
+        assert_eq!(rows.len(), 1); assert_eq!(rows[0]["owner"], ID); assert!(rows[0]["code"].is_null());
+        let unknown = InstalledApi { version: None, ..installed.clone() };
+        assert_eq!(companions::selected(&packages, &grants, "A", &unknown)[0]["code"], "UnsupportedCapability");
+        let other = InstalledApi { harness: "kilo".into(), ..installed.clone() };
+        assert!(companions::selected(&packages, &grants, "A", &other).is_empty());
+        assert!(companions::prepare(&packages, &grants, &storage.0, "A", &unknown, "{}", false).is_err());
+        assert!(companions::prepare(&packages, &grants, &storage.0, "A", &installed, "{}", true).is_err());
+        let previous = r#"{"model":"preserved","plugin":["existing"]}"#;
+        let mut resources = companions::prepare(&packages, &grants, &storage.0, "A", &installed, previous, false).unwrap();
+        let env = resources.environment();
+        let config: Value = serde_json::from_str(&env["OPENCODE_CONFIG_CONTENT"]).unwrap();
+        assert_eq!(config["model"], "preserved"); assert_eq!(config["plugin"][0], "existing");
+        let file = reqwest::Url::parse(config["plugin"][1].as_str().unwrap()).unwrap().to_file_path().unwrap();
+        assert_eq!(std::fs::read(file).unwrap(), entry); // Materialized bytes only: never execute code at install.
+        packages.enable(ID, false).unwrap();
+        assert!(companions::selected(&packages, &grants, "A", &installed).is_empty());
+        assert!(resources.environment().is_empty()); resources.close().unwrap();
+        packages.enable(ID, true).unwrap();
+        let trusted = companions::prepare(&packages, &grants, &storage.0, "A", &installed, "{}", false).unwrap();
+        packages.trust(ID, &digest, false).unwrap();
+        assert!(companions::selected(&packages, &grants, "A", &installed).is_empty()); assert!(trusted.environment().is_empty());
+        packages.trust(ID, &digest, true).unwrap(); packages.enable(ID, true).unwrap();
+        companions::selected(&packages, &grants, "A", &installed);
+        let revoked = companions::prepare(&packages, &grants, &storage.0, "A", &installed, "{}", false).unwrap();
+        grants.revoke(ID, companions::PERMISSION).unwrap();
+        assert!(revoked.environment().is_empty()); assert!(companions::selected(&packages, &grants, "A", &installed).is_empty());
+        assert!(companions::selected(&storage.packages(true), &grants, "A", &installed).is_empty());
     }
     /// Every file of one shipped example's `package/` folder, as archive-relative names.
     fn example_files(dir: &str) -> Vec<(String, Vec<u8>)> {

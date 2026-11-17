@@ -13,6 +13,7 @@ import { DELIVERED, RUN_KINDS, type HookRegistry, type Occurrence, type RunFacts
 // R0505: the `can` a deciding hook gets for a request of each mode (no approve where the sandbox or mode holds it).
 import { modeCan } from './runtime-hook-decisions.ts';
 import { CompanionLifetime } from './runtime-companion-lifetime.ts';
+import { companionCoverage } from './runtime-package-companions.ts';
 
 export const companionLifetime = new CompanionLifetime('preview-host');
 
@@ -255,7 +256,7 @@ export function runs(counters: Obj | null): Obj[] {
   }));
 }
 export function report(harnesses: readonly Harness[], counters: Obj | null, only: string | null): Obj {
-  return { schemaVersion: SCHEMA_VERSION, decisions: 'delivered', harnesses: harnesses.filter(harness => only === null || harness.id === only).map(row), runs: runs(counters), companionLifecycle: companionLifetime.report() };
+  return { schemaVersion: SCHEMA_VERSION, decisions: 'delivered', harnesses: harnesses.filter(harness => only === null || harness.id === only).map(row), runs: runs(counters), companionLifecycle: companionLifetime.report(), companionCoverage: harnesses.filter(harness => only === null || harness.id === only).map(harness => companionCoverage(harness.id)) };
 }
 
 /** The built-in roster and the package providers of enabled, trusted packages outside safe mode. */

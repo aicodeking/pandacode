@@ -314,10 +314,9 @@ config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-pend
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions pending requests:`);
 config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-late-responses.spec.ts'];
 config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions late responses:`);
+config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-kilo-companion.spec.ts', '**/extensions-runtime-package-companions.spec.ts'];
+config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions kilo companion:|extensions package companions:`);
 export default defineConfig(config, {
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts', '**/agents-dock.spec.ts', '**/generative-ui.spec.ts'],
   grep: new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions project reads|extensions inventory|extensions context|extensions baseline|extensions install|extensions catalog|extensions layout|extensions menus|extensions dialogs|extensions view actions|extensions thread actions|extensions settings actions|extensions windows|menu bar popover|the widget stays|running agents widget|Escape closes the header popover|the working ring|the pinned window|toggling the widget setting|overlay copies live Markdown|streamed markdown|a table sorts|buttons and forms|custom views|invalid specs|stats, tree|details collapse|Antigravity installation|resource usage lives|the command palette|Model routing is its|settings open on Recommended|settings deep links`),
 });
-
-config.testMatch = [...config.testMatch as string[], '**/extensions-runtime-kilo-companion.spec.ts'];
-config.grep = new RegExp(`${config.grep instanceof RegExp ? config.grep.source : ''}|extensions kilo companion:`);

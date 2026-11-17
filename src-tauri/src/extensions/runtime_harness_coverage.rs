@@ -444,7 +444,7 @@ pub fn report(harnesses: &[Harness], counters: &Value, only: Option<&str>) -> Va
         .map(|companions| companions.report())
         .unwrap_or_else(|_| json!({"code": "HostUnavailable"}));
     json!({"schemaVersion": SCHEMA_VERSION, "decisions": "delivered", "harnesses": rows,
-        "runs": runs(counters), "companionLifecycle": lifecycle})
+        "runs": runs(counters), "companionLifecycle": lifecycle, "companionCoverage": harnesses.iter().filter(|h| only.is_none_or(|id| h.id == id)).map(|h| super::runtime_package_companions::coverage(&h.id)).collect::<Vec<_>>()})
 }
 
 /// The built-in roster and the package providers of enabled, trusted packages (`snapshot` is `extensions_snapshot`
@@ -507,7 +507,12 @@ fn serve_now(app: &tauri::AppHandle, owner: &str, params: &Value) -> Value {
     if !super::runtime_hook_registration::holds(&grants, owner, &version, PERMISSION, None) { return super::context::failure("PermissionDenied"); }
     let harnesses = roster(&snapshot, |id| crate::providers::executable(id).is_some());
     if let Some(id) = &only { if !harnesses.iter().any(|harness| harness.id == *id) { return super::context::failure("NotFound"); } }
-    json!({"ok": true, "value": report(&harnesses, &counters(), only.as_deref())})
+    let mut value = report(&harnesses, &counters(), only.as_deref());
+    value["packageCompanions"] = json!(harnesses.iter().filter(|h| only.as_ref().is_none_or(|id| h.id == *id)).flat_map(|h| {
+        let installed = super::runtime_companion_lifetime::InstalledApi { harness: h.id.clone(), version: None, apis: vec![] };
+        super::runtime_package_companions::listing(&snapshot, None, &installed, |id, version| grants.check(id, version, super::runtime_package_companions::PERMISSION, &super::runtime_grants::Target::default()).is_ok())
+    }).collect::<Vec<_>>());
+    json!({"ok": true, "value": value})
 }
 
 // ---------------------------------------------------------------------------------------------------------------

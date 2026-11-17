@@ -3128,14 +3128,26 @@ async fn launch_operation_admitted(
         // prompt, and `full` asks at the harness and is answered at the host while a deciding hook is held. Unchanged
         // when no hook is attached.
         let (config, sink) = extensions::runtime_hook_decisions::wrap(&app, config, sink, own_input.clone(), stopped.clone());
-        let companion_owners = extensions::runtime_hook_decisions::companion_owners(&app, &session_id);
+        let hook_companion_owners = extensions::runtime_hook_decisions::companion_owners(&app, &session_id);
+        let package_companion_owners = extensions::runtime_package_companions::task_owners(&app, &session_id, &config.provider);
+        let mut companion_owners = hook_companion_owners.clone();
+        companion_owners.extend(package_companion_owners.iter().filter(|id| !hook_companion_owners.contains(id)).cloned());
         if !companion_owners.is_empty() && !cloud {
             use extensions::runtime_companion_lifetime::{InstalledApi, registry};
             let installed = InstalledApi { harness: config.provider.clone(), version: None, apis: vec![] };
             if let Ok(mut companions) = registry().lock() {
                 let profile = if config.provider == "codex" { Some(extensions::runtime_codex_companion::profile()) } else if config.provider == "opencode" { extensions::runtime_opencode_companion::profile(&installed) } else if config.provider == "kilo" { extensions::runtime_kilo_companion::profile(&installed) } else { extensions::runtime_callback_companions::profile(&config.provider) };
-                let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, profile.as_ref(),
-                    |manifest| extensions::runtime_callback_companions::resources(manifest, &config.provider));
+                let profile = if hook_companion_owners.is_empty() { extensions::runtime_package_companions::profile(&installed) } else { profile };
+                let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, profile.as_ref(), |manifest| {
+                    if package_companion_owners.is_empty() {
+                        extensions::runtime_callback_companions::resources(manifest, &config.provider)
+                    } else if hook_companion_owners.is_empty() {
+                        extensions::runtime_package_companions::prepare_app(&app, &session_id, &installed, "{}")
+                    } else {
+                        // Coordinated host transport + package loading must be qualified together.
+                        Err("UnsupportedCapability".into())
+                    }
+                });
             }
         }
         let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());

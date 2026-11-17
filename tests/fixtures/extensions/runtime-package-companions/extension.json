@@ -1,0 +1,14 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.package-companion",
+  "name": "Fixture package companion",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["harness.companions"],
+  "requiredContributions": ["companions"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["companions"] },
+  "contributes": {
+    "companions": [{ "id": "sample.package-companion/opencode", "title": "Fixture native module", "harness": "opencode", "file": "companions/opencode.mjs" }]
+  }
+}

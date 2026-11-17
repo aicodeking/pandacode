@@ -389,6 +389,12 @@ jobs:
       - name: OpenCode companion fixtures (WebKit configuration)
         env: { PW_PORT: '16998', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-opencode-companion.spec.ts --workers=1
+      - name: Package companions Chromium
+        env: { PW_PORT: '17001', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-package-companions.spec.ts --workers=1
+      - name: Package companions WebKit
+        env: { PW_PORT: '17002', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-package-companions.spec.ts --workers=1
       - name: Kilo companion Chromium
         env: { PW_PORT: '16999', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-kilo-companion.spec.ts --workers=1

@@ -331,7 +331,7 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
     if matches!(request["op"].as_str(), Some("narrow" | "revoke" | "revokeAll"))
         && (request["op"] == "revokeAll"
             || permission.is_some_and(|name| matches!(name,
-                "harness.hooks.observe" | "harness.hooks.decide" | "runtime.service")))
+                "harness.hooks.observe" | "harness.hooks.decide" | "harness.companions" | "runtime.service")))
     {
         if let Ok(mut companions) = super::runtime_companion_lifetime::registry().lock() {
             companions.end_owner(id, super::runtime_companion_lifetime::StopReason::Revoked);
