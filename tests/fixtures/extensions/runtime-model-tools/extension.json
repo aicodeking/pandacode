@@ -1,0 +1,33 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.memory",
+  "name": "Memory",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "tools.model"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.memory/control", "title": "Memory control", "action": { "kind": "runCommand" } }
+    ],
+    "modelTools": [
+      {
+        "id": "sample.memory/memory", "name": "memory",
+        "description": "Add, search, list and forget memories of this project.",
+        "inputSchema": {
+          "type": "object", "required": ["mode"], "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["add", "search", "list", "forget"] },
+            "content": { "type": "string", "maxLength": 1000 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+          }
+        }
+      },
+      { "id": "sample.memory/slow_recall", "name": "slow_recall", "description": "Never answers in time.", "inputSchema": { "type": "object" }, "timeoutMs": 100 },
+      { "id": "sample.memory/big_dump", "name": "big_dump", "description": "Answers a result past 64 KiB.", "inputSchema": { "type": "object" } },
+      { "id": "sample.memory/bare_value", "name": "bare_value", "description": "Answers a bare value instead of the envelope.", "inputSchema": { "type": "object" } },
+      { "id": "sample.memory/broken", "name": "broken", "description": "Answers an error result and never needs a prompt.", "inputSchema": { "type": "object" }, "approval": "never" }
+    ]
+  }
+}

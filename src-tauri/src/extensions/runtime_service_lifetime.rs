@@ -793,7 +793,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_terminals::service_stopped(&app, owner); super::runtime_harness_console::service_stopped(&app, owner);super::runtime_workspace_cloud::service_stopped(&app, owner);super::runtime_workspace_projects::service_stopped(&app, owner);super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_terminals::service_stopped(&app, owner); super::runtime_harness_console::service_stopped(&app, owner);super::runtime_workspace_cloud::service_stopped(&app, owner);super::runtime_workspace_projects::service_stopped(&app, owner);super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); super::runtime_model_tools::service_stopped(owner); })); }
         // Hook deliveries (R0503) go into the running service as one-way host calls.
         { let app = app.clone(); super::runtime_hook_registration::registry().set_deliver(Arc::new(move |owner: &str, frame: Value| { use tauri::Manager; app.try_state::<ServiceLifetime>().ok_or("HostUnavailable")?.send_hook(owner, frame).map(drop) })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
@@ -840,6 +840,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.harnesses.list` (R0509, harnesses.inventory): the grant is checked natively per call.
             if request.method == "harnessesList" { return super::runtime_harness_coverage::serve(app, request).await; }
             if matches!(request.method.as_str(), "hooks" | "hooksInput") { return super::runtime_hook_registration::serve(app, request).await; }
+            // `panda.modelTools.register` and dispose (R0701, tools.model): the declaration and the grant are checked natively per call.
+            if request.method == "modelTools" { return super::runtime_model_tools::serve(app, request).await; }
             // Messages, notes and the revisioned queue (R0402, tasks.message): the grant and the task are resolved natively per call.
             if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }
             // `panda.views.post` and `instances` (R0303, ui.richViews): the instances and the grant are resolved natively per call.

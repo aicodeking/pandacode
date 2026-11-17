@@ -4,6 +4,7 @@ import { proposalOrder, OrderingCycle, type Placement } from './ordering.ts';
 import { contrast, parseHex } from '../color.ts';
 import { validDiscoveryRoots, type DiscoveryRoot } from './provider-discovery.ts';
 import { checkHookDeclarations } from './runtime-hook-registration.ts';
+import { checkModelToolDeclarations } from './runtime-model-tools.ts';
 import { checkAll as checkPresentations, checkConversationProvider } from './runtime-transcript-presentation.ts';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
@@ -311,6 +312,9 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
     // Hooks (R0503): the event-dependent rules the schema cannot say, shared with contracts.rs (runtime_hook_registration::check).
     const hooks = checkHookDeclarations(manifest);
     if (!hooks.ok) error(hooks.refusal.code, `${path}/${hooks.refusal.at}`, hooks.refusal.ids);
+    // Model tools (R0701): the rules the schema cannot say, shared with contracts.rs (runtime_model_tools::check).
+    const modelTools = checkModelToolDeclarations(manifest);
+    if (!modelTools.ok) error(modelTools.refusal.code, `${path}/${modelTools.refusal.at}`, modelTools.refusal.ids);
     const owned = new Set<string>();
     for (const kind of knownContributions) for (const item of (contributions[kind] ?? []) as ObjectValue[]) {
       const itemId = item.id as string;

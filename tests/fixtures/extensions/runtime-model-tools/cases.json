@@ -1,0 +1,55 @@
+{
+  "provenance": "synthetic",
+  "note": "Shared by runtime_model_tools::tests (native) and tests/extensions-runtime-model-tools.spec.ts (preview twin). A refusal case starts from the `memory` tool of extension.json: `set` changes fields, `drop` removes them, `extra` adds tools derived from the changed one, `count` replaces the list with that many valid tools. The string \"{pad:N}\" stands for N characters.",
+  "refusals": [
+    { "id": "reserved-name", "set": { "name": "pandacode_memory" }, "expect": { "code": "ReservedId", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "reserved-id", "set": { "id": "panda.memory" }, "expect": { "code": "ReservedId", "at": "contributes/modelTools", "ids": ["panda.memory"] } },
+    { "id": "foreign-id", "set": { "id": "other.pkg/memory" }, "expect": { "code": "InvalidId", "at": "contributes/modelTools", "ids": ["other.pkg/memory"] } },
+    { "id": "name-uppercase", "set": { "name": "Memory" }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "name-starts-with-digit", "set": { "name": "1memory" }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "name-too-long", "set": { "name": "{pad:49}" }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "duplicate-id", "extra": [{ "set": { "name": "other" } }], "expect": { "code": "DuplicateId", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "duplicate-name", "extra": [{ "set": { "id": "sample.memory/other" } }], "expect": { "code": "DuplicateId", "at": "contributes/modelTools", "ids": ["sample.memory/other"] } },
+    { "id": "description-missing", "drop": ["description"], "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "description-too-long", "set": { "description": "{pad:1025}" }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-missing", "drop": ["inputSchema"], "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-not-an-object-type", "set": { "inputSchema": { "type": "string" } }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-with-a-reference", "set": { "inputSchema": { "type": "object", "properties": { "a": { "$ref": "#/definitions/a" } } } }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-requires-a-missing-property", "set": { "inputSchema": { "type": "object", "required": ["ghost"], "properties": { "a": { "type": "string" } } } }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-unknown-type", "set": { "inputSchema": { "type": "object", "properties": { "a": { "type": "date" } } } }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "schema-too-large", "set": { "inputSchema": { "type": "object", "properties": { "a": { "type": "string", "description": "{pad:17000}" } } } }, "expect": { "code": "LimitExceeded", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "timeout-too-low", "set": { "timeoutMs": 99 }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "timeout-too-high", "set": { "timeoutMs": 600001 }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "approval-unknown", "set": { "approval": "sometimes" }, "expect": { "code": "InvalidShape", "at": "contributes/modelTools", "ids": ["sample.memory/memory"] } },
+    { "id": "seventeen-tools", "count": 17, "expect": { "code": "LimitExceeded", "at": "contributes/modelTools", "ids": ["sample.memory"] } },
+    { "id": "without-the-tools-model-grant", "permissions": ["ui.contribute", "runtime.service"], "expect": { "code": "PermissionDenied", "at": "permissions", "ids": ["sample.memory"] } },
+    { "id": "without-a-service", "noService": true, "expect": { "code": "UnsupportedRuntime", "at": "contributes/modelTools", "ids": ["sample.memory"] } }
+  ],
+  "inputs": [
+    { "id": "add", "input": { "mode": "add", "content": "pnpm" }, "valid": true },
+    { "id": "list-with-limit", "input": { "mode": "list", "limit": 50 }, "valid": true },
+    { "id": "missing-required", "input": {}, "valid": false },
+    { "id": "value-outside-the-enum", "input": { "mode": "drop" }, "valid": false },
+    { "id": "wrong-type", "input": { "mode": "add", "content": 5 }, "valid": false },
+    { "id": "too-long", "input": { "mode": "add", "content": "{pad:1001}" }, "valid": false },
+    { "id": "extra-property", "input": { "mode": "list", "extra": 1 }, "valid": false },
+    { "id": "below-minimum", "input": { "mode": "list", "limit": 0 }, "valid": false },
+    { "id": "above-maximum", "input": { "mode": "list", "limit": 51 }, "valid": false },
+    { "id": "not-an-integer", "input": { "mode": "list", "limit": 2.5 }, "valid": false },
+    { "id": "not-an-object", "input": "list", "valid": false }
+  ],
+  "envelopes": [
+    { "id": "content", "answer": { "content": { "memories": [] } }, "expect": { "content": { "memories": [] }, "isError": false } },
+    { "id": "error-result", "answer": { "content": "boom", "isError": true }, "expect": { "content": "boom", "isError": true } },
+    { "id": "bare-string", "answer": "just text", "expect": { "code": "InvalidShape" } },
+    { "id": "missing-content", "answer": { "isError": false }, "expect": { "code": "InvalidShape" } },
+    { "id": "extra-field", "answer": { "content": 1, "extra": true }, "expect": { "code": "InvalidShape" } },
+    { "id": "is-error-not-a-boolean", "answer": { "content": 1, "isError": "yes" }, "expect": { "code": "InvalidShape" } },
+    { "id": "exactly-64-kib", "answer": { "content": "{pad:65534}" }, "expect": { "content": "{pad:65534}", "isError": false } },
+    { "id": "one-byte-over", "answer": { "content": "{pad:65535}" }, "expect": { "code": "LimitExceeded" } }
+  ],
+  "collisions": [
+    { "id": "no-collision", "entries": [{ "owner": "sample.memory", "names": ["memory"] }, { "owner": "sample.notes", "names": ["notes"] }], "available": [["sample.memory", "memory"], ["sample.notes", "notes"]], "conflicts": [] },
+    { "id": "the-later-package-loses", "entries": [{ "owner": "sample.memory", "names": ["memory"] }, { "owner": "sample.notes", "names": ["memory", "notes"] }], "available": [["sample.memory", "memory"], ["sample.notes", "notes"]], "conflicts": [["sample.notes", "memory", "sample.memory"]] }
+  ]
+}

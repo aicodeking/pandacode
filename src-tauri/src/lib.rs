@@ -2641,6 +2641,8 @@ fn build_task_host(
     let host = Some(turn_changes::with_host(host, tracker, stopped.clone()));
     let host = Some(session_titles::with_host(title_run, host, stopped));
     // Hooks (R0504): `tool.after` of PandaCode's own tools is awaited and may rewrite the result the harness gets.
+    // Model tools (R0701): the tools a package's service answers join the host, inside the result hooks (the harness asks as for any tool).
+    let host = host.map(|host| extensions::runtime_model_tools::with_model_tools(host, app.clone(), session_id.to_owned()));
     let host = host.map(|host| extensions::runtime_hook_context::with_result_hooks(host, app.clone(), session_id.to_owned()));
     (host, team_tools_missing)
 }

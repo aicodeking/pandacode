@@ -222,11 +222,31 @@ process.stdin.on('data', chunk => {
               return Object.freeze({ dispose: () => { appliedHandlers.delete(handler); } });
             },
           });
+          // Model tools (R0701, tools.model): the handler of a declared id answers `{ content, isError? }` when the host calls it.
+          const modelToolHandlers = new Map();
+          const modelTools = Object.freeze({
+            register(id, handler) {
+              if (typeof id !== 'string' || typeof handler !== 'function') throw new TypeError('modelTools.register needs an id and a function');
+              if (modelToolHandlers.has(id)) throw new Error('DuplicateId');
+              modelToolHandlers.set(id, handler);
+              const forget = () => { if (modelToolHandlers.get(id) === handler) modelToolHandlers.delete(id); };
+              const ready = rpc('modelTools', { op: 'register', id }).then(() => undefined, error => { forget(); throw error; });
+              ready.catch(() => {});
+              let live = true;
+              return Object.freeze({ ready, dispose: () => {
+                if (!live) return;
+                live = false;
+                forget();
+                ready.then(() => rpc('modelTools', { op: 'unregister', id }).catch(() => {}), () => {});
+              } });
+            },
+          });
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
             apiVersion: '1.0.0',
             events,
             hooks,
+            modelTools,
             commands: Object.freeze({ register(id, handler) {
               if (!invocation.lifetime.commands.includes(id) || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
               commands.set(id, handler);
@@ -432,6 +452,13 @@ process.stdin.on('data', chunk => {
               // A hook delivery (R0503) is answered at once; its handlers run afterwards, in order, and what they return goes nowhere.
               if (call.method === 'hook' && call.params?.receipt) { reply({ ok: true, value: null }); serveReceipt(call.params.receipt); return; }
               // An awaited delivery (R0504) answers with the handlers' return; a throw answers its code.
+              // A model-tool call (R0701): the handler registered for the id answers; a missing one is UnknownReference, a throw answers its code.
+              if (call.method === 'hook' && call.params?.kind === 'modelTool') {
+                const modelTool = modelToolHandlers.get(call.params.toolId);
+                if (!modelTool) return reply({ ok: false, error: { code: 'UnknownReference' } });
+                const answered = await modelTool(freeze(call.params.input ?? null), freeze(call.params.call ?? {}));
+                return reply({ ok: true, value: answered === undefined ? null : answered });
+              }
               if (call.method === 'hook' && call.params?.observeOnly === false) return reply({ ok: true, value: await answerHook(call.params) });
               if (call.method === 'hook') { reply({ ok: true, value: null }); serveHook(call.params); return; }
               const handler = call.method === 'command' ? commands.get(call.params?.commandId) : undefined;
