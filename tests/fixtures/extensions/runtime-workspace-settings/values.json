@@ -1,0 +1,20 @@
+{
+  "sidebar.sort": { "tasks": "recent", "projects": "name", "group": "flat" },
+  "sidebar.filter": "project-1",
+  "sidebar.scope": 10,
+  "sidebar.order": ["project-2", "project-1"],
+  "view.open": "board",
+  "tiles.layout": ["task-1", "task-2"],
+  "find.query": "needle",
+  "projects.search": "haystack",
+  "tokenSaver": { "defaults": { "packs": [], "level": "full" }, "threads": {} },
+  "council": { "target": 8.5, "maxRounds": 5, "reviewers": 3, "newThreads": true },
+  "team.profiles": { "profiles": [{ "id": "p1", "name": "Review team" }] },
+  "widgets": { "pinned": ["usage"] },
+  "machines.orchestration": { "mode": "auto" },
+  "appearance.compact": true,
+  "appearance.theme": "light",
+  "bot:bot-1": { "pinned": true, "order": 0 },
+  "channel:channel-1": { "pinned": false, "order": null },
+  "excluded": ["telemetry", "routing", "github", "safeMode", "updates", "trust", "pairing", "remoteAccess", "credentials"]
+}

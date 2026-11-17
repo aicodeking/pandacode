@@ -4871,6 +4871,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_notifications::Notices::default());
     app.manage(extensions::runtime_dialog_navigation::DialogSlots::default());
     app.manage(extensions::runtime_tasks_start::TaskOrigins::open(&dir));
+    app.manage(extensions::runtime_service_lifetime::runtime_workspace_settings::WorkspaceSettings::open(&dir));
     app.manage(extensions::runtime_tasks_start::StartSlots::default());
     app.manage(extensions::runtime_tasks_messages::TaskMessages::open(&dir));
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
@@ -5356,6 +5357,9 @@ pub fn run() {
                 extensions::runtime_tasks_start::extensions_runtime_task_defaults_answer,
                 extensions::runtime_tasks_start::extensions_runtime_task_origins,
                 extensions::runtime_tasks_messages::extensions_runtime_message_origins,
+                extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_publish,
+                extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_pending,
+                extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_ack,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialog_answer,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialogs,
                 usage_ledger::usage_ledger,

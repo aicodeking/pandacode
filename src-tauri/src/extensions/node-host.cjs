@@ -206,6 +206,12 @@ process.stdin.on('data', chunk => {
                 resume: taskId => rpc('tasksQueue', { op: 'resume', taskId }),
               }),
             }),
+            // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.
+            workspace: Object.freeze({ settings: Object.freeze({
+              list: () => rpc('workspaceSettings', { op: 'list' }),
+              get: key => rpc('workspaceSettings', { op: 'get', key }),
+              set: (key, value, options) => rpc('workspaceSettings', { op: 'set', key, value, ...(options && options.revision !== undefined ? { revision: options.revision } : {}) }),
+            }) }),
             // Publishes what is true for the package's own providers (R0806, ui.dynamic): readiness, account, models, limits.
             providers: Object.freeze({ update: (id, state) => rpc('providerUpdate', { id, state }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.

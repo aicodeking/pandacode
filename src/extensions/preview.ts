@@ -27,6 +27,7 @@ import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
 import * as codeFolders from './runtime-code-folders';
+import { previewWorkspaceSettings } from './runtime-workspace-settings';
 // One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
 const previewFamilyConsents = familyConsents.createFamilyConsentsPreview(runtimeGrants.createRuntimeGrantsPreview());
 (window as unknown as { __extensionFamilyConsents?: unknown }).__extensionFamilyConsents = { ...familyConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
@@ -359,6 +360,8 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   if (command === 'extensions_runtime_notice_recorder') return [];
   // No service runs in the preview: no dialog is pending; answers are recorded for the spec (runtime-dialog-navigation.ts).
   // No service starts a task in the preview: no label exists; the defaults answers are recorded for the spec (runtime-tasks-start.ts).
+  // The app's own workspace settings (R0407): labelled stand-in with the native rules and refusal envelope (runtime-workspace-settings.ts).
+  if (command.startsWith('extensions_workspace_settings_')) return previewWorkspaceSettings(command, args);
   if (command === 'extensions_runtime_task_origins') return { revision: 0, origins: {} };
   // No service queues a message in the preview: no entry is labelled (the spec drives runtime-tasks-messages.ts directly).
   if (command === 'extensions_runtime_message_origins') return { revision: 0, entries: {} };

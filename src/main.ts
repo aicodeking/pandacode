@@ -961,6 +961,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   });
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
+  // The app's own settings a package with `workspace.settings` reads and changes (R0407): the window publishes its values and applies the package's changes.
+  void import('./extensions/runtime-workspace-settings').then(settings => settings.startWorkspaceSettingsSync({ families: () => ({ bots: sidebarBots.map(bot => bot.id), channels: sidebarChannels.map(channel => channel.id) }) }));
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and
   // activated through the original buttons. Error text, the dismissal journal, Undo and the toast text stay here and in
   // thread-errors.ts and toast-model.ts.

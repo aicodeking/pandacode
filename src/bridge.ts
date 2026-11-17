@@ -50,6 +50,7 @@ export async function subscribe(name: 'extensions-runtime-task-defaults', callba
 export async function subscribe(name: 'extensions-runtime-task-origins', callback: (event: number) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-message-origins', callback: (event: number) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-queue-resume', callback: (event: { taskId: string; owner: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-workspace-setting', callback: (event: { key: string; revision: number; by: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-provider-state', callback: (event: unknown) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {

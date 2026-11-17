@@ -52,6 +52,9 @@ pub mod runtime_service_status;
 // Services placed beside remote and headless executors, their Connect methods and the desktop's view of them (R0108).
 #[path = "runtime_executor_placement.rs"]
 pub mod runtime_executor_placement;
+// The app's own workspace settings, read and changed by services with `workspace.settings` (R0407).
+#[path = "runtime_workspace_settings.rs"]
+pub mod runtime_workspace_settings;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
@@ -803,6 +806,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if request.method == "tasksStart" { return super::runtime_tasks_start::serve(app, request).await; }
             // Messages, notes and the revisioned queue (R0402, tasks.message): the grant and the task are resolved natively per call.
             if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }
+            // `panda.workspace.settings.list`, `get` and `set` (R0407): `workspace.settings` is checked natively per call.
+            if request.method == "workspaceSettings" {
+                return tauri::async_runtime::spawn_blocking(move || runtime_workspace_settings::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
