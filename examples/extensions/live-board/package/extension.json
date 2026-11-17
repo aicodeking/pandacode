@@ -5,7 +5,7 @@
   "name": "Work board",
   "engines": { "pandacodeApi": "^1.0.0" },
   "extensionKind": "ui",
-  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify"],
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.richViews"],
   "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
   "contributes": {
     "commands": [
@@ -18,7 +18,7 @@
       { "id": "sample.live-board/who-button", "location": "panda.workspace.header.actions", "command": "sample.live-board/who", "presentation": "button", "text": "Who is working" }
     ],
     "views": [
-      { "id": "sample.live-board/board", "title": "Work board", "text": "Connecting to the tracker." }
+      { "id": "sample.live-board/board", "title": "Work board", "text": "Connecting to the tracker.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 360, "height": 280 } } }
     ],
     "settings": [
       { "id": "sample.live-board/tracker", "title": "Tracker", "fields": [

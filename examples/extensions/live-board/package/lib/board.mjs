@@ -16,6 +16,11 @@
 //   subscribe(topic, handler) -> Promise<off> frames are `{ event, seq, data }`
 //   onDown(handler), onUp(handler)            optional: the connection was lost / is (re)established
 //   reconnect(), retarget(address)            optional: try again now / use another address
+//   cli(args) -> Promise<json>                optional (cut B): one run of the tracker's command-line tool, e.g.
+//                                             ['claim', '--id=T-1', '--actor=Ada']; rejects with an error that has a `code`
+//                                             (Conflict, NotFound, Unreachable...). Without it the panel is read-only.
+// Cut B adds the rich panel (`panda.views`): the same snapshot as a board with selection and detail, and Claim, Close
+// and Undo through that command-line tool.
 export const OWNER = 'sample.live-board';
 export const IDS = Object.freeze({
   page: `${OWNER}/tracker`, status: `${OWNER}/ready`, view: `${OWNER}/board`,
@@ -27,6 +32,7 @@ const MAX_ROWS = 100;
 const MAX_CELL = 200;
 const COLUMNS = ['Issue', 'Title', 'Status', 'Assignee'];
 const NOTICE = 'tracker';
+const CHUNK = 200;
 
 const fail = code => Object.assign(new Error(code), { code });
 const clean = (value, fallback = '-') => { const text = String(value ?? '').replace(/\s+/g, ' ').trim(); return text ? text.slice(0, MAX_CELL) : fallback; };
@@ -38,6 +44,7 @@ export async function run(panda, lifetime, link, options = {}) {
   const state = {
     unit: UNIT, daemon: '', revision: null, snapshot: null, offline: false, since: null, failure: null,
     retries: 0, actor: null, answers: [], refused: [], switches: 0, refreshes: 0,
+    acts: 0, undo: null, notice: null,
   };
   const disposers = [];
   const topics = new Set();
@@ -48,7 +55,7 @@ export async function run(panda, lifetime, link, options = {}) {
 
   // One short line, always under the host's 200 character cap.
   const report = () => {
-    const body = { ready: state.snapshot ? state.snapshot.readyIds.length : null, total: state.snapshot ? state.snapshot.issues.length : null, offline: state.offline, retries: state.retries, actor: state.actor, unit: state.unit, revision: state.revision, switches: state.switches, refreshes: state.refreshes, answers: state.answers.length, refused: state.refused };
+    const body = { ready: state.snapshot ? state.snapshot.readyIds.length : null, total: state.snapshot ? state.snapshot.issues.length : null, offline: state.offline, retries: state.retries, actor: state.actor, unit: state.unit, revision: state.revision, switches: state.switches, refreshes: state.refreshes, answers: state.answers.length, acts: state.acts, undo: state.undo ? state.undo.op : null, refused: state.refused };
     let text = JSON.stringify(body);
     if (text.length > 200) text = JSON.stringify({ ...body, refused: state.refused.length });
     void Promise.resolve(lifetime.setStatus({ text: text.slice(0, 200) })).catch(() => undefined);
@@ -154,7 +161,13 @@ export async function run(panda, lifetime, link, options = {}) {
 
   // ---- what the user sees ----------------------------------------------------------------------------------------
 
+  // The host-rendered fallback (status item and table) and the rich panel are two views of the same snapshot.
   const render = async force => {
+    await renderHost(force);
+    await pushPanel(force);
+  };
+
+  const renderHost = async force => {
     const snapshot = state.snapshot;
     let status, view;
     if (!snapshot) {
@@ -195,6 +208,133 @@ export async function run(panda, lifetime, link, options = {}) {
     return { status: answer.status, actor: state.actor };
   };
 
+  // ---- the rich panel (cut B) ------------------------------------------------------------------------------------
+  //
+  // The panel is a picture of the service's snapshot. The service sends it as `board.begin` (counts, the daemon's own
+  // readyIds and blockedIds, the stale marking, the undo that is possible), then the issues in `board.rows` chunks of
+  // CHUNK rows (a message holds at most 256 KiB), so 2,000 issues are 10 small messages and never one large one. A
+  // panel that opens gets the current board, to that instance only. Claim, Close and Undo go through the command-line
+  // tool of the tracker (link.cli), never straight to the daemon.
+  const panel = panda.views;
+  const VIEW = IDS.view;
+  const ID = /^[A-Za-z0-9._-]{1,64}$/;
+  let sequence = 0, pushed = '';
+
+  const undoLabel = () => (state.undo ? `Undo ${state.undo.op} of ${state.undo.id}` : null);
+  const boardMessages = () => {
+    const snapshot = state.snapshot;
+    if (!snapshot) return [{ kind: 'board.unknown', offline: state.offline, failure: state.failure }];
+    sequence += 1;
+    const parts = Math.ceil(snapshot.issues.length / CHUNK);
+    const messages = [{
+      kind: 'board.begin', seq: sequence, total: snapshot.issues.length, parts, readyIds: snapshot.readyIds, blockedIds: snapshot.blockedIds,
+      revision: snapshot.revision ?? null, stale: state.offline, since: state.since ? clock(state.since) : null, actor: state.actor,
+      unit: state.unit, undo: undoLabel(), notice: state.notice,
+    }];
+    for (let index = 0; index < parts; index += 1) {
+      messages.push({ kind: 'board.rows', seq: sequence, index, rows: snapshot.issues.slice(index * CHUNK, (index + 1) * CHUNK).map(issue => ({ id: clean(issue.id), title: clean(issue.title), status: clean(issue.status), assignee: clean(issue.assignee, ''), revision: issue.revision ?? null })) });
+    }
+    return messages;
+  };
+  // One send at a time per target is not needed: a newer `board.begin` makes the panel drop the older, unfinished one.
+  const sendBoard = async instance => {
+    if (!panel) return;
+    const options = instance ? { instance } : undefined;
+    for (const message of boardMessages()) await panel.post(VIEW, message, options);
+  };
+  const pushPanel = async force => {
+    if (!panel) return;
+    const snapshot = state.snapshot;
+    const body = snapshot ? (snapshot.revision ?? JSON.stringify(snapshot.issues)) : null;
+    const signature = JSON.stringify([body, snapshot ? snapshot.readyIds : null, snapshot ? snapshot.blockedIds : null, state.offline, state.since, state.actor, state.unit, undoLabel(), state.notice, snapshot ? null : state.failure]);
+    if (!force && signature === pushed) return;
+    pushed = signature;
+    await Promise.resolve(sendBoard()).catch(refuse);
+  };
+
+  const needCli = () => { if (typeof link.cli !== 'function') throw fail('UnsupportedCapability'); };
+  const issueOf = id => {
+    if (!ID.test(String(id ?? ''))) throw fail('InvalidShape');
+    const issue = state.snapshot?.issues.find(item => item.id === id);
+    if (!issue) throw fail('NotFound');
+    return issue;
+  };
+  const doer = () => clean(state.actor, 'board');
+  const refused = (message, code) => Object.assign(fail(code), { text: message });
+
+  const claimIssue = async id => {
+    needCli();
+    const issue = issueOf(id);
+    if (issue.status === 'closed') throw refused(`${id} is closed.`, 'InvalidState');
+    const result = await link.cli(['claim', `--id=${id}`, `--actor=${doer()}`]);
+    state.undo = { op: 'claim', id, revision: result?.revision ?? null, before: { status: clean(issue.status, 'open'), assignee: String(issue.assignee ?? '') } };
+    return `Claimed ${id}.`;
+  };
+  const closeIssue = async (id, reason) => {
+    needCli();
+    const issue = issueOf(id);
+    if (issue.status === 'closed') throw refused(`${id} is already closed.`, 'InvalidState');
+    const result = await link.cli(['close', `--id=${id}`, `--reason=${clean(reason, 'closed from the work board')}`]);
+    state.undo = { op: 'close', id, revision: result?.revision ?? null, before: null };
+    return `Closed ${id}.`;
+  };
+  // Undo changes the issue back only when nobody else touched it since: a closed issue is reopened with the daemon's own
+  // revision guard; a claimed one is read first and left alone when its revision moved. The refusal is shown.
+  const undoLast = async () => {
+    needCli();
+    const last = state.undo;
+    if (!last) throw refused('There is nothing to undo.', 'NothingToUndo');
+    const changed = () => refused(`${last.id} changed since you ${last.op === 'close' ? 'closed' : 'claimed'} it; the undo was refused.`, 'Conflict');
+    try {
+      if (last.op === 'close') {
+        await link.cli(['reopen', `--id=${last.id}`, `--if-revision=${last.revision}`]);
+      } else {
+        const now = await link.cli(['show', `--id=${last.id}`]);
+        if (now?.revision !== last.revision) throw changed();
+        await link.cli(['update', `--id=${last.id}`, `--status=${last.before.status}`, `--assignee=${last.before.assignee}`]);
+      }
+    } catch (error) {
+      if (error?.code === 'Conflict') { state.undo = null; state.notice = (error.text ?? changed().text); throw Object.assign(fail('Conflict'), { text: state.notice }); }
+      throw error;
+    }
+    state.undo = null; state.notice = null;
+    return `Undid the ${last.op} of ${last.id}.`;
+  };
+  const detailOf = async id => {
+    needCli();
+    issueOf(id);
+    const issue = await link.cli(['show', `--id=${id}`]);
+    return { kind: 'detail', id, issue: { id: clean(issue.id), title: clean(issue.title), status: clean(issue.status), assignee: clean(issue.assignee, ''), type: clean(issue.type, ''), priority: issue.priority ?? null, revision: issue.revision ?? null, description: String(issue.description ?? '').slice(0, 2000), dependsOn: Array.isArray(issue.dependsOn) ? issue.dependsOn.map(item => clean(item)).slice(0, 50) : [] } };
+  };
+
+  const answerPanel = async (message, from) => {
+    const op = message?.kind;
+    const target = from?.instanceId ? { instance: from.instanceId } : undefined;
+    const tell = body => Promise.resolve(panel.post(VIEW, body, target)).catch(refuse);
+    if (op === 'detail') {
+      try { await tell(await detailOf(message.id)); } catch (error) { await tell({ kind: 'result', op, id: String(message.id ?? ''), ok: false, code: String(error?.code ?? 'Failed'), message: error?.text ?? `Could not read ${message.id}.` }); }
+      return null;
+    }
+    if (!['claim', 'close', 'undo'].includes(op)) return null;
+    state.acts += 1;
+    let outcome;
+    try {
+      const text = op === 'claim' ? await claimIssue(message.id) : op === 'close' ? await closeIssue(message.id, message.reason) : await undoLast();
+      state.notice = op === 'undo' ? null : state.notice;
+      outcome = { kind: 'result', op, id: String(message.id ?? state.undo?.id ?? ''), ok: true, message: text };
+    } catch (error) {
+      outcome = { kind: 'result', op, id: String(message.id ?? ''), ok: false, code: String(error?.code ?? 'Failed'), message: error?.text ?? `${op} failed (${error?.code ?? 'Failed'}).` };
+    }
+    // Read again at once so the board shows what the tracker says; the daemon's own change event makes at most one more.
+    await refresh().catch(refuse);
+    outcome.undo = undoLabel();
+    await tell(outcome);
+    report();
+    return null;
+  };
+
+  const guardAnswer = (message, from) => answerPanel(message, from).catch(refuse);
+
   // ---- settings --------------------------------------------------------------------------------------------------
 
   const readSettings = async () => {
@@ -221,6 +361,12 @@ export async function run(panda, lifetime, link, options = {}) {
     return { offline: state.offline, retries: state.retries };
   });
   command(IDS.who, () => ask());
+  if (panel) {
+    try {
+      disposers.push(panel.on('opened', instance => { void Promise.resolve(sendBoard(instance?.instanceId)).catch(refuse); }));
+      disposers.push(panel.onMessage(VIEW, guardAnswer));
+    } catch (error) { refuse(error); }
+  }
 
   const on = (kind, handler) => { try { disposers.push(panda.events.on(kind, guard(handler))); } catch (error) { refuse(error); } };
   on('settings.changed', async () => {

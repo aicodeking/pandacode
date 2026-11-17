@@ -5,6 +5,7 @@
 // backoff. The address comes from the Tracker settings page; PANDA_FIXTURE_B1 is the address a test hands in before
 // the settings are read.
 const net = require('node:net');
+const { spawn } = require('node:child_process');
 
 const TIMEOUT_MS = 1500;
 const BACKOFF_MS = [250, 500, 1000];
@@ -108,6 +109,7 @@ function tcpLink(initialAddress) {
       address = next;
       if (socket) socket.destroy(); else reconnectLater();
     },
+    address: () => address,
     close() {
       closed = true; clearTimeout(timer); timer = null;
       for (const [id, entry] of pending) { clearTimeout(entry.guard); entry.reject(fail('Unreachable')); pending.delete(id); }
@@ -116,8 +118,34 @@ function tcpLink(initialAddress) {
   };
 }
 
+// The tracker's command-line tool, one finite run per call (cut B: Claim, Close, Undo). A test hands in the script of the
+// B2 fake tool as PANDA_FIXTURE_B2; the arguments are an array (no shell), the child's stdin stays open until it ends
+// (its EOF would cancel the work), and exactly one JSON document is read from its stdout.
+const CLI_TIMEOUT_MS = 10000;
+function cliRunner(script, address) {
+  return args => new Promise((resolve, reject) => {
+    if (!script) { reject(fail('UnsupportedCapability')); return; }
+    const child = spawn(process.execPath, [script, '--daemon', address(), '--json', ...args], { shell: false, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '', done = false;
+    const finish = (error, value) => { if (done) return; done = true; clearTimeout(guard); try { child.stdin.end(); } catch { /* already closed */ } if (error) reject(error); else resolve(value); };
+    const guard = setTimeout(() => { child.kill(); finish(fail('Timeout')); }, CLI_TIMEOUT_MS);
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => { out += chunk; });
+    child.stderr.on('data', () => {});
+    child.once('error', () => finish(fail('Unreachable')));
+    child.once('close', code => {
+      let json = null;
+      try { json = JSON.parse(out); } catch { /* not a document */ }
+      if (code === 0 && json !== null) finish(null, json);
+      else if (code === 3) finish(fail('Unreachable'));
+      else finish(fail(json?.error?.code ?? 'Failed'));
+    });
+  });
+}
+
 exports.service = async (panda, lifetime) => {
   const link = tcpLink(process.env.PANDA_FIXTURE_B1 || '');
+  link.cli = cliRunner(process.env.PANDA_FIXTURE_B2 || '', () => link.address());
   lifetime.onStop(() => link.close());
   const { run } = await import('./lib/board.mjs');
   await run(panda, lifetime, link);

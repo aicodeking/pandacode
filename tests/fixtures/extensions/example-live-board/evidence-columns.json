@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "live-board-cut-b-evidence-columns",
+  "task": "R1202",
+  "note": "Every column below is prepared and was NOT run when written (binding user decision of 2026-11-16: no tests, no installed-app or browser runs until the final test phase). Nothing here is an observation.",
+  "columns": {
+    "preview": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "spec": "tests/extensions-example-live-board.spec.ts",
+      "grep": "live board preview:",
+      "engines": {
+        "chromium": { "status": "prepared, not run (deferred to the final test phase)", "port": 16521, "command": "npx.cmd playwright test tests/extensions-example-live-board.spec.ts --workers=1" },
+        "webkit": { "status": "prepared, not run (deferred to the final test phase)", "port": 16522, "command": "npx.cmd playwright test -c playwright.webkit.config.ts tests/extensions-example-live-board.spec.ts --workers=1" }
+      },
+      "environment": { "PW_PORT": "16521 (Chromium) / 16522 (WebKit)", "PW_PROD": "1", "PW_WORKERS": "2", "PANDACODE_TEST_CHROME": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "PLAYWRIGHT_BROWSERS_PATH": "D:\\panda-code\\_work\\00-tmp\\playwright-browsers" }
+    },
+    "installedWindows": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "runner": "tests/fixtures/extensions/runtime-windows-panels/qualify.mjs (R0306, reused; no second runner)",
+      "command": "node tests/fixtures/extensions/runtime-windows-panels/qualify.mjs --build",
+      "profile": "a dedicated Windows account or a Windows Sandbox with PANDACODE_QUALIFICATION_PROFILE=dedicated",
+      "stage": {
+        "package": "examples/extensions/live-board/package (zip it like stagePackages does; sample.live-board)",
+        "grants": ["runtime.service", "ui.richViews", "events.workspace", "ui.dynamic", "ui.notify"],
+        "environment": { "PANDA_FIXTURE_B1": "the address B1 printed as `socket`", "PANDA_FIXTURE_B2": "tests/fixtures/extensions/backends/fake-cli/fake-cli.mjs (absolute path)" },
+        "seeds": { "default": "three issues T-1, T-2 (depends on T-1), T-3 closed", "scale": "tests/fixtures/extensions/example-live-board/issues-2000.json (or POST /control/issues/fill {count: 2000})" },
+        "integration": "stage.mjs PACKAGES and expected.json belong to R0306: the final phase adds one `live-board` entry there and the checks below under criterion C3/C4; this fixture does not edit them"
+      },
+      "scenarios": [
+        { "id": "data-channel", "steps": "open the board panel; B2 creates T-4; read window.__liveBoard.boards", "expect": { "firstBoardWithin": "2 s of the open", "addedIssueWithin": "2 s of the B2 create", "readyIdsExactlyB1": true } },
+        { "id": "assets-state-focus", "steps": "select T-2; reload the panel; hide and show the inspector; Tab into the list and press ArrowDown", "expect": { "originIsPackageOrigin": true, "stateRestored": "selected and scrollTop", "visibilityEvents": "hidden then visible", "keyboardMovesSelection": true } },
+        { "id": "claim-close-undo", "steps": "Claim T-1, Close T-1, Undo; claim T-1, change T-1 through B2, Undo", "expect": { "dispatch": "fake CLI argv recorded by B1's request log", "staleUndo": "refused with a visible notice and the issue untouched" } },
+        { "id": "scale", "steps": "fill B1 with 2000 issues; open the panel; scroll to the end", "expect": { "rowsInDom": "at most 60", "chunkedMessages": 10, "firstPaintWithin": "2 s" } },
+        { "id": "offline", "steps": "B1 fault `refuse` ms 3000 while the panel is open", "expect": { "lastSnapshotKept": true, "markedStale": true, "retryButtonInHeader": true, "recovery": "banner gone" } },
+        { "id": "failure-containment", "steps": "make the panel throw in its page; start a B5 fake-agent task", "expect": { "panelFailedWithReload": true, "serviceStillAnswers": true, "taskNotStopped": true } },
+        { "id": "cleanup", "steps": "disable the package; re-enable and revoke ui.richViews; enter safe mode", "expect": { "noPanelFrame": true, "noChannel": true, "noLiveItems": true, "noServiceProcess": true } }
+      ],
+      "closes": "R3 for the actual board, only once these scenarios have run and passed"
+    }
+  }
+}

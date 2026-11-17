@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Work board</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-rows: auto auto 1fr auto; height: 100vh; }
+    header { padding: 8px 10px; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    #counts { font-weight: 600; }
+    #banner { padding: 6px 10px; display: none; }
+    #banner[data-shown="true"] { display: block; background: color-mix(in srgb, orange 25%, transparent); }
+    #notice { padding: 6px 10px; display: none; background: color-mix(in srgb, crimson 20%, transparent); }
+    #notice[data-shown="true"] { display: block; }
+    #viewport { overflow-y: auto; position: relative; contain: strict; }
+    #spacer { position: relative; }
+    .row { position: absolute; left: 0; right: 0; height: 28px; display: grid; grid-template-columns: 5.5em 1fr 6.5em 7em; gap: 8px; align-items: center; padding: 0 10px; box-sizing: border-box; cursor: default; }
+    .row[aria-selected="true"] { background: color-mix(in srgb, dodgerblue 25%, transparent); }
+    .row .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .row[data-status="ready"] .status { color: seagreen; }
+    .row[data-status="blocked"] .status { color: darkorange; }
+    footer { border-top: 1px solid color-mix(in srgb, currentColor 15%, transparent); padding: 8px 10px; display: grid; gap: 6px; }
+    #detail { min-height: 3em; white-space: pre-wrap; }
+    #actions { display: flex; gap: 6px; align-items: center; }
+    #result { margin-left: auto; }
+  </style>
+</head>
+<body>
+  <header><span id="counts">Waiting for the board</span><span id="actor"></span></header>
+  <div>
+    <div id="banner" role="status"></div>
+    <div id="notice" role="alert"></div>
+  </div>
+  <div id="viewport" tabindex="0" role="listbox" aria-label="Issues"><div id="spacer"></div></div>
+  <footer>
+    <div id="detail">Select an issue.</div>
+    <div id="actions">
+      <button id="claim" type="button" disabled>Claim</button>
+      <button id="close" type="button" disabled>Close</button>
+      <button id="undo" type="button" disabled>Undo</button>
+      <span id="result" role="status"></span>
+    </div>
+  </footer>
+  <script src="./app.js"></script>
+</body>
+</html>
