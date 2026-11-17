@@ -53,6 +53,8 @@ export type RuntimeScope = { readonly taskId: string } | { readonly projectId: s
 /** One live contribution: the manifest shape of its `kind` plus an optional scope. `id`, `kind`, `location` and `command` are fixed. */
 export type RuntimeContribution = { readonly kind: 'menu' | 'command' | 'view' | 'slashCommand'; readonly id: string; readonly location?: string; readonly command?: string; readonly scope?: RuntimeScope; readonly [field: string]: Json | undefined };
 /** Changeable fields: text, badge, icon, tone, tooltip (up to 1,024 characters), progress (0-100), enabled, visible (boolean or null to restore the declared one), args, items; for a view also title, controls, toolbar. At most 20 applied per second. */
+/** A notice (R0207): key names it inside the package (the same key replaces it), 	ext up to 1,024 characters, 	itle up to 120. */
+export type RuntimeNotice = { readonly key: string; readonly text: string; readonly title?: string; readonly tone?: 'neutral' | 'info' | 'success' | 'warning' | 'danger' };
 export type RuntimePatch = { readonly text?: string; readonly badge?: string; readonly icon?: string; readonly tone?: 'neutral' | 'info' | 'success' | 'warning' | 'danger'; readonly tooltip?: string; readonly progress?: number; readonly enabled?: boolean | null; readonly visible?: boolean | null; readonly args?: Json; readonly items?: Json; readonly title?: string; readonly controls?: Json; readonly toolbar?: Json };
 export interface RuntimeItem {
   readonly id: string;
@@ -143,6 +145,13 @@ export interface PandaCode {
     update(id: string, patch: RuntimePatch): Promise<null>;
     /** Changes `title`, `text`, `controls` or `toolbar` of a view of this package. */
     updateView(id: string, patch: RuntimePatch): Promise<null>;
+    /** Raises the notice named `key` of this package, or replaces it when it is live (needs `runtime.service` and the
+     * `ui.notify` grant). The package's name leads every notice, in the app and in the operating-system channel. At most
+     * 6 sends per minute; the following ones merge into one "N more notices" notice. `os` is `unavailable` when this
+     * build has no operating-system channel: the notice still shows in the app. */
+    notify(notice: RuntimeNotice): Promise<{ readonly key: string; readonly replaced: boolean; readonly merged: boolean; readonly os: 'delivered' | 'unavailable' }>;
+    /** Removes the notice named `key`; a key that is gone answers `NotFound`. */
+    withdraw(key: string): Promise<null>;
   };
 }
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;

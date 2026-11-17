@@ -284,6 +284,10 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   if (command === 'extensions_runtime_native_consents') return nativeConsents.createNativeConsentsPreview().call(command, snapshot);
   // No service runs in the preview: the live layer is empty (the spec drives runtime-dynamic-items.ts directly).
   if (command === 'extensions_runtime_items') return { revision: 0, owners: {} };
+  // No service runs in the preview: no notice is live and the recorder is empty (the spec drives runtime-notifications.ts directly).
+  if (command === 'extensions_runtime_notices') return { revision: 0, notices: [] };
+  if (command === 'extensions_runtime_notice_dismiss') return false;
+  if (command === 'extensions_runtime_notice_recorder') return [];
   // No service runs in the preview: no dialog is pending; answers are recorded for the spec (runtime-dialog-navigation.ts).
   if (command === 'extensions_runtime_dialogs') return [];
   if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }

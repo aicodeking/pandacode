@@ -1,0 +1,17 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.runtime-notifications",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "ui.notify"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.runtime-notifications/control", "title": "Runtime notifications control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.runtime-notifications/header", "location": "panda.workspace.header.actions", "command": "sample.runtime-notifications/control", "presentation": "button", "text": "Notices" }
+    ]
+  }
+}

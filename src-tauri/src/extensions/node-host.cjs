@@ -175,6 +175,9 @@ process.stdin.on('data', chunk => {
               },
               update: (id, patch) => rpc('ui', { op: 'update', id, patch }),
               updateView: (id, patch) => rpc('ui', { op: 'updateView', id, patch }),
+              // Replaceable, attributed notices (R0207, ui.notify): the host names the package and checks the grant on every call.
+              notify: notice => rpc('notice', { op: 'notify', notice }),
+              withdraw: key => rpc('notice', { op: 'withdraw', key }),
               // Resolves with the user's answer, `{ status: 'confirmed', values }` or `{ status: 'cancelled' }` (R0206); a second dialog while one is open answers Conflict.
               showDialog: dialog => rpc('uiDialog', dialog),
               // Shows a view or settings page of the package, a task, or a file of a project; an unknown or stale target answers NotFound.

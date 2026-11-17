@@ -1,0 +1,16 @@
+/* The in-app list of notices that background services raise (docs/extensions/runtime-notifications.md). One glass surface
+ * above the app toast; every row leads with the package that raised it. */
+.runtime-notices { position: fixed; right: max(16px, env(safe-area-inset-right)); bottom: max(72px, calc(env(safe-area-inset-bottom) + 56px)); z-index: 49; box-sizing: border-box; width: min(360px, calc(100vw - 32px)); max-height: 40vh; overflow-y: auto; }
+.runtime-notices[hidden] { display: none; }
+.runtime-notices > ul { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.runtime-notice { display: flex; align-items: flex-start; gap: var(--space-2); padding: 8px 10px; border: 1px solid var(--glass-border); border-radius: var(--glass-radius); background: var(--glass-fill); color: var(--text); font-size: var(--text-sm); backdrop-filter: blur(28px) saturate(1.6); -webkit-backdrop-filter: blur(28px) saturate(1.6); }
+.runtime-notice[data-notice-tone="danger"] { border-color: var(--ds-danger); }
+.runtime-notice[data-notice-tone="neutral"] { border-color: var(--glass-border); }
+.runtime-notice-body { display: grid; gap: 2px; min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.runtime-notice-package { color: var(--muted); font-size: var(--text-xs); }
+.runtime-notice-heading[hidden] { display: none; }
+.runtime-notice-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; }
+.runtime-notice-dismiss { flex: none; padding: 2px 8px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-raised); box-shadow: var(--ds-shadow-raised); color: var(--text); font: inherit; font-size: var(--text-xs); }
+@media (prefers-reduced-transparency: reduce) { .runtime-notice { background: var(--bg); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+@media (prefers-contrast: more) { .runtime-notice { background: var(--bg); border-color: var(--border); backdrop-filter: none; -webkit-backdrop-filter: none; } }
+@media (forced-colors: active) { .runtime-notice, .runtime-notice-dismiss { border-color: CanvasText; background: Canvas; color: CanvasText; } }

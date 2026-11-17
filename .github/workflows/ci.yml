@@ -183,6 +183,12 @@ jobs:
       - name: Dialog answers and navigation (WebKit)
         env: { PW_PORT: '16132', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-dialog-navigation.spec.ts --workers=1
+      - name: Replaceable notifications (Chromium)
+        env: { PW_PORT: '16141', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-notifications.spec.ts --workers=1
+      - name: Replaceable notifications (WebKit)
+        env: { PW_PORT: '16142', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-notifications.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

@@ -947,6 +947,8 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
     root: $('.workspace'), onContextChanged, find: () => threadFind,
     state: () => { const s = session(); return { project: s?.projectId || undefined, task: s?.id || undefined, provider: s?.provider, limit: s?.limitedAt ? `${s.limitedAt}:${s.limitedUntil ?? ''}:${s.resumeAtReset ? 1 : 0}` : '', busy: Boolean(modelPickerCleanup) }; },
   });
+  // Notices that background services raise (ui.notify): a list above the toast, each row led by its package name.
+  void import('./extensions/runtime-notifications').then(notices => notices.mountRuntimeNotices());
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and
   // activated through the original buttons. Error text, the dismissal journal, Undo and the toast text stay here and in
   // thread-errors.ts and toast-model.ts.

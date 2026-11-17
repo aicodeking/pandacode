@@ -759,7 +759,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
@@ -792,6 +792,10 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             // `panda.ui.register`, `update`, `updateView` and a handle's `update` / `dispose` (R0205).
             if request.method == "ui" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_dynamic_items::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
+            // `panda.ui.notify` and `panda.ui.withdraw` (R0207): `ui.notify` is checked natively per call.
+            if request.method == "notice" {
+                return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
             // `panda.ui.showDialog` (waits for the user's answer) and `panda.ui.reveal` (R0206): `ui.dynamic` is checked natively per call.
             if matches!(request.method.as_str(), "uiDialog" | "uiReveal") { return super::runtime_dialog_navigation::serve(app, request).await; }
@@ -1675,6 +1679,92 @@ mod tests {
             manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
             assert_eq!(items.count(DYNAMIC_ID), 0, "the layer ends with the process");
             assert!(items.snapshot()["owners"].get(DYNAMIC_ID).is_none() || items.snapshot()["owners"][DYNAMIC_ID]["menus"] == json!([]));
+            b1.stop().await;
+        }
+
+        const NOTICES_MANIFEST: &str = include_str!("../../../tests/fixtures/extensions/runtime-notifications/extension.json");
+        const NOTICES_SOURCE: &str = include_str!("../../../tests/fixtures/extensions/runtime-notifications/main.cjs");
+        const NOTICES_ID: &str = "sample.runtime-notifications";
+        const NOTICES_CONTROL: &str = "sample.runtime-notifications/control";
+
+        /// R0207 acceptance: an installed service, told by B1 signals, raises a notice that names its package, replaces it by
+        /// key (one notice), withdraws it (gone from the recorder and the list), merges a burst past six a minute, and loses
+        /// every notice when `ui.notify` is revoked or the process ends.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn notifications_installed_service_raises_replaces_withdraws_merges_and_loses_them_on_revoke_and_stop() {
+            use crate::extensions::runtime_grants::Target;
+            use crate::extensions::runtime_notifications::{failure, now_millis, serve, Checks, Notice, Notices, Os, OsChannel};
+            struct Delivers;
+            impl OsChannel for Delivers { fn show(&self, _: &str, _: &Notice) -> Os { Os::Delivered } fn withdraw(&self, _: &str, _: &str) -> Os { Os::Delivered } }
+            let runtime = supervisor::Runtime::packaged(&runtime_dir()).unwrap();
+            let b1 = B1::start(&runtime).await;
+            let dir = Dir::new();
+            let packages = ExtensionPackages::new(&dir.0, false);
+            let grants = Arc::new(RuntimeGrants::open(&dir.0));
+            let notices = Arc::new(Notices::new(Box::new(Delivers)));
+            let dispatch: Dispatch = { let (notices, grants) = (notices.clone(), grants.clone()); Arc::new(move |request: DispatchRequest| {
+                let (notices, grants) = (notices.clone(), grants.clone());
+                Box::pin(async move {
+                    if request.method != "notice" { return failure("UnsupportedCapability"); }
+                    let granted = grants.check(&request.owner, "1.0.0", "ui.notify", &Target::default()).is_ok();
+                    serve(&notices, &request.owner, &Checks { granted, package: &request.owner, now_ms: now_millis() }, &request.params)
+                }) as Pin<Box<dyn Future<Output = Value> + Send>>
+            }) };
+            { let packages = packages.0.lock().unwrap(); packages.install(&archive(NOTICES_MANIFEST, NOTICES_SOURCE)).unwrap(); let digest = digest(&packages); packages.trust(NOTICES_ID, &digest, true).unwrap(); packages.enable(NOTICES_ID, true).unwrap(); }
+            let env = [("PANDA_FIXTURE_B1", b1.socket.as_str())];
+            let manager = ServiceLifetime::new(vec![runtime_dir()]).with_env(&env);
+            manager.set_dispatch(dispatch);
+            { let notices = notices.clone(); manager.set_ended_hook(Arc::new(move |owner: &str| { notices.clear(owner, "service-stopped"); })); }
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            grants.grant(NOTICES_ID, PERMISSION, Scope::default()).unwrap();
+            grants.grant(NOTICES_ID, "ui.notify", Scope::default()).unwrap();
+            { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while !manager.serves(NOTICES_ID, NOTICES_CONTROL) { assert!(Instant::now() < deadline, "the service never became ready"); tokio::time::sleep(Duration::from_millis(25)).await; }
+
+            // What the interface reads, waited for (the product is told by an event, never polls).
+            let list = |what: &'static str, check: Box<dyn Fn(&[Value]) -> bool>| { let notices = notices.clone(); async move {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                loop {
+                    let snapshot = notices.snapshot();
+                    let rows = snapshot["notices"].as_array().cloned().unwrap_or_default();
+                    if check(&rows) { return rows; }
+                    assert!(Instant::now() < deadline, "timed out waiting for {what}: {snapshot}");
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
+            } };
+            let ops = |notices: &Notices| notices.recorder().as_array().unwrap().iter().map(|entry| entry["op"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+
+            // Raise: the notice names the package and reaches the OS channel.
+            b1.order(json!({"op": "alert"})).await;
+            let rows = list("the notice", Box::new(|rows| rows.len() == 1)).await;
+            assert_eq!((rows[0]["package"].as_str(), rows[0]["text"].as_str(), rows[0]["tone"].as_str(), rows[0]["os"].as_str()), (Some(NOTICES_ID), Some("3 builds failed"), Some("danger"), Some("delivered")), "{}", rows[0]);
+            // Replace: the same key is one notice with the new text.
+            b1.order(json!({"op": "replace"})).await;
+            let rows = list("the replacement", Box::new(|rows| rows.len() == 1 && rows[0]["text"] == "4 builds failed")).await;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(ops(&notices), ["show", "replace"]);
+            // Withdraw: gone from the list and recorded.
+            b1.order(json!({"op": "withdraw"})).await;
+            list("the withdrawal", Box::new(|rows| rows.is_empty())).await;
+            assert_eq!(ops(&notices), ["show", "replace", "withdraw"]);
+            // A burst of nine: six notices and one merged notice that counts the other three.
+            b1.order(json!({"op": "burst", "count": 9})).await;
+            let rows = list("the merge", Box::new(|rows| rows.iter().any(|row| row["merged"] == true && row["count"] == 3))).await;
+            assert_eq!(rows.len(), 7, "six notices and the merged one: {rows:?}");
+            // Revoke `ui.notify`: the sweep removes every notice of the package and the service can raise no more.
+            grants.revoke(NOTICES_ID, "ui.notify").unwrap();
+            assert!(notices.sweep(&|owner| grants.check(owner, "1.0.0", "ui.notify", &Target::default()).is_ok(), "revoked-or-disabled"));
+            list("the revoke", Box::new(|rows| rows.is_empty())).await;
+            b1.order(json!({"op": "alert"})).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(notices.count(NOTICES_ID), 0, "a revoked grant raises nothing");
+            // Granted again, one more notice, and the process ending takes it with it.
+            grants.grant(NOTICES_ID, "ui.notify", Scope::default()).unwrap();
+            b1.order(json!({"op": "alert"})).await;
+            list("the second notice", Box::new(|rows| rows.len() == 1)).await;
+            manager.stop_all(StopReason::Quit); assert!(manager.wait_idle(STOP_GRACE + Duration::from_secs(1)).await);
+            assert_eq!(notices.count(NOTICES_ID), 0, "the notices end with the process");
             b1.stop().await;
         }
 

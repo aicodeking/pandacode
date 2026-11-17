@@ -42,6 +42,7 @@ export async function subscribe(name: 'terminal-event', callback: (event: Termin
 export async function subscribe(name: 'browser-state', callback: (event: BrowserStatus) => void): Promise<() => void>;
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-items', callback: (event: number) => void): Promise<() => void>;
+export async function subscribe(name: 'extensions-runtime-notices', callback: (event: number) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-dialog', callback: (event: { id: string; owner: string; dialog: import('./extensions/dialog-state').DialogDefinition }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-dialog-close', callback: (event: { id: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'extensions-runtime-reveal', callback: (event: { owner: string; target: import('./extensions/runtime-dialog-navigation').RevealTarget }) => void): Promise<() => void>;

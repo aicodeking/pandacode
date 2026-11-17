@@ -330,6 +330,8 @@ pub fn extensions_runtime_grant(app: tauri::AppHandle, packages: tauri::State<'_
     }
     // A new `runtime.service` grant starts the service; a revoked one already cancelled its grant work.
     super::runtime_service_lifetime::reconcile_app(&app);
+    // A revoked or narrowed ui.notify takes the package's notices off both surfaces at once (R0207).
+    super::runtime_notifications::sweep_app(&app);
     Ok(grants.projection())
 }
 
