@@ -352,6 +352,14 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       // R0301: the schema admits heights from 24 (band views); every placement of this slice needs 160 or more.
       const minSize = (view.rich as ObjectValue | undefined)?.minSize as ObjectValue | undefined;
       if (minSize && (minSize.height as number) < 160) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
+      // R0302: a remote page's origin is one of the origins it declares (`rich.remote`).
+      const url = (view.rich as ObjectValue | undefined)?.url;
+      if (typeof url === 'string') {
+        // The same rule as contracts.rs: `https://` + the address's authority is listed (the schema bounds both).
+        const rest = url.startsWith('https://') ? url.slice(8) : undefined;
+        const origin = rest === undefined ? undefined : `https://${rest.slice(0, rest.search(/[/?#]/) < 0 ? rest.length : rest.search(/[/?#]/))}`;
+        if (!origin || !(((view.rich as ObjectValue).remote ?? []) as Json[]).includes(origin)) error('InvalidShape', `${path}/contributes/views`, [view.id as string]);
+      }
       for (const item of (view.toolbar ?? []) as ObjectValue[]) reference('commands', item.command, 'views');
     }
     for (const page of (contributions.settings ?? []) as ObjectValue[]) {

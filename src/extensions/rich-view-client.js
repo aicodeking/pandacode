@@ -1,6 +1,12 @@
 (() => {
   'use strict';
-  const session = JSON.parse(document.getElementById('panda-view-session').textContent);
+  if ('pandaView' in window) return;
+  // The legacy inline document carries its session in an element; a served folder page (R0302) gets this script as
+  // `/~panda/client.js` with the session on the tag, and learns its base address from it (`pandaView.baseUrl`).
+  const inline = document.getElementById('panda-view-session');
+  const tag = !inline && document.currentScript ? document.currentScript : null;
+  const session = inline ? JSON.parse(inline.textContent) : (tag && tag.dataset.pandaSession) || '';
+  const baseUrl = tag && tag.src ? new URL('/', tag.src).href : undefined;
   let initialized = false, alive = true;
   const callbacks = new Set();
   let current;
@@ -26,6 +32,7 @@
   addEventListener('message', listener);
   addEventListener('pagehide', () => { alive = false; removeEventListener('message', listener); removeEventListener('error', fault); removeEventListener('unhandledrejection', fault); callbacks.clear(); themeCallbacks.clear(); current = undefined; }, { once: true });
   Object.defineProperty(window, 'pandaView', { value: Object.freeze({
+    ...(baseUrl ? { baseUrl } : {}),
     onDidChangeTheme(callback) {
       if (!alive || typeof callback !== 'function' || themeCallbacks.size >= 16) return () => {};
       themeCallbacks.add(callback); return () => themeCallbacks.delete(callback);

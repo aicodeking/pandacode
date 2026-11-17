@@ -1,0 +1,19 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-assets-twin",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [
+      { "id": "sample.rich-assets-twin/board", "title": "Twin board", "text": "Host-rendered twin board: the same storage key in another package.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector" } }
+    ],
+    "commands": [
+      { "id": "sample.rich-assets-twin/open", "title": "Open twin board", "action": { "kind": "openView", "view": "sample.rich-assets-twin/board" } }
+    ],
+    "menus": [
+      { "id": "sample.rich-assets-twin/header", "location": "panda.workspace.header.actions", "command": "sample.rich-assets-twin/open", "presentation": "button" }
+    ]
+  }
+}

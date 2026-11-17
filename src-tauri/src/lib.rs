@@ -5060,6 +5060,8 @@ pub fn run() {
     let context = app_context();
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default();
+    // R0302: rich panel folders are served from per-package origins of the `pandapanel` scheme (read-only, no IPC).
+    builder = extensions::rich_views::runtime_rich_assets::register(builder);
     // A dead WKWebView content process leaves a blank window: reload it, within a limit.
     #[cfg(target_os = "macos")]
     {

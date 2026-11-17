@@ -18,6 +18,7 @@ import { pageZoom } from '../ui-size';
 import { extensionsManagementSnapshot, extensionsSnapshot, onExtensionChanged } from './manager';
 import { appearanceSnapshot, richViewDocument, type RichAssets } from './rich-views';
 import { createRuntimeGrantsPreview, type SyncSnapshot } from './runtime-grants';
+import { ASSET_RELOADABLE, assetEndedNote, assetRefusalNote, previewServedUrl, servedSource } from './runtime-rich-assets';
 import type { RegisteredView } from './views-state';
 
 export type MountTechnique = 'browser-iframe' | 'native-webview';
@@ -43,7 +44,8 @@ const PREVIEW_ASSETS: Record<string, () => Promise<RichAssets>> = {
     script: (await import('../../tests/fixtures/extensions/rich-view/assets/view.js?raw')).default,
   }),
 };
-export const previewMountable = (entry: RegisteredView) => entry.view.id in PREVIEW_ASSETS;
+/** R0302: a folder or remote view mounts from its package origin (the preview needs `?rich-assets`, see runtime-rich-assets.ts). */
+export const previewMountable = (entry: RegisteredView) => entry.view.id in PREVIEW_ASSETS || !!servedSource(entry.view.rich);
 
 /** The preview twin of `runtime_rich_mount::authorize`: enabled, trusted executable content, `ui.richViews` granted. */
 export function previewAuthority(entry: RegisteredView): Authority {
@@ -58,14 +60,18 @@ export function previewAuthority(entry: RegisteredView): Authority {
 }
 
 export function refusalNote(code: string, owner: string): string {
+  const asset = assetRefusalNote(code);
+  if (asset) return asset;
   if (code.startsWith('ExecutableTrustRequired')) return `Review the executable trust of ${owner} in Settings → Extensions to show this panel. The host-rendered view stays available.`;
   if (code.startsWith('PermissionDenied')) return `Grant ui.richViews to ${owner} in Settings → Extensions to show this panel. The host-rendered view stays available.`;
   if (code.startsWith('UnsupportedRuntime')) return 'Rich panels are not qualified on this platform yet. The host-rendered view stays available.';
   if (code.startsWith('LimitExceeded')) return 'Too many extension panels are open. Close one, then reload this panel.';
   return 'The extension panel is unavailable. The host-rendered view stays available.';
 }
-const RELOADABLE = new Set(['unresponsive', 'error', 'timeout', 'changed']);
+const RELOADABLE = new Set<string>(['unresponsive', 'error', 'timeout', 'changed', ...ASSET_RELOADABLE]);
 export function endedNote(reason: string): string {
+  const asset = assetEndedNote(reason);
+  if (asset) return asset;
   switch (reason) {
     case 'unresponsive': return 'The extension panel stopped responding and was closed. The rest of PandaCode is unaffected.';
     case 'error': return 'The extension panel failed and was closed. The rest of PandaCode is unaffected.';
@@ -86,16 +92,20 @@ const nextFrame = () => new Promise<void>(resolve => requestAnimationFrame(() =>
 async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (event: Report) => void): Promise<() => void> {
   const authority = previewAuthority(entry);
   if (authority !== 'ok') throw new Refusal(authority);
+  const served = !!servedSource(entry.view.rich);
   const load = PREVIEW_ASSETS[entry.view.id];
-  if (!load) throw new Refusal('UnsupportedRuntime');
+  if (!load && !served) throw new Refusal('UnsupportedRuntime');
   const id = `extension-panel-${crypto.randomUUID()}`;
-  const html = await richViewDocument(entry, await load(), id);
+  // R0302: a folder or remote view is the shell of its package origin (its own storage); a legacy view a composed document.
+  const html = served || !load ? '' : await richViewDocument(entry, await load(), id);
+  const src = served ? await previewServedUrl(entry, id) : '';
   // Recheck after the asynchronous composition: a disable or revoke in between must not revive the panel.
   const again = previewAuthority(entry);
   if (again !== 'ok') throw new Refusal(again);
   const frame = document.createElement('iframe');
   frame.className = 'extension-rich-panel-frame'; frame.title = `${entry.view.title} — ${entry.owner}`;
-  frame.setAttribute('sandbox', 'allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.dataset.mountId = id;
+  // The served shell keeps its own (package) origin, which is never the app's: it still cannot reach this document.
+  frame.setAttribute('sandbox', served ? 'allow-scripts allow-same-origin' : 'allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.dataset.mountId = id;
   let last = performance.now(), started = false, ended = false;
   const dispose = () => { window.clearInterval(timer); window.removeEventListener('message', onMessage); frame.remove(); };
   const end = (reason: string) => { if (ended) return; ended = true; dispose(); report({ kind: 'ended', reason }); };
@@ -103,14 +113,14 @@ async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (
   const onMessage = (event: MessageEvent) => {
     if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object' || event.data.schemaVersion !== 1) return;
     if (event.data.kind === 'beat') { last = performance.now(); started = true; }
-    else if (event.data.kind === 'failed') end(['unresponsive', 'error', 'timeout'].includes(event.data.reason) ? event.data.reason : 'error');
+    else if (event.data.kind === 'failed') end(['unresponsive', 'error', 'timeout', 'origin'].includes(event.data.reason) ? event.data.reason : 'error');
   };
   window.addEventListener('message', onMessage);
   const timer = window.setInterval(() => {
     if (document.hidden) { last = performance.now(); return; }
     if (performance.now() - last > (started ? SILENCE_MS : FIRST_BEAT_MS)) end('unresponsive');
   }, 1000);
-  frame.srcdoc = html;
+  if (served) frame.src = src; else frame.srcdoc = html;
   surface.replaceChildren(frame);
   report({ kind: 'mounted', id });
   return () => { ended = true; dispose(); };
@@ -253,10 +263,22 @@ export async function openRichWindow(entry: RegisteredView): Promise<string> {
   const close = () => { dispose(); popup.close(); };
   previewWindows.set(popup, dispose);
   try {
-    const html = await richViewDocument(entry, await PREVIEW_ASSETS[entry.view.id](), `extension-view-${crypto.randomUUID()}`);
+    const label = `extension-view-${crypto.randomUUID()}`;
+    // R0302: a folder or remote view opens the shell of its package origin (the same origin as its inspector panel).
+    if (servedSource(entry.view.rich)) {
+      const url = await previewServedUrl(entry, label);
+      if (popup.closed || previewAuthority(entry) !== 'ok') { close(); return ''; }
+      popup.opener = null; popup.location.href = url;
+      return '';
+    }
+    const html = await richViewDocument(entry, await PREVIEW_ASSETS[entry.view.id](), label);
     if (popup.closed || previewAuthority(entry) !== 'ok') { close(); return ''; }
     popup.opener = null; popup.document.open(); popup.document.write(html); popup.document.close();
     popup.addEventListener('pagehide', dispose, { once: true });
     return '';
-  } catch (error) { close(); throw error; }
+  } catch (error) {
+    close();
+    if (servedSource(entry.view.rich) && error instanceof Error) return refusalNote(error.message, entry.owner);
+    throw error;
+  }
 }

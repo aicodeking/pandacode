@@ -18,7 +18,6 @@
 //!   (`extensions-rich-mount-ended`), so it shows the failure with a reload control; tasks, terminals and the draft
 //!   are never touched.
 use crate::extensions::{packages::{ExtensionPackages, Snapshot}, rich_views, runtime_grants::{RuntimeGrants, Target}, runtime_platform_qualification as platform};
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::{atomic::{AtomicBool, Ordering}, Mutex}, time::{Duration, Instant}};
@@ -151,17 +150,20 @@ pub async fn extensions_rich_mount_open(caller: tauri::Webview, app: tauri::AppH
     let window = caller.window();
     let label = format!("{PANEL_PREFIX}{}", uuid::Uuid::new_v4());
     let dark = window.theme().is_ok_and(|theme| theme == tauri::Theme::Dark);
-    let (pinned, html) = rich_views::panel_document(&snapshot, &request.view_id, &request.version, &label, dark)?;
-    let url = format!("data:text/html;base64,{}", STANDARD.encode(html));
+    // R0302: a legacy inline view opens its data document; a folder or remote page opens the shell on the package's
+    // own origin (`runtime_rich_assets`), registered under `label` until `forget` releases it.
+    let (pinned, url) = rich_views::panel_target(&app, &snapshot, &request.view_id, &request.version, &label, dark)?;
     let navigation = url.clone();
-    let parsed = url.parse().map_err(|_| "UnsafeAsset")?;
+    let Ok(parsed) = url.parse() else { forget(&app, &label); return Err("UnsafeAsset".into()) };
     {
         let state = app.state::<RichMounts>();
         let mut inner = state.inner.lock().map_err(|_| "HostUnavailable")?;
-        if inner.panels.len() >= MOUNT_LIMIT { return Err("LimitExceeded".into()); }
+        if inner.panels.len() >= MOUNT_LIMIT { drop(inner); forget(&app, &label); return Err("LimitExceeded".into()); }
         inner.panels.insert(label.clone(), Panel { owner: pinned.owner, version: pinned.version, view_id: request.view_id.clone(), fingerprint: pinned.fingerprint });
     }
     let builder = tauri::webview::WebviewBuilder::new(&label, tauri::WebviewUrl::External(parsed))
+        // The package origin's scheme is pinned (its page storage is keyed by it).
+        .use_https_scheme(false)
         .devtools(false)
         .disable_drag_drop_handler()
         // The panel may not navigate away from its own document nor open windows (a panel cannot replace the app).
@@ -272,6 +274,8 @@ fn end(app: &tauri::AppHandle, label: &str, kind: Kind, reason: &str) {
     }
 }
 pub fn forget(app: &tauri::AppHandle, label: &str) {
+    // R0302: a served folder goes with its last mount.
+    rich_views::runtime_rich_assets::release(label);
     let Some(state) = app.try_state::<RichMounts>() else { return };
     let Ok(mut inner) = state.inner.lock() else { return };
     inner.panels.remove(label); inner.watches.remove(label);
@@ -284,7 +288,7 @@ pub fn window_closed(app: &tauri::AppHandle, label: &str) {
         Ok(mut inner) => { let panels: Vec<String> = inner.panels.keys().cloned().collect(); for label in &panels { inner.watches.remove(label); } inner.panels.clear(); panels }
         Err(_) => return,
     };
-    for label in panels { if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
+    for label in panels { rich_views::runtime_rich_assets::release(&label); if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
 }
 /// Disable, uninstall, update, safe mode, untrust and revoke end the mounts they no longer allow (`rich_views::reconcile`
 /// calls this after every lifecycle change; the grant command calls `sweep_app`).

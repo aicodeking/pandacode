@@ -370,6 +370,13 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             if view.get("rich").is_some() && !strings(&manifest["permissions"]).contains(&"ui.richViews".to_owned()) { return Err(fail("PermissionDenied", &format!("{path}/permissions"), vec![id.to_owned()])); }
             // R0301: the schema admits heights from 24 (band views); every placement of this slice needs 160 or more.
             if view["rich"]["minSize"]["height"].as_u64().is_some_and(|height| height < 160) { return Err(fail("InvalidShape", &format!("{path}/contributes/views"), vec![view["id"].as_str().unwrap_or_default().to_owned()])); }
+            // R0302: a remote page's origin is one of the origins it declares (`rich.remote`).
+            if let Some(url) = view["rich"]["url"].as_str() {
+                // The same rule as contracts.ts: `https://` + the address's authority is listed (the schema bounds both).
+                let origin = url.strip_prefix("https://").map(|rest| format!("https://{}", &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())]));
+                let listed = origin.is_some_and(|origin| view["rich"]["remote"].as_array().is_some_and(|remote| remote.iter().any(|item| item.as_str() == Some(origin.as_str()))));
+                if !listed { return Err(fail("InvalidShape", &format!("{path}/contributes/views"), vec![view["id"].as_str().unwrap_or_default().to_owned()])); }
+            }
             for item in items(view, "toolbar") { reference(contributions, "commands", &item["command"], &format!("{path}/contributes/views"))?; }
         }
         for page in items(contributions, "settings") {

@@ -9,6 +9,7 @@ import { mountWarmSpareSettings } from './runtime-provider-speed';
 import { mountExecutorServices } from './runtime-executor-placement';
 import { mountSurfaceExplorer } from './explorer';
 import { mountShortcutSettings } from './shortcut-settings';
+import { declaredRemoteNote } from './runtime-rich-assets';
 
 const projectName = (id: string) => extensionProjects().find(project => project.id === id)?.name;
 function scopeSummary(projects: string[] | undefined): string {
@@ -115,7 +116,9 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
             const transient = openExtensionDialog({ title: 'Trust executable extension?', fields: [], confirmation: 'Trust this exact version and executable content with your normal account authority?', confirmLabel: 'Review full authority', successMessage: 'Executable trust recorded' }, { schemaVersion: 1, windowId: 'main', surfaceId: 'panda.commands', revision: 1 }, 'panda.core', target);
             closeTrust = transient.close;
             // The warning must be visible before the first confirmation, not hidden behind a tooltip.
-            const warning = document.createElement('p'); warning.textContent = `${item.manifest.id} ${item.manifest.version} · SHA-256 ${item.executable.digest}\n${EXECUTABLE_WARNING}`;
+            // R0302: the network destinations its panels declare (`rich.remote`) are part of what the user trusts.
+            const remote = declaredRemoteNote(item.manifest as Parameters<typeof declaredRemoteNote>[0]);
+            const warning = document.createElement('p'); warning.textContent = `${item.manifest.id} ${item.manifest.version} · SHA-256 ${item.executable.digest}\n${EXECUTABLE_WARNING}${remote ? `\n${remote}` : ''}`;
             document.querySelector('#dialog[aria-label="Trust executable extension? — panda.core"] .dialog-heading')?.after(warning);
             const result = await transient.result;
             if (closeTrust === transient.close) closeTrust = undefined;

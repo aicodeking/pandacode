@@ -45,6 +45,8 @@ impl Package {
     }
     /// `None` for a package without executable content, else whether the user trusted this digest (R0301 reads it).
     pub(super) fn executable_trusted(&self) -> Option<bool> { self.executable.as_ref().map(|executable| executable.trusted) }
+    /// The archive digest of a package with executable content (R0302 pins served panel folders to it).
+    pub(super) fn executable_digest(&self) -> Option<&str> { self.executable.as_ref().map(|executable| executable.digest.as_str()) }
     #[cfg(test)]
     pub(super) fn set_executable_for_test(&mut self, trusted: Option<bool>) {
         self.executable = trusted.map(|trusted| Executable { digest: "test-digest".into(), trusted });
@@ -185,7 +187,14 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         icons.insert(icon["id"].as_str().unwrap().to_owned(), static_svg(content)?); allowed.insert(asset.to_owned());
     }
     let mut rich_assets = BTreeMap::new();
+    let names: Vec<&str> = files.values().map(|(name, _)| name.as_str()).collect();
     for view in contributions["views"].as_array().into_iter().flatten().filter(|view| view.get("rich").is_some()) {
+        // R0302: a folder panel declares every file of its folder (any type, within the package limits); a remote
+        // page declares none. The legacy inline triple below keeps its rules.
+        if view["rich"].get("html").is_none() {
+            for name in super::rich_views::runtime_rich_assets::check_archive(view, &names)? { allowed.insert(name); }
+            continue;
+        }
         let read = |key: &str| -> Result<String> {
             let asset = view["rich"][key].as_str().ok_or("Unsafe rich-view asset.")?;
             if !safe_name(asset) || !asset.starts_with("assets/") { return Err("Unsafe rich-view asset.".into()); }
@@ -454,6 +463,27 @@ impl Packages {
             if file.is_dir() || !(name == "main.cjs" || runtime_code_folders::in_code_folder(&package.manifest, &name)) { continue; }
             let mut content = Vec::new(); file.by_ref().take(MAX_FILE + 1).read_to_end(&mut content).map_err(|_| "HostUnavailable")?;
             files.push((name, content));
+        }
+        Ok((record.checksum, files))
+    }
+    /// The files of a rich view's panel folder (`rich.folder`, R0302), relative to the folder, read from the
+    /// revalidated stored archive of an enabled, trusted package, with the archive checksum they belong to.
+    pub(crate) fn panel_files(&self, id: &str, folder: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
+        if self.safe || !safe_name(id) || id.contains('/') || !runtime_code_folders::valid_folder(folder) { return Err("PermissionDenied".into()); }
+        let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
+        if !package.enabled || !package.executable.is_some_and(|executable| executable.trusted) { return Err("PermissionDenied".into()); }
+        let declared = package.manifest["contributes"]["views"].as_array().into_iter().flatten().any(|view| view["rich"]["folder"] == folder);
+        if !declared { return Err("PermissionDenied".into()); }
+        let bytes = STANDARD.decode(record.archive).map_err(|_| "HostUnavailable")?;
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "HostUnavailable")?;
+        let prefix = format!("{folder}/");
+        let mut files = Vec::new();
+        for index in 0..zip.len() {
+            let mut file = zip.by_index(index).map_err(|_| "HostUnavailable")?;
+            let Some(relative) = file.name().strip_prefix(&prefix).filter(|relative| !relative.is_empty()).map(str::to_owned) else { continue };
+            if file.is_dir() { continue; }
+            let mut content = Vec::new(); file.by_ref().take(MAX_FILE + 1).read_to_end(&mut content).map_err(|_| "HostUnavailable")?;
+            files.push((relative, content));
         }
         Ok((record.checksum, files))
     }
@@ -864,6 +894,10 @@ mod tests {
         let public = serde_json::to_value(&snapshot).unwrap();
         assert!(public["packages"][0].get("richAssets").is_none() && public["packages"][0].get("rich_assets").is_none());
         assert!(!public.to_string().contains("extension-invalid.example"));
+        // Q023 (R0302): retained for the legacy inline form (three files of at most 64 KiB each, nothing else
+        // undeclared), because that form is inlined into one host-composed document; the permissioned larger budget
+        // is a `rich.folder` panel, bounded only by the package limits
+        // (`rich_views::runtime_rich_assets::tests::installed_folder_and_remote_panels_validate_...`).
         for replacement in [b"</SCRIPT><script>bad()".as_slice(), &[0xff], &vec![b'x'; 65537]] {
             let mut invalid = files; invalid[3] = ("assets/view.js", replacement); assert!(validate(&archive(&invalid)).is_err());
         }

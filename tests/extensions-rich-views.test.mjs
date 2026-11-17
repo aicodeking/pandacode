@@ -42,8 +42,35 @@ test('rich views declare local assets and a separate required API grant', () => 
   assert.equal(validateContract('packages', [manifest]).ok, true);
   const missing = structuredClone(manifest); missing.permissions = ['ui.contribute'];
   assert.equal(validateContract('packages', [missing]).error.code, 'PermissionDenied');
+  // Q048 (R0302): retained for `rich.html`, an archive path of the legacy inline form (a remote or query address is
+  // not a file of the archive: predictability). The permissioned remote page is `rich.url` with its origin declared
+  // in `rich.remote` (positive test below).
   for (const path of ['../view.html', 'assets/../view.html', 'https://remote/view.html', 'assets/view.html?x=1']) {
     const bad = structuredClone(manifest); bad.contributes.views[0].rich.html = path;
     assert.equal(validateContract('packages', [bad]).ok, false);
   }
+});
+test('rich views declare a panel folder or a remote page with declared origins (R0302)', () => {
+  const manifest = JSON.parse(readFileSync(new URL('./fixtures/extensions/runtime-rich-assets/alpha/extension.json', import.meta.url), 'utf8'));
+  assert.equal(validateContract('packages', [manifest]).ok, true);
+  const twin = JSON.parse(readFileSync(new URL('./fixtures/extensions/runtime-rich-assets/twin/extension.json', import.meta.url), 'utf8'));
+  assert.equal(validateContract('packages', [manifest, twin]).ok, true);
+  const view = rich => { const changed = structuredClone(manifest); changed.contributes.views[0].rich = rich; return validateContract('packages', [changed]); };
+  assert.equal(view({ url: 'https://charts.example.test/a?b=1', remote: ['https://charts.example.test'], minSize: { width: 320, height: 200 }, placement: 'window' }).ok, true);
+  for (const rich of [
+    { html: 'assets/a.html', css: 'assets/a.css', script: 'assets/a.js', folder: 'panel' },
+    { folder: 'panel', entry: 'index.html', url: 'https://charts.example.test/' },
+    { folder: 'Panel', entry: 'index.html' },
+    { folder: 'panel', entry: '../index.html' },
+    { folder: 'panel', entry: '/index.html' },
+    { folder: 'panel' },
+    { url: 'http://charts.example.test/', remote: ['https://charts.example.test'] },
+    { url: 'https://charts.example.test/' },
+    { folder: 'panel', entry: 'index.html', remote: ['https://charts.example.test/path'] },
+    { folder: 'panel', entry: 'index.html', remote: [] },
+  ]) assert.equal(view(rich).ok, false, JSON.stringify(rich));
+  // A remote page's origin must be listed in rich.remote (a semantic rule, both validators).
+  assert.equal(view({ url: 'https://other.example.test/x', remote: ['https://charts.example.test'] }).error.code, 'InvalidShape');
+  const missing = structuredClone(manifest); missing.permissions = ['ui.contribute'];
+  assert.equal(validateContract('packages', [missing]).error.code, 'PermissionDenied');
 });

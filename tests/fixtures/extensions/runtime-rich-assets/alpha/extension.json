@@ -1,0 +1,22 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-assets",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [
+      { "id": "sample.rich-assets/board", "title": "Asset board", "text": "Host-rendered asset board: the panel keeps a note in its own storage.", "rich": { "folder": "panel", "entry": "index.html", "remote": ["https://charts.example.test"], "placement": "inspector", "minSize": { "width": 320, "height": 240 } } },
+      { "id": "sample.rich-assets/chart", "title": "Remote chart", "text": "Host-rendered chart summary: three series.", "rich": { "url": "https://charts.example.test/chart.html", "remote": ["https://charts.example.test"], "placement": "inspector" } }
+    ],
+    "commands": [
+      { "id": "sample.rich-assets/open", "title": "Open asset board", "action": { "kind": "openView", "view": "sample.rich-assets/board" } },
+      { "id": "sample.rich-assets/chart-open", "title": "Open remote chart", "action": { "kind": "openView", "view": "sample.rich-assets/chart" } }
+    ],
+    "menus": [
+      { "id": "sample.rich-assets/header", "location": "panda.workspace.header.actions", "command": "sample.rich-assets/open", "presentation": "button" },
+      { "id": "sample.rich-assets/chart-header", "location": "panda.workspace.header.actions", "command": "sample.rich-assets/chart-open", "presentation": "button" }
+    ]
+  }
+}

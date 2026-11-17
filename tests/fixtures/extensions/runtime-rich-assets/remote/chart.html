@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Remote chart</title></head>
+<body>
+  <!-- Served for https://charts.example.test by the spec's route (no network). A remote page without the client
+       script is shown as is and has no pandaView. -->
+  <p id="remote-chart">Remote chart: three series</p>
+  <p id="remote-view">pandaView: <span id="has-view"></span></p>
+  <script>document.getElementById('has-view').textContent = 'pandaView' in window ? 'present' : 'absent';</script>
+</body>
+</html>

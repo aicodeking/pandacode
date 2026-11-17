@@ -252,6 +252,8 @@ impl Packages {
         for candidate in [&path, &stage] { if candidate.symlink_metadata().is_ok() { std::fs::remove_file(candidate).map_err(|_| "StorageUnavailable")?; } }
         // The package's data directory (`panda.storage.directory`, every scope) goes with its own data.
         super::runtime_code_folders::remove_data(&self.app_data(), id)?;
+        // R0302: the page storage of its panel origin is cleared by the next panel shell of this package, once.
+        super::super::rich_views::runtime_rich_assets::request_wipe(&self.app_data(), id)?;
         self.storage_dispose(Some(id), None); Ok(())
     }
     /// Identity, version, project and activation binding come ONLY from the captured host handle.

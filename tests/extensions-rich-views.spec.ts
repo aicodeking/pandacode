@@ -55,6 +55,10 @@ test('extensions rich views: installed local assets receive only presentation DT
 });
 
 test('extensions rich views: opaque frame rejects DOM/IPC/top navigation/eval and remote script/image/fetch attacks', async ({ page, context }) => {
+  // Q118 (R0302): retained for the legacy inline form only (its composed document pins its three files by hash:
+  // predictability of that composition, not a security limit). `parentDom` and `rawIpc` stay false for every form
+  // (fault isolation, interface stability). The permissioned path with network and eval is a folder or remote panel on
+  // its own origin, with declared remote frames (`extensions-runtime-rich-assets.spec.ts`).
   // Route-abort is a final safety net. Record requests separately: CSP must prevent reaching it.
   const network: string[] = [];
   await context.route('https://extension-invalid.example/**', route => { network.push(route.request().url()); return route.abort(); });

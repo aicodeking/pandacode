@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Asset board</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1 id="title">Asset board</h1>
+  <img id="logo" src="img/logo.svg" alt="Asset board logo" width="32" height="32">
+  <p id="image">image: loading</p>
+  <p id="module">modules: loading</p>
+  <p id="origin"></p>
+  <p id="base"></p>
+  <p id="init">init: waiting</p>
+  <label>Note <input id="note" autocomplete="off"></label>
+  <button id="save" type="button">Save note</button>
+  <p id="stored"></p>
+  <button id="outside" type="button">Open a path outside the folder</button>
+  <button id="undeclared" type="button">Open an undeclared origin</button>
+  <iframe id="remote" title="Declared remote frame" src="https://charts.example.test/embed.html" width="240" height="60"></iframe>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

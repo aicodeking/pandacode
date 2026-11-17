@@ -10,6 +10,10 @@ use tauri::Manager;
 // The module uses `crate::extensions::` paths, so it may move to mod.rs unchanged; never declare it in both places.
 #[path = "runtime_rich_mount.rs"]
 pub mod runtime_rich_mount;
+// R0302: panel folders, remote pages and per-package origins (`rich_views::runtime_rich_assets`); same rule as above.
+#[path = "runtime_rich_assets.rs"]
+pub mod runtime_rich_assets;
+use runtime_rich_assets::Source;
 
 const CHANNEL: &str = include_str!("../../../src/extensions/rich-view-channel.js");
 const CLIENT: &str = include_str!("../../../src/extensions/rich-view-client.js");
@@ -25,7 +29,12 @@ pub struct RichAssets { pub html: String, pub css: String, pub script: String }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenRequest { view_id: String, version: String }
-struct Presentation { owner: String, version: String, view: Value, assets: RichAssets }
+/// What a view shows: the legacy inline triple (composed into a data document), or a folder or remote page served
+/// from the package's own origin (R0302, `runtime_rich_assets`).
+#[derive(Clone, PartialEq)]
+enum Content { Inline(RichAssets), Served(Source) }
+/// `generation` is the archive digest of a served view (its files are read from the archive at mount time).
+struct Presentation { owner: String, version: String, view: Value, content: Content, generation: String }
 #[derive(Default)]
 pub struct RichViews(Mutex<BTreeMap<String, Presentation>>);
 
@@ -35,39 +44,62 @@ fn resolve(snapshot: &Snapshot, request: &OpenRequest) -> Result<Presentation, S
         let permissions = package.manifest["permissions"].as_array().ok_or("PermissionDenied")?;
         if !permissions.contains(&json!("ui.contribute")) || !permissions.contains(&json!("ui.richViews")) { continue; }
         if let Some(view) = package.manifest["contributes"]["views"].as_array().into_iter().flatten().find(|view| view["id"] == request.view_id && view.get("rich").is_some()) {
-            let assets = package.rich_assets.get(&request.view_id).ok_or("UnsafeAsset")?.clone();
-            return Ok(Presentation { owner: package.manifest["id"].as_str().ok_or("PermissionDenied")?.into(), version: request.version.clone(), view: view.clone(), assets });
+            let owner: String = package.manifest["id"].as_str().ok_or("PermissionDenied")?.into();
+            let (content, generation) = match runtime_rich_assets::source(&view["rich"]).map_err(|_| "UnsafeAsset")? {
+                None => (Content::Inline(package.rich_assets.get(&request.view_id).ok_or("UnsafeAsset")?.clone()), String::new()),
+                Some(source) => (Content::Served(source), package.executable_digest().ok_or("ExecutableTrustRequired")?.to_owned()),
+            };
+            return Ok(Presentation { owner, version: request.version.clone(), view: view.clone(), content, generation });
         }
     }
     Err("PermissionDenied".into())
 }
-/// What a mounted panel is pinned to: its owner, version and a fingerprint of the view and its assets, so a
-/// same-version reload or a changed view ends the mount (`runtime_rich_mount::reconcile`).
+/// What a mounted panel is pinned to: its owner, version and a fingerprint of the view and its assets (the archive
+/// digest for a served folder), so a same-version reload, an update or a changed view ends the mount
+/// (`runtime_rich_mount::reconcile`).
 pub(super) struct Pinned { pub owner: String, pub version: String, pub fingerprint: String }
 fn pinned(presentation: &Presentation) -> Pinned {
     let mut digest = Sha256::new();
-    for part in [presentation.view.to_string(), presentation.assets.html.clone(), presentation.assets.css.clone(), presentation.assets.script.clone()] { digest.update((part.len() as u64).to_le_bytes()); digest.update(part.as_bytes()); }
+    let parts = match &presentation.content {
+        Content::Inline(assets) => vec![presentation.view.to_string(), assets.html.clone(), assets.css.clone(), assets.script.clone()],
+        Content::Served(_) => vec![presentation.view.to_string(), presentation.generation.clone()],
+    };
+    for part in parts { digest.update((part.len() as u64).to_le_bytes()); digest.update(part.as_bytes()); }
     Pinned { owner: presentation.owner.clone(), version: presentation.version.clone(), fingerprint: format!("{:x}", digest.finalize()) }
 }
 /// Resolves a view for a host mount without composing it.
 pub(super) fn pin(snapshot: &Snapshot, view_id: &str, version: &str) -> Result<Pinned, String> {
     Ok(pinned(&resolve(snapshot, &OpenRequest { view_id: view_id.into(), version: version.into() })?))
 }
-/// The composed panel document for a host mount (the same shell and isolation as the separate window).
+/// The composed panel document for a host mount of a legacy inline view (the same shell and isolation as the
+/// separate window). The mounts open `panel_target`; tests read the composed document.
+#[cfg(test)]
 pub(super) fn panel_document(snapshot: &Snapshot, view_id: &str, version: &str, label: &str, dark: bool) -> Result<(Pinned, String), String> {
     let presentation = resolve(snapshot, &OpenRequest { view_id: view_id.into(), version: version.into() })?;
+    let Content::Inline(assets) = &presentation.content else { return Err("UnsupportedContribution: a served panel opens through panel_target.".into()) };
     let session = uuid::Uuid::new_v4().to_string();
-    Ok((pinned(&presentation), document(&presentation, label, &session, dark)))
+    Ok((pinned(&presentation), document(&presentation, assets, label, &session, dark)))
+}
+/// The address a host mount opens (R0302): a data document for a legacy inline view, else the shell on the
+/// package's own origin (`runtime_rich_assets::prepare`, which registers the mount `label`; every teardown releases it).
+pub(super) fn panel_target(app: &tauri::AppHandle, snapshot: &Snapshot, view_id: &str, version: &str, label: &str, dark: bool) -> Result<(Pinned, String), String> {
+    let presentation = resolve(snapshot, &OpenRequest { view_id: view_id.into(), version: version.into() })?;
+    Ok((pinned(&presentation), target(app, &presentation, label, dark)?))
+}
+fn target(app: &tauri::AppHandle, presentation: &Presentation, label: &str, dark: bool) -> Result<String, String> {
+    match &presentation.content {
+        Content::Inline(assets) => Ok(format!("data:text/html;base64,{}", STANDARD.encode(document(presentation, assets, label, &uuid::Uuid::new_v4().to_string(), dark)))),
+        Content::Served(source) => runtime_rich_assets::prepare(app, &presentation.owner, &presentation.version, &presentation.generation, &presentation.view, source, label, dark),
+    }
 }
 fn hash(source: &str) -> String { format!("'sha256-{}'", STANDARD.encode(Sha256::digest(source.as_bytes()))) }
 fn still_current(snapshot: &Snapshot, old: &Presentation) -> bool {
     resolve(snapshot, &OpenRequest { view_id: old.view["id"].as_str().unwrap_or_default().into(), version: old.version.clone() })
-        .is_ok_and(|new| new.owner == old.owner && new.assets == old.assets && new.view == old.view)
+        .is_ok_and(|new| new.owner == old.owner && new.content == old.content && new.view == old.view && new.generation == old.generation)
 }
 fn escaped_json(value: &Value) -> String { value.to_string().replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026") }
-fn document(presentation: &Presentation, label: &str, session: &str, dark: bool) -> String {
+fn document(presentation: &Presentation, assets: &RichAssets, label: &str, session: &str, dark: bool) -> String {
     let bootstrap = format!("{CHANNEL}\n{CLIENT}"); let shell = format!("{CHANNEL}\n{HOST}");
-    let assets = &presentation.assets;
     let policy = format!("default-src 'none'; script-src {} {} {}; script-src-attr 'none'; style-src {}; img-src 'none'; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src about:; worker-src 'none'", hash(&bootstrap), hash(&assets.script), hash(&shell), hash(&assets.css));
     let meta = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{policy}\"><meta name=\"referrer\" content=\"no-referrer\">");
     let session_json = escaped_json(&json!(session));
@@ -85,17 +117,19 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
     runtime_rich_mount::authorize_app(&app, &snapshot, &presentation.owner, &presentation.version)?;
     if !native_qualified() { return Ok(json!({"opened":false,"reason":UNSUPPORTED})); }
     let label = format!("extension-view-{}", uuid::Uuid::new_v4());
-    let session = uuid::Uuid::new_v4().to_string();
-    let html = document(&presentation, &label, &session, window.theme().is_ok_and(|theme| theme == tauri::Theme::Dark));
-    let url = format!("data:text/html;base64,{}", STANDARD.encode(html));
+    if app.state::<RichViews>().0.lock().map_err(|_| "HostUnavailable")?.len() >= 8 { return Err("LimitExceeded".into()); }
+    // R0302: a legacy view opens its data document; a folder or remote page opens the shell on the package origin.
+    let url = target(&app, &presentation, &label, window.theme().is_ok_and(|theme| theme == tauri::Theme::Dark))?;
     let navigation = url.clone();
-    let url = url.parse().map_err(|_| "UnsafeAsset")?;
+    let url = match url.parse() { Ok(url) => url, Err(_) => { runtime_rich_assets::release(&label); return Err("UnsafeAsset".into()); } };
     let state = app.state::<RichViews>();
     let mut views = state.0.lock().map_err(|_| "HostUnavailable")?;
-    if views.len() >= 8 { return Err("LimitExceeded".into()); }
+    if views.len() >= 8 { drop(views); runtime_rich_assets::release(&label); return Err("LimitExceeded".into()); }
     views.insert(label.clone(), presentation); drop(views);
     let result = tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::External(url))
         .title("Extension view — experimental").inner_size(760.0, 560.0).min_inner_size(360.0, 240.0)
+        // The package origin's scheme is pinned (its storage is keyed by it).
+        .use_https_scheme(false)
         .devtools(false).disable_drag_drop_handler()
         .on_navigation(move |next| next.as_str() == navigation)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
@@ -103,13 +137,13 @@ pub async fn extensions_rich_view_open(window: tauri::WebviewWindow, app: tauri:
         .build();
     let created = match result {
         Ok(created) => created,
-        Err(_) => { state.0.lock().map_err(|_| "HostUnavailable")?.remove(&label); return Err("HostUnavailable".into()); }
+        Err(_) => { runtime_rich_assets::release(&label); state.0.lock().map_err(|_| "HostUnavailable")?.remove(&label); return Err("HostUnavailable".into()); }
     };
     // Revocation may have removed the reserved record before the OS window existed.
     // Reconcile after creation AND check the reservation: never leave that window orphaned.
     reconcile(&app);
     let retained = state.0.lock().map(|views| views.contains_key(&label)).unwrap_or(false);
-    if !retained { let _ = created.close(); return Err("StaleContext".into()); }
+    if !retained { runtime_rich_assets::release(&label); let _ = created.close(); return Err("StaleContext".into()); }
     runtime_rich_mount::watch(&app, &label, runtime_rich_mount::Kind::Window);
     Ok(json!({"opened":true,"windowId":label}))
 }
@@ -120,7 +154,7 @@ pub fn window_closed(app: &tauri::AppHandle, label: &str) {
     let Ok(mut views) = state.0.lock() else { return };
     if label != "main" { views.remove(label); return; }
     let close: Vec<_> = views.keys().cloned().collect(); views.clear(); drop(views);
-    for label in close { if let Some(window) = app.get_webview_window(&label) { let _ = window.close(); } }
+    for label in close { runtime_rich_assets::release(&label); if let Some(window) = app.get_webview_window(&label) { let _ = window.close(); } }
 }
 /// Revalidation also catches a same-version development reload; unrelated owners stay open.
 pub fn reconcile(app: &tauri::AppHandle) {
@@ -175,13 +209,18 @@ mod tests {
     }
     #[test]
     fn composed_document_has_no_broad_csp_and_escapes_package_data_in_host_config() {
-        let presentation = Presentation { owner: "sample.rich-view".into(), version: "1.0.0".into(), view: json!({"id":"sample.rich-view/report","title":"</script><script>hostAttack()</script>","text":"fallback"}), assets: RichAssets { html: "<h1>Local</h1>".into(), css: "body{}".into(), script: "window.canary = true;".into() } };
-        let html = document(&presentation, "extension-view-test", "session-test", false);
+        // Q026 (R0302): retained for the legacy inline form, whose host-composed document inlines the package's files
+        // and pins them by hash (predictability of that composition, not a security limit). The permissioned path
+        // with network, workers and eval is a folder or remote panel on its own origin, which gets no host policy
+        // (`runtime_rich_assets::tests::package_files_carry_media_types_and_no_content_policy_...`).
+        let assets = RichAssets { html: "<h1>Local</h1>".into(), css: "body{}".into(), script: "window.canary = true;".into() };
+        let presentation = Presentation { owner: "sample.rich-view".into(), version: "1.0.0".into(), view: json!({"id":"sample.rich-view/report","title":"</script><script>hostAttack()</script>","text":"fallback"}), content: Content::Inline(assets.clone()), generation: String::new() };
+        let html = document(&presentation, &assets, "extension-view-test", "session-test", false);
         assert!(html.contains("sandbox") && html.contains("allow-scripts"));
         assert!(html.contains("connect-src 'none'") && html.contains("form-action 'none'") && html.contains("worker-src 'none'"));
         assert!(!html.contains("unsafe-eval") && !html.contains("unsafe-inline") && !html.contains("blob:") && !html.contains("https:"));
         assert!(!html.contains("<script>hostAttack()"));
         assert!(html.contains("\\u003c/script\\u003e"));
-        assert!(html.contains(&hash(&presentation.assets.script)));
+        assert!(html.contains(&hash(&assets.script)));
     }
 }
