@@ -20,6 +20,48 @@
   // the host watchdog ends it; served frames are not pinged.
   const embedded = typeof window !== 'undefined' && typeof parent !== 'undefined' && parent !== window;
   const tell = (kind, extra) => { if (embedded) parent.postMessage({ schemaVersion: 1, kind, sequence: beat, ...extra }, '*'); };
+  // R0303: the channel of a served panel. Installed: `POST /~panda/channel` on this origin (the host knows the
+  // webview; nothing in the body names it) and pushes dispatched as `panda-view-host` events. Preview (an embedded
+  // shell): the same requests and pushes through the host page. The inline form has none (its document pins
+  // connect-src 'none').
+  const transport = !served ? null : embedded ? 'embedded' : 'native';
+  let channelOpen = false, hostVisible = true, sentVisibility = '', focused = false, seq = 0;
+  const replies = new Map(), held = [];
+  const unavailable = { ok: false, error: { schemaVersion: 1, code: 'HostUnavailable', message: 'HostUnavailable: the panel host did not answer. Reload the panel.', path: '$', ids: [] } };
+  const toHost = (kind, fields) => {
+    const body = { schemaVersion: 1, session: config.session, kind, ...fields };
+    if (transport === 'native') {
+      return fetch('/~panda/channel', { method: 'POST', body: JSON.stringify(body), headers: { 'Content-Type': 'application/json' }, cache: 'no-store', keepalive: kind === 'bye' })
+        .then(response => response.json()).catch(() => unavailable);
+    }
+    if (transport === 'embedded') return new Promise(resolve => { const id = ++seq; replies.set(id, resolve); parent.postMessage({ schemaVersion: 1, kind: 'channel', seq: id, request: body }, '*'); });
+    return Promise.resolve({ ok: false, error: { schemaVersion: 1, code: 'UnsupportedCapability', message: 'UnsupportedCapability: the inline rich form has no channel. Declare rich.folder to talk to the service.', path: '$', ids: [] } });
+  };
+  const toFrame = message => { if (alive && frame.contentWindow) frame.contentWindow.postMessage(message, '*'); };
+  const refuse = (id, error) => toFrame({ schemaVersion: 1, session: config.session, kind: 'reply', id, ok: false, error });
+  // What the page sees: the host's visibility and this document's focus (a focused frame is part of it).
+  const showVisibility = () => {
+    if (!alive || !initialized || !channelOpen) return;
+    const now = typeof document.hasFocus === 'function' && document.hasFocus();
+    if (now !== focused) { focused = now; void toHost('focus', { focused }); }
+    const key = `${hostVisible}:${focused}`;
+    if (key === sentVisibility) return;
+    sentVisibility = key;
+    toFrame({ schemaVersion: 1, session: config.session, kind: 'visibility', visible: hostVisible, focused });
+  };
+  const sendTheme = theme => {
+    if (!alive || !initialized) return;
+    const message = { schemaVersion: 1, session: config.session, kind: 'theme', sequence: sequence + 1, dto: config.dto, theme };
+    if (!richViewMessage(message, config.session, 'theme', sequence + 1)) return;
+    sequence++; toFrame(message);
+  };
+  const fromHost = detail => {
+    if (!alive || !detail || typeof detail !== 'object' || detail.session !== config.session) return;
+    if (!initialized || !channelOpen) { if (held.length < 64) held.push(detail); return; }
+    if (richViewChannel(detail, config.session, 'message') || richViewChannel(detail, config.session, 'reply')) toFrame(detail);
+    else if (richViewChannel(detail, config.session, 'visibility')) { hostVisible = detail.visible; showVisibility(); }
+    else if (richViewChannel(detail, config.session, 'theme')) sendTheme(detail.theme);
+  };
   let beat = 0, pending = 0, heart = 0;
   const stop = () => { if (heart && typeof clearInterval === 'function') clearInterval(heart); heart = 0; };
   const failures = {
@@ -42,31 +84,77 @@
   if (typeof setInterval === 'function') heart = setInterval(() => {
     if (!alive) return;
     beat++; document.title = `panda-view:alive:${beat}`; tell('beat');
+    showVisibility();
     if (!initialized || served) return;
     if (pending && beat - pending > 3) { fail('unresponsive'); return; }
     if (!pending) { pending = beat; frame.contentWindow.postMessage({ schemaVersion: 1, session: config.session, kind: 'ping', sequence: beat }, '*'); }
   }, 1000);
   const origins = served ? [location.origin, ...(Array.isArray(config.frameOrigins) ? config.frameOrigins : [])] : ['null'];
+  // The host page of an embedded shell answers its channel requests and pushes; nothing else from it is heard.
+  if (transport === 'embedded') addEventListener('message', event => {
+    const data = event.data;
+    if (!alive || event.source !== parent || !data || typeof data !== 'object' || data.schemaVersion !== 1) return;
+    if (data.kind === 'channel-reply' && replies.has(data.seq)) { const resolve = replies.get(data.seq); replies.delete(data.seq); resolve(data.response && typeof data.response === 'object' ? data.response : unavailable); }
+    else if (data.kind === 'host') fromHost(data.detail);
+  }, { signal: controller.signal });
+  if (transport === 'native') addEventListener('panda-view-host', event => fromHost(event.detail), { signal: controller.signal });
+  // Initializes the frame's document. A served page first asks the host for its instance (`hello`): the init then
+  // carries the instance, its state and the current theme, followed by its visibility and what waited for it.
+  let starting = false;
+  const initialize = () => {
+    const init = (instance, theme) => {
+      const message = { schemaVersion: 1, session: config.session, kind: 'init', sequence: 1, dto: config.dto, theme: theme || config.theme, ...(instance ? { instance } : {}) };
+      if (!richViewMessage(message, config.session, 'init', 1)) return false;
+      initialized = true; sequence = 1; clearTimeout(timeout); status.textContent = 'Isolated extension view';
+      toFrame(message);
+      return true;
+    };
+    if (!transport) { init(); return; }
+    if (starting) return;
+    starting = true;
+    void toHost('hello', {}).then(response => {
+      starting = false;
+      if (!alive) return;
+      const value = response && response.ok ? response.value : null;
+      const instance = value && { instanceId: value.instanceId, viewId: value.viewId, placement: value.placement, restored: value.restored, ...(value.state !== undefined ? { state: value.state } : {}) };
+      const theme = value && richViewTheme(value.theme) ? value.theme : undefined;
+      if (!init(instance && richViewInstance(instance) ? instance : undefined, theme)) { init(); return; }
+      channelOpen = !!instance;
+      if (!channelOpen) return;
+      hostVisible = value.visible !== false; sentVisibility = '';
+      showVisibility();
+      for (const message of Array.isArray(value.pending) ? value.pending : []) fromHost({ ...message, schemaVersion: 1, session: config.session });
+      for (const detail of held.splice(0)) fromHost(detail);
+    });
+  };
   addEventListener('message', event => {
     if (!alive || event.source !== frame.contentWindow || !origins.includes(event.origin)) return;
     if (richViewSignal(event.data, config.session, 'fault')) { fail('error'); return; }
+    // The frame's channel requests after the handshake go to the host as they are, never as anything else.
+    if (initialized && served) {
+      const data = event.data;
+      if (richViewChannel(data, config.session, 'post') || richViewChannel(data, config.session, 'call')) {
+        if (!channelOpen) { refuse(data.id, { schemaVersion: 1, code: 'UnsupportedCapability', message: 'UnsupportedCapability: this panel has no channel.' }); return; }
+        const fields = data.kind === 'post' ? { id: data.id, message: data.message } : { id: data.id, path: data.path, args: data.args };
+        void toHost(data.kind, fields).then(response => { if (!response || response.ok !== true) refuse(data.id, (response && response.error) || unavailable.error); });
+        return;
+      }
+      if (richViewChannel(data, config.session, 'state')) { if (channelOpen) void toHost('state', { value: data.value }); return; }
+    }
     // A served frame may load another page of its folder: each new document announces itself and is initialized.
     if (initialized && !served) { if (richViewSignal(event.data, config.session, 'pong') && event.data.sequence === pending) pending = 0; return; }
     if (!richViewMessage(event.data, config.session, 'ready', 1)) return;
-    const message = { schemaVersion: 1, session: config.session, kind: 'init', sequence: 1, dto: config.dto, theme: config.theme };
-    if (!richViewMessage(message, config.session, 'init', 1)) return;
-    initialized = true; sequence = 1; clearTimeout(timeout); status.textContent = 'Isolated extension view';
-    frame.contentWindow.postMessage(message, '*');
+    initialize();
   }, { signal: controller.signal });
-  addEventListener('panda-view-theme', event => {
-    if (!alive || !initialized) return;
-    const message = { schemaVersion: 1, session: config.session, kind: 'theme', sequence: sequence + 1, dto: config.dto, theme: event.detail };
-    if (!richViewMessage(message, config.session, 'theme', sequence + 1)) return;
-    sequence++; frame.contentWindow.postMessage(message, '*');
-  }, { signal: controller.signal });
+  // The preview's separate window and the legacy host follow the app's appearance through this event.
+  addEventListener('panda-view-theme', event => sendTheme(event.detail), { signal: controller.signal });
+  if (typeof document.hasFocus === 'function') for (const name of ['focus', 'blur']) addEventListener(name, () => setTimeout(showVisibility, 0), { signal: controller.signal });
   // Source-window identity is checked, not a payload's claimed window/owner. A navigation
   // destroys this document/session; no package message ever becomes a native command.
-  addEventListener('pagehide', () => { alive = false; controller.abort(); clearTimeout(timeout); stop(); frame.remove(); }, { once: true });
+  addEventListener('pagehide', () => {
+    if (channelOpen) void toHost('bye', {});
+    alive = false; controller.abort(); clearTimeout(timeout); stop(); frame.remove();
+  }, { once: true });
   if (!served) {
     frame.srcdoc = config.document;
     document.body.replaceChildren(status, frame);
@@ -83,7 +171,10 @@
   }, { signal: controller.signal });
   // A remote page without the client never initializes: once it has loaded it is shown as is.
   frame.addEventListener('load', () => { if (alive && !initialized && !config.expectsClient) status.textContent = 'Isolated extension view'; }, { signal: controller.signal });
-  const start = () => { if (!alive) return; frame.src = config.src; document.body.replaceChildren(status, frame); };
+  // R0303: a remote page learns its session from the fragment (never sent to its server), so a page that includes the
+  // client script (`sdk/panda-view.js`) gets the channel; a page without it is shown as is.
+  const address = config.src.startsWith('/') ? config.src : `${config.src.split('#')[0]}#panda-session=${encodeURIComponent(config.session)}`;
+  const start = () => { if (!alive) return; frame.src = address; document.body.replaceChildren(status, frame); };
   if (!config.wipe) { start(); return; }
   // "Remove own data" (R0302): clear this origin's page storage once, before the package's page runs.
   status.textContent = 'Clearing the panel’s removed data…';

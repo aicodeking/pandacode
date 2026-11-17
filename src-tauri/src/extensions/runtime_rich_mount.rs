@@ -17,7 +17,7 @@
 //!   reports a failure, never starts or stops beating is destroyed and the main window is told
 //!   (`extensions-rich-mount-ended`), so it shows the failure with a reload control; tasks, terminals and the draft
 //!   are never touched.
-use crate::extensions::{packages::{ExtensionPackages, Snapshot}, rich_views, runtime_grants::{RuntimeGrants, Target}, runtime_platform_qualification as platform};
+use crate::extensions::{packages::{ExtensionPackages, Snapshot}, rich_views, runtime_grants::{RuntimeGrants, Target}, runtime_platform_qualification as platform, rich_views::runtime_rich_channel as channel};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, sync::{atomic::{AtomicBool, Ordering}, Mutex}, time::{Duration, Instant}};
@@ -197,7 +197,8 @@ pub async fn extensions_rich_mount_bounds(caller: tauri::Webview, app: tauri::Ap
 #[tauri::command]
 pub async fn extensions_rich_mount_close(caller: tauri::Webview, app: tauri::AppHandle, mount_id: String) -> Result<(), String> {
     if caller.label() != "main" || !mount_id.starts_with(PANEL_PREFIX) { return Err(DENIED.into()); }
-    forget(&app, &mount_id);
+    // R0303: a closed inspector panel keeps its instance's state for a reopen in this run.
+    forget_keeping(&app, &mount_id, true);
     if let Some(view) = app.get_webview(&mount_id) { let _ = view.close(); }
     Ok(())
 }
@@ -225,11 +226,15 @@ pub fn watch(app: &tauri::AppHandle, label: &str, kind: Kind) {
 /// A hidden panel's timers may be throttled: its watch pauses and restarts its clock when shown again.
 fn pause(app: &tauri::AppHandle, label: &str, paused: bool) {
     let Some(state) = app.try_state::<RichMounts>() else { return };
-    let Ok(mut inner) = state.inner.lock() else { return };
-    if let Some(watch) = inner.watches.get_mut(label) {
-        if watch.paused && !paused { if watch.last_beat.is_some() { watch.last_beat = Some(Instant::now()); } else { watch.started = Instant::now(); } }
-        watch.paused = paused;
+    {
+        let Ok(mut inner) = state.inner.lock() else { return };
+        if let Some(watch) = inner.watches.get_mut(label) {
+            if watch.paused && !paused { if watch.last_beat.is_some() { watch.last_beat = Some(Instant::now()); } else { watch.started = Instant::now(); } }
+            watch.paused = paused;
+        }
     }
+    // R0303: the instance and its service hear a change of visibility (once per change).
+    channel::visibility(app, label, !paused);
 }
 /// One watchdog pass; `false` ends the thread when nothing is watched. Window state is read without holding the lock
 /// (the main thread takes it in `observe_title`).
@@ -264,7 +269,8 @@ fn tick(app: &tauri::AppHandle) -> bool {
     true
 }
 fn end(app: &tauri::AppHandle, label: &str, kind: Kind, reason: &str) {
-    forget(app, label);
+    // R0303: a failed panel keeps its instance's state for the reload; a lifecycle end drops it.
+    forget_keeping(app, label, matches!(reason, "unresponsive" | "error" | "timeout" | "origin"));
     match kind {
         Kind::Panel => {
             if let Some(view) = app.get_webview(label) { let _ = view.close(); }
@@ -273,9 +279,12 @@ fn end(app: &tauri::AppHandle, label: &str, kind: Kind, reason: &str) {
         Kind::Window => { if let Some(window) = app.get_webview_window(label) { let _ = window.close(); } }
     }
 }
-pub fn forget(app: &tauri::AppHandle, label: &str) {
-    // R0302: a served folder goes with its last mount.
+pub fn forget(app: &tauri::AppHandle, label: &str) { forget_keeping(app, label, false); }
+/// Every teardown: the served folder goes with its last mount (R0302); the instance closes, keeping its state for a
+/// reopen when `keep` (R0303).
+pub fn forget_keeping(app: &tauri::AppHandle, label: &str, keep: bool) {
     rich_views::runtime_rich_assets::release(label);
+    channel::detach(app, label, keep);
     let Some(state) = app.try_state::<RichMounts>() else { return };
     let Ok(mut inner) = state.inner.lock() else { return };
     inner.panels.remove(label); inner.watches.remove(label);
@@ -288,7 +297,7 @@ pub fn window_closed(app: &tauri::AppHandle, label: &str) {
         Ok(mut inner) => { let panels: Vec<String> = inner.panels.keys().cloned().collect(); for label in &panels { inner.watches.remove(label); } inner.panels.clear(); panels }
         Err(_) => return,
     };
-    for label in panels { rich_views::runtime_rich_assets::release(&label); if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
+    for label in panels { rich_views::runtime_rich_assets::release(&label); channel::detach(app, &label, false); if let Some(view) = app.get_webview(&label) { let _ = view.close(); } }
 }
 /// Disable, uninstall, update, safe mode, untrust and revoke end the mounts they no longer allow (`rich_views::reconcile`
 /// calls this after every lifecycle change; the grant command calls `sweep_app`).

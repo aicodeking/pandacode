@@ -1,0 +1,21 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.rich-channel",
+  "version": "1.0.0",
+  "name": "Rich channel board",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "service.mjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "views": [
+      { "id": "sample.rich-channel/board", "title": "Channel board", "text": "Host-rendered board: issues stream from the service.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } }
+    ],
+    "commands": [
+      { "id": "sample.rich-channel/open", "title": "Open channel board", "action": { "kind": "openView", "view": "sample.rich-channel/board" } }
+    ],
+    "menus": [
+      { "id": "sample.rich-channel/header", "location": "panda.workspace.header.actions", "command": "sample.rich-channel/open", "presentation": "button" }
+    ]
+  }
+}

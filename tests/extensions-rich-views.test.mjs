@@ -7,11 +7,20 @@ import { validateContract } from '../src/extensions/contracts.ts';
 const source = readFileSync(new URL('../src/extensions/rich-view-channel.js', import.meta.url), 'utf8');
 const accepts = runInNewContext(`${source}; richViewMessage`, { TextEncoder });
 const ready = { schemaVersion: 1, kind: 'ready', session: 'session-a', sequence: 1 };
+// Q049 (R0303): retained for the handshake. `invoke` and a `command` field stay refused for every message (a panel
+// never obtains a native command: fault isolation and interface stability), and the handshake keeps its 32 KB
+// envelope (a fixed presentation shape: predictability). Changed by the permissioned channel: after the handshake a
+// served panel exchanges `post`, `state`, `call`, `message`, `reply`, `visibility` and `theme` of up to 256 KiB of
+// JSON (positive test below and tests/extensions-runtime-rich-channel.spec.ts).
 test('rich view channel rejects oversized, forged, stale and extra-field messages', () => {
   assert.equal(accepts(ready, 'session-a', 'ready', 1), true);
   for (const change of [{ schemaVersion: 2 }, { session: 'session-b' }, { kind: 'invoke' }, { sequence: 0 }, { sequence: 2 }, { command: 'read_file' }, { session: 'é'.repeat(32768) }]) assert.equal(accepts({ ...ready, ...change }, 'session-a', 'ready', 1), false);
   assert.equal(accepts(null, 'session-a', 'ready', 1), false);
 });
+// Q050 (R0303): retained: the DTO stays the presentation DTO (an extra `dto.credentials` is refused: ADR-0006, a held
+// credential never reaches a webview or a panel) and the theme stays finite; the host accepts one handshake per
+// document. Changed: an init may carry the panel's instance and state beside the DTO, and messages flow after the
+// handshake (positive test below).
 test('rich view init accepts only the presentation DTO and finite theme schema', () => {
   const init = { ...ready, kind: 'init', dto: { schemaVersion: 1, owner: 'sample.rich-view', version: '1.0.0', viewId: 'sample.rich-view/report', windowId: 'extension-view-a', title: 'Report', text: 'Fallback' }, theme: { schemaVersion: 1, colorScheme: 'dark' } };
   assert.equal(accepts(init, 'session-a', 'init', 1), true);
@@ -35,6 +44,23 @@ test('rich view host checks actual source and opaque origin, accepts once and di
   message({ source: target, origin: 'null', data: ready }); assert.equal(sent.length, expire ? 0 : 1);
   listeners.get('pagehide')(); assert.equal(signal.aborted, true); assert.equal(removed, true);
   message({ source: target, origin: 'null', data: ready }); assert.equal(sent.length, expire ? 0 : 1);
+  }
+});
+test('rich view channel carries the instance, state and messages of a served panel after the handshake (R0303)', () => {
+  const channel = runInNewContext(`${source}; richViewChannel`, { TextEncoder });
+  const dto = { schemaVersion: 1, owner: 'sample.rich-channel', version: '1.0.0', viewId: 'sample.rich-channel/board', windowId: 'extension-panel-a', title: 'Board', text: 'Fallback' };
+  const init = { ...ready, kind: 'init', dto, theme: { schemaVersion: 1, colorScheme: 'dark' }, instance: { instanceId: 'i-1', viewId: dto.viewId, placement: 'inspector', restored: true, state: 'x'.repeat(200000) } };
+  assert.equal(accepts(init, 'session-a', 'init', 1), true);
+  assert.equal(accepts({ ...init, instance: { ...init.instance, state: 'x'.repeat(262144) } }, 'session-a', 'init', 1), false);
+  assert.equal(accepts({ ...init, instance: { ...init.instance, credentials: 'never' } }, 'session-a', 'init', 1), false);
+  const envelope = { schemaVersion: 1, session: 'session-a' };
+  assert.equal(channel({ ...envelope, kind: 'post', id: 1, message: 'x'.repeat(200000) }, 'session-a', 'post'), true);
+  assert.equal(channel({ ...envelope, kind: 'state', value: { selected: 'T-1' } }, 'session-a', 'state'), true);
+  assert.equal(channel({ ...envelope, kind: 'call', id: 2, path: 'tasks.queue.list', args: ['t1'] }, 'session-a', 'call'), true);
+  assert.equal(channel({ ...envelope, kind: 'reply', id: 2, ok: false, error: { code: 'UnsupportedCapability' } }, 'session-a', 'reply'), true);
+  assert.equal(channel({ ...envelope, kind: 'visibility', visible: false, focused: true }, 'session-a', 'visibility'), true);
+  for (const forged of [{ ...envelope, kind: 'invoke', command: 'read_file' }, { ...envelope, kind: 'post', id: 1, message: 1, command: 'read_file' }, { ...envelope, kind: 'post', id: 0, message: 1 }, { ...envelope, session: 'session-b', kind: 'state', value: 1 }, { ...envelope, kind: 'call', id: 1, path: '../x', args: [] }]) {
+    assert.equal(channel(forged, 'session-a', forged.kind), false, JSON.stringify(forged).slice(0, 80));
   }
 });
 test('rich views declare local assets and a separate required API grant', () => {

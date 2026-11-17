@@ -526,7 +526,36 @@ export interface TasksApi {
 }
 /** `workspace.settings` (global): the app's own settings, by the frozen keys `sidebar.sort`, `sidebar.filter`, `sidebar.scope`, `sidebar.order`, `view.open`, `tiles.layout`, `find.query`, `projects.search`, `tokenSaver`, `council`, `bot:<id>`, `channel:<id>`, `team.profiles`, `widgets`, `machines.orchestration`, `appearance.compact` and `appearance.theme`. An unknown key (telemetry, routing, the GitHub switch, safe mode, updates, trust, pairing and remote access are not keys) answers `NotFound`; a `revision` that is not the current one answers `StaleContext`. A fixed key nobody has written reads `null` at revision 0. See docs/extensions/runtime-workspace-settings.md. */
 export interface WorkspaceSettingsApi { list(): Promise<readonly string[]>; get(key: string): Promise<{ readonly key: string; readonly value: unknown; readonly revision: number }>; set(key: string, value: unknown, options?: { readonly revision?: number }): Promise<null> }
-export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly workspace: { readonly settings: WorkspaceSettingsApi } }
+export interface ServicePandaCode { readonly apiVersion: '1.0.0'; readonly commands: { register(id: string, handler: (invocation: unknown) => unknown): Disposable }; readonly secrets: PrivateSecrets; readonly events: WorkspaceEvents; readonly storage: ServiceStorage; readonly auth: ServiceAuth; readonly settings: PackageSettings; readonly context: ServiceContext; readonly harnesses: ServiceHarnesses; readonly providers: ServiceProviders; readonly ui: ServiceUi; readonly tasks: TasksApi; readonly workspace: { readonly settings: WorkspaceSettingsApi }; readonly views: PanelViews }
+/** One mount of a rich view (R0303): its own id, document and `state`. An inspector panel keeps its id across a reload or failure in this run. See docs/extensions/runtime-rich-channel.md. */
+export interface PanelInstance { readonly instanceId: string; readonly viewId: string; readonly windowId: string; readonly placement: 'inspector' | 'floating' | 'window' | 'band' | 'editor'; readonly visible: boolean; readonly focused: boolean; readonly scope?: { readonly taskId?: string; readonly projectId?: string } }
+/** `panda.views` of a service (`ui.richViews`): `post` without `instance` reaches every live instance of the view and answers how many received it (nothing is queued for a closed one); messages are at most 256 KiB of JSON and 20 per second per package in each direction (`LimitExceeded`). A view that is not a rich view of the package is `NotFound`. */
+export interface PanelViews {
+  post(viewId: string, message: Json, options?: { readonly instance?: string }): Promise<{ readonly delivered: number }>;
+  onMessage(viewId: string, handler: (message: Json, from: PanelInstance) => void | Promise<void>): Disposable;
+  on(kind: 'opened' | 'visible' | 'hidden' | 'closed', handler: (instance: PanelInstance) => void): Disposable;
+  instances(viewId?: string): Promise<readonly PanelInstance[]>;
+}
+/** The finite theme a panel receives (today's theme message). */
+export interface PanelTheme { readonly schemaVersion: 1; readonly colorScheme: 'light' | 'dark'; readonly tokens?: Readonly<Record<string, string>> }
+/** What `pandaView.onDidInitialize` receives: today's `{ dto, theme }` envelope, plus the instance of a served panel (absent for the legacy inline form). */
+export interface PanelInit { readonly dto: Json; readonly theme: PanelTheme; readonly instanceId?: string; readonly viewId?: string; readonly placement?: PanelInstance['placement']; readonly restored?: boolean; readonly state?: Json }
+/** The package SDK inside a panel, through the host: every call the package holds a grant for except the service-only ones (secrets, sign-in, the data directory, internal calls and handler registrations), which reject with `UnsupportedCapability`. */
+export type PanelApi = Omit<ServicePandaCode, 'secrets' | 'auth' | 'events' | 'commands' | 'views' | 'providers' | 'storage'>;
+/** `window.pandaView` in a rich panel (R0302 `baseUrl`, R0303 channel). Callbacks return a bare unsubscribe function. */
+export interface PandaView {
+  onDidInitialize(callback: (init: PanelInit) => void): () => void;
+  onDidChangeTheme(callback: (theme: PanelTheme) => void): () => void;
+  readonly viewId: string; readonly instanceId: string; readonly baseUrl?: string;
+  /** To the service; `UnsupportedCapability` without one, `HostUnavailable` while it is not running, `LimitExceeded` past the bounds. */
+  postMessage(message: Json): Promise<null>;
+  onMessage(callback: (message: Json) => void): () => void;
+  /** Called once after initialization and at every change. */
+  onDidChangeVisibility(callback: (state: { readonly visible: boolean; readonly focused: boolean }) => void): () => void;
+  /** Synchronous; `set` throws `LimitExceeded` above 256 KiB. Kept for one run of the app, across hiding, reload and failure. */
+  readonly state: { get(): Json | undefined; set(value: Json): void };
+  readonly panda: PanelApi;
+}
 /** What the user answered a service's dialog (R0206). A dialog that was closed, or whose service ended, is `cancelled`. */
 export type DialogAnswer = { readonly status: 'confirmed'; readonly values: Readonly<Record<string, string | boolean | readonly string[]>> } | { readonly status: 'cancelled' };
 /** Where `reveal` takes the window: a view or settings page of this package, a task, or a file of a project (relative path). */

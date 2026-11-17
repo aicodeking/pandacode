@@ -8,7 +8,7 @@
 //
 // Twins driven here (never copied): runtime-workspace-events (R0202), runtime-content-resources (R0203),
 // runtime-usage-resources (R0204), runtime-dynamic-items (R0205), runtime-dialog-navigation (R0206),
-// runtime-notifications (R0207). The B1 fake daemon (tests/fixtures/extensions/backends/core/fake-daemon.mjs) is the
+// runtime-notifications (R0207), runtime-rich-channel (R0303, `panda.views`). The B1 fake daemon (tests/fixtures/extensions/backends/core/fake-daemon.mjs) is the
 // replaced backend: its browser-importable core answers `panda.daemon`. Later namespaces extend `buildPanda` with short
 // edits, never a second runner. Everything here is for predictability and fault isolation, never for trust (ADR-0005).
 import type { Json } from './contracts';
@@ -21,6 +21,7 @@ import { query as queryUsage, type World as UsageWorld } from './runtime-usage-r
 import { TaskStarter, PERMISSION as TASKS_START_PERMISSION, type StartWorld } from './runtime-tasks-start';
 import { TaskMessenger, type MessengerWorld } from './runtime-tasks-messages';
 import { WorkspaceEvents, eventFrame, type Envelope } from './runtime-workspace-events';
+import { ChannelError, PreviewViews, type PanelInstance, type PreviewPanelHost } from './runtime-rich-channel';
 
 /** Every report of this runner is of this column; the receipt keeps preview, native fixtures and installed apart. */
 export const COLUMN = 'preview' as const;
@@ -28,6 +29,7 @@ export const SERVICE_PERMISSION = 'runtime.service';
 export const EVENTS_PERMISSION = 'events.workspace';
 export const NOTIFY_PERMISSION = 'ui.notify';
 export const DYNAMIC_PERMISSION = 'ui.dynamic';
+export const PANELS_PERMISSION = 'ui.richViews';
 
 export type ServiceState = 'stopped' | 'running' | 'failed';
 export type StopReason = 'stop' | 'disable' | 'trust' | 'safeMode' | 'update' | 'failed';
@@ -83,6 +85,15 @@ export interface PreviewPanda {
     request(op: string, params?: unknown): Promise<unknown>;
     subscribe(topic: string, handler: (frame: { event: string; seq: number; data: unknown }) => void): Promise<Disposer>;
   };
+  /** `panda.views` (R0303, ui.richViews): the package's panel instances, through the page's panel host. */
+  readonly views: PanelViews;
+}
+/** The service side of panels: `post` and `instances` reach the host; `onMessage` and `on` keep handlers in the service. */
+export interface PanelViews {
+  post(viewId: string, message: Json, options?: { instance?: string }): Promise<{ delivered: number }>;
+  instances(viewId?: string): Promise<PanelInstance[]>;
+  onMessage(viewId: string, handler: (message: Json, from: PanelInstance) => unknown): { dispose(): void };
+  on(kind: 'opened' | 'visible' | 'hidden' | 'closed', handler: (instance: PanelInstance) => unknown): { dispose(): void };
 }
 
 /** The shape of B1's browser-importable core (`createDaemon`): the preview never sees more than this. */
@@ -118,6 +129,8 @@ export interface PreviewOptions {
 ote and queue run in; absent: they are UnsupportedCapability. */
   tasksMessages?: MessengerWorld;
   scopes?: { tasks: readonly string[]; projects: readonly string[] };
+  /** The page's host of panel shells (R0303); absent: `panda.views` answers UnsupportedCapability. */
+  panels?: PreviewPanelHost;
   enabled?: boolean;
   safeMode?: boolean;
 }
@@ -154,6 +167,9 @@ export class RuntimePreview {
   private ended: ((reason: StopReason) => void) | null = null;
   private grantsMap: Grants;
   private options: PreviewOptions;
+  /** The service's panel handlers and the panda it was given (R0303: a panel's proxied calls run on it). */
+  private views: PreviewViews | null = null;
+  private panda: PreviewPanda | null = null;
 
   constructor(options: PreviewOptions) {
     this.options = options;
@@ -161,6 +177,35 @@ export class RuntimePreview {
     this.starter = options.tasksStart ? new TaskStarter(options.tasksStart) : null;
     this.messenger = options.tasksMessages ? new TaskMessenger(options.tasksMessages) : null;
     this.events.setGate((_owner, _version, project) => this.holds(EVENTS_PERMISSION, project));
+    if (options.panels) {
+      this.views = new PreviewViews(options.panels, options.manifest.id, () => this.holds(PANELS_PERMISSION));
+      options.panels.setService({
+        declares: owner => owner === this.owner && options.manifest.runtime?.service?.start === 'onEnable',
+        running: owner => owner === this.owner && this.state === 'running',
+        deliver: async (_owner, params) => { if (this.state === 'running') await this.views?.receive(params); },
+        call: (_owner, path, args) => this.callByPath(path, args),
+      });
+    }
+  }
+  /** `panda.views` of this service, as the service sees it (also read by the specs). */
+  panelViews(): PanelViews {
+    const views = this.views;
+    const missing = () => new PandaError('UnsupportedCapability');
+    const declared = (viewId: string) => (this.options.manifest.contributes?.views ?? []).some(view => view.id === viewId);
+    return {
+      post: (viewId, message, options) => !views ? Promise.reject(missing()) : !declared(viewId) ? Promise.reject(new PandaError('NotFound')) : views.post(viewId, message, options),
+      instances: viewId => (views ? views.instances(viewId) : Promise.reject(missing())),
+      onMessage: (viewId, handler) => { if (!views) throw missing(); return views.onMessage(viewId, handler); },
+      on: (kind, handler) => { if (!views) throw missing(); return views.on(kind, handler); },
+    };
+  }
+  /** A panel's proxied call (never a service-only one: the channel refused those) on the service's own panda. */
+  private async callByPath(path: string, args: readonly unknown[]): Promise<unknown> {
+    if (!this.panda || this.state !== 'running') throw new PandaError('HostUnavailable');
+    let target: unknown = this.panda;
+    for (const part of path.split('.')) target = target && typeof target === 'object' && Object.hasOwn(target, part) ? (target as Record<string, unknown>)[part] : undefined;
+    if (typeof target !== 'function') throw new ChannelError(`UnsupportedCapability: ${path} is not a call of the package SDK in a panel in this release.`);
+    return (target as (...values: unknown[]) => unknown)(...args);
   }
 
   get owner() { return this.options.manifest.id; }
@@ -223,7 +268,8 @@ export class RuntimePreview {
     const stopped = new Promise<StopReason>(resolve => { this.ended = resolve; });
     const lifetime: PreviewLifetime = { onStop: cleanup => { this.cleanups.push(cleanup); }, setStatus: status => { Object.assign(this.status, status); }, stopped };
     this.step('start');
-    try { await module.service(this.buildPanda(), lifetime); } catch (error) {
+    this.panda = this.buildPanda();
+    try { await module.service(this.panda, lifetime); } catch (error) {
       const code = error instanceof PandaError ? error.code : 'HostUnavailable';
       await this.stop('failed');
       this.state = 'failed';
@@ -240,6 +286,7 @@ export class RuntimePreview {
     this.state = 'stopped'; this.stopReason = reason;
     this.events.detach(this.owner, this.generation);
     this.handlers.clear(); this.topics.clear(); this.commandHandlers.clear();
+    this.views?.clear(); this.panda = null;
     this.dialogs.cancelOwner(this.owner);
     this.items.clear(this.owner);
     this.notices.clear(this.owner, `service-${reason}`);
@@ -385,6 +432,7 @@ export class RuntimePreview {
           resume: taskId => this.call('tasks.queue', () => unwrap(this.messaging().queue(owner, this.messageChecks(), { op: 'resume', taskId }))),
         },
       },
+      views: this.panelViews(),
       daemon: {
         request: (op, params) => this.call('daemon.request', () => {
           if (!this.daemonCore) throw new PandaError('HostUnavailable');

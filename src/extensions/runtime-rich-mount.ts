@@ -19,6 +19,7 @@ import { extensionsManagementSnapshot, extensionsSnapshot, onExtensionChanged } 
 import { appearanceSnapshot, richViewDocument, type RichAssets } from './rich-views';
 import { createRuntimeGrantsPreview, type SyncSnapshot } from './runtime-grants';
 import { ASSET_RELOADABLE, assetEndedNote, assetRefusalNote, previewServedUrl, servedSource } from './runtime-rich-assets';
+import { followTheme, previewPanelHost } from './runtime-rich-channel';
 import type { RegisteredView } from './views-state';
 
 export type MountTechnique = 'browser-iframe' | 'native-webview';
@@ -107,7 +108,12 @@ async function mountFrame(surface: HTMLElement, entry: RegisteredView, report: (
   // The served shell keeps its own (package) origin, which is never the app's: it still cannot reach this document.
   frame.setAttribute('sandbox', served ? 'allow-scripts allow-same-origin' : 'allow-scripts'); frame.referrerPolicy = 'no-referrer'; frame.dataset.mountId = id;
   let last = performance.now(), started = false, ended = false;
-  const dispose = () => { window.clearInterval(timer); window.removeEventListener('message', onMessage); frame.remove(); };
+  // R0303: a served shell talks to the page's panel host (instance, state, messages); the instance keeps its state
+  // for a reload of this slot. Visibility follows the frame's box.
+  const unbind = served ? previewPanelHost().bind(id, frame, { owner: entry.owner, version: entry.version, viewId: entry.view.id }) : () => {};
+  const shown = new ResizeObserver(() => previewPanelHost().setVisible(id, frame.isConnected && frame.checkVisibility() && frame.clientWidth > 1 && frame.clientHeight > 1));
+  if (served) { shown.observe(frame); followTheme(); }
+  const dispose = () => { window.clearInterval(timer); window.removeEventListener('message', onMessage); shown.disconnect(); unbind(true); frame.remove(); };
   const end = (reason: string) => { if (ended) return; ended = true; dispose(); report({ kind: 'ended', reason }); };
   // Only the shell (the frame's own window) is heard; the package's nested frame has another source.
   const onMessage = (event: MessageEvent) => {
@@ -179,6 +185,8 @@ async function mountNative(surface: HTMLElement, entry: RegisteredView, report: 
   };
   if (disposed) return () => {};
   report({ kind: 'mounted', id: mountId });
+  // R0303: mounted panels follow the app's appearance (scheme and tokens), sent once and at every palette change.
+  followTheme();
   sync();
   return () => { const live = !disposed; stop(); if (live) void call('extensions_rich_mount_close', { mountId }).catch(() => {}); };
 }
@@ -248,6 +256,8 @@ window.addEventListener('pagehide', () => { for (const [popup, dispose] of previ
  * legacy characterization of `rich-views.ts`.
  */
 export async function openRichWindow(entry: RegisteredView): Promise<string> {
+  // R0303: the window's panel follows the app's appearance as an inspector panel does.
+  followTheme();
   if (!preview || !previewMountable(entry) || entry.owner === 'sample.rich-view') return (await import('./rich-views')).openRichView(entry);
   const authority = previewAuthority(entry);
   if (authority !== 'ok') return refusalNote(authority, entry.owner);

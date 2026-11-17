@@ -28,6 +28,7 @@
 //!   with reason `changed` ("reload the panel to show the new version") because its pin includes the archive digest.
 //! - **Remove own data.** Leaves a marker; the next shell of that package clears the page's storage once before it
 //!   frames the entry, then removes the marker (`/~panda/wiped`).
+use crate::extensions::rich_views::runtime_rich_channel::{self as channel, Origin, CHANNEL_PATH};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::{Path, PathBuf}, sync::{Arc, LazyLock, Mutex}};
@@ -268,6 +269,14 @@ impl Registry {
         if !self.mounts.values().any(|other| other.key == mount.key) { self.served.remove(&mount.key); }
     }
     pub fn held_bytes(&self) -> u64 { self.served.values().map(|served| served.bytes).sum() }
+    /// R0303: the session and origin of the mount `label` when `uri` is its own origin's channel path, so the channel
+    /// answers for the requesting webview only (another package's origin, or the app window, has none).
+    pub fn channel_mount(&self, label: &str, uri: &str) -> Option<(String, Origin)> {
+        let (key, path) = parse(uri)?;
+        let mount = self.mounts.get(label).filter(|mount| mount.key == key && path == CHANNEL_PATH)?;
+        let owner = self.served.get(&key)?.owner.clone();
+        Some((mount.session.clone(), Origin { owner, version: mount.dto["version"].as_str()?.to_owned(), view_id: mount.dto["viewId"].as_str()?.to_owned() }))
+    }
 
     /// The answer to `method uri` from the webview `label`.
     pub fn respond(&mut self, label: &str, method: &str, uri: &str) -> Reply {
@@ -365,11 +374,23 @@ pub fn prepare(app: &tauri::AppHandle, owner: &str, version: &str, generation: &
 pub fn release(label: &str) { if let Ok(mut registry) = REGISTRY.lock() { registry.release(label); } }
 
 /// Registers the scheme on the app builder (`lib.rs`). The handler only reads the registry: folders are loaded
-/// when a mount opens, never while a request waits.
-pub fn register<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+/// when a mount opens, never while a request waits. `POST /~panda/channel` is the panel's channel (R0303): answered
+/// at once for the requesting webview's mount; results arrive later as pushes.
+pub fn register(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<tauri::Wry> {
     builder.register_uri_scheme_protocol(SCHEME, |context, request| {
+        let uri = request.uri().to_string();
+        if request.method() == tauri::http::Method::POST && parse(&uri).is_some_and(|(_, path)| path == CHANNEL_PATH) {
+            let label = context.webview_label().to_owned();
+            let mount = REGISTRY.lock().ok().and_then(|registry| registry.channel_mount(&label, &uri));
+            let (status, answer) = match mount {
+                Some((session, origin)) => (200, channel::serve_post(context.app_handle(), &label, &session, origin, request.body())),
+                None => (403, channel::refusal("PermissionDenied: this address answers only its own package's panels.")),
+            };
+            return tauri::http::Response::builder().status(status).header("Content-Type", "application/json").header("Cache-Control", "no-store").header("X-Content-Type-Options", "nosniff")
+                .body(serde_json::to_vec(&answer).unwrap_or_default()).unwrap_or_else(|_| tauri::http::Response::new(Vec::new()));
+        }
         let reply = match REGISTRY.lock() {
-            Ok(mut registry) => registry.respond(context.webview_label(), request.method().as_str(), &request.uri().to_string()),
+            Ok(mut registry) => registry.respond(context.webview_label(), request.method().as_str(), &uri),
             Err(_) => Reply::page(503, "Panel host unavailable", "Reload the panel."),
         };
         let mut response = tauri::http::Response::builder().status(reply.status).header("Content-Type", reply.content_type).header("X-Content-Type-Options", "nosniff");
@@ -417,6 +438,24 @@ mod tests {
     struct Dir(PathBuf);
     impl Dir { fn new() -> Self { let path = std::env::temp_dir().join(format!("pandacode-rich-assets-test-{}", uuid::Uuid::new_v4())); std::fs::create_dir(&path).unwrap(); Self(path) } }
     impl Drop for Dir { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+
+    #[test]
+    fn the_channel_path_answers_only_the_requesting_mount_of_its_own_origin() {
+        // R0303: the instance is the requesting webview's label; nothing in the request names it.
+        let mut registry = Registry::default();
+        let alpha = mounted(&mut registry, "extension-panel-a", ALPHA, "alpha");
+        mounted(&mut registry, "extension-panel-t", TWIN, "twin");
+        let own = format!("{}{CHANNEL_PATH}", origin(&alpha.key));
+        let (session, found) = registry.channel_mount("extension-panel-a", &own).unwrap();
+        assert_eq!((session.as_str(), found.owner.as_str(), found.version.as_str(), found.view_id.as_str()), (alpha.session.as_str(), ALPHA, "1.0.0", "sample.rich-assets/board"));
+        // Another package's panel, the app window, an unknown label and another path have no channel here.
+        assert!(registry.channel_mount("extension-panel-t", &own).is_none());
+        assert!(registry.channel_mount("main", &own).is_none());
+        assert!(registry.channel_mount("extension-panel-zz", &own).is_none());
+        assert!(registry.channel_mount("extension-panel-a", &format!("{}/~panda/client.js", origin(&alpha.key))).is_none());
+        // Files stay read-only: a POST elsewhere is still refused by the file handler.
+        assert_eq!(registry.respond("extension-panel-a", "POST", &format!("{}/index.html", origin(&alpha.key))).status, 405);
+    }
 
     #[test]
     fn origin_keys_are_per_package_stable_and_dns_safe() {

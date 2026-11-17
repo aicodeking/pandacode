@@ -41,6 +41,10 @@ test('extensions rich views: installed local assets receive only presentation DT
   await page.locator('#prompt').fill('Preserved window draft');
   const popup = await open(page, true);
   const frame = popup.frameLocator('iframe');
+  // Q119 (R0303): retained for this legacy inline view: it receives only the presentation DTO and theme (its
+  // host-composed document pins connect-src 'none', so it has no return path: predictability). Changed for a served
+  // panel: its init also carries the instance and state, and it talks to its service
+  // (tests/extensions-runtime-rich-channel.spec.ts).
   await expect(frame.locator('#report')).toHaveText('sample.rich-view 1.0.0: Isolated report');
   await expect(frame.locator('#theme')).toContainText('window: extension-view-');
   expect(await popup.evaluate(() => opener === null)).toBe(true);

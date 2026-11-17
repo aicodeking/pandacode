@@ -144,6 +144,22 @@ process.stdin.on('data', chunk => {
             waiting.push(envelope);
             void pump();
           };
+          // Panel instances (R0303, ui.richViews): `onMessage` and `on` handlers live here; the host hands each panel
+          // message or event over as a host call `panel`, answered once taken. Handlers run one message at a time, in
+          // the order the host sent them; a failing handler never stops the next one.
+          const panelMessages = new Map(), panelEvents = new Map();
+          let panelQueue = Promise.resolve();
+          const panelHandler = (map, key, handler) => {
+            if (typeof key !== 'string' || typeof handler !== 'function') throw new TypeError('views needs a view id or kind and a function');
+            const set = map.get(key) ?? new Set(); map.set(key, set); set.add(handler);
+            return Object.freeze({ dispose: () => { set.delete(handler); if (!set.size) map.delete(key); } });
+          };
+          const servePanel = params => {
+            const instance = freeze(params?.instance ?? null);
+            const handlers = params?.kind === 'message' ? [...(panelMessages.get(params.viewId) ?? [])].map(handler => () => handler(freeze(params.message ?? null), instance))
+              : [...(panelEvents.get(params?.kind) ?? [])].map(handler => () => handler(instance));
+            panelQueue = panelQueue.then(async () => { for (const run of handlers) { try { await run(); } catch { /* never stops the next message */ } } });
+          };
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
             apiVersion: '1.0.0',
@@ -221,12 +237,20 @@ process.stdin.on('data', chunk => {
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
             // Declared connection requests (R0804): the host builds, authenticates and runs them; the grant is checked per call.
             connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connectionsRequest', { ...options, op, invocation: invocations.getStore() })]))),
+            // Panel instances (R0303, ui.richViews): post to every live instance of a view or to one, list them, hear them.
+            views: Object.freeze({
+              post: (viewId, message, options) => rpc('views', { op: 'post', viewId, message: message === undefined ? null : message, ...(options && options.instance !== undefined ? { instance: options.instance } : {}) }),
+              instances: viewId => rpc('views', viewId === undefined ? { op: 'instances' } : { op: 'instances', viewId }),
+              onMessage: (viewId, handler) => panelHandler(panelMessages, viewId, handler),
+              on: (kind, handler) => { if (!['opened', 'visible', 'hidden', 'closed'].includes(kind)) throw new TypeError('views.on needs opened, visible, hidden or closed'); return panelHandler(panelEvents, kind, handler); },
+            }),
           });
           // Host to service calls interleave freely with the service's own requests: each runs on its own.
           serveCall = async call => {
             const reply = body => send({ schemaVersion: 1, token: init.token, reply: { id: call.id, ...body } });
             const code = error => { const text = error?.code ?? error?.message; return typeof text === 'string' && /^[A-Z][A-Za-z]{0,63}$/.test(text) ? text : 'HostUnavailable'; };
             try {
+              if (call.method === 'panel') { servePanel(call.params); return reply({ ok: true, value: null }); }
               const handler = call.method === 'command' ? commands.get(call.params?.commandId) : undefined;
               if (!handler) return reply({ ok: false, error: { code: 'PermissionDenied' } });
               const value = await invocations.run(call.id, () => handler(freeze({ commandId: call.params.commandId, args: call.params.args ?? null })));

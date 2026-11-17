@@ -236,6 +236,17 @@ impl ServiceLifetime {
     /// service's own requests, bounded to 64 pending. Settled with an error code when the service stops, crashes or
     /// is disconnected. `handle` is the captured context the command runs for; the service's context queries made
     /// while it runs are answered against it.
+    /// Hands a panel message or event to the running service of `id` (host call `panel`, R0303). The same bounds as an
+    /// owned command (64 pending); settled when the process ends.
+    pub async fn call_panel(&self, id: &str, params: Value) -> Result<Value, String> {
+        let calls = {
+            let inner = self.inner.lock().map_err(|_| "HostUnavailable".to_owned())?;
+            inner.entries.get(id).filter(|entry| entry.state == State::Running).ok_or("HostUnavailable")?.calls.clone()
+        };
+        let (reply, answer) = oneshot::channel();
+        calls.try_send(HostCall { method: "panel", params, handle: None, reply }).map_err(|error| match error { mpsc::error::TrySendError::Full(_) => "LimitExceeded", mpsc::error::TrySendError::Closed(_) => "HostUnavailable" })?;
+        answer.await.unwrap_or_else(|_| Err("HostUnavailable".into()))
+    }
     pub async fn call_command(&self, id: &str, command_id: &str, args: Value, handle: Option<String>) -> Result<Value, String> {
         let calls = {
             let inner = self.inner.lock().map_err(|_| "HostUnavailable".to_owned())?;
@@ -769,6 +780,10 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
         { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_provider_state::service_stopped(&app, owner); })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
+        // Panel instances (R0303): the host call `panel` into a running service, the server of a panel's proxied
+        // calls, and the main window's appearance (listened for once per app).
+        { let dispatch = app_dispatch(&app); let app = app.clone(); super::rich_views::runtime_rich_channel::connect(super::rich_views::runtime_rich_channel::Hooks { call: Arc::new(move |owner: String, params: Value| { let app = app.clone(); Box::pin(async move { match app.try_state::<ServiceLifetime>() { Some(services) => services.call_panel(&owner, params).await, None => Err("HostUnavailable".to_owned()) } }) as Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> }), dispatch }); }
+        super::rich_views::runtime_rich_channel::install(&app);
         let Ok(packages) = packages.0.lock() else { return };
         services.reconcile(&packages, &grants);
     });
@@ -806,6 +821,8 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if request.method == "tasksStart" { return super::runtime_tasks_start::serve(app, request).await; }
             // Messages, notes and the revisioned queue (R0402, tasks.message): the grant and the task are resolved natively per call.
             if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }
+            // `panda.views.post` and `instances` (R0303, ui.richViews): the instances and the grant are resolved natively per call.
+            if request.method == "views" { return super::rich_views::runtime_rich_channel::serve(app, request).await; }
             // `panda.workspace.settings.list`, `get` and `set` (R0407): `workspace.settings` is checked natively per call.
             if request.method == "workspaceSettings" {
                 return tauri::async_runtime::spawn_blocking(move || runtime_workspace_settings::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
