@@ -1569,6 +1569,8 @@ for (const auto of [false, true]) test(`re-picking the current model ${auto ? 'i
   await page.keyboard.press('Escape');
   await expect(picker(page)).toHaveCount(0);
   const configures = await callCount(page, 'configure_session'), teamSaves = await callCount(page, 'architect_configure');
+  // The thread has loaded (a disabled prompt takes no focus, after a pick or a re-pick).
+  await expect(page.locator('#prompt')).toBeEnabled();
   await openSettled(page);
   // Watch for any busy cue from the pick on.
   await trigger(page).evaluate(node => {
@@ -1578,6 +1580,8 @@ for (const auto of [false, true]) test(`re-picking the current model ${auto ? 'i
   });
   await picker(page).locator('.model-menu-option[aria-current="true"]').click();
   await expect(picker(page)).toHaveCount(0);
+  // Like a real pick, focus goes back to the prompt.
+  await expect(page.locator('#prompt')).toBeFocused();
   await page.waitForTimeout(300);
   expect(await callCount(page, 'configure_session')).toBe(configures);
   expect(await callCount(page, 'architect_configure')).toBe(teamSaves);

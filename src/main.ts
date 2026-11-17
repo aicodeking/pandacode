@@ -4201,7 +4201,9 @@ async function editBoardTask(): Promise<void> {
   if (task.id !== state.sessionId || generation !== state.generation || isRunning()) return;
   fullTaskDescription = { id: task.id, value: details.taskDescription ?? '' };
   replaceSession(details);
-  showBoardTaskForm(details);
+  // The task as now held (deleted meanwhile: nothing to edit).
+  const current = state.sessions.find(item => item.id === task.id);
+  if (current) showBoardTaskForm(current);
 }
 function showBoardTaskForm(task?: Session): void {
   const p = task ? state.projects.find(p => p.id === task.projectId) : project() ?? state.projects[0];
@@ -4848,7 +4850,8 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       replaceSession(await taskCall<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }));
       prewarmedDrafts.delete(task.id);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
-      if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
+      // The task as just stored (plan mode on), not the copy this command started with.
+      if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(state.sessions.find(item => item.id === task.id) ?? task, argumentsText);
       break;
     }
     case 'init': case 'recap': await instruction(task, slashInstruction(action, argumentsText)); break;
@@ -6789,6 +6792,8 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
+  // Re-picking the model in use closes the picker, which hands focus back to its trigger: the prompt takes it after.
+  let promptOnClose = false;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: () => pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
@@ -6811,6 +6816,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
       modelPickerCleanup = undefined;
       modelSwitch.flushTranscript();
+      if (promptOnClose && !inPanel && selected.id === state.sessionId && generation === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
     },
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
@@ -6838,11 +6844,12 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         renderHeader(); return;
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
-      // The model already in use only closes the picker: nothing saves, nothing pulses, an automatic team keeps its roster.
+      // The model already in use only closes the picker (focus back on the prompt, as after a pick): nothing saves,
+      // nothing pulses, an automatic team keeps its roster.
       // A named team's lead is not that model's row: picking it leaves the team (model-switch.ts leaveTeam).
       const now = (inPanel ? btwSideTask() ?? btwDraftTask() : state.sessions.find(item => item.id === selected.id)) ?? selected;
       const sameModel = providerId === now.provider && (model || 'default') === (now.model || 'default');
-      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) return;
+      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) { promptOnClose = true; return; }
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
       // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the
@@ -6854,15 +6861,19 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         if (inPanel) { if (current()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); } }
         else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
       };
+      // `harness`: against the harness shown (a pending pick's, maybe); `changed`: native's harness changed once saved
+      // (model-switch.ts decides it from what native last confirmed), the only case that re-reads the thread.
       const harness = providerId !== now.provider;
+      let changed = false;
       const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
         show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
-        repaint: saved => {
-          if (!saved || harness || inPanel) paint(harness, saved && harness);
+        repaint: (saved, nativeHarness) => {
+          changed = saved && nativeHarness;
+          if (!saved || harness || nativeHarness || inPanel) paint(harness || nativeHarness, changed);
           else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
         },
       });
-      if (harness) void saving.then(saved => saved ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
+      void saving.then(saved => saved && changed ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
       return { saved: saving };
     },
   });

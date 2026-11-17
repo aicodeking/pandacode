@@ -1,8 +1,9 @@
 /**
  * Model, effort and permission changes that show at once and save behind (the model picker's optimistic switch).
  *
- * Per task, model and permission changes save one at a time in pick order (each waits for the one before), and effort
- * changes queue the same way, so native stores them in the order they were made. Anything
+ * Per task, model and permission changes save one at a time in pick order (each waits for the one before; one replaced
+ * by a newer pick of its kind before its turn is skipped), and effort changes queue the same way, so native stores them
+ * in the order they were made. Anything
  * that must follow the saved choice (a send, a board start, reopening the picker) waits with `settled()`. Waiters are
  * woken explicitly after each save's bookkeeping (busy cleared, labels repainted), never by racing a promise that
  * other code also awaits, so what they see does not depend on the order promises settle in.
@@ -152,6 +153,9 @@ const modelBase = new Map<string, Session>();
 /** The same for permission picks: each task's newest one, and the permissions native last confirmed. */
 const latestMode = new Map<string, symbol>();
 const modeBase = new Map<string, Session['mode']>();
+/** The team an older model pick left while a newer pick waited (whether native then stored or refused the older one):
+ *  the newer pick's refusal says so, since the task is out of the team whatever it ends up on. */
+const leftTeams = new Map<string, string>();
 /** Holds a newer copy of the task and marks the fields this pick wrote (for the reads already open). */
 function put(task: Session, fields: readonly ChoiceField[]): void {
   writes += 1;
@@ -223,19 +227,21 @@ export async function readTasks<T>(read: () => Promise<T>, owned: readonly Choic
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 /** Saves a model or permission change after the task's previous one has landed (so native gets them in pick order):
  *  `save` resolves whether it saved, `after` repaints. Waiters resume after the last change's `after`, which runs (and
- *  wakes them) even when `save` throws; a throw counts as not saved and is reported. */
+ *  wakes them) even when `save` throws; a throw counts as not saved and is reported. An `after` that throws is logged:
+ *  the change still resolves whether it saved, and the next one still runs. */
 export function switchModel(id: string, save: () => Promise<boolean>, after: (saved: boolean) => void): Promise<boolean> {
   busy(id, 1);
   // The newest change holds the task's slot until it lands, so saving() stays true until every change has settled.
   const before = switches.get(id);
   let run: Promise<boolean> | undefined, done = false;
   run = (async () => {
-    if (before) await before;
+    // The previous change reported its own outcome: this one runs whatever it was.
+    if (before) await before.catch(() => false);
     let saved = false;
     try { saved = await save(); } catch (error) { console.error(error); hooks.notify(message(error)); } finally {
       done = true;
       busy(id, -1); if (switches.get(id) === run) switches.delete(id);
-      try { after(saved); } finally { wake(id); }
+      try { after(saved); } catch (error) { console.error(error); } finally { wake(id); }
     }
     return saved;
   })();
@@ -268,11 +274,14 @@ async function settlePick(id: string, choice: ModelChoice, harness: boolean): Pr
 }
 /** A model the user picked: shown at once, then saved (team removal, configure, then `settlePick`). If the configure
  *  fails, only the task's own model fields go back (a title or status that changed meanwhile stays) and the notice
- *  names the model it is back on and any team it left. `ui.repaint` runs once the save is done. */
+ *  names the model it is back on and any team it (or an older pick) left. A pick replaced by a newer one before its
+ *  turn is skipped (resolving false): the newer one saves instead. `ui.repaint` runs once the save is done, told
+ *  whether the harness changed from the one native had. */
 export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; repaint(saved: boolean, harness: boolean): void }): Promise<boolean> {
   const previous = hooks.task(id);
   if (!previous) return Promise.resolve(false);
-  const harness = choice.provider !== previous.provider;
+  // Against native's harness, decided when the save starts: a pending pick shown meanwhile is not a harness change.
+  let harness = false;
   sentWarm.delete(id); refused.delete(id);
   count(modelsSaving, id, 1);
   if (!modelBase.has(id)) modelBase.set(id, previous);
@@ -287,12 +296,16 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   const run = switchModel(id, async () => {
     // What a refusal goes back to: native's model once the picks before this one have landed.
     const base = modelBase.get(id) ?? previous;
+    harness = choice.provider !== base.provider;
+    // Replaced before its turn: the newer pick saves instead (no configure, no warm start).
+    if (superseded()) return false;
     let previousEffort = base.reasoningEffort;
     // A model picked while an effort change saves goes after it, so the effort reply can't land on the new model.
     for (let queue = efforts.get(id); queue; queue = efforts.get(id)) {
       await queue.chain;
       previousEffort = hooks.task(id)?.reasoningEffort;
     }
+    if (superseded()) return false;
     let left: string | null = null;
     try {
       left = await leaveTeam(id);
@@ -300,10 +313,13 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       const saved = await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) });
       if (modelBase.has(id)) modelBase.set(id, saved);
       put(superseded() ? keepNewer(saved) : saved, MODEL_FIELDS);
+      // Should the newer pick be refused, its notice says the task left this team.
+      if (left && superseded()) leftTeams.set(id, left);
     } catch (error) {
       console.error(error);
-      // A newer pick is saving: its outcome decides what shows, and it reports its own refusal.
-      if (superseded()) return false;
+      // A newer pick is saving: its outcome decides what shows, and it reports its own refusal (and this team left).
+      if (superseded()) { if (left) leftTeams.set(id, left); return false; }
+      left ??= leftTeams.get(id) ?? null;
       const now = hooks.task(id) ?? base;
       // The pick only cleared codexSettings for a new harness; on the same one a speed change saved meanwhile stays.
       const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage };
@@ -316,13 +332,17 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     return true;
   }, saved => {
     count(modelsSaving, id, -1);
-    if (!superseded()) { latestPick.delete(id); modelBase.delete(id); }
+    if (!superseded()) { latestPick.delete(id); modelBase.delete(id); leftTeams.delete(id); }
     ui.repaint(saved, harness);
   });
   // Shown once the save is registered, so the repaint already marks the trigger busy.
   // A new harness or model starts at its default effort; the same model keeps its effort, as native does.
-  const sameModel = !harness && (choice.model || 'default') === (previous.model || 'default');
-  put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: harness ? null : previous.codexSettings, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
+  // Back on native's harness after a pending pick to another one: its settings again.
+  const native = modelBase.get(id) ?? previous;
+  const shownHarness = choice.provider !== previous.provider;
+  const sameModel = !shownHarness && (choice.model || 'default') === (previous.model || 'default');
+  const codexSettings = !shownHarness ? previous.codexSettings : choice.provider === native.provider ? native.codexSettings : null;
+  put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
   ui.show();
   return run;
 }
@@ -343,6 +363,8 @@ export function pickMode(id: string, mode: Session['mode'], ui: PickUi & { name(
   latestMode.set(id, pick);
   const superseded = () => latestMode.get(id) !== pick;
   const run = switchModel(id, async () => {
+    // Replaced before its turn: the newer pick saves instead.
+    if (superseded()) return false;
     try {
       await call('update_session', { sessionId: id, mode, ...warmArg(ui.warm) });
       if (modeBase.has(id)) modeBase.set(id, mode);

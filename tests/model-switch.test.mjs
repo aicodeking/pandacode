@@ -17,9 +17,12 @@ globalThis.__modelSwitchCall = (command, args) => {
 const switcher = await import('../src/model-switch.ts');
 
 const tasks = new Map();
+/** Named teams by task, the notices shown, and the tasks whose account binding was released. */
+const teams = new Map(), notices = [], releases = [];
 switcher.initModelSwitch({
-  setBusy() {}, pickerOpening: () => false, notify() {}, task: id => tasks.get(id), put: task => tasks.set(task.id, task),
-  team: () => undefined, teamChanged() {}, autoTeam: base => Promise.resolve(base), releaseAccount: () => Promise.resolve(),
+  setBusy() {}, pickerOpening: () => false, notify: text => notices.push(text), task: id => tasks.get(id), put: task => tasks.set(task.id, task),
+  team: id => teams.get(id), teamChanged: event => { if (event.removed) teams.delete(event.sessionId); },
+  autoTeam: base => Promise.resolve(base), releaseAccount: id => { releases.push(id); return Promise.resolve(); },
   label: task => task.model, effortName: task => task.reasoningEffort ?? '', pickerShown: () => false, remember() {},
 });
 const stored = (id, values = {}) => ({ id, provider: 'claude', model: 'sonnet', reasoningEffort: 'low', codexSettings: null, contextUsage: null, mode: 'ask', title: 'Task', ...values });
@@ -366,4 +369,126 @@ test('a configure_session answering (a bot’s model) while a pick saves is beli
   assert.equal(effort.reasoningEffort, 'xhigh');
   await reply('set_reasoning_effort', args => stored('u', { reasoningEffort: args.reasoningEffort }));
   await saving;
+});
+
+/* ----- A failing repaint, superseded picks, refusals out of a team, mixed picks ----- */
+test('a repaint that throws does not stall the next save: it runs, cleans up and the task stops saving', async () => {
+  tasks.set('v', stored('v'));
+  const logged = console.error; console.error = () => {};
+  try {
+    const first = switcher.pickModel('v', { provider: 'claude', model: 'opus', warm: false, local: true }, { show() {}, repaint() { throw new Error('repaint broke'); } });
+    const second = switcher.pickModel('v', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+    await reply('configure_session', args => stored('v', { model: args.model }));
+    await first.catch(() => undefined);
+    await reply('configure_session', args => stored('v', { model: args.model }));
+    assert.equal(await second, true);
+    assert.equal(switcher.saving('v'), false);
+    assert.equal(await switcher.settled('v'), true);
+    assert.equal(tasks.get('v').model, 'haiku');
+  } finally { console.error = logged; }
+});
+
+test('a pick back to the harness native has, after a refused pick to another, keeps the account binding', async () => {
+  tasks.set('w', stored('w', { provider: 'codex', model: 'astra' }));
+  releases.length = 0;
+  const harnesses = [];
+  const track = { show() {}, repaint: (_, harness) => harnesses.push(harness) };
+  const first = switcher.pickModel('w', { provider: 'claude', model: 'opus', warm: false, local: true }, track);
+  const second = switcher.pickModel('w', { provider: 'codex', model: 'nova', warm: false, local: true }, track);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await first, false);
+  await reply('configure_session', args => stored('w', { provider: args.provider, model: args.model }));
+  assert.equal(await second, true);
+  assert.deepEqual(releases, [], 'native never left Codex');
+  assert.equal(harnesses.at(-1), false, 'the saved pick repaints as a change within the harness');
+});
+
+test('a model pick replaced before its save starts is skipped: only the older in flight and the newest reach native', async () => {
+  tasks.set('x', stored('x'));
+  const picks = ['opus', 'haiku', 'sonnet-4'].map(model => switcher.pickModel('x', { provider: 'claude', model, warm: true, local: true }, ui));
+  await ticks();
+  assert.deepEqual(pending('configure_session').map(entry => entry.args.model), ['opus']);
+  await reply('configure_session', args => stored('x', { model: args.model }));
+  await ticks();
+  assert.deepEqual(pending('configure_session').map(entry => entry.args.model), ['sonnet-4'], 'haiku was replaced before its turn');
+  assert.equal(tasks.get('x').model, 'sonnet-4');
+  assert.equal(switcher.saving('x'), true);
+  await reply('configure_session', new Error('Busy.'));
+  assert.deepEqual(await Promise.all(picks), [true, false, false]);
+  // The refusal goes back to what native confirmed (the first pick), not the skipped one.
+  assert.equal(tasks.get('x').model, 'opus');
+  assert.equal(switcher.saving('x'), false);
+  assert.equal((await switcher.settledChange('x'))?.what, 'model');
+});
+
+test('a permission pick replaced before its save starts is skipped too', async () => {
+  tasks.set('y', stored('y', { mode: 'ask' }));
+  const modeUi = { warm: false, paint() {}, name: mode => mode, trigger: () => null };
+  const picks = ['full', 'plan', 'auto'].map(mode => switcher.pickMode('y', mode, modeUi));
+  await reply('update_session', () => null);
+  await ticks();
+  assert.deepEqual(pending('update_session').map(entry => entry.args.mode), ['auto']);
+  await reply('update_session', () => null);
+  assert.deepEqual(await Promise.all(picks), [true, false, true]);
+  assert.equal(tasks.get('y').mode, 'auto');
+  assert.equal(switcher.modeBusy('y'), false);
+  assert.equal(switcher.saving('y'), false);
+});
+
+test('an older pick out of a named team refused while a newer one saves: the final refusal still says the task left it', async () => {
+  tasks.set('z', stored('z'));
+  teams.set('z', { rosterOnly: true, name: 'Reviewers' });
+  notices.length = 0;
+  const first = switcher.pickModel('z', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('z', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  await reply('architect_configure', () => null);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await first, false);
+  assert.deepEqual(notices, [], 'the newer pick decides what to say');
+  await reply('configure_session', new Error('Still busy.'));
+  assert.equal(await second, false);
+  assert.equal(notices.length, 1);
+  assert.match(notices[0], /still on sonnet; the task left team Reviewers/);
+  // Said once: a later refusal does not repeat it.
+  const third = switcher.pickModel('z', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await reply('configure_session', new Error('No.'));
+  assert.equal(await third, false);
+  assert.doesNotMatch(notices.at(-1), /Reviewers/);
+});
+
+test('model pick, refused permission pick, model pick: native gets them in order and the refusal is what settles', async () => {
+  tasks.set('mx', stored('mx', { mode: 'ask' }));
+  const modeUi = { warm: false, paint() {}, name: mode => mode, trigger: () => null };
+  const order = [];
+  const record = command => args => { order.push(command === 'configure_session' ? args.model : args.mode); return command === 'configure_session' ? stored('mx', { model: args.model }) : null; };
+  const first = switcher.pickModel('mx', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const mode = switcher.pickMode('mx', 'full', modeUi);
+  const second = switcher.pickModel('mx', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  assert.deepEqual([tasks.get('mx').model, tasks.get('mx').mode], ['haiku', 'full']);
+  await reply('configure_session', record('configure_session'));
+  await ticks();
+  assert.equal(pending('configure_session').length, 0, 'the second model waits for the permission save');
+  await reply('update_session', new Error('Approvals are locked.'));
+  assert.equal(await mode, false);
+  await reply('configure_session', record('configure_session'));
+  assert.deepEqual([await first, await second], [true, true]);
+  assert.deepEqual(order, ['opus', 'haiku']);
+  assert.deepEqual([tasks.get('mx').model, tasks.get('mx').mode], ['haiku', 'ask']);
+  assert.equal(switcher.saving('mx'), false);
+  assert.equal(switcher.modeBusy('mx'), false);
+  assert.deepEqual(await switcher.settledChange('mx'), { what: 'permissions', reason: 'Approvals are locked.' });
+});
+
+test('an older pick out of a named team that saved, then a newer one refused: the refusal says the task left it', async () => {
+  tasks.set('za', stored('za'));
+  teams.set('za', { rosterOnly: true, name: 'Writers' });
+  notices.length = 0;
+  const first = switcher.pickModel('za', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  const second = switcher.pickModel('za', { provider: 'claude', model: 'haiku', warm: false, local: true }, ui);
+  await reply('architect_configure', () => null);
+  await reply('configure_session', args => stored('za', { model: args.model }));
+  assert.equal(await first, true);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await second, false);
+  assert.match(notices.at(-1), /still on opus; the task left team Writers/);
 });
