@@ -503,6 +503,32 @@ mod task_agent_tests {
     }
 
     #[test]
+    fn a_draft_with_nothing_to_start_ahead_holds_no_ticket() {
+        let (state, project) = settings_state();
+        let store = state.store.lock().unwrap();
+        // Codex drafts are warmed by a pick or keystroke, never by this start: nothing to start.
+        let codex = store.create_session(&project, "codex", "default", "ask").unwrap();
+        let codex = store.mark_draft(&codex.id).unwrap();
+        assert!(reserve_draft_prewarm(&store, &codex.id).unwrap().is_none());
+        assert!(!providers::has_warm_agent(&codex), "no ticket, so a send does not wait");
+        // A task that is not a draft reserves nothing either.
+        let kept = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        assert!(reserve_draft_prewarm(&store, &kept.id).unwrap().is_none());
+        assert!(!providers::has_warm_agent(&kept));
+        // A Claude draft reserves its start with the row as it is now; a pick supersedes it.
+        let draft = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        let draft = store.mark_draft(&draft.id).unwrap();
+        let (ticket, config) = reserve_draft_prewarm(&store, &draft.id).unwrap().expect("reserved");
+        assert_eq!(config.model, "claude-sonnet-5-5");
+        assert!(providers::warm_reserved(&draft.id, ticket));
+        let pick = providers::reserve_warm_agent(&draft.id);
+        assert!(!providers::warm_reserved(&draft.id, ticket), "the pick took its place");
+        providers::release_warm_ticket(&draft.id, ticket);
+        assert!(providers::warm_reserved(&draft.id, pick), "releasing the old ticket keeps the pick's");
+        providers::release_warm_ticket(&draft.id, pick);
+    }
+
+    #[test]
     fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -1061,6 +1087,19 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
     Ok(providers::warms(&config).then_some(config))
 }
 
+/// A new draft's start ahead: its launch and ticket, read and reserved under the store lock. A
+/// pick saves its row and plans its own start (`warm_launch::plan_rewarm`) under that lock, so
+/// one landing after this supersedes or cancels the ticket, and one before it is read here. A
+/// draft with nothing to start reserves nothing, so a send never waits for it.
+fn reserve_draft_prewarm(db: &Store, session_id: &str) -> Result<Option<(u64, RunConfig)>> {
+    if !db.is_empty_draft(session_id)? || architect::load(db, session_id)?.is_some() {
+        return Ok(None);
+    }
+    let session = db.session(session_id)?;
+    Ok(draft_prewarm_config(db, &session)?
+        .map(|config| (providers::reserve_warm_agent(session_id), config)))
+}
+
 fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &str) {
     if cfg!(test) || headless::active() || state.shutdown.load(Ordering::SeqCst) != 0 {
         return;
@@ -1069,16 +1108,12 @@ fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &st
         return;
     }
     let launch = providers::warm_epoch(session_id);
-    // Reserved before the row is read: a pick after this supersedes or cancels the ticket
-    // (`warm_launch::plan_rewarm`), so this start never warms settings the draft has left.
-    let ticket = providers::reserve_warm_agent(session_id);
     let app = app.clone();
     let store = state.store.clone();
     let agents = state.agents.clone();
     let session_id = session_id.to_owned();
     tauri::async_runtime::spawn(async move {
-        let prepared = blocking({
-            let app = app.clone();
+        let reserved = blocking({
             let store = store.clone();
             let agents = agents.clone();
             let session_id = session_id.clone();
@@ -1086,19 +1121,24 @@ fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &st
                 if !agents.lock().is_ok_and(|running| running.is_empty()) {
                     return Ok(None);
                 }
-                let config = {
-                    let db = store.lock().map_err(|e| e.to_string())?;
-                    if !db.is_empty_draft(&session_id)?
-                        || architect::load(&db, &session_id)?.is_some()
-                    {
-                        return Ok(None);
-                    }
-                    let session = db.session(&session_id)?;
-                    draft_prewarm_config(&db, &session)?
-                };
-                let Some(config) = config else {
+                let db = store.lock().map_err(|e| e.to_string())?;
+                reserve_draft_prewarm(&db, &session_id)
+            }
+        })
+        .await;
+        // Nothing to start: no ticket was taken, so a send has nothing to wait for.
+        let Ok(Some((ticket, config))) = reserved else {
+            return;
+        };
+        // The catalog is built outside the store lock (its wrappers lock the store themselves).
+        let prepared = blocking({
+            let app = app.clone();
+            let session_id = session_id.clone();
+            move || {
+                // A send or pick already took this start's place: skip the slow build.
+                if !providers::warm_reserved(&session_id, ticket) {
                     return Ok(None);
-                };
+                }
                 skill_manager::begin_launch_at(&config.session_id, &config.cwd);
                 let stopped = Arc::new(AtomicBool::new(false));
                 let (host, _) =
