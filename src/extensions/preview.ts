@@ -62,6 +62,7 @@ import composerPanelsManifest from '../../tests/fixtures/extensions/composer-pan
 import composerAttachManifest from '../../tests/fixtures/extensions/composer-attach/extension.json';
 import threadExtrasManifest from '../../tests/fixtures/extensions/thread-extras/extension.json';
 import tilesPickerManifest from '../../tests/fixtures/extensions/tiles-picker/extension.json';
+import upstreamExplorerManifest from '../../tests/fixtures/extensions/upstream-explorer/manifest.json';
 import commandsExtrasManifest from '../../tests/fixtures/extensions/commands-extras/extension.json';
 import taskMenusManifest from '../../tests/fixtures/extensions/task-menus/extension.json';
 import windowMenusManifest from '../../tests/fixtures/extensions/window-menus/extension.json';
@@ -83,6 +84,7 @@ import coreDialogsManifest from '../../tests/fixtures/extensions/core-dialogs/ex
 import coreDialogsSvg from '../../tests/fixtures/extensions/core-dialogs/assets/note.svg?raw';
 import ownedDialogsManifest from '../../tests/fixtures/extensions/owned-dialogs/extension.json';
 import ownedDialogsSvg from '../../tests/fixtures/extensions/owned-dialogs/assets/mark.svg?raw';
+import toolImageViewerManifest from '../../tests/fixtures/extensions/upstream-tool-images/manifest.json';
 import primitivesManifest from '../../tests/fixtures/extensions/primitives/extension.json';
 import primitivesSvg from '../../tests/fixtures/extensions/primitives/assets/mark.svg?raw';
 import { validSettingsValues } from './settings-state';
@@ -360,6 +362,11 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
       snapshot.packages.push({ manifest: moodboardManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
+    if (new URLSearchParams(location.search).has('upstream-tool-images')) {
+      if (snapshot.packages.some(item => item.manifest.id === toolImageViewerManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: toolImageViewerManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
     if (new URLSearchParams(location.search).has('owned-dialog-coverage')) {
       if (snapshot.packages.some(item => item.manifest.id === ownedDialogsManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: ownedDialogsManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
@@ -398,6 +405,11 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
     if (new URLSearchParams(location.search).has('commands-extras')) {
       if (snapshot.packages.some(item => item.manifest.id === commandsExtrasManifest.id)) throw new Error('Already installed');
       snapshot.packages.push({ manifest: commandsExtrasManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
+      localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
+    }
+    if (new URLSearchParams(location.search).has('upstream-explorer')) {
+      if (snapshot.packages.some(item => item.manifest.id === upstreamExplorerManifest.id)) throw new Error('Already installed');
+      snapshot.packages.push({ manifest: upstreamExplorerManifest as ExtensionPackage['manifest'], icons: {}, enabled: false });
       localStorage.setItem(key, JSON.stringify(snapshot.packages)); notify('extensions-changed', null); return read();
     }
     if (new URLSearchParams(location.search).has('tiles-picker')) {

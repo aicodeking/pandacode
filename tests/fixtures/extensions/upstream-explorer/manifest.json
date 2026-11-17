@@ -1,0 +1,93 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.upstream-explorer",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "ui.customize"
+  ],
+  "contributes": {
+    "components": [
+      {
+        "id": "sample.upstream-explorer/files",
+        "title": "Compact files",
+        "slot": "panda.files",
+        "contractVersion": 1,
+        "presentation": "list"
+      }
+    ],
+    "commands": [
+      {
+        "id": "sample.upstream-explorer/open-in-tool",
+        "title": "Open in my tool",
+        "action": {
+          "kind": "showMessage",
+          "message": "Sent the clicked file to my tool."
+        }
+      },
+      {
+        "id": "sample.upstream-explorer/folder-in-tool",
+        "title": "Open folder in my tool",
+        "action": {
+          "kind": "showMessage",
+          "message": "Sent the clicked folder to my tool."
+        }
+      },
+      {
+        "id": "sample.upstream-explorer/project-tool",
+        "title": "Explorer tool",
+        "action": {
+          "kind": "showMessage",
+          "message": "The project tool ran from the explorer toolbar."
+        }
+      }
+    ],
+    "menus": [
+      {
+        "id": "sample.upstream-explorer/file",
+        "command": "sample.upstream-explorer/open-in-tool",
+        "location": "panda.inspector.files.context",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "file"
+        }
+      },
+      {
+        "id": "sample.upstream-explorer/folder",
+        "command": "sample.upstream-explorer/folder-in-tool",
+        "location": "panda.inspector.files.context",
+        "visible": {
+          "op": "eq",
+          "key": "selection.kind",
+          "value": "folder"
+        }
+      },
+      {
+        "id": "sample.upstream-explorer/toolbar",
+        "command": "sample.upstream-explorer/project-tool",
+        "location": "panda.inspector.files.toolbar",
+        "presentation": "button",
+        "text": "Explorer tool"
+      }
+    ],
+    "layouts": [
+      {
+        "id": "sample.upstream-explorer/folders-first",
+        "title": "Collapse before New file",
+        "location": "panda.inspector.files.toolbar",
+        "rules": [
+          {
+            "id": "panda.inspector.files.toolbar/collapse",
+            "target": "panda.inspector.files.toolbar/new-file",
+            "side": "before"
+          }
+        ]
+      }
+    ]
+  }
+}

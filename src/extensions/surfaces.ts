@@ -718,9 +718,19 @@ export function boundedContextActions<T extends { children?: T[] }>(core: T[], c
   return { items, omitted };
 }
 
+/** Project explorer (the Files tab): the host's own tools above the tree and the entries of its row/folder menu. Every one
+ * reorders and hides on its original node or menu row; the host's create, rename and delete dialog (and its unsaved-edit
+ * guard) stays the host's, so a contributed action never edits a file for a package. See docs/extensions/upstream-explorer.md. */
+export const EXPLORER_TOOLBAR_LOCATION = 'panda.inspector.files.toolbar', EXPLORER_CONTEXT_LOCATION = 'panda.inspector.files.context';
+export const EXPLORER_TOOLBAR_CONTROLS = [['new-file', 'New file'], ['new-folder', 'New folder'], ['actions', 'File actions'], ['collapse', 'Collapse folders']] as const satisfies readonly (readonly [string, string])[];
+export const EXPLORER_CONTEXT_CONTROLS = [['open', 'Open file'], ['attach', 'Attach file'], ['new-file', 'New File'], ['new-folder', 'New Folder'], ['rename', 'Rename'], ['delete', 'Delete'], ['copy-path', 'Copy Path'], ['reveal', 'Reveal in OS'], ['open-external', 'Open in Default App']] as const satisfies readonly (readonly [string, string])[];
+/** Kept in place for recovery: the project-level File actions button is the pointer path to the menu of an empty or hidden-row tree. */
+export const EXPLORER_PINNED_CONTROLS: Readonly<Record<string, string>> = { [`${EXPLORER_TOOLBAR_LOCATION}/actions`]: 'the pointer path to the project menu' };
+
 export const CONTEXT_COMMANDS: Record<string, readonly (readonly [string, string])[]> = {
   'panda.documents.context': [['select', 'Select document'], ['close', 'Close document'], ['attach', 'Attach'], ['copy', 'Copy file'], ['preview', 'Preview in browser']],
-  'panda.inspector.files.context': [['open', 'Open file'], ['attach', 'Attach file']],
+  'panda.inspector.files.context': EXPLORER_CONTEXT_CONTROLS,
+  'panda.inspector.files.toolbar': EXPLORER_TOOLBAR_CONTROLS,
   'panda.inspector.changes.context': [['stage', 'Stage file'], ['unstage', 'Unstage file'], ['open', 'Open file'], ['copy', 'Copy path']],
   'panda.inspector.search.context': [['open', 'Open file']],
   'panda.sidebar.context': [['toggle', 'Collapse or expand section']],

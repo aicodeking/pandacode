@@ -7,6 +7,7 @@ import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, sortAfterChoice, taskComparator, type SidebarSort } from './sidebar-sort';
 import type { SidebarModel } from './extensions/sidebar-host';
+import type { ExplorerSurface } from './extensions/upstream-explorer';
 import type { SidebarSectionId } from './extensions/surfaces';
 import './styles.css';
 import { createVoiceDictation, voiceButtonHtml } from './voice-dictation';
@@ -675,6 +676,9 @@ mountDesktopBrand($('.brand-name'));
 const extensionContextListeners = new Set<() => void>();
 let extensionSidebarHidden = () => false;
 let applyExtensionVisibility = () => {};
+/** Project explorer adapter (docs/extensions/upstream-explorer.md): tool order and visibility, and the captured menu surface. */
+let applyExplorerLayout = () => {};
+let explorerSurface: ((context: { projectId: string; sessionId?: string }, path: string, directory: boolean) => ExplorerSurface | undefined) | undefined;
 let refreshExtensionInspectorActions = () => {};
 let boardPresentation: ReturnType<typeof import('./extensions/board-host').mountBoardPresentation> | undefined;
 // Extension failure must never gate built-in startup; native safe mode precedes package loading.
@@ -703,6 +707,14 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
   }
   const { layout, registerLayoutContext, applyControlVisibility, applyControlOrder } = await import('./extensions/layout-host');
   const { orderedControls } = await import('./extensions/layout-host');
+  const explorerAdapter = await import('./extensions/upstream-explorer');
+  applyExplorerLayout = () => explorerAdapter.applyExplorerLayout($('#inspector-content'), extensionsLayoutSafeMode, () => document.querySelector<HTMLElement>('#inspector-content .file-row button') ?? $('#inspector-toggle'));
+  // One menu, one captured object: the project, task, path, kind and the generation it was opened at. A switch of task or
+  // project, or a later generation, makes it stale and nothing runs for it (the row going away is checked by the menu).
+  explorerSurface = (context, path, directory) => {
+    const opened = state.generation;
+    return explorerAdapter.explorerSurface(context, path, directory, opened, () => opened === state.generation && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId);
+  };
   const { registeredInspectorViews, INSPECTOR_VIEW_LOCATION } = await import('./extensions/views-state');
   const { registerInspectorViewOpener } = await import('./extensions/view-navigation');
   mountExtensionView = (await import('./extensions/views')).mountInspectorView;
@@ -763,6 +775,7 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       applyControlOrder(location, bindings, extensionsLayoutSafeMode);
       if (!extensionsLayoutSafeMode) applyControlVisibility(bindings, () => $('#inspector-toggle'));
     } else for (const node of [$('#inspector-refresh'), document.querySelector<HTMLElement>('.inspector-hide')!]) { node.removeAttribute('data-layout-hidden'); node.inert = false; }
+    applyExplorerLayout();
     if (extensionsLayoutSafeMode) return;
     applyControlVisibility([
       ['panda.workspace.header.actions/sidebar-toggle', $('#sidebar-toggle')],
@@ -1208,19 +1221,6 @@ if (preview && new URLSearchParams(location.search).has('design-coverage')) {
   (window as any).__previewDesignAction = (action: unknown) => designPanel?.dispatch(action);
   (window as any).__previewDesignRefresh = () => designPanel?.refresh();
 }
-$('#inspector-content').addEventListener('contextmenu', event => {
-  if (state.inspectorTab !== 'files') return;
-  const row = (event.target as HTMLElement).closest<HTMLElement>('.file-row');
-  const anchor = row?.querySelector<HTMLElement>('button[data-path]');
-  if (!anchor || anchor.dataset.action === 'toggle-file-folder') return;
-  event.preventDefault(); run(showInspectorFileActions(anchor, anchor.dataset.path!, 'files', { x: event.clientX, y: event.clientY }));
-});
-$('#inspector-content').addEventListener('keydown', event => {
-  if (state.inspectorTab !== 'files' || isImeKey(event) || event.key !== 'ContextMenu' && !(event.key === 'F10' && event.shiftKey)) return;
-  const anchor = (event.target as HTMLElement).closest<HTMLElement>('.file-row')?.querySelector<HTMLElement>('button[data-path]');
-  if (!anchor || anchor.dataset.action === 'toggle-file-folder') return;
-  event.preventDefault(); run(showInspectorFileActions(anchor, anchor.dataset.path!, 'files'));
-});
 const fileTabs = createFileTabs({
   call,
   canAttach: context => Boolean(state.sessionId) && context.sessionId === state.sessionId,
@@ -1248,7 +1248,13 @@ const fileTabs = createFileTabs({
 });
 const fileExplorer = createFileExplorer({
   call,
-  menu: ({ anchor, ...options }) => run(showChoices(anchor, options)),
+  menu: ({ anchor, ...options }) => {
+    // Preview only: a controlled fault of the extension surface; the explorer falls back to its built-in menu.
+    if (preview && options.extensionSurface && (window as any).__previewExplorerFault) return Promise.reject(new Error('controlled explorer fault'));
+    return showChoices(anchor, options);
+  },
+  surface: (context, path, directory) => explorerSurface?.(context, path, directory),
+  attach: path => attachFile(path),
   modal, closeModal,
   open: async (path, context) => {
     if (context.projectId !== state.projectId) await selectProject(context.projectId);
@@ -7357,6 +7363,7 @@ function renderInspector(): void {
     // Morphed once the tree is up, so a folder's chevron survives to turn.
     const tree = `<section class="file-explorer" aria-label="File explorer"><div class="file-folder-path"><span title="${escape(workspacePath())}">${escape(project()?.name)}</span><div class="file-explorer-tools">${button('new-workspace-file', 'New file', 'file')}${button('new-workspace-folder', 'New folder', 'folder')}${button('file-menu', 'File actions', 'more', '', 'data-path="" data-directory="true" aria-haspopup="menu"')}${state.openFolders.size ? button('collapse-folders', 'Collapse folders', 'minimize') : ''}</div></div><div class="file-list">${fileTree(state.files, 0) || '<div class="inspector-empty">This folder is empty.</div>'}</div></section>`;
     if (target.querySelector(':scope>.file-explorer')) morph(target, tree, 6); else target.innerHTML = tree;
+    applyExplorerLayout();
     if (componentFocused) (target.querySelector<HTMLElement>(`[data-path="${CSS.escape(componentFocused)}"]`) ?? target.querySelector<HTMLElement>('button'))?.focus();
     return;
   }

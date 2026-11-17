@@ -1,11 +1,15 @@
 import './file-explorer.css';
 import { escape, isImeKey } from './dom';
 import type { openChoiceMenu } from './choice-menu';
+import type { ExplorerSurface } from './extensions/upstream-explorer';
 
 type Context = { projectId: string; sessionId?: string };
 type Deps = {
   call<T>(command: string, args: Record<string, unknown>): Promise<T>;
-  menu(options: Omit<Parameters<typeof openChoiceMenu>[0], 'onClose'>): void;
+  menu(options: Omit<Parameters<typeof openChoiceMenu>[0], 'onClose'> & { extensionSurface?: ExplorerSurface }): void | Promise<void>;
+  /** The captured extension surface of one menu (project, path, kind, revision); absent when nothing can contribute. */
+  surface?(context: Context, path: string, directory: boolean): ExplorerSurface | undefined;
+  attach?(path: string, context: Context): void;
   modal(title: string, body: string): HTMLDialogElement;
   closeModal(): void;
   open(path: string, context: Context): Promise<void>;
@@ -61,21 +65,32 @@ export function createFileExplorer(deps: Deps) {
     });
   }
   function menu(anchor: HTMLElement, context: Context, path: string, directory: boolean, point?: { x: number; y: number }): void {
-    deps.menu({ anchor, point, title: path.split('/').pop() || 'Project files', actions: true, items: [
-      { id: 'new-file', label: 'New File', icon: 'file' },
+    const file = Boolean(path) && !directory;
+    const options = { anchor, point, title: path.split('/').pop() || 'Project files', actions: true, items: [
+      // Files lead with Open and Attach, as the Files tab menu always did; the rows below are upstream's.
+      ...(file ? [{ id: 'open', label: 'Open file', icon: 'file' }, ...(deps.attach ? [{ id: 'attach', label: 'Attach file', icon: 'plus' }] : [])] : []),
+      { id: 'new-file', label: 'New File', icon: 'file', ...(file ? { separator: true } : {}) },
       { id: 'new-folder', label: 'New Folder', icon: 'folder' },
       ...(path ? [{ id: 'rename', label: 'Rename', icon: 'edit', separator: true }, { id: 'delete', label: 'Delete', icon: 'trash', danger: true }] : []),
       { id: 'copy-path', label: 'Copy Path', icon: 'copy', separator: true },
       { id: 'reveal', label: 'Reveal in OS', icon: 'folder' },
       ...(!directory ? [{ id: 'open-external', label: 'Open in Default App', icon: 'external' }] : []),
-    ], onSelect: async action => {
+    ], onSelect: async (action: string) => {
+      if (action === 'open') { await deps.open(path, context); return; }
+      if (action === 'attach') { deps.attach?.(path, context); return; }
       if (['copy-path', 'reveal', 'open-external'].includes(action)) {
         if (action === 'open-external') { await deps.call('open_workspace_file', { ...context, path }); return; }
         const absolute = await deps.call<string>('manage_workspace_entry', { ...context, action: 'path', path });
         if (action === 'reveal') await deps.call('reveal_path', { path: absolute });
         else { await navigator.clipboard.writeText(absolute); deps.notify('Path copied'); }
       } else edit(context, action, path, directory);
-    } });
+    } };
+    // A contributed action or a faulted extension surface never costs the built-in menu: it opens without them.
+    const builtIn = () => { try { void Promise.resolve(deps.menu(options)).catch(deps.report); } catch (error) { deps.report(error); } };
+    const failed = (error: unknown) => { deps.report(error); deps.notify('Explorer extension actions failed. The built-in menu is shown.'); builtIn(); };
+    const surface = deps.surface?.(context, path, directory);
+    if (!surface) { builtIn(); return; }
+    try { void Promise.resolve(deps.menu({ ...options, extensionSurface: surface })).catch(failed); } catch (error) { failed(error); }
   }
   window.setInterval(() => { if (!document.hidden) void refresh().catch(deps.report); }, 2000);
   window.addEventListener('focus', () => { void refresh().catch(deps.report); });

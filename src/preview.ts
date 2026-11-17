@@ -532,6 +532,12 @@ if (new URLSearchParams(location.search).has('pull-coverage')) {
 if (new URLSearchParams(location.search).has('commands-extras')) {
   (window as any).__previewCommandsSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
 }
+// Explicit project explorer extension fixture only: safe mode with the tree open, and a removal of a file from outside the
+// app (what the explorer's two-second refresh sees), so a menu captured on it can be shown to go stale.
+if (new URLSearchParams(location.search).has('upstream-explorer')) {
+  (window as any).__previewExplorerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
+  (window as any).__previewExplorerRemove = (path: string) => previewExplorer.manage({ projectId: 'project-1', sessionId: 'session-1', action: 'delete', path }, '');
+}
 // Explicit tiles and project picker extension fixture only: safe mode while tiles show or the picker holds a draft.
 if (new URLSearchParams(location.search).has('tiles-picker')) {
   (window as any).__previewTilesPickerSafeMode = async () => (await import('./extensions/manager')).enterExtensionsSafeMode();
