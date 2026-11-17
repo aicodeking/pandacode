@@ -62,3 +62,4 @@ pub mod runtime_harness_coverage;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;
+pub mod runtime_codex_companion;

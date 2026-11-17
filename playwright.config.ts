@@ -153,6 +153,7 @@ config.testMatch.push('**/extensions-runtime-hook-registration.spec.ts');
 config.testMatch.push('**/extensions-runtime-harness-coverage.spec.ts');
 config.testMatch.push('**/extensions-runtime-companion-lifetime.spec.ts');
 config.testMatch.push('**/extensions-runtime-callback-companions.spec.ts');
+config.testMatch.push('**/extensions-runtime-codex-companion.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-context.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-decisions.spec.ts');
 config.testMatch.push('**/extensions-runtime-hook-resolution.spec.ts');

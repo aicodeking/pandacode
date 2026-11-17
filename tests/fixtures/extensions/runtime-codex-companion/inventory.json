@@ -1,0 +1,11 @@
+{
+  "provenance": "synthetic",
+  "liveCapture": false,
+  "sourceRevision": "aea4c6ee4b652d84b416731b11c2b8299d767209",
+  "result": { "data": [{ "cwd": "/fixture", "warnings": [], "errors": [], "hooks": [
+    { "key": "session:PreToolUse.0", "eventName": "PreToolUse", "source": "sessionFlags", "currentHash": "hash-PreToolUse", "handler": { "type": "command", "command": "node forward.mjs" } },
+    { "key": "session:PermissionRequest.0", "eventName": "PermissionRequest", "source": "sessionFlags", "currentHash": "hash-PermissionRequest", "handler": { "type": "command", "command": "node forward.mjs" } },
+    { "key": "session:PostToolUse.0", "eventName": "PostToolUse", "source": "sessionFlags", "currentHash": "hash-PostToolUse", "handler": { "type": "command", "command": "node forward.mjs" } },
+    { "key": "unrelated", "eventName": "PreToolUse", "source": "user", "currentHash": "never-trusted", "handler": { "type": "command", "command": "other" } }
+  ] }] }
+}
