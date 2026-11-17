@@ -202,12 +202,46 @@ enum Event {
 #[derive(Default)]
 struct Pending { approval: Option<String>, question: Option<(String, Value)>, session: bool }
 struct Conversation { sid: String, sink: Sink, pending: Mutex<Pending>, cancel: Arc<AtomicBool> }
+/// Longest complete input a provider event may carry beside its preview (a declared ACP harness frame is at most 8 MiB).
+const MAX_INPUT_JSON: usize = 8 << 20;
+/// The call an approval asks about and what its answer can carry.
+type HookRequest = (Option<String>, super::hook_payload::Support);
+/// R0502: takes the hook-path fields out of a provider event: `inputJson` of a tool event (the complete input), and
+/// `callId`, `can` and `denyReason` of an approval. Each is checked; the rest of the event keeps its strict shape.
+fn hook_fields(value: &mut Value) -> Result<(Option<Value>, Option<HookRequest>), String> {
+    let kind = value["kind"].as_str().unwrap_or_default().to_owned();
+    let Some(event) = value.as_object_mut() else { return Ok((None, None)) };
+    match kind.as_str() {
+        "tool" => {
+            let complete = event.remove("inputJson");
+            if complete.as_ref().is_some_and(|input| serde_json::to_vec(input).map_or(usize::MAX, |bytes| bytes.len()) > MAX_INPUT_JSON) { return Err("LimitExceeded".into()); }
+            Ok((complete, None))
+        }
+        "approval" => {
+            let call = match event.remove("callId") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(id)) if !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control) => Some(id),
+                Some(_) => return Err("InvalidShape".into()),
+            };
+            let can = event.remove("can");
+            if can.as_ref().is_some_and(|can| !can.as_array().is_some_and(|list| list.len() <= 8 && list.iter().all(|entry| matches!(entry.as_str(), Some("approve" | "deny" | "ask" | "rewriteInput"))))) { return Err("InvalidShape".into()); }
+            let deny = event.remove("denyReason");
+            if deny.as_ref().is_some_and(|deny| !matches!(deny.as_str(), Some("answer" | "steer" | "none"))) { return Err("InvalidShape".into()); }
+            Ok((None, Some((call, super::hook_payload::provider_support(&json!({"can":can,"denyReason":deny}))))))
+        }
+        _ => Ok((None, None)),
+    }
+}
 impl Conversation {
     fn emit(&self, kind: &str, text: String, request_id: Option<String>, data: Option<Value>, tool: Option<super::ToolActivity>) {
         (self.sink)(AgentEvent { session_id: self.sid.clone(), kind: kind.into(), text, request_id, data, tool });
     }
-    fn event(&self, value: Value) -> Result<Value, String> {
+    fn event(&self, mut value: Value) -> Result<Value, String> {
         if self.cancel.load(Ordering::Acquire) { return Err("Cancelled".into()); }
+        // R0502: a tool event may carry its complete input (`inputJson`) beside the bounded preview, and an approval
+        // its call (`callId`) and what it can take (`can`, `denyReason`). They go to the hook path, never to the window,
+        // and are taken out before the event's own bound and shape are checked.
+        let (complete, request) = hook_fields(&mut value)?;
         if value.to_string().len() > 32768 { return Err("LimitExceeded".into()); }
         let event: Event = serde_json::from_value(value).map_err(|_| "InvalidShape")?;
         let mut pending = self.pending.lock().map_err(|_| "HostUnavailable")?;
@@ -220,6 +254,8 @@ impl Conversation {
             }
             Event::Tool { tool } => {
                 if !["running", "completed", "failed"].contains(&tool.status.as_str()) || tool.id.is_empty() || tool.id.len() > 200 || tool.name.len() > 200 { return Err("InvalidTool".into()); }
+                if let Some(input) = &complete { super::hook_payload::record(&self.sid, None, &tool.id, input).map_err(str::to_owned)?; }
+                if tool.status != "running" { super::hook_payload::finish(&self.sid, &tool.id); }
                 self.emit("tool", String::new(), None, None, Some(tool));
             }
             Event::Usage { used_tokens, context_window } => {
@@ -229,6 +265,8 @@ impl Conversation {
             Event::Approval { text } => {
                 if pending.approval.is_some() || pending.question.is_some() { return Err("Conflict".into()); }
                 let id = uuid::Uuid::new_v4().to_string(); pending.approval = Some(id.clone());
+                let (call, support) = request.unwrap_or((None, super::hook_payload::provider_support(&Value::Null)));
+                super::hook_payload::open_approval(&self.sid, &id, call.as_deref(), support);
                 self.emit("approval", text, Some(id), None, None);
             }
             Event::Question { questions } => {
@@ -236,6 +274,7 @@ impl Conversation {
                 let request = json!({"method":"item/tool/requestUserInput","params":{"questions":questions}});
                 let data = super::host_inputs::normalize(&request)?;
                 let id = uuid::Uuid::new_v4().to_string(); pending.question = Some((id.clone(), request));
+                super::hook_payload::open_question(&self.sid, &id);
                 self.emit("input_request", String::new(), Some(id), Some(data), None);
             }
         }
@@ -248,14 +287,24 @@ impl Conversation {
             RunInput::Approval { request_id, approved } => {
                 if pending.approval.as_deref() != Some(&request_id) { return None; }
                 pending.approval = None;
+                // `ProviderInput`: the bare decision, plus a package's reason, rewritten input and name when one was
+                // attached (R0502); a user's own answer reads exactly as before.
+                let answer = super::hook_payload::take(&self.sid, &request_id, approved);
                 self.emit("approval_cancelled", String::new(), Some(request_id), None, None);
-                Some(json!({"kind":"approval","approved":approved}))
+                Some(super::hook_payload::provider_input(&answer))
             }
             RunInput::UserInput { request_id, response, reply } => {
                 let result = pending.question.as_ref().filter(|(id, _)| id == &request_id).ok_or_else(|| "Stale input request".to_owned()).and_then(|(_, request)| super::host_inputs::answer(request, response));
                 if let Some(reply) = reply { let _ = reply.send(result.as_ref().map(|_| ()).map_err(Clone::clone)); }
                 match result {
-                    Ok(response) => { pending.question = None; self.emit("input_cancelled", String::new(), Some(request_id), None, None); Some(json!({"kind":"question","response":response})) }
+                    Ok(response) => {
+                        pending.question = None;
+                        let by = super::hook_payload::take_question(&self.sid, &request_id);
+                        self.emit("input_cancelled", String::new(), Some(request_id), None, None);
+                        let mut value = json!({"kind":"question","response":response});
+                        if let Some(package) = by { value["decidedBy"] = json!(package); }
+                        Some(value)
+                    }
                     Err(_) => None,
                 }
             }
@@ -389,6 +438,40 @@ mod tests {
         for builtin in crate::providers::PROVIDERS.map(|(id, _)| id) { assert!(crate::architect::require_team_provider(builtin).is_ok(), "{builtin}"); }
         for unknown in ["not-a-provider", "panda.core/zcode", "sample.harness"] { assert!(crate::architect::require_team_provider(unknown).unwrap_err().contains("unsupported team tools"), "{unknown}"); }
     }
+    /// R0502: a package provider's tool event hands its complete input (over core's 32 KiB event bound) to the hook
+    /// path while the window keeps the preview; an approval pairs with its call, and `ProviderInput` carries a
+    /// package's reason, rewritten input and name, or the bare decision for the user's own answer.
+    #[test]
+    fn provider_events_hand_complete_inputs_and_answers_to_the_hook_path() {
+        use super::super::hook_payload as payload;
+        let events = Arc::new(Mutex::new(Vec::new())); let captured = events.clone();
+        let sid = format!("r0502-provider-{}", uuid::Uuid::new_v4());
+        let conversation = Conversation { sid: sid.clone(), sink: Arc::new(move |event| captured.lock().unwrap().push(event)), pending: Mutex::default(), cancel: Arc::new(AtomicBool::new(false)) };
+        let complete = json!({"command":"rm -rf /tmp/x","content":"x".repeat(100_000)});
+        conversation.event(json!({"kind":"tool","tool":{"id":"t1","name":"Bash","status":"running","input":"rm -rf /tmp/x …","output":""},"inputJson":complete})).unwrap();
+        let shown = events.lock().unwrap().last().unwrap().tool.clone().unwrap();
+        assert_eq!(shown.input, "rm -rf /tmp/x …", "the window keeps the preview");
+        let call = payload::call_id(&sid, "t1").expect("the complete input was recorded");
+        assert_eq!(payload::payload(&call).unwrap()["input"], complete);
+        // Hook fields are checked; the event keeps its strict shape otherwise.
+        for bad in [json!({"kind":"approval","text":"x","callId":7}), json!({"kind":"approval","text":"x","can":["everything"]}), json!({"kind":"approval","text":"x","denyReason":"loud"}), json!({"kind":"text","text":"x","inputJson":{}})] {
+            assert!(conversation.event(bad.clone()).is_err(), "{bad}");
+        }
+        conversation.event(json!({"kind":"approval","text":"Run it?","callId":"t1","can":["approve","deny","rewriteInput"]})).unwrap();
+        let request = events.lock().unwrap().last().unwrap().request_id.clone().unwrap();
+        assert_eq!(payload::request_call(&sid, &request), Some(call.clone()));
+        payload::attach(&sid, &request, payload::Answer { approved: true, reason: None, input: Some(json!({"command":"rm -rf ./tmp/x"})), decided_by: Some("sample.guard".into()) }).unwrap();
+        assert_eq!(conversation.input(RunInput::Approval { request_id: request, approved: true }).unwrap(), json!({"kind":"approval","approved":true,"input":{"command":"rm -rf ./tmp/x"},"decidedBy":"sample.guard"}));
+        // Without `rewriteInput` the rewrite is refused and the request stays open; the user's deny is the bare decision.
+        conversation.event(json!({"kind":"approval","text":"Again?","callId":"t1"})).unwrap();
+        let request = events.lock().unwrap().last().unwrap().request_id.clone().unwrap();
+        assert!(payload::attach(&sid, &request, payload::Answer { approved: true, reason: None, input: Some(json!({})), decided_by: Some("sample.guard".into()) }).unwrap_err().starts_with("UnsupportedCapability"));
+        assert_eq!(conversation.input(RunInput::Approval { request_id: request, approved: false }).unwrap(), json!({"kind":"approval","approved":false}));
+        conversation.event(json!({"kind":"tool","tool":{"id":"t1","name":"Bash","status":"completed","input":"","output":"done"}})).unwrap();
+        assert_eq!(payload::read(&call, 0), Err("StaleContext"));
+        payload::forget_run(&sid);
+    }
+
     #[test]
     fn dynamic_harness_core_owns_pending_completion_identity_and_cancellation() {
         let events = Arc::new(Mutex::new(Vec::new())); let captured = events.clone();

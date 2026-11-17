@@ -28,6 +28,7 @@ pub(crate) mod runtime_provider_launch;
 pub mod runtime_tasks_start;
 pub mod runtime_tasks_messages;
 pub(crate) mod runtime_hook_fixtures;
+pub(crate) mod runtime_hook_payload;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;

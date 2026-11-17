@@ -379,6 +379,8 @@ mod tests {
                         move |input| match input {
                             RunInput::Stop => { stop.store(true, Ordering::Release); None }
                             RunInput::Approval { approved, .. } => Some(json!({"kind":"approval","approved":approved})),
+                            // A structured question reaches core as a question (R0502); its answer goes back as core's response.
+                            RunInput::UserInput { response, .. } => Some(json!({"kind":"question","response":response})),
                             _ => None,
                         },
                         received, cancel).await
@@ -422,6 +424,11 @@ mod tests {
                         run.answer(true).await;
                     }
                     "stop" => { run.until("an approval request", is_approval).await; run.inputs.send(RunInput::Stop).await.unwrap(); }
+                    // Core cancels the question it was asked (an empty answer set): the agent hears a cancelled outcome.
+                    "cancel-question" => {
+                        run.until("a structured question", |event| event["kind"] == "question").await;
+                        run.inputs.send(RunInput::UserInput { request_id: "fixture".into(), response: json!({"answers":{}}), reply: None }).await.unwrap();
+                    }
                     "none" => {}
                     other => panic!("{id}: unknown host action {other}"),
                 }

@@ -20,6 +20,8 @@ use tokio::{
 mod attachments;
 #[path = "extensions/builtin_protocol.rs"]
 mod builtin_adapter;
+/// Complete tool inputs and approval answers for the hook path (runtime slice R0502).
+pub(crate) use crate::extensions::runtime_hook_payload as hook_payload;
 #[path = "extensions/dynamic_harness.rs"]
 pub(crate) mod dynamic_adapter;
 // Speed tiers and opted-in warm spares of declared package harnesses (R0807); declared here so the extensions module list stays untouched.
@@ -888,6 +890,8 @@ pub(crate) fn take_decline_reason(session_id: &str, id: &str) -> Option<String> 
 /// Drops every reason left for a session (its run ended, so none can be claimed any more).
 pub(crate) fn forget_decline_reasons(session_id: &str) {
     DECLINE_REASONS.lock().unwrap_or_else(|poison| poison.into_inner()).retain(|(session, _, _)| session != session_id);
+    // The run's recorded tool inputs and open requests for the hook path go with it (R0502).
+    hook_payload::forget_run(session_id);
 }
 
 /// Sessions whose current run is a team worker's, so PandaCode's own tool hosts refuse the
@@ -2155,6 +2159,13 @@ impl Protocol {
     fn thinking(&self, text: &str, step: &mut Step) {
         if !text.is_empty() { step.events.push(self.event("thinking", text, None)); }
     }
+    /// The complete input of a harness call, handed to the hook path before its display preview is cut (R0502).
+    /// Recorded only while a package holds a hook; otherwise nothing happens.
+    fn hook_input(&self, id: &str, input: &Value) {
+        if !id.is_empty() && !input.is_null() && hook_payload::observed() {
+            let _ = hook_payload::record(&self.config.session_id, None, &limited(id, 256), input);
+        }
+    }
     fn tool_update(
         &mut self,
         id: &str,
@@ -2195,6 +2206,10 @@ impl Protocol {
         }
         if let Some(status) = status {
             tool.status = status.into();
+            // The call ended: its complete input stays readable only while a hook still holds it (R0502).
+            if matches!(status, "completed" | "failed") && hook_payload::observed() {
+                hook_payload::finish(&self.config.session_id, &id);
+            }
         }
         if let Some(input) = input {
             tool.input = limited(&input, TOOL_INPUT_LIMIT);
@@ -2417,6 +2432,7 @@ impl Protocol {
                     .is_some_and(|tool| tool.status != "running"));
         // Kimi sends cumulative argument previews before execution and REPLACES
         // content with the result on completion; missing fields are unchanged.
+        if let Some(input) = update.get("rawInput") { self.hook_input(field(update, "toolCallId"), input); }
         let input = if let Some(input) = update.get("rawInput").filter(|value| !value.is_null()) {
             Some(preview_json(input, TOOL_INPUT_LIMIT))
         } else if !finished && update.get("content").is_some() {
@@ -2476,6 +2492,11 @@ impl Protocol {
     }
     fn approval(&mut self, value: Value, text: String, step: &mut Step) {
         let request_id = uuid::Uuid::new_v4().to_string();
+        // Pair the request with the call it asks about, hand the hook path that call's complete input, and record
+        // what this harness's answer can carry (R0502). Nothing changes in what is written to the harness.
+        let call = hook_payload::frame_call(&value);
+        if let Some((harness, input)) = &call { self.hook_input(harness, input); }
+        hook_payload::open_approval(&self.config.session_id, &request_id, call.as_ref().map(|(harness, _)| limited(harness, 256)).as_deref(), hook_payload::builtin_support(&self.config.provider));
         let mut event = self.event("approval", short(&text), Some(&value));
         event.request_id = Some(request_id.clone());
         // Approving it grants more than this action (`approve`), so PandaCode never approves
@@ -2494,10 +2515,14 @@ impl Protocol {
             let request = self.pending.get(id)?.clone();
             let decision = self.muse_decide(&request, approved)?;
             self.pending.remove(id);
+            hook_payload::close(&self.config.session_id, id);
             return Some(decision);
         }
         let request = self.pending.remove(id)?;
         let declined = decline_text(&self.config.session_id, id);
+        // A package's reason and rewritten input, when one was attached before this decision (R0502). `attach` already
+        // refused a rewrite this harness cannot run, so only the Claude stream arm below ever sees one.
+        let answer = hook_payload::take(&self.config.session_id, id, approved);
         Some(match self.config.provider.as_str() {
             "pi" | "omp" => json!({"type":"extension_ui_response","id":request["id"],"confirmed":approved}),
             "zcode" => zcode::permission_decision(&request, approved),
@@ -2527,7 +2552,7 @@ impl Protocol {
                 json!({"jsonrpc":"2.0","id":request["id"],"result":{"outcome":outcome}})
             }
             _ => {
-                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":if approved {json!({"behavior":"allow","updatedInput":request["request"]["input"]})} else {json!({"behavior":"deny","message":declined})}}})
+                json!({"type":"control_response","response":{"subtype":"success","request_id":request["request_id"],"response":hook_payload::claude_permission_response(&request["request"]["input"], &answer, &declined)}})
             }
         })
     }
@@ -3277,6 +3302,7 @@ impl Protocol {
                             self.text_snapshot(&id, None, &text, &mut step);
                         }
                         if block["type"] == "tool_use" {
+                            self.hook_input(field(block, "id"), &block["input"]);
                             self.tool_update(
                                 field(block, "id"),
                                 block["name"].as_str(),

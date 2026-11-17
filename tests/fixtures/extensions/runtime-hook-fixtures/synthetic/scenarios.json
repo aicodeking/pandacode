@@ -22,7 +22,7 @@
     {
       "id": "structured-question",
       "prompt": "#script [{\"question\":{\"id\":\"db\",\"question\":\"Choose a database\",\"options\":[\"Postgres\",\"SQLite\"],\"transport\":\"acp-permission\"}},{\"say\":\"after-question\"}]",
-      "host": ["none"],
+      "host": ["cancel-question"],
       "expect": { "texts": ["answer: {\"cancelled\":true}", "after-question"], "neverTexts": ["answer: Postgres", "answer: SQLite"], "noApproval": true, "stop": "end_turn" }
     },
     {

@@ -3,8 +3,12 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { runScenario } from '../core/scenario.mjs';
 import { body, json, lifetime, lines, listen, listener, loopback, main } from '../common.mjs';
 
-export async function startAgent({ input, output, logFile, diagnostics = process.stderr } = {}) {
+export async function startAgent({ input, output, logFile, diagnostics = process.stderr, pandacode = '' } = {}) {
   let sessionSerial = 0, requestSerial = 1000, stopped = false, fault = null;
+  // Opt-in PandaCode permission-answer fields (R0502): `reason` and/or `updatedInput`, declared in `initialize` as
+  // agentCapabilities._meta.pandacode.permissionAnswer and then read from the permission result's `_meta.pandacode`.
+  const declared = new Set(String(pandacode ?? '').split(',').map(entry => entry.trim()).filter(entry => entry === 'reason' || entry === 'updatedInput'));
+  const permissionAnswer = Object.fromEntries([...declared].map(entry => [entry, true]));
   const sessions = new Map(), pending = new Map(), log = [], controllers = new Set();
   let resolveDone;
   const done = new Promise(resolve => { resolveDone = resolve; });
@@ -62,7 +66,12 @@ export async function startAgent({ input, output, logFile, diagnostics = process
         permission: async tool => {
           const value = await ask({ toolCall: { toolCallId: `tool-${toolSerial}`, title: tool.name, kind: tool.kind === 'shell' ? 'execute' : tool.kind, rawInput: tool.input }, options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }, { optionId: 'deny', name: 'Reject once', kind: 'reject_once' }] });
           const outcome = value.result?.outcome;
-          return { approved: outcome?.outcome === 'selected' && outcome.optionId === 'allow', reason: outcome?.reason ?? value.result?._meta?.fixture?.reason, input: value.result?._meta?.fixture?.input };
+          const answer = value.result?._meta?.pandacode ?? {};
+          return {
+            approved: outcome?.outcome === 'selected' && outcome.optionId === 'allow',
+            reason: (declared.has('reason') ? answer.reason : undefined) ?? outcome?.reason ?? value.result?._meta?.fixture?.reason,
+            input: (declared.has('updatedInput') ? answer.updatedInput : undefined) ?? value.result?._meta?.fixture?.input,
+          };
         },
         // ACP v1 has no question frame. Opt-in `transport: "acp-permission"` sends the question the way ACP harnesses
         // do in practice: a permission request whose options are the answers (`q0_opt_<n>`, plus `q0_skip`).
@@ -131,7 +140,7 @@ export async function startAgent({ input, output, logFile, diagnostics = process
     const respond = result => write({ id: frame.id, result });
     try {
       const params = frame.params ?? {};
-      if (frame.method === 'initialize') respond({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true }, sessionCapabilities: {} }, agentInfo: { name: 'fixture-agent', version: '1' } });
+      if (frame.method === 'initialize') respond({ protocolVersion: 1, agentCapabilities: { mcpCapabilities: { http: true }, sessionCapabilities: {}, ...(declared.size ? { _meta: { pandacode: { permissionAnswer } } } : {}) }, agentInfo: { name: 'fixture-agent', version: '1' } });
       else if (frame.method === 'session/new') {
         const servers = structuredClone(params.mcpServers ?? []);
         for (const server of servers) { if (server.type !== 'http') throw new Error('Only HTTP tool servers are supported'); loopback(server.url); }
@@ -150,6 +159,6 @@ export async function startAgent({ input, output, logFile, diagnostics = process
   return { close, done, control: url };
 }
 if (main(import.meta.url)) {
-  const agent = await startAgent({ input: process.stdin, output: process.stdout, logFile: process.env.FAKE_AGENT_LOG });
+  const agent = await startAgent({ input: process.stdin, output: process.stdout, logFile: process.env.FAKE_AGENT_LOG, pandacode: process.env.FAKE_AGENT_PANDACODE });
   lifetime(agent.close, agent.done);
 }

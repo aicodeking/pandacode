@@ -224,6 +224,71 @@ mod tests {
         }
     }
 
+    /// Runtime slice R0502: a built-in permission request is paired with its call and its complete input, and a
+    /// package's answer (reason, rewritten input, attribution) renders with the semantics of the shared answer fixture
+    /// that the package provider renderings also follow (`runtime_hook_payload::tests`). Request ids repeat across
+    /// runs without sharing an answer; a rewrite the harness cannot run is refused before anything is written.
+    #[test]
+    fn builtin_adapter_answers_share_the_package_semantics_attribution_and_run_identity() {
+        use crate::extensions::runtime_hook_payload as payload;
+        payload::set_observed(true);
+        let fixture: Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/runtime-hook-payload/answers.json")).unwrap();
+        let original = fixture["originalInput"].clone();
+        for case in fixture["cases"].as_array().unwrap() {
+            let id = case["id"].as_str().unwrap();
+            let answer = payload::Answer::parse(&case["answer"]).unwrap();
+            for provider in ["claude", "glm", "kimi"] {
+                let mut config = super::super::tests::config(provider);
+                config.session_id = format!("r0502-{id}-{provider}-{}", uuid::Uuid::new_v4());
+                let run = config.session_id.clone();
+                let mut session = Session::new(config).unwrap();
+                let (frame, harness_call) = if provider == "kimi" {
+                    (json!({"jsonrpc":"2.0","id":41,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"t1","title":"Bash","rawInput":original},"options":fixture["acpOptions"]}}), "t1")
+                } else {
+                    (json!({"type":"control_request","request_id":"perm-1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"toolu_1","input":original}}), "toolu_1")
+                };
+                let step = session.receive(frame).unwrap();
+                let request = step.events.iter().find(|event| event.kind == "approval").and_then(|event| event.request_id.clone()).unwrap_or_else(|| panic!("{id}/{provider}: {:?}", step.events));
+                // Paired: the request's call is the recorded call, and the hook can read the complete input.
+                let call = payload::request_call(&run, &request).unwrap_or_else(|| panic!("{id}/{provider}: no call paired"));
+                assert_eq!(payload::call_id(&run, harness_call).as_deref(), Some(call.as_str()));
+                assert_eq!(payload::payload(&call).unwrap()["input"], original);
+                assert_eq!(payload::support(&run, &request), Some(payload::builtin_support(provider)));
+                let refused = case["expect"]["unsupportedFor"].as_array().is_some_and(|list| list.iter().any(|entry| entry == provider));
+                let attached = payload::attach(&run, &request, answer.clone());
+                assert_eq!(attached.is_err(), refused, "{id}/{provider}: {attached:?}");
+                if refused {
+                    assert!(attached.unwrap_err().starts_with("UnsupportedCapability"));
+                    assert!(payload::support(&run, &request).is_some(), "{id}/{provider}: still open");
+                    payload::forget_run(&run);
+                    continue;
+                }
+                // Another run with the same request id never sees this answer.
+                let other = format!("{run}-other");
+                payload::open_approval(&other, &request, None, payload::builtin_support(provider));
+                assert_eq!(payload::take(&other, &request, answer.approved), payload::Answer::plain(answer.approved));
+                let step = session.approval_step(&request, answer.approved);
+                let write = step.write.first().unwrap_or_else(|| panic!("{id}/{provider}: nothing written"));
+                let (executed, reason) = if provider == "kimi" {
+                    assert_eq!(write["result"]["outcome"]["optionId"], if answer.approved { "allow" } else { "deny" });
+                    assert!(write["result"].get("_meta").is_none(), "a built-in ACP harness gets the bare decision");
+                    (original.clone(), None)
+                } else {
+                    let response = &write["response"]["response"];
+                    (response.get("updatedInput").cloned().unwrap_or(original.clone()), response["message"].as_str().filter(|text| *text != USER_DECLINE).map(str::to_owned))
+                };
+                if answer.approved { assert_eq!(executed, case["expect"]["executed"], "{id}/{provider}"); }
+                let travels = payload::builtin_support(provider).deny_reason == payload::DenyReason::Answer;
+                assert_eq!(reason, if travels { case["expect"]["reason"].as_str().map(str::to_owned) } else { None }, "{id}/{provider}");
+                assert_eq!(payload::approval_resolved(&run, &request, Some(&call), Some(&answer))["by"], case["expect"]["by"]);
+                // Claimed once: the request is closed.
+                assert!(payload::support(&run, &request).is_none());
+                forget_decline_reasons(&run);
+                assert_eq!(payload::call_id(&run, harness_call), None, "the run's end drops its calls");
+            }
+        }
+    }
+
     #[test]
     fn builtin_adapter_does_not_turn_failed_resume_or_cancel_into_success() {
         for provider in all().filter(|p| matches!(p.id, "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes")) {

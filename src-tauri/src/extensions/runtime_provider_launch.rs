@@ -17,15 +17,16 @@
 //!   active runs, and records readiness transitions. Two concurrent conversations see the same state, never two.
 //! * A credential PandaCode holds is never placed in the launched program's environment (ADR-0006): the environment
 //!   is the app's own plus the manifest's fixed `env` text.
-use crate::providers::RunInput;
+use crate::providers::{hook_payload, RunInput};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::{Path, PathBuf}, process::Stdio, sync::{Arc, Mutex, OnceLock, atomic::{AtomicBool, Ordering}}, time::Duration};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
 /// The ACP protocol version the host speaks (`initialize.protocolVersion`).
 const ACP_VERSION: u64 = 1;
-/// Longest stdout frame the host accepts from a launched harness.
-const MAX_LINE: usize = 1 << 20;
+/// Longest stdout frame the host accepts from a launched harness. A tool call may carry an input over 1 MiB, which
+/// reaches the hook path completely (runtime slice R0502); hook frames themselves stay within 2 MiB.
+const MAX_LINE: usize = 8 << 20;
 /// Longest text delta forwarded as one core event (core refuses larger events).
 const CHUNK: usize = 8_000;
 const STARTUP: Duration = Duration::from_secs(60);
@@ -239,7 +240,10 @@ fn tool_event(update: &Value) -> Option<Value> {
         text.chars().take(2_000).collect()
     };
     let output = update["content"].as_array().map(|items| items.iter().filter_map(|item| item["content"]["text"].as_str().or_else(|| item["text"].as_str())).collect::<Vec<_>>().join("\n")).unwrap_or_default();
-    Some(json!({"kind":"tool","tool":{"id":id.chars().take(200).collect::<String>(),"name":name.chars().take(200).collect::<String>(),"status":status,"input":preview(&update["rawInput"]),"output":if output.is_empty() { preview(&update["rawOutput"]) } else { output.chars().take(2_000).collect() }}}))
+    let mut event = json!({"kind":"tool","tool":{"id":id.chars().take(200).collect::<String>(),"name":name.chars().take(200).collect::<String>(),"status":status,"input":preview(&update["rawInput"]),"output":if output.is_empty() { preview(&update["rawOutput"]) } else { output.chars().take(2_000).collect() }}});
+    // The complete input travels beside the preview to the hook path (R0502); core takes it out before the window.
+    if !update["rawInput"].is_null() { event["inputJson"] = update["rawInput"].clone(); }
+    Some(event)
 }
 
 /// Maps one `session/update` onto core events. Unknown kinds are ignored, as built-in ACP harnesses do.
@@ -256,18 +260,12 @@ fn update_events(update: &Value) -> Vec<Value> {
     }
 }
 
-fn permission_choice<'a>(options: &'a [Value], approved: bool) -> Option<&'a Value> {
-    let (wanted, fallback) = if approved { ("allow_once", "allow_always") } else { ("reject_once", "reject_always") };
-    options.iter().find(|option| option["kind"] == wanted).or_else(|| options.iter().find(|option| option["kind"] == fallback))
-}
+#[cfg(test)]
+fn permission_choice(options: &[Value], approved: bool) -> Option<&Value> { hook_payload::acp_choice(options, approved) }
 
 /// Whether a `session/request_permission` is a structured question rather than a tool approval: more than one allow
 /// option, or answer ids of the `q<N>_opt_<M>` form (the rule of the built-in ACP harnesses in `providers.rs`).
-pub(crate) fn structured_question(request: &Value) -> bool {
-    let options = request["params"]["options"].as_array().map(Vec::as_slice).unwrap_or_default();
-    options.iter().filter(|option| option["kind"] == "allow_once").count() > 1
-        || options.iter().any(|option| option["optionId"].as_str().and_then(|id| id.strip_prefix('q')).and_then(|id| id.split_once("_opt_")).is_some_and(|(number, _)| number.parse::<usize>().is_ok()))
-}
+pub(crate) fn structured_question(request: &Value) -> bool { hook_payload::acp_structured_question(request) }
 
 /// A started harness process with its pipes: what a send owns while it talks, and what a warm spare (R0807) holds
 /// after `initialize` until a send adopts it.
@@ -408,6 +406,10 @@ pub(crate) async fn drive_adopted(
     };
     let mut remote: Option<String> = None;
     let mut pending_permission: Option<Value> = None;
+    // A structured question waiting for core's answer, and what the agent declared it reads in a permission result
+    // (`agentCapabilities._meta.pandacode.permissionAnswer`, R0502).
+    let mut pending_question: Option<Value> = None;
+    let mut support = hook_payload::Support::BARE;
     let mut prompt_id: Option<u64> = None;
     let mut cancelled_sent = false;
     let mut stop_deadline: Option<tokio::time::Instant> = None;
@@ -440,17 +442,22 @@ pub(crate) async fn drive_adopted(
                     Some(RunInput::Stop) => { input(RunInput::Stop); }
                     // ACP v1 has no live steering frame: say so instead of claiming delivery.
                     Some(RunInput::Steer { reply, .. }) => { let _ = reply.send(Err("UnsupportedCapability: this declared ACP harness cannot take live steering".into())); }
-                    Some(other) => { if let Some(answer) = input(other) { if answer["kind"] == "approval" {
-                        if let Some(request) = pending_permission.take() {
-                            let options = request["params"]["options"].as_array().cloned().unwrap_or_default();
-                            let approved = answer["approved"] == true;
-                            let result = match permission_choice(&options, approved) {
-                                Some(option) => json!({"outcome":{"outcome":"selected","optionId":option["optionId"]}}),
-                                None => json!({"outcome":{"outcome":"cancelled"}}),
-                            };
-                            let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))).await;
+                    Some(other) => { if let Some(answer) = input(other) {
+                        if answer["kind"] == "approval" {
+                            if let Some(request) = pending_permission.take() {
+                                let options = request["params"]["options"].as_array().cloned().unwrap_or_default();
+                                // The selected option, plus `_meta.pandacode` with the reason and rewritten input the
+                                // agent declared it reads; an agent that declared nothing gets the bare decision.
+                                let result = hook_payload::acp_permission_result(&options, &hook_payload::answer_of(&answer), support);
+                                let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))).await;
+                            }
+                        } else if answer["kind"] == "question" {
+                            if let Some(request) = pending_question.take() {
+                                let result = hook_payload::acp_question_result(&request, &answer["response"]);
+                                let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":request["id"],"result":result}))).await;
+                            }
                         }
-                    } } }
+                    } }
                     None => cancel.store(true, Ordering::Release),
                 }
                 None
@@ -469,15 +476,21 @@ pub(crate) async fn drive_adopted(
                 "session/update" => for value in update_events(&frame["params"]["update"]) {
                     if let Err(error) = event(value) { if !cancel.load(Ordering::Acquire) { outcome = Err(format!("The harness sent an event core refused: {error}")); } break 'frames; }
                 },
-                // A structured question is not a tool approval: approving it would silently pick its first answer.
-                // Like the built-in ACP harnesses, decline it as cancelled (normalized questions are slice R0502).
+                // A structured question is not a tool approval: approving it would silently pick its first answer. It
+                // goes to core as a question (its allow options are the answers) and the answer selects its option;
+                // a question core cannot take, or a second one while one waits, is declined as cancelled (R0502).
                 "session/request_permission" if frame.get("id").is_some() && structured_question(&frame) => {
-                    let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":frame["id"],"result":{"outcome":{"outcome":"cancelled"}}}))).await;
+                    let asked = pending_question.is_none() && hook_payload::acp_question(&frame).is_some_and(|questions| event(json!({"kind":"question","questions":questions})).is_ok());
+                    if asked { pending_question = Some(frame.clone()); }
+                    else { let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":frame["id"],"result":{"outcome":{"outcome":"cancelled"}}}))).await; }
                 }
                 "session/request_permission" if frame.get("id").is_some() => {
                     let title = frame["params"]["toolCall"]["title"].as_str().unwrap_or("The agent asks to run a tool.");
                     let text: String = title.chars().take(2_000).collect();
-                    match event(json!({"kind":"approval","text":text})) {
+                    // The call it asks about and what its answer can carry pair the request with the hook path (R0502).
+                    let mut approval = json!({"kind":"approval","text":text,"can":support.can(),"denyReason":support.json()["denyReason"]});
+                    if let Some(call) = frame["params"]["toolCall"]["toolCallId"].as_str().filter(|id| !id.is_empty() && id.len() <= 200) { approval["callId"] = json!(call); }
+                    match event(approval) {
                         Ok(_) => pending_permission = Some(frame.clone()),
                         Err(_) => { let _ = stdin.write_all(&write(json!({"jsonrpc":"2.0","id":frame["id"],"result":{"outcome":{"outcome":"cancelled"}}}))).await; }
                     }
@@ -491,6 +504,7 @@ pub(crate) async fn drive_adopted(
             Some(1) => {
                 if frame["result"]["protocolVersion"] != ACP_VERSION { outcome = Err("This harness does not support ACP protocol v1.".into()); break; }
                 with(&state, |state| state.handshakes += 1);
+                support = hook_payload::acp_support(&frame["result"]);
                 let capabilities = &frame["result"]["agentCapabilities"];
                 let mut params = json!({"cwd":cwd.to_string_lossy(),"mcpServers":[]});
                 // The selected model, effort and speed tier travel in the ACP extension point (`_meta`), attributed to the package (R0807).

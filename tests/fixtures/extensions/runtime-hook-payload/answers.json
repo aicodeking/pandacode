@@ -1,0 +1,49 @@
+{
+  "_fixture": {
+    "provenance": "synthetic",
+    "liveCapture": false,
+    "slice": "R0502",
+    "purpose": "One answer table shared by the package provider, declared ACP, bare ACP and Claude Code renderings (native runtime_hook_payload::tests and the preview twin src/extensions/runtime-hook-payload.ts)."
+  },
+  "originalInput": { "command": "rm -rf /tmp/fixture" },
+  "acpOptions": [
+    { "optionId": "allow", "name": "Allow once", "kind": "allow_once" },
+    { "optionId": "deny", "name": "Reject once", "kind": "reject_once" }
+  ],
+  "acpDeclaredInitialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": { "_meta": { "pandacode": { "permissionAnswer": { "reason": true, "updatedInput": true } } } }
+  },
+  "cases": [
+    {
+      "id": "user-approve",
+      "answer": { "approved": true },
+      "expect": { "executed": { "command": "rm -rf /tmp/fixture" }, "reason": null, "by": "user" }
+    },
+    {
+      "id": "user-deny",
+      "answer": { "approved": false },
+      "expect": { "reason": null, "by": "user" }
+    },
+    {
+      "id": "package-deny-with-reason",
+      "answer": { "approved": false, "reason": "Blocked by sample.guard: deletes outside the project.", "decidedBy": "sample.guard" },
+      "expect": { "reason": "Blocked by sample.guard: deletes outside the project.", "by": { "package": "sample.guard" } }
+    },
+    {
+      "id": "package-approve",
+      "answer": { "approved": true, "decidedBy": "sample.guard" },
+      "expect": { "executed": { "command": "rm -rf /tmp/fixture" }, "reason": null, "by": { "package": "sample.guard" } }
+    },
+    {
+      "id": "package-rewrite",
+      "answer": { "approved": true, "input": { "command": "rm -rf ./tmp/fixture" }, "decidedBy": "sample.guard" },
+      "expect": {
+        "executed": { "command": "rm -rf ./tmp/fixture" },
+        "reason": null,
+        "by": { "package": "sample.guard" },
+        "unsupportedFor": ["providerBare", "acpBare", "kimi"]
+      }
+    }
+  ]
+}

@@ -5,5 +5,5 @@
 import { lifetime } from './common.mjs';
 import { startAgent } from './fake-agent/fake-agent.mjs';
 
-const agent = await startAgent({ input: process.stdin, output: process.stdout, logFile: process.env.FAKE_AGENT_LOG });
+const agent = await startAgent({ input: process.stdin, output: process.stdout, logFile: process.env.FAKE_AGENT_LOG, pandacode: process.env.FAKE_AGENT_PANDACODE });
 lifetime(agent.close, agent.done);

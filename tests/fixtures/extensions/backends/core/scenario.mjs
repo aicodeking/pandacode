@@ -8,6 +8,7 @@ export function parseScenario(prompt) {
   for (const step of steps) {
     if (!step || typeof step !== 'object' || allowed.filter(key => Object.hasOwn(step, key)).length !== 1) throw new Error('Each step needs exactly one action');
     if ('sleep' in step && (!Number.isInteger(step.sleep) || step.sleep < 0 || step.sleep > 3600000)) throw new Error('Invalid sleep');
+    if ('padInput' in step && (!step.tool || !Number.isInteger(step.padInput) || step.padInput < 0 || step.padInput > 8388608)) throw new Error('Invalid padInput');
   }
   return steps;
 }
@@ -18,15 +19,18 @@ export async function runScenario(prompt, io) {
     if ('say' in step) await say(step.say);
     else if (step.echoPrompt) await say(prompt);
     else if (step.tool) {
-      await io.emit({ kind: 'tool', status: 'pending', tool: step.tool });
-      const answer = step.ask ? await io.permission(step.tool) : { approved: true };
+      // `padInput: N` adds an N-character `padding` field to the tool input (large-input tests, R0502), so a prompt
+      // stays small while the agent emits a tool frame of any size.
+      const tool = step.padInput ? { ...step.tool, input: { ...step.tool.input, padding: 'x'.repeat(step.padInput) } } : step.tool;
+      await io.emit({ kind: 'tool', status: 'pending', tool });
+      const answer = step.ask ? await io.permission(tool) : { approved: true };
       if (!answer.approved) {
-        await io.emit({ kind: 'tool', status: 'denied', tool: step.tool });
+        await io.emit({ kind: 'tool', status: 'denied', tool });
         await say(`denied: ${answer.reason ?? 'permission rejected (ACP supplied no reason)'}`);
       } else {
-        const input = answer.input ?? step.tool.input;
-        await io.emit({ kind: 'tool', status: 'completed', tool: { ...step.tool, input }, output: step.output ?? '' });
-        await say(`ran: ${JSON.stringify(input)}`);
+        const input = answer.input ?? tool.input;
+        await io.emit({ kind: 'tool', status: 'completed', tool: { ...tool, input }, output: step.output ?? '' });
+        await say(step.padInput && answer.input === undefined ? `ran: <${JSON.stringify(input).length} bytes>` : `ran: ${JSON.stringify(input)}`);
       }
     } else if (step.question) {
       const answer = await io.question(step.question);

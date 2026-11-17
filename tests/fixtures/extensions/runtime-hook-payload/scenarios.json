@@ -1,0 +1,37 @@
+{
+  "_fixture": {
+    "provenance": "synthetic",
+    "liveCapture": false,
+    "slice": "R0502",
+    "purpose": "Fake agent (B5) scenarios for complete tool inputs, deny reasons and rewrites through the declared ACP transport (native runtime_hook_payload::tests::windows_transport) and over raw stdio (tests/extensions-runtime-hook-payload.spec.ts). FAKE_AGENT_PANDACODE makes the agent declare agentCapabilities._meta.pandacode.permissionAnswer."
+  },
+  "scenarios": [
+    {
+      "id": "large-input",
+      "env": {},
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"rm -rf /tmp/hook-payload\"}},\"padInput\":1500000},{\"say\":\"after-large\"}]",
+      "expect": { "command": "rm -rf /tmp/hook-payload", "minimumBytes": 1500000 }
+    },
+    {
+      "id": "deny-reason",
+      "env": { "FAKE_AGENT_PANDACODE": "reason,updatedInput" },
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"rm -rf /tmp/x\"}},\"ask\":true},{\"say\":\"after-deny\"}]",
+      "reason": "Blocked by sample.guard: deletes outside the project.",
+      "expect": { "original": { "command": "rm -rf /tmp/x" } }
+    },
+    {
+      "id": "rewrite-supported",
+      "env": { "FAKE_AGENT_PANDACODE": "reason,updatedInput" },
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"rm -rf /tmp/x\"}},\"ask\":true},{\"say\":\"after-rewrite\"}]",
+      "rewrite": { "command": "rm -rf ./tmp/x" },
+      "expect": { "original": { "command": "rm -rf /tmp/x" } }
+    },
+    {
+      "id": "rewrite-unsupported",
+      "env": {},
+      "prompt": "#script [{\"tool\":{\"name\":\"Bash\",\"kind\":\"shell\",\"input\":{\"command\":\"rm -rf /tmp/x\"}},\"ask\":true},{\"say\":\"after-refusal\"}]",
+      "rewrite": { "command": "rm -rf ./tmp/x" },
+      "expect": { "original": { "command": "rm -rf /tmp/x" } }
+    }
+  ]
+}

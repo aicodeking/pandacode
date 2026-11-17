@@ -249,6 +249,12 @@ jobs:
       - name: Hook fixtures and frame provenance (WebKit)
         env: { PW_PORT: '16212', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-hook-fixtures.spec.ts --workers=1
+      - name: Complete tool inputs and approval answers (Chromium)
+        env: { PW_PORT: '16231', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-hook-payload.spec.ts --workers=1
+      - name: Complete tool inputs and approval answers (WebKit)
+        env: { PW_PORT: '16232', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-hook-payload.spec.ts --workers=1
       - name: Upstream semantic remote sends and images (Chromium)
         env: { PW_PORT: '15851', PW_PROD: '1' }
         run: npx playwright test tests/upstream-semantic-remote-images.spec.ts --workers=1

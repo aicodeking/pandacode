@@ -3,7 +3,7 @@
 Spawn `node fake-agent.mjs` with stdin/stdout/stderr pipes. Stdout contains only
 newline-delimited ACP v1 JSON-RPC. Read readiness from **stderr**:
 `{ready:true,transport:"stdio-acp",control:"http://127.0.0.1:<free>"}`.
-The maximum input line is 64 KiB. Set `FAKE_AGENT_LOG` to a fixture-owned file
+The maximum input line is 64 KiB (output lines are not bounded). Set `FAKE_AGENT_LOG` to a fixture-owned file
 to append **every received frame**, including responses, as JSONL. No tool input
 is executed. No real harness, shell or external service is invoked.
 
@@ -22,10 +22,19 @@ session/request_permission with allow/reject-once options and waits. Normal
 ACP selected allow completes and echoes `ran: <JSON input>`; reject echoes an
 explicit no-reason message if the protocol response supplied none.
 
-**Fixture-only reason/rewrite seam:** put `{reason,input}` under the response's
-`result._meta.fixture`. This is a test extension, not a product or ACP claim.
-It lets tests prove the shared interpreter echoes `denied: <reason>` and
-`ran: <rewritten input>`. Standard ACP does not transport those fields today.
+**PandaCode permission-answer fields (R0502):** set `FAKE_AGENT_PANDACODE`
+to `reason`, `updatedInput` or both (comma-separated). The agent then declares
+`agentCapabilities._meta.pandacode.permissionAnswer = {reason?:true,
+updatedInput?:true}` in `initialize` and reads `result._meta.pandacode.reason`
+and `.updatedInput` from permission results: a deny echoes `denied: <reason>`,
+an allow with `updatedInput` runs and echoes `ran: <rewritten input>`. Without
+the variable it declares nothing and ignores those fields, like a standard ACP
+agent (the host then refuses a rewrite with `UnsupportedCapability`).
+The older fixture-only seam `result._meta.fixture.{reason,input}` is still read.
+
+A tool step may add `padInput: N` (0 to 8,388,608): the input gains an
+N-character `padding` field, so a small prompt makes the agent emit a tool frame
+of any size; an approved padded call echoes `ran: <B bytes>`.
 
 ACP question and compact steps fail with `UnsupportedCapability`; ACP v1 has
 no corresponding frame in the characterized transport. The shared interpreter
