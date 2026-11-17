@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "note": "Scripted B1 samples for the Machine monitor. Each list is the samples POSTed to /control/metrics/script for that machine; B1 advances one sample per machine per tick (core.sample(id) in the preview).",
+  "machines": [
+    { "id": "m-alpha", "name": "alpha" },
+    { "id": "m-beta", "name": "beta" }
+  ],
+  "scripts": {
+    "calm": [{ "cpu": 20, "mem": 30 }, { "cpu": 25, "mem": 32 }, { "cpu": 30, "mem": 31 }],
+    "climb": [{ "cpu": 20, "mem": 30 }, { "cpu": 75, "mem": 40 }, { "cpu": 80, "mem": 40 }, { "cpu": 95, "mem": 45 }, { "cpu": 96, "mem": 45 }, { "cpu": 40, "mem": 40 }, { "cpu": 20, "mem": 30 }],
+    "memory-high": [{ "cpu": 30, "mem": 85 }]
+  },
+  "expect": {
+    "climb": {
+      "levels": ["ok", "strained", "strained", "critical", "critical", "ok", "ok"],
+      "status": ["2 machines ok", "alpha strained", "alpha strained", "alpha critical", "alpha critical", "2 machines ok", "2 machines ok"],
+      "notices": "strained: after the 2nd strained reading (sample 3); critical: at sample 4 (replaces the strained row); reminder: only after the reminder interval; withdrawn when the level returns to ok"
+    },
+    "calm": { "avg": 25, "peak": 30 }
+  }
+}

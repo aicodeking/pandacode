@@ -1,0 +1,37 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.monitor",
+  "version": "1.0.0",
+  "name": "Machine monitor",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "events.workspace", "ui.dynamic", "ui.notify", "ui.richViews"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "files": ["lib"], "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.monitor/show", "title": "Show machines", "action": { "kind": "openView", "view": "sample.monitor/fleet" } },
+      { "id": "sample.monitor/test-alert", "title": "Send a test alert", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.monitor/status", "location": "panda.status.items", "command": "sample.monitor/show", "presentation": "status", "text": "Machines" }
+    ],
+    "views": [
+      { "id": "sample.monitor/fleet", "title": "Machines", "text": "Connecting to the metrics daemon.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 360, "height": 320 } } }
+    ],
+    "settings": [
+      { "id": "sample.monitor/thresholds", "title": "Machines", "fields": [
+        { "id": "daemon", "kind": "text", "label": "Metrics daemon address (host:port)", "value": "127.0.0.1:7422" },
+        { "id": "fast", "kind": "text", "label": "Seconds between readings while a panel is visible (1 to 60)", "value": "5" },
+        { "id": "slow", "kind": "text", "label": "Seconds between readings otherwise (5 to 600)", "value": "60" },
+        { "id": "cpu-strained", "kind": "text", "label": "CPU percent that is strained", "value": "70" },
+        { "id": "cpu-critical", "kind": "text", "label": "CPU percent that is critical", "value": "90" },
+        { "id": "mem-strained", "kind": "text", "label": "Memory percent that is strained", "value": "75" },
+        { "id": "mem-critical", "kind": "text", "label": "Memory percent that is critical", "value": "90" },
+        { "id": "mem-elevated", "kind": "text", "label": "Memory percent that makes a silent machine worth a notice", "value": "75" },
+        { "id": "cap", "kind": "text", "label": "Most notices per machine per hour", "value": "4" },
+        { "id": "reminder", "kind": "text", "label": "Minutes between reminders while critical", "value": "10" },
+        { "id": "alerts", "kind": "switch", "label": "Raise notices", "value": true }
+      ] }
+    ]
+  }
+}

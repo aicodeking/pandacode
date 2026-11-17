@@ -639,6 +639,12 @@ jobs:
       - name: Work board example, service and dynamic UI (WebKit preview)
         env: { PW_PORT: '16172', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-live-board.spec.ts --workers=1
+      - name: Machine monitor example, visibility, notices and charts (Chromium preview)
+        env: { PW_PORT: '16651', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-example-monitor.spec.ts --workers=1
+      - name: Machine monitor example, visibility, notices and charts (WebKit preview)
+        env: { PW_PORT: '16652', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-example-monitor.spec.ts --workers=1
       - name: Attention inbox example, late answers and model tools (Chromium preview)
         env: { PW_PORT: '16691', PW_PROD: '1' }
         run: npx playwright test tests/extensions-example-inbox.spec.ts --workers=1

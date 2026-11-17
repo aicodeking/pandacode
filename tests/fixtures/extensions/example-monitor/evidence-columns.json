@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "monitor-evidence-columns",
+  "task": "R1206",
+  "note": "Every column below is prepared and was NOT run when written (binding user decision of 2026-11-16: no tests, no installed-app or browser runs until the final test phase). Nothing here is an observation.",
+  "columns": {
+    "preview": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "spec": "tests/extensions-example-monitor.spec.ts",
+      "grep": "monitor preview:",
+      "engines": {
+        "chromium": { "status": "prepared, not run (deferred to the final test phase)", "port": 16651, "command": "npx.cmd playwright test tests/extensions-example-monitor.spec.ts --workers=1" },
+        "webkit": { "status": "prepared, not run (deferred to the final test phase)", "port": 16652, "command": "npx.cmd playwright test -c playwright.webkit.config.ts tests/extensions-example-monitor.spec.ts --workers=1" }
+      },
+      "environment": { "PW_PORT": "16651 (Chromium) / 16652 (WebKit)", "PW_PROD": "1", "PW_WORKERS": "2", "PANDACODE_TEST_CHROME": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe", "PLAYWRIGHT_BROWSERS_PATH": "D:\\panda-code\\_work\\00-tmp\\playwright-browsers" }
+    },
+    "native": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "fixture": "tests/fixtures/extensions/example-monitor/main.cjs (crash wrapper around the shipped files)",
+      "scenarios": [
+        { "id": "interval", "steps": "install and grant the six permissions; open the panel; hide it; read B1's request log", "expect": { "subscribeIntervalMs": [60000, 5000, 60000], "changeWithin": "one fast interval of the visibility change" } },
+        { "id": "notices", "steps": "script the climb for one machine; read the native notice recorder next to the visible list", "expect": { "recorderMatchesList": true, "replaceNotMultiply": true, "mergeAfterSixSendsPerMinute": true } },
+        { "id": "offline", "steps": "B1 fault refuse for 3 s, then recover", "expect": { "lastReadingsKept": true, "statusDaemonOffline": true, "recovery": "history re-read, status back" } },
+        { "id": "cleanup", "steps": "disable; revoke ui.notify; safe mode; quit", "expect": { "noRequestAfter": "2 s", "noNotice": true, "noLiveItem": true } }
+      ]
+    },
+    "installedWindows": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "runner": "tests/fixtures/extensions/runtime-windows-panels/qualify.mjs (R0306, reused; no second runner)",
+      "stage": {
+        "package": "examples/extensions/monitor/package (sample.monitor)",
+        "grants": ["runtime.service", "ui.richViews", "events.workspace", "ui.dynamic", "ui.notify"],
+        "environment": { "PANDA_FIXTURE_B1": "the address B1 printed as `socket`" },
+        "integration": "stage.mjs PACKAGES and expected.json belong to R0306; this fixture does not edit them"
+      },
+      "scenarios": [
+        { "id": "panel-state", "steps": "select a machine; hide and show the inspector; reload the panel", "expect": { "selectionKept": true, "historyRedrawnFromSnapshot": true } },
+        { "id": "os-notification", "steps": "script a critical reading", "expect": { "osChannel": "reported as delivered or unavailable, never assumed" } },
+        { "id": "task-undisturbed", "steps": "start a B5 fake-agent task while the panel updates", "expect": { "taskNotStopped": true } }
+      ]
+    }
+  }
+}

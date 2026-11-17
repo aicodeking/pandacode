@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Machines</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <header>
+    <span id="summary">Waiting for the machines</span>
+    <button id="reload" type="button" title="Ask the service for a fresh snapshot">Reload data</button>
+  </header>
+  <div id="banner" role="status"></div>
+  <main>
+    <section id="cards" role="listbox" aria-label="Machines"></section>
+    <section id="detail" aria-live="polite">
+      <h2 id="detail-title">Select a machine</h2>
+      <div id="detail-seen"></div>
+      <figure><figcaption>CPU, last 30 minutes <span id="cpu-stats"></span></figcaption><canvas id="cpu-chart" width="320" height="90"></canvas></figure>
+      <figure><figcaption>Memory, last 30 minutes <span id="mem-stats"></span></figcaption><canvas id="mem-chart" width="320" height="90"></canvas></figure>
+    </section>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
