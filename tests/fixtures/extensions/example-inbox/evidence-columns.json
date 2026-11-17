@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "inbox-evidence-columns",
+  "task": "R1210",
+  "note": "Every column below is prepared and was NOT run when written (binding user decision of 2026-11-16: no tests, no installed-app or browser runs until the final test phase). Nothing here is an observation. Fake harnesses and the B5 scripted agent only: nothing authorizes an installed real harness.",
+  "columns": {
+    "preview": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "spec": "tests/extensions-example-inbox.spec.ts",
+      "grep": "inbox example:",
+      "note": "Runs in the test runner's Node: the shipped main.cjs against a stand-in of the service SDK; R0507 and R0508 twins decide what the host would answer.",
+      "engines": {
+        "chromium": { "status": "prepared, not run (deferred to the final test phase)", "port": 16691, "command": "npx.cmd playwright test tests/extensions-example-inbox.spec.ts --workers=1" },
+        "webkit": { "status": "prepared, not run (deferred to the final test phase)", "port": 16692, "command": "npx.cmd playwright test -c playwright.webkit.config.ts tests/extensions-example-inbox.spec.ts --workers=1" }
+      }
+    },
+    "native": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "note": "The pending events, the snapshot and the late answer are covered by runtime_pending_requests::tests and runtime_late_responses::tests (R0507, R0508). The final phase adds the inbox to the installed service tests only if the installed column below needs a recorded native step.",
+      "grants": ["runtime.service", "harness.hooks.observe", "harness.hooks.decide", "harness.hooks.context", "tools.model", "tasks.message", "ui.richViews", "ui.dynamic", "ui.notify", "events.workspace"]
+    },
+    "installedWindows": {
+      "status": "prepared, not run (deferred to the final test phase)",
+      "runner": "tests/fixtures/extensions/runtime-windows-panels/qualify.mjs (R0306, reused; no second runner) plus the R1212 qualification",
+      "stage": {
+        "package": "examples/extensions/inbox/package (sample.inbox)",
+        "fakeAgent": "the B5 scripted ACP agent (tests/fixtures/extensions/backends/fake-agent/fake-agent.mjs) with `tool` steps that ask, `question` steps and `callTool`; no real harness"
+      },
+      "scenarios": [
+        { "id": "two-tasks-late-answer", "steps": "pause two fake tasks, one on an approval and one on a question; let the 30 s hook budget pass; answer both from the panel", "expect": { "rowsBeforeAnswer": 2, "answerReachesTheRightTask": true, "transcript": "<tool> approved through Attention inbox." } },
+        { "id": "race-the-user", "steps": "answer the approval in the thread while the panel's Approve is in flight", "expect": { "oneWinner": true, "panelResult": "StaleContext", "rowLeft": true, "noSecondAnswer": true } },
+        { "id": "mode-holds-approve", "steps": "put the task in plan mode and press Approve on a shell call", "expect": { "code": "UnsupportedCapability", "hostPromptStillThere": true } },
+        { "id": "reopen", "steps": "close and reopen the panel, then restart the service", "expect": { "rowsFromPending": true, "unreadKept": true } },
+        { "id": "disable-and-safe-mode", "steps": "revoke harness.hooks.decide; disable; start in safe mode", "expect": { "denied": "PermissionDenied", "hostPromptsNormal": true, "noRowOrBadgeLeft": true } }
+      ]
+    }
+  }
+}

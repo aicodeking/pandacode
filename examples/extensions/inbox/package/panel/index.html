@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Inbox</title>
+  <style>
+    :root { color-scheme: light dark; font: 13px/1.4 system-ui, sans-serif; }
+    body { margin: 0; display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+    header { padding: 8px 10px; display: flex; gap: 10px; align-items: baseline; border-bottom: 1px solid color-mix(in srgb, currentColor 15%, transparent); }
+    #counts { font-weight: 600; }
+    #result { margin-left: auto; }
+    main { overflow-y: auto; padding: 0 10px 10px; }
+    h2 { font-size: 12px; text-transform: uppercase; opacity: .7; margin: 12px 0 4px; }
+    .item { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); border-radius: 6px; padding: 6px 8px; margin-bottom: 6px; display: grid; gap: 4px; }
+    .item .head { display: flex; gap: 8px; align-items: baseline; }
+    .item .kind { font-weight: 600; }
+    .item .age { margin-left: auto; opacity: .6; }
+    .item .body { white-space: pre-wrap; word-break: break-word; }
+    .item .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .item[data-unread="false"] { opacity: .7; }
+    input[type="text"] { flex: 1; min-width: 8em; }
+    .empty { opacity: .6; padding: 6px 0; }
+  </style>
+</head>
+<body>
+  <header><span id="counts">Waiting for the inbox</span><span id="result" role="status"></span></header>
+  <main>
+    <h2>Waiting on you</h2>
+    <div id="waiting" role="list" aria-label="Waiting on you"></div>
+    <h2>Messages</h2>
+    <div id="messages" role="list" aria-label="Messages"></div>
+  </main>
+  <script src="./app.js"></script>
+</body>
+</html>

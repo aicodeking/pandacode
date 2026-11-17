@@ -1,0 +1,61 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.inbox",
+  "version": "1.0.0",
+  "name": "Attention inbox",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute", "runtime.service", "events.workspace", "harness.hooks.observe", "harness.hooks.context", "harness.hooks.decide",
+    "tools.model", "tasks.message", "ui.dynamic", "ui.notify", "ui.richViews", "storage.private", "tasks.summary"
+  ],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [
+      { "id": "sample.inbox/open", "title": "Open the inbox", "action": { "kind": "openView", "view": "sample.inbox/inbox" } },
+      { "id": "sample.inbox/control", "title": "Inbox control", "action": { "kind": "runCommand" } }
+    ],
+    "menus": [
+      { "id": "sample.inbox/count", "location": "panda.status.items", "command": "sample.inbox/open", "presentation": "badge", "text": "Inbox" }
+    ],
+    "views": [
+      { "id": "sample.inbox/inbox", "title": "Inbox", "text": "Nothing is waiting.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 280 } } }
+    ],
+    "hooks": [
+      { "id": "sample.inbox/approval-pending", "event": "approval.pending" },
+      { "id": "sample.inbox/approval-resolved", "event": "approval.resolved" },
+      { "id": "sample.inbox/question-pending", "event": "question.pending" },
+      { "id": "sample.inbox/question-resolved", "event": "question.resolved" },
+      { "id": "sample.inbox/turn-fail", "event": "turn.fail" },
+      { "id": "sample.inbox/task-idle", "event": "task.idle" },
+      { "id": "sample.inbox/prompt-submit", "event": "prompt.submit" }
+    ],
+    "modelTools": [
+      {
+        "id": "sample.inbox/notify", "name": "inbox_notify",
+        "description": "Leave an unread message for the user in the Attention inbox. Use it to report something that does not block you.",
+        "inputSchema": { "type": "object", "required": ["message"], "additionalProperties": false, "properties": { "message": { "type": "string", "minLength": 1, "maxLength": 1000 }, "url": { "type": "string", "maxLength": 2000 } } },
+        "approval": "never"
+      },
+      {
+        "id": "sample.inbox/ask", "name": "inbox_ask",
+        "description": "Add a waiting row to the Attention inbox when you need the user before you can go on. It stays until the user marks it handled or you call inbox_resolve.",
+        "inputSchema": { "type": "object", "required": ["message"], "additionalProperties": false, "properties": { "message": { "type": "string", "minLength": 1, "maxLength": 1000 } } },
+        "approval": "never"
+      },
+      {
+        "id": "sample.inbox/resolve", "name": "inbox_resolve",
+        "description": "Remove a waiting row you added with inbox_ask. Without an id it resolves the latest one of this task.",
+        "inputSchema": { "type": "object", "additionalProperties": false, "properties": { "id": { "type": "string", "maxLength": 64 } } },
+        "approval": "never"
+      }
+    ],
+    "settings": [
+      { "id": "sample.inbox/settings", "title": "Attention inbox", "fields": [
+        { "id": "retentionDays", "kind": "text", "label": "Keep messages for (days)", "value": "7" },
+        { "id": "notifyDelaySec", "kind": "text", "label": "Notify after a row waits (seconds, 0 turns it off)", "value": "120" },
+        { "id": "brief", "kind": "switch", "label": "Brief agents about the inbox tools", "value": true }
+      ] }
+    ]
+  }
+}
