@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "id": "sample.ask",
+  "name": "Ask",
+  "version": "1.0.0",
+  "description": "Asks the model one question from a background service (fixture of runtime slice R0704).",
+  "permissions": ["runtime.service", "models.call"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.ask/ask", "title": "Ask the model" }, { "id": "sample.ask/cancel", "title": "Cancel the question" }]
+  }
+}

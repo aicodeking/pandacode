@@ -241,12 +241,30 @@ process.stdin.on('data', chunk => {
               } });
             },
           });
+          // One bounded model answer (R0704, models.call): the host checks the options and the grant, queues (two run, eight
+          // wait per package), runs a hidden harness call with no tools and no hooks, and answers `{ text, harness, model, usage? }`.
+          // `signal` stays here: aborting it asks the host to cancel that call.
+          let modelCallSerial = 0;
+          const models = Object.freeze({
+            async call(options) {
+              if (options === null || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('models.call needs an options object');
+              const { signal, ...rest } = options;
+              if (signal !== undefined && (signal === null || typeof signal.addEventListener !== 'function')) throw new TypeError('models.call signal must be an AbortSignal');
+              const callId = `mc-${++modelCallSerial}`;
+              const cancel = () => { rpc('modelsCall', { op: 'cancel', callId }).catch(() => {}); };
+              if (signal?.aborted) throw Object.assign(new Error('Cancelled'), { code: 'Cancelled' });
+              signal?.addEventListener('abort', cancel, { once: true });
+              try { return await rpc('modelsCall', { op: 'call', callId, options: rest }); }
+              finally { signal?.removeEventListener('abort', cancel); }
+            },
+          });
           // Handlers registered here live in the service's shared state; owned commands only.
           const servicePanda = Object.freeze({
             apiVersion: '1.0.0',
             events,
             hooks,
             modelTools,
+            models,
             commands: Object.freeze({ register(id, handler) {
               if (!invocation.lifetime.commands.includes(id) || typeof handler !== 'function' || commands.has(id)) throw new Error('PermissionDenied');
               commands.set(id, handler);

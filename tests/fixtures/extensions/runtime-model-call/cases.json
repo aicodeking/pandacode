@@ -1,0 +1,22 @@
+{
+  "_fixture": { "provenance": "synthetic", "note": "Shared by runtime_model_call::tests (native) and tests/extensions-runtime-model-call.spec.ts; \"{pad:N}\" stands for N x characters." },
+  "limits": { "running": 2, "waiting": 8, "defaultTimeoutMs": 60000, "minTimeoutMs": 1000, "maxTimeoutMs": 600000 },
+  "options": [
+    { "id": "minimal", "options": { "prompt": "#reply four" }, "expect": {} },
+    { "id": "everything", "options": { "prompt": "hello", "system": "Be brief.", "harness": "fake-agent", "model": "m1", "effort": "low", "projectId": "p1", "taskId": "t1", "timeoutMs": 5000 }, "expect": { "timeoutMs": 5000 } },
+    { "id": "minimum timeout", "options": { "prompt": "x", "timeoutMs": 1000 }, "expect": { "timeoutMs": 1000 } },
+    { "id": "maximum timeout", "options": { "prompt": "x", "timeoutMs": 600000 }, "expect": { "timeoutMs": 600000 } },
+    { "id": "timeout below the minimum", "options": { "prompt": "x", "timeoutMs": 999 }, "expect": { "code": "InvalidShape" } },
+    { "id": "timeout above the maximum", "options": { "prompt": "x", "timeoutMs": 600001 }, "expect": { "code": "InvalidShape" } },
+    { "id": "fractional timeout", "options": { "prompt": "x", "timeoutMs": 1500.5 }, "expect": { "code": "InvalidShape" } },
+    { "id": "no prompt", "options": { "system": "x" }, "expect": { "code": "InvalidShape" } },
+    { "id": "blank prompt", "options": { "prompt": "   " }, "expect": { "code": "InvalidShape" } },
+    { "id": "prompt of the wrong type", "options": { "prompt": 4 }, "expect": { "code": "InvalidShape" } },
+    { "id": "unknown field", "options": { "prompt": "x", "tools": [] }, "expect": { "code": "InvalidShape" } },
+    { "id": "system of the wrong type", "options": { "prompt": "x", "system": 1 }, "expect": { "code": "InvalidShape" } },
+    { "id": "empty harness", "options": { "prompt": "x", "harness": "" }, "expect": { "code": "InvalidShape" } },
+    { "id": "long model name", "options": { "prompt": "x", "model": "{pad:129}" }, "expect": { "code": "InvalidShape" } },
+    { "id": "prompt past 256 KiB", "options": { "prompt": "{pad:262145}" }, "expect": { "code": "LimitExceeded" } },
+    { "id": "system past 64 KiB", "options": { "prompt": "x", "system": "{pad:65537}" }, "expect": { "code": "LimitExceeded" } }
+  ]
+}
