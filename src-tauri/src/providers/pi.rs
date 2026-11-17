@@ -8,6 +8,7 @@ impl Bridge {
         command: &mut Command,
         mode: &str,
         server: Option<&mcp_host::Server>,
+        companion: Option<Value>,
     ) -> Result<Self, String> {
         let directory = std::env::temp_dir().join(format!("pandacode-pi-{}", uuid::Uuid::new_v4()));
         let builder = &mut std::fs::DirBuilder::new();
@@ -21,6 +22,7 @@ impl Bridge {
             .map(mcp_host::Server::pi_config)
             .unwrap_or_else(|| json!({}));
         config["mode"] = json!(mode);
+        if let Some(companion) = companion { config["companion"] = companion; }
         command
             .arg("--extension")
             .arg(path)
@@ -582,6 +584,13 @@ impl Protocol {
                         self.pi_started(&state, step)?;
                     }
                 }
+            }
+            "input" if value["title"] == "PandaCode companion v1" && crate::extensions::runtime_callback_companions::active(&self.config.session_id) => {
+                let mut frame: Value = serde_json::from_str(field(&value, "placeholder")).unwrap_or(Value::Null);
+                if frame.is_object() { frame["id"] = value["id"].clone(); }
+                if let Some((lease, invocation)) = crate::extensions::runtime_callback_companions::receive(&self.config.session_id, &frame) {
+                    step.events.push(self.event("companion_callback", "", Some(&json!({"lease":lease,"invocation":invocation}))));
+                } else { step.write.push(json!({"type":"extension_ui_response","id":value["id"],"cancelled":true})); }
             }
             "confirm" => self.approval(
                 value.clone(),

@@ -1,0 +1,8 @@
+{
+  "provenance": "synthetic",
+  "liveCapture": false,
+  "modes": ["ask", "auto", "review", "plan", "full"],
+  "harnesses": ["claude", "glm", "mimo", "pi", "omp"],
+  "request": {"type":"control_request","request_id":"callback-a","request":{"subtype":"hook_callback","callback_id":"pandacode:PreToolUse","tool_use_id":"call-a","input":{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo original"}}}},
+  "answer": {"decision":"rewrite","input":{"command":"echo rewritten"},"reason":"Fixture guard"}
+}

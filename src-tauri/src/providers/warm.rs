@@ -125,6 +125,7 @@ fn record(config: &RunConfig, tools: &[Value], approval_tools: &HashSet<String>,
 
 /// Only plain Claude Code: key-based relays carry per-launch credentials.
 pub fn supported(config: &RunConfig) -> bool {
+    if crate::extensions::runtime_callback_companions::active(&config.session_id) { return false; }
     config.provider == "claude" && config.goal.is_none() && config.skill.is_none()
 }
 

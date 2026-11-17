@@ -54,6 +54,7 @@ pub mod runtime_model_call;
 pub mod runtime_protected_presentation;
 pub mod runtime_hook_decisions;
 pub mod runtime_companion_lifetime;
+pub mod runtime_callback_companions;
 pub mod runtime_hook_resolution;
 pub mod runtime_pending_requests;
 pub mod runtime_late_responses;

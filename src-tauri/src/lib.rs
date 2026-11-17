@@ -3133,8 +3133,9 @@ async fn launch_operation_admitted(
             use extensions::runtime_companion_lifetime::{InstalledApi, registry};
             let installed = InstalledApi { harness: config.provider.clone(), version: None, apis: vec![] };
             if let Ok(mut companions) = registry().lock() {
-                let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, None,
-                    |_| Err("No qualified host companion adapter.".into()));
+                let profile = extensions::runtime_callback_companions::profile(&config.provider);
+                let _ = companions.begin(companion_key.clone(), &companion_owners, &installed, profile.as_ref(),
+                    |manifest| extensions::runtime_callback_companions::resources(manifest, &config.provider));
             }
         }
         let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());

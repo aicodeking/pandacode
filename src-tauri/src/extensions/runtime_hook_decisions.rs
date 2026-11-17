@@ -520,6 +520,19 @@ struct Wrapped {
 impl Wrapped {
     fn send(&self, input: RunInput) -> bool { self.input.upgrade().is_some_and(|sender| sender.send(input).is_ok()) }
     fn on_event(self: &Arc<Self>, event: AgentEvent) {
+        if event.kind == "companion_callback" {
+            let data = event.data.unwrap_or(Value::Null);
+            let parsed = serde_json::from_value::<super::runtime_companion_lifetime::Lease>(data["lease"].clone())
+                .ok().zip(serde_json::from_value::<super::runtime_callback_companions::Invocation>(data["invocation"].clone()).ok());
+            if let Some((lease, invocation)) = parsed.filter(|(lease,_)| lease.key.task_id == self.task) {
+                let this = self.clone();
+                tauri::async_runtime::spawn(async move {
+                    let answer = super::runtime_callback_companions::resolve(hooks::registry(), &this.env, &this.task, &invocation).await.unwrap_or(json!({}));
+                    if !this.stopped.load(Ordering::SeqCst) { this.send(RunInput::CompanionReply { lease, request_id: invocation.id, answer }); }
+                });
+            }
+            return;
+        }
         if event.kind == "approval_cancelled" {
             if let Some(id) = &event.request_id { if let Some(cancelled) = self.held.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get_mut(id) { *cancelled = true; } }
             return (self.inner)(event);

@@ -383,6 +383,12 @@ jobs:
       - name: Companion lifecycle fixtures (WebKit configuration)
         env: { PW_PORT: '16992', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-companion-lifetime.spec.ts --workers=1
+      - name: Callback companion fixtures (Chromium configuration)
+        env: { PW_PORT: '16993', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-callback-companions.spec.ts --workers=1
+      - name: Callback companion fixtures (WebKit configuration)
+        env: { PW_PORT: '16994', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-callback-companions.spec.ts --workers=1
       - name: Prompt context, result rewrites and compaction answers (Chromium)
         env: { PW_PORT: '16401', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-hook-context.spec.ts --workers=1

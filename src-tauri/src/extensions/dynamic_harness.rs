@@ -315,6 +315,7 @@ impl Conversation {
                 Some(json!({"kind":"steer","id":id,"text":text}))
             }
             RunInput::Goal { reply, .. } => { let _ = reply.send(Err("UnsupportedCapability: goals".into())); None }
+            RunInput::CompanionReply { .. } => None, // Built-in callback transport; never package provider input.
             RunInput::CodexRequest { reply, .. } => { let _ = reply.send(Err("UnsupportedCapability: Codex request".into())); None }
         }
     }

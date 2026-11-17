@@ -727,6 +727,11 @@ pub enum RunInput {
         params: Value,
         reply: tokio::sync::oneshot::Sender<Result<Value, String>>,
     },
+    CompanionReply {
+        lease: crate::extensions::runtime_companion_lifetime::Lease,
+        request_id: String,
+        answer: Value,
+    },
     Approval {
         request_id: String,
         approved: bool,
@@ -2486,7 +2491,7 @@ impl Protocol {
             "codex" => codex_initialize(),
             "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => acp_initialize(&self.config.provider),
             _ => {
-                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
+                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":crate::extensions::runtime_callback_companions::registration(&self.config.session_id)}})
             }
         }
     }
@@ -3132,6 +3137,13 @@ impl Protocol {
                     step.write.push(request);
                     self.phase = 1;
                     self.claude_send_held(&mut step);
+                }
+            }
+            "control_request" if value["request"]["subtype"] == "hook_callback" => {
+                if let Some((lease, invocation)) = crate::extensions::runtime_callback_companions::receive(&self.config.session_id, &value) {
+                    step.events.push(self.event("companion_callback", "", Some(&json!({"lease":lease,"invocation":invocation}))));
+                } else {
+                    step.write.push(json!({"type":"control_response","response":{"subtype":"error","request_id":value["request_id"],"error":"Unsupported or stale companion callback."}}));
                 }
             }
             "system" if value["subtype"] == "init" => {
@@ -4415,7 +4427,7 @@ async fn run_process_with_tools(
     }
     let codex_ready = codex_spare.is_some();
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
-        Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
+        Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref(), crate::extensions::runtime_callback_companions::registration(&config.session_id))?)
     } else { None };
     let cline_settings = match &mcp {
         Some(server) if config.provider == "cline" && !crate::cloud_agents::transport::is_cloud(&config.session_id) => {
@@ -4521,6 +4533,11 @@ async fn run_process_with_tools(
                         Some(RunInput::Goal{request,reply})=>{let step=protocol.goal_control(request,reply);if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}},
                         Some(RunInput::CodexRequest{method,params,reply})=>{let step=protocol.codex_control(method,params,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
                         Some(RunInput::Steer{id,text,reply})=>{let step=protocol.steer(id,text,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
+                        Some(RunInput::CompanionReply{lease,request_id,answer})=>{
+                            if let Some(frame)=crate::extensions::runtime_callback_companions::reply(&lease,&request_id,answer) {
+                                write_json(&mut stdin,&frame).await?;
+                            }
+                        },
                         Some(RunInput::Approval{request_id,approved})=>{if !mcp.as_ref().is_some_and(|server|server.approve(&request_id,approved)) {let step=protocol.approval_step(&request_id,approved); apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;}},
                         Some(RunInput::UserInput{request_id,response,reply})=>{
                             match protocol.question(&request_id,response) {
