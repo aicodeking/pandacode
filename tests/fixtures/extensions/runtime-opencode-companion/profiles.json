@@ -1,0 +1,10 @@
+{
+  "provenance": "synthetic",
+  "liveCapture": false,
+  "acpBackend": "../backends/",
+  "profiles": [
+    { "version": "v1.19.5", "api": "opencode.plugin.v1", "url": "file:///C:/owned/companion.mjs", "key": "plugin", "previous": "{\"model\":\"preserved\",\"plugin\":[\"existing\"]}" },
+    { "version": "c5e741e787594e8c18fa70ab3a4705db1c927793", "api": "opencode.plugin.v2", "url": "file:///C:/owned/companion/", "key": "plugins", "previous": "{\"model\":\"preserved\",\"plugins\":[{\"package\":\"existing\"}]}" }
+  ],
+  "refusals": ["pure mode", "unknown version", "V2 single file", "callback failure", "expired transport"]
+}

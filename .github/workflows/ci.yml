@@ -383,6 +383,12 @@ jobs:
       - name: Companion lifecycle fixtures (WebKit configuration)
         env: { PW_PORT: '16992', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-companion-lifetime.spec.ts --workers=1
+      - name: OpenCode companion fixtures (Chromium configuration)
+        env: { PW_PORT: '16997', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-opencode-companion.spec.ts --workers=1
+      - name: OpenCode companion fixtures (WebKit configuration)
+        env: { PW_PORT: '16998', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-opencode-companion.spec.ts --workers=1
       - name: Codex companion fixtures (Chromium configuration)
         env: { PW_PORT: '16995', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-codex-companion.spec.ts --workers=1

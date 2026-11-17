@@ -63,3 +63,4 @@ pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;
 pub mod runtime_codex_companion;
+pub mod runtime_opencode_companion;
