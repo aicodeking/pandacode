@@ -188,5 +188,6 @@ test('the ledger keeps its CRLF line endings and opens with the T60 completion a
   const head = text.split('\r\n').slice(0, 5);
   assert.deepEqual(head.slice(0, 3), ['{', '  "schemaVersion": 1,', '  "completionAudit": {']);
   assert.match(head[3], /^ {4}"task": "extensibility-final-261113-v3yy\/T60",$/);
-  assert.match(head[4], /^ {4}"status": "accepted",$/);
+  // "blocked" while the ledger lists open upstream-sync rows (completionAudit.gaps); "accepted" once they close.
+  assert.match(head[4], /^ {4}"status": "(?:accepted|blocked)",$/);
 });

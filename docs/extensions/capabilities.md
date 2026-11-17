@@ -28,6 +28,37 @@ Discovery never grants authority: invoking still needs the manifest permission, 
 and a captured, unrevoked context. Platform limits that are not visible here are listed in the
 [author guide](README.md#platform-limits).
 
+## Upstream surfaces without a contract yet
+
+The post-merge baseline (PandaCode 0.3.128 merged, audit S05A, published by S05B) inventories every
+renderer member in `tests/fixtures/extensions/surfaces.json`. The members below exist in the product
+but are **not** in the table that follows: no location serves them, so no package can place, hide or
+reorder anything there today. They are listed as `open` in `completionAudit.gaps` (the completion
+audit stays `blocked` until each one gets a contract or a named exception) and are never counted as
+closed.
+
+| Surface | Members | Owner slice |
+|---|---|---|
+| Project explorer (`src/file-explorer.ts`) | `close-dialog`, create/rename/delete dialog, file context menu; in `src/main.ts`: `file-menu`, `new-workspace-file`, `new-workspace-folder`, dock `toggle-files` | S0601 |
+| Floating editor dock button | `toggle-file-editor` (the editor body is `panda.documents`, already a table row) | S0602 |
+| Tool image viewer (`src/tool-image-viewer.ts`) | `close`, `copy`, `reveal`, `zoom`, viewer dialog | S0604 |
+| Grouped thread errors | `dismiss-error`, `dismiss-errors`, `dismiss-failover-error`, `toggle-error` in `src/main.ts`; `dismiss-error` in `src/bots.ts` and `src/agents-dock-window.ts`; `models-retry` in `src/bots.ts` | S0607 (S0605 owns the dock window file) |
+
+Named exceptions, with provenance (`_work/30-plan/upstream-sync/PLAN-upstream-content.md`, sections 1
+and 5). An exception is a decision with a reason, not a closure, and none of them is a security
+restriction (ADR-0005):
+
+| Item | Why it is not a location | Owner of the record |
+|---|---|---|
+| `settings-page` in `src/usage-labels.ts` | Inline fix link whose only effect is `revealSetting(providers)`; the destination page is already a Settings page surface. | S0609 |
+| Floating editor chrome (`src/file-window.ts`: maximize, hide, drag, resize, Escape) | The host owns placement, focus return and Escape; the discovery regexes cannot see it. | S0602 |
+| Shell intent classifier (`shell-intent*.ts`) | Internal classification, no extension path. | S0603 |
+| Application menu Quit item (`src-tauri/src/app_menu.rs`) | System-owned item on macOS that routes quit through the exit path. | S0609 |
+| Crash guard native (`src-tauri/src/crash_guard/*`) | Fault isolation and recovery stay built-in. | S0608 |
+
+The counts and names in the table are generated from `src/extensions/catalog.ts` and were not changed
+by this publication; regenerate and compare them in the final test phase.
+
 <!-- capability-table:start -->
 | Location | Kind | Operations | Item types | Windows | Host fallbacks |
 | --- | --- | --- | --- | --- | --- |
