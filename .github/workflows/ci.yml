@@ -213,6 +213,12 @@ jobs:
       - name: Task drafts and attachments (WebKit)
         env: { PW_PORT: '16252', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-tasks-drafts.spec.ts --workers=1
+      - name: Moodboards and cloud machines (Chromium)
+        env: { PW_PORT: '16341', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-workspace-cloud.spec.ts --workers=1
+      - name: Moodboards and cloud machines (WebKit)
+        env: { PW_PORT: '16342', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-cloud.spec.ts --workers=1
       - name: Rich panels mounted in host surfaces (Chromium)
         env: { PW_PORT: '16191', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-rich-mount.spec.ts --workers=1
@@ -225,12 +231,36 @@ jobs:
       - name: Panel folders on isolated per-package origins (WebKit)
         env: { PW_PORT: '16292', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-rich-assets.spec.ts --workers=1
+      - name: Rich panel data channel (Chromium)
+        env: { PW_PORT: '16301', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-rich-channel.spec.ts --workers=1
+      - name: Rich panel data channel (WebKit)
+        env: { PW_PORT: '16302', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-rich-channel.spec.ts --workers=1
+      - name: Harness consoles and commands (Chromium)
+        env: { PW_PORT: '16351', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-harness-console.spec.ts --workers=1
+      - name: Harness consoles and commands (WebKit)
+        env: { PW_PORT: '16352', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-harness-console.spec.ts --workers=1
       - name: Workspace settings (Chromium)
         env: { PW_PORT: '16271', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-settings.spec.ts --workers=1
       - name: Workspace settings (WebKit)
         env: { PW_PORT: '16272', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-settings.spec.ts --workers=1
+      - name: Bots and shared channels (Chromium)
+        env: { PW_PORT: '16321', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-workspace-automation.spec.ts --workers=1
+      - name: Bots and shared channels (WebKit)
+        env: { PW_PORT: '16322', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-automation.spec.ts --workers=1
+      - name: Recipes and wake-ups (Chromium)
+        env: { PW_PORT: '16331', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-workspace-schedules.spec.ts --workers=1
+      - name: Recipes and wake-ups (WebKit)
+        env: { PW_PORT: '16332', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-workspace-schedules.spec.ts --workers=1
       - name: Dynamic provider state (Chromium)
         env: { PW_PORT: '16161', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-provider-state.spec.ts --workers=1

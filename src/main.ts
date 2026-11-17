@@ -977,10 +977,35 @@ void import('./extensions/header').then(async ({ mountExtensionHeader, mountExte
       return { name: item.name, mime: 'image/*', path: item.path };
     },
   }));
+  // Harness consoles and command-center actions a package asks for (R0408): the same console and the same slash path the user's typing takes.
+  void import('./extensions/runtime-harness-console').then(consoles => consoles.mountRuntimeHarnessConsole({
+    task: taskId => { const task = state.sessions.find(item => item.id === taskId); return task ? { projectId: task.projectId, provider: task.provider, running: isRunning(task.id) } : undefined; },
+    show: async taskId => { if (state.sessionId !== taskId) await selectSession(taskId); },
+    openTask: async taskId => { const task = state.sessions.find(item => item.id === taskId); if (!task) throw new Error('not found'); await openHarnessConsole(task); },
+    openHarness: async (harness, projectId) => {
+      const task = state.sessions.find(item => item.projectId === projectId && item.provider === harness && !isRunning(item.id));
+      if (!task) throw new Error('not found');
+      if (state.sessionId !== task.id) await selectSession(task.id);
+      await openHarnessConsole(task);
+    },
+    run: async (taskId, command, args) => {
+      const task = state.sessions.find(item => item.id === taskId);
+      if (!task) throw new Error('not found');
+      const text = args ? `${command} ${args}` : command;
+      const resolved = await call<{ action: string | null; arguments: string }>('resolve_slash_command', { sessionId: task.id, text });
+      if (resolved.action) await performSlashAction(resolved.action, resolved.arguments, task);
+      else await instruction(task, text);
+    },
+    attribute: (_packageId, text) => notify(text),
+  }));
+  // The host confirmation of a package's irreversible moodboard or cloud machine removal (R0406C).
+  void import('./extensions/runtime-workspace-cloud').then(cloud => cloud.mountWorkspaceCloud());
   // Readiness, account, models and limits a package service publishes for its providers (R0806): the webview's mirror of the host overlay.
   void import('./extensions/runtime-provider-state').then(state => state.mountProviderStateSync());
   // The app's own settings a package with `workspace.settings` reads and changes (R0407): the window publishes its values and applies the package's changes.
   void import('./extensions/runtime-workspace-settings').then(settings => settings.startWorkspaceSettingsSync({ families: () => ({ bots: sidebarBots.map(bot => bot.id), channels: sidebarChannels.map(channel => channel.id) }) }));
+  // Bots and shared channels a package with `workspace.manage` manages (R0406): the window asks the user before an irreversible deletion.
+  void import('./extensions/runtime-workspace-automation').then(automation => automation.startWorkspaceAutomation({ confirm: options => confirmHostDeletion(options) }));
   // Thread error rows (Details, Dismiss) and the toast's close button: arranged by the user's order and visibility, and
   // activated through the original buttons. Error text, the dismissal journal, Undo and the toast text stay here and in
   // thread-errors.ts and toast-model.ts.
@@ -9399,6 +9424,16 @@ async function deleteBot(bot: import('./bots').Bot): Promise<void> {
 function confirmBotDelete(name: string): Promise<boolean> {
   const dialog = modal(`Delete ${name}?`, '<form id="delete-bot-form"><p class="delete-task-description">This removes the bot, its conversations and its channel connections. Its workspace folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete bot</button></div></form>', 'delete-task-dialog');
   const form = dialog.querySelector<HTMLFormElement>('#delete-bot-form')!;
+  form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
+  return new Promise(resolve => {
+    dialog.addEventListener('close', () => resolve(false), { once: true });
+    form.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); resolve(true); closeModal(); }, { once: true });
+  });
+}
+/** The host confirmation of a deletion a package asked for (R0406), on the same plate as the interface's own deletions. */
+function confirmHostDeletion(options: { title: string; text: string; button: string }): Promise<boolean> {
+  const dialog = modal(options.title, `<form id="host-delete-form"><p class="delete-task-description">${escape(options.text)}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">${escape(options.button)}</button></div></form>`, 'delete-task-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('#host-delete-form')!;
   form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
   return new Promise(resolve => {
     dialog.addEventListener('close', () => resolve(false), { once: true });

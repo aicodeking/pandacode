@@ -131,7 +131,10 @@ config.testMatch.push('**/extensions-runtime-notifications.spec.ts');
 config.testMatch.push('**/extensions-runtime-tasks-start.spec.ts');
 config.testMatch.push('**/extensions-runtime-tasks-messages.spec.ts');
 config.testMatch.push('**/extensions-runtime-tasks-drafts.spec.ts');
+config.testMatch.push('**/extensions-runtime-workspace-cloud.spec.ts');
 config.testMatch.push('**/extensions-runtime-workspace-settings.spec.ts');
+config.testMatch.push('**/extensions-runtime-workspace-automation.spec.ts');
+config.testMatch.push('**/extensions-runtime-workspace-schedules.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-state.spec.ts');
 config.testMatch.push('**/extensions-runtime-provider-speed.spec.ts');
 config.testMatch.push('**/extensions-runtime-preview.spec.ts');
@@ -153,6 +156,8 @@ config.testMatch.push('**/upstream-api-tools-example.spec.ts');
 config.testMatch.push('**/extensions-example-live-board.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-mount.spec.ts');
 config.testMatch.push('**/extensions-runtime-rich-assets.spec.ts');
+config.testMatch.push('**/extensions-runtime-rich-channel.spec.ts');
+config.testMatch.push('**/extensions-runtime-harness-console.spec.ts');
 export default defineConfig(config, {
   // Project read coverage is explicit, like every experimental extension surface.
   testMatch: [...config.testMatch as string[], '**/extensions-trust.spec.ts', ...(process.platform === 'win32' && process.arch === 'x64' ? ['**/extensions-runtime.spec.ts'] : []), '**/extensions-project-reads.spec.ts', '**/extensions-inventory.spec.ts', '**/extensions-context.spec.ts', '**/extensions-baseline.spec.ts', '**/extensions-install.spec.ts', '**/extensions-catalog.spec.ts', '**/extensions-layout.spec.ts', '**/extensions-menus.spec.ts', '**/extensions-dialogs.spec.ts', '**/extensions-view-actions.spec.ts', '**/extensions-thread-actions.spec.ts', '**/extensions-settings-actions.spec.ts', '**/extensions-windows.spec.ts', '**/tray-popover.spec.ts'],

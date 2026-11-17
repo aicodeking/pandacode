@@ -4877,8 +4877,12 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     app.manage(extensions::runtime_dialog_navigation::DialogSlots::default());
     app.manage(extensions::runtime_tasks_start::TaskOrigins::open(&dir));
     app.manage(extensions::runtime_service_lifetime::runtime_workspace_settings::WorkspaceSettings::open(&dir));
+    app.manage(extensions::runtime_service_lifetime::runtime_workspace_automation::Automation::open(&dir));
+    app.manage(extensions::runtime_service_lifetime::runtime_workspace_schedules::Origins::open(&dir));
     app.manage(extensions::runtime_tasks_start::StartSlots::default());
     app.manage(extensions::runtime_tasks_drafts::DraftSlots::default());
+    app.manage(extensions::runtime_harness_console::ConsoleSlots::default());
+    app.manage(extensions::runtime_workspace_cloud::WorkspaceCloud::default());
     app.manage(extensions::runtime_tasks_messages::TaskMessages::open(&dir));
     // Background services of trusted packages start at app start, on a blocking task that never delays launch.
     app.manage(extensions::runtime_service_lifetime::ServiceLifetime::new(extensions::runtime_service_lifetime::runtime_directories(app.handle())));
@@ -5212,6 +5216,9 @@ pub fn run() {
                 extensions::runtime_grants::extensions_runtime_grant,
                 extensions::runtime_tasks_drafts::extensions_runtime_draft_answer,
                 extensions::runtime_tasks_drafts::extensions_runtime_draft_allowed,
+                extensions::runtime_harness_console::extensions_runtime_console_answer,
+                extensions::runtime_workspace_cloud::extensions_runtime_workspace_cloud_answer,
+                extensions::runtime_workspace_cloud::extensions_runtime_workspace_cloud_activity,
                 extensions::runtime_service_lifetime::extensions_service_lifetime,
                 extensions::runtime_service_lifetime::runtime_service_status::extensions_service_status,
                 extensions::runtime_service_lifetime::runtime_executor_placement::extensions_executor_services,
@@ -5368,6 +5375,10 @@ pub fn run() {
                 extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_publish,
                 extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_pending,
                 extensions::runtime_service_lifetime::runtime_workspace_settings::extensions_workspace_settings_ack,
+                extensions::runtime_service_lifetime::runtime_workspace_automation::extensions_workspace_automation_confirm_answer,
+                extensions::runtime_service_lifetime::runtime_workspace_automation::extensions_workspace_automation_pending,
+                extensions::runtime_service_lifetime::runtime_workspace_automation::extensions_workspace_automation_origins,
+                extensions::runtime_service_lifetime::runtime_workspace_schedules::extensions_workspace_origins,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialog_answer,
                 extensions::runtime_dialog_navigation::extensions_runtime_dialogs,
                 usage_ledger::usage_ledger,

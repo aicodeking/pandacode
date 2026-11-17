@@ -55,6 +55,11 @@ pub mod runtime_executor_placement;
 // The app's own workspace settings, read and changed by services with `workspace.settings` (R0407).
 #[path = "runtime_workspace_settings.rs"]
 pub mod runtime_workspace_settings;
+// Bots and shared channels, managed by services with `workspace.manage` (R0406).
+#[path = "runtime_workspace_automation.rs"]
+pub mod runtime_workspace_automation;
+#[path = "runtime_workspace_schedules.rs"]
+pub mod runtime_workspace_schedules;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
@@ -788,7 +793,7 @@ pub fn reconcile_app(app: &tauri::AppHandle) {
         let (Some(services), Some(packages), Some(grants)) = (app.try_state::<ServiceLifetime>(), app.try_state::<super::packages::ExtensionPackages>(), app.try_state::<RuntimeGrants>()) else { return };
         services.set_dispatch(app_dispatch(&app));
         { let app = app.clone(); services.set_restart_hook(Arc::new(move || reconcile_app(&app))); }
-        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); })); }
+        { let app = app.clone(); services.set_ended_hook(Arc::new(move |owner: &str| { super::runtime_dynamic_items::service_stopped(&app, owner); super::runtime_dialog_navigation::service_stopped(&app, owner); super::runtime_notifications::service_stopped(&app, owner); super::runtime_tasks_start::service_stopped(&app, owner); super::runtime_tasks_drafts::service_stopped(&app, owner); super::runtime_harness_console::service_stopped(&app, owner);super::runtime_workspace_cloud::service_stopped(&app, owner);super::runtime_provider_state::service_stopped(&app, owner); super::runtime_hook_registration::service_stopped(&app, owner); })); }
         // Hook deliveries (R0503) go into the running service as one-way host calls.
         { let app = app.clone(); super::runtime_hook_registration::registry().set_deliver(Arc::new(move |owner: &str, frame: Value| { use tauri::Manager; app.try_state::<ServiceLifetime>().ok_or("HostUnavailable")?.send_hook(owner, frame).map(drop) })); }
         services.events().set_gate(runtime_workspace_events::grants_gate(&app));
@@ -837,13 +842,20 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
             if matches!(request.method.as_str(), "tasksMessage" | "tasksNote" | "tasksQueue") { return super::runtime_tasks_messages::serve(app, request).await; }
             // `panda.views.post` and `instances` (R0303, ui.richViews): the instances and the grant are resolved natively per call.
             if request.method == "views" { return super::rich_views::runtime_rich_channel::serve(app, request).await; }
+            // `panda.workspace.recipes.*` and `panda.workspace.wakeups.*` (R0406B): `workspace.manage` is checked natively per call.
+            if matches!(request.method.as_str(), "workspaceRecipes" | "workspaceWakeups") { return runtime_workspace_schedules::serve(app, request).await; }
+            // `panda.workspace.bots.*` and `panda.workspace.channels.*` (R0406): `workspace.manage` is checked natively per call; removals confirm by default.
+            if request.method == "workspaceAutomation" { return runtime_workspace_automation::serve(app, request).await; }
             // `panda.workspace.settings.list`, `get` and `set` (R0407): `workspace.settings` is checked natively per call.
             if request.method == "workspaceSettings" {
                 return tauri::async_runtime::spawn_blocking(move || runtime_workspace_settings::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }
             // `panda.tasks.draft.*` (R0403, tasks.draft) and `panda.tasks.attachments.read` (tasks.transcript.read): the grant is checked natively per call.
+            // `panda.workspace.moodboards.*` and `panda.workspace.cloud.*` (R0406C, workspace.manage): the grant is checked natively per call.
+            if matches!(request.method.as_str(), "workspaceMoodboards" | "workspaceCloud") { return super::runtime_workspace_cloud::serve(app, request).await; }
             if request.method == "tasksDraft" { return super::runtime_tasks_drafts::serve(app, request).await; }
             if request.method == "tasksAttachmentsRead" { return super::runtime_tasks_drafts::serve_attachment(app, request).await; }
+            if request.method == "harnessConsole" { return super::runtime_harness_console::serve(app, request).await; }
             if request.method == "notice" {
                 return tauri::async_runtime::spawn_blocking(move || super::runtime_notifications::serve_app(&app, &request.owner, &request.params)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
             }

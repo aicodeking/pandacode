@@ -248,6 +248,12 @@ process.stdin.on('data', chunk => {
               refreshLimits: options => rpc('limitsRefresh', options === undefined || options === null ? {} : { ...options }),
               // Makes another account of a harness the active one (R0805, credentials.use for that account): a host operation, no credential crosses.
               switchAccount: options => rpc('accountSwitch', options === undefined || options === null ? {} : { ...options }),
+              // Harness consoles and command-center actions (R0408): the host resolves the target and asks the user once per round.
+              console: Object.freeze({ open: options => rpc('harnessConsole', { ...(options ?? {}), op: 'open' }) }),
+              commands: Object.freeze({
+                list: options => rpc('harnessConsole', { ...(options ?? {}), op: 'list' }),
+                run: options => rpc('harnessConsole', { ...(options ?? {}), op: 'run' }),
+              }),
             }),
             // Starts an attributed task (R0401, tasks.start): defaults, worktree and target are resolved by the host; no option pairs a machine.
             tasks: Object.freeze({
@@ -268,7 +274,44 @@ process.stdin.on('data', chunk => {
               attachments: Object.freeze({ read: options => rpc('tasksAttachmentsRead', options === undefined || options === null ? {} : { ...options }) }),
             }),
             // The app's own workspace settings (R0407, workspace.settings): the grant and the key are checked by the host per call; a stale revision is StaleContext.
-            workspace: Object.freeze({ settings: Object.freeze({
+            workspace: Object.freeze({
+              // Bots and shared channels (R0406, workspace.manage): the host checks the grant per call; removals confirm by default.
+              bots: Object.freeze({
+                create: input => rpc('workspaceAutomation', { family: 'bots', op: 'create', input }),
+                update: (botId, input) => rpc('workspaceAutomation', { family: 'bots', op: 'update', id: botId, input }),
+                remove: botId => rpc('workspaceAutomation', { family: 'bots', op: 'remove', id: botId }),
+              }),
+              channels: Object.freeze({
+                create: input => rpc('workspaceAutomation', { family: 'channels', op: 'create', input }),
+                update: (channelId, input) => rpc('workspaceAutomation', { family: 'channels', op: 'update', id: channelId, input }),
+                remove: channelId => rpc('workspaceAutomation', { family: 'channels', op: 'remove', id: channelId }),
+              }),
+              // Recipes and wake-ups (R0406B, workspace.manage): the host checks the grant per call; removals confirm by default.
+              recipes: Object.freeze({
+                list: options => rpc('workspaceRecipes', { op: 'list', ...(options ?? {}) }),
+                save: recipe => rpc('workspaceRecipes', { op: 'save', recipe }),
+                remove: recipeId => rpc('workspaceRecipes', { op: 'remove', recipeId }),
+                run: (recipeId, options) => rpc('workspaceRecipes', { op: 'run', recipeId, options }),
+              }),
+              wakeups: Object.freeze({
+                list: options => rpc('workspaceWakeups', { op: 'list', ...(options ?? {}) }),
+                create: input => rpc('workspaceWakeups', { op: 'create', input }),
+                update: (wakeupId, input) => rpc('workspaceWakeups', { op: 'update', wakeupId, input }),
+                remove: wakeupId => rpc('workspaceWakeups', { op: 'remove', wakeupId }),
+              }),
+              // Moodboards and already configured cloud machines (R0406C, workspace.manage): the host checks the grant per call; removals confirm by default.
+              moodboards: Object.freeze({
+                create: input => rpc('workspaceMoodboards', { op: 'create', input }),
+                rename: (boardId, name) => rpc('workspaceMoodboards', { op: 'rename', boardId, name }),
+                remove: boardId => rpc('workspaceMoodboards', { op: 'remove', boardId }),
+                addImage: (boardId, input) => rpc('workspaceMoodboards', { op: 'addImage', boardId, input }),
+                removeImage: (boardId, imageId) => rpc('workspaceMoodboards', { op: 'removeImage', boardId, imageId }),
+              }),
+              cloud: Object.freeze({
+                provision: input => rpc('workspaceCloud', { op: 'provision', input }),
+                ...Object.fromEntries(['sync', 'retry', 'open', 'stop', 'remove'].map(op => [op, machineId => rpc('workspaceCloud', { op, machineId })])),
+              }),
+              settings: Object.freeze({
               list: () => rpc('workspaceSettings', { op: 'list' }),
               get: key => rpc('workspaceSettings', { op: 'get', key }),
               set: (key, value, options) => rpc('workspaceSettings', { op: 'set', key, value, ...(options && options.revision !== undefined ? { revision: options.revision } : {}) }),

@@ -28,6 +28,9 @@ import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
 import * as codeFolders from './runtime-code-folders';
 import { previewWorkspaceSettings } from './runtime-workspace-settings';
+import { previewWorkspaceAutomation, previewWorkspaceAutomationNotifier } from './runtime-workspace-automation';
+import { previewWorkspaceSchedules } from './runtime-workspace-schedules';
+import { previewWorkspaceCloud } from './runtime-workspace-cloud';
 // One store per page, so a ticket minted by a gate is the one the choice presents; a reload is the preview's restart.
 const previewFamilyConsents = familyConsents.createFamilyConsentsPreview(runtimeGrants.createRuntimeGrantsPreview());
 (window as unknown as { __extensionFamilyConsents?: unknown }).__extensionFamilyConsents = { ...familyConsents, createRuntimeGrantsPreview: runtimeGrants.createRuntimeGrantsPreview };
@@ -362,11 +365,18 @@ function previewExtensionCommand(command: string, args: Record<string, unknown>,
   // No service starts a task in the preview: no label exists; the defaults answers are recorded for the spec (runtime-tasks-start.ts).
   // The app's own workspace settings (R0407): labelled stand-in with the native rules and refusal envelope (runtime-workspace-settings.ts).
   if (command.startsWith('extensions_workspace_settings_')) return previewWorkspaceSettings(command, args);
+  // Bots and shared channels (R0406): labelled stand-in with the native forms and refusal envelope (runtime-workspace-automation.ts).
+  if (command.startsWith('extensions_workspace_automation_')) { previewWorkspaceAutomationNotifier(notify); return previewWorkspaceAutomation(command, args); }
+  // Recipes and wake-ups (R0406B): labelled stand-in with the native ids, shapes and refusal envelope (runtime-workspace-schedules.ts).
+  if (command.startsWith('extensions_workspace_schedules_') || command === 'extensions_workspace_origins') return previewWorkspaceSchedules(command, args);
   if (command === 'extensions_runtime_task_origins') return { revision: 0, origins: {} };
   // No service queues a message in the preview: no entry is labelled (the spec drives runtime-tasks-messages.ts directly).
   if (command === 'extensions_runtime_message_origins') return { revision: 0, entries: {} };
   if (command === 'extensions_runtime_task_defaults_answer') { ((window as unknown as { __runtimeTaskDefaultsAnswers?: unknown[] }).__runtimeTaskDefaultsAnswers ??= []).push(args); return null; }
   if (command === 'extensions_runtime_draft_answer') { ((window as unknown as { __runtimeDraftAnswers?: unknown[] }).__runtimeDraftAnswers ??= []).push(args); return null; }
+  if (command === 'extensions_runtime_console_answer') { ((window as unknown as { __runtimeConsoleAnswers?: unknown[] }).__runtimeConsoleAnswers ??= []).push(args); return null; }
+  // Moodboards and cloud machines (R0406C): the confirmation answers are recorded for the spec (runtime-workspace-cloud.ts).
+  if (command.startsWith('extensions_runtime_workspace_cloud_')) return previewWorkspaceCloud(command, args);
   if (command === 'extensions_runtime_draft_allowed') return ((args.ghosts as unknown[]) ?? []).map(() => true);
   if (command === 'extensions_runtime_dialogs') return [];
   if (command === 'extensions_runtime_dialog_answer') { ((window as unknown as { __runtimeDialogAnswers?: unknown[] }).__runtimeDialogAnswers ??= []).push(args); return null; }
