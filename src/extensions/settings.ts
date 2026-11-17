@@ -4,6 +4,7 @@ import { extensionsManagementSnapshot as extensionsSnapshot, onExtensionsChanged
 import { EXECUTABLE_WARNING } from './executable';
 import { openExtensionDialog } from './dialogs';
 import { mountGrantsManager } from './runtime-grants-manager';
+import { mountRunningServices } from './runtime-service-status';
 import { mountSurfaceExplorer } from './explorer';
 import { mountShortcutSettings } from './shortcut-settings';
 
@@ -24,6 +25,7 @@ function scopeControl(id: string, projects: string[] | undefined, disabled: bool
 export function mountExtensionSettings(host: HTMLElement): () => void {
   let disposed = false, pending = false, error = '';
   let cleanupGrants: (() => void) | undefined;
+  let cleanupRunning: (() => void) | undefined;
   let cleanupExplorer: (() => void) | undefined;
   let cleanupShortcuts: (() => void) | undefined;
   let closeTrust: (() => void) | undefined;
@@ -31,6 +33,7 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
     if (disposed) return;
     const snapshot = extensionsSnapshot();
     cleanupGrants?.();
+    cleanupRunning?.();
     cleanupExplorer?.();
     cleanupShortcuts?.();
     host.innerHTML = `<p>Local unsigned packages. Installation and discovery execute no package code or install hooks. Executable packages require separate content/version-bound trust.</p>
@@ -41,7 +44,7 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       ${snapshot.safeMode ? '<p role="status" tabindex="-1">Safe mode: packages are not loaded. Restart without --safe-mode to restore explicit enable preferences.</p>' : ''}
       <p>Uninstall retains private data by default. The separate “Uninstall and remove private data” action requires confirmation for only that extension’s private settings and storage. Projects, drafts and history are never removed. Storage grants constrain the public API, not independent file access by trusted native code.</p>
       ${snapshot.packages.map(item => `<div class="setting-row"><div><strong>${escape(item.manifest.id)}</strong><small>${escape(item.manifest.version)} · Local unsigned · ${item.reason ? 'Failed' : item.enabled ? 'Enabled' : 'Installed — disabled'}</small><small>Owner: ${escape(item.manifest.id)} · ${escape(item.reason ?? (item.enabled ? 'Explicitly enabled' : 'Not enabled by the user'))} · ${escape(scopeSummary(item.projects))}</small></div><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-enabled="${!item.enabled}" ${pending ? 'disabled' : ''}>${item.reason ? 'Retry' : item.enabled ? 'Disable' : 'Enable'} ${escape(item.manifest.id)}</button><button type="button" class="secondary-button" data-extension-id="${escape(item.manifest.id)}" data-extension-uninstall ${pending ? 'disabled' : ''}>Uninstall ${escape(item.manifest.id)}</button></div>${scopeControl(item.manifest.id, item.projects, pending || snapshot.safeMode)}`).join('')}
-      ${error ? `<p role="alert">${escape(error)}</p>` : ''}${snapshot.diagnostics.map(message => `<p role="status">${escape(message)}</p>`).join('')}<section data-extension-grants aria-label="Extension permissions"></section><section data-extension-shortcuts aria-label="Extension shortcuts"></section><section data-extension-catalog aria-label="Surface explorer"></section>`;
+      ${error ? `<p role="alert">${escape(error)}</p>` : ''}${snapshot.diagnostics.map(message => `<p role="status">${escape(message)}</p>`).join('')}<section data-extension-running aria-label="Running extension services"></section><section data-extension-grants aria-label="Extension permissions"></section><section data-extension-shortcuts aria-label="Extension shortcuts"></section><section data-extension-catalog aria-label="Surface explorer"></section>`;
     for (const item of snapshot.packages.filter(item => item.executable)) {
       const node = document.createElement('button'); node.type = 'button'; node.className = 'secondary-button'; node.dataset.extensionId = item.manifest.id; node.dataset.extensionTrust = '';
       node.textContent = `${item.executable!.trusted ? 'Revoke executable trust' : 'Review executable trust'} ${item.manifest.id}`; node.disabled = pending;
@@ -68,6 +71,7 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
       node.textContent = `Uninstall and remove private data ${item.manifest.id}`; node.disabled = pending;
       [...host.querySelectorAll<HTMLButtonElement>('[data-extension-uninstall]')].find(button => button.dataset.extensionId === item.manifest.id)?.after(node);
     }
+    cleanupRunning = mountRunningServices(host.querySelector<HTMLElement>('[data-extension-running]')!);
     cleanupGrants = mountGrantsManager(host.querySelector<HTMLElement>('[data-extension-grants]')!);
     cleanupExplorer = mountSurfaceExplorer(host.querySelector<HTMLElement>('[data-extension-catalog]')!);
     cleanupShortcuts = mountShortcutSettings(host.querySelector<HTMLElement>('[data-extension-shortcuts]')!);
@@ -166,5 +170,5 @@ export function mountExtensionSettings(host: HTMLElement): () => void {
     (match && !match.disabled ? match : host.querySelector<HTMLElement>('[role="alert"]') ?? host.querySelector<HTMLElement>('[data-extension-install]'))?.focus({ preventScroll: true });
   };
   const cleanup = onExtensionsChanged(draw); host.addEventListener('click', click); host.addEventListener('change', change); draw(); void loadExtensions();
-  return () => { disposed = true; closeTrust?.(); cleanup(); cleanupGrants?.(); cleanupExplorer?.(); cleanupShortcuts?.(); host.removeEventListener('click', click); host.removeEventListener('change', change); host.replaceChildren(); };
+  return () => { disposed = true; closeTrust?.(); cleanup(); cleanupGrants?.(); cleanupRunning?.(); cleanupExplorer?.(); cleanupShortcuts?.(); host.removeEventListener('click', click); host.removeEventListener('change', change); host.replaceChildren(); };
 }

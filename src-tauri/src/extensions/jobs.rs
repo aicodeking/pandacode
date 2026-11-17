@@ -35,7 +35,15 @@ impl Registry {
         }
     }
 }
-impl ExtensionJobs { pub fn stop(&self, owner: Option<&str>, handle: Option<&str>) { if let Ok(mut state) = self.0.lock() { state.stop(owner, handle); } } }
+impl ExtensionJobs {
+    pub fn stop(&self, owner: Option<&str>, handle: Option<&str>) { if let Ok(mut state) = self.0.lock() { state.stop(owner, handle); } }
+    /// The running jobs of each owner, each job once (the Running list and the quit account, R0107).
+    pub fn running(&self) -> BTreeMap<String, usize> {
+        let mut owners = BTreeMap::new();
+        if let Ok(state) = self.0.lock() { for job in state.jobs.values().filter(|job| job.state == "running") { *owners.entry(job.scope.owner.clone()).or_default() += 1; } }
+        owners
+    }
+}
 fn dto(id: &str, job: &Job) -> Value { json!({"schemaVersion":1,"job":id,"state":job.state,"progress":job.progress,"result":job.result,"error":job.error}) }
 fn arguments(tool: &Value, args: &[String]) -> Result<()> {
     if tool["executable"] != "node" || tool["cwd"] != "project" { return Err("UnsupportedCapability"); }
@@ -148,6 +156,21 @@ mod tests {
         registry.stop(Some("a"), None); registry.settle("opaque", Ok(vec![])); registry.settle("opaque", Err("Timeout"));
         assert!(!unrelated.load(Ordering::Acquire)); assert_eq!(registry.jobs["unrelated"].state, "running");
         let job = registry.owned(&a, "opaque").unwrap(); assert_eq!(job.state, "cancelled"); assert_eq!(job.error, Some("Cancelled")); assert!(job.result.is_null());
+    }
+    /// R0107: the Running list and the quit account count each running job once, per owner; settled jobs are gone.
+    #[test]
+    fn running_jobs_are_counted_once_per_owner() {
+        let jobs = ExtensionJobs::default();
+        assert!(jobs.running().is_empty());
+        {
+            let mut registry = jobs.0.lock().unwrap();
+            for (id, owner, state) in [("1", "a", "running"), ("2", "a", "running"), ("3", "a", "completed"), ("4", "b", "running"), ("5", "c", "cancelled")] {
+                registry.jobs.insert(id.into(), Job { scope: scope(owner, "A"), cancel: Arc::default(), state, progress: vec![], result: Value::Null, error: None });
+            }
+        }
+        assert_eq!(jobs.running(), BTreeMap::from([("a".to_owned(), 2), ("b".to_owned(), 1)]));
+        jobs.0.lock().unwrap().settle("4", Ok(vec![]));
+        assert_eq!(jobs.running(), BTreeMap::from([("a".to_owned(), 2)]));
     }
     #[test]
     fn structured_arguments_never_become_executable_or_cwd() {

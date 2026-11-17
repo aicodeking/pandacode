@@ -1,0 +1,13 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.service-status",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service", "storage.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.service-status/state", "title": "Service status state", "action": { "kind": "runCommand" } }],
+    "menus": [{ "id": "sample.service-status/header", "location": "panda.workspace.header.actions", "command": "sample.service-status/state", "presentation": "button", "text": "Service status" }]
+  }
+}

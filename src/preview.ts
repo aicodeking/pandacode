@@ -1843,8 +1843,16 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     try { return { ok: true, value: previewOwnedJobs.call(snapshot, extensionContextBroker?.binding(snapshot, args.request.handle), args.request.handle, args.request.request) } as T; }
     catch (error) { return { ok: false, error: { schemaVersion: 1, code: error instanceof Error ? error.message : 'HostUnavailable', path: '$', ids: [] } } as T; }
   }
+  // The Running list and the quit account (R0107): a labelled stand-in over the lifetime stand-in; enable is the retry.
+  const serviceStatus = async () => {
+    const extensions = await import('./extensions/preview'), status = await import('./extensions/runtime-service-status');
+    const lifetime = () => extensions.previewExtensions('extensions_service_lifetime', {}, emit) as import('./extensions/runtime-service-lifetime').ServiceLifetimeProjection;
+    return status.previewServiceStatus(command, args, lifetime, sessions.filter(s => ['running', 'waiting'].includes(s.status)).length);
+  };
+  if (['extensions_service_status', 'extensions_service_stop', 'extensions_service_retry', 'extensions_service_data_size', 'extensions_service_status_preview', 'extensions_service_quit_preview'].includes(command)) return await serviceStatus() as T;
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);
+    if (command === 'extensions_enable' && args.enabled === true) await serviceStatus();
     if (command === 'extensions_enable' && args.enabled === false || command === 'extensions_safe_mode') {
       for (const s of sessions.filter(s => providerOwner(s.provider) && ['running', 'waiting'].includes(s.status) && (command === 'extensions_safe_mode' || providerOwner(s.provider) === args.id))) {
         harnessPreview.stop(s.id); previewProviderFinished(providerOwner(s.provider)!, emit); s.status = 'idle'; agent({ sessionId: s.id, kind: 'done', text: 'Extension disabled' });

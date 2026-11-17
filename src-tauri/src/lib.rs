@@ -4950,9 +4950,11 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
         let local = lock_agents(&state.agents).map(|a| a.keys().filter(|id| !cloud.contains(*id)).count()).unwrap_or(0);
         let shutting_down = state.shutdown.load(Ordering::SeqCst) != 0;
-        if quit_guard::should_confirm_quit(local, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE)) {
+        // One account: local agents and the extension packages still working (R0107), each package once.
+        let account = quit_guard::QuitAccount { agents: local, packages: extensions::runtime_service_lifetime::runtime_service_status::quit_packages(app) };
+        if quit_guard::should_confirm(&account, headless::active(), quit_guard::confirmed(), shutting_down, code == Some(tauri::RESTART_EXIT_CODE)) {
             api.prevent_exit();
-            quit_guard::ask(app, local);
+            quit_guard::ask_account(app, &account);
             return;
         }
         api.prevent_exit();
@@ -5184,6 +5186,10 @@ pub fn run() {
                 extensions::runtime_grants::extensions_runtime_grants,
                 extensions::runtime_grants::extensions_runtime_grant,
                 extensions::runtime_service_lifetime::extensions_service_lifetime,
+                extensions::runtime_service_lifetime::runtime_service_status::extensions_service_status,
+                extensions::runtime_service_lifetime::runtime_service_status::extensions_service_stop,
+                extensions::runtime_service_lifetime::runtime_service_status::extensions_service_retry,
+                extensions::runtime_service_lifetime::runtime_service_status::extensions_service_data_size,
                 extensions::runtime_native_consents::extensions_runtime_native_consents,
                 extensions::runtime_family_consents::extensions_family_consents,
                 extensions::runtime_private_secrets::extensions_private_secrets,

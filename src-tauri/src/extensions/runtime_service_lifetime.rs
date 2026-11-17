@@ -6,7 +6,8 @@
 //! (update), loss of trust or of the grant, safe mode and quit. The host asks the service to stop, gives its
 //! `onStop` handlers at most two seconds, then ends the whole process tree (the job object).
 //!
-//! What this slice does NOT do (named owners): the Running list and the quit confirmation (R0107). Crash restart with
+//! The Running list, the user's Stop (`held` until Retry or enable) and the quit confirmation are R0107
+//! (`runtime_service_status.rs`, `ServiceLifetime::stop`). Crash restart with
 //! backoff, parking, the start state and memory measurement are R0106 (`runtime_service_supervision.rs`, applied in
 //! `supervise` and `run` below).
 //!
@@ -41,10 +42,14 @@ pub mod runtime_usage_resources;
 #[path = "runtime_service_supervision.rs"]
 pub mod runtime_service_supervision;
 use self::runtime_service_supervision::{self as supervision, Clock, CrashHistory, Decision, Memory};
+// The Running list of the Extensions page, its Stop/Retry/Data size controls and the extension part of the quit
+// account (R0107).
+#[path = "runtime_service_status.rs"]
+pub mod runtime_service_status;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
-use std::{collections::BTreeMap, ffi::OsString, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
+use std::{collections::{BTreeMap, BTreeSet}, ffi::OsString, future::Future, path::PathBuf, pin::Pin, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
 use tokio::{io::AsyncReadExt, sync::{mpsc, oneshot, watch, Notify}, task::JoinSet};
 
 /// A request the service made to the host, after the channel admitted it.
@@ -151,8 +156,10 @@ struct Queued { want: Want, source: String, reason: StartReason, work: Work, cod
 /// the entry point and code folders read from the stored archive, and the `storage.private` grant work (absent when
 /// the grant is not held; cancelled when it is revoked).
 struct Code { app_data: PathBuf, checksum: String, files: Vec<(String, Vec<u8>)>, storage: Option<Work> }
+/// `held` (R0107): services the user stopped; nothing starts them until `retry` (Retry, enable, development reload)
+/// clears them, or their package is disabled or uninstalled.
 #[derive(Default)]
-struct Inner { launched: bool, quitting: bool, next: u64, entries: BTreeMap<String, Entry>, counters: BTreeMap<String, Counters>, queued: BTreeMap<String, Queued> }
+struct Inner { launched: bool, quitting: bool, next: u64, entries: BTreeMap<String, Entry>, counters: BTreeMap<String, Counters>, queued: BTreeMap<String, Queued>, held: BTreeSet<String> }
 
 /// Native owner of every background service. Managed as Tauri state; independent of windows and captured contexts.
 pub struct ServiceLifetime {
@@ -250,8 +257,14 @@ impl ServiceLifetime {
         let granted = |id: &str, version: &str| !headless && grants.check(id, version, PERMISSION, &Target::default()).is_ok();
         updated.extend(Self::stop_where(&mut inner, &snapshot, granted));
         let wanted = desired(&snapshot, granted);
-        inner.queued.retain(|id, queued| wanted.get(id).is_some_and(|want| want.digest == queued.want.digest));
-        for (id, want) in wanted {
+        // A user's stop (R0107) lasts until Retry or enable; a disable or an uninstall ends it, so the next enable or
+        // install starts the service normally. Anything else (a grant change, an update, another reconcile) keeps it.
+        let installed_enabled = |id: &String| snapshot["packages"].as_array().into_iter().flatten().any(|package| package["manifest"]["id"] == id.as_str() && package["enabled"] == true);
+        // Safe mode loads no package: its empty snapshot ends nothing.
+        if snapshot["safeMode"] != true { inner.held.retain(installed_enabled); }
+        let held = inner.held.clone();
+        inner.queued.retain(|id, queued| !held.contains(id) && wanted.get(id).is_some_and(|want| want.digest == queued.want.digest));
+        for (id, want) in wanted.into_iter().filter(|(id, _)| !held.contains(id)) {
             // A start behind a process that is still stopping waits for it (one service per package).
             let (reason, restarts, history) = match inner.entries.get(&id) {
                 None if updated.contains(&id) => (StartReason::Update, 0, CrashHistory::default()),
@@ -297,8 +310,44 @@ impl ServiceLifetime {
 
     /// Clears a failed start, a scheduled crash restart or a parked service so the next `reconcile` starts it again
     /// at once, with a clean crash history (the explicit retry of enable and development reload).
+    /// It also ends a user's stop (R0107).
     pub fn retry(&self, id: &str) {
-        if let Ok(mut inner) = self.inner.lock() { if inner.entries.get(id).is_some_and(|entry| entry.state.idle()) { inner.entries.remove(id); } }
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.held.remove(id);
+            if inner.entries.get(id).is_some_and(|entry| entry.state.idle()) { inner.entries.remove(id); }
+        }
+    }
+
+    /// The user's Stop (R0107): a starting or running service gets `onStop("stop")` and ends; a scheduled crash
+    /// restart is cancelled; a stopping one loses the start queued behind it. In every case the service stays stopped
+    /// (`held`) until `retry` (Retry, enable) or a disable or uninstall. `NotFound` for a package with no service;
+    /// `Conflict` when nothing runs or is scheduled (stopped, failed, parked).
+    pub fn stop(&self, id: &str) -> Result<(), &'static str> {
+        let mut inner = self.inner.lock().map_err(|_| "HostUnavailable")?;
+        let state = match inner.entries.get(id) {
+            Some(entry) => entry.state,
+            None if inner.counters.contains_key(id) => return Err("Conflict"),
+            None => return Err("NotFound"),
+        };
+        match state {
+            State::Starting | State::Running => {
+                if let Some(entry) = inner.entries.get_mut(id) { entry.state = State::Stopping; let _ = entry.stop.send(Some(StopReason::Stop)); }
+            }
+            State::Restarting => {
+                // No process: the timer finds nothing to restart. No `onStop` ran.
+                inner.entries.remove(id);
+                let counters = inner.counters.entry(id.to_owned()).or_default();
+                *counters.stops.entry(StopReason::Stop.as_str()).or_default() += 1;
+                counters.last_stop = Some((StopReason::Stop.as_str(), false));
+            }
+            State::Stopping => {}
+            State::Failed | State::Parked => return Err("Conflict"),
+        }
+        inner.queued.remove(id);
+        inner.held.insert(id.to_owned());
+        drop(inner);
+        self.changed.notify_waiters();
+        Ok(())
     }
 
     /// Asks every service to stop with `reason`; after `quit` nothing starts again in this manager.
@@ -339,6 +388,7 @@ impl ServiceLifetime {
                 "id": id,
                 "version": entry.map(|entry| entry.version.clone()),
                 "state": entry.map_or("stopped", |entry| entry.state.as_str()),
+                "held": inner.held.contains(id.as_str()),
                 "reason": entry.map(|entry| entry.reason.as_str()),
                 "restarts": entry.map_or(0, |entry| entry.restarts),
                 "status": entry.and_then(|entry| entry.status.as_ref()).map(|(text, working)| json!({"text": text, "working": working})),
