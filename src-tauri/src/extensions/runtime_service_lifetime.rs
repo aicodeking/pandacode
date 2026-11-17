@@ -49,6 +49,9 @@ use self::runtime_service_supervision::{self as supervision, Clock, CrashHistory
 // account (R0107).
 #[path = "runtime_service_status.rs"]
 pub mod runtime_service_status;
+// Services placed beside remote and headless executors, their Connect methods and the desktop's view of them (R0108).
+#[path = "runtime_executor_placement.rs"]
+pub mod runtime_executor_placement;
 use super::{packages::Packages, runtime_grants::{RuntimeGrants, Target, Work}, supervisor};
 use serde_json::{json, Value};
 use super::packages::runtime_code_folders;
@@ -262,8 +265,10 @@ impl ServiceLifetime {
         let mut updated = Self::stop_where(&mut inner, &snapshot, |_: &str, _: &str| true);
         // Safe mode loads no package, so its snapshot is empty: never let that erase the grants file.
         if snapshot["safeMode"] != true { let _ = grants.sync(&snapshot); }
-        let headless = crate::headless::active();
-        let granted = |id: &str, version: &str| !headless && grants.check(id, version, PERMISSION, &Target::default()).is_ok();
+        // Placement (R0108): a desktop runs every kind; a headless host runs only workspace-kind services, beside
+        // its executor (a `ui` package's code belongs to a window).
+        let here = runtime_executor_placement::services_here(&snapshot, runtime_executor_placement::this_executor());
+        let granted = |id: &str, version: &str| here.contains(id) && grants.check(id, version, PERMISSION, &Target::default()).is_ok();
         updated.extend(Self::stop_where(&mut inner, &snapshot, granted));
         let wanted = desired(&snapshot, granted);
         // A user's stop (R0107) lasts until Retry or enable; a disable or an uninstall ends it, so the next enable or

@@ -1,0 +1,21 @@
+[
+  {
+    "deviceId": "fake-build-server",
+    "name": "build-server",
+    "platform": "linux",
+    "headless": true,
+    "online": true,
+    "packages": [
+      {
+        "manifest": { "id": "sample.executor-placement", "version": "1.0.0", "extensionKind": "workspace", "permissions": ["ui.contribute", "runtime.service", "storage.private"], "runtime": { "service": { "start": "onEnable" } } },
+        "enabled": true, "trusted": true, "granted": ["runtime.service"]
+      },
+      {
+        "manifest": { "id": "sample.executor-placement-ui", "version": "1.0.0", "extensionKind": "ui", "permissions": ["ui.contribute", "runtime.service"], "runtime": { "service": { "start": "onEnable" } } },
+        "enabled": true, "trusted": true, "granted": ["runtime.service"]
+      }
+    ]
+  },
+  { "deviceId": "fake-studio", "name": "studio", "platform": "darwin", "headless": false, "online": false, "packages": [] },
+  { "deviceId": "fake-old-laptop", "name": "old-laptop", "platform": "windows", "headless": false, "online": true, "legacy": true, "packages": [] }
+]

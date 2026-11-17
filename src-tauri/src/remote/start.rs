@@ -779,6 +779,8 @@ async fn start_claimed(app: &tauri::AppHandle, from: &str, start: Start, progres
     cancel.commit()?;
     let state = app.state::<AppState>();
     let task = create_task(&*state.store.lock().map_err(|e| e.to_string())?, &project.id, &start)?;
+    // This computer executes the task: its workspace-kind services act for it, as for a local one (R0108).
+    crate::extensions::runtime_service_lifetime::runtime_workspace_events::task_created(app, &task.id, &project.id, &task.provider);
     // A local run may have started in the main checkout since the reservation was taken.
     // ponytail: local runs don't consult the reservation, so a run starting between this check
     // and `send_message` registering the agent still shares it; gate local admission if it bites.

@@ -196,7 +196,7 @@ impl PartialEq for Parsed {
 
 /// Every feature group, in the order `host.hello` lists them. A new feature file adds
 /// itself here (and its `mod` line above) once.
-const GROUPS: [(&str, &[Method]); 16] = [
+const GROUPS: [(&str, &[Method]); 17] = [
     ("hello", HELLO),
     ("threads", threads::METHODS),
     ("composer", composer::METHODS),
@@ -213,6 +213,8 @@ const GROUPS: [(&str, &[Method]); 16] = [
     ("settings", settings::METHODS),
     ("rewind", rewind::METHODS),
     ("search", search::METHODS),
+    // Extension services beside this computer's executor (R0108); declared with the runtime, not in this folder.
+    ("extensions", crate::extensions::runtime_service_lifetime::runtime_executor_placement::REMOTE_METHODS),
 ];
 
 /// Every registry method.

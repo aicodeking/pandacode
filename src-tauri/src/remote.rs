@@ -23,6 +23,18 @@ mod start;
 
 pub(crate) use mirror::route;
 
+/// Seams for the extension runtime's executor placement (R0108): its registry methods are declared in
+/// `extensions/runtime_executor_placement.rs`, and the desktop calls hosts through the same client.
+pub(crate) mod extension_placement {
+    pub(crate) use super::client::{call_within, maybe_ran, TIMEOUT};
+    #[allow(unused_imports)] // the fake transport of the extension tests
+    pub(crate) use super::client::TIMED_OUT;
+    pub(crate) use super::config::device_name;
+    pub(crate) use super::methods::{Access, Ctx, Method, Reply, Run};
+    /// This computer's Connect device id.
+    pub(crate) fn this_device(app: &tauri::AppHandle) -> String { super::remote(app).device_id() }
+}
+
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

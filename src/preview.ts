@@ -1856,6 +1856,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return status.previewServiceStatus(command, args, lifetime, sessions.filter(s => ['running', 'waiting'].includes(s.status)).length);
   };
   if (['extensions_service_status', 'extensions_service_stop', 'extensions_service_retry', 'extensions_service_data_size', 'extensions_service_status_preview', 'extensions_service_quit_preview'].includes(command)) return await serviceStatus() as T;
+  // Services beside remote and headless executors (R0108): a labelled fake paired transport, protocol only.
+  if (['extensions_executor_services', 'extensions_executor_service_control', 'extensions_executor_grant', 'extensions_executor_preview'].includes(command)) return (await import('./extensions/runtime-executor-placement')).previewExecutorPlacement(command, args) as T;
   if (command.startsWith('extensions_')) {
     const result = (await import('./extensions/preview')).previewExtensions(command, args, emit);
     if (command === 'extensions_enable' && args.enabled === true) await serviceStatus();

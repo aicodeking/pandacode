@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.executor-placement-ui",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "runtime.service"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.executor-placement-ui/where", "title": "Where does the window service run", "action": { "kind": "runCommand" } }]
+  }
+}

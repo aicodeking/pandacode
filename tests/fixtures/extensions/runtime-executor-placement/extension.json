@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.executor-placement",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute", "runtime.service", "storage.private"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "commands": [{ "id": "sample.executor-placement/where", "title": "Where does the executor service run", "action": { "kind": "runCommand" } }]
+  }
+}

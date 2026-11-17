@@ -165,6 +165,12 @@ jobs:
       - name: Running services and quit accounting (WebKit)
         env: { PW_PORT: '15972', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-service-status.spec.ts --workers=1
+      - name: Services beside remote and headless executors (Chromium)
+        env: { PW_PORT: '16181', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-executor-placement.spec.ts --workers=1
+      - name: Services beside remote and headless executors (WebKit)
+        env: { PW_PORT: '16182', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-executor-placement.spec.ts --workers=1
       - name: Upstream floating code editor (Chromium)
         env: { PW_PORT: '16021', PW_PROD: '1' }
         run: npx playwright test tests/upstream-editor-extensions.spec.ts --workers=1
