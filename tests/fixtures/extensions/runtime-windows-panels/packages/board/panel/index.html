@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Qualification board</title>
+  <style>
+    body { font: 13px system-ui, sans-serif; margin: 8px; }
+    canvas { image-rendering: pixelated; width: 256px; height: 64px; border: 1px solid #888; }
+    output { display: block; }
+  </style>
+</head>
+<body>
+  <h1>Qualification board</h1>
+  <canvas id="stream" width="64" height="16" aria-label="Streamed frames"></canvas>
+  <output id="instance">instance: none</output>
+  <output id="frames">frames: 0</output>
+  <output id="claimed">claimed: none</output>
+  <output id="storage">storage: none</output>
+  <output id="task">task: none</output>
+  <button id="focus-target" type="button">Panel button</button>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -214,6 +214,13 @@ mod tests {
     fn unqualified_targets_and_forged_window_options_fail_closed() {
         // R0301: the gate is a per-platform table; targets without their own evidence stay closed.
         assert_eq!(native_qualified(), super::runtime_rich_mount::qualified_for(super::super::runtime_platform_qualification::current_target()));
+        // Q025 (R0306): changed for the permissioned path: Windows x64 opens rich panels and windows for a trusted
+        // package holding `ui.richViews` (its installed record: docs/extensions/runtime-windows-panels.md). Retained:
+        // macOS and Linux answer UnsupportedRuntime (predictability: no installed evidence there, never inferred); the
+        // forged request fields below fail as InvalidShape (interface stability: the host takes the address and size
+        // from the manifest, `rich.minSize` is the permissioned size); an `extension-view-*` label gets no command
+        // (fault isolation, interface stability: panels use the channel). None of these is a security limit.
+        assert!(super::runtime_rich_mount::qualified_for(Some("windows-x64")));
         for target in ["macos-arm64", "macos-x64", "linux-x64", "linux-arm64"] { assert!(!super::runtime_rich_mount::qualified_for(Some(target)), "{target}"); }
         assert!(!super::runtime_rich_mount::qualified_for(None));
         let request = json!({"viewId":"sample.rich-view/report","version":"1.0.0"});

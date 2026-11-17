@@ -1,0 +1,20 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.windows-panels-twin",
+  "version": "1.0.0",
+  "name": "Windows panels qualification twin",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews"],
+  "contributes": {
+    "views": [
+      { "id": "sample.windows-panels-twin/board", "title": "Qualification twin", "text": "Host-rendered twin: a panel without a service, on its own origin.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 200 } } }
+    ],
+    "commands": [
+      { "id": "sample.windows-panels-twin/open", "title": "Open qualification twin", "action": { "kind": "openView", "view": "sample.windows-panels-twin/board" } }
+    ],
+    "menus": [
+      { "id": "sample.windows-panels-twin/header", "location": "panda.workspace.header.actions", "command": "sample.windows-panels-twin/open", "presentation": "button" }
+    ]
+  }
+}

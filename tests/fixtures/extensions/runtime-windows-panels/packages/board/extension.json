@@ -1,0 +1,24 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.windows-panels",
+  "version": "1.0.0",
+  "name": "Windows panels qualification board",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "ui",
+  "permissions": ["ui.contribute", "ui.richViews", "runtime.service", "tasks.start", "events.workspace"],
+  "runtime": { "kind": "node", "entrypoint": "main.cjs", "service": { "start": "onEnable" } },
+  "contributes": {
+    "views": [
+      { "id": "sample.windows-panels/board", "title": "Qualification board", "text": "Host-rendered board: the installed qualification draws streamed frames in the panel.", "rich": { "folder": "panel", "entry": "index.html", "placement": "inspector", "minSize": { "width": 320, "height": 240 } } },
+      { "id": "sample.windows-panels/chart", "title": "Qualification chart", "text": "Host-rendered chart summary: one remote page.", "rich": { "url": "https://charts.windows-panels.test/chart.html", "remote": ["https://charts.windows-panels.test"], "placement": "inspector" } }
+    ],
+    "commands": [
+      { "id": "sample.windows-panels/open", "title": "Open qualification board", "action": { "kind": "openView", "view": "sample.windows-panels/board" } },
+      { "id": "sample.windows-panels/chart-open", "title": "Open qualification chart", "action": { "kind": "openView", "view": "sample.windows-panels/chart" } }
+    ],
+    "menus": [
+      { "id": "sample.windows-panels/header", "location": "panda.workspace.header.actions", "command": "sample.windows-panels/open", "presentation": "button" },
+      { "id": "sample.windows-panels/chart-header", "location": "panda.workspace.header.actions", "command": "sample.windows-panels/chart-open", "presentation": "button" }
+    ]
+  }
+}

@@ -72,6 +72,8 @@ test('extensions windows: synthetic native menu select opens host quick pick imm
   await expect(page.getByRole('menuitemradio', { name: 'Unavailable report', exact: true })).toBeDisabled();
   await page.keyboard.press('Escape'); await expect(dialog(page)).toBeVisible();
   await page.keyboard.press('Escape'); await expect(dialog(page)).not.toBeVisible(); await expect(page.locator('#prompt')).toBeFocused();
+  // Q116 (R0306): retained. A native menu entry whose command the package does not own is refused before any UI opens
+  // (predictability: a menu item runs only its declared command; not a security limit).
   await page.evaluate(() => (window as any).__previewNativeExtensionAction('sample.window-laboratory/native-denied'));
   await expect(page.locator('#toast')).toContainText('PermissionDenied'); await expect(page.locator('#toast')).toBeVisible(); await expect(dialog(page)).not.toBeVisible();
 });

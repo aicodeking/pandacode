@@ -18,7 +18,11 @@ test('extensions windows: every actual auxiliary label has an explicit surface a
   assert.deepEqual([...new Set(actualLabels)].sort(), ['agents-dock', 'extension-view', 'launcher', 'main', 'tray']);
   const rich = ledger.families.find(family => family.id === 'panda.windows').members.find(member => member[4] === 'extension-view');
   assert.equal(rich[1], 'src-tauri/src/extensions/rich_views.rs');
-  assert.match(rich[3], /native execution disabled on all targets/);
+  // Q051 (R0306): changed. Rich windows open for trusted packages holding ui.richViews on qualified targets (Windows
+  // x64, docs/extensions/runtime-windows-panels.md) and answer UnsupportedRuntime on every other target (predictability:
+  // no installed evidence there). R1102 owns the per-target platform record.
+  assert.match(rich[3], /trusted packages holding ui\.richViews on qualified targets \(windows-x64\); UnsupportedRuntime on every other target/);
+  assert.doesNotMatch(rich[3], /disabled on all targets/);
   for (const id of Object.keys(WINDOW_ACTION_SURFACES)) assert.ok(ledger.implementedAdapters.find(adapter => adapter.id === id)?.tests.includes('tests/extensions-windows.spec.ts'));
   for (const [surface, windowId] of Object.entries(WINDOW_ACTION_SURFACES)) {
     const metadata = ui.listSurfaces({ windowId, location: surface }).items[0];
@@ -77,6 +81,9 @@ test('window coverage: every panda.tray/panda.windows member and the pinned widg
   }
   assert.doesNotMatch(JSON.stringify(coverage), /\blater\b|TODO|pending implementation/i);
   const ui = createUiCatalog(coverageState);
+  // Q052 (R0306): retained. Protected window controls (Quit, Show PandaCode, recovery, the pinned widget's lifetime)
+  // stay inspect-only: they are the user's way back when packages fail (fault isolation and recovery, not security).
+  // Packages contribute beside them through the window action surfaces and panda.tray.menu, asserted below.
   for (const [location, windowId] of Object.entries(WINDOW_PROTECTED_SURFACES)) {
     const surface = ui.listSurfaces({ windowId, location }).items[0];
     assert.equal(surface.available, true); assert.deepEqual(surface.windows, [windowId]); assert.deepEqual(surface.supportedOperations, ['inspect']);
@@ -104,5 +111,6 @@ test('window coverage: auxiliary contributions hide and reorder through the host
   for (const location of ['panda.launcher.actions', 'panda.agentsDock.actions']) layout.move(location, ['sample.a/one', 'sample.a/two'], { id: 'sample.a/two', target: 'sample.a/one', side: 'before' });
   layout.setVisible('sample.window-coverage/native-extra', false);
   assert.equal(layout.isHidden('sample.window-coverage/native-extra'), true);
+  // Q052 (R0306): retained, same reason: the recovery controls keep a fixed place (predictability when packages fail).
   for (const location of Object.keys(WINDOW_PROTECTED_SURFACES)) assert.throws(() => layout.move(location, [`${location}/a`, `${location}/b`], { id: `${location}/b`, target: `${location}/a`, side: 'before' }), /Unsupported placement/);
 });

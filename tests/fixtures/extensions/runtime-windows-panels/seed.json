@@ -1,0 +1,10 @@
+{
+  "issues": [
+    { "id": "T-1", "title": "Qualify the board panel", "type": "task", "priority": 1 },
+    { "id": "T-2", "title": "Qualify the remote page", "type": "task", "priority": 2 },
+    { "id": "T-3", "title": "Qualify the twin storage", "type": "task", "priority": 3 }
+  ],
+  "machines": [
+    { "id": "m1", "name": "qualification machine", "cpu": 37, "mem": 52 }
+  ]
+}

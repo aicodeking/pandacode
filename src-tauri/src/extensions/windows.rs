@@ -258,6 +258,13 @@ mod tests {
         assert!(command_allowed("agents-dock", "agents_dock_unpin")); assert!(!command_allowed("tray", "agents_dock_unpin"));
         for unknown in ["overlay", "secondary", "browser", "browser-1", "main-forged", ""] { for command in ["extensions_window_snapshot", "extensions_window_action", "extensions_install", "tray_quit"] { assert!(!command_allowed(unknown, command)); } }
         assert!(command_allowed("main", "extensions_install"));
+        // Q038 (R0306): retained. The tray, launcher and agents-dock webviews are host windows with their own
+        // capability, never a package's (interface stability). Panel webviews of trusted packages (inspector
+        // `extension-panel-*`, window `extension-view-*`) get no command at all: their permissioned path is the
+        // `pandapanel` channel and the proxied SDK under `ui.richViews` (fault isolation, not a security limit).
+        for label in ["extension-panel-00000000-0000-4000-8000-000000000000", "extension-view-00000000-0000-4000-8000-000000000000"] {
+            for command in ["extensions_window_snapshot", "extensions_rich_mount_open", "extensions_rich_focus", "extensions_runtime", "extensions_install", "read_file", "send_message"] { assert!(!command_allowed(label, command), "{label}: {command}"); }
+        }
         // The native menu layout is a main-window presentation update; no auxiliary or unknown webview may send it.
         assert!(command_allowed("main", "extensions_native_layout"));
         for window in AUXILIARY.iter().chain(&["overlay", "extension-view-1", "browser-1", ""]) { assert!(!command_allowed(window, "extensions_native_layout"), "{window}"); }

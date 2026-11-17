@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.windows-panels-agent",
+  "version": "1.0.0",
+  "engines": { "pandacodeApi": "^1.0.0" },
+  "extensionKind": "workspace",
+  "permissions": ["ui.contribute"],
+  "requiredContributions": ["providers"],
+  "contributes": {
+    "providers": [{
+      "apiVersion": 1,
+      "id": "sample.windows-panels-agent/fake",
+      "name": "Qualification fake agent",
+      "metadata": {
+        "modes": ["ask"],
+        "authentication": "Offline fixture; the declared fake ACP agent needs no sign-in or API key.",
+        "readiness": { "state": "ready", "reason": "Ready offline through its declared ACP launch." },
+        "usage": { "context": true, "limitsReason": "The fake agent reports context tokens, not subscription limits. No account or network is used." }
+      },
+      "models": [],
+      "launch": {
+        "protocol": "acp",
+        "command": ["{node}", "__FAKE_AGENT__"],
+        "env": { "FAKE_AGENT_LOG": "__AGENT_LOG__" }
+      }
+    }]
+  }
+}

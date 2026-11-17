@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "kind": "runtime-windows-panels-observation",
+  "target": "windows-x64",
+  "evidence": "synthetic",
+  "note": "SYNTHETIC: written by hand to show the record shape and to exercise evaluate.mjs offline. Not an observation of any app; its evidence label keeps it invalid as installed proof.",
+  "identity": {
+    "candidateCommit": "0000000000000000000000000000000000000000",
+    "sourceFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "builtFingerprint": "1111111111111111111111111111111111111111111111111111111111111111",
+    "buildMatchesSource": true,
+    "treeClean": true,
+    "installer": { "name": "PandaCode_0.0.0_x64-setup.exe", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "bytes": 1 },
+    "app": { "exe": "pandacode.exe", "sha256": "3333333333333333333333333333333333333333333333333333333333333333", "bytes": 1, "version": "0.0.0" },
+    "installedBy": "nsis-silent"
+  },
+  "engines": {
+    "webview2": "0.0.0.0",
+    "userAgent": "synthetic Edg/0.0.0.0",
+    "node": "v26.1.0",
+    "os": { "platform": "win32", "arch": "x64", "release": "synthetic", "version": "synthetic" }
+  },
+  "instrumentation": { "additionalBrowserArguments": "synthetic" },
+  "scenarios": {
+    "setup": { "errors": [], "packages": [], "projectId": "synthetic" },
+    "stream": {
+      "technique": "native-webview",
+      "shellHasMinSize": true,
+      "frames": { "drawn": 40, "last": 39, "gaps": 0, "done": { "posted": 40, "at": 0 }, "sample": { "x": 39, "rgba": [195, 173, 200, 255] } },
+      "service": { "requested": 40, "posted": 40, "delivered": 40, "refused": 0 }
+    },
+    "action": { "claim": { "issueId": "T-1", "status": "in_progress", "mine": true, "ms": 12 }, "serviceClaims": 1 },
+    "storage": {
+      "boardInspector": { "local": "qualification-note", "indexed": "qualification-note", "origin": "http://pandapanel.p0.localhost" },
+      "boardWindow": { "local": "qualification-note", "indexed": "qualification-note", "origin": "http://pandapanel.p0.localhost" },
+      "boardAfterRestart": { "local": "qualification-note", "indexed": "qualification-note", "origin": "http://pandapanel.p0.localhost" },
+      "twin": { "local": null, "origin": "http://pandapanel.p1.localhost" },
+      "twinAfterStore": { "local": "twin-note", "origin": "http://pandapanel.p1.localhost" },
+      "boardAfterTwinStore": { "local": "qualification-note", "indexed": "qualification-note", "origin": "http://pandapanel.p0.localhost" },
+      "distinctOrigins": true,
+      "twinPost": "UnsupportedCapability"
+    },
+    "remote": { "technique": "native-webview", "text": "Remote chart: windows panels", "origin": "https://charts.windows-panels.test", "framed": true, "requests": 1 },
+    "state": {
+      "windowInit": { "placement": "window", "restored": false, "state": null },
+      "parked": { "sameDocument": true, "sawHidden": true },
+      "afterReload": { "restored": true, "state": { "note": "remembered" } }
+    },
+    "inline": { "aliveAfterMs": 15000, "richState": null },
+    "focus": {
+      "trace": [
+        { "step": "slot-enter", "main": false, "panel": true, "active": "div.extension-rich-panel" },
+        { "step": "panel-button", "main": false, "panel": true, "active": "div.extension-rich-panel" },
+        { "step": "escape", "main": true, "panel": false, "active": "div.extension-rich-panel" },
+        { "step": "re-enter", "main": false, "panel": true, "active": "div.extension-rich-panel" },
+        { "step": "release-focus", "main": true, "panel": false, "active": "div.extension-rich-panel" },
+        { "step": "chord-enter", "main": false, "panel": true, "active": "div.extension-rich-panel" },
+        { "step": "chord", "main": false, "panel": true, "active": "div.extension-rich-panel" }
+      ],
+      "forwarded": ["Control+F12"],
+      "forwardedCount": 1
+    },
+    "fault": {
+      "taskId": "synthetic-task",
+      "runningAtFault": true,
+      "panelState": "error",
+      "panelPagesAfter": 0,
+      "turnFinished": true,
+      "turnFailed": false,
+      "taskStopped": false,
+      "agentPrompts": 1,
+      "agentCancel": 0,
+      "promptEnabled": true,
+      "reload": { "restored": true, "state": { "note": "remembered" } }
+    },
+    "band": { "technique": "native-webview", "height": 48, "richState": null, "aliveAfterMs": 10000, "webview": true },
+    "lifecycle": {
+      "revoke": { "panelState": "revoked", "pages": 0, "channel": "closed" },
+      "disable": { "panelState": "disabled", "pages": 0, "serviceStopped": true },
+      "safeMode": { "pages": 0, "windows": 0, "serviceStopped": true, "promptEnabled": true }
+    }
+  }
+}

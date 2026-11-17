@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Qualification remote chart</title>
+</head>
+<body>
+  <h1 id="remote-chart">Remote chart: windows panels</h1>
+  <p id="remote-origin"></p>
+  <script>
+    // R0306 fixture remote page, answered for the declared origin https://charts.windows-panels.test by the
+    // qualification's request route (no network). It records where it was framed from.
+    document.getElementById('remote-origin').textContent = location.origin;
+    window.__windowsPanelsRemote = { origin: location.origin, framed: window.top !== window, at: Date.now() };
+  </script>
+</body>
+</html>

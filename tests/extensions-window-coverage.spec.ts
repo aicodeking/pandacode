@@ -82,6 +82,8 @@ test('Window coverage: with zero extensions every auxiliary window keeps its cor
   const items = region.getByRole('list', { name: 'Surface items' });
   await expect(items.locator('[data-catalog-item="panda.agentsDock.protected/unpin"]')).toContainText('Unpin widget — closes the pinned window');
   await expect(items.locator('[data-catalog-item="panda.agentsDock.protected/lifetime"]')).toContainText('Operations: inspect');
+  // Q116 (R0306): retained. Protected window controls are the user's way back when packages fail (fault isolation and
+  // recovery, not security); packages contribute beside them through the window action surfaces and the tray menu.
   // Protected window controls never offer a hide toggle.
   await expect(region.getByRole('list', { name: 'Item visibility' }).getByRole('button')).toHaveCount(0);
   await region.getByLabel('Item location', { exact: true }).selectOption('panda.tray.protected');
@@ -156,6 +158,8 @@ test('Window coverage: the main window sends the OS menu only its global hide/or
 test('Window coverage: forged cross-window requests and passive native entries are refused without opening UI', async ({ page, context }) => {
   await seed(context); await main(page); await page.locator('#prompt').fill('Untouched draft');
   const forge = (request: Record<string, string>) => page.evaluate(request => window.dispatchEvent(new StorageEvent('storage', { key: 'pandacode.preview.extensions.presentation', newValue: JSON.stringify({ request, nonce: crypto.randomUUID() }) })), request);
+  // Q116 (R0306): retained. A contribution resolves only on the surface it was declared for and `panda.tray.protected/quit`
+  // stays the host's (predictability and recovery, not security); trusted panels act through their own channel.
   // A dock action claimed from the tray surface, a passive status and a raw command ID never resolve.
   for (const request of [{ surfaceId: 'panda.tray.actions', id: id('dock-form'), version: '1.0.0' }, { surfaceId: 'panda.tray.menu', id: id('native-status'), version: '1.0.0' }, { surfaceId: 'panda.tray.menu', id: id('form'), version: '1.0.0' }, { surfaceId: 'panda.tray.protected', id: 'panda.tray.protected/quit', version: '1.0.0' }]) {
     await forge(request);

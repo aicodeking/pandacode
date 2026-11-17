@@ -297,6 +297,14 @@ jobs:
       - name: Harness consoles and commands (WebKit)
         env: { PW_PORT: '16352', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-harness-console.spec.ts --workers=1
+      # The installed Windows record itself is made by qualify.mjs on a dedicated profile (docs/extensions/runtime-windows-panels.md);
+      # here the harness, its table and its evaluator are checked, and the installed column skips without a record.
+      - name: Rich panels on installed Windows, harness (Chromium)
+        env: { PW_PORT: '16471', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-windows-panels.spec.ts --workers=1
+      - name: Rich panels on installed Windows, harness (WebKit)
+        env: { PW_PORT: '16472', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-windows-panels.spec.ts --workers=1
       - name: Workspace settings (Chromium)
         env: { PW_PORT: '16271', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-settings.spec.ts --workers=1

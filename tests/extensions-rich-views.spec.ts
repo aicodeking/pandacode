@@ -95,6 +95,9 @@ test('extensions rich views: sibling-source and stale initialization cannot reta
 });
 
 test('extensions rich views: unqualified targets expose a usable host fallback and never create a window', async ({ page }) => {
+  // Q117 (R0306): retained for unqualified targets, which this preview models: no installed evidence on that platform
+  // (predictability, not security). The qualified path (Windows x64, a trusted package holding ui.richViews) is the
+  // installed record of tests/extensions-runtime-windows-panels.spec.ts and the inspector mount specs.
   await setup(page, false); let popups = 0; page.on('popup', () => popups++);
   await page.getByRole('button', { name: 'Open isolated report', exact: true }).click();
   await page.getByRole('button', { name: 'Open isolated extension window', exact: true }).click();
