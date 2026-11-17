@@ -484,6 +484,25 @@ mod task_agent_tests {
     }
 
     #[test]
+    fn a_harness_pick_before_the_turn_end_start_keeps_its_own_start() {
+        let (state, project) = settings_state();
+        let store = state.store.lock().unwrap();
+        let task = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        // A pick to Codex landed between the run's `done` and the turn-end start, and
+        // reserved its own start for the new harness.
+        store.db.execute("UPDATE sessions SET provider='codex', model='gpt-5.5' WHERE id=?1", [&task.id]).unwrap();
+        let pick = providers::reserve_warm_agent(&task.id);
+        assert!(reserve_turn_end_warm(&store, &task.id, "claude").is_none(), "nothing reserved for the old harness");
+        assert!(providers::warm_reserved(&task.id, pick), "the pick's pending start is untouched");
+        // Same harness: the start is reserved with the row's current settings.
+        let (ticket, current) = reserve_turn_end_warm(&store, &task.id, "codex").expect("reserved");
+        assert!(providers::warm_reserved(&task.id, ticket));
+        assert_eq!((current.provider.as_str(), current.model.as_str()), ("codex", "gpt-5.5"));
+        providers::release_warm_ticket(&task.id, ticket);
+        assert!(reserve_turn_end_warm(&store, "missing", "codex").is_none());
+    }
+
+    #[test]
     fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
@@ -3501,34 +3520,39 @@ async fn launch_operation_admitted(
             let waiting_on_workers = lead && store.lock().ok().and_then(|db| architect::load(&db, &session_id).ok().flatten()).is_some_and(|snapshot| {
                 snapshot.workers.iter().any(|worker| !worker.abandoned && architect::unsettled(&worker.status))
             });
-            // Reserved before the row is read: a pick landing before the start records supersedes
-            // or cancels the ticket (`warm_launch::plan_rewarm`), so the spare never carries
-            // settings the task has left; a pick after it retargets the recorded agent.
-            let ticket = (replied && !waiting_on_workers).then(|| providers::reserve_warm_agent(&session_id));
-            let task = store.lock().ok().filter(|_| ticket.is_some()).and_then(|db| db.session(&session_id).ok());
-            match (ticket, task) {
-                (Some(ticket), Some(task)) => {
-                    next.resume_id = task.resume_id;
-                    next.model = task.model;
-                    next.mode = task.mode;
-                    next.reasoning_effort = task.reasoning_effort;
-                    next.codex_settings = task.codex_settings;
-                    next.prompt.clear();
-                    next.images.clear();
-                    // A turn just ended: a follow-up is likely.
-                    providers::touch_warm_agent(&session_id);
-                    tauri::async_runtime::spawn(async move {
-                        let id = next.session_id.clone();
-                        let _ = providers::prewarm_reserved(ticket, next, tools, approvals, launch).await;
-                        providers::release_warm_ticket(&id, ticket);
-                    });
-                }
-                (Some(ticket), None) => providers::release_warm_ticket(&session_id, ticket),
-                (None, _) => {}
+            // Reserved under the store lock, after reading the row (`reserve_turn_end_warm`).
+            let reserved = (replied && !waiting_on_workers)
+                .then(|| store.lock().ok())
+                .flatten()
+                .and_then(|db| reserve_turn_end_warm(&db, &session_id, &next.provider));
+            if let Some((ticket, task)) = reserved {
+                next.resume_id = task.resume_id;
+                next.model = task.model;
+                next.mode = task.mode;
+                next.reasoning_effort = task.reasoning_effort;
+                next.codex_settings = task.codex_settings;
+                next.prompt.clear();
+                next.images.clear();
+                // A turn just ended: a follow-up is likely.
+                providers::touch_warm_agent(&session_id);
+                tauri::async_runtime::spawn(async move {
+                    let id = next.session_id.clone();
+                    let _ = providers::prewarm_reserved(ticket, next, tools, approvals, launch).await;
+                    providers::release_warm_ticket(&id, ticket);
+                });
             }
         }
     });
     Ok(())
+}
+/// The turn-end start's ticket and the task's row, read and reserved under the store lock: a
+/// pick saves its row and plans its own start (`warm_launch::plan_rewarm`) under that lock, so
+/// one landing after this supersedes or cancels the ticket, and one before it is read here. A
+/// harness pick that landed first keeps its own pending start: the run's launch (tools,
+/// instructions) was built for the old harness, so nothing is reserved for it.
+fn reserve_turn_end_warm(store: &Store, session_id: &str, provider: &str) -> Option<(u64, Session)> {
+    let task = store.session(session_id).ok()?;
+    (task.provider == provider).then(|| (providers::reserve_warm_agent(session_id), task))
 }
 fn runs_team_maintenance(state: &AppState, session_id: &str) -> Result<bool> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
