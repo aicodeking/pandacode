@@ -1,6 +1,6 @@
 //! Package providers use core conversation events and input, never raw AgentEvent/IPC authority.
 use super::{AgentEvent, ModelInfo, ProviderInfo, ReasoningEffortInfo, RunConfig, RunInput, Sink};
-use crate::extensions::{packages::Packages, supervisor};
+use crate::extensions::{packages::Packages, runtime_provider_launch as launch, supervisor};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, OnceLock, Weak, atomic::{AtomicBool, Ordering}}, time::Duration};
@@ -30,7 +30,23 @@ fn registrations_for(workspace_only: bool) -> Vec<Registration> {
         .into_iter().map(|(definition, version, digest, source)| Registration { definition, version, digest, source }).collect()
 }
 fn resolve(id: &str) -> Result<Registration, String> {
-    registrations().into_iter().find(|registration| registration.definition["id"] == id).ok_or_else(|| crate::extensions::providers::PROVIDER_RECOVERY.into())
+    registrations().into_iter().find(|registration| registration.definition["id"] == id).ok_or_else(|| {
+        // An installed `launch` provider whose executable content is not trusted gets its own explicit readiness error.
+        let untrusted = crate::extensions::providers::extension_owner(id).and_then(|owner| HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, id))));
+        if untrusted.is_some_and(|facts| !facts.trusted) { launch::TRUST_REQUIRED.into() } else { crate::extensions::providers::PROVIDER_RECOVERY.into() }
+    })
+}
+/// The packaged Node runtime of this target, if it is qualified.
+fn node_runtime() -> Option<supervisor::Runtime> {
+    let directory = HOST.get().and_then(|host| host.directory.clone());
+    let mut runtime = directory.as_deref().and_then(|directory| supervisor::Runtime::packaged(directory).ok());
+    if runtime.is_none() && cfg!(debug_assertions) { runtime = supervisor::Runtime::packaged(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
+    runtime
+}
+/// Where a declared harness's placeholders resolve for this package.
+fn launch_places(owner: &str, provider: &str) -> launch::Places {
+    let facts = HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, provider)));
+    launch::Places { node: node_runtime().map(|runtime| runtime.binary), package: facts.as_ref().and_then(|facts| facts.package.clone()), data: facts.and_then(|facts| facts.data) }
 }
 fn catalog(definition: &Value) -> Vec<ModelInfo> {
     definition["models"].as_array().into_iter().flatten().map(|model| ModelInfo {
@@ -54,6 +70,14 @@ pub(crate) fn discovery_definitions() -> Vec<Value> {
     registrations().into_iter().map(|registration| registration.definition).collect()
 }
 fn metadata(definition: &Value) -> Value {
+    let base = declared_metadata(definition);
+    let id = definition["id"].as_str().unwrap_or_default();
+    match (launch::declared(definition), crate::extensions::providers::extension_owner(id)) {
+        (Some(_), Some(owner)) => launch::overlay(owner, definition, base, &launch_places(owner, id)),
+        _ => base,
+    }
+}
+fn declared_metadata(definition: &Value) -> Value {
     definition.get("metadata").cloned().unwrap_or_else(|| json!({"modes":["ask"],"authentication":"Authentication is managed by the trusted extension; no credentials are returned to PandaCode.","readiness":{"state":"ready","reason":"Ready through its trusted extension."},"usage":{"context":false,"limitsReason":"This extension does not expose account limits. Check its provider dashboard."}}))
 }
 pub(crate) fn limits_reason(id: &str) -> String {
@@ -236,15 +260,17 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     let pin = crate::extensions::packages::pin_provider(&packages, owner, &registration.digest)?;
     if host.as_ref().is_some_and(|host| host.tools.iter().any(|tool| tool["name"].as_str().is_some_and(crate::architect::team_tool))) { require_team_definition(&registration.definition)?; }
     let host = host.filter(|_| require_team_definition(&registration.definition).is_ok());
-    let directory = HOST.get().and_then(|host| host.directory.clone());
-    let mut runtime = directory.as_deref().and_then(|directory| supervisor::Runtime::packaged(directory).ok());
-    if runtime.is_none() && cfg!(debug_assertions) { runtime = supervisor::Runtime::packaged(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
-    let runtime = runtime.ok_or("UnsupportedRuntime: this target's trusted provider runtime is not qualified")?;
+    // A declared `launch` harness runs its own executable over ACP: no handler, no Node bootstrap, and a catalog that may start empty.
+    let declared = launch::declared(&registration.definition).cloned();
+    let runtime = if declared.is_some() { None } else { Some(node_runtime().ok_or("UnsupportedRuntime: this target's trusted provider runtime is not qualified")?) };
     if config.goal.is_some() || config.skill.is_some() || !config.images.is_empty() { return Err("UnsupportedCapability: goals, native skills or images".into()); }
     validate_mode(&registration.definition, &config.mode)?;
+    let resolved = declared.as_ref().map(|spec| launch::resolve(spec, &launch_places(owner, &config.provider))).transpose()?;
     let models = catalog(&registration.definition);
-    let model = models.iter().find(|model| model.id == config.model).ok_or("Unsupported provider model")?;
-    if config.reasoning_effort.as_ref().is_some_and(|effort| !model.reasoning_efforts.iter().any(|entry| &entry.id == effort)) { return Err("Unsupported provider effort".into()); }
+    if declared.is_none() || !models.is_empty() {
+        let model = models.iter().find(|model| model.id == config.model).ok_or("Unsupported provider model")?;
+        if config.reasoning_effort.as_ref().is_some_and(|effort| !model.reasoning_efforts.iter().any(|entry| &entry.id == effort)) { return Err("Unsupported provider effort".into()); }
+    }
     let cancel = Arc::new(AtomicBool::new(false));
     let key = uuid::Uuid::new_v4().to_string();
     {
@@ -257,7 +283,7 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     if packages.lock().map_err(|_| "HostUnavailable")?.executable_source(owner)?.0 != registration.digest { return Err("StaleContext".into()); }
     let conversation = Arc::new(Conversation { sid: config.session_id.clone(), sink, pending: Mutex::default(), cancel: cancel.clone() });
     let (tx, rx) = tokio::sync::mpsc::channel(16);
-    let receiver = Arc::new(tokio::sync::Mutex::new(rx));
+    let (rx, receiver) = if resolved.is_some() { (Some(rx), None) } else { (None, Some(Arc::new(tokio::sync::Mutex::new(rx)))) };
     let reader = conversation.clone();
     let pump = tokio::spawn(async move {
         while let Some(input) = input.recv().await {
@@ -270,7 +296,14 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
     let context = json!({"provider":{"apiVersion":1,"id":config.provider,"version":registration.version,"digest":registration.digest,"model":config.model,"effort":config.reasoning_effort,"mode":config.mode,"resumeId":config.resume_id,"prompt":config.prompt,"instructions":config.instructions,"teamTools":host.as_ref().map(team_catalog).unwrap_or_default()}});
     let handler = conversation.clone();
     harness.store(true, Ordering::SeqCst);
-    let result = supervisor::run_owned_async(&runtime, &registration.source, context, cancel.clone(), &config.cwd, Duration::from_secs(3600), move |method, params| {
+    let result = if let (Some(resolved), Some(inputs)) = (resolved, rx) {
+        // Every run of the package shares its one launch state; the service flag joins a declared background service.
+        if let Some(facts) = packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, &config.provider)) { launch::mark_service(owner, facts.service); }
+        let (events, answers) = (handler.clone(), handler.clone());
+        launch::drive(owner, resolved, &config.cwd, &config.prompt, config.resume_id.as_deref(), move |value| events.event(value), move |value| answers.input(value), inputs, cancel.clone()).await
+    } else {
+    let runtime = runtime.expect("a handler provider has its runtime"); let receiver = receiver.expect("a handler provider has its receiver");
+    supervisor::run_owned_async(&runtime, &registration.source, context, cancel.clone(), &config.cwd, Duration::from_secs(3600), move |method, params| {
         let conversation = handler.clone(); let receiver = receiver.clone(); let host = host.clone();
         async move {
             let result = match method.as_str() {
@@ -289,7 +322,8 @@ pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::m
             };
             match result { Ok(value) => json!({"ok":true,"value":value}), Err(code) => json!({"ok":false,"error":{"code":code}}) }
         }
-    }).await.map_err(str::to_owned);
+    }).await.map(|_| ()).map_err(str::to_owned)
+    };
     pump.abort(); let _ = pump.await;
     let finished = conversation.finish();
     drop(pin);

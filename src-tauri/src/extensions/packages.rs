@@ -164,6 +164,9 @@ fn validate(bytes: &[u8]) -> Result<Package> {
         // Code folders (`runtime.files`): every file inside a declared folder is package code, of any type.
         for (name, _) in files.values() { if runtime_code_folders::in_code_folder(&manifest, name) { allowed.insert(name.clone()); } }
         Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
+    } else if contributions["providers"].as_array().into_iter().flatten().any(|provider| provider.get("launch").is_some()) {
+        // A declared `launch` harness runs a command, not package code: no entrypoint, but the same executable trust.
+        Some(Executable { digest: format!("{:x}", Sha256::digest(bytes)), trusted: false })
     } else { None };
     for icon in contributions["icons"].as_array().into_iter().flatten() {
         let asset = icon["asset"].as_str().unwrap();
@@ -409,13 +412,22 @@ impl Packages {
         self.write(&path, &record)
     }
     /// Revalidate the stored archive on every activation; no mutable extracted code path.
+    /// The data directory a declared `launch` harness gets for `{data}` (created when missing).
+    pub(crate) fn launch_data_directory(&self, id: &str) -> std::io::Result<PathBuf> {
+        if !safe_name(id) || id.contains('/') { return Err(std::io::ErrorKind::InvalidInput.into()); }
+        let path = self.root.with_file_name("extension-launch-data-v1").join(id);
+        std::fs::create_dir_all(&path)?;
+        Ok(path)
+    }
     pub(crate) fn executable_source(&self, id: &str) -> Result<(String, String)> {
         if self.safe || !safe_name(id) || id.contains('/') { return Err("PermissionDenied".into()); }
         let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
         if !package.enabled || !package.executable.is_some_and(|executable| executable.trusted) { return Err("PermissionDenied".into()); }
         let bytes = STANDARD.decode(record.archive).map_err(|_| "HostUnavailable")?;
         let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|_| "HostUnavailable")?;
-        let mut source = String::new(); zip.by_name("main.cjs").map_err(|_| "HostUnavailable")?.take(MAX_FILE + 1).read_to_string(&mut source).map_err(|_| "HostUnavailable")?;
+        let mut source = String::new();
+        // A package that declares only `launch` providers has no entrypoint: its executable content is the digest.
+        if package.manifest.get("runtime").is_some() { zip.by_name("main.cjs").map_err(|_| "HostUnavailable")?.take(MAX_FILE + 1).read_to_string(&mut source).map_err(|_| "HostUnavailable")?; }
         Ok((record.checksum, source))
     }
     /// The code of an enabled, trusted package for its code directory: the entry point and every file of its

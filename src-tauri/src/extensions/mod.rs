@@ -19,6 +19,7 @@ pub mod runtime_sign_in;
 pub mod runtime_native_consents;
 pub mod runtime_family_consents;
 pub mod runtime_platform_qualification;
+pub(crate) mod runtime_provider_launch;
 pub mod providers;
 pub(crate) mod placement;
 pub(crate) mod supervisor;

@@ -259,11 +259,20 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       const background = parseHex(String(colors.background))!.rgb;
       if (contrast(background, parseHex(String(colors.foreground))!.rgb) < 7 || contrast(background, parseHex(String(colors.accent))!.rgb) < 3) error('InvalidAppearanceContrast', `${path}/contributes/themes`);
     }
-    const executable = [...((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id), ...((contributions.providers ?? []) as ObjectValue[]).map(provider => provider.id)];
+    const executable = [...((contributions.commands ?? []) as ObjectValue[]).filter(command => (command.action as ObjectValue).kind === 'runCommand').map(command => command.id), ...((contributions.providers ?? []) as ObjectValue[]).filter(provider => provider.launch === undefined).map(provider => provider.id)];
     const events = (manifest.runtime as ObjectValue | undefined)?.activationEvents as Json[] | undefined;
     for (const provider of (contributions.providers ?? []) as ObjectValue[]) {
       if (!validDiscoveryRoots(String(provider.id), (provider.discovery ?? []) as DiscoveryRoot[])) error('PermissionDenied', `${path}/contributes/providers/discovery`, [String(provider.id)]);
-      if (!manifest.runtime) error('UnsupportedRuntime', path, [id]);
+      // A `launch` provider is declared, not executed by package code: it needs executable trust but no handler or runtime.
+      const launch = provider.launch as ObjectValue | undefined;
+      if (!launch && !manifest.runtime) error('UnsupportedRuntime', path, [id]);
+      if (launch) {
+        const command = (launch.command ?? []) as Json[];
+        const values = [...command, ...Object.values((launch.env ?? {}) as ObjectValue)];
+        const placeholdersOk = values.every(value => { let rest = String(value); for (;;) { const start = rest.indexOf('{'); if (start < 0) return true; const end = rest.indexOf('}', start); if (end < 0 || !['node', 'package', 'data'].includes(rest.slice(start + 1, end))) return false; rest = rest.slice(end + 1); } });
+        const env = Object.keys((launch.env ?? {}) as ObjectValue);
+        if (!command.length || !command[0] || !placeholdersOk || env.length > 32 || env.some(name => !name || /[=\0]/.test(name))) error('InvalidShape', `${path}/contributes/providers/launch`, [String(provider.id)]);
+      } else if (!((provider.models ?? []) as Json[]).length) error('InvalidShape', `${path}/contributes/providers/models`, [String(provider.id)]);
       const metadata = provider.metadata as ObjectValue | undefined;
       const modes = metadata?.modes as Json[] | undefined;
       if (modes && new Set(modes).size !== modes.length) error('DuplicateId', path, [id]);

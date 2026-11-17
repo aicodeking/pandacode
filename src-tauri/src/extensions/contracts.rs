@@ -278,12 +278,21 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
             let colors = &theme[mode];
             if appearance_contrast(text(colors, "background"), text(colors, "foreground")) < 7.0 || appearance_contrast(text(colors, "background"), text(colors, "accent")) < 3.0 { return Err(fail("InvalidAppearanceContrast", &format!("{path}/contributes/themes"), vec![])); }
         } }
-        let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").chain(items(contributions, "providers").iter()).map(|command| text(command, "id").to_owned()).collect();
+        let executable: Vec<_> = items(contributions, "commands").iter().filter(|command| command["action"]["kind"] == "runCommand").chain(items(contributions, "providers").iter().filter(|provider| provider.get("launch").is_none())).map(|command| text(command, "id").to_owned()).collect();
         for provider in items(contributions, "providers") {
             if !crate::skill_manager::roots::discovery::valid_roots(text(provider, "id"), &provider["discovery"]) {
                 return Err(fail("PermissionDenied", &format!("{path}/contributes/providers/discovery"), vec![text(provider, "id").into()]));
             }
-            if manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
+            // A `launch` provider is declared, not executed by package code: it needs executable trust but no handler or runtime.
+            let launched = provider.get("launch").is_some();
+            if !launched && manifest.get("runtime").is_none() { return Err(fail("UnsupportedRuntime", &path, vec![])); }
+            if launched {
+                let launch = &provider["launch"];
+                let command = strings(&launch["command"]);
+                let placeholders_ok = command.iter().chain(launch["env"].as_object().into_iter().flat_map(|env| env.values()).filter_map(Value::as_str).map(str::to_owned).collect::<Vec<_>>().iter())
+                    .all(|value| { let mut rest = value.as_str(); loop { let Some(start) = rest.find('{') else { return true }; let Some(end) = rest[start..].find('}') else { return false }; if !["node", "package", "data"].contains(&&rest[start + 1..start + end]) { return false; } rest = &rest[start + end + 1..]; } });
+                if command.is_empty() || command[0].is_empty() || !placeholders_ok || launch["env"].as_object().is_some_and(|env| env.len() > 32 || env.keys().any(|name| name.is_empty() || name.contains(['=', '\0']))) { return Err(fail("InvalidShape", &format!("{path}/contributes/providers/launch"), vec![text(provider, "id").into()])); }
+            } else if items(provider, "models").is_empty() { return Err(fail("InvalidShape", &format!("{path}/contributes/providers/models"), vec![text(provider, "id").into()])); }
             let modes = strings(&provider["metadata"]["modes"]);
             if modes.iter().collect::<BTreeSet<_>>().len() != modes.len() { return Err(fail("DuplicateId", &path, vec![])); }
             if let Some(icon) = provider["metadata"]["icon"].as_str() {
