@@ -113,6 +113,13 @@ impl PrivateSecrets {
         }
     }
 
+    /// The host's own use of a package secret (R0804): `connections` attaches it to a declared request. The value goes to
+    /// the transport and nowhere else; no package call reaches this.
+    pub(in crate::extensions) fn attach(&self, id: &str, key: &str) -> Option<String> {
+        if !valid_key(key) { return None; }
+        self.read().ok()?.get(id).and_then(|owned| owned.get(key)).cloned().filter(|value| !value.is_empty())
+    }
+
     /// Removes everything the package owns (uninstall). Safe to call for a package without secrets.
     pub fn remove_package(&self, id: &str) -> Result<()> {
         if !self.read()?.contains_key(id) { return Ok(()); }

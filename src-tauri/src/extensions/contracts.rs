@@ -327,6 +327,8 @@ fn manifests(input: &Value, diagnostics: &mut Vec<Value>, allow_missing: bool) -
                 if !operations.insert(text(operation, "id")) { return Err(fail("DuplicateId", &path, vec![])); }
                 if super::connections::endpoint(text(operation, "url")).is_err() { return Err(fail("PermissionDenied", &path, vec![])); }
             }
+            // The authentication names what it needs (R0804): the header or the query parameter that carries the credential.
+            if text(connection, "authentication") == "header" && connection.get("headerName").and_then(Value::as_str).is_none() || text(connection, "authentication") == "query" && connection.get("queryName").and_then(Value::as_str).is_none() { return Err(fail("InvalidShape", &path, vec![])); }
         }
         for tool in items(contributions, "tools") {
             if !executable.contains(&text(tool, "command").to_owned()) || !strings(&manifest["permissions"]).contains(&"tools.execute".to_owned()) || !tool_commands.insert(text(tool, "command")) { return Err(fail("PermissionDenied", &path, vec![])); }

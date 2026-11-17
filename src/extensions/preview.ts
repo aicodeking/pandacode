@@ -19,6 +19,7 @@ import { createServiceLifetimePreview } from './runtime-service-lifetime';
 import * as serviceSupervision from './runtime-service-supervision';
 import { createPrivateSecretsPreview } from './runtime-private-secrets';
 import { createSignInPreview } from './runtime-sign-in';
+import { createConnectionAdaptersPreview, type Transport } from './runtime-connection-adapters';
 import { call } from '../bridge';
 import * as nativeConsents from './runtime-native-consents';
 import * as familyConsents from './runtime-family-consents';
@@ -165,6 +166,21 @@ function signInService(args: Record<string, unknown>): unknown {
 function reconcileSignIns(): void {
   for (const flow of previewSignIn.projection().flows) if (signInGrant(flow.id) !== 'ok') previewSignIn.revoke(flow.id);
 }
+// Declared connection requests (R0804): the same rules over a transport the test supplies (a real loopback call from
+// the test process); the preview has no network of its own. Package secrets come from the private-secrets stand-in.
+const previewConnectionAdapters = createConnectionAdaptersPreview({
+  transport: request => { const transport = (window as unknown as { __connectionTransport?: Transport }).__connectionTransport; if (!transport) throw new Error('HostUnavailable'); return transport(request); },
+  secret: (id, name) => previewPrivateSecrets.attach(id, name),
+});
+if (new URLSearchParams(location.search).has('connection-adapters')) (window as unknown as { __extensionConnectionAdapters?: unknown }).__extensionConnectionAdapters = { call: (command: string, args?: Record<string, unknown>) => call(command, args) };
+function connectionAdaptersCall(args: Record<string, unknown>): unknown {
+  const snapshot = read(), id = String(args.id), grants = runtimeGrants.createRuntimeGrantsPreview();
+  if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
+  const found = snapshot.packages.find(item => item.manifest.id === id), version = found?.manifest.version ?? '';
+  const check = snapshot.safeMode || !found ? 'PermissionDenied' : grants.check(id, version, 'connections.request');
+  if (check !== 'ok') previewConnectionAdapters.revoke(id); // what runs when the grant goes away loses its output
+  return previewConnectionAdapters.handle(check, id, version, args.caller === 'panel' ? 'panel' : 'service', (found?.manifest ?? {}) as unknown as Record<string, unknown>, String(args.method), args.params, item => grants.check(id, version, 'credentials.use', { item }));
+}
 function reconcileServices(): void {
   const snapshot = read(), grants = runtimeGrants.createRuntimeGrantsPreview();
   if (!snapshot.safeMode) grants.sync(snapshot as runtimeGrants.SyncSnapshot);
@@ -178,7 +194,8 @@ export function previewExtensions(command: string, args: Record<string, unknown>
   if (command === 'extensions_sign_in_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return signInService(args); }
   if (command === 'extensions_sign_in_cancel') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return { cancelled: previewSignIn.cancel(String(args.id)) }; }
   if (command === 'extensions_sign_in_paste') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); previewSignIn.paste(String(args.id), String(args.url)); return null; }
-  if (command === 'extensions_uninstall') previewPrivateSecrets.removePackage(String(args.id));
+  if (command === 'extensions_connection_adapters_service') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); return connectionAdaptersCall(args); }
+  if (command === 'extensions_uninstall') { previewPrivateSecrets.removePackage(String(args.id)); previewConnectionAdapters.forget(String(args.id)); }
   if (command === 'extensions_service_lifetime') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return previewServiceSupervision.decorate(previewServiceLifetime.projection()); }
   if (command === 'extensions_service_supervision_preview') { if (windowLabel !== 'main') throw new Error('PermissionDenied'); reconcileServices(); return serviceSupervisionPreview(args); }
   // Enable is the retry of a parked, restarting or never-settled service (native `runtime::retry`).

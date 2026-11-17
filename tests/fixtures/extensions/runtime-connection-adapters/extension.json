@@ -1,0 +1,401 @@
+{
+  "manifestVersion": 1,
+  "id": "sample.connection-adapters",
+  "version": "1.0.0",
+  "engines": {
+    "pandacodeApi": "^1.0.0"
+  },
+  "extensionKind": "ui",
+  "permissions": [
+    "ui.contribute",
+    "runtime.service",
+    "connections.request",
+    "secrets.private",
+    "credentials.use"
+  ],
+  "runtime": {
+    "kind": "node",
+    "entrypoint": "main.cjs",
+    "activationEvents": [
+      "sample.connection-adapters/usage",
+      "sample.connection-adapters/report",
+      "sample.connection-adapters/keyed",
+      "sample.connection-adapters/open",
+      "sample.connection-adapters/methods",
+      "sample.connection-adapters/summary",
+      "sample.connection-adapters/limits",
+      "sample.connection-adapters/slow",
+      "sample.connection-adapters/mirror",
+      "sample.connection-adapters/held",
+      "sample.connection-adapters/hosted",
+      "sample.connection-adapters/cloud"
+    ],
+    "service": {
+      "start": "onEnable"
+    }
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "sample.connection-adapters/usage",
+        "title": "Usage API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/report",
+        "title": "Report API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/keyed",
+        "title": "Keyed API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/open",
+        "title": "Open API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/methods",
+        "title": "Methods API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/summary",
+        "title": "Summary API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/limits",
+        "title": "Limits API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/slow",
+        "title": "Slow API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/mirror",
+        "title": "Mirror API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/held",
+        "title": "Held API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/hosted",
+        "title": "Hosted API",
+        "action": {
+          "kind": "runCommand"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/cloud",
+        "title": "Cloud API",
+        "action": {
+          "kind": "runCommand"
+        }
+      }
+    ],
+    "connections": [
+      {
+        "id": "sample.connection-adapters/usage",
+        "command": "sample.connection-adapters/usage",
+        "title": "Usage API",
+        "authentication": "header",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/usage?unit=percent",
+            "headers": {
+              "x-client": "sample"
+            }
+          }
+        ],
+        "headerName": "x-api-key",
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        },
+        "maxResponseBytes": 262144
+      },
+      {
+        "id": "sample.connection-adapters/report",
+        "command": "sample.connection-adapters/report",
+        "title": "Report API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "send",
+            "method": "POST",
+            "url": "http://127.0.0.1:9/report",
+            "body": "json"
+          }
+        ],
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/keyed",
+        "command": "sample.connection-adapters/keyed",
+        "title": "Keyed API",
+        "authentication": "query",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/query"
+          }
+        ],
+        "queryName": "key",
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/open",
+        "command": "sample.connection-adapters/open",
+        "title": "Open API",
+        "authentication": "none",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/open"
+          }
+        ]
+      },
+      {
+        "id": "sample.connection-adapters/methods",
+        "command": "sample.connection-adapters/methods",
+        "title": "Methods API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "put",
+            "method": "PUT",
+            "url": "http://127.0.0.1:9/open",
+            "body": "json"
+          },
+          {
+            "id": "patch",
+            "method": "PATCH",
+            "url": "http://127.0.0.1:9/open",
+            "body": "json"
+          },
+          {
+            "id": "delete",
+            "method": "DELETE",
+            "url": "http://127.0.0.1:9/open",
+            "body": "json"
+          }
+        ],
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/summary",
+        "command": "sample.connection-adapters/summary",
+        "title": "Summary API",
+        "authentication": "bearer",
+        "adapter": "json-summary",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "summary",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/summary"
+          },
+          {
+            "id": "text",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/text"
+          },
+          {
+            "id": "missing",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/missing"
+          }
+        ],
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/limits",
+        "command": "sample.connection-adapters/limits",
+        "title": "Limits API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "text",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/text"
+          },
+          {
+            "id": "large",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/large"
+          },
+          {
+            "id": "chunked",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/chunked"
+          },
+          {
+            "id": "redirect",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/redirect"
+          },
+          {
+            "id": "missing",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/missing"
+          }
+        ],
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        },
+        "maxResponseBytes": 4096
+      },
+      {
+        "id": "sample.connection-adapters/slow",
+        "command": "sample.connection-adapters/slow",
+        "title": "Slow API",
+        "authentication": "none",
+        "adapter": "json",
+        "timeoutMs": 500,
+        "operations": [
+          {
+            "id": "wait",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/wait"
+          }
+        ]
+      },
+      {
+        "id": "sample.connection-adapters/mirror",
+        "command": "sample.connection-adapters/mirror",
+        "title": "Mirror API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/mirror"
+          }
+        ],
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/held",
+        "command": "sample.connection-adapters/held",
+        "title": "Held API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/open"
+          }
+        ],
+        "credential": {
+          "source": "held",
+          "id": "provider:glm"
+        }
+      },
+      {
+        "id": "sample.connection-adapters/hosted",
+        "command": "sample.connection-adapters/hosted",
+        "title": "Hosted API",
+        "authentication": "bearer",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "get",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/open"
+          }
+        ]
+      },
+      {
+        "id": "sample.connection-adapters/cloud",
+        "command": "sample.connection-adapters/cloud",
+        "title": "Cloud API",
+        "authentication": "header",
+        "adapter": "json",
+        "timeoutMs": 2000,
+        "operations": [
+          {
+            "id": "usage",
+            "method": "GET",
+            "url": "http://127.0.0.1:9/v1/usage"
+          },
+          {
+            "id": "chat",
+            "method": "POST",
+            "url": "http://127.0.0.1:9/v1/chat",
+            "body": "json"
+          }
+        ],
+        "headerName": "x-api-key",
+        "credential": {
+          "source": "secret",
+          "key": "api-key"
+        }
+      }
+    ]
+  }
+}

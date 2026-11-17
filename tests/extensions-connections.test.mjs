@@ -17,9 +17,15 @@ test('extensions connections: shared descriptors reject secret fields, missing p
   const denied = structuredClone(manifest); denied.permissions = ['ui.contribute']; assert.equal(validateContract('packages', [denied]).error.code, 'PermissionDenied');
   const duplicate = structuredClone(manifest); duplicate.contributes.connections[0].operations.push(duplicate.contributes.connections[0].operations[0]);
   assert.equal(validateContract('packages', [duplicate]).error.code, 'DuplicateId');
-  for (const url of ['http://example.com/', 'https://user:pass@example.com/', 'https://example.com/?token=bad', 'https://example.com/#secret']) {
+  // Retained refusals (R0804): an address the user never saw as a place a credential may go. https or numeric loopback
+  // http only, no user information, no fragment. A query is part of a declared address now (it had no recorded reason).
+  for (const url of ['http://example.com/', 'http://localhost:4000/', 'https://user:pass@example.com/', 'https://example.com/#secret']) {
     const invalid = structuredClone(manifest); invalid.contributes.connections[0].operations[0].url = url;
     assert.equal(validateContract('packages', [invalid]).error.code, 'PermissionDenied');
+  }
+  for (const url of ['https://example.com/?window=5h', 'http://127.0.0.1:4000/summary?unit=percent', 'http://127.0.0.2:4000/', 'http://[::1]:4000/']) {
+    const valid = structuredClone(manifest); valid.contributes.connections[0].operations[0].url = url;
+    assert.equal(validateContract('packages', [valid]).ok, true, url);
   }
 });
 

@@ -93,7 +93,7 @@ export interface PandaCode {
    * strings/headers are returned. This does not constrain trusted code's independent OS access. */
   readonly connections: {
     status(options: ConnectionResource): Promise<ConnectionStatus>;
-    start(options: ConnectionResource & { credential: string }): Promise<ConnectionRequest>;
+    start(options: ConnectionResource & { credential?: string; body?: Json; query?: Readonly<Record<string, string>> }): Promise<ConnectionRequest>;
     poll(options: ConnectionResource & { request: string }): Promise<ConnectionRequest>;
     cancel(options: ConnectionResource & { request: string }): Promise<ConnectionRequest>;
   };
@@ -127,15 +127,20 @@ export interface PandaCode {
 export type Activate = (panda: PandaCode, context: InvocationContext) => void | Promise<void>;
 export interface ConnectionResource { readonly connection: string; readonly operation: string }
 export interface ConnectionStatus { readonly schemaVersion: 1; readonly state: 'connected' | 'disconnected'; readonly credential: string | null }
-export interface ConnectionRequest { readonly schemaVersion: 1; readonly request: string; readonly state: 'running' | 'completed' | 'failed'; readonly response: { readonly schemaVersion: 1; readonly accepted: boolean; readonly count: number } | null; readonly error: string | null }
-/** Initial adapter: exact GET URL, HTTPS (numeric loopback HTTP allowed), no redirects,
- * no query/userinfo/fragment, Bearer only; 32 KiB response, 100–30,000 ms deadline.
- * json-summary projects only boolean accepted and integer count (0..1,000,000).
- * Unknown authentication schemes fail with UnsupportedCapability, never a raw-key fallback. */
+export interface ConnectionRequest { readonly schemaVersion: 1; readonly request: string; readonly state: 'running' | 'completed' | 'failed'; readonly response: { readonly schemaVersion: 1; readonly accepted: boolean; readonly count: number } | { readonly schemaVersion: 1; readonly status: number; readonly body: Json } | null; readonly error: string | null }
+/** Declared requests (R0804): HTTPS (numeric loopback HTTP allowed), no redirects, no userinfo/fragment; the address may
+ * carry a query. `json-summary` projects only boolean accepted and integer count (32 KiB response); `json` returns the
+ * parsed body within `maxResponseBytes` (default 256 KiB, at most 1 MiB). Authentication: bearer, header (`headerName`),
+ * query (`queryName`) or none; the credential is a package secret (`credential.source: 'secret'`) or a held one
+ * (`'held'`, needs `credentials.use`) and never reaches the package. `start` accepts `body` (operations declaring
+ * `"body": "json"`, at most 256 KiB) and `query` (at most 16 string pairs). Unknown authentication schemes fail with
+ * UnsupportedCapability, never a raw-key fallback. Service only on the duplex channel. */
 export interface ConnectionDescriptor {
   readonly id: string; readonly command: string; readonly title: string; readonly authentication: string;
-  readonly adapter: 'json-summary'; readonly timeoutMs: number;
-  readonly operations: readonly { readonly id: string; readonly method: 'GET'; readonly url: string }[];
+  readonly adapter: 'json-summary' | 'json'; readonly timeoutMs: number;
+  readonly headerName?: string; readonly queryName?: string; readonly maxResponseBytes?: number;
+  readonly credential?: { readonly source: 'host' } | { readonly source: 'secret'; readonly key: string } | { readonly source: 'held'; readonly id: string };
+  readonly operations: readonly { readonly id: string; readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; readonly url: string; readonly body?: 'json'; readonly headers?: Readonly<Record<string, string>> }[];
 }
 export interface OwnedJob { readonly schemaVersion: 1; readonly job: string; readonly state: 'running' | 'completed' | 'cancelled' | 'timeout' | 'failed'; readonly progress: readonly Json[]; readonly result: Json; readonly error: string | null }
 /** Export `tools` from main.cjs, keyed by the fully qualified manifest tool ID.

@@ -182,6 +182,8 @@ process.stdin.on('data', chunk => {
             harnesses: Object.freeze({ refreshLimits: options => rpc('limitsRefresh', options === undefined || options === null ? {} : { ...options }) }),
             // The package's data directory (storage.private). `project` needs the context of an owned command.
             storage: Object.freeze({ directory: options => rpc('storageDirectory', { ...options, invocation: invocations.getStore() }) }),
+            // Declared connection requests (R0804): the host builds, authenticates and runs them; the grant is checked per call.
+            connections: Object.freeze(Object.fromEntries(['status', 'start', 'poll', 'cancel'].map(op => [op, options => rpc('connectionsRequest', { ...options, op, invocation: invocations.getStore() })]))),
           });
           // Host to service calls interleave freely with the service's own requests: each runs on its own.
           serveCall = async call => {

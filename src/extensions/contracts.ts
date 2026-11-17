@@ -317,8 +317,12 @@ function manifests(input: Json, diagnostics: Diagnostic[]): Json {
       if (new Set(operations.map(operation => operation.id)).size !== operations.length) error('DuplicateId', `${path}/contributes/connections`);
       for (const operation of operations) {
         let url: URL; try { url = new URL(String(operation.url)); } catch { error('PermissionDenied', `${path}/contributes/connections`); }
-        if (!(url!.protocol === 'https:' || url!.protocol === 'http:' && url!.hostname === '127.0.0.1') || url!.username || url!.password || url!.search || url!.hash) error('PermissionDenied', `${path}/contributes/connections`);
+        // https, or http on a numeric loopback address; a query is part of the declared address (R0804).
+        const loopback = /^127(\.\d{1,3}){3}$/.test(url!.hostname) || url!.hostname === '[::1]';
+        if (!(url!.protocol === 'https:' || url!.protocol === 'http:' && loopback) || url!.username || url!.password || url!.hash) error('PermissionDenied', `${path}/contributes/connections`);
       }
+      // The authentication names what it needs (R0804): the header or the query parameter that carries the credential.
+      if (connection.authentication === 'header' && typeof connection.headerName !== 'string' || connection.authentication === 'query' && typeof connection.queryName !== 'string') error('InvalidShape', `${path}/contributes/connections`);
     }
     for (const tool of (contributions.tools ?? []) as ObjectValue[]) {
       reference('commands', tool.command, 'tools');

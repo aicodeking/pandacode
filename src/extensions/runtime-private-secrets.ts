@@ -75,6 +75,8 @@ export function createPrivateSecretsPreview(storage: Pick<Storage, 'getItem' | '
       stored[id] = { ...owned, [name]: map.value };
       save(stored); return null;
     },
+    /** The host's own use of a package secret (R0804, `connections`): attached to a declared request, never returned to a package. */
+    attach(id: string, name: string): string | null { const value = load()[id]?.[name]; return typeof value === 'string' && value && KEY.test(name) ? value : null; },
     /** Uninstall removes the owner's secrets. */
     removePackage(id: string) { const stored = load(); delete stored[id]; save(stored); },
     projection(): PrivateSecretsProjection {

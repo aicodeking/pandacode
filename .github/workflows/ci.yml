@@ -99,6 +99,12 @@ jobs:
       - name: Private package secrets (WebKit)
         env: { PW_PORT: '15446', PW_PROD: '1' }
         run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-private-secrets.spec.ts --workers=1
+      - name: Connection adapters (Chromium)
+        env: { PW_PORT: '15911', PW_PROD: '1' }
+        run: npx playwright test tests/extensions-runtime-connection-adapters.spec.ts --workers=1
+      - name: Connection adapters (WebKit)
+        env: { PW_PORT: '15912', PW_PROD: '1' }
+        run: npx playwright test -c playwright.webkit.config.ts tests/extensions-runtime-connection-adapters.spec.ts --workers=1
       - name: Workspace events (Chromium)
         env: { PW_PORT: '15901', PW_PROD: '1' }
         run: npx playwright test tests/extensions-runtime-workspace-events.spec.ts --workers=1

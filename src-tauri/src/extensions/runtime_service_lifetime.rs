@@ -640,7 +640,7 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
                                 Err(code) => { if !answer(id, &super::context::failure(code)) && requested.is_none() { failure = Some("HostUnavailable"); } }
                                 Ok(()) => {
                                     // Context requests run for the command they were made from, never for a handle the package names.
-                                    let handle = if method == "context" || method == "storageDirectory" { params.get("invocation").and_then(Value::as_u64).and_then(|call| handles.get(&call).cloned()) } else { None };
+                                    let handle = if method == "context" || method == "storageDirectory" || method == "connectionsRequest" { params.get("invocation").and_then(Value::as_u64).and_then(|call| handles.get(&call).cloned()) } else { None };
                                     let mut params = params;
                                     if let Some(object) = params.as_object_mut() { object.remove("invocation"); }
                                     // `storage.directory` (R0105): the live `storage.private` grant of this service. With
@@ -765,6 +765,14 @@ fn app_dispatch(app: &tauri::AppHandle) -> Dispatch {
         Box::pin(async move {
             use tauri::Manager;
             if request.method == "storageDirectory" { return storage_directory(&app, request); }
+            // Declared connection requests (R0804): the grant, the declaration and the credential are resolved natively per call.
+            if request.method == "connectionsRequest" {
+                return tauri::async_runtime::spawn_blocking(move || {
+                    let mut params = request.params;
+                    let op = params.as_object_mut().and_then(|object| object.remove("op")).and_then(|op| op.as_str().map(str::to_owned)).unwrap_or_default();
+                    super::runtime_connection_adapters::serve(&app, &request.owner, request.handle.as_deref(), &format!("connections.{op}"), &params)
+                }).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
+            }
             // `panda.settings.get` and the task content reads: answered from the grants file, no captured context needed.
             if matches!(request.method.as_str(), "settingsGet" | "contentQuery") {
                 return tauri::async_runtime::spawn_blocking(move || runtime_content_resources::serve(&app, request)).await.unwrap_or_else(|_| super::context::failure("HostUnavailable"));
