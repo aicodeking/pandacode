@@ -285,6 +285,8 @@ test('sustained costly paints turn the glass solid, and a later improvement brin
   test.setTimeout(60_000);
   await open(page);
   await setIdleAfter(page, 1e9);
+  // Load the lazy progress pip stylesheet before measuring its real glass fill.
+  await page.evaluate(async () => { await import('/src/progress-pip.ts'); });
   const before = await glass(page);
   const seeThrough = await surfaceAlphas(page);
   for (const spec of ['button.pp-pill', 'div.agents-dock-popover']) expect(seeThrough[spec], `${spec} is see-through glass on a cheap renderer`).toBeLessThan(1);
