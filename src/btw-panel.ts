@@ -4,6 +4,7 @@
 import { escape, icon, isImeKey } from './dom';
 import { TITLE_PREFIX, parseBtw } from './btw';
 import { joinPulses } from './model-switch';
+import { createCommittedDrafts } from './composer-restore';
 import type { Message, MessagePage, Session } from './types';
 
 export interface BtwPanelHost {
@@ -15,6 +16,9 @@ export interface BtwPanelHost {
   streaming(sideId: string): boolean;
   waiting(sideId: string): boolean;
   mainRunning(): boolean;
+  mainId(): string;
+  /** A side-thread draft key, including before its first send creates a real side thread. */
+  draftKey(mainId: string): string;
   draft(sideId: string): string;
   setDraft(sideId: string, text: string): void;
   /** The saved rows that show while `messages` stream (the main transcript's slice). */
@@ -32,7 +36,7 @@ export interface BtwPanelHost {
   mountPickers(textarea: HTMLTextAreaElement, side: Session): () => void;
   bindActions(root: HTMLElement): void;
   /** Sends as a /btw message (with main-thread context), creating the side thread if needed. */
-  send(text: string): Promise<void>;
+  send(text: string, mainId: string): Promise<void>;
   queue(side: Session, text: string): Promise<void>;
   steer(side: Session, text: string): Promise<void>;
   /** Runs an app slash command on the side thread: false when `text` is not one, a string to send instead, else true. */
@@ -50,6 +54,8 @@ export class BtwPanel {
   private root?: HTMLElement;
   private messages: Message[] = [];
   private loadedFor = '';
+  private draftFor = '';
+  private committedDrafts = createCommittedDrafts();
   private rowsKey = '';
   private frame = 0;
   private retry = 0;
@@ -69,7 +75,7 @@ export class BtwPanel {
   /** Hidden: the next `show` reloads, so nothing stale comes back. */
   dispose(): void {
     this.pickers?.dispose(); this.pickers = undefined;
-    this.root = undefined; this.loadedFor = ''; this.rowsKey = ''; this.awaiting = false;
+    this.root = undefined; this.loadedFor = ''; this.draftFor = ''; this.rowsKey = ''; this.awaiting = false;
     cancelAnimationFrame(this.frame); this.frame = 0; clearTimeout(this.retry);
   }
   /** The id of the side thread on screen, if the panel shows one. */
@@ -116,13 +122,13 @@ export class BtwPanel {
   }
 
   private build(): HTMLElement {
-    this.pickers?.dispose(); this.pickers = undefined; this.rowsKey = '';
+    this.pickers?.dispose(); this.pickers = undefined; this.rowsKey = ''; this.draftFor = '';
     const root = this.root = document.createElement('div');
     root.className = 'btw-panel';
     root.innerHTML = `<header class="btw-head"><div><strong></strong><small role="status"></small></div><div class="btw-actions"><button class="icon-button" data-btw="new" aria-label="New side thread" title="New side thread">${icon('plus')}</button><button class="icon-button" data-btw="open" aria-label="Open side thread as a full thread" title="Open as full thread">${icon('external')}</button><button class="icon-button" data-btw="close" aria-label="Close side thread panel" title="Close">${icon('close')}</button></div></header><div class="inspector-empty btw-empty">${icon('chat')}<h3>No side thread yet</h3><p>Ask something on the side while this task keeps working. Type <code>/btw</code> and a question in the prompt, or write it here.</p></div><div class="transcript btw-transcript" role="log" aria-label="Side thread conversation" aria-live="off" tabindex="0"><div class="btw-stream-region"></div></div><div class="btw-composer-area"><div class="btw-above"></div><form class="composer btw-composer"><textarea class="btw-input" rows="2" aria-label="Message the side thread"></textarea><div class="composer-toolbar btw-toolbar"></div></form></div>`;
     const input = root.querySelector<HTMLTextAreaElement>('.btw-input')!, log = root.querySelector<HTMLElement>('.btw-transcript')!;
     const resize = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 180) + 'px'; input.style.overflowY = input.scrollHeight > input.clientHeight + 1 ? 'auto' : 'hidden'; };
-    input.addEventListener('input', () => { if (this.loadedFor) this.host.setDraft(this.loadedFor, input.value); resize(); });
+    input.addEventListener('input', () => { this.host.setDraft(this.host.draftKey(this.host.mainId()), input.value); resize(); });
     log.addEventListener('scroll', () => { this.stick = log.scrollHeight - log.scrollTop - log.clientHeight < 48; }, { passive: true });
     root.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); this.submit(false); });
     // Listening on the form lets the slash and @ pickers (on the textarea) take Enter first.
@@ -165,19 +171,22 @@ export class BtwPanel {
     const text = parseBtw(typed) ?? typed;
     if (!text) { input.value = ''; return; }
     const side = this.host.side()?.session, sideId = side?.id ?? '';
+    const mainId = this.host.mainId(), draftKey = sideId || this.host.draftKey(mainId);
     const running = side ? this.host.running(side.id) : false;
-    input.value = ''; if (sideId) this.host.setDraft(sideId, '');
-    const work = !side ? this.host.send(text)
+    this.committedDrafts.note(draftKey, typed);
+    input.value = ''; this.host.setDraft(draftKey, '');
+    const work = !side ? this.host.send(text, mainId)
       : running ? (steer ? this.host.steer(side, text) : this.host.queue(side, text))
-      : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text));
+      : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId));
     this.stick = true;
     work.catch(error => {
       // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
       const current = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
-      const shown = current && (!sideId || sideId === this.loadedFor);
-      const newer = shown ? current.value : sideId ? this.host.draft(sideId) : '';
-      const restored = newer ? `${typed}\n\n${newer}` : typed;
-      if (sideId) this.host.setDraft(sideId, restored);
+      const key = sideId || this.host.draftKey(mainId);
+      const shown = current?.isConnected && this.host.mainId() === mainId && this.host.draftKey(mainId) === key;
+      const newer = shown ? current.value : this.host.draft(key);
+      const restored = this.committedDrafts.restore(draftKey, typed, newer).text;
+      this.host.setDraft(key, restored);
       if (shown) current.value = restored;
       this.host.report(error);
     }).finally(() => this.refresh());
@@ -190,10 +199,10 @@ export class BtwPanel {
     if (!side) { this.loadedFor = ''; this.messages = []; this.awaiting = false; this.pickers?.dispose(); this.pickers = undefined; }
     else if (side.session.id !== this.loadedFor) {
       this.loadedFor = side.session.id; this.messages = []; this.rowsKey = ''; this.awaiting = false; this.stick = true;
-      const draft = this.host.draft(side.session.id);
-      if (draft && !input.value) input.value = draft;
       void this.reload();
     }
+    const draftKey = this.host.draftKey(this.host.mainId());
+    if (this.draftFor !== draftKey) { this.draftFor = draftKey; input.value = this.host.draft(draftKey); }
     const log = root.querySelector<HTMLElement>('.btw-transcript')!;
     root.querySelector<HTMLElement>('.btw-head')!.hidden = !side;
     root.querySelector<HTMLElement>('.btw-empty')!.hidden = Boolean(side);

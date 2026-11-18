@@ -5375,15 +5375,16 @@ function remoteRefusal(s: Session, error: unknown): boolean {
 }
 /** The asking card's Keep fixing: a follow-up to the lead with its own text and no attachments, sent the way a queued
  *  message is (`deliverQueued`), so the prompt's draft and attachments are never touched. */
-async function councilKeepFixing(sessionId: string): Promise<void> {
+async function councilKeepFixing(sessionId: string): Promise<boolean> {
   const task = state.sessions.find(item => item.id === sessionId);
   if (!task) throw new Error('This task is gone.');
   if (isRunning(task.id)) throw new Error('The team is already working.');
-  if (!await afterChoiceSaved(task.id, 'Not sent')) return;
+  if (!await afterChoiceSaved(task.id, 'Not sent')) return false;
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
   catch (error) { if (hold === undefined) state.queueHolds.delete(task.id); else state.queueHolds.set(task.id, hold); throw error; }
+  return true;
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
@@ -5537,7 +5538,9 @@ async function sendDraft(): Promise<void> {
 }
 // /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
 const btwPanel = new BtwPanel({
-  call, report,
+  call, report: reportBtw,
+  mainId: () => state.sessionId,
+  draftKey: mainId => btwLink(mainId)?.sideId ?? BTW_DRAFT + mainId,
   side: () => { const link = btwLink(state.sessionId), side = link && state.sessions.find(task => task.id === link.sideId); return side && { session: side, hiddenThrough: link.hiddenThrough ?? 0 }; },
   running: sideId => isRunning(sideId),
   streaming: sideId => state.streams.has(sideId) || finishingStreams.has(sideId),
@@ -5606,7 +5609,7 @@ const btwPanel = new BtwPanel({
       return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
     }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
   }); },
-  send: text => sendBtw(text),
+  send: (text, mainId) => sendBtw(text, mainId),
   queue: (side, text) => btwPanelQueue(side, text),
   // A team takes messages between runs, as in the main composer.
   steer: (side, text) => teams.get(side.id) ? btwPanelQueue(side, text) : steerOrQueue(side, text),
@@ -5685,12 +5688,13 @@ function btwFromComposer(): boolean {
     notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
   }
   const draft = prompt.value;
+  noteCommittedDraft(s, draft);
   voiceDictation.draftCleared(s.id);
   prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
   if (!text) { btwPanel.focus(); return true; }
-  run(voiceDictation.submit(() => sendBtw(text).catch(error => {
+  run(voiceDictation.submit(() => sendBtw(text, s.id).catch(error => {
     restoreComposerDraft(s, draft);
-    throw error;
+    if (!(error instanceof BtwChoiceRefusal) || error.message) throw error;
   })));
   return true;
 }
@@ -5726,18 +5730,22 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
   }
   btwDrafts.delete(main.id);
   state.sessions = [{ ...side, title }, ...state.sessions.filter(task => task.id !== side.id)];
-  writeLink(localStorage, main.id, link); renderNavigation();
+  writeLink(localStorage, main.id, link);
+  const draftKey = BTW_DRAFT + main.id, draft = state.drafts.get(draftKey);
+  if (draft) { state.drafts.set(side.id, draft); state.drafts.delete(draftKey); }
+  renderNavigation();
   return link;
 }
 /** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
 const btwSending = new Map<string, Promise<void>>();
-function sendBtw(text: string): Promise<void> {
-  const main = session(); if (!main) return Promise.resolve();
+function sendBtw(text: string, mainId = state.sessionId): Promise<void> {
+  const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.resolve();
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
   // Capture this submission's pending choice before it queues: an earlier send may settle its refusal first.
   const link = btwLink(main.id);
-  const held = link && modelSwitch.saving(link.sideId) ? holdBtwSend(main.id, link.sideId) : undefined;
+  const choiceId = link?.sideId ?? main.id;
+  const held = modelSwitch.saving(choiceId) ? holdBtwSend(main.id, choiceId) : undefined;
   const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, held));
   btwSending.set(main.id, next); btwPanel.refresh();
   void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
@@ -5745,15 +5753,27 @@ function sendBtw(text: string): Promise<void> {
 }
 /** Only the shown side thread's button can carry this held send's cue, even after another task opens. */
 function holdBtwSend(mainId: string, sideId: string): Promise<readonly modelSwitch.Unchanged[]> {
-  return modelSwitch.holdSend(sideId, () => state.sessionId === mainId && btwPanel.shownId() === sideId ? document.querySelector('.btw-panel .btw-send') : null);
+  return modelSwitch.holdSend(sideId, () => state.sessionId === mainId && (btwPanel.shownId() ?? mainId) === sideId ? document.querySelector('.btw-panel .btw-send') : null);
 }
-/** The composer restores this text itself; mark each refused change said so no other notice repeats it. */
+/** Every held send rejects and restores its text; only the first reports the shared refusal. */
+class BtwChoiceRefusal extends Error {}
+function reportBtw(error: unknown): void {
+  if (error instanceof BtwChoiceRefusal && !error.message) return;
+  report(error);
+}
 function checkBtwChoice(refusals: readonly modelSwitch.Unchanged[]): void {
-  if (refusals.length) { refusals.forEach(refusal => modelSwitch.announce(refusal, refusals)); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
+  if (!refusals.length) return;
+  const text = modelSwitch.unsaidText(refusals);
+  throw new BtwChoiceRefusal(text ? `Not sent — ${text}. Your message is back in the box.` : '');
 }
 /** Sends to the side thread with the main thread's news since its last message. */
 async function deliverBtw(main: Session, text: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
   if (held) checkBtwChoice(await held);
+  // A first side thread inherits confirmed main-task choices, never their optimistic, still-saving copy.
+  if (!btwLink(main.id)) {
+    if (modelSwitch.saving(main.id)) checkBtwChoice(await holdBtwSend(main.id, main.id));
+    main = state.sessions.find(task => task.id === main.id) ?? main;
+  }
   const link = btwLink(main.id) ?? await createBtw(main, text);
   // Also wait for a choice made after submission, while this send was queued.
   if (modelSwitch.saving(link.sideId)) checkBtwChoice(await holdBtwSend(main.id, link.sideId));

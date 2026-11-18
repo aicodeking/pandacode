@@ -462,7 +462,7 @@ test('a true harness switch clears a stale account binding after configuring the
 
 // Model switching is optimistic: the picker opens on cached data and a pick shows at once while the backend saves.
 /** Loads the preview with holdable commands (HELD; `holdCall`, then `releaseCall`) and a log of every call (`__calls`). */
-const HELD = ['architect_profiles', 'configure_session', 'set_reasoning_effort', 'list_provider_models', 'get_messages', 'get_task', 'send_message', 'update_session'];
+const HELD = ['create_session', 'architect_profiles', 'configure_session', 'set_reasoning_effort', 'list_provider_models', 'get_messages', 'get_task', 'send_message', 'update_session'];
 /** `clock`: a controllable clock, to step past the catalogs' 5-minute expiry. */
 async function loadHeld(page: Page, url = '/?teams', { clock = false, startupHolds = [] as string[] } = {}): Promise<void> {
   // A cold dev server compiles the rewritten preview module first: leave the boot wait room inside the test.
@@ -2006,12 +2006,12 @@ test('a refused side-model change restores the unsent question ahead of a newer 
   await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
   await box.fill('newer draft');
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(box).toHaveValue('held question\n\nnewer draft');
+  await expect(box).toHaveValue('held question\nnewer draft');
   await expect(page.locator('#toast')).toContainText('Your message is back in the box.');
   expect(await sends()).toBe(before);
   await page.locator('.task-item[data-id="session-2"]').click();
   await page.locator('.task-item[data-id="session-1"]').click();
-  await expect(box).toHaveValue('held question\n\nnewer draft');
+  await expect(box).toHaveValue('held question\nnewer draft');
 });
 
 test('finishing task A’s held send keeps task B’s held send busy', async ({ page }) => {
@@ -2060,4 +2060,141 @@ test('finishing side A’s held send keeps the shown side B’s held send busy',
   await releaseCall(page, 'update_session', 'Preview refused side B.');
   await expect(panel.locator('.btw-send')).not.toHaveAttribute('aria-busy', 'true');
   await expect(box).toHaveValue('side B held question');
+});
+
+
+for (const composer of ['main', 'side']) test(`refusal gaps: ${composer} restores held questions in submission order and says one notice`, async ({ page }) => {
+  await loadHeld(page, '/');
+  const { box, sends, before } = await sideSwitchHeld(page);
+  await watchToasts(page);
+  const input = composer === 'main' ? page.locator('#prompt') : box;
+  const prefix = composer === 'main' ? '/btw ' : '';
+  for (const text of ['first question', 'second question']) {
+    await input.fill(prefix + text);
+    await input.press('Enter');
+    await expect(input).toHaveValue('');
+  }
+  await input.fill('newer draft');
+  await releaseCall(page, 'configure_session', 'Shared side refusal.');
+  await expect(input).toHaveValue(`${prefix}first question\n${prefix}second question\nnewer draft`);
+  expect(await sends()).toBe(before);
+  await expect(page.locator('#toast')).not.toContainText('x2');
+  expect(await refusalToasts(page)).toHaveLength(1);
+});
+
+for (const refused of [false, true]) test(`refusal gaps: first side send waits for the main choice ${refused ? 'refusal' : 'success'}`, async ({ page }) => {
+  await loadHeld(page, '/');
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  const creates = await callCount(page, 'create_session');
+  await page.locator('#prompt').fill('/btw first pending question');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('#prompt')).toHaveValue('');
+  await page.waitForTimeout(200);
+  expect(await callCount(page, 'create_session')).toBe(creates);
+  expect(await sent(page)).toBe(0);
+  await releaseCall(page, 'configure_session', refused ? 'Main choice refused.' : undefined);
+  if (refused) {
+    await expect(page.locator('#prompt')).toHaveValue('/btw first pending question');
+    expect(await sent(page)).toBe(0);
+  } else {
+    await expect.poll(() => sent(page)).toBe(1);
+    const created = await page.evaluate(() => (window as any).__callArgs.filter(([name]: [string]) => name === 'create_session').at(-1)[1]);
+    expect(created.provider).toBe('codex');
+    expect(created.model).toContain('astra');
+  }
+});
+
+test('refusal gaps: first side question returns only to the originating task after switching', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await holdCall(page, 'create_session');
+  const box = page.locator('.btw-input');
+  await box.fill('task A first side question');
+  await box.press('Enter');
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.create_session))).toBe(true);
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await box.fill('task B draft');
+  await releaseCall(page, 'create_session', 'First side creation refused.');
+  await expect(page.locator('#toast')).toContainText('First side creation refused');
+  await expect(box).toHaveValue('task B draft');
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(box).toHaveValue('task A first side question');
+  await box.press('Enter');
+  await expect(page.locator('.btw-panel .message.agent-message[data-message-id]')).toHaveCount(1);
+  await expect(box).toHaveValue('');
+});
+
+test('refusal gaps: Keep fixing returns to asking after a permissions refusal with one notice', async ({ page }) => {
+  await loadHeld(page, '/?council=asking');
+  await watchToasts(page);
+  await holdCall(page, 'update_session');
+  await page.locator('#mode-picker-trigger').click();
+  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
+  const keep = page.locator('#composer .council-strip').getByRole('button', { name: 'Keep fixing' });
+  await keep.click();
+  await expect(keep).toHaveAttribute('aria-disabled', 'true');
+  await releaseCall(page, 'update_session', 'Keep permissions refused.');
+  await expect(keep).toBeVisible();
+  await expect(keep).not.toHaveAttribute('aria-disabled', 'true');
+  await expect(page.locator('.council-strip-state')).toHaveText('Needs you');
+  expect(await callCount(page, 'architect_start')).toBe(0);
+  await expect(page.locator('#toast')).toContainText('Keep permissions refused');
+  expect(await refusalToasts(page)).toHaveLength(1);
+  await expect(page.locator('.council-strip [role="alert"]')).toHaveCount(0);
+});
+
+
+test('refusal gaps: two held side sends announce a refused preference once', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { box, sends, before } = await sideSwitchHeld(page);
+  await watchToasts(page);
+  for (const text of ['first held side', 'second held side']) {
+    await box.fill(text);
+    await box.press('Enter');
+    await expect(box).toHaveValue('');
+  }
+  await releaseCall(page, 'configure_session', 'One side preference refusal.');
+  await expect.poll(() => box.inputValue()).toContain('first held side');
+  await expect.poll(() => box.inputValue()).toContain('second held side');
+  await expect(page.locator('#toast .toast-counter')).toHaveText('');
+  expect(await sends()).toBe(before);
+  expect(await refusalToasts(page)).toHaveLength(1);
+});
+
+
+test('refusal gaps: mixed main and side submissions keep their own ordered drafts across navigation and retry', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { box, sends, before } = await sideSwitchHeld(page);
+  await watchToasts(page);
+  const main = page.locator('#prompt');
+  await main.fill('/btw first main question');
+  await main.press('Enter');
+  await expect(main).toHaveValue('');
+  await box.fill('side question');
+  await box.press('Enter');
+  await expect(box).toHaveValue('');
+  await main.fill('/btw second main question');
+  await main.press('Enter');
+  await expect(main).toHaveValue('');
+  await main.fill('newer main draft');
+  await box.fill('newer side draft');
+  await releaseCall(page, 'configure_session', 'Mixed send refusal.');
+  const mainDraft = '/btw first main question\n/btw second main question\nnewer main draft';
+  const sideDraft = 'side question\nnewer side draft';
+  await expect(main).toHaveValue(mainDraft);
+  await expect(box).toHaveValue(sideDraft);
+  await expect(page.locator('#toast .toast-counter')).toHaveText('');
+  expect(await sends()).toBe(before);
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(main).toHaveValue(mainDraft);
+  await expect(box).toHaveValue(sideDraft);
+  await box.press('Enter');
+  await expect.poll(() => sends()).toBe(before + 1);
+  await expect(box).toHaveValue('');
+  await expect(main).toHaveValue(mainDraft);
 });
