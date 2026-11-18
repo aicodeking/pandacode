@@ -56,7 +56,7 @@ type Kind = 'effort' | 'speed';
 type Choice = { id: string; name: string; description: string };
 
 /** A transient picker with local state and listeners released on dismissal. */
-export function openModelPicker(options: ModelPickerOptions): () => void {
+export function openModelPicker(options: ModelPickerOptions) {
   const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, onSpeedSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
@@ -257,8 +257,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
     }).join('');
     if (railHtml !== railMarkup) {
+      const focused = rail.contains(document.activeElement);
       rail.innerHTML = railHtml;
       railMarkup = railHtml;
+      if (focused) (rail.querySelector<HTMLElement>('[tabindex="0"]') ?? search).focus({ preventScroll: true });
       if (query) rail.querySelector('.model-menu-count:not(:empty)')?.parentElement?.scrollIntoView({ block: 'nearest' });
     }
 
@@ -388,11 +390,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
       : canSetEffort || canSetSpeed ? `${canSetEffort ? segmentRow('effort', 'Effort', choices.effort, model.defaultReasoningEffort) : ''}${canSetSpeed ? segmentRow('speed', 'Speed', choices.speed) : ''}<p class="model-menu-effort-hint"></p>` : '';
+    const focusedRadio = markup !== settingsKey && settings.contains(document.activeElement)
+      ? radioChoice(document.activeElement as HTMLElement) : undefined;
     if (markup !== settingsKey) {
-      const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
       settingsKey = markup;
-      if (focused) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
     }
     settings.querySelectorAll<HTMLElement>('.model-menu-effort').forEach(group => {
       const kind = group.dataset.kind as Kind;
@@ -408,6 +410,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       group.setAttribute('aria-disabled', String(disabled));
       trackSegment(group, selected);
     });
+    if (focusedRadio) {
+      const group = settings.querySelector<HTMLElement>(`[data-kind="${focusedRadio.kind}"]`);
+      const radio = group?.querySelector<HTMLElement>(`[data-${focusedRadio.kind}="${CSS.escape(focusedRadio.id ?? '')}"]:not(:disabled)`);
+      (radio ?? group?.querySelector<HTMLElement>('.selected:not(:disabled)') ?? search).focus({ preventScroll: true });
+    }
     const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint');
     if (!hint) return;
     const kind: Kind = hoveredChoice?.kind ?? (canSetEffort ? 'effort' : 'speed');
@@ -614,5 +621,5 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       renderChoices();
     });
   } else loadCatalogs();
-  return () => close();
+  return Object.assign(() => close(), { refresh: renderChoices });
 }

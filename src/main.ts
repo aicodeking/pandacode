@@ -238,7 +238,7 @@ const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<Pr
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
-let modelPickerCleanup: (() => void) | undefined;
+let modelPickerCleanup: (ReturnType<typeof import('./model-picker').openModelPicker> & { taskId?: string }) | undefined;
 let projectPickerCleanup: (() => void) | undefined;
 let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
@@ -4526,6 +4526,7 @@ function removeDeletedSessions(ids: string[]): void {
   terminalPanel.forget(ids);
   const removed = new Set(ids);
   for (const id of removed) {
+    provisionalTasks.delete(id);
     deletedSessions.add(id); writeLink(localStorage, id, null);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
@@ -5197,9 +5198,9 @@ async function send(): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await sendDraft();
 }
-async function sendDraft(submitted?: SendIntent): Promise<void> {
+async function sendDraft(): Promise<void> {
   const waitingFor = state.sessionId, generation = state.generation;
-  let intent = submitted ?? (waitingFor ? sendIntent(waitingFor) : undefined);
+  let intent = waitingFor ? sendIntent(waitingFor) : undefined;
   if (waitingFor && harnessWaitingSends.has(waitingFor)) { if (intent) harnessWaitingSends.set(waitingFor, intent); return; }
   if (waitingFor && intent && (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor))) {
     harnessWaitingSends.set(waitingFor, intent);
@@ -5208,6 +5209,7 @@ async function sendDraft(submitted?: SendIntent): Promise<void> {
       while (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
         const outcome = await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
         if (state.sessionId !== waitingFor || state.generation !== generation) return;
+        if (outcome === 'stale' && !explicitHarnessSaves.has(waitingFor)) return;
         if (outcome === 'missing' && !explicitHarnessSaves.has(waitingFor)) {
           const task = session();
           if (task) showMissingHarness(task);
@@ -5215,11 +5217,10 @@ async function sendDraft(submitted?: SendIntent): Promise<void> {
         }
       }
       intent = harnessWaitingSends.get(waitingFor) ?? intent;
-    } catch { return; } // The picker shows its save error; keep the user's draft.
+    } catch { return; } // The failed save reports its error; keep the draft for a deliberate retry.
     finally { harnessWaitingSends.delete(waitingFor); }
     if (!intentHolds(intent)) return;
   }
-  if (submitted && !intentHolds(submitted)) return;
   if (btwFromComposer()) return;
   const draft = intent?.draft ?? document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
@@ -5238,12 +5239,10 @@ async function sendDraft(submitted?: SendIntent): Promise<void> {
   clearRemoteStart(s.id);
   const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
-  // A task made from the last launch's list is checked against the real one before it first goes; a corrected task is
-  // sent from the start again, with its new harness (it is no longer provisional, so this runs once).
+  // A deliberate retry joins the same wait as a Send pressed during the automatic save.
   if (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id)) {
-    const ready = await provisionalReadyToSend(s);
-    // The corrected send is the one Enter submitted: an edit during the correction cancels it.
-    if (ready && state.sessionId === s.id) await sendDraft(intent ?? sendIntent(s.id));
+    run(correctProvisionalTask(s));
+    await sendDraft();
     return;
   }
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
@@ -6561,21 +6560,21 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
-    onTeamSelect: async id => {
+    onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
-      provisionalTasks.delete(selected.id);
       await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
+        provisionalTasks.delete(selected.id);
         onArchitect(saved ?? { sessionId: selected.id, removed: true });
         await reloadSessions();
         if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
-    },
+    }),
     // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
     // an empty list or the last launch's (which may name CLIs no longer installed).
     anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
@@ -6615,7 +6614,6 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
-      provisionalTasks.delete(selected.id);
       await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
@@ -6632,6 +6630,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        provisionalTasks.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
         if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
@@ -6659,6 +6658,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       } finally { configuringSessions.delete(selected.id); }
     }),
   });
+  modelPickerCleanup.taskId = selected.id;
 }
 /** Deploy: pick a connected platform, then a new task in this project ships it end to end. */
 async function showDeploy(anchor: HTMLElement): Promise<void> {
@@ -8952,18 +8952,24 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
   const pending = provisionalCorrections.get(task.id);
   if (pending) return pending;
   configuringSessions.add(task.id);
-  let missing = false;
   const correction = (async (): Promise<'ok' | 'missing' | 'stale'> => {
     let saved = task;
-    while (provisionalTasks.has(task.id)) {
-      if (provider(saved.provider)?.installed) return 'ok';
+    while (provisionalTasks.has(task.id) && !explicitHarnessSaves.has(task.id)) {
+      if (provider(saved.provider)?.installed) {
+        provisionalTasks.delete(task.id);
+        return 'ok';
+      }
       const harness = pickHarness(state.providers);
-      if (!harness?.installed) { missing = true; return 'missing'; }
+      if (!harness?.installed) return 'missing';
       saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
       const index = state.sessions.findIndex(s => s.id === task.id);
-      if (index < 0 || deletedSessions.has(task.id) || state.sessions[index].lastPromptAt != null || isRunning(task.id)) return 'stale';
+      if (index < 0 || deletedSessions.has(task.id) || state.sessions[index].lastPromptAt != null || isRunning(task.id)) {
+        provisionalTasks.delete(task.id);
+        return 'stale';
+      }
       // A queued picker save can still fail. Publish the successful write before yielding to it.
       state.sessions[index] = saved;
+      if (modelPickerCleanup?.taskId === task.id) modelPickerCleanup.refresh();
       if (task.id === state.sessionId) {
         if (modelPickerCleanup) refreshModelLabels(); else renderComposer();
         renderHeader();
@@ -8972,20 +8978,10 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
     return 'stale';
   })().finally(() => {
     configuringSessions.delete(task.id);
-    if (!missing) provisionalTasks.delete(task.id);
     provisionalCorrections.delete(task.id);
   });
   provisionalCorrections.set(task.id, correction);
   return correction;
-}
-/** Before a first Send: a task still provisional whose harness the real list says is missing moves to an installed one,
- *  or the send stops with the install note. Until the real list lands the last launch's choice is the best known one. */
-async function provisionalReadyToSend(s: Session): Promise<boolean> {
-  if (!providersKnown || !provisionalTasks.has(s.id)) return true;
-  const outcome = await correctProvisionalTask(s);
-  if (outcome !== 'missing') return outcome === 'ok';
-  showMissingHarness(s);
-  return false;
 }
 function showMissingHarness(s: Session): void {
   showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
