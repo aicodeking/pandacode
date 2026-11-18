@@ -206,12 +206,12 @@ export function failedTests(output) {
 }
 
 /**
- * A run's dependency cache: an APFS clone of this checkout's target, nearly free until written, and
- * removed with the run. Incremental data is keyed by path, so a clone at a new path can't reuse it.
+ * A run's independent dependency cache: an APFS clone on macOS, a portable copy elsewhere, removed
+ * with the run. Incremental data is keyed by path, so a clone at a new path can't reuse it.
  */
 export async function cloneTarget(to, source = join(REPO, 'src-tauri', 'target', 'debug')) {
   mkdirSync(to, { recursive: true });
-  await must('cp', ['-c', '-R', '-p', source, join(to, 'debug')]);
+  await must('cp', [...(process.platform === 'darwin' ? ['-c'] : []), '-R', '-p', source, join(to, 'debug')], { timeout: 20 * 60_000 });
   await rm(join(to, 'debug', 'incremental'), { recursive: true, force: true, maxRetries: 3 });
   // Dependency identity (depsFingerprint) does not guarantee build-output completeness.
   // Rerun build scripts at the relocated OUT_DIR; retain their compilation cache and the source.

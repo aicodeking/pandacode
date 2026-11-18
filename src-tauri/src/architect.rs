@@ -778,7 +778,7 @@ fn worker_has_skills(enabled: bool, provider: &str) -> bool {
 
 /// What the lead's rules say about skills: nothing while workers can use them.
 fn lead_skills_clause(enabled: bool) -> &'static str {
-    if enabled { "" } else { " Workers on claude, glm or mimo have no Skill tool: do not ask them to use skills." }
+    if enabled { "" } else { " Workers on claude, glm, mimo or alibaba have no Skill tool: do not ask them to use skills." }
 }
 
 #[tauri::command]

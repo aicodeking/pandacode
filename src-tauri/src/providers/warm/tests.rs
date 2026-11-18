@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
@@ -140,6 +141,7 @@ fn idle_spare(lead: bool, age: Duration) -> Spare {
 }
 
 /// A pool of the test's own, so tests running in parallel never share spares.
+#[cfg(unix)]
 pub(super) fn own_pool() -> &'static Pool {
     Box::leak(Box::default())
 }
@@ -271,13 +273,14 @@ fn stub_spawn(config: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> S
     })
 }
 
-/// The stub lifecycle with a pool of its own.
-#[cfg(unix)]
 /// A lead's renewal check whose launch inputs never change.
+#[cfg(unix)]
 fn lead(renew: Renew) -> Option<Lead> {
     Some((renew, Arc::new(String::new)))
 }
 
+/// The stub lifecycle with a pool of its own.
+#[cfg(unix)]
 fn stub() -> Lifecycle {
     Lifecycle { idle: Duration::from_millis(400), spawn: stub_spawn, current: |_, _, _, _, _| true, pool: own_pool() }
 }

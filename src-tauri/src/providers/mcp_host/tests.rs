@@ -132,12 +132,19 @@ async fn bench_panda_catalog_lists_a_real_task_s_tools_and_stubs_the_app_s() {
     let names: Vec<&str> = tools.as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
     assert_eq!(names.first(), Some(&"pandacode_schedule_wakeup"), "{names:?}");
     assert_eq!(&names[names.len() - 2..], [crate::turn_changes::TRACK_TOOL, crate::session_titles::TOOL]);
-    for name in [EXPLORE_TOOL, "pandacode_tool_save", "pandacode_vm_list", "pandacode_design_write", "pandacode_progress_snapshot", "pandacode_run_project", "pandacode_preview_file"] {
+    for name in [EXPLORE_TOOL, "pandacode_tool_save", "pandacode_design_write", "pandacode_progress_snapshot", "pandacode_run_project", "pandacode_preview_file"] {
         assert!(names.contains(&name), "{name} missing from {names:?}");
+    }
+    for name in BENCH_FIRST_VM_TOOLS {
+        assert_eq!(names.contains(&name), cfg!(all(target_os = "macos", target_arch = "aarch64")), "{name} in {names:?}");
     }
     assert!(!names.iter().any(|name| name.starts_with("pandacode_simulator_")));
     let mobile = bench_listed(true).await;
-    assert!(mobile.as_array().unwrap().iter().any(|tool| tool["name"] == "pandacode_simulator_screenshot"));
+    let mobile_names: Vec<&str> = mobile.as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+    assert_eq!(mobile_names.contains(&"pandacode_simulator_screenshot"), cfg!(target_os = "macos"), "{mobile_names:?}");
+    if !cfg!(target_os = "macos") {
+        assert!(!mobile_names.iter().any(|name| name.starts_with("pandacode_simulator_")));
+    }
 }
 #[test]
 fn bench_catalog_copies_match_their_sources() {

@@ -98,7 +98,7 @@ impl Run for ChecksRun {
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::RUN_CHECKS)?;
             let root = task_root(&ctx.state(), &self.session_id).await?;
             // Bounded by checks.rs (120 s, 64 KiB of output, a 4 KB tail in the reply).
-            crate::blocking(move || Ok(crate::checks::turn_report(&root))).await
+            Ok(crate::checks::turn_report_after_exit(&self.session_id, root).await)
         })
     }
 }
@@ -609,6 +609,17 @@ mod tests {
         let gate = body.find("require_full_access_to(ctx.full_access, ").expect("checks.run checks Full access");
         assert!(gate < body.find("crate::checks::turn_report").unwrap(), "the gate comes before the checks run");
         assert_eq!(super::super::find("checks.run").unwrap().access, Access::Full);
+    }
+
+    #[test]
+    fn checks_run_waits_for_the_session_exit_before_running_checks() {
+        let source = include_str!("tools.rs");
+        let body = &source[source.find("impl Run for ChecksRun").unwrap()..source.find("// ---- recipes.list").unwrap()];
+        let gate = body.find("require_full_access_to(ctx.full_access, ").unwrap();
+        let root = body.find("task_root(&ctx.state(), &self.session_id).await?").unwrap();
+        let check = body.find("Ok(crate::checks::turn_report_after_exit(&self.session_id, root).await)").expect("checks wait for the exit through the desktop helper");
+        assert!(gate < root && root < check, "access and workspace validation precede the exit wait and checks");
+        assert!(!body.contains("crate::checks::turn_report("));
     }
 
     #[test]

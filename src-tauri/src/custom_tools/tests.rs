@@ -137,10 +137,44 @@ fn a_slow_script_is_stopped_at_its_timeout() {
     assert!(outcome.exit.is_none() && outcome.timed_out && started.elapsed().as_secs() < 10);
 }
 
-/// Whether any process is left in the group `id` (signal 0 checks without signalling).
+/// Whether a live process is left in the group `id`. Signal 0 also counts zombies:
+/// Linux may keep an orphan's entry until init reaps it, after SIGKILL and pipe EOF.
 #[cfg(unix)]
 fn group_alive(id: i32) -> bool {
-    unsafe { libc::kill(-id, 0) == 0 }
+    let output = std::process::Command::new("ps").args(["-axo", "pgid=,stat="]).output().unwrap();
+    assert!(output.status.success(), "ps failed: {}", String::from_utf8_lossy(&output.stderr));
+    let processes = String::from_utf8(output.stdout).unwrap();
+    processes.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next().and_then(|pgid| pgid.parse::<i32>().ok()) == Some(id)
+            && fields.next().is_some_and(|state| !state.starts_with('Z'))
+    })
+}
+
+#[cfg(unix)]
+#[test]
+fn group_alive_distinguishes_live_processes_from_unreaped_zombies() {
+    use std::os::unix::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    // A pipe keeps the shell alive until we close it, without a timed sleep.
+    let mut child = Command::new("sh").args(["-c", "read line"])
+        .process_group(0).stdin(Stdio::piped()).spawn().unwrap();
+    let id = child.id() as i32;
+    let live = group_alive(id);
+    drop(child.stdin.take());
+    // Observe its exit without reaping it, so the zombie cannot disappear under ps.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    let waited = unsafe { libc::waitid(libc::P_PID, id as libc::id_t, &mut info, libc::WEXITED | libc::WNOWAIT) };
+    #[cfg(target_os = "linux")]
+    let signal_sees_zombie = unsafe { libc::kill(-id, 0) == 0 };
+    let zombie_is_live = group_alive(id);
+    child.wait().unwrap();
+    assert_eq!(waited, 0);
+    assert!(live, "a running shell must be detected");
+    #[cfg(target_os = "linux")]
+    assert!(signal_sees_zombie, "signal 0 must still see the unreaped shell");
+    assert!(!zombie_is_live, "an exited shell cannot run or hold output pipes open");
 }
 
 #[cfg(unix)]
@@ -330,4 +364,19 @@ fn the_offered_tools_stay_the_same_whatever_the_catalog_holds() {
     assert_eq!(offered(), before, "a failed save or another project's tool keeps it");
     test_save(&base.0, "p1", "build-app", "true");
     assert_eq!(offered(), before, "nor the first tool");
+}
+
+#[test]
+fn settings_listing_reports_directory_errors_but_allows_absent_folders() {
+    let base = temp();
+    let fresh = ipc::listing(&base.0.join("absent"), str::to_owned).unwrap();
+    assert!(fresh.global.is_empty() && fresh.projects.is_empty());
+    for relative in ["global", "projects", "projects/p1"] {
+        let path = base.0.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not a directory").unwrap();
+        assert!(ipc::listing(&base.0, str::to_owned).is_err(), "{relative} must report a listing error");
+        assert!(store::load_all(&path).is_empty(), "the agent catalog stays fail-soft");
+        std::fs::remove_file(path).unwrap();
+    }
 }

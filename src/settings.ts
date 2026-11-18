@@ -91,7 +91,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM and MiMo team workers; off removes Skill next run.' },
+  { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code; turn on other harnesses below. Deny rules don’t bind it.' },
 ] as const;

@@ -418,3 +418,13 @@ The registration test requires this entry because it checks unsuperseded source 
 
 Prepared launch texts, metadata, snapshots, seeds and treatment pins are unchanged. Saver's `assertUnchanged` and GUI's `loadMeta` still reject launch-text drift: this parser fix does not make the recorded G2 launches current or authorize a call. Launching with the changed report requires fresh preparation under a separately registered batch; existing evidence must be preserved.
 <!-- /deviation:G2-5 -->
+
+### CI maintenance: portable dependency-cache copies
+
+<!-- deviation:G2-6 -->
+**G2-6** (2026-11-18, maintenance only; no benchmark calls). Ubuntu CI rejected the macOS-only `cp -c` flag in `cloneTarget`. The shared helper now uses `-c` only on macOS, retaining APFS copy-on-write, and portable `cp -R -p` elsewhere. Each copy has a 20-minute timeout. Copies remain independent, preserve permissions, timestamps and symlink targets, and remove incremental data and build-script execution fingerprints only from the disposable cache. The four callers and dependency-identity checks are unchanged.
+
+The Linux-mode regression rejects non-POSIX copy flags and exercises actual host copying, including paths with spaces, file permissions, file/directory timestamps, relative and dangling symlinks, independent writes, dependency identity and disposable-only cleanup. The existing offline Cargo test continues to check regeneration of missing build outputs without modifying the source cache. This is test proof of the Linux flag path; it does not claim a Linux runtime run or a benchmark measurement.
+
+G2-6 supersedes G2-5 to pin the changed `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins and all three analysis pins unchanged. The preceding 31 registration rows and every historical registered section remain byte-identical. No historical result, prepared launch text, metadata, snapshot, seed, treatment, budget or launch gate changes. G2-5's launch-text-drift restriction and the separate smoke/main approval gates still apply; this maintenance entry authorizes no model call or batch launch.
+<!-- /deviation:G2-6 -->

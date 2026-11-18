@@ -3293,6 +3293,12 @@ pub(crate) async fn task_worktree_status(state: &AppState, session_id: String, t
 
 #[tauri::command]
 async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
+    merge_task_worktree(&state, session_id, workspace::Trust::Desktop).await
+}
+
+/// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
+/// phone's `worktree.merge` with its [`workspace::Trust`]), once its CLI has exited.
+pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
     // A clean Claude-family run leaves the agents map at `result`, before its CLI has exited and
     // while it may still write to this checkout.
     guard_idle(
@@ -3302,14 +3308,11 @@ async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Resul
     )
     .await?;
     let store = state.store.clone();
-    blocking(move || merge_task_worktree(&store, &session_id, workspace::Trust::Desktop)).await
-}
-
-/// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
-/// phone's `worktree.merge` with its [`workspace::Trust`]). Blocking.
-pub(crate) fn merge_task_worktree(store: &Arc<Mutex<Store>>, session_id: &str, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
-    let (main, path, _) = worktree_paths(store, session_id)?;
-    workspace::merge_worktree(&main, &path, trust)
+    blocking(move || {
+        let (main, path, _) = worktree_paths(&store, &session_id)?;
+        workspace::merge_worktree(&main, &path, trust)
+    })
+    .await
 }
 
 /// Refuse while `busy()`, wait for `wait` (the session's CLI exits), then refuse again: a run may

@@ -38,12 +38,21 @@ pub(super) fn scope_dir(base: &Path, project: Option<&str>) -> Result<PathBuf, S
     }
 }
 
+/// Missing scopes are normal on a fresh install; other listing errors must reach Settings.
+fn read_entries(dir: &Path) -> Result<Vec<fs::DirEntry>, String> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Could not read the tool folder: {e}")),
+    };
+    entries.collect::<Result<Vec<_>, _>>().map_err(|e| format!("Could not read the tool folder: {e}"))
+}
+
 /// Project ids that have a tool folder.
-pub(super) fn project_ids(base: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(base.join("projects")) else { return Vec::new() };
-    let mut ids: Vec<String> = entries.flatten().filter_map(|entry| entry.file_name().into_string().ok()).filter(|id| valid_project_id(id)).collect();
+pub(super) fn project_ids(base: &Path) -> Result<Vec<String>, String> {
+    let mut ids: Vec<String> = read_entries(&base.join("projects"))?.into_iter().filter_map(|entry| entry.file_name().into_string().ok()).filter(|id| valid_project_id(id)).collect();
     ids.sort();
-    ids
+    Ok(ids)
 }
 
 fn tool_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
@@ -91,6 +100,18 @@ pub(super) fn load_all(dir: &Path) -> Vec<Tool> {
         .collect();
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     tools
+}
+
+/// Settings needs directory failures, while the agent catalog above stays fail-soft.
+pub(super) fn try_load_all(dir: &Path) -> Result<Vec<Tool>, String> {
+    let mut tools: Vec<Tool> = read_entries(dir)?
+        .into_iter()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter_map(|file| file.strip_suffix(".json").map(str::to_owned))
+        .filter_map(|name| load(dir, &name))
+        .collect();
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(tools)
 }
 
 pub(super) fn store(dir: &Path, tool: &Tool) -> Result<(), String> {

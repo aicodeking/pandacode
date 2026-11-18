@@ -18,6 +18,7 @@ use std::{
 /// Bytes of each stream an agent gets back: the end, where errors are.
 pub(super) const KEEP: usize = 16 * 1024;
 /// How long a stopped script gets between SIGTERM and SIGKILL.
+#[cfg(unix)]
 const GRACE: Duration = Duration::from_millis(500);
 /// How long the output readers get, once the script has ended, for their pipes to close.
 const READ_WAIT: Duration = Duration::from_secs(1);

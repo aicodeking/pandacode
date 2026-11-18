@@ -166,7 +166,7 @@ pub(super) struct Pending {
 
 impl Pending {
     /// Nothing to wait for (a stub that spawns no process).
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn none() -> Self {
         Pending { _guard: None }
     }
@@ -183,7 +183,7 @@ pub(super) fn pending(session_id: &str) -> Pending {
 }
 
 /// Test seam: an exit registered for `session_id` until the returned guard drops.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn hold_for_test(session_id: &str) -> Box<dyn std::any::Any + Send> {
     Box::new(pending(session_id))
 }

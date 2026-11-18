@@ -40,8 +40,8 @@ const PATTERNS: &[&str] = &[
     "ab",
     r"\s+$",
     r"zzz_no_such_token_anywhere",
-    r"\Afn ",
-    r"\)\z",
+    r"^fn ",
+    r"\)$",
 ];
 
 fn limit() -> Limit {
@@ -141,10 +141,36 @@ fn temp_repo_matches_rg_when_it_is_installed() {
     write("sub/x.gen", b"needle\n");
     write("sub/y.rs", b"needle bar\nbaz\n");
     let canonical = root.canonicalize().unwrap();
-    for pattern in ["needle", "Needle", "task", "héllo", "été", r"\s+$", "^$", "foo$", r"[^a]", r"bar\s*baz", "(?i)NEEDLE", r"\xe9", r"\Aneedle", r"needle\z", r"\Afoo"] {
+    for pattern in ["needle", "Needle", "task", "héllo", "été", r"\s+$", "^$", "foo$", r"[^a]", r"bar\s*baz", "(?i)NEEDLE", r"\xe9"] {
         let expected = engine_scope(&canonical, rg_hits(&canonical, pattern));
         assert_eq!(hits(&canonical, pattern, Policy::NeverIndex), expected, "scan {pattern}");
         assert_eq!(hits(&canonical, pattern, Policy::AlwaysIndex), expected, "index {pattern}");
+    }
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+// Absolute anchors are checked against the engine's per-line contract separately: rg 13.0.0
+// and 15.2.0 disagree on `\Afoo` in the fixture above, depending on search optimizations.
+// They are therefore not a portable oracle for `\A`/`\z`; ordinary patterns still use rg.
+#[test]
+fn absolute_anchors_match_each_line() {
+    let root = std::env::temp_dir().join(format!("pandacode-explore-anchors-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.rs"), b"needle\nfoo\r\nneedle").unwrap();
+    let canonical = root.canonicalize().unwrap();
+    let cases: &[(&str, &[usize])] = &[
+        (r"\Aneedle", &[1, 3]),
+        (r"needle\z", &[1, 3]),
+        (r"\Aneedle\z", &[1, 3]),
+        (r"\Afoo", &[2]),
+        (r"foo\z", &[]),
+        (r"foo\r\z", &[2]),
+    ];
+    for &(pattern, lines) in cases {
+        let expected = lines.iter().map(|&line| ("a.rs".to_owned(), line)).collect::<BTreeSet<_>>();
+        for policy in [Policy::NeverIndex, Policy::AlwaysIndex] {
+            assert_eq!(hits(&canonical, pattern, policy), expected, "{policy:?} {pattern}");
+        }
     }
     std::fs::remove_dir_all(root).unwrap();
 }

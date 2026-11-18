@@ -43,7 +43,14 @@ impl Limit {
 
     /// Takes `bytes` of the call's allowance; false, taking nothing, when too few are left.
     pub(super) fn take_bytes(&self, bytes: usize) -> bool {
-        self.bytes_left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(bytes)).is_ok()
+        let mut left = self.bytes_left.load(Ordering::Relaxed);
+        while let Some(remaining) = left.checked_sub(bytes) {
+            match self.bytes_left.compare_exchange_weak(left, remaining, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => return true,
+                Err(current) => left = current,
+            }
+        }
+        false
     }
 
     /// True once the call must stop; remembers it, so the reply can say it was cut short.
@@ -154,9 +161,28 @@ mod tests {
     #[test]
     fn the_byte_allowance_runs_out() {
         let limit = Limit::new(Arc::default());
+        assert!(limit.take_bytes(0));
+        assert!(!limit.take_bytes(usize::MAX));
         assert!(limit.take_bytes(MAX_CALL_BYTES - 1));
         assert!(!limit.take_bytes(2));
         assert!(limit.take_bytes(1));
+        assert!(!limit.take_bytes(1));
+        assert!(limit.take_bytes(0));
+    }
+
+    #[test]
+    fn concurrent_reads_share_one_byte_allowance() {
+        let limit = Limit::with_bytes(1000);
+        std::thread::scope(|scope| {
+            let readers: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+                let mut taken = 0;
+                while limit.take_bytes(1) {
+                    taken += 1;
+                }
+                taken
+            })).collect();
+            assert_eq!(readers.into_iter().map(|reader| reader.join().unwrap()).sum::<usize>(), 1000);
+        });
         assert!(!limit.take_bytes(1));
     }
 }

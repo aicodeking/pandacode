@@ -4,7 +4,9 @@ use super::{
     limit::Limit,
     *,
 };
-use std::{collections::BTreeSet, fs, time::Duration};
+use std::{collections::BTreeSet, fs};
+#[cfg(unix)]
+use std::time::Duration;
 
 pub(super) struct Repo(pub(super) PathBuf);
 

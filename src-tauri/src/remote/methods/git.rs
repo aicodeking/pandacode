@@ -645,8 +645,7 @@ impl Run for WorktreeMerge {
                 return Err("Wait for the agent to finish before merging its worktree.".into());
             }
             // The desktop's merge_worktree, with hooks only while the switch is on.
-            let (store, session_id, trust) = (ctx.state().store.clone(), self.session_id.clone(), trust_of(&ctx));
-            let merged = crate::blocking(move || crate::merge_task_worktree(&store, &session_id, trust)).await?;
+            let merged = crate::merge_task_worktree(&ctx.state(), self.session_id, trust_of(&ctx)).await?;
             changed(&ctx);
             serde_json::to_value(merged).map_err(|e| e.to_string())
         })
@@ -1284,6 +1283,25 @@ mod tests {
             let lock = body.find("lock_task_checkout(&ctx").expect(method);
             assert!(body[lock..].contains(check), "{method} re-checks after the lock");
         }
+    }
+
+    #[test]
+    fn worktree_merge_waits_for_exit_through_the_shared_helper() {
+        let lib = include_str!("../../lib.rs");
+        let desktop = &lib[lib.find("async fn merge_worktree(").unwrap()..];
+        let desktop = &desktop[..desktop.find("\n}\n").unwrap()];
+        assert!(desktop.contains("merge_task_worktree(&state, session_id, workspace::Trust::Desktop).await"));
+        let helper = &lib[lib.find("pub(crate) async fn merge_task_worktree(").expect("shared async merge helper")..];
+        let helper = &helper[..helper.find("\n}\n").unwrap()];
+        let guard = helper.find("guard_idle(").expect("shared idle checks before and after waiting");
+        assert!(guard < helper.find("providers::await_exit(&session_id)").unwrap());
+        assert!(helper.find(".await?;").unwrap() < helper.find("workspace::merge_worktree(").unwrap());
+        assert!(helper.contains("workspace::merge_worktree(&main, &path, trust)"));
+        let source = include_str!("git.rs");
+        let remote = &source[source.find("impl Run for WorktreeMerge").unwrap()..];
+        let remote = &remote[..remote.find("\n}\n").unwrap()];
+        assert!(remote.find("let _checkout = lock_task_checkout(").unwrap() < remote.find("crate::merge_task_worktree(").unwrap());
+        assert!(remote.contains("crate::merge_task_worktree(&ctx.state(), self.session_id, trust_of(&ctx)).await?"));
     }
 
     #[test]

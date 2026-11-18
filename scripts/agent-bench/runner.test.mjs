@@ -1,9 +1,9 @@
 // The runner core in lib.mjs that run.mjs and saver.mjs share: recovery, batch pins, job order, pool.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
 import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, seededJobs } from './lib.mjs';
@@ -14,6 +14,51 @@ import { editStepsGate, parseCsv, reuseReport, runFromRow, runsCsv } from './ana
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'bench-core-'));
 const quiet = async fn => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
+
+test('Linux cache cloning uses portable cp flags and preserves independent files, metadata and symlinks', () => {
+  const dir = scratch();
+  try {
+    const source = join(dir, 'source cache');
+    const to = join(dir, 'private cache');
+    const bin = join(dir, 'bin');
+    const fingerprint = join('.fingerprint', 'fixture-123');
+    for (const path of ['deps', fingerprint, 'incremental', 'empty']) mkdirSync(join(source, path), { recursive: true });
+    mkdirSync(bin);
+    // Reject non-POSIX flags like GNU cp rejects -c, then exercise the host's real copy behavior.
+    writeFileSync(join(bin, 'cp'), '#!/bin/sh\nfor arg do\n  case "$arg" in -R|-p) ;; -*) echo "unsupported cp flag: $arg" >&2; exit 64 ;; esac\ndone\nexec /bin/cp "$@"\n');
+    chmodSync(join(bin, 'cp'), 0o755);
+    const artifact = join('deps', 'libfixture-123.rlib');
+    writeFileSync(join(source, artifact), 'dependency');
+    chmodSync(join(source, artifact), 0o751);
+    const stamp = new Date('2020-01-02T03:04:05Z');
+    utimesSync(join(source, artifact), stamp, stamp);
+    utimesSync(join(source, 'empty'), stamp, stamp);
+    symlinkSync('libfixture-123.rlib', join(source, 'deps', 'linked'));
+    symlinkSync('../absent', join(source, 'deps', 'dangling'));
+    for (const path of [join(fingerprint, 'run-build-script-fixture'), join(fingerprint, 'build-script-build'), join('incremental', 'state')]) writeFileSync(join(source, path), 'cached');
+    const copied = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      Object.defineProperty(process, 'platform', { value: 'linux' });
+      const { cloneTarget } = await import(${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)});
+      await cloneTarget(process.argv[1], process.argv[2]);
+    `, to, source], { env: { ...process.env, PATH: bin + delimiter + process.env.PATH }, encoding: 'utf8', timeout: 10_000 });
+    assert.equal(copied.status, 0, copied.stderr);
+    const debug = join(to, 'debug');
+    assert.deepEqual(depsFingerprint(debug), depsFingerprint(source));
+    assert.equal(statSync(join(debug, artifact)).mode, statSync(join(source, artifact)).mode);
+    assert.equal(statSync(join(debug, artifact)).mtimeMs, stamp.getTime());
+    assert.equal(statSync(join(debug, 'empty')).mtimeMs, stamp.getTime());
+    assert.equal(readlinkSync(join(debug, 'deps', 'linked')), 'libfixture-123.rlib');
+    assert.equal(readlinkSync(join(debug, 'deps', 'dangling')), '../absent');
+    assert.ok(!existsSync(join(debug, 'incremental')));
+    assert.deepEqual(readdirSync(join(debug, fingerprint)), ['build-script-build']);
+    writeFileSync(join(debug, 'deps', 'linked'), 'changed clone');
+    assert.equal(readFileSync(join(debug, artifact), 'utf8'), 'changed clone');
+    assert.equal(readFileSync(join(source, artifact), 'utf8'), 'dependency');
+    assert.equal(readFileSync(join(source, fingerprint, 'run-build-script-fixture'), 'utf8'), 'cached');
+    assert.equal(readFileSync(join(source, 'incremental', 'state'), 'utf8'), 'cached');
+    assert.equal(statSync(join(source, artifact)).mtimeMs, stamp.getTime());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('cloned Cargo cache regenerates missing build outputs without changing the source cache', async () => {
   const dir = scratch();

@@ -35,9 +35,8 @@ fn matches(pattern: &str, text: &str) -> bool {
             .strip_suffix(" *")
             .is_some_and(|base| glob(base.as_bytes(), text.as_bytes()))
 }
-/// The rules of one permission object that apply to the skill tool, in OpenCode's order: every
-/// key whose name matches `skill` (`*`, `skill`, `skill *`), a string as a `*` pattern.
-fn skill_rules(permission: Option<&Json>) -> Vec<(String, String)> {
+/// Matching permission keys in OpenCode's order; a string action is a `*` resource pattern.
+fn permission_rules(permission: Option<&Json>, tool: &str) -> Vec<(String, String)> {
     let Some(Json::Object(permission)) = permission else {
         return Vec::new();
     };
@@ -48,7 +47,7 @@ fn skill_rules(permission: Option<&Json>) -> Vec<(String, String)> {
     permission
         .0
         .iter()
-        .filter(|(key, _)| matches(key, "skill"))
+        .filter(|(key, _)| matches(key, tool))
         .flat_map(|(_, value)| match value {
             Json::Object(rules) => rules
                 .0
@@ -59,9 +58,9 @@ fn skill_rules(permission: Option<&Json>) -> Vec<(String, String)> {
         })
         .collect()
 }
-/// The action OpenCode takes for `skill` in `agent`: top-level rules, then the agent's, last
+/// The action OpenCode takes in `agent`: top-level rules, then the agent's, last
 /// match wins.
-fn action(config: &Object, agent: &str, skill: &str) -> String {
+fn permission_action(config: &Object, agent: &str, tool: &str, resource: &str) -> String {
     let agent_permission = match get(config, "agent") {
         Some(Json::Object(agents)) => match get(agents, agent) {
             Some(Json::Object(agent)) => get(agent, "permission"),
@@ -69,12 +68,98 @@ fn action(config: &Object, agent: &str, skill: &str) -> String {
         },
         _ => None,
     };
-    skill_rules(get(config, "permission"))
+    permission_rules(get(config, "permission"), tool)
         .into_iter()
-        .chain(skill_rules(agent_permission))
-        .rfind(|(pattern, _)| matches(pattern, skill))
+        .chain(permission_rules(agent_permission, tool))
+        .rfind(|(pattern, _)| matches(pattern, resource))
         .map(|(_, action)| action)
         .unwrap_or_else(|| "allow".into())
+}
+fn action(config: &Object, agent: &str, skill: &str) -> String {
+    permission_action(config, agent, "skill", skill)
+}
+
+#[test]
+fn skill_manager_opencode_bound_tool_grants_stay_last_after_layered_merges() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let disabled = BTreeSet::from(["review".into()]);
+    let agents = OpenCodeAgents {
+        names: BTreeSet::from(["build".into(), "plan".into()]),
+        complete: true,
+    };
+    for (pattern, wildcard) in [
+        ("*", "ask"),
+        ("*", "deny"),
+        ("pandacode_architect_*", "ask"),
+        ("pandacode_architect_*", "deny"),
+    ] {
+        // An earlier config has the exact name before its wildcard; mergeDeep keeps that order.
+        let rules = format!(
+            r#"{{"{tool}":"deny","{pattern}":"{wildcard}","other_server_*":"ask","bash":{{"*":"ask","deploy *":"deny"}},"skill":{{"review":"allow","*":"allow"}}}}"#
+        );
+        let project = r#"{"permission":RULES,"agent":{"build":{"permission":RULES},"plan":{"permission":RULES}}}"#
+            .replace("RULES", &rules);
+        for existing in [None, Some(rules.as_str())] {
+            let launch = opencode_launch_with("{}", existing, &disabled, &agents);
+            let (inline, permission) = opencode_tool_grants(
+                &launch.content,
+                launch.permission.as_deref(),
+                &["pandacode_explore"],
+            )
+            .unwrap();
+            let permission_layer = format!(r#"{{"permission":{}}}"#, permission.unwrap());
+            // Check the env rules independently, so inline grants cannot hide a missing env grant.
+            let mut env_config = object(&format!(r#"{{"permission":{rules}}}"#));
+            merge(&mut env_config, object(&permission_layer));
+            assert_eq!(
+                permission_action(&env_config, "unconfigured", tool, "*"),
+                "allow"
+            );
+            let mut config = object(&project);
+            merge(&mut config, object(&inline));
+            merge(&mut config, object(&permission_layer));
+            let merged = serde_json::to_string(&config).unwrap();
+            // Existing rule order and nested command limits remain intact.
+            assert!(merged.contains(&format!(
+                r#""{tool}":"allow","{pattern}":"{wildcard}","other_server_*":"ask","bash":{{"*":"ask","deploy *":"deny"}}"#
+            )), "{merged}");
+            for agent in ["build", "plan", "unconfigured"] {
+                for name in [tool.to_owned(), format!("{tool} arguments")] {
+                    assert_eq!(
+                        permission_action(&config, agent, &name, "*"),
+                        "allow",
+                        "{agent}: {merged}"
+                    );
+                }
+                for name in [
+                    format!("{tool}2"),
+                    format!("{tool}_other"),
+                    "pandacode_architect_pandacode_tool_run".into(),
+                ] {
+                    assert_eq!(
+                        permission_action(&config, agent, &name, "*"),
+                        wildcard,
+                        "{agent}: {name}"
+                    );
+                }
+                assert_eq!(
+                    permission_action(&config, agent, "other_server_tool", "*"),
+                    "ask"
+                );
+                assert_eq!(
+                    permission_action(&config, agent, "bash", "deploy production"),
+                    "deny"
+                );
+                assert_eq!(permission_action(&config, agent, "bash", "pwd"), "ask");
+                assert_eq!(
+                    action(&config, agent, "review"),
+                    "deny",
+                    "{agent}: {merged}"
+                );
+                assert_eq!(action(&config, agent, "other"), "allow");
+            }
+        }
+    }
 }
 
 #[test]

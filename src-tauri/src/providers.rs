@@ -89,7 +89,7 @@ use exit::reap;
 use exit::{await_exit_with_cap, exit_registry};
 use launch_input::{next_input, stop_requested};
 pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently};
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) use exit::hold_for_test as hold_exit_for_test;
 use host_tools::apply_step;
 pub use host_tools::ToolHost;

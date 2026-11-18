@@ -4,7 +4,9 @@ use super::host::{catalog_text, host, list, note_due, note_text, specs, Ctx, EMP
 use super::tests::{author, ctx, draft, param, temp, tool, Temp};
 use super::*;
 use serde_json::{json, Value};
-use std::sync::{atomic::AtomicBool, Arc};
+use std::sync::Arc;
+#[cfg(unix)]
+use std::sync::atomic::AtomicBool;
 
 fn session() -> String {
     format!("review-{}", uuid::Uuid::new_v4())
@@ -178,7 +180,7 @@ fn tag_characters_cannot_hide_text_in_when() {
     let error = save(&dir.0, sneaky, author("s"), 1).unwrap_err();
     assert!(error.contains("when contains U+E0049"), "{error}");
     assert_eq!(one_line(&format!("a{hidden}\u{2028}b\u{180E}\u{0600}")), "ab");
-    assert_eq!(approval::preview(&json!(format!("a\u{E0041}\u{2029}"))), r#""a\uE0041\u2029""#);
+    assert_eq!(approval::preview(&json!("a\u{E0041}\u{2029}")), r#""a\uE0041\u2029""#);
     for c in ['\u{206A}', '\u{FFF9}', '\u{06DD}', '\u{070F}', '\u{08E2}', '\u{110BD}', '\u{110CD}', '\u{1343F}', '\u{1D17A}', '\u{E0000}', '\u{E007F}'] {
         assert!(invisible(c), "U+{:04X}", c as u32);
     }

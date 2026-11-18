@@ -37,21 +37,21 @@ fn app_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(base_dir(&app.path().app_data_dir().map_err(|e| e.to_string())?))
 }
 
-fn views(dir: &Path, scope: Scope) -> Vec<ToolView> {
+fn views(dir: &Path, scope: Scope) -> Result<Vec<ToolView>, String> {
     let mut stats = store::read_stats(dir);
-    store::load_all(dir).into_iter().map(|tool| ToolView { stats: stats.remove(&tool.name).unwrap_or_default(), tool, scope }).collect()
+    Ok(store::try_load_all(dir)?.into_iter().map(|tool| ToolView { stats: stats.remove(&tool.name).unwrap_or_default(), tool, scope }).collect())
 }
 
 /// Every scope's tools; `name_of` names a project id (bots and chats included).
 pub(super) fn listing(base: &Path, name_of: impl Fn(&str) -> String) -> Result<Listing, String> {
-    let global = views(&store::scope_dir(base, None)?, Scope::Global);
-    let projects = store::project_ids(base)
-        .into_iter()
-        .filter_map(|id| {
-            let tools = views(&store::scope_dir(base, Some(&id)).ok()?, Scope::Project);
-            (!tools.is_empty()).then(|| ProjectTools { project_name: name_of(&id), project_id: id, tools })
-        })
-        .collect();
+    let global = views(&store::scope_dir(base, None)?, Scope::Global)?;
+    let mut projects = Vec::new();
+    for id in store::project_ids(base)? {
+        let tools = views(&store::scope_dir(base, Some(&id))?, Scope::Project)?;
+        if !tools.is_empty() {
+            projects.push(ProjectTools { project_name: name_of(&id), project_id: id, tools });
+        }
+    }
     Ok(Listing { global, projects })
 }
 

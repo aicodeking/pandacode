@@ -64,7 +64,7 @@ Apart from that sticky `NotebookEdit`, it changes nothing a worker is allowed to
 
 **`Skill` is on for workers by default.** Settings → Agents → Workers can use skills decides it (on; the `worker-skills-off` marker in app data turns it off).
 
-- While it is off, team workers on Claude-family harnesses get `Skill` denied. Leads and ordinary tasks always keep `Skill`.
+- While it is off, team workers on Claude-family harnesses (Claude Code, GLM, MiMo and Alibaba Token Plan) get `Skill` denied. Leads and ordinary tasks always keep `Skill`.
 - The worker rules' "no Skill tool" sentence appears only while it is off and only for harnesses that really deny `Skill` (the Claude family). A user rule telling workers to use a skill stops working only then.
 - None of 1,573 real worker transcripts on this machine called `Skill`. Its listing is about 8k cache-write tokens per worker with a real skills library.
 - **`Skill`'s own effect on billed cost was not isolated.** Batch S3 compared round 18's launch with the launch before it on a copy of a real skills library. Its arms differ in three things: the `--disallowedTools` list (`Skill` added, `TaskStop` removed), the MCP server (BASE also lists the agent-made tools) and the instructions (BASE also has `REUSE`).

@@ -3624,7 +3624,7 @@ fn only_workers_whose_harness_denies_skill_hear_about_it() {
     let lead = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
     let mut team = new_team(lead.clone(), TeamConfig { auto: false, roster_only: false, name: None, workers: vec![], catalog: vec![], max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None, council: None });
     let mut sids = vec![];
-    for (id, provider) in [("c", "claude"), ("x", "codex")] {
+    for (id, provider) in [("c", "claude"), ("x", "codex"), ("a", "alibaba")] {
         let sid = store.create_session(&project.id, provider, "default", "ask").unwrap().id;
         team.workers.push(Worker { session_id: sid.clone(), provider: provider.into(), ..worker(id, "running", &["src"], &[]) });
         sids.push(sid);
@@ -3634,9 +3634,15 @@ fn only_workers_whose_harness_denies_skill_hear_about_it() {
     assert!(text(&sids[0], false).contains(clause), "claude + off");
     assert!(!text(&sids[0], true).contains("Skill"), "claude + on");
     assert!(!text(&sids[1], false).contains("Skill"), "codex + off");
+    assert!(!text(&sids[1], true).contains("Skill"), "codex + on");
+    assert!(text(&sids[2], false).contains(clause), "alibaba + off");
+    assert!(!text(&sids[2], true).contains("Skill"), "alibaba + on");
     // The lead is the one told not to ask for skills, only while the setting is off.
     let lead_off = rules(&store, &team, &lead, false).unwrap();
-    assert!(lead_off.text.ends_with(lead_skills_clause(false)));
+    let expected = " Workers on claude, glm, mimo or alibaba have no Skill tool: do not ask them to use skills.";
+    assert_eq!(lead_skills_clause(false), expected);
+    assert_eq!(lead_skills_clause(true), "");
+    assert!(lead_off.text.ends_with(expected));
     assert!(!rules(&store, &team, &lead, true).unwrap().text.contains("Skill"));
     let roster = lead_off.roster.unwrap();
     assert!(lead_off.text[roster].starts_with('['), "the roster range still points at the roster");

@@ -273,7 +273,9 @@ pub(crate) fn opencode_tool_grants(
     let mut inline = parse_inline(text)?;
     let grant = |permission: &mut Object| {
         for name in served {
-            permission.put(format!("pandacode_architect_{name}"), Json::Other(serde_json::json!("allow")));
+            let name = format!("pandacode_architect_{name}");
+            permission.put(name.clone(), Json::Other(serde_json::json!("allow")));
+            permission.put(trailing_key(&name), Json::Other(serde_json::json!("allow")));
         }
     };
     grant(inline.child("permission").object(true));
@@ -295,7 +297,7 @@ pub(crate) fn opencode_tool_grants(
     Some((serde_json::to_string(&inline).expect("OpenCode configuration"), permission))
 }
 
-/// The extra key each deny is also written under. OpenCode (1.19) deep-merges config layers
+/// The extra key for each deny or bound-tool grant. OpenCode (1.19) deep-merges config layers
 /// keeping the first layer's key order, then applies the last matching rule, so a deny for an
 /// existing key (`{"review":"allow","*":"allow"}` from a project) would stay in place before the
 /// wildcard allow. `"<name> *"` matches exactly `<name>` (OpenCode reads a trailing ` *` as

@@ -182,7 +182,7 @@ pub(super) fn context(store: &Store, parent: &str, actor: &str, full: bool) -> R
         let previews = previewed(store, parent, actor)?;
         pending = previews.iter().map(|n| (n.0.clone(), n.4)).collect();
         notes.extend(previews.into_iter().filter(|n| !changed.contains(&n.0)));
-        notes.sort_by(|a, b| b.4.cmp(&a.4));
+        notes.sort_by_key(|note| std::cmp::Reverse(note.4));
     }
     let Some(newest) = notes.iter().map(|n| n.4).max() else {
         return Ok(String::new());
