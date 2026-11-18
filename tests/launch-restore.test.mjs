@@ -1039,3 +1039,69 @@ test('held and live drafts each within the size limit survive a combined 50,001 
   drafts.set('task', live);
   assert.equal(new PersistedDrafts(store).get('task'), held + '\n' + live);
 });
+
+test('recovered 50,001-char multi-piece draft preserves its pieces across manual retry and refusal', () => {
+  const store = memory(), before = new PersistedDrafts(store);
+  const a = 'a'.repeat(25000), b = 'b'.repeat(25000);
+  before.hold('btw-draft:p', a);
+  before.set('btw-draft:p', b);
+  const drafts = new PersistedDrafts(store);
+  const recovered = drafts.get('btw-draft:p');
+  assert.equal(recovered, `${a}\n${b}`);
+  assert.equal(recovered.length, MAX_DRAFT_CHARS + 1);
+  // Manual retry holds the joined 50,001-char string and clears the live box.
+  const retry = drafts.hold('btw-draft:p', recovered);
+  drafts.delete('btw-draft:p');
+  assert.equal(new PersistedDrafts(store).get('btw-draft:p'), recovered, 'survives restart during retry');
+  drafts.set('btw-draft:p', 'newer');
+  assert.equal(new PersistedDrafts(store).get('btw-draft:p'), `${recovered}\nnewer`, 'preserves newer typing during retry');
+  assert.equal(retry.reject('newer'), `${recovered}\nnewer`);
+  assert.equal(drafts.get('btw-draft:p'), `${recovered}\nnewer`);
+  assert.equal(new PersistedDrafts(store).get('btw-draft:p'), `${recovered}\nnewer`, 'survives restart after refusal');
+});
+
+test('late refusal preserves independently typed identical text', () => {
+  const store = memory(), drafts = new PersistedDrafts(store);
+  const first = drafts.hold('side', 'question');
+  drafts.delete('side');
+  drafts.set('side', 'question');
+  assert.equal(first.reject('question'), 'question\nquestion');
+  assert.equal(drafts.get('side'), 'question\nquestion');
+  assert.equal(new PersistedDrafts(store).get('side'), 'question\nquestion');
+  // Two identical submissions plus identical newer typing stay three copies.
+  const store2 = memory(), drafts2 = new PersistedDrafts(store2);
+  const h1 = drafts2.hold('side', 'question');
+  drafts2.delete('side');
+  const h2 = drafts2.hold('side', 'question');
+  drafts2.delete('side');
+  const r1 = h1.reject('question');
+  assert.equal(r1, 'question\nquestion');
+  assert.equal(h2.reject(r1), 'question\nquestion\nquestion');
+});
+
+test('held sends with trailing whitespace restore in submission order', () => {
+  const store = memory(), drafts = new PersistedDrafts(store);
+  const first = drafts.hold('side', '/btw first  ');
+  drafts.delete('side');
+  const second = drafts.hold('side', '/btw second');
+  drafts.delete('side');
+  const r1 = first.reject('');
+  assert.equal(r1, '/btw first  ');
+  const r2 = second.reject(r1);
+  assert.equal(r2, '/btw first  \n/btw second');
+  assert.equal(new PersistedDrafts(store).get('side'), '/btw first  \n/btw second');
+});
+
+test('reclaim moves a new-task side draft on publication and leaves the next new task clean', () => {
+  const store = memory(), drafts = new PersistedDrafts(store);
+  let draftTask = true;
+  drafts.newTaskKey = id => id === 'btw-draft:t1' && draftTask ? 'btw-draft:new:p1'
+    : id === 'btw-draft:t2' ? 'btw-draft:new:p1' : undefined;
+  drafts.set('btw-draft:t1', 'side note');
+  assert.ok(store.getItem(DRAFT_PREFIX + 'btw-draft:new:p1'));
+  draftTask = false;
+  drafts.reclaim('btw-draft:t1');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'btw-draft:new:p1'), null);
+  assert.equal(new PersistedDrafts(store).get('btw-draft:t1'), 'side note');
+  assert.equal(drafts.get('btw-draft:t2'), undefined);
+});

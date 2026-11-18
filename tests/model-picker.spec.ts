@@ -472,7 +472,8 @@ async function loadHeld(page: Page, url = '/?teams', { clock = false, startupHol
     let patched = 0;
     const body = (await response.text())
       .replace(new RegExp(`case (["'])(${HELD.join('|')})\\1:`, 'g'), (found, _q, name) => { patched += 1; return `${found} { const gate = window.__holds?.[${JSON.stringify(name)}]; if (gate) { (window.__atGate ??= {})[${JSON.stringify(name)}] = true; await gate; } const over = window.__override?.[${JSON.stringify(name)}]?.(args); if (over !== undefined) return over; }`; })
-      .replace(/async function invoke\(command, args\) \{/, found => { patched += 1; return `${found} (window.__calls ??= []).push(command); (window.__callArgs ??= []).push([command, args]);`; });
+      .replace(/async function invoke\(command, args\) \{/, found => { patched += 1; return `${found} (window.__calls ??= []).push(command); (window.__callArgs ??= []).push([command, args]);`; })
+      .replace('if (showCards)', 'try { const retained = JSON.parse(sessionStorage.getItem("__testRetainedSessions") || "[]"); if (Array.isArray(retained) && retained.length) { sessions = [...retained.filter(s => !sessions.some(x => x.id === s.id)), ...sessions]; for (const s of retained) messages[s.id] ??= []; } } catch {}\nif (showCards)');
     await route.fulfill({ response, body: `${body}\nwindow.__pandacodePreviewUrl = import.meta.url;\nwindow.__previewPatched = ${patched};\n` });
   });
   await page.addInitScript((startup: string[]) => {
@@ -2276,3 +2277,194 @@ for (const origin of ['main', 'first side']) for (const refused of [false, true]
     }
   });
 }
+
+test('recovered 50,001-char side draft survives manual retry, reload during retry, and reload after refusal', async ({ page }) => {
+  await loadHeld(page, '/');
+  const prompt = page.locator('#prompt'), box = page.locator('.btw-input');
+  const a = 'a'.repeat(25000), b = 'b'.repeat(25000), combined = `${a}\n${b}`;
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await box.fill(a);
+  await box.press('Enter');
+  await expect(box).toHaveValue('');
+  await box.fill(b);
+  await page.reload();
+  await expect(prompt).toBeEnabled({ timeout: 20_000 });
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await expect(box).toHaveValue(combined);
+  // Manual retry holds the recovered 50,001-char draft and preserves it across reload during retry.
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await box.press('Enter');
+  await expect(box).toHaveValue('');
+  await page.reload();
+  await expect(prompt).toBeEnabled({ timeout: 20_000 });
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await expect(box).toHaveValue(combined);
+  // Manual retry followed by refusal preserves the 50,001-char draft immediately and across reload.
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await box.press('Enter');
+  await expect(box).toHaveValue('');
+  await releaseCall(page, 'configure_session', 'Refused oversized retry.');
+  await expect(box).toHaveValue(combined);
+  await page.reload();
+  await expect(prompt).toBeEnabled({ timeout: 20_000 });
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await expect(box).toHaveValue(combined);
+});
+
+for (const origin of ['side', 'main'] as const) test(`late refusal preserves independently typed identical text (${origin})`, async ({ page }) => {
+  await loadHeld(page, '/');
+  const { box } = await sideSwitchHeld(page);
+  const input = origin === 'side' ? box : page.locator('#prompt');
+  const text = origin === 'side' ? 'question' : '/btw question';
+  await input.fill(text);
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await input.fill(text);
+  await releaseCall(page, 'configure_session', 'Identical refusal.');
+  await expect(input).toHaveValue(`${text}\n${text}`);
+});
+
+test('refusal after opening a side thread as a full thread restores into #prompt alongside newer typing', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { panel, box, sends, before } = await sideSwitchHeld(page);
+  await box.fill('original side question');
+  await box.press('Enter');
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await panel.getByRole('button', { name: 'Open side thread as a full thread', exact: true }).click();
+  const prompt = page.locator('#prompt');
+  await expect(prompt).toHaveValue('');
+  await prompt.fill('newer full typing');
+  await releaseCall(page, 'configure_session', 'Refused after opening full.');
+  await expect(page.locator('#toast')).toContainText('Your message is back in the box.');
+  await expect(prompt).toHaveValue('original side question\nnewer full typing');
+  await expect(page.locator('#composer .send-button[type="submit"]')).not.toHaveAttribute('aria-busy', 'true');
+  expect(await sends()).toBe(before);
+  await prompt.press('Enter');
+  await expect.poll(sends).toBe(before + 1);
+  const sentArgs = await page.evaluate(() => (window as any).__callArgs.filter(([name]: [string]) => name === 'send_message').at(-1)[1]);
+  expect(sentArgs.text).toContain('original side question\nnewer full typing');
+});
+
+test('first side send while main model save is pending sets aria-busy and allows consistent held sends', async ({ page }) => {
+  await loadHeld(page, '/');
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  const prompt = page.locator('#prompt'), panel = page.locator('.btw-panel'), box = page.locator('.btw-input'), send = panel.locator('.btw-send');
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await box.fill('first pending side');
+  await box.press('Enter');
+  await expect(box).toHaveValue('');
+  await expect(send).toHaveAttribute('aria-busy', 'true');
+  await expect(send).toBeEnabled();
+  await box.fill('second pending side');
+  await send.click();
+  await expect(box).toHaveValue('');
+  await expect(send).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Main model save refused.');
+  await expect(send).not.toHaveAttribute('aria-busy', 'true');
+  await expect(box).toHaveValue('first pending side\nsecond pending side');
+  expect(await sent(page)).toBe(0);
+  // While creation itself runs without a pending choice, the send button is disabled and Enter is blocked consistently.
+  await holdCall(page, 'create_session');
+  await box.press('Enter');
+  await expect(send).toBeDisabled();
+  await box.fill('ignored while disabled');
+  await box.press('Enter');
+  await expect(box).toHaveValue('ignored while disabled');
+  await releaseCall(page, 'create_session');
+  await expect.poll(() => sent(page)).toBe(1);
+});
+
+for (const origin of ['main', 'side'] as const) test(`refused /btw sends with trailing whitespace restore in submission order (${origin})`, async ({ page }) => {
+  await loadHeld(page, '/');
+  const { box, sends, before } = await sideSwitchHeld(page);
+  const input = origin === 'main' ? page.locator('#prompt') : box;
+  const first = (origin === 'main' ? '/btw ' : '') + 'first  ';
+  const second = (origin === 'main' ? '/btw ' : '') + 'second';
+  await input.fill(first);
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await input.fill(second);
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await releaseCall(page, 'configure_session', 'Whitespace order refusal.');
+  await expect(input).toHaveValue(`${first}\n${second}`);
+  expect(await sends()).toBe(before);
+});
+
+test('new task with unsent side note reclaims its side draft on publication, error reconciliation, and reload during first turn', async ({ page }) => {
+  await loadHeld(page, '/?slowturn');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
+  await expect.poll(async () => (await task(page)).draft).toBe(true);
+  const draftId = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await page.locator('.btw-input').fill('side note for published task');
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')))).toHaveLength(1);
+  // Failed first send reconciles the side draft back under the project key while draft remains true.
+  await page.evaluate(() => { (window as any).__previewSendFails = 1; });
+  await page.locator('#prompt').fill('will fail first');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('#prompt')).toHaveValue('will fail first');
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')))).toEqual(['pandacode.draft:btw-draft:new:project-1']);
+  // Publish the New task and check storage immediately during the first turn (before turn completion).
+  await page.locator('#prompt').fill('start first turn');
+  await page.locator('#prompt').press('Enter');
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')))).toEqual([]);
+  await expect.poll(() => page.evaluate(tid => JSON.parse(localStorage.getItem(`pandacode.draft:btw-draft:${tid}`) || 'null')?.text ?? null, draftId)).toBe('side note for published task');
+  // Retain the published task across reload during the first turn and verify a fresh New task does not inherit the note.
+  await page.evaluate(id => {
+    sessionStorage.setItem('__testRetainedSessions', JSON.stringify([{
+      id, projectId: 'project-1', title: 'start first turn', provider: 'claude', model: 'sonnet', mode: 'ask',
+      status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, draft: false,
+    }]));
+  }, draftId);
+  await page.reload();
+  await expect(page.locator('#prompt')).toBeEnabled({ timeout: 20_000 });
+  await page.locator('.new-task-button').click();
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('.btw-input')).toHaveValue('');
+  await page.locator(`.task-item[data-id="${draftId}"]`).click();
+  await expect(page.locator('.btw-input')).toHaveValue('side note for published task');
+});
+
+test('first side submission parked at send_message with linked side retains draft under side id across reload', async ({ page }) => {
+  await loadHeld(page, '/');
+  const prompt = page.locator('#prompt'), box = page.locator('.btw-input');
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await holdCall(page, 'send_message');
+  await box.fill('parked first side question');
+  await box.press('Enter');
+  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.send_message)), { timeout: 15_000 }).toBe(true);
+  const sideId = await page.evaluate(() => (window as any).__callArgs.filter(([name]: [string]) => name === 'send_message').at(-1)[1].sessionId);
+  expect(sideId).toBeTruthy();
+  await expect.poll(() => page.evaluate(id => ({
+    parent: localStorage.getItem('pandacode.draft:btw-draft:session-1'),
+    side: JSON.parse(localStorage.getItem(`pandacode.draft:${id}`) || 'null')?.text ?? null,
+    link: JSON.parse(localStorage.getItem('pandacode.btw') || '{}')['session-1']?.sideId ?? null,
+  }), sideId)).toEqual({ parent: null, side: 'parked first side question', link: sideId });
+  await page.evaluate(id => {
+    sessionStorage.setItem('__testRetainedSessions', JSON.stringify([{
+      id, projectId: 'project-1', title: 'BTW: parked first side question', provider: 'claude', model: 'sonnet', mode: 'ask',
+      status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, draft: false,
+    }]));
+  }, sideId);
+  await page.reload();
+  await expect(prompt).toBeEnabled({ timeout: 20_000 });
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await expect(box).toHaveValue('parked first side question');
+});

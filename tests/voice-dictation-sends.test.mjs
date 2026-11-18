@@ -277,3 +277,21 @@ test('composer restore: applying a restored draft keeps the selection on the sam
   field.setSelectionRange(1, 1, 'none'); applyRestoredDraft(field, 'A\nB\nnew', 'A\nB\nC\nnew', 4);
   assert.deepEqual([field.selectionStart, field.selectionEnd], [1, 1]);
 });
+
+test('composer restore: independently typed identical text after a committed send is not collapsed', async () => {
+  const { createCommittedDrafts } = await import('../src/composer-restore.ts');
+  const drafts = createCommittedDrafts();
+  drafts.note('t', 'question');
+  assert.deepEqual(drafts.restore('t', 'question', 'question'), { text: 'question\nquestion', at: 0 });
+});
+
+test('composer restore: trailing whitespace preserves restore identity and submission order', async () => {
+  const { createCommittedDrafts } = await import('../src/composer-restore.ts');
+  const drafts = createCommittedDrafts();
+  drafts.note('t', '/btw first  ');
+  drafts.note('t', '/btw second');
+  const first = drafts.restore('t', '/btw first  ', '');
+  assert.deepEqual(first, { text: '/btw first  ', at: 0 });
+  const second = drafts.restore('t', '/btw second', first.text);
+  assert.deepEqual(second, { text: '/btw first  \n/btw second', at: 13 });
+});

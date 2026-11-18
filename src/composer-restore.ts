@@ -32,14 +32,15 @@ export function createCommittedDrafts(limit = COMMITTED_DRAFT_LIMIT): CommittedD
   const update = (threadId: string, entries: readonly CommittedDraft[]) => { drafts = new Map(drafts).set(threadId, entries); };
 
   /** A rejected draft's place among the drafts already restored at the top (written order), else before everything.
-   * Only text typed anew that equals it is deduplicated. */
+   * Only uncommitted text that equals it is deduplicated. */
   const placement = (threadId: string, text: string, current: string): { at: number; dedupe: boolean } => {
     const entries = drafts.get(threadId) ?? [], restored = entries.filter(entry => entry.restored);
-    const own = entries.find(entry => !entry.restored && entry.text === text.trim());
+    const own = entries.find(entry => !entry.restored && entry.text === text)
+      ?? entries.find(entry => !entry.restored && entry.text.trim() === text.trim());
     const joined = restored.map(entry => entry.text).join('\n');
     const present = Boolean(joined) && (current === joined || current.startsWith(`${joined}\n`));
-    if (own) update(threadId, entries.map(entry => entry === own ? { ...entry, restored: true } : entry));
-    if (!own || !present) return { at: 0, dedupe: !present };
+    if (own) update(threadId, entries.map(entry => entry === own ? { ...entry, text, restored: true } : entry));
+    if (!own || !present) return { at: 0, dedupe: !own };
     const earlier = restored.filter(entry => entry.serial < own.serial).map(entry => entry.text).join('\n');
     return { at: earlier ? earlier.length + 1 : 0, dedupe: false };
   };
@@ -49,7 +50,7 @@ export function createCommittedDrafts(limit = COMMITTED_DRAFT_LIMIT): CommittedD
     note(threadId, text) {
       if (!text.trim()) return;
       const kept = (drafts.get(threadId) ?? []).filter(entry => !entry.restored).slice(1 - limit);
-      update(threadId, [...kept, { serial: ++commits, text: text.trim(), restored: false }]);
+      update(threadId, [...kept, { serial: ++commits, text, restored: false }]);
     },
     forget(threadIds) {
       const next = new Map(drafts);

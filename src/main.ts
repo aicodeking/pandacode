@@ -4665,6 +4665,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
 function applyTaskDetails(id: string, details: Session, asked: Session | undefined, steady: boolean): void {
   const loaded = state.sessions.find(task => task.id === id);
   if (loaded && mergeTaskDetails(loaded, details, asked, steady, state.streams.has(id))) renderTranscript(); else syncTeamRows();
+  if (loaded) { state.drafts.reclaim(id); state.drafts.reclaim(BTW_DRAFT + id); }
 }
 /** Nothing selected; the next launch opens the newest thread of the current project, not the last one. */
 function clearOpenSession(): void { cancelStreamRender(); state.sessionId = ''; rememberOpenThread(localStorage, ''); }
@@ -5216,7 +5217,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     const sentAt = Date.now();
     task.lastPromptAt = sentAt; task.draft = false; pendingPromptActivity.set(task.id, sentAt);
     // Published: text typed since the message was queued is the thread's own now, not its project's New task text.
-    state.drafts.reclaim(task.id);
+    state.drafts.reclaim(task.id); state.drafts.reclaim(BTW_DRAFT + task.id);
     stream(task.id).lastPromptAt = sentAt; stream(task.id).startedAt = Math.min(stream(task.id).startedAt, sentAt); stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
     sent = sentPrompt(task, content, sentAt);
     if (task.id === state.sessionId) { state.messages = [...state.messages, sent]; render(); } else renderNavigation();
@@ -5506,6 +5507,7 @@ async function sendDraft(): Promise<void> {
     // A bot's own conversation goes through the bot, which adds its brief and memories.
     if (bot) await call('bot_message', { botId: bot.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
     else await call(teams.get(s.id) && !s.remoteDevice && !moodboardItems.length ? 'architect_start' : 'send_message', { sessionId: s.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
+    if (wasDraft) { state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id); }
   } catch (error) {
     pendingPromptActivity.delete(s.id); if (sent) dropMirrorPrompt(s.id, sent);
     state.streams.delete(s.id); s.status = 'idle';
@@ -5513,8 +5515,8 @@ async function sendDraft(): Promise<void> {
     // says otherwise, so its restored text is kept under its project (an empty draft session is
     // discarded at the next launch, and text under its id with it).
     if (wasDraft) {
-      listed.draft = true; state.drafts.reclaim(s.id);
-      void taskCall<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); renderNavigation(); }).catch(() => undefined);
+      listed.draft = true; state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id);
+      void taskCall<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id); renderNavigation(); }).catch(() => undefined);
     }
     restoreComposerDraft(s, draft);
     if (promptItemsConsumed) attachments.restore(s.id, promptItems);
@@ -5551,6 +5553,14 @@ const btwPanel = new BtwPanel({
   },
   mainRunning: () => isRunning(),
   holdDraft: (id, text) => state.drafts.hold(id, text),
+  restoreComposer: (key, apply) => {
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!prompt?.isConnected || prompt.dataset.sessionId !== key) return false;
+    const current = prompt.value, restored = apply(current);
+    applyRestoredDraft(prompt, current, restored, 0);
+    resizePrompt();
+    return true;
+  },
   draft: sideId => state.drafts.get(sideId) ?? '',
   setDraft: (sideId, text) => { if (text) state.drafts.set(sideId, text); else state.drafts.delete(sideId); },
   // Dismissed error rows leave the list the panel keys its redraws on; the rows themselves get the whole list, so
@@ -5577,14 +5587,16 @@ const btwPanel = new BtwPanel({
     // Before the side thread exists, the choices apply to the one /btw creates (btwDraftTask).
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
-    // A pick made while /btw creates the side thread could miss it, so the pickers wait. A model, effort or permission
-    // save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
-    const saving = modelSwitch.saving(side.id);
-    const running = isRunning(side.id), busy = (configuringSessions.has(side.id) && !saving) || (btwSending.has(state.sessionId) && !modelSwitch.sendHeld(side.id));
+    // Before a side thread exists, a held first send waits on the main thread's pending choice (sendBtw's choiceId).
+    // A model, effort or permission save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
+    const choiceId = shown?.id ?? state.sessionId;
+    const saving = modelSwitch.saving(choiceId), held = modelSwitch.sendHeld(choiceId);
+    const running = isRunning(side.id), busy = (configuringSessions.has(side.id) && !saving) || (btwSending.has(state.sessionId) && !held);
+    const lockTriggers = running || busy || (!shown && btwSending.has(state.sessionId));
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
-      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${modelSwitch.sendHeld(side.id) ? 'aria-busy="true" ' : ''}${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
-    return `<div class="composer-tools">${modelTriggerHtml(side, running || busy)}<span class="composer-separator"></span>${modeTriggerHtml(side, running || busy)}</div>${send}`;
+      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${held ? 'aria-busy="true" ' : ''}${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    return `<div class="composer-tools">${modelTriggerHtml(side, lockTriggers)}<span class="composer-separator"></span>${modeTriggerHtml(side, lockTriggers)}</div>${send}`;
   },
   menuBusy: root => Boolean(root.querySelector('[aria-expanded="true"]') || (pendingMenuOpen && root.contains(pendingMenuOpen.anchor))),
   mountPickers: (textarea, side) => {
@@ -5757,12 +5769,19 @@ function sendBtw(text: string, mainId = state.sessionId, sideId = btwLink(mainId
   const held = modelSwitch.saving(choiceId) ? holdBtwSend(main.id, choiceId) : undefined;
   const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, sideId, held));
   btwSending.set(main.id, next); btwPanel.refresh();
-  void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
+  void next.catch(() => undefined).finally(() => {
+    if (btwSending.get(main.id) === next) btwSending.delete(main.id);
+    if (!modelSwitch.sendHeld?.(state.sessionId)) document.querySelector('#composer .send-button[type="submit"]')?.removeAttribute('aria-busy');
+    btwPanel.refresh();
+  });
   return next;
 }
-/** Only the shown side thread's button can carry this held send's cue, even after another task opens. */
+/** Only the shown side thread's button (or its full-thread composer if opened full) carries this held send's cue. */
 function holdBtwSend(mainId: string, sideId: string): Promise<readonly modelSwitch.Unchanged[]> {
-  return modelSwitch.holdSend(sideId, () => state.sessionId === mainId && (btwPanel.shownId() ?? mainId) === sideId ? document.querySelector('.btw-panel .btw-send') : null);
+  return modelSwitch.holdSend(sideId, () => state.sessionId === sideId
+    ? document.querySelector('#composer .send-button[type="submit"]')
+    : state.sessionId === mainId && (btwPanel.shownId() ?? mainId) === sideId
+    ? document.querySelector('.btw-panel .btw-send') : null);
 }
 /** Every held send rejects and restores its text; only the first reports the shared refusal. */
 class BtwChoiceRefusal extends Error {}
@@ -5780,18 +5799,27 @@ async function deliverBtw(main: Session, text: string, sideId?: string, held?: P
   main = btwSendParent(main.id, sideId);
   if (held) {
     const refusals = await held;
+    btwPanel.refresh();
     main = btwSendParent(main.id, sideId);
     checkBtwChoice(refusals);
   }
   // A first side thread inherits confirmed main-task choices, never their optimistic, still-saving copy.
   if (!btwLink(main.id)) {
-    if (modelSwitch.saving(main.id)) checkBtwChoice(await holdBtwSend(main.id, main.id));
+    if (modelSwitch.saving(main.id)) {
+      const refusals = await holdBtwSend(main.id, main.id);
+      btwPanel.refresh();
+      checkBtwChoice(refusals);
+    }
     main = btwSendParent(main.id, sideId);
   }
   const link = btwLink(main.id) ?? await createBtw(main, text);
   main = btwSendParent(main.id, link.sideId);
   // Also wait for a choice made after submission, while this send was queued.
-  if (modelSwitch.saving(link.sideId)) checkBtwChoice(await holdBtwSend(main.id, link.sideId));
+  if (modelSwitch.saving(link.sideId)) {
+    const refusals = await holdBtwSend(main.id, link.sideId);
+    btwPanel.refresh();
+    checkBtwChoice(refusals);
+  }
   main = btwSendParent(main.id, link.sideId);
   const side = state.sessions.find(task => task.id === link.sideId);
   if (!side) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
@@ -6936,8 +6964,10 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       // The side thread re-reads its rows only once a harness change has saved; until then (and for a model change
       // within its harness) only its composer repaints.
       const paint = (harness: boolean, reread = false) => {
-        if (inPanel) { if (current()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); } }
-        else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+        if (inPanel) {
+          if (current()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); }
+          else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+        } else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
       };
       // `harness`: against the harness shown (a pending pick's, maybe); `changed`: native's harness changed once saved
       // (model-switch.ts decides it from what native last confirmed), the only case that re-reads the thread.

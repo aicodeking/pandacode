@@ -22,6 +22,8 @@ export interface BtwPanelHost {
   draft(sideId: string): string;
   setDraft(sideId: string, text: string): void;
   holdDraft(id: string, text: string): DraftHold;
+  /** Updates another open editor (such as the full-thread composer) if it currently shows `key`. */
+  restoreComposer?(key: string, apply: (current: string) => string): boolean;
   /** The saved rows that show while `messages` stream (the main transcript's slice). */
   visible(sideId: string, messages: Message[]): Message[];
   /** Replaces every row of `log` before `region` with the saved turns, as the main transcript draws them. */
@@ -127,8 +129,7 @@ export class BtwPanel {
     root.className = 'btw-panel';
     root.innerHTML = `<header class="btw-head"><div><strong></strong><small role="status"></small></div><div class="btw-actions"><button class="icon-button" data-btw="new" aria-label="New side thread" title="New side thread">${icon('plus')}</button><button class="icon-button" data-btw="open" aria-label="Open side thread as a full thread" title="Open as full thread">${icon('external')}</button><button class="icon-button" data-btw="close" aria-label="Close side thread panel" title="Close">${icon('close')}</button></div></header><div class="inspector-empty btw-empty">${icon('chat')}<h3>No side thread yet</h3><p>Ask something on the side while this task keeps working. Type <code>/btw</code> and a question in the prompt, or write it here.</p></div><div class="transcript btw-transcript" role="log" aria-label="Side thread conversation" aria-live="off" tabindex="0"><div class="btw-stream-region"></div></div><div class="btw-composer-area"><div class="btw-above"></div><form class="composer btw-composer"><textarea class="btw-input" rows="2" aria-label="Message the side thread"></textarea><div class="composer-toolbar btw-toolbar"></div></form></div>`;
     const input = root.querySelector<HTMLTextAreaElement>('.btw-input')!, log = root.querySelector<HTMLElement>('.btw-transcript')!;
-    const resize = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 180) + 'px'; input.style.overflowY = input.scrollHeight > input.clientHeight + 1 ? 'auto' : 'hidden'; };
-    input.addEventListener('input', () => { this.host.setDraft(this.host.draftKey(this.host.mainId()), input.value); resize(); });
+    input.addEventListener('input', () => { this.host.setDraft(this.host.draftKey(this.host.mainId()), input.value); this.resize(input); });
     log.addEventListener('scroll', () => { this.stick = log.scrollHeight - log.scrollTop - log.clientHeight < 48; }, { passive: true });
     root.querySelector('form')!.addEventListener('submit', event => { event.preventDefault(); this.submit(false); });
     // Listening on the form lets the slash and @ pickers (on the textarea) take Enter first.
@@ -166,27 +167,34 @@ export class BtwPanel {
   private submit(steer: boolean): void {
     const input = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
     if (!input) return;
-    const typed = input.value.trim();
+    const raw = input.value;
     // `/btw` here just means this side thread.
-    const text = parseBtw(typed) ?? typed;
+    const text = parseBtw(raw) ?? raw.trim();
     if (!text) { input.value = ''; return; }
     const side = this.host.side()?.session, sideId = side?.id ?? '';
     const mainId = this.host.mainId(), draftKey = sideId || this.host.draftKey(mainId);
     const running = side ? this.host.running(side.id) : false;
-    const releaseDraft = this.host.holdDraft(draftKey, typed);
+    if (!running && this.root?.querySelector<HTMLButtonElement>('.btw-send')?.disabled) return;
+    const releaseDraft = this.host.holdDraft(draftKey, raw);
     input.value = ''; this.host.setDraft(draftKey, '');
     const work = !side ? this.host.send(text, mainId)
       : running ? (steer ? this.host.steer(side, text) : this.host.queue(side, text))
       : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId, sideId));
     this.stick = true;
     work.catch(error => {
-      // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
+      // Keep the unsent text alongside newer typing, in whichever editor currently shows the owning task.
       const current = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
       const key = releaseDraft.owner();
       const shown = current?.isConnected && this.host.mainId() === mainId && this.host.draftKey(mainId) === key;
-      const newer = shown ? current.value : this.host.draft(key);
-      const restored = releaseDraft.reject(newer);
-      if (shown) current.value = restored;
+      if (shown) {
+        const newer = current.value, restored = releaseDraft.reject(newer);
+        const shift = restored.length - newer.length, start = current.selectionStart, end = current.selectionEnd, direction = current.selectionDirection;
+        current.value = restored;
+        if (typeof current.setSelectionRange === 'function') current.setSelectionRange(start + shift, end + shift, direction);
+        this.resize?.(current);
+      } else if (!this.host.restoreComposer?.(key, newer => releaseDraft.reject(newer))) {
+        releaseDraft.reject(this.host.draft(key));
+      }
       this.host.report(error);
     }).finally(() => { releaseDraft(); this.refresh(); });
   }
@@ -274,5 +282,12 @@ export class BtwPanel {
       input.placeholder = placeholder;
       input.setAttribute('aria-description', running ? 'Enter to queue for when the side agent finishes. Command Enter to steer its running turn.' : 'Enter to send. Shift Enter for a new line. Type / for commands or @ to mention a project file.');
     }
+  }
+
+  private resize(input: HTMLTextAreaElement): void {
+    if (!input.style) return;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 180) + 'px';
+    input.style.overflowY = input.scrollHeight > input.clientHeight + 1 ? 'auto' : 'hidden';
   }
 }

@@ -76,6 +76,24 @@ export const DRAFT_FLUSH_MS = 200;
 const bytes = (text: string) => text.length * 2;
 const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
 
+/** Splits an oversized multi-line draft along newlines into `keep`-sized pieces (reusing `hint` when exact). */
+function splitParts(text: string, hint?: readonly string[]): string[] {
+  if (!text.trim() || bytes(text) > DRAFTS_BYTE_BUDGET) return [];
+  if (keep(text)) return [text];
+  if (hint?.length && hint.join('\n') === text && hint.every(keep)) return [...hint];
+  const lines = text.split('\n');
+  if (lines.some(line => line.length > MAX_DRAFT_CHARS)) return [];
+  const parts: string[] = [];
+  let current = lines[0] ?? '';
+  for (const line of lines.slice(1)) {
+    const joined = `${current}\n${line}`;
+    if (joined.length <= MAX_DRAFT_CHARS) current = joined;
+    else { parts.push(current); current = line; }
+  }
+  parts.push(current);
+  return parts.length && parts.every(keep) && parts.join('\n') === text ? parts : [];
+}
+
 function safeRead(store: Pick<Store, 'getItem'>, key: string): string | null {
   try { return store.getItem(key); } catch { return null; }
 }
@@ -102,7 +120,7 @@ export function decodeDraft(raw: string | null): { t: number; text: string; part
   } catch { return null; }
 }
 
-interface HeldEntry { id: string; text: string; refused: boolean }
+interface HeldEntry { id: string; text: string; parts: readonly string[]; refused: boolean }
 export interface DraftHold {
   (): void;
   owner(): string;
@@ -180,7 +198,7 @@ export class PersistedDrafts extends Map<string, string> {
   /** Keep submitted text recoverable until its send settles, without showing it in the live field.
    * A fresh launch reads the combined text as an ordinary draft and never replays a send. */
   hold(id: string, text: string): DraftHold {
-    const entry = { id, text, refused: false };
+    const entry: HeldEntry = { id, text, parts: splitParts(text, this.recoveredParts.get(id)), refused: false };
     const entries = (this.held.get(id) ?? []).filter(item => !item.refused);
     this.held.set(id, [...entries, entry]);
     this.savedAt.set(id, this.now());
@@ -195,10 +213,10 @@ export class PersistedDrafts extends Map<string, string> {
       owner: () => entry.id,
       reject: (current: string, restored?: string) => {
         const entries = this.held.get(entry.id) ?? [];
+        if (entry.refused || !entries.includes(entry)) return current;
         const preceding = entries.slice(0, entries.indexOf(entry)).filter(item => item.refused).map(item => item.text).join('\n');
         const at = preceding && (current === preceding || current.startsWith(preceding + '\n')) ? preceding.length : 0;
-        const result = restored ?? (current === entry.text && !entries.some(item => item.refused) ? current :
-          [current.slice(0, at), entry.text, current.slice(at + (at ? 1 : 0))].filter(Boolean).join('\n'));
+        const result = restored ?? [current.slice(0, at), entry.text, current.slice(at + (at ? 1 : 0))].filter(Boolean).join('\n');
         entry.refused = true;
         super.set(entry.id, result);
         this.finishSettled(entry.id);
@@ -231,7 +249,7 @@ export class PersistedDrafts extends Map<string, string> {
     }
     const parts = this.recoveredParts.get(from);
     if (parts) this.recoveredParts.set(to, parts);
-    super.set(to, live ?? '');
+    if (live) super.set(to, live); else super.delete(to);
     this.savedAt.set(to, this.savedAt.get(from) ?? this.now());
     this.delete(from);
     this.write(to);
@@ -241,11 +259,12 @@ export class PersistedDrafts extends Map<string, string> {
     const entries = this.held.get(id) ?? [], live = super.get(id) ?? '';
     const prefix = entries.filter(item => item.refused).map(item => item.text).join('\n');
     if (prefix && (live === prefix || live.startsWith(prefix + '\n'))) {
-      return [...entries.map(item => item.text), live.slice(prefix.length + 1)].filter(keep);
+      const tail = live === prefix ? '' : live.slice(prefix.length + 1);
+      return [...entries.flatMap(item => item.parts), ...splitParts(tail)];
     }
     const parts = this.recoveredParts.get(id);
-    const liveParts = parts && parts.join('\n') === live ? parts : [live];
-    return [...entries.filter(item => !item.refused).map(item => item.text), ...liveParts].filter(keep);
+    const liveParts = splitParts(live, parts);
+    return [...entries.filter(item => !item.refused).flatMap(item => item.parts), ...liveParts];
   }
 
   /** Writes any pending debounced draft changes to storage immediately. */
