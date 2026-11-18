@@ -134,17 +134,25 @@ fn roots(agent: Agent) -> Vec<PathBuf> {
             base.into_iter().flat_map(|base| [base.join("sessions"), base.join("archived_sessions")]).collect()
         }
         Agent::Pi => {
-            // Pi writes one JSONL per session under a cwd-named folder; a dedicated
-            // session dir wins over a moved agent dir, then the default location.
-            let absolute = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|path| path.is_absolute());
-            let base = absolute("PI_CODING_AGENT_SESSION_DIR")
-                .or_else(|| absolute("PI_CODING_AGENT_DIR").map(|dir| dir.join("sessions")))
-                .or_else(|| home.map(|home| home.join(".pi").join("agent").join("sessions")));
-            base.into_iter().collect()
+            pi_root(home.as_deref(), |name| std::env::var_os(name)).into_iter().collect()
         }
     };
     roots.dedup();
     roots
+}
+
+fn pi_root(home: Option<&Path>, read: impl Fn(&str) -> Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let absolute = |name: &str| {
+        let path = PathBuf::from(read(name)?);
+        let path = match path.strip_prefix("~") {
+            Ok(suffix) => home?.join(suffix),
+            Err(_) => path,
+        };
+        path.is_absolute().then_some(path)
+    };
+    absolute("PI_CODING_AGENT_SESSION_DIR")
+        .or_else(|| absolute("PI_CODING_AGENT_DIR").map(|dir| dir.join("sessions")))
+        .or_else(|| home.map(|home| home.join(".pi").join("agent").join("sessions")))
 }
 
 fn modified_ms(metadata: &std::fs::Metadata) -> i64 {

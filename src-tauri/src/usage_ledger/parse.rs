@@ -273,15 +273,16 @@ pub(crate) fn pi_line(line: &str) -> Option<Record> {
         "compaction" | "branch_summary" => (&entry["usage"], None),
         _ => return None,
     };
-    let usage = usage.as_object()?;
+    usage.as_object()?;
     let seconds = unix_seconds(entry["timestamp"].as_str()?)?;
     let input = count(&usage["input"]);
     let cache_read = count(&usage["cacheRead"]);
     let cache_write = count(&usage["cacheWrite"]);
+    let cache_write_1h = count(&usage["cacheWrite1h"]).min(cache_write);
     let output = count(&usage["output"]);
     let key = entry["id"].as_str().map(|id| {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        ("pi", id).hash(&mut hasher);
+        ("pi", id, entry["timestamp"].as_str()).hash(&mut hasher);
         hasher.finish()
     });
     let record = Record {
@@ -291,8 +292,8 @@ pub(crate) fn pi_line(line: &str) -> Option<Record> {
         model: model.and_then(model_name).unwrap_or_else(|| Model::from("unknown")),
         input,
         cache_read,
-        cache_write,
-        cache_write_1h: 0,
+        cache_write: cache_write - cache_write_1h,
+        cache_write_1h,
         output,
     };
     (record.tokens() > 0).then_some(record)

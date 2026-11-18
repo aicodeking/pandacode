@@ -325,7 +325,7 @@ fn pi_assistant(id: &str, model: &str) -> String {
 #[test]
 fn pi_entries_count_each_billed_call_once_and_keep_no_content() {
     let record = parse::pi_line(&pi_assistant("a1b2c3d4", "Acme:Example-Model")).unwrap();
-    assert_eq!((record.input, record.cache_read, record.cache_write, record.cache_write_1h, record.output), (290, 12544, 64, 0, 271), "reasoning and 1h cache writes are not added again");
+    assert_eq!((record.input, record.cache_read, record.cache_write, record.cache_write_1h, record.output), (290, 12544, 48, 16, 271), "reasoning and 1h cache writes are not added again");
     assert_eq!(record.model.as_str(), "acme:example-model");
     assert_eq!(record.hour, parse::unix_seconds("2026-10-02T09:15:02Z").unwrap() / 3600);
     assert_eq!(record.class, 0);
@@ -356,6 +356,50 @@ fn pi_entries_count_each_billed_call_once_and_keep_no_content() {
 }
 
 #[test]
+fn pi_partial_usage_does_not_panic_or_invent_missing_tokens() {
+    let line = json!({"type":"usage","id":"partial","timestamp":"2026-10-02T09:22:00Z","model":"example-model","usage":{"input":7}}).to_string();
+    let record = parse::pi_line(&line).unwrap();
+    assert_eq!((record.input, record.cache_read, record.cache_write, record.output), (7, 0, 0, 0));
+    for usage in [json!({}), json!(null), json!([])] {
+        let line = json!({"type":"usage","id":"empty","timestamp":"2026-10-02T09:22:00Z","usage":usage}).to_string();
+        assert_eq!(parse::pi_line(&line), None);
+    }
+}
+
+#[test]
+fn pi_hour_cache_writes_keep_token_totals_and_use_their_own_price() {
+    let prices = parse_prices(&json!({"model-x":{"mode":"chat","input_cost_per_token":1e-6,"output_cost_per_token":5e-6,"cache_creation_input_token_cost":1e-6,"cache_creation_input_token_cost_above_1hr":2e-6}}));
+    let book = PriceBook::from_prices(prices);
+    for hour_writes in [0, 16, 64, 96] {
+        let line = json!({"type":"usage","id":"cache","timestamp":"2026-10-02T09:22:00Z","model":"model-x","usage":{"cacheWrite":64,"cacheWrite1h":hour_writes}}).to_string();
+        let record = parse::pi_line(&line).unwrap();
+        let expected_hour = hour_writes.min(64) as u64;
+        assert_eq!((record.tokens(), record.cache_write, record.cache_write_1h), (64, 64 - expected_hour, expected_hour));
+        let (cost, _) = book.cost(&record).unwrap();
+        assert!((cost - (64 + expected_hour) as f64 * 1e-6).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn pi_roots_expand_home_and_prefer_the_session_override() {
+    let home = std::env::temp_dir().join("pi-home");
+    for (sessions, agent, expected) in [
+        (None, None, home.join(".pi/agent/sessions")),
+        (None, Some("~/.pi-work"), home.join(".pi-work/sessions")),
+        (Some("~/logs"), Some("~/.pi-work"), home.join("logs")),
+        (Some("logs"), Some("~/.pi-work"), home.join(".pi-work/sessions")),
+        (Some("~"), None, home.clone()),
+    ] {
+        let root = pi_root(Some(&home), |name| match name {
+            "PI_CODING_AGENT_SESSION_DIR" => sessions.map(Into::into),
+            "PI_CODING_AGENT_DIR" => agent.map(Into::into),
+            _ => None,
+        });
+        assert_eq!(root, Some(expected));
+    }
+}
+
+#[test]
 fn pi_sessions_are_discovered_deduped_and_linked_to_tasks() {
     let root = std::env::temp_dir().join(format!("pandacode-ledger-pi-{}", uuid::Uuid::new_v4()));
     let sessions = root.join("agent").join("sessions").join("--home-user-proj--");
@@ -365,7 +409,9 @@ fn pi_sessions_are_discovered_deduped_and_linked_to_tasks() {
     let linked = sessions.join("2026-10-02T09-15-02_aaaa1111.jsonl");
     // A forked session copies the same assistant entry under a new session id.
     std::fs::write(&linked, format!("{}\n{}\n{}\n{}\n", pi_assistant("a1b2c3d4", "acme:example-model"), pi_assistant("a1b2c3d4", "acme:example-model"), warm, compaction)).unwrap();
-    std::fs::write(sessions.join("2026-10-02T10-00-00_bbbb2222.jsonl"), format!("{}\n", pi_assistant("other0001", "acme:example-model"))).unwrap();
+    let forked = pi_assistant("a1b2c3d4", "acme:example-model");
+    let reused_id = forked.replace("2026-10-02T09:15:02.000Z", "2026-10-02T09:15:02.001Z");
+    std::fs::write(sessions.join("2026-10-02T10-00-00_bbbb2222.jsonl"), format!("{forked}\n{reused_id}\n{}\n", pi_assistant("other0001", "acme:example-model"))).unwrap();
 
     let roots: Roots = vec![(Agent::Pi, vec![root.join("agent").join("sessions")])];
     let links = vec!["aaaa1111".to_string()];
@@ -376,7 +422,7 @@ fn pi_sessions_are_discovered_deduped_and_linked_to_tasks() {
     let per_assistant: u64 = 290 + 12544 + 64 + 271;
     let ledger = aggregate(&full, &book(), 0, 1);
     let tokens: u64 = ledger.rows.iter().map(|row| row.2 + row.3 + row.4 + row.5).sum();
-    assert_eq!(tokens, per_assistant * 2 + 50000 + 100 + 200 + 20, "a forked copy of the same entry counts once");
+    assert_eq!(tokens, per_assistant * 3 + 50000 + 100 + 200 + 20, "fork copies count once; independent same-ID calls still count");
     assert_eq!(ledger.sessions.len(), 2, "each Pi session file counts as a session");
     assert_eq!(task_usage_from_cache(&full, &links, 0), task_usage_from_cache(&slim, &links, 0));
     let task = task_usage_from_cache(&full, &links, 0);
