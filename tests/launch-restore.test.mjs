@@ -1009,3 +1009,33 @@ test('held text follows a temporary task when published with an empty live compo
   release();
   assert.equal(new PersistedDrafts(store, () => NOW).get('temporary'), undefined);
 });
+
+test('restored first refusal keeps its place ahead of the next pending send across restart', () => {
+  const store = memory(), drafts = new PersistedDrafts(store);
+  const first = drafts.hold('task', 'first'), second = drafts.hold('task', 'second');
+  drafts.set('task', 'later');
+  first.reject('later');
+  assert.equal(new PersistedDrafts(store).get('task'), 'first\nsecond\nlater');
+  second.reject(drafts.get('task'));
+  assert.equal(drafts.get('task'), 'first\nsecond\nlater');
+});
+
+test('a late settlement preserves the subsequent New task’s project draft', () => {
+  for (const reject of [true, false]) {
+    const store = memory(), drafts = newTasks(new PersistedDrafts(store));
+    const hold = drafts.hold('n1', 'first');
+    drafts.delete('n1');
+    drafts.set('n2', 'new owner');
+    if (reject) hold.reject(''); else hold();
+    drafts.reclaimAll();
+    assert.equal(new PersistedDrafts(store).get('new:p'), 'new owner');
+  }
+});
+
+test('held and live drafts each within the size limit survive a combined 50,001 characters', () => {
+  const store = memory(), drafts = new PersistedDrafts(store);
+  const held = 'a'.repeat(25000), live = 'b'.repeat(25000);
+  drafts.hold('task', held);
+  drafts.set('task', live);
+  assert.equal(new PersistedDrafts(store).get('task'), held + '\n' + live);
+});

@@ -2208,6 +2208,14 @@ test('an unsent new-task side draft survives reload', async ({ page }) => {
   await page.locator('#prompt').press('Enter');
   await page.locator('.btw-input').fill('new task side thought');
   await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')).map(key => JSON.parse(localStorage.getItem(key)!).text))).toEqual(['new task side thought']);
+  const draftId = await page.locator('#prompt').getAttribute('data-session-id');
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await page.evaluate(() => (window as any).__previewEmit('sessions-changed', {}));
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', draftId!);
+  await page.getByRole('button', { name: 'Change task project', exact: true }).first().click();
+  await page.getByRole('option', { name: /^pandacode — / }).click();
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')))).toEqual(['pandacode.draft:btw-draft:new:project-2']);
   await page.reload();
   await expect(page.locator('#prompt')).toBeEnabled();
   await page.locator('#prompt').fill('/btw ');

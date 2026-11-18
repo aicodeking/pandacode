@@ -88,21 +88,34 @@ function storedKeys(store: Store): string[] {
 }
 
 /** One stored draft, or null when it is malformed. */
-export function decodeDraft(raw: string | null): { t: number; text: string } | null {
+export function decodeDraft(raw: string | null): { t: number; text: string; parts?: string[] } | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object') return null;
-    const { t, text } = value as Record<string, unknown>;
-    return typeof t === 'number' && Number.isFinite(t) && typeof text === 'string' ? { t, text } : null;
+    const { t, text, parts } = value as Record<string, unknown>;
+    if (typeof t === 'number' && Number.isFinite(t) && Array.isArray(parts) && parts.length && parts.every(part => typeof part === 'string' && keep(part))) {
+      const combined = parts.join('\n');
+      if (bytes(combined) <= DRAFTS_BYTE_BUDGET) return { t, text: combined, parts };
+    }
+    return typeof t === 'number' && Number.isFinite(t) && typeof text === 'string' && keep(text) ? { t, text } : null;
   } catch { return null; }
 }
 
+interface HeldEntry { id: string; text: string; refused: boolean }
+export interface DraftHold {
+  (): void;
+  owner(): string;
+  reject(current: string, restored?: string): string;
+}
 /** The drafts map, written through to storage (see the file comment). `newTaskKey` names the
  * project key (`new:<project id>`) of a task that is a New task, undefined for any other task. */
 export class PersistedDrafts extends Map<string, string> {
   newTaskKey: (id: string) => string | undefined = () => undefined;
-  private readonly held = new Map<string, { text: string }[]>();
+  private readonly held = new Map<string, HeldEntry[]>();
+  /** Original bounded pieces of an oversized combined recovery draft after launch. */
+  private readonly recoveredParts = new Map<string, string[]>();
+  private readonly displaced = new Map<string, string>();
   private readonly savedAt = new Map<string, number>();
   /** Bytes of each draft as stored; absent when it is not in storage. */
   private readonly stored = new Map<string, number>();
@@ -130,7 +143,8 @@ export class PersistedDrafts extends Map<string, string> {
     for (const key of storedKeys(store)) {
       if (!this.keeping) { safeRemove(store, key); continue; }
       const draft = decodeDraft(safeRead(store, key)), id = key.slice(DRAFT_PREFIX.length);
-      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t) || !keep(draft.text)) { safeRemove(store, key); continue; }
+      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t)) { safeRemove(store, key); continue; }
+      if (draft.parts) this.recoveredParts.set(id, draft.parts);
       super.set(id, draft.text); this.savedAt.set(id, draft.t); this.stored.set(id, bytes(draft.text));
     }
     this.loaded = true;
@@ -141,14 +155,16 @@ export class PersistedDrafts extends Map<string, string> {
 
   override set(id: string, text: string, immediate = true): this {
     if (!this.loaded) return super.set(id, text);
-    this.claim(id);
+    if (super.get(id) !== text) this.displaced.delete(id);
+    if (text || super.has(id) || this.held.has(id)) this.claim(id);
     if (super.get(id) === text) {
       if (immediate && this.dirty.has(id)) this.flush(id);
       return this;
     }
+    this.recoveredParts.delete(id);
     super.set(id, text);
     this.savedAt.set(id, this.now());
-    if (!keep(this.recoveryText(id))) {
+    if (!this.recoveryParts(id).length) {
       this.dropDirty(id);
       this.unstore(id);
     } else if (immediate) {
@@ -163,21 +179,73 @@ export class PersistedDrafts extends Map<string, string> {
 
   /** Keep submitted text recoverable until its send settles, without showing it in the live field.
    * A fresh launch reads the combined text as an ordinary draft and never replays a send. */
-  hold(id: string, text: string): () => void {
-    const entry = { text }, entries = this.held.get(id) ?? [];
+  hold(id: string, text: string): DraftHold {
+    const entry = { id, text, refused: false };
+    const entries = (this.held.get(id) ?? []).filter(item => !item.refused);
     this.held.set(id, [...entries, entry]);
     this.savedAt.set(id, this.now());
     this.write(id);
-    return () => {
-      if (!this.held.get(id)?.includes(entry)) return;
-      const remaining = (this.held.get(id) ?? []).filter(item => item !== entry);
-      if (remaining.length) this.held.set(id, remaining); else this.held.delete(id);
-      this.write(id);
+    const release = () => {
+      if (entry.refused || !this.held.get(entry.id)?.includes(entry)) return;
+      this.held.set(entry.id, (this.held.get(entry.id) ?? []).filter(item => item !== entry));
+      this.finishSettled(entry.id);
+      this.write(entry.id);
     };
+    return Object.assign(release, {
+      owner: () => entry.id,
+      reject: (current: string, restored?: string) => {
+        const entries = this.held.get(entry.id) ?? [];
+        const preceding = entries.slice(0, entries.indexOf(entry)).filter(item => item.refused).map(item => item.text).join('\n');
+        const at = preceding && (current === preceding || current.startsWith(preceding + '\n')) ? preceding.length : 0;
+        const result = restored ?? (current === entry.text && !entries.some(item => item.refused) ? current :
+          [current.slice(0, at), entry.text, current.slice(at + (at ? 1 : 0))].filter(Boolean).join('\n'));
+        entry.refused = true;
+        super.set(entry.id, result);
+        this.finishSettled(entry.id);
+        this.savedAt.set(entry.id, this.now());
+        this.write(entry.id);
+        return result;
+      },
+    });
   }
 
-  private recoveryText(id: string): string {
-    return [...(this.held.get(id) ?? []).map(entry => entry.text), super.get(id) ?? ''].filter(Boolean).join('\n');
+  /** Once all sends settle, only the editable text needs to survive. */
+  private finishSettled(id: string): void {
+    if (this.held.get(id)?.some(entry => !entry.refused)) return;
+    const live = super.get(id) ?? '';
+    if (live.length > MAX_DRAFT_CHARS) this.recoveredParts.set(id, this.recoveryParts(id));
+    this.held.delete(id);
+  }
+
+  hasContent(id: string): boolean {
+    return Boolean(this.get(id)?.trim() || this.held.get(id)?.some(entry => !entry.refused));
+  }
+
+  move(from: string, to: string): void {
+    const live = this.get(from), entries = this.held.get(from);
+    if (live === undefined && !entries) return;
+    if (entries) {
+      this.held.delete(from);
+      for (const entry of entries) entry.id = to;
+      this.held.set(to, entries);
+    }
+    const parts = this.recoveredParts.get(from);
+    if (parts) this.recoveredParts.set(to, parts);
+    super.set(to, live ?? '');
+    this.savedAt.set(to, this.savedAt.get(from) ?? this.now());
+    this.delete(from);
+    this.write(to);
+  }
+
+  private recoveryParts(id: string): string[] {
+    const entries = this.held.get(id) ?? [], live = super.get(id) ?? '';
+    const prefix = entries.filter(item => item.refused).map(item => item.text).join('\n');
+    if (prefix && (live === prefix || live.startsWith(prefix + '\n'))) {
+      return [...entries.map(item => item.text), live.slice(prefix.length + 1)].filter(keep);
+    }
+    const parts = this.recoveredParts.get(id);
+    const liveParts = parts && parts.join('\n') === live ? parts : [live];
+    return [...entries.filter(item => !item.refused).map(item => item.text), ...liveParts].filter(keep);
   }
 
   /** Writes any pending debounced draft changes to storage immediately. */
@@ -186,7 +254,7 @@ export class PersistedDrafts extends Map<string, string> {
     if (id !== undefined) {
       if (!this.dirty.delete(id)) return;
       if (!this.dirty.size) this.cancelFlushTimer();
-      if (keep(this.recoveryText(id))) this.write(id); else this.unstore(id);
+      if (this.recoveryParts(id).length) this.write(id); else this.unstore(id);
       return;
     }
     this.cancelFlushTimer();
@@ -194,7 +262,7 @@ export class PersistedDrafts extends Map<string, string> {
     const pending = [...this.dirty];
     this.dirty.clear();
     for (const dirtyId of pending) {
-      if (keep(this.recoveryText(dirtyId))) this.write(dirtyId); else this.unstore(dirtyId);
+      if (this.recoveryParts(dirtyId).length) this.write(dirtyId); else this.unstore(dirtyId);
     }
   }
 
@@ -214,6 +282,8 @@ export class PersistedDrafts extends Map<string, string> {
   override delete(id: string): boolean {
     this.dropDirty(id);
     this.savedAt.delete(id);
+    this.recoveredParts.delete(id);
+    if (!this.held.get(id)?.some(entry => !entry.refused)) this.held.delete(id);
     const removed = super.delete(id);
     if (this.held.has(id)) { this.write(id); return removed; }
     this.unstore(id);
@@ -229,7 +299,7 @@ export class PersistedDrafts extends Map<string, string> {
     this.cancelFlushTimer();
     this.dirty.clear();
     for (const key of storedKeys(this.store)) safeRemove(this.store, key);
-    this.stored.clear(); this.claimed.clear(); this.held.clear();
+    this.stored.clear(); this.claimed.clear(); this.held.clear(); this.displaced.clear(); this.recoveredParts.clear();
     for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); }
   }
 
@@ -262,6 +332,8 @@ export class PersistedDrafts extends Map<string, string> {
   private adopt(id: string): string | undefined {
     const key = this.newTaskKey(id), text = key === undefined ? undefined : super.get(key);
     if (key === undefined || text === undefined) return undefined;
+    const parts = this.recoveredParts.get(key);
+    if (parts) { this.recoveredParts.set(id, parts); this.recoveredParts.delete(key); }
     super.set(id, text); this.savedAt.set(id, this.savedAt.get(key) ?? this.now());
     const size = this.stored.get(key);
     if (size !== undefined) this.stored.set(id, size);
@@ -275,7 +347,7 @@ export class PersistedDrafts extends Map<string, string> {
   reclaim(id: string): void {
     if (!this.loaded) return;
     if (this.dirty.has(id)) this.flush(id);
-    else this.claim(id);
+    else if (super.has(id) || this.held.has(id)) this.claim(id);
   }
 
   /** `reclaim` for every thread draft: call after the session list (or a task's draft flag) changed. */
@@ -290,13 +362,14 @@ export class PersistedDrafts extends Map<string, string> {
    * text back to the project key. `rewrite`: write the moved text (false when a write is under way). */
   private claim(id: string, rewrite = true): void {
     const key = this.newTaskKey(id), previous = this.claimed.get(id);
+    if (key !== undefined && this.displaced.get(id) === key) return;
     if (previous === key) return;
     const moved = this.stored.has(id) || this.dirty.has(id);
     safeRemove(this.store, DRAFT_PREFIX + (previous ?? id)); this.stored.delete(id);
     if (key === undefined) this.claimed.delete(id);
     else {
       if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); this.dropDirty(key); }
-      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); this.dropDirty(other); }
+      for (const [other, owned] of this.claimed) if (owned === key) { this.displaced.set(other, key); this.claimed.delete(other); this.stored.delete(other); this.dropDirty(other); }
       this.claimed.set(id, key);
     }
     // Moved to another project, published, or a New task again: its text moves to the new key.
@@ -314,13 +387,13 @@ export class PersistedDrafts extends Map<string, string> {
   private write(id: string): void {
     // Its New task state may have changed since the change was typed.
     this.claim(id, false);
-    if (!this.keeping) return;
-    const text = this.recoveryText(id);
-    if (!keep(text)) { this.unstore(id); return; }
+    if (!this.keeping || (this.displaced.has(id) && this.displaced.get(id) === this.newTaskKey(id))) return;
+    const parts = this.recoveryParts(id), text = parts.join('\n');
+    if (!parts.length || bytes(text) > DRAFTS_BYTE_BUDGET) { this.unstore(id); return; }
     const size = bytes(text);
     this.stored.delete(id);
     this.evictOldest(DRAFTS_BYTE_BUDGET - size);
-    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), text }), key = this.keyOf(id);
+    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), ...(text.length > MAX_DRAFT_CHARS ? { parts } : { text }) }), key = this.keyOf(id);
     try { this.store.setItem(key, value); }
     catch {
       // Full: make room by dropping the older half of what is stored, then try once more.

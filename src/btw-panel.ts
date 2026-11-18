@@ -4,7 +4,7 @@
 import { escape, icon, isImeKey } from './dom';
 import { TITLE_PREFIX, parseBtw } from './btw';
 import { joinPulses } from './model-switch';
-import { createCommittedDrafts } from './composer-restore';
+import type { DraftHold } from './launch-restore';
 import type { Message, MessagePage, Session } from './types';
 
 export interface BtwPanelHost {
@@ -21,7 +21,7 @@ export interface BtwPanelHost {
   draftKey(mainId: string): string;
   draft(sideId: string): string;
   setDraft(sideId: string, text: string): void;
-  holdDraft?(id: string, text: string): () => void;
+  holdDraft(id: string, text: string): DraftHold;
   /** The saved rows that show while `messages` stream (the main transcript's slice). */
   visible(sideId: string, messages: Message[]): Message[];
   /** Replaces every row of `log` before `region` with the saved turns, as the main transcript draws them. */
@@ -56,7 +56,6 @@ export class BtwPanel {
   private messages: Message[] = [];
   private loadedFor = '';
   private draftFor = '';
-  private committedDrafts = createCommittedDrafts();
   private rowsKey = '';
   private frame = 0;
   private retry = 0;
@@ -174,22 +173,19 @@ export class BtwPanel {
     const side = this.host.side()?.session, sideId = side?.id ?? '';
     const mainId = this.host.mainId(), draftKey = sideId || this.host.draftKey(mainId);
     const running = side ? this.host.running(side.id) : false;
-    const releaseDraft = this.host.holdDraft?.(draftKey, typed) ?? (() => {});
-    this.committedDrafts.note(draftKey, typed);
+    const releaseDraft = this.host.holdDraft(draftKey, typed);
     input.value = ''; this.host.setDraft(draftKey, '');
     const work = !side ? this.host.send(text, mainId)
       : running ? (steer ? this.host.steer(side, text) : this.host.queue(side, text))
       : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId, sideId));
     this.stick = true;
     work.catch(error => {
-      releaseDraft();
       // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
       const current = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
-      const key = sideId || this.host.draftKey(mainId);
+      const key = releaseDraft.owner();
       const shown = current?.isConnected && this.host.mainId() === mainId && this.host.draftKey(mainId) === key;
       const newer = shown ? current.value : this.host.draft(key);
-      const restored = this.committedDrafts.restore(draftKey, typed, newer).text;
-      this.host.setDraft(key, restored);
+      const restored = releaseDraft.reject(newer);
       if (shown) current.value = restored;
       this.host.report(error);
     }).finally(() => { releaseDraft(); this.refresh(); });

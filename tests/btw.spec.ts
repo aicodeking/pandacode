@@ -570,11 +570,14 @@ function sideSendLifetimeHarness() {
   const sendSource = mainSource.slice(mainSource.indexOf('const btwSending ='), mainSource.indexOf('/** The `Main thread context:` block'));
   const panelSource = readFileSync(new URL('../src/btw-panel.ts', import.meta.url), 'utf8');
   const submitSource = panelSource.slice(panelSource.indexOf('  private submit('), panelSource.indexOf('  private update('));
-  const restoreExports: any = {};
-  new Function('exports', ts.transpile(readFileSync(new URL('../src/composer-restore.ts', import.meta.url), 'utf8'), { module: ts.ModuleKind.CommonJS }))(restoreExports);
+  const draftExports: any = {};
+  new Function('exports', ts.transpile(readFileSync(new URL('../src/launch-restore.ts', import.meta.url), 'utf8'), { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }))(draftExports);
+  const disk = new Map<string, string>();
+  const store = { get length() { return disk.size; }, key: (i: number) => [...disk.keys()][i], getItem: (key: string) => disk.get(key), setItem: (key: string, value: string) => disk.set(key, value), removeItem: (key: string) => disk.delete(key) };
+  const restart = () => new draftExports.PersistedDrafts(store);
   const gate = () => { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; };
   const parent = { id: 'parent', status: 'idle' }, child = { id: 'child', status: 'idle' };
-  const state: any = { sessionId: parent.id, inspectorTab: 'btw', sessions: [parent], streams: new Map(), drafts: new Map() };
+  const state: any = { sessionId: parent.id, inspectorTab: 'btw', sessions: [parent], streams: new Map(), drafts: restart() };
   let linked: string | undefined;
   const link = () => linked ? { sideId: linked, seenId: 0 } : undefined;
   const saving = new Set<string>();
@@ -605,16 +608,16 @@ function sideSendLifetimeHarness() {
   const panel: any = new Panel();
   let shownMain = parent.id;
   panel.root = { querySelector: () => input };
-  panel.committedDrafts = restoreExports.createCommittedDrafts();
   panel.refresh = () => {};
   panel.host = {
     mainId: () => shownMain, side: () => linked ? { session: state.sessions.find((task: any) => task.id === linked) } : undefined,
     running: () => false, draftKey: (id: string) => id === parent.id && linked ? linked : 'btw-draft:' + id,
     draft: (id: string) => state.drafts.get(id) ?? '', setDraft: (id: string, text: string) => state.drafts.set(id, text),
+    holdDraft: (id: string, text: string) => state.drafts.hold(id, text),
     send: api.sendBtw, report: (error: Error) => errors.push(error),
     command: async () => { commands.push(linked!); if (blockCommand) await command.promise; return false; },
   };
-  return { ...api, state, saving, choice, context, creation, command, title, sent, setup, created, waits, errors, commands, input, btwDrafts,
+  return { ...api, restart, state, saving, choice, context, creation, command, title, sent, setup, created, waits, errors, commands, input, btwDrafts,
     submit: () => panel.submit(false), removeParent: () => { state.sessions = state.sessions.filter((task: any) => task.id !== parent.id); },
     link: () => { linked = child.id; state.sessions.push(child); }, currentLink: link,
     replaceSide: (id?: string) => { linked = id; if (id) state.sessions.push({ id, status: 'idle' }); input.value = 'replacement side draft'; },
@@ -728,4 +731,20 @@ test('side send lifetime: parent deleted during child title save rolls back the 
   expect(h.state.drafts.get('btw-draft:parent')).toBe('keep my side thought\nnewer side thought');
   expect(h.state.drafts.has('child')).toBe(false);
   expect(h.input.value).toBe('other task draft');
+});
+
+test('first side submission follows its published child through a link replacement', async () => {
+  const h = sideSendLifetimeHarness();
+  h.blockContext();
+  h.submit();
+  await expect.poll(() => h.currentLink()?.sideId).toBe('child');
+  expect(h.restart().get('child')).toBe('keep my side thought');
+  expect(h.restart().get('btw-draft:parent')).toBeUndefined();
+  h.replaceSide('replacement');
+  h.context.release();
+  await expect.poll(() => h.errors.length).toBe(1);
+  expect(h.input.value).toBe('replacement side draft');
+  expect(h.state.drafts.get('child')).toBe('keep my side thought');
+  expect(h.restart().get('child')).toBe('keep my side thought');
+  expect(h.sent).toEqual([]);
 });

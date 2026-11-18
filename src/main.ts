@@ -1413,7 +1413,7 @@ function leaveDraft(nextId: string): void {
   if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const typed = prompt?.dataset.sessionId === draft.id ? prompt.value : state.drafts.get(draft.id) ?? '';
-  if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
+  if (state.drafts.hasContent(BTW_DRAFT + draft.id) || state.drafts.hasContent(draft.id) || btwLink(draft.id) || voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
   state.sessions = state.sessions.filter(task => task.id !== draft.id);
   state.drafts.delete(draft.id);
   prewarmedDrafts.delete(draft.id);
@@ -4990,12 +4990,12 @@ function clearSavedDrafts(): void {
 const committedDrafts = createCommittedDrafts();
 function noteCommittedDraft(s: Session, text: string): void { committedDrafts.note(s.id, text); }
 /** Restores a rejected message before newer draft text (after earlier rejected ones) without losing its selection. */
-function restoreComposerDraft(s: Session, text: string): void {
+function restoreComposerDraft(s: Session, text: string, hold?: ReturnType<PersistedDrafts['hold']>): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const shown = prompt?.dataset.sessionId === s.id;
   const current = shown ? prompt.value : state.drafts.get(s.id) ?? '';
   const restored = committedDrafts.restore(s.id, text, current);
-  state.drafts.set(s.id, restored.text);
+  if (hold) hold.reject(current, restored.text); else state.drafts.set(s.id, restored.text);
   if (shown) { applyRestoredDraft(prompt, current, restored.text, restored.at); resizePrompt(); }
 }
 /** Restores an unsent message and its attachments alongside any newer draft. */
@@ -5689,14 +5689,13 @@ function btwFromComposer(): boolean {
     notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
   }
   const draft = prompt.value;
-  const releaseDraft = text ? state.drafts.hold(s.id, draft) : () => {};
+  const releaseDraft = text ? state.drafts.hold(s.id, draft) : undefined;
   noteCommittedDraft(s, draft);
   voiceDictation.draftCleared(s.id);
   prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
   if (!text) { btwPanel.focus(); return true; }
   run(voiceDictation.submit(() => sendBtw(text, s.id).catch(error => {
-    releaseDraft();
-    restoreComposerDraft(s, draft);
+    restoreComposerDraft(s, draft, releaseDraft);
     if (!(error instanceof BtwChoiceRefusal) || error.message) throw error;
   }).finally(releaseDraft)));
   return true;
@@ -5735,8 +5734,7 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
   btwDrafts.delete(main.id);
   state.sessions = [{ ...side, title }, ...state.sessions.filter(task => task.id !== side.id)];
   writeLink(localStorage, main.id, link);
-  const draftKey = BTW_DRAFT + main.id, draft = state.drafts.get(draftKey);
-  if (draft) { state.drafts.set(side.id, draft); state.drafts.delete(draftKey); }
+  state.drafts.move(BTW_DRAFT + main.id, side.id);
   renderNavigation();
   return link;
 }
@@ -6709,11 +6707,15 @@ async function changeTaskProject(projectId: string): Promise<void> {
   if (selected.worktreePath && selected.projectId !== projectId) throw new Error('A worktree task stays with its original project. Start a new task to use another project.');
   if (selected.projectId === projectId) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
   const generation = state.generation;
+  // Adopt any saved side text while the task still belongs to its original project.
+  state.drafts.get(BTW_DRAFT + selected.id);
   configuringSessions.add(selected.id);
   try {
     const updated = await taskCall<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
     prewarmedDrafts.delete(selected.id);
     const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+    state.drafts.reclaim(selected.id);
+    state.drafts.reclaim(BTW_DRAFT + selected.id);
     if (chatTask(selected)) await forgetChat(selected.projectId);
     if (selected.id !== state.sessionId) { renderNavigation(); return; }
     // The user may have left and reselected this task while the write ran.
