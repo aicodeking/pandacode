@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPlan, builtArtifact, checksumLine, macosSigning } from './build.mjs';
+import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { buildPlan, builtArtifact, checksumLine, macosSigning, verifyMacArtifacts } from './build.mjs';
 import { appImageBundleOptions } from './common.mjs';
 
 const env = { PANDACODE_LICENSE_PUBLIC_KEY: 'stale', PANDACODE_UPDATE_PUBLIC_KEY: 'stale', TAURI_SIGNING_PRIVATE_KEY: 'stale', APPLE_ID: 'someone', APPLE_SIGNING_IDENTITY: 'Developer ID Application: Someone', PATH: 'test-path' };
@@ -72,4 +75,92 @@ test('the build selects the exact versioned bundle Tauri produced', () => {
 test('checksum sidecars use the sha256sum format', () => {
   assert.equal(checksumLine('a'.repeat(64), 'PandaCode-Linux-x86_64.AppImage'), `${'a'.repeat(64)}  PandaCode-Linux-x86_64.AppImage\n`);
   assert.throws(() => checksumLine('nothex', 'x'), /SHA-256/);
+});
+
+
+test('macOS validates the app inside each Developer ID download and cleans up on failure', { skip: process.platform === 'win32' }, async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), 'pandacode-release-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const releaseVersion = '1.2.3';
+  const app = join(scratch, 'PandaCode.app');
+  const dmg = join(scratch, 'PandaCode.dmg');
+  const updater = join(scratch, 'PandaCode.app.tar.gz');
+  const makeApp = async (path, binary = 'current binary') => {
+    await mkdir(join(path, 'Contents/MacOS'), { recursive: true });
+    await writeFile(join(path, 'Contents/MacOS/pandacode'), binary);
+  };
+  await makeApp(app);
+
+  for (const [name, badPayload, failure, expectedError] of [
+    ['valid'],
+    ['missing DMG ticket', 'dmg', 'ticket', /missing ticket/],
+    ['missing updater ticket', 'updater', 'ticket', /missing ticket/],
+    ['wrong DMG binary', 'dmg', 'binary', /disk image contains a different app build/],
+    ['wrong updater version', 'updater', 'version', /updater archive contains a different app build/],
+    ['Gatekeeper rejection', 'updater', 'assessment', /assessment failed/],
+    ['extraction failure', 'updater', 'extraction', /extraction failed/],
+    ['no updater'],
+  ]) {
+    await t.test(name, async () => {
+      const payloads = new Map();
+      const checks = [];
+      const unpack = async (dir, kind) => {
+        const path = join(dir, 'PandaCode.app');
+        payloads.set(path, { kind, dir });
+        await makeApp(path, badPayload === kind && failure === 'binary' ? 'stale binary' : undefined);
+      };
+      const commands = {
+        async run(command, args) {
+          const path = args.at(-1);
+          if (command === '/usr/bin/hdiutil') {
+            if (args[0] === 'verify') assert.equal(args[1], dmg);
+            if (args[0] === 'attach') {
+              assert.equal(args[1], dmg);
+              assert.ok(args.includes('-readonly'));
+              const mount = args[args.indexOf('-mountpoint') + 1];
+              await unpack(mount, 'dmg');
+              await symlink('/Applications', join(mount, 'Applications'));
+            }
+            if (args[0] === 'detach') {
+              await rm(join(args[1], 'PandaCode.app'), { recursive: true });
+              await rm(join(args[1], 'Applications'));
+            }
+          } else if (command === '/usr/bin/tar') {
+            assert.equal(args[1], updater);
+            await unpack(path, 'updater');
+            if (failure === 'extraction') throw new Error('extraction failed');
+          } else if (command === '/usr/bin/xcrun' || command === '/usr/sbin/spctl') {
+            const { kind } = payloads.get(path);
+            if (command === '/usr/bin/xcrun') assert.deepEqual(args.slice(0, -1), ['stapler', 'validate']);
+            const check = command === '/usr/bin/xcrun' ? 'ticket' : 'assessment';
+            checks.push([kind, check]);
+            if (kind === badPayload && check === failure) throw new Error(check === 'ticket' ? 'missing ticket' : 'assessment failed');
+          } else {
+            assert.equal(command, '/usr/bin/codesign');
+            assert.ok(payloads.has(path));
+            checks.push([payloads.get(path).kind, 'signature']);
+          }
+        },
+        execFileSync(command, args) {
+          assert.equal(command, '/usr/libexec/PlistBuddy');
+          if (args[1] === 'Print :CFBundleExecutable') return 'pandacode\n';
+          assert.equal(args[1], 'Print :CFBundleShortVersionString');
+          const path = args.at(-1);
+          const { kind } = payloads.get(join(path, '../..'));
+          return badPayload === kind && failure === 'version' ? '1.2.2\n' : `${releaseVersion}\n`;
+        },
+      };
+      const verify = () => verifyMacArtifacts({ dmg, app, releaseVersion, mode: 'developer-id', updater: name === 'no updater' ? undefined : updater }, commands);
+      if (expectedError) {
+        await assert.rejects(verify, expectedError);
+      } else {
+        await verify();
+        const kinds = name === 'no updater' ? ['dmg'] : ['dmg', 'updater'];
+        assert.deepEqual(checks, kinds.flatMap(kind => ['signature', 'ticket', 'assessment'].map(check => [kind, check])));
+      }
+      for (const { dir } of payloads.values()) {
+        await assert.rejects(lstat(dir), { code: 'ENOENT' });
+      }
+    });
+  }
 });
