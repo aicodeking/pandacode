@@ -566,6 +566,7 @@ test('an unsent first side prompt survives boot cleanup and reopening after relo
 // missing-parent panel state. No copied send or draft-restoration implementation.
 function sideSendLifetimeHarness() {
   const mainSource = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const createSource = mainSource.slice(mainSource.indexOf('async function createBtw('), mainSource.indexOf('/** One create-or-send'));
   const sendSource = mainSource.slice(mainSource.indexOf('const btwSending ='), mainSource.indexOf('/** The `Main thread context:` block'));
   const panelSource = readFileSync(new URL('../src/btw-panel.ts', import.meta.url), 'utf8');
   const submitSource = panelSource.slice(panelSource.indexOf('  private submit('), panelSource.indexOf('  private update('));
@@ -573,24 +574,31 @@ function sideSendLifetimeHarness() {
   new Function('exports', ts.transpile(readFileSync(new URL('../src/composer-restore.ts', import.meta.url), 'utf8'), { module: ts.ModuleKind.CommonJS }))(restoreExports);
   const gate = () => { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; };
   const parent = { id: 'parent', status: 'idle' }, child = { id: 'child', status: 'idle' };
-  const state: any = { sessionId: parent.id, inspectorTab: 'btw', sessions: [parent, child], streams: new Map(), drafts: new Map() };
-  let linked = false;
+  const state: any = { sessionId: parent.id, inspectorTab: 'btw', sessions: [parent], streams: new Map(), drafts: new Map() };
+  let linked: string | undefined;
+  const link = () => linked ? { sideId: linked, seenId: 0 } : undefined;
   const saving = new Set<string>();
-  const choice = gate(), context = gate(), creation = gate();
-  let blockContext = false, blockCreation = false;
-  const sent: any[] = [], created: string[] = [], waits: string[] = [], errors: Error[] = [];
+  const choice = gate(), context = gate(), creation = gate(), command = gate(), title = gate();
+  let blockContext = false, blockCreation = false, blockCommand = false, blockTitle = false;
+  const sent: any[] = [], setup: any[] = [], created: string[] = [], waits: string[] = [], errors: Error[] = [], commands: string[] = [];
+  const btwDrafts = new Map();
   const dependencies: Record<string, any> = {
-    state, btwRefusal: () => undefined, btwLink: () => linked ? { sideId: child.id, seenId: 0 } : undefined,
+    state, btwRefusal: () => undefined, btwLink: link,
     modelSwitch: { saving: (id: string) => saving.has(id), holdSend: async (id: string) => { waits.push(id); await choice.promise; return []; } },
     btwPanel: { refresh() {}, shownId: () => child.id, sent() {}, reload() {} }, document: { querySelector: () => null },
     report: (error: Error) => errors.push(error),
-    createBtw: async () => { created.push(parent.id); if (blockCreation) await creation.promise; linked = true; return { sideId: child.id, seenId: 0 }; },
     isRunning: () => false, stream: () => ({}), renderInspector() {},
-    btwContext: async () => { if (blockContext) await context.promise; return { text: '', link: { sideId: child.id, seenId: 0 } }; },
-    writeLink() {}, localStorage: {}, readLinks: () => ({}), sentPrompt: () => ({}),
-    call: async (command: string, args: any) => { sent.push({ command, args }); },
+    btwContext: async (_main: any, link: any) => { if (blockContext) await context.promise; return { text: '', link }; },
+    writeLink: (_storage: any, _mainId: string, next: any) => { linked = next?.sideId; }, localStorage: {}, readLinks: () => ({ [parent.id]: link() }), sentPrompt: () => ({}),
+    call: async (command: string, args: any) => {
+      (command === 'send_message' ? sent : setup).push({ command, args });
+      if (command === 'update_session' && blockTitle) await title.promise;
+    },
+    taskCall: async () => { created.push(parent.id); if (blockCreation) await creation.promise; return child; },
+    sideTitle: (text: string) => 'BTW: ' + text, applyBtwDraft: async (_mainId: string, side: any) => side,
+    btwDrafts, BTW_DRAFT: 'btw-draft:', renderNavigation() {},
   };
-  const js = ts.transpile(sendSource, { target: ts.ScriptTarget.ES2022 });
+  const js = ts.transpile(createSource + sendSource, { target: ts.ScriptTarget.ES2022 });
   const api = new Function(...Object.keys(dependencies), js + '\nreturn { sendBtw, btwSending };')(...Object.values(dependencies));
   const Panel = new Function('parseBtw', ts.transpile('class Panel {' + submitSource + '}\n', { target: ts.ScriptTarget.ES2022 }) + '\nreturn Panel;')(() => null);
   const input = { value: 'keep my side thought', isConnected: true };
@@ -600,13 +608,18 @@ function sideSendLifetimeHarness() {
   panel.committedDrafts = restoreExports.createCommittedDrafts();
   panel.refresh = () => {};
   panel.host = {
-    mainId: () => shownMain, side: () => undefined, draftKey: (id: string) => 'btw-draft:' + id,
+    mainId: () => shownMain, side: () => linked ? { session: state.sessions.find((task: any) => task.id === linked) } : undefined,
+    running: () => false, draftKey: (id: string) => id === parent.id && linked ? linked : 'btw-draft:' + id,
     draft: (id: string) => state.drafts.get(id) ?? '', setDraft: (id: string, text: string) => state.drafts.set(id, text),
     send: api.sendBtw, report: (error: Error) => errors.push(error),
+    command: async () => { commands.push(linked!); if (blockCommand) await command.promise; return false; },
   };
-  return { ...api, state, saving, choice, context, creation, sent, created, waits, errors, input,
+  return { ...api, state, saving, choice, context, creation, command, title, sent, setup, created, waits, errors, commands, input, btwDrafts,
     submit: () => panel.submit(false), removeParent: () => { state.sessions = state.sessions.filter((task: any) => task.id !== parent.id); },
-    link: () => { linked = true; }, blockContext: () => { blockContext = true; }, blockCreation: () => { blockCreation = true; },
+    link: () => { linked = child.id; state.sessions.push(child); }, currentLink: link,
+    replaceSide: (id?: string) => { linked = id; if (id) state.sessions.push({ id, status: 'idle' }); input.value = 'replacement side draft'; },
+    blockContext: () => { blockContext = true; }, blockCreation: () => { blockCreation = true; },
+    blockCommand: () => { blockCommand = true; }, blockTitle: () => { blockTitle = true; },
     navigate: () => { state.sessionId = 'other'; shownMain = 'other'; input.value = 'other task draft'; }, gate,
   };
 }
@@ -635,7 +648,7 @@ for (const phase of ['submission', 'queued', 'captured choice', 'main choice', '
     }
     await expect.poll(() => h.errors.map(error => error.message)).toEqual([expect.stringContaining('main thread is no longer available')]);
     expect(h.sent).toEqual([]);
-    expect(h.state.drafts.get('btw-draft:parent')).toBe(phase === 'queued' ? 'keep my side thought\nnewer side thought' : 'keep my side thought');
+    expect(h.state.drafts.get(['side choice', 'context'].includes(phase) ? 'child' : 'btw-draft:parent')).toBe(phase === 'queued' ? 'keep my side thought\nnewer side thought' : 'keep my side thought');
     if (phase === 'submission') expect(h.input.value).toBe('keep my side thought');
     else expect(h.input.value).toBe('other task draft');
   });
@@ -650,5 +663,69 @@ test('side send lifetime: navigation and independent side choices still deliver 
   expect(h.sent[0]).toMatchObject({ command: 'send_message', args: { sessionId: 'child', text: 'keep my side thought' } });
   expect(h.errors).toEqual([]);
   expect(h.waits).toEqual(['child']);
+  expect(h.input.value).toBe('other task draft');
+});
+
+for (const phase of ['command', 'queued', 'captured choice', 'side choice', 'context']) {
+  for (const replacement of [undefined, 'replacement']) {
+    test(`side send lifetime: new side ${replacement ?? 'draft'} during ${phase} restores the original side draft`, async () => {
+      const h = sideSendLifetimeHarness(), queued = h.gate();
+      h.link();
+      h.state.drafts.set('child', 'keep my side thought');
+      if (phase === 'command') h.blockCommand();
+      if (phase === 'queued' || phase === 'side choice') h.btwSending.set('parent', queued.promise);
+      if (phase === 'captured choice') h.saving.add('child');
+      if (phase === 'context') h.blockContext();
+      h.submit();
+      if (phase === 'command') await expect.poll(() => h.commands.length).toBe(1);
+      if (phase === 'queued' || phase === 'side choice') await expect.poll(() => h.btwSending.get('parent') !== queued.promise).toBe(true);
+      if (phase === 'side choice') { h.saving.add('child'); queued.release(); }
+      if (phase === 'captured choice' || phase === 'side choice') await expect.poll(() => h.waits).toEqual(['child']);
+      if (phase === 'context') await new Promise(resolve => setTimeout(resolve, 0));
+      h.replaceSide(replacement);
+      h.state.drafts.set(replacement ?? 'btw-draft:parent', 'replacement side draft');
+      h.state.drafts.set('child', 'newer original side thought');
+      queued.release(); h.choice.release(); h.context.release(); h.command.release();
+      await expect.poll(() => h.errors.map(error => error.message)).toEqual([expect.stringContaining('side thread has changed')]);
+      expect(h.sent).toEqual([]);
+      expect(h.created).toEqual([]);
+      expect(h.currentLink()?.sideId).toBe(replacement);
+      expect(h.state.drafts.get('child')).toBe('keep my side thought\nnewer original side thought');
+      expect(h.state.drafts.get(replacement ?? 'btw-draft:parent')).toBe('replacement side draft');
+      expect(h.input.value).toBe('replacement side draft');
+    });
+  }
+}
+
+test('side send lifetime: serialized first sends share the side created while they wait', async () => {
+  const h = sideSendLifetimeHarness();
+  h.blockCreation();
+  const first = h.sendBtw('first side thought', 'parent');
+  await expect.poll(() => h.created.length).toBe(1);
+  const second = h.sendBtw('second side thought', 'parent');
+  h.creation.release();
+  await Promise.all([first, second]);
+  expect(h.created).toEqual(['parent']);
+  expect(h.sent.map((call: any) => call.args)).toEqual([
+    expect.objectContaining({ sessionId: 'child', text: 'first side thought' }),
+    expect.objectContaining({ sessionId: 'child', text: 'second side thought' }),
+  ]);
+});
+
+test('side send lifetime: parent deleted during child title save rolls back the unpublished child', async () => {
+  const h = sideSendLifetimeHarness();
+  h.blockTitle(); h.btwDrafts.set('parent', { model: 'picked-model' });
+  h.submit();
+  await expect.poll(() => h.setup.map(call => call.command)).toEqual(['update_session']);
+  h.state.drafts.set('btw-draft:parent', 'newer side thought');
+  h.removeParent(); h.navigate(); h.title.release();
+  await expect.poll(() => h.errors.map(error => error.message)).toEqual([expect.stringContaining('main thread is no longer available')]);
+  expect(h.sent).toEqual([]);
+  expect(h.setup).toContainEqual({ command: 'delete_session', args: { sessionId: 'child' } });
+  expect(h.state.sessions.some((task: any) => task.id === 'child')).toBe(false);
+  expect(h.currentLink()).toBeUndefined();
+  expect(h.btwDrafts.get('parent')).toEqual({ model: 'picked-model' });
+  expect(h.state.drafts.get('btw-draft:parent')).toBe('keep my side thought\nnewer side thought');
+  expect(h.state.drafts.has('child')).toBe(false);
   expect(h.input.value).toBe('other task draft');
 });

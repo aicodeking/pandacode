@@ -5609,7 +5609,7 @@ const btwPanel = new BtwPanel({
       return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
     }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
   }); },
-  send: (text, mainId) => sendBtw(text, mainId),
+  send: (text, mainId, sideId) => sendBtw(text, mainId, sideId),
   queue: (side, text) => btwPanelQueue(side, text),
   // A team takes messages between runs, as in the main composer.
   steer: (side, text) => teams.get(side.id) ? btwPanelQueue(side, text) : steerOrQueue(side, text),
@@ -5720,6 +5720,7 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     }
     side = await applyBtwDraft(main.id, side);
     await call('update_session', { sessionId: side.id, title });
+    btwSendParent(main.id);
   } catch (error) {
     // Never leave a half-set-up task behind; the panel keeps its picks and the /btw text comes back.
     const created = side;
@@ -5738,21 +5739,21 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
 /** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
 const btwSending = new Map<string, Promise<void>>();
 const BTW_PARENT_MISSING = 'Not sent — the main thread is no longer available. Your message is back in the box.';
-/** Recheck the captured parent after waits without depending on which task is now open. */
-function btwSendParent(mainId: string): Session {
+/** Recheck the captured parent and side after waits without depending on which task is now open. */
+function btwSendParent(mainId: string, sideId?: string): Session {
   const main = state.sessions.find(task => task.id === mainId);
   if (!main) throw new Error(BTW_PARENT_MISSING);
+  if (sideId && btwLink(mainId)?.sideId !== sideId) throw new Error('Not sent — the side thread has changed. Your message is back in the box.');
   return main;
 }
-function sendBtw(text: string, mainId = state.sessionId): Promise<void> {
+function sendBtw(text: string, mainId = state.sessionId, sideId = btwLink(mainId)?.sideId): Promise<void> {
   const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.reject(new Error(BTW_PARENT_MISSING));
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
   // Capture this submission's pending choice before it queues: an earlier send may settle its refusal first.
-  const link = btwLink(main.id);
-  const choiceId = link?.sideId ?? main.id;
+  const choiceId = sideId ?? main.id;
   const held = modelSwitch.saving(choiceId) ? holdBtwSend(main.id, choiceId) : undefined;
-  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, held));
+  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, sideId, held));
   btwSending.set(main.id, next); btwPanel.refresh();
   void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
   return next;
@@ -5773,23 +5774,23 @@ function checkBtwChoice(refusals: readonly modelSwitch.Unchanged[]): void {
   throw new BtwChoiceRefusal(text ? `Not sent — ${text}. Your message is back in the box.` : '');
 }
 /** Sends to the side thread with the main thread's news since its last message. */
-async function deliverBtw(main: Session, text: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
-  main = btwSendParent(main.id);
+async function deliverBtw(main: Session, text: string, sideId?: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
+  main = btwSendParent(main.id, sideId);
   if (held) {
     const refusals = await held;
-    main = btwSendParent(main.id);
+    main = btwSendParent(main.id, sideId);
     checkBtwChoice(refusals);
   }
   // A first side thread inherits confirmed main-task choices, never their optimistic, still-saving copy.
   if (!btwLink(main.id)) {
     if (modelSwitch.saving(main.id)) checkBtwChoice(await holdBtwSend(main.id, main.id));
-    main = btwSendParent(main.id);
+    main = btwSendParent(main.id, sideId);
   }
   const link = btwLink(main.id) ?? await createBtw(main, text);
-  main = btwSendParent(main.id);
+  main = btwSendParent(main.id, link.sideId);
   // Also wait for a choice made after submission, while this send was queued.
   if (modelSwitch.saving(link.sideId)) checkBtwChoice(await holdBtwSend(main.id, link.sideId));
-  main = btwSendParent(main.id);
+  main = btwSendParent(main.id, link.sideId);
   const side = state.sessions.find(task => task.id === link.sideId);
   if (!side) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
@@ -5800,7 +5801,7 @@ async function deliverBtw(main: Session, text: string, held?: Promise<readonly m
   let sentLink: BtwLink | undefined;
   try {
     const context = await btwContext(main, link);
-    btwSendParent(main.id);
+    btwSendParent(main.id, link.sideId);
     if (!state.sessions.some(task => task.id === side.id)) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
     const content = text + context.text;
     sentLink = context.link;

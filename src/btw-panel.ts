@@ -35,8 +35,8 @@ export interface BtwPanelHost {
   /** Slash commands and @ mentions on the side prompt; returns their cleanup. */
   mountPickers(textarea: HTMLTextAreaElement, side: Session): () => void;
   bindActions(root: HTMLElement): void;
-  /** Sends as a /btw message (with main-thread context), creating the side thread if needed. */
-  send(text: string, mainId: string): Promise<void>;
+  /** Sends with main-thread context to the captured side, or creates one for a first send. */
+  send(text: string, mainId: string, sideId?: string): Promise<void>;
   queue(side: Session, text: string): Promise<void>;
   steer(side: Session, text: string): Promise<void>;
   /** Runs an app slash command on the side thread: false when `text` is not one, a string to send instead, else true. */
@@ -177,7 +177,7 @@ export class BtwPanel {
     input.value = ''; this.host.setDraft(draftKey, '');
     const work = !side ? this.host.send(text, mainId)
       : running ? (steer ? this.host.steer(side, text) : this.host.queue(side, text))
-      : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId));
+      : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId, sideId));
     this.stick = true;
     work.catch(error => {
       // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
