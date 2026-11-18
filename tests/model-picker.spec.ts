@@ -2198,3 +2198,73 @@ test('refusal gaps: mixed main and side submissions keep their own ordered draft
   await expect(box).toHaveValue('');
   await expect(main).toHaveValue(mainDraft);
 });
+
+test('an unsent new-task side draft survives reload', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
+  await expect.poll(async () => (await task(page)).draft).toBe(true);
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await page.locator('.btw-input').fill('new task side thought');
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith('pandacode.draft:btw-draft:new:')).map(key => JSON.parse(localStorage.getItem(key)!).text))).toEqual(['new task side thought']);
+  await page.reload();
+  await expect(page.locator('#prompt')).toBeEnabled();
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('.btw-input')).toHaveValue('new task side thought');
+});
+
+for (const origin of ['main', 'first side']) test(`a held ${origin} side send survives reload as ordered draft text`, async ({ page }) => {
+  await loadHeld(page, '/');
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  const prompt = page.locator('#prompt');
+  if (origin === 'first side') { await prompt.fill('/btw '); await prompt.press('Enter'); }
+  const input = origin === 'main' ? prompt : page.locator('.btw-input');
+  const prefix = origin === 'main' ? '/btw ' : '';
+  await input.fill(prefix + 'held side thought');
+  await input.press('Enter');
+  await expect(input).toHaveValue('');
+  await input.fill('later draft');
+  await page.reload();
+  await expect(prompt).toBeEnabled();
+  if (origin === 'first side') { await prompt.fill('/btw '); await prompt.press('Enter'); }
+  await expect(input).toHaveValue(prefix + 'held side thought\nlater draft');
+  expect(await page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'send_message'))).toEqual([]);
+  await page.reload();
+  await expect(prompt).toBeEnabled();
+  if (origin === 'first side') { await prompt.fill('/btw '); await prompt.press('Enter'); }
+  await expect(input).toHaveValue(prefix + 'held side thought\nlater draft');
+});
+
+for (const origin of ['main', 'first side']) for (const refused of [false, true]) {
+  test(`a ${refused ? 'refused' : 'successful'} held ${origin} side send cleans its recovery copy`, async ({ page }) => {
+    await loadHeld(page, '/');
+    await holdCall(page, 'configure_session');
+    await pickAstra(page);
+    const prompt = page.locator('#prompt');
+    if (origin === 'first side') { await prompt.fill('/btw '); await prompt.press('Enter'); }
+    const input = origin === 'main' ? prompt : page.locator('.btw-input');
+    const text = (origin === 'main' ? '/btw ' : '') + 'held cleanup thought';
+    await input.fill(text);
+    await input.press('Enter');
+    await expect(input).toHaveValue('');
+    await input.fill('later cleanup draft');
+    await releaseCall(page, 'configure_session', refused ? 'Cleanup refusal.' : undefined);
+    const expected = refused ? text + '\nlater cleanup draft' : 'later cleanup draft';
+    await expect(input).toHaveValue(expected);
+    if (!refused) await expect(page.locator('.btw-panel .message.agent-message[data-message-id]')).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage)
+      .filter(key => key.startsWith('pandacode.draft:'))
+      .map(key => JSON.parse(localStorage.getItem(key)!).text)
+      .filter((text: string) => text.includes('cleanup')))).toEqual([expected]);
+    if (refused) {
+      await page.reload();
+      await expect(prompt).toBeEnabled();
+      if (origin === 'first side') { await prompt.fill('/btw '); await prompt.press('Enter'); }
+      await expect(input).toHaveValue(expected);
+      expect(await sent(page)).toBe(0);
+    }
+  });
+}

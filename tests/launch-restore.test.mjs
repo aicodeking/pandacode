@@ -908,3 +908,104 @@ test('side draft cleanup validates the parent ID length rather than the syntheti
   const parent = 'p'.repeat(MAX_SESSION_ID);
   assert.deepEqual(draftThreadBatches(['btw-draft:' + parent, 'btw-draft:', 'btw-draft:' + parent + 'x']), [[parent]]);
 });
+
+test('held sends restore as ordered editable text, settle independently and never duplicate later drafts', () => {
+  const store = memory();
+  const drafts = new PersistedDrafts(store);
+  drafts.set('task', 'first');
+  const first = drafts.hold('task', 'first');
+  drafts.delete('task');
+  const second = drafts.hold('task', 'second');
+  drafts.set('task', 'later');
+  assert.equal(drafts.get('task'), 'later');
+  assert.equal(new PersistedDrafts(store).get('task'), 'first\nsecond\nlater');
+  first(); first();
+  assert.equal(new PersistedDrafts(store).get('task'), 'second\nlater');
+  second();
+  assert.equal(new PersistedDrafts(store).get('task'), 'later');
+  drafts.delete('task');
+  assert.equal(new PersistedDrafts(store).get('task'), undefined);
+});
+
+
+test('a new-task side draft adopts its project key and follows publishing and project cleanup', async () => {
+  const { dropDeletedDrafts, dropRemovedProjectDrafts } = await import('../src/launch-restore.ts');
+  const store = memory();
+  let isDraft = true;
+  const key = id => id === 'btw-draft:temporary' && isDraft ? 'btw-draft:new:project' : undefined;
+  const before = new PersistedDrafts(store);
+  before.newTaskKey = key;
+  before.set('btw-draft:temporary', 'side draft');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'btw-draft:temporary'), null);
+  const drafts = new PersistedDrafts(store);
+  await dropDeletedDrafts(drafts, async ids => { assert.deepEqual(ids, []); return ids; });
+  dropRemovedProjectDrafts(drafts, ['project']);
+  drafts.newTaskKey = key;
+  assert.equal(drafts.get('btw-draft:temporary'), 'side draft');
+  isDraft = false;
+  drafts.reclaim('btw-draft:temporary');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'btw-draft:new:project'), null);
+  assert.equal(new PersistedDrafts(store).get('btw-draft:temporary'), 'side draft');
+  isDraft = true;
+  drafts.reclaim('btw-draft:temporary');
+  const next = new PersistedDrafts(store);
+  dropRemovedProjectDrafts(next, []);
+  assert.equal(store.getItem(DRAFT_PREFIX + 'btw-draft:new:project'), null);
+});
+
+test('clearing saved drafts or turning them off also clears held recovery without resurrecting it on settlement', () => {
+  for (const off of [false, true]) {
+    const store = memory(), drafts = new PersistedDrafts(store);
+    const release = drafts.hold('task', 'held');
+    drafts.delete('task');
+    if (off) drafts.setKeeping(false); else drafts.clearStored();
+    release();
+    assert.equal(store.getItem(DRAFT_PREFIX + 'task'), null);
+  }
+});
+
+test('a temporary side draft follows project adoption, publishing, removal and draft preferences', async () => {
+  const { BTW_DRAFT, dropDeletedDrafts, dropRemovedProjectDrafts } = await import('../src/launch-restore.ts');
+  const store = memory();
+  const projectKey = BTW_DRAFT + NEW_TASK_DRAFT + 'project';
+  const oldId = BTW_DRAFT + 'temporary-before-restart';
+  const before = new PersistedDrafts(store, () => NOW);
+  before.newTaskKey = id => id === oldId ? projectKey : undefined;
+  before.set(oldId, 'unsent side text');
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + projectKey)).text, 'unsent side text');
+  const after = new PersistedDrafts(store, () => NOW);
+  const asked = [];
+  await dropDeletedDrafts(after, async ids => { asked.push(...ids); return ids; });
+  assert.deepEqual(asked, []);
+  dropRemovedProjectDrafts(after, ['project']);
+  const newId = BTW_DRAFT + 'temporary-after-restart';
+  let published = false;
+  after.newTaskKey = id => id === newId && !published ? projectKey : undefined;
+  assert.equal(after.get(newId), 'unsent side text');
+  assert.equal(after.get(oldId), undefined);
+  published = true; after.reclaim(newId);
+  assert.equal(store.getItem(DRAFT_PREFIX + projectKey), null);
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + newId)).text, 'unsent side text');
+  before.set(oldId, 'removed project side text');
+  const removed = new PersistedDrafts(store, () => NOW);
+  dropRemovedProjectDrafts(removed, []);
+  assert.equal(removed.has(projectKey), false);
+  removed.setKeeping(false);
+  removed.hold('parent', 'private held text');
+  removed.delete('parent');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'parent'), null);
+});
+
+test('held text follows a temporary task when published with an empty live composer', () => {
+  const store = memory(), drafts = new PersistedDrafts(store, () => NOW);
+  let temporary = true;
+  drafts.newTaskKey = id => id === 'temporary' && temporary ? 'new:project' : undefined;
+  drafts.set('temporary', 'held question');
+  const release = drafts.hold('temporary', 'held question');
+  drafts.delete('temporary');
+  temporary = false; drafts.reclaimAll();
+  assert.equal(store.getItem(DRAFT_PREFIX + 'new:project'), null);
+  assert.equal(new PersistedDrafts(store, () => NOW).get('temporary'), 'held question');
+  release();
+  assert.equal(new PersistedDrafts(store, () => NOW).get('temporary'), undefined);
+});

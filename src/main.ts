@@ -839,7 +839,7 @@ const pullView = createPullView({
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify, notifyError,
 });
-function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
+function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); state.drafts.reclaim(BTW_DRAFT + saved.id); }
 /** Puts a task native answered with in place of the one held; a task no longer held (deleted meanwhile) is not added back. */
 function replaceSession(next: Session): void { const index = state.sessions.findIndex(s => s.id === next.id); if (index >= 0) state.sessions[index] = next; }
 /** A native call whose reply may be a task or tasks (get_task, an update's answer): each keeps a model, effort or
@@ -4754,6 +4754,7 @@ async function removeProject(id: string): Promise<void> {
   removeDeletedSessions(state.sessions.filter(s => s.projectId === id).map(s => s.id));
   // Its unsent New task text goes with it.
   state.drafts.delete(NEW_TASK_DRAFT + id);
+  state.drafts.delete(BTW_DRAFT + NEW_TASK_DRAFT + id);
   state.projects = await call<Project[]>('list_projects');
   if (state.projectFilter === id) setProjectFilter('');
   if (state.projectId === id) activateProject(userProjects()[0]?.id ?? '');
@@ -5549,6 +5550,7 @@ const btwPanel = new BtwPanel({
     return Boolean(live?.approvals.size || live?.inputs.size) || status === 'waiting' || status === 'waiting_approval';
   },
   mainRunning: () => isRunning(),
+  holdDraft: (id, text) => state.drafts.hold(id, text),
   draft: sideId => state.drafts.get(sideId) ?? '',
   setDraft: (sideId, text) => { if (text) state.drafts.set(sideId, text); else state.drafts.delete(sideId); },
   // Dismissed error rows leave the list the panel keys its redraws on; the rows themselves get the whole list, so
@@ -5687,14 +5689,16 @@ function btwFromComposer(): boolean {
     notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
   }
   const draft = prompt.value;
+  const releaseDraft = text ? state.drafts.hold(s.id, draft) : () => {};
   noteCommittedDraft(s, draft);
   voiceDictation.draftCleared(s.id);
   prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
   if (!text) { btwPanel.focus(); return true; }
   run(voiceDictation.submit(() => sendBtw(text, s.id).catch(error => {
+    releaseDraft();
     restoreComposerDraft(s, draft);
     if (!(error instanceof BtwChoiceRefusal) || error.message) throw error;
-  })));
+  }).finally(releaseDraft)));
   return true;
 }
 /** A new side thread in the main thread's project, harness, model and checkout. */
@@ -9034,7 +9038,11 @@ const agentUpdates = initializeAgentUpdates({
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 // A New task's text is kept per project, since its draft session does not outlive the launch.
-state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
+state.drafts.newTaskKey = id => {
+  const side = id.startsWith(BTW_DRAFT), parentId = side ? id.slice(BTW_DRAFT.length) : id;
+  const task = state.sessions.find(s => s.id === parentId);
+  return task?.draft ? (side ? BTW_DRAFT : '') + NEW_TASK_DRAFT + task.projectId : undefined;
+};
 expireDraftsWhileRunning(state.drafts);
 renderThemeToggle(); render(); renderInspector();
 // The model picker opens without a wait: its module and team library load at idle, or when its trigger is hovered or focused.

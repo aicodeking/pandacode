@@ -21,6 +21,7 @@ export interface BtwPanelHost {
   draftKey(mainId: string): string;
   draft(sideId: string): string;
   setDraft(sideId: string, text: string): void;
+  holdDraft?(id: string, text: string): () => void;
   /** The saved rows that show while `messages` stream (the main transcript's slice). */
   visible(sideId: string, messages: Message[]): Message[];
   /** Replaces every row of `log` before `region` with the saved turns, as the main transcript draws them. */
@@ -173,6 +174,7 @@ export class BtwPanel {
     const side = this.host.side()?.session, sideId = side?.id ?? '';
     const mainId = this.host.mainId(), draftKey = sideId || this.host.draftKey(mainId);
     const running = side ? this.host.running(side.id) : false;
+    const releaseDraft = this.host.holdDraft?.(draftKey, typed) ?? (() => {});
     this.committedDrafts.note(draftKey, typed);
     input.value = ''; this.host.setDraft(draftKey, '');
     const work = !side ? this.host.send(text, mainId)
@@ -180,6 +182,7 @@ export class BtwPanel {
       : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text, mainId, sideId));
     this.stick = true;
     work.catch(error => {
+      releaseDraft();
       // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
       const current = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
       const key = sideId || this.host.draftKey(mainId);
@@ -189,7 +192,7 @@ export class BtwPanel {
       this.host.setDraft(key, restored);
       if (shown) current.value = restored;
       this.host.report(error);
-    }).finally(() => this.refresh());
+    }).finally(() => { releaseDraft(); this.refresh(); });
   }
 
   private update(): void {
