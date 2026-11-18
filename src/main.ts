@@ -4491,6 +4491,9 @@ const SLASH_INSTRUCTIONS: Record<string, string> = {
 function slashInstruction(action: string, argumentsText: string): string { return SLASH_INSTRUCTIONS[action] + (argumentsText ? '\n' + argumentsText : ''); }
 /** App slash commands that act only on the task they are given, so the By the way panel can run them for its side thread. */
 const SIDE_SAFE_SLASH = new Set(['usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs', 'export', 'fast', 'settings', 'theme']);
+/** Commands that act on this app alone, never on the agent, so Enter runs them even while a run is active.
+ *  `/status` is the one a reader wants mid-run: it names the context tokens the harness last reported. */
+const RUN_SAFE_SLASH = new Set([...SIDE_SAFE_SLASH, 'status']);
 /** Runs an app slash command typed in the By the way panel on its side thread. Returns text to send to the side
  *  agent instead (commands that become a prompt), true when handled, false when `text` is not an app command;
  *  commands that would act on the open thread are refused with a notice. */
@@ -4509,6 +4512,17 @@ async function btwSlash(side: Session, text: string, toolbar: HTMLElement | null
   if (SIDE_SAFE_SLASH.has(action) || (action === 'plan' && (!args || ['on', 'off'].includes(args)))) { await performSlashAction(action, args, side); return true; }
   notify(`Open the side thread as a full thread to use ${text.split(/\s/)[0]}.`);
   return true;
+}
+/** The context line in `/status`: what the harness last reported, kept current while the dialog stays open. */
+function contextDetail(task: Session): string {
+  return contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.';
+}
+/** A Task status dialog open during a run takes each new reading instead of the one it opened with. */
+function updateStatusContext(task: Session): void {
+  const line = document.querySelector<HTMLElement>(`#dialog[open] [data-status-usage="${CSS.escape(task.id)}"]`);
+  if (!line) return;
+  const detail = contextDetail(task);
+  if (line.textContent !== detail) line.textContent = detail;
 }
 async function performSlashAction(action: string, argumentsText: string, task: Session): Promise<void> {
   if (action.startsWith('console:')) { await openHarnessConsole(task, `/${action.slice(8)}${argumentsText ? ' ' + argumentsText : ''}`); return; }
@@ -4559,7 +4573,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     }
     case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
-    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
+    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p data-status-usage="${escape(task.id)}">${escape(contextDetail(task))}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
       if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
@@ -4609,6 +4623,26 @@ function clearComposer(s: Session): void {
 async function enqueueFromComposer(forceQueue = false): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await enqueueDraft(forceQueue);
+}
+/** Enter while a run is active: queue the draft for the next turn, except a command that only acts on this
+ *  app. Sending `/status` to the agent would spend a turn and never show the usage the user asked for. */
+async function queueOrRunLocalCommand(): Promise<void> {
+  const s = session(), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const draft = prompt?.value ?? '', text = draft.trim();
+  if (s && prompt && !btwFromComposer() && /^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(text)) {
+    const generation = state.generation;
+    const resolved = await call<{ action: string | null; arguments: string }>('resolve_slash_command', { sessionId: s.id, text }).catch(() => null);
+    // Only this task, unchanged, may be acted on; anything that moved meanwhile is queued as typed.
+    if (resolved?.action && RUN_SAFE_SLASH.has(resolved.action) && state.sessionId === s.id && state.generation === generation && prompt.value === draft) {
+      const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
+      prompt.value = ''; state.drafts.delete(s.id); resizePrompt();
+      try { await performSlashAction(resolved.action, resolved.arguments, s); }
+      catch (error) { restoreComposerDraft(s, draft); throw error; }
+      finally { finishSubmit(); }
+      return;
+    }
+  }
+  await enqueueFromComposer();
 }
 async function enqueueDraft(forceQueue: boolean): Promise<void> {
   if (btwFromComposer()) return;
@@ -5605,6 +5639,7 @@ function onAgent(event: AgentEvent): void {
     if (s && usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
+      updateStatusContext(s);
     }
     return;
   }
@@ -8286,8 +8321,9 @@ document.addEventListener('keydown', event => {
   else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
-    // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
-    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
+    // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn; a
+    // command that only acts on this app runs instead of waiting for the run to end.
+    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : queueOrRunLocalCommand());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
