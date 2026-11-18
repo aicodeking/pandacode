@@ -7147,22 +7147,12 @@ function showDeleteTask(task = session()): void {
   });
 }
 function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
-let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
-  const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
   modelCatalogs.clear();
-  askingProviderList();
-  const found = await call<Provider[]>('list_providers', { force: true });
-  if (generation !== settingsDiscoveryGeneration) return state.providers;
-  // Versions arrive blank (the cache was cleared) and fill in by `provider-versions`; the same CLI keeps its shown
-  // models, and a real version change reported later drops them.
-  const providers = mergeProviderList(found, (entry, previous) => previous.path === entry.path);
-  state.providers = providers;
-  // A Settings refresh answers the boot question too (the boot list may have failed or still be out).
-  if (!providersKnown) { providersKnown = true; settleProviders(providers); run(correctProvisionalTasks()); }
-  refreshAuthorNames();
-  return providers;
+  const generation = askingProviderList();
+  providersLanded(await call<Provider[]>('list_providers', { force: true }), generation, true);
+  return state.providers;
 }
 /** Settings is a full page over the workspace; Back or Escape returns to where you were. */
 let settingsView: import('./settings').SettingsView | undefined;
@@ -8750,7 +8740,8 @@ async function boot(): Promise<void> {
   activateProject(reopened?.projectId ?? newTask ?? state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
   // A remembered New task whose project is gone (removed elsewhere) falls back like any launch.
   const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
-  if (newTask) run(createTask(newTask));
+  // An explicit creation press is already waiting for boot. The saved text stays available to New task.
+  if (newTask && !pressInFlight) run(createTask(newTask));
   // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
   const selecting = first ? selectSession(first.id) : undefined, bootGeneration = state.generation;
   showCrashNotice();
@@ -8843,11 +8834,14 @@ function versionReplaced(id: ProviderId, version: string): boolean {
   realVersions.set(id, version);
   return Boolean(before && before !== version);
 }
+let providerListGeneration = 0;
+let appliedProviderListGeneration = 0;
 /** A list request is going out: its probe reports again, so earlier reports no longer apply. */
-function askingProviderList(): void {
+function askingProviderList(): number {
   reportedVersions = new Map();
   versionsPendingUntil = Date.now() + PROVIDER_VERSIONS_PATIENCE_MS;
   window.setTimeout(() => settingsView?.providersChanged(state.providers), PROVIDER_VERSIONS_PATIENCE_MS + 50);
+  return ++providerListGeneration;
 }
 /** A landed list, merged: versions reported meanwhile fill its blanks, and a harness at the same path keeps the version
  *  shown until its probe reports (a refresh never blanks it); models found this launch stay unless `keep` says otherwise
@@ -8896,12 +8890,8 @@ function loadBootProviders(listening: Promise<unknown>): void {
   void listening.catch(() => undefined).then(() => askBootProviders(0));
 }
 function askBootProviders(attempt: number): void {
-  const discovery = settingsDiscoveryGeneration;
-  askingProviderList();
-  run(call<Provider[]>('list_providers').then(found => {
-    if (!Array.isArray(found)) throw new Error('The agent harness list was not readable.');
-    providersLanded(found, discovery);
-  }).catch(error => {
+  const generation = askingProviderList();
+  run(call<Provider[]>('list_providers').then(found => providersLanded(found, generation)).catch(error => {
     if (providersKnown) return;
     markProvidersOverdue();
     const wait = PROVIDER_RETRY_MS[attempt];
@@ -8910,10 +8900,13 @@ function askBootProviders(attempt: number): void {
     window.setTimeout(() => { if (!providersKnown) askBootProviders(attempt + 1); }, wait);
   }));
 }
-function providersLanded(found: Provider[], discovery: number): void {
+function providersLanded(found: Provider[], generation: number, force = false): void {
+  if (!Array.isArray(found)) throw new Error('The agent harness list was not readable.');
+  // A pending or failed refresh leaves this answer usable. A newer successful one has already replaced it.
+  if (generation < appliedProviderListGeneration) return;
+  state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.has(entry.id));
+  appliedProviderListGeneration = generation;
   keepProviderCatalog(found);
-  // A Settings refresh meanwhile has the newer list; otherwise models already discovered this launch stay.
-  if (discovery === settingsDiscoveryGeneration) state.providers = mergeProviderList(found, entry => modelCatalogs.has(entry.id));
   providersKnown = true;
   settleProviders(state.providers);
   const s = session();
@@ -8926,7 +8919,7 @@ function providersLanded(found: Provider[], discovery: number): void {
   // Restored queues name the agent they wait for.
   if (s && state.queues.get(s.id)?.length) renderComposer();
   run(correctProvisionalTasks());
-  if (!preview && !state.providers.some(p => p.installed)) {
+  if (!force && !preview && !state.providers.some(p => p.installed)) {
     const pending = bootPending;
     void (pending ?? Promise.resolve()).catch(() => undefined).then(() => notify('Open Settings to check your installed agent CLIs.'));
   }

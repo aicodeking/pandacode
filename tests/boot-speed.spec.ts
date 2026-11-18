@@ -286,6 +286,70 @@ test('Settings before the list answers shows the last launch\'s installed harnes
   await expect(claude.locator('code')).toHaveText('/sample/bin/claude', { timeout: 10_000 });
 });
 
+for (const refresh of ['fails', 'wins'] as const) {
+  test(`startup keeps the newest successful catalog when Settings refresh ${refresh}`, async ({ page }) => {
+    test.setTimeout(45_000);
+    const boot = { id: 'claude', name: 'Boot Claude', installed: true, path: '/sample/bin/claude', version: '1.2.3', models: [] };
+    const fresh = { id: 'codex', name: 'Refreshed Codex', installed: true, path: '/sample/bin/codex', version: '4.5.6', models: [] };
+    type Answer = typeof boot[] | null;
+    type CatalogWindow = Window & { __answerBoot?: (answer: Answer) => void; __answerRefresh?: (answer: Answer) => void };
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const body = (await response.text()).replace(/case ["']list_providers["']\s*:/, `$&
+        if (!args.deviceId) {
+          result = await new Promise(resolve => { window[args.force ? '__answerRefresh' : '__answerBoot'] = resolve; });
+          if (result === null) throw new Error('Agent discovery failed');
+          break;
+        }`);
+      await route.fulfill({ response, body: previewBody(body) });
+    });
+    await page.goto('/');
+    await expect.poll(() => page.evaluate(() => typeof (window as CatalogWindow).__answerBoot)).toBe('function');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    const settings = page.getByRole('region', { name: 'Settings', exact: true });
+    await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => typeof (window as CatalogWindow).__answerRefresh)).toBe('function');
+
+    const answer = (key: '__answerBoot' | '__answerRefresh', value: Answer) => page.evaluate(async ({ key, value }) => {
+      (window as CatalogWindow)[key]!(value);
+      // Let the IPC reply reach the app before advancing to the next action.
+      await new Promise(requestAnimationFrame);
+    }, { key, value });
+    const expected = refresh === 'fails' ? boot : fresh;
+    const version = settings.locator(`.provider-diagnostic[data-provider="${expected.id}"] .settings-provider-version`);
+    if (refresh === 'fails') {
+      await answer('__answerBoot', [boot]);
+      await answer('__answerRefresh', null);
+      await expect(settings.getByText('Couldn’t check agents. Try refreshing again.')).toBeVisible();
+    } else {
+      await answer('__answerRefresh', [fresh]);
+      await expect(version).toHaveText(fresh.version);
+      await answer('__answerBoot', [boot]);
+      await expect(version).toHaveText(fresh.version);
+    }
+    await settings.getByRole('button', { name: 'Back to the workspace' }).click();
+    await page.locator('.sidebar-actions .new-task-button').click();
+    await expect(page.locator('.new-task-welcome')).toBeVisible();
+    const prompt = page.locator('#prompt');
+    const chosen = await page.evaluate(async id => {
+      const task = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string };
+      return task.provider;
+    }, await prompt.getAttribute('data-session-id'));
+    expect(chosen).toBe(expected.id);
+    await page.locator('#model-picker-trigger').click();
+    const harnesses = page.locator('.model-menu-rail [data-view^="h:"]');
+    await expect(harnesses).toHaveCount(1);
+    await expect(harnesses.first()).toHaveAttribute('data-view', `h:${expected.id}`);
+
+    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]'));
+    expect(kept).toEqual([{ id: expected.id, name: expected.name, installed: true, models: [] }]);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+    await expect(version).toHaveText(expected.version);
+  });
+}
+
 test('a version filling in keeps cached models; a real version change drops them', async ({ page }) => {
   test.setTimeout(45_000);
   await heldVersions(page);
@@ -559,6 +623,50 @@ test('early New chat waits for the first session snapshot and keeps its typed te
   await expect(prompt).toHaveAttribute('data-session-id', chat!);
   await expect(prompt).toHaveValue('Keep this early chat draft');
 });
+
+for (const earlyChat of [true, false]) {
+  test(earlyChat ? 'early New chat stays in front of the remembered project draft' : 'startup reopens the remembered project draft without a creation press', async ({ page }) => {
+    test.setTimeout(45_000);
+    const text = 'Keep this remembered project draft';
+    type RestoreWindow = Window & { __releaseBootSnapshot?: () => void; __startupChatId?: string };
+    await page.addInitScript(draft => {
+      localStorage.setItem('pandacode.project', 'project-1');
+      localStorage.setItem('pandacode.openThread', 'unsent-project-draft');
+      localStorage.setItem('pandacode.openNewTask', '1');
+      localStorage.setItem('pandacode.draft:new:project-1', JSON.stringify({ t: Date.now(), text: draft }));
+    }, text);
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const body = (await response.text())
+        .replace(/case ["']list_sessions["']\s*:/, '$& if (!window.__releaseBootSnapshot) await new Promise(resolve => { window.__releaseBootSnapshot = resolve; });')
+        .replace(/(case ["']chat_create["']\s*:\s*\{[\s\S]*?)(emit\(["']sessions-changed["'])/, '$1 window.__startupChatId = result.id; $2');
+      await route.fulfill({ response, body });
+    });
+    await page.goto('/');
+    await expect.poll(() => page.evaluate(() => typeof (window as RestoreWindow).__releaseBootSnapshot)).toBe('function');
+    const chatButton = page.locator('.sidebar-actions .new-chat-button');
+    const taskButton = page.locator('.sidebar-actions .new-task-button');
+    if (earlyChat) {
+      await chatButton.click();
+      await expect(chatButton).toHaveAttribute('aria-busy', 'true');
+    }
+    await page.evaluate(() => (window as RestoreWindow).__releaseBootSnapshot!());
+    const prompt = page.locator('#prompt');
+    if (earlyChat) {
+      const chatId = () => page.evaluate(() => (window as RestoreWindow).__startupChatId);
+      await expect.poll(chatId).toBeTruthy();
+      await expect(chatButton).not.toHaveAttribute('aria-busy', 'true');
+      await expect(taskButton).not.toHaveAttribute('aria-busy', 'true');
+      await expect(prompt).toHaveAttribute('data-session-id', (await chatId())!);
+      await expect(prompt).toHaveValue('');
+      await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.draft:new:project-1') ?? '{}').text)).toBe(text);
+      await page.locator('#navigation .task-item[data-id="session-1"]').click();
+      await taskButton.click();
+    }
+    await expect(page.locator('.new-task-welcome')).toBeVisible();
+    await expect(prompt).toHaveValue(text);
+  });
+}
 
 for (const outcome of ['success', 'failure', 'switch'] as const) {
   test(`Send waits for the explicit harness save after correction: ${outcome}`, async ({ page }) => {
