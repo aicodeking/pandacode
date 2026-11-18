@@ -274,8 +274,7 @@ test('file explorer: focus in the in-app browser keeps the focused rate; the win
 });
 
 /** Tracks the Files poll's live interval (named `filePollTick` in file-explorer.ts) by its period, so a test can read the
- * rate directly: [] while nothing is mounted, [2000] while in use, [3000] once settled or unfocused, [8000] after a long
- * idle without focus. */
+ * rate directly: [] while nothing is mounted, [2000] while in use, [3000] once settled or unfocused. */
 async function trackPollTimer(page: Page): Promise<() => Promise<number[]>> {
   await page.addInitScript(() => {
     const live = new Map<number, number>(), set = window.setInterval.bind(window), clear = window.clearInterval.bind(window);
@@ -307,35 +306,60 @@ test('file explorer: a focused poll backs off to 3 s after unchanged reads', asy
   expect(await periods()).toEqual([3000]);
 });
 
-test('file explorer: only a long idle without focus backs the poll off to 8 s, and input or focus undoes it', async ({ page }) => {
-  test.setTimeout(60_000);
-  // Lets the test move the page's clock forward without touching its timers.
-  await page.addInitScript(() => {
-    const now = Date.now.bind(Date);
-    (window as any).__clockSkew = 0;
-    Date.now = () => now() + (window as any).__clockSkew;
-  });
+test('file explorer: visible Files and open tabs stay fresh after a long idle without focus', async ({ page }) => {
+  await page.clock.install();
   const periods = await trackPollTimer(page);
-  await countPolls(page);
-  const skip = (ms: number) => page.evaluate(by => { (window as any).__clockSkew += by; }, ms);
-  // Focused, five minutes without input only settles it: the 8 s back-off needs the window to be unfocused too.
-  await skip(6 * 60_000);
-  await expect.poll(periods, { timeout: 4000, intervals: [250], message: 'a focused, long idle window settles to 3 s' }).toEqual([3000]);
-  // Another app takes focus, reported by the window (the preview's stand-in), as the in-app browser test does.
+  const polls = await countPolls(page);
+  await item(page, 'README.md').click();
+  await expect(page.locator('#file-panel [contenteditable="true"]')).toBeVisible();
+  const original = await disk(page, 'read_file', { path: 'README.md' });
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  await page.clock.fastForward(6 * 60_000);
+  expect(await periods(), 'a focused, long idle window settles to 3 s').toEqual([3000]);
   await page.evaluate(() => (window as any).__windowFocus.set(false));
-  await expect.poll(periods, { timeout: 4000, intervals: [250], message: 'unfocused after a long idle, it backs off to 8 s' }).toEqual([8000]);
-  // Input (a wheel over the unfocused window) restores the unfocused 3 s rate. Dispatched rather than driven through the
-  // mouse: WebKit's driver focuses the page for real input.
-  await page.evaluate(() => dispatchEvent(new WheelEvent('wheel', { deltaY: 10 })));
-  await expect.poll(periods, { timeout: 1000, message: 'input undoes the long-idle back-off' }).toEqual([3000]);
-  // Unfocused but recently used: a short idle keeps the 3 s rate.
-  await skip(60_000);
-  await page.waitForTimeout(3500);
-  expect(await periods(), 'a minute without input, unfocused').toEqual([3000]);
-  await skip(5 * 60_000);
-  await expect.poll(periods, { timeout: 4000, intervals: [250] }).toEqual([8000]);
+  expect(await periods(), 'visible but unfocused stays at 3 s, even after five minutes').toEqual([3000]);
+  await disk(page, 'manage_workspace_entry', { action: 'new-file', path: 'after-long-idle.txt' });
+  await disk(page, 'write_workspace_file', { path: 'README.md', expected: original, content: '# Saved after long idle\n' });
+  const from = await polls();
+  await page.clock.runFor(3000);
+  expect(await polls(), 'the next scheduled read takes at most 3 s').toBeGreaterThan(from);
+  await expect(item(page, 'after-long-idle.txt')).toBeVisible();
+  await expect(page.locator('#file-panel [contenteditable="true"]')).toContainText('Saved after long idle');
+  expect(await periods()).toEqual([3000]);
   await page.evaluate(() => (window as any).__windowFocus.set(true));
-  await expect.poll(periods, { timeout: 1000, message: 'focus brings the 2 s rate back' }).toEqual([2000]);
+  expect(await periods(), 'focus brings the 2 s rate back').toEqual([2000]);
+});
+
+test('file explorer: focus and activity never read while hidden or unmounted', async ({ page }) => {
+  await page.clock.install();
+  const periods = await trackPollTimer(page);
+  const polls = await countPolls(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
+  const hidden = await polls();
+  await page.evaluate(async () => {
+    const { noteFilePollActivity } = await import('/src/file-explorer.ts');
+    noteFilePollActivity();
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    dispatchEvent(new Event('focus'));
+  });
+  expect(await periods(), 'a hidden document stops the interval').toEqual([]);
+  await page.clock.runFor(10_000);
+  expect(await polls(), 'neither focus nor pending activity reads a hidden document').toBe(hidden);
+  await page.evaluate(() => { delete (document as any).hidden; document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(polls).toBeGreaterThan(hidden);
+  await page.getByRole('button', { name: 'Toggle file explorer', exact: true }).click();
+  await page.clock.runFor(300);
+  expect(await periods(), 'no watched surface means no interval').toEqual([]);
+  const unmounted = await polls();
+  await page.evaluate(async () => {
+    dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    const { noteFilePollActivity } = await import('/src/file-explorer.ts');
+    noteFilePollActivity();
+  });
+  await page.clock.runFor(10_000);
+  expect(await polls(), 'focus, showing and activity do not read an unmounted surface').toBe(unmounted);
 });
 
 test('file explorer: input brings a settled poll back to 2 s', async ({ page }) => {
@@ -411,7 +435,7 @@ test('file explorer: while the open thread\'s agent works the poll keeps the 2 s
 });
 
 
-test('file explorer: read-only tool snapshots keep the regular poll; writes refresh and coalesce with it', async ({ page }) => {
+test('file explorer: read-only tools and stdout-only Command snapshots keep the regular poll; writes refresh and coalesce with it', async ({ page }) => {
   test.setTimeout(45_000);
   await countPolls(page);
   await item(page, 'src').click();
@@ -423,13 +447,20 @@ test('file explorer: read-only tool snapshots keep the regular poll; writes refr
     const count = () => w.__filePolls as number;
     const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
     const tool = (name: string) => w.__previewEmit('agent-event', { sessionId, kind: 'tool', text: name, tool: { id: name, name, status: 'completed', input: '', output: '' } });
+    const command = (output: string) => w.__previewEmit('agent-event', { sessionId, kind: 'tool', text: 'Command', tool: { id: 'stdout-command', name: 'Command', status: 'running', input: 'npm run dev', output } });
     w.__previewEmit('agent-event', { sessionId, kind: 'status', text: 'Working' });
+    command('starting');
+    await delay(450);
     const before = count();
+    let snapshots = 0;
     const timer = setInterval(() => {
+      snapshots++;
+      command(`server output ${snapshots}`);
       for (const name of ['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'read_file', 'list_dir', 'WebSearch']) tool(name);
+      if (snapshots === 12) clearInterval(timer);
     }, 500);
-    await delay(5200);
-    clearInterval(timer);
+    while (snapshots < 12) await delay(25);
+    await delay(450);
     const readOnly = count() - before, tick = count();
     while (count() === tick) await delay(25);
     const from = count();
@@ -443,10 +474,11 @@ test('file explorer: read-only tool snapshots keep the regular poll; writes refr
     const nearTick = count();
     tool('Write');
     await delay(700);
-    return { readOnly, write, shown, coalesced: count() - nearTick };
+    return { snapshots, readOnly, write, shown, coalesced: count() - nearTick };
   }, sessionId);
-  // Two expanded folders, at most three regular ticks in 5.2 s; one read of each for a write or nearby poll.
-  expect(reads.readOnly).toBeLessThanOrEqual(6);
+  // Two expanded folders, at most four regular ticks in 6.45 s; stdout snapshots must not add a read apiece.
+  expect(reads.snapshots).toBe(12);
+  expect(reads.readOnly).toBeLessThanOrEqual(8);
   expect(reads.write).toBe(2);
   expect(reads.shown).toBe(true);
   expect(reads.coalesced).toBe(2);

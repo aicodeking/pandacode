@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -24,7 +24,7 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
       }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
-      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider }); if (window.__holdConfigure) { window.__holdConfigure = false; await new Promise(resolve => { window.__releaseConfigure = resolve; }); }')
+      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider }); if (args.provider === "codex" && window.__holdExplicit) { await new Promise(resolve => { window.__releaseExplicit = resolve; }); if (window.__failExplicit) throw new Error("Explicit save failed"); } if (window.__holdConfigure) { window.__holdConfigure = false; await new Promise(resolve => { window.__releaseConfigure = resolve; }); }')
       .replace(/case ["']send_message["']\s*:\s*\{/, '$& (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });')
       .replace(/case ["']cloud_connections["']\s*:\s*result\s*=\s*previewCloud\.connections\(\)\s*;/, '$& if (window.__cloudConnected) result = result.map(item => ({ ...item, connected: true }));');
     await route.fulfill({ response, body: previewBody(body) });
@@ -558,4 +558,104 @@ test('early New chat waits for the first session snapshot and keeps its typed te
   await page.waitForTimeout(500);
   await expect(prompt).toHaveAttribute('data-session-id', chat!);
   await expect(prompt).toHaveValue('Keep this early chat draft');
+});
+
+for (const outcome of ['success', 'failure', 'switch'] as const) {
+  test(`Send waits for the explicit harness save after correction: ${outcome}`, async ({ page }) => {
+    test.setTimeout(45_000);
+    const draft = await heldCorrection(page);
+    await page.evaluate(fail => { const w = window as BootWindow; w.__holdExplicit = true; w.__failExplicit = fail; }, outcome === 'failure');
+    const menu = page.locator('.model-menu');
+    await menu.locator('[role="tab"][data-view="h:codex"]').click();
+    await menu.locator('[role="option"]:not([disabled])').first().click();
+    const text = 'Send only after Codex is saved';
+    await page.locator('#prompt').fill(text);
+    await page.locator('#prompt').press('Enter');
+    await page.locator('#prompt').press('Enter');
+    await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+    await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseExplicit)).toBe('function');
+    await page.waitForTimeout(250);
+    expect(await sent(page)).toEqual([]);
+    await expect(page.locator('#prompt')).toHaveValue(text);
+    if (outcome === 'switch') {
+      await page.locator('#navigation').getByRole('button', { name: /^pandacode .*Explore the project/ }).click();
+      await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', draft);
+    }
+    await page.evaluate(() => (window as BootWindow).__releaseExplicit!());
+    if (outcome === 'success') {
+      await expect.poll(async () => (await sent(page)).length).toBe(1);
+      expect((await sent(page))[0]).toEqual({ sessionId: draft, text });
+      const saved = await page.evaluate(async id => (await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string }).provider, draft);
+      expect(saved).toBe('codex');
+    } else {
+      await page.waitForTimeout(500);
+      expect(await sent(page)).toEqual([]);
+      if (outcome === 'switch') {
+        // Drafts are omitted from the sidebar; New task in their project reopens them.
+        const original = await page.evaluate(async id => {
+          const preview = await import('/src/preview.ts');
+          const task = await preview.invoke('get_task', { sessionId: id }) as { projectId: string };
+          const tasks = await preview.invoke('list_sessions', {}) as { id: string; projectId: string; draft: boolean }[];
+          return tasks.find(item => item.projectId === task.projectId && !item.draft)!.id;
+        }, draft);
+        await page.locator(`#navigation .task-item[data-id="${original}"]`).click();
+        await page.locator('.sidebar-actions .new-task-button').click();
+        await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', draft);
+      }
+      await expect(page.locator('#prompt')).toHaveValue(text);
+    }
+  });
+}
+
+/* Enter submits the text in the composer at that moment. When the send has to wait (a harness save, a correction), an
+ * edit meanwhile cancels that submit and the edited draft stays put; Enter again sends the edit, once. */
+async function editWhileSaving(page: Page, draft: string): Promise<void> {
+  const prompt = page.locator('#prompt');
+  const later = 'A later revision I have not submitted';
+  await prompt.fill(later);
+  await page.evaluate(() => (window as BootWindow).__releaseExplicit!());
+  await page.waitForTimeout(600);
+  expect(await sent(page)).toEqual([]);
+  await expect(prompt).toHaveValue(later);
+  await expect(prompt).toHaveAttribute('data-session-id', draft);
+  await prompt.press('Enter');
+  await expect.poll(async () => (await sent(page)).length).toBe(1);
+  expect((await sent(page))[0]).toEqual({ sessionId: draft, text: later });
+  await page.waitForTimeout(500);
+  expect(await sent(page)).toHaveLength(1);
+}
+
+test('an edit during the explicit harness save after correction cancels that Send and keeps the edit', async ({ page }) => {
+  test.setTimeout(45_000);
+  const draft = await heldCorrection(page);
+  await page.evaluate(() => { (window as BootWindow).__holdExplicit = true; });
+  const menu = page.locator('.model-menu');
+  await menu.locator('[role="tab"][data-view="h:codex"]').click();
+  await menu.locator('[role="option"]:not([disabled])').first().click();
+  await page.locator('#prompt').fill('Message submitted by Enter');
+  await page.locator('#prompt').press('Enter');
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseExplicit)).toBe('function');
+  await editWhileSaving(page, draft);
+});
+
+test('an edit during an ordinary harness save cancels that Send and keeps the edit', async ({ page }) => {
+  test.setTimeout(45_000);
+  await slowProviders(page);
+  await page.goto('/');
+  const prompt = page.locator('#prompt');
+  await expect(prompt).toBeVisible();
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  const thread = (await prompt.getAttribute('data-session-id'))!;
+  await page.evaluate(() => { (window as BootWindow).__holdExplicit = true; });
+  await prompt.fill('The text I pressed Enter for');
+  await page.locator('#model-picker-trigger').click();
+  const menu = page.locator('.model-menu');
+  await menu.locator('[role="tab"][data-view="h:codex"]').click();
+  await menu.locator('[role="option"]:not([disabled])').first().click();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseExplicit)).toBe('function');
+  await prompt.press('Enter');
+  await page.waitForTimeout(100);
+  expect(await sent(page)).toEqual([]);
+  await editWhileSaving(page, thread);
 });

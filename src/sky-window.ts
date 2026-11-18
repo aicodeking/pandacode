@@ -93,7 +93,9 @@ const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000
 const RATE_SAMPLE = 8, RATE_BUDGET_MS = 16, RATE_FLOOR_FPS = 2, FAST_FLOOR_FPS = 4;
 /** Costly paint (#348, #351): when the rolling median has stayed over RATE_BUDGET_MS for COSTLY_PAINT_MS, the main sky
  * sets `html[data-costly-paint]` and every glass takes its solid reduced-transparency fill (src/motion.css), since each
- * blur re-blurs its backdrop on every canvas frame; a median under half the budget for CHEAP_PAINT_MS clears it. Once the
+ * blur re-blurs its backdrop on every canvas frame. Recovery needs solid frames that stayed over budget for COSTLY_PAINT_MS
+ * (at any point while solid) and then under half of it for CHEAP_PAINT_MS: cheap solid frames alone only show that the
+ * fallback helped, and a short spike never sustains. Once the
  * verdict is settled (no change pending) the probe stops and takes RATE_SAMPLE fresh frames every RESAMPLE_MS, so a
  * GPU-composited machine pays one burst of 8 probes every 30 s and never sees the attribute. */
 const COSTLY_PAINT_MS = 10_000, CHEAP_PAINT_MS = 30_000, RESAMPLE_MS = 30_000;
@@ -196,6 +198,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   // so far (preview: specs check the probe goes quiet once settled).
   const ownsPaint = !options.tileRoot;
   let costlyPaint = false, costlySince = 0, cheapSince = 0, resampleAt = 0, samples = 0;
+  let solidPaintCost: number | null = null;
   let costlyPaintMs = COSTLY_PAINT_MS, cheapPaintMs = CHEAP_PAINT_MS, resampleMs = RESAMPLE_MS;
   const probe = new MessageChannel();
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
@@ -510,22 +513,30 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     else if (costly && median < RATE_BUDGET_MS / 2) costly = false;
     paintVerdict(median, performance.now());
   }
-  /** Costly paint: a median over the budget sustained for `costlyPaintMs` sets `html[data-costly-paint]`, one under half
-   * of it for `cheapPaintMs` clears it (a borderline machine never flaps). While a change is pending the probe keeps
-   * sliding its window; otherwise it pauses for `resampleMs` and starts over with a fresh burst. */
+  /** Costly paint: sustained over-budget glass enables the solid fill. Only a costly-to-cheap improvement measured
+   * entirely with solid fill can restore glass: cheap frames caused by removing blur are not recovery evidence. The
+   * costly half is the same sustain as the glass verdict (`costlySince` over `costlyPaintMs`, every sample solid since
+   * `setCostlyPaint` resets the window), recorded once in `solidPaintCost`; until it is proven, cheap solid frames are
+   * settled and the probe stays quiet. While a change is pending the probe keeps sliding its window; otherwise it pauses
+   * for `resampleMs` and starts over with a fresh burst. */
   function paintVerdict(median: number, now: number): void {
     const dear = median > RATE_BUDGET_MS, cheap = median < RATE_BUDGET_MS / 2;
     costlySince = dear ? costlySince || now : 0;
-    cheapSince = cheap ? cheapSince || now : 0;
-    if (!costlyPaint && costlySince && now - costlySince >= costlyPaintMs) setCostlyPaint(true);
-    else if (costlyPaint && cheapSince && now - cheapSince >= cheapPaintMs) setCostlyPaint(false);
-    const pending = costlyPaint ? cheapSince !== 0 : costlySince !== 0;
+    const sustainedDear = costlySince !== 0 && now - costlySince >= costlyPaintMs;
+    if (costlyPaint && solidPaintCost === null && sustainedDear) solidPaintCost = median;
+    cheapSince = cheap && solidPaintCost !== null ? cheapSince || now : 0;
+    if (!costlyPaint && sustainedDear) { setCostlyPaint(true); return; }
+    else if (costlyPaint && cheapSince && now - cheapSince >= cheapPaintMs) { setCostlyPaint(false); return; }
+    // Solid and not yet proven costly: a dear median keeps sliding until it sustains or breaks.
+    const pending = costlyPaint ? cheapSince !== 0 || (solidPaintCost === null && costlySince !== 0) : costlySince !== 0;
     if (pending) return;
     frameCosts = [];
     resampleAt = now + resampleMs;
   }
   function setCostlyPaint(on: boolean): void {
     costlyPaint = on;
+    solidPaintCost = null;
+    resample(); // Never mix glass and solid frames in the recovery baseline.
     if (ownsPaint) document.documentElement.toggleAttribute('data-costly-paint', on);
   }
   /** Measurement starts over (a spec's made-up cost): a fresh burst now, with no verdict carried across. */
@@ -723,7 +734,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     set forceFrameMs(ms: number | null) { forceFrameMs = ms; resample(); },
     // Costly paint: whether it is set, the samples taken (they stop while settled), when the next burst is due, and
     // shorter sustain/hysteresis/resample spans for specs.
-    get costlyPaint() { return costlyPaint; }, get samples() { return samples; }, get resampleIn() { return Math.max(0, resampleAt - performance.now()); },
+    get costlyPaint() { return costlyPaint; }, get solidPaintCost() { return solidPaintCost; }, get samples() { return samples; }, get resampleIn() { return Math.max(0, resampleAt - performance.now()); },
     set costlyPaintMs(ms: number) { costlyPaintMs = ms; }, set cheapPaintMs(ms: number) { cheapPaintMs = ms; }, set resampleMs(ms: number) { resampleMs = ms; },
     set forcePaintMs(ms: number | null) { forcePaintMs = ms; costs = []; }, set quietMs(ms: number) { quietMs = ms; } } });
   refresh();

@@ -237,8 +237,8 @@ test('cheap frames keep the shipped rest and idle rates', async ({ page }) => {
 });
 
 /** Costly paint (src/sky-window.ts `paintVerdict`, #348/#351): frame costs that stay over budget set
- * `html[data-costly-paint]`, and the glass (src/motion.css) takes its solid reduced-transparency fill; cheap ones clear it
- * after a hysteresis. Once settled, the probe stops and samples a fresh burst of 8 frames every 30 s. `__sky.costlyPaintMs`,
+ * `html[data-costly-paint]`, and the glass (src/motion.css) takes its solid reduced-transparency fill; a later
+ * costly-to-cheap improvement measured with solid fill clears it after a hysteresis. Once settled, the probe stops and samples a fresh burst of 8 frames every 30 s. `__sky.costlyPaintMs`,
  * `cheapPaintMs` and `resampleMs` (preview only) shorten those spans. */
 const setSky = (page: Page, values: Record<string, number>) => page.evaluate(entries => { Object.assign((window as any).__sky, entries); }, values);
 const costlyPaint = (page: Page) => page.evaluate(() => document.documentElement.hasAttribute('data-costly-paint'));
@@ -281,7 +281,7 @@ const surfaceAlphas = (page: Page) => page.evaluate(specs => {
   }));
 }, SURFACES);
 
-test('sustained costly paints turn the glass solid, and cheap ones bring it back', async ({ page }) => {
+test('sustained costly paints turn the glass solid, and a later improvement brings it back', async ({ page }) => {
   test.setTimeout(60_000);
   await open(page);
   await setIdleAfter(page, 1e9);
@@ -300,7 +300,8 @@ test('sustained costly paints turn the glass solid, and cheap ones bring it back
   expect(costly.blurred, 'elements still blurring their backdrop').toBe(0);
   const opaque = await surfaceAlphas(page);
   for (const spec of SURFACES) expect(opaque[spec], `${spec} takes a solid fill while paint is costly`).toBe(1);
-  // The pace and rates of a cheap renderer are untouched by this: the rate governor is checked above.
+  // Establish that solid rendering is still costly before the independent renderer improvement.
+  await expect.poll(() => page.evaluate(() => (window as any).__sky.solidPaintCost), { timeout: 10_000 }).toBe(40);
   await forceFrameMs(page, 1);
   await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(false);
   const back = await glass(page);
@@ -336,4 +337,59 @@ test('cheap paints never set costly paint, and the probe goes quiet once settled
   expect(await samples()).toBe(from + 8);
   expect(await page.evaluate(() => (window as any).__costlyPaintSeen as boolean), 'costly paint on a cheap renderer').toBe(false);
   expect(await costlyPaint(page)).toBe(false);
+});
+
+test('cheap solid frames cannot repeatedly restore expensive glass', async ({ page }) => {
+  test.setTimeout(30_000);
+  await open(page);
+  await setIdleAfter(page, 1e9);
+  await setSky(page, { costlyPaintMs: 300, cheapPaintMs: 300, resampleMs: 300 });
+  await page.evaluate(() => {
+    const read = (window as any).__sky;
+    (window as any).__glassSwitches = [];
+    const update = () => {
+      const solid = document.documentElement.hasAttribute('data-costly-paint');
+      (window as any).__glassSwitches.push(solid);
+      read.forceFrameMs = solid ? 1 : 40;
+    };
+    new MutationObserver(update).observe(document.documentElement, { attributes: true, attributeFilter: ['data-costly-paint'] });
+    update();
+  });
+  await expect.poll(() => costlyPaint(page), { timeout: 10_000 }).toBe(true);
+  const from = await frames(page);
+  await page.waitForTimeout(6500);
+  expect(await page.evaluate(() => (window as any).__glassSwitches)).toEqual([false, true]);
+  expect(await frames(page), 'solid fallback keeps the sky moving').toBeGreaterThan(from);
+  expect((await glass(page)).filter).toBe('none');
+});
+
+test('a later sustained costly solid period, then sustained cheap solid frames, bring the glass back', async ({ page }) => {
+  test.setTimeout(60_000);
+  await open(page);
+  await setIdleAfter(page, 1e9);
+  await setSky(page, { costlyPaintMs: 2500, cheapPaintMs: 600, resampleMs: 300 });
+  const solidCost = () => page.evaluate(() => (window as any).__sky.solidPaintCost as number | null);
+  await forceFrameMs(page, 40);
+  await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(true);
+  // The first solid frames are cheap: that only shows the fallback helped, so the probe settles and nothing recovers.
+  await forceFrameMs(page, 1);
+  await expect.poll(() => page.evaluate(() => (window as any).__sky.resampleIn as number), { timeout: 10_000 }).toBeGreaterThan(0);
+  await page.waitForTimeout(1500);
+  expect(await costlyPaint(page)).toBe(true);
+  expect(await solidCost()).toBeNull();
+  // A spike shorter than the costly sustain is no evidence either.
+  await forceFrameMs(page, 40);
+  await page.waitForTimeout(2000);
+  await forceFrameMs(page, 1);
+  await page.waitForTimeout(1500);
+  expect(await solidCost(), 'a short costly spike is not recovery evidence').toBeNull();
+  expect(await costlyPaint(page)).toBe(true);
+  // Solid frames that stay costly for the whole sustain, then stay cheap for the hysteresis, restore the glass.
+  await forceFrameMs(page, 40);
+  await expect.poll(solidCost, { timeout: 15_000 }).toBe(40);
+  expect(await costlyPaint(page), 'still solid while solid frames are costly').toBe(true);
+  await forceFrameMs(page, 1);
+  await expect.poll(() => costlyPaint(page), { timeout: 15_000 }).toBe(false);
+  expect((await glass(page)).filter).toContain('blur');
+  expect(await solidCost(), 'the evidence is spent once glass is back').toBeNull();
 });

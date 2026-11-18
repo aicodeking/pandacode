@@ -5170,18 +5170,53 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
+/** Explicit picker saves include their wait behind a provisional correction. */
+const explicitHarnessSaves = new Map<string, Promise<void>>();
+/** What Enter submitted: the thread, its text and its attachments as they were when pressed. A send that waits (harness
+ *  save, provisional correction, Council) goes only if all three are unchanged after the wait; an edit meanwhile cancels
+ *  it and leaves the edited draft and attachments alone, and a later Enter submits the edit instead. */
+type SendIntent = { sessionId: string; draft: string; items: unknown[] };
+/** Threads with a send waiting on a harness save; a second Enter replaces the intent it will check. */
+const harnessWaitingSends = new Map<string, SendIntent>();
+const composerItems = (id: string): unknown[] => [...state.attachments, ...(state.browserAttachments.get(id) ?? []), ...attachments.list(id), ...(state.moodboardAttachments.get(id) ?? [])];
+function sendIntent(id: string): SendIntent {
+  return { sessionId: id, draft: document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '', items: composerItems(id) };
+}
+function intentHolds(intent: SendIntent): boolean {
+  if (state.sessionId !== intent.sessionId || (document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '') !== intent.draft) return false;
+  const items = composerItems(intent.sessionId);
+  return items.length === intent.items.length && items.every((item, index) => item === intent.items[index]);
+}
+function saveExplicitHarness(id: string, save: () => Promise<void>): Promise<void> {
+  const pending = Promise.resolve().then(save);
+  explicitHarnessSaves.set(id, pending);
+  void pending.finally(() => { if (explicitHarnessSaves.get(id) === pending) explicitHarnessSaves.delete(id); }).catch(() => undefined);
+  return pending;
+}
 async function send(): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await sendDraft();
 }
-async function sendDraft(): Promise<void> {
-  const waitingFor = state.sessionId, correction = waitingFor && provisionalCorrections.get(waitingFor);
-  if (correction) {
-    await correction;
-    if (state.sessionId !== waitingFor) return;
+async function sendDraft(submitted?: SendIntent): Promise<void> {
+  const waitingFor = state.sessionId, generation = state.generation;
+  let intent = submitted ?? (waitingFor ? sendIntent(waitingFor) : undefined);
+  if (waitingFor && harnessWaitingSends.has(waitingFor)) { if (intent) harnessWaitingSends.set(waitingFor, intent); return; }
+  if (waitingFor && intent && (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor))) {
+    harnessWaitingSends.set(waitingFor, intent);
+    try {
+      // The explicit choice can arrive while the correction is saving. Recheck after each await.
+      while (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
+        await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
+        if (state.sessionId !== waitingFor || state.generation !== generation) return;
+      }
+      intent = harnessWaitingSends.get(waitingFor) ?? intent;
+    } catch { return; } // The picker shows its save error; keep the user's draft.
+    finally { harnessWaitingSends.delete(waitingFor); }
+    if (!intentHolds(intent)) return;
   }
+  if (submitted && !intentHolds(submitted)) return;
   if (btwFromComposer()) return;
-  const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
+  const draft = intent?.draft ?? document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
@@ -5202,7 +5237,8 @@ async function sendDraft(): Promise<void> {
   // sent from the start again, with its new harness (it is no longer provisional, so this runs once).
   if (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id)) {
     const ready = await provisionalReadyToSend(s);
-    if (ready && state.sessionId === s.id) await sendDraft();
+    // The corrected send is the one Enter submitted: an edit during the correction cancels it.
+    if (ready && state.sessionId === s.id) await sendDraft(intent ?? sendIntent(s.id));
     return;
   }
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
@@ -5211,7 +5247,7 @@ async function sendDraft(): Promise<void> {
     councilFirstSends.add(s.id);
     try { const failed = await council.enableForNewThread(s.id); if (failed) notifyError(`Council did not turn on: ${failed}`); }
     finally { councilFirstSends.delete(s.id); }
-    if (state.sessionId !== s.id) return;
+    if (state.sessionId !== s.id || (intent && !intentHolds(intent))) return;
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
@@ -5704,7 +5740,10 @@ function onAgent(event: AgentEvent): void {
   // The open thread's agent at work: the Files tree and open file follow its edits within a poll tick, input or not.
   // After this event is handled, so a run it starts already counts as working (isRunning) when the poll picks its rate.
   if (event.sessionId === state.sessionId) {
-    if (event.kind === 'turn_changes' || event.kind === 'tool' && !['read', 'search', 'web', 'fetch'].includes(toolKind(event.tool?.name ?? event.text))) queueMicrotask(noteFilePollActivity);
+    const tool = event.kind === 'tool' ? event.tool : undefined;
+    const previous = tool && state.streams.get(event.sessionId)?.tools.find(item => item.key === 'tool:' + tool.id)?.content;
+    const stdoutOnly = tool && toolKind(tool.name) === 'shell' && tool.status === 'running' && previous && typeof previous !== 'string' && previous.status === 'running' && previous.name === tool.name && previous.input === tool.input;
+    if (event.kind === 'turn_changes' || event.kind === 'tool' && !stdoutOnly && !['read', 'search', 'web', 'fetch'].includes(toolKind(event.tool?.name ?? event.text))) queueMicrotask(noteFilePollActivity);
     else if (RUN_STATE_EVENTS.has(event.kind)) queueMicrotask(noteFilePollChange);
   }
   if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
@@ -6562,7 +6601,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         else if (selected.id === state.sessionId) refreshModelLabels();
       } finally { configuringSessions.delete(selected.id); }
     },
-    onSelect: async (providerId, model) => {
+    onSelect: (providerId, model) => saveExplicitHarness(selected.id, async () => {
       if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
@@ -6612,7 +6651,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
         }
       } finally { configuringSessions.delete(selected.id); }
-    },
+    }),
   });
 }
 /** Deploy: pick a connected platform, then a new task in this project ships it end to end. */
@@ -6622,12 +6661,17 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items: deployItems(connections), onSelect: async id => {
     closeChoiceMenu();
     const projectId = state.projectId;
-    // Only into the draft this press opened: a press dropped for a later one leaves whatever thread is open untouched.
-    const draft = await createTask(projectId) ? openedDraft(projectId) : undefined;
-    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (!draft || !prompt || prompt.dataset.sessionId !== draft.id) return;
-    prompt.value = deployBrief(id as import('./deploy').DeployTarget);
-    await send();
+    // Reuse a same-project New task already opening, as another New task press would.
+    const opening = pressInFlight?.press.key === `task:${projectId}` ? pressInFlight.settled : undefined;
+    // Keep creation and submission in one press: the next platform opens its own draft afterwards.
+    await pressCreation({ key: `deploy:${projectId}:${id}`, action: 'new-task', work: async () => {
+      const draft = (opening ? await opening : await startTask(projectId)) ? openedDraft(projectId) : undefined;
+      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+      if (!draft || !prompt || prompt.dataset.sessionId !== draft.id) return false;
+      prompt.value = deployBrief(id as import('./deploy').DeployTarget);
+      await send();
+      return true;
+    } });
   } });
 }
 /** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */

@@ -24,17 +24,15 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 /** How often the open tree and the file on screen are re-read while someone can see them: every 2 s while the window is
  * focused and in use or the open thread's agent is working; every 3 s once it settles (three unchanged reads in a row, or
  * 30 s without input) or while it is shown but another app has focus, so PandaCode beside an editor shows its saves
- * within 3 s; every 8 s only after a long idle (LONG_IDLE_MS without input) while unfocused. */
-const POLL_MS = 2000, SETTLED_POLL_MS = 3000, IDLE_POLL_MS = 8000;
+ * within 3 s, even after a long idle. */
+const POLL_MS = 2000, SETTLED_POLL_MS = 3000;
 /** An agent's tool or file event is followed by one read this soon (ms), batching a burst of events into one. */
 const ACTIVITY_READ_MS = 400;
 /** Unchanged reads in a row, and ms without input, after which a focused window polls at SETTLED_POLL_MS. */
 const SETTLE_READS = 3, SETTLE_IDLE_MS = 30_000;
-/** Ms without input after which an unfocused window backs off to IDLE_POLL_MS. */
-const LONG_IDLE_MS = 5 * 60_000;
 /** What the poll keeps fresh: the Files tree in the inspector, and the open-file panel (tabs or a floating window). */
 const WATCHED = '#inspector-content .file-explorer, #file-panel';
-/** Input that brings a settled poll back to POLL_MS (or an idle, unfocused one back to SETTLED_POLL_MS). */
+/** Input that brings a focused, settled poll back to POLL_MS. */
 const INPUT_EVENTS = ['pointerdown', 'keydown', 'wheel'] as const;
 
 /** Whether a watched surface is on screen. One query and a visibility check per tick, every POLL_MS at most. */
@@ -59,9 +57,8 @@ export function noteFilePollChange(): void { poll?.changed(); }
 export function noteFilePollActivity(): void { poll?.activity(); }
 
 /** The poll (`list_files` for the tree, `workspace_file_stamp` for the file on screen): every POLL_MS while the window is
- * focused and in use, every SETTLED_POLL_MS once it settles or while it is shown without focus, every IDLE_POLL_MS after a
- * long idle without focus, and none while it is hidden or
- * no tree or file tab is mounted, so an idle window costs no timer and no IPC at all. Each tick skips the refresh unless
+ * focused and in use, every SETTLED_POLL_MS once it settles or while it is shown without focus, and none while it is
+ * hidden or no tree or file tab is mounted. Each scheduled read skips the refresh unless
  * the Files tree or an open file is visible. Coming back (focus, or the document shown again) refreshes at once; focus,
  * input and a change restart the quick rate. */
 function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
@@ -73,7 +70,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   const rate = (): number => {
     if (document.hidden || !mounted) return 0;
     if (busy() || focused && !settled()) return POLL_MS;
-    return !focused && Date.now() - active >= LONG_IDLE_MS ? IDLE_POLL_MS : SETTLED_POLL_MS;
+    return SETTLED_POLL_MS;
   };
   const sync = (): void => {
     const next = rate();
@@ -86,6 +83,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   const wake = (): void => { unchanged = 0; active = Date.now(); sync(); };
   const run = (): void => {
     window.clearTimeout(soon); soon = 0;
+    if (document.hidden || !mounted || !watchedVisible()) return;
     void refresh().then(changed => {
       if (changed === undefined) return;
       if (changed) wake(); else { unchanged++; sync(); }
@@ -94,15 +92,14 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   // Named so a test can tell this interval from the app's others.
   function filePollTick(): void {
     nextPoll = Date.now() + period;
-    const now = windowFocused();
-    if (now !== focused) { focused = now; sync(); if (!now) return; }
+    focused = windowFocused();
     sync();
-    if (watchedVisible()) run();
+    run();
   }
-  // Only a settled (focused) or long-idle (unfocused) poll has a rate to restore, so input costs a timestamp otherwise.
+  // Only a focused, settled poll has a rate to restore, so input costs a timestamp otherwise.
   const input = (): void => {
     active = Date.now();
-    if (unchanged || period === IDLE_POLL_MS || period === SETTLED_POLL_MS && focused) wake();
+    if (unchanged || period === SETTLED_POLL_MS && focused) wake();
   };
   for (const type of INPUT_EVENTS) window.addEventListener(type, input, { capture: true, passive: true });
   const focusedAgain = (): void => { focused = true; wake(); run(); };
@@ -122,7 +119,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
     activity() {
       wake();
       if (soon || !period || nextPoll - Date.now() <= ACTIVITY_READ_MS) return;
-      soon = window.setTimeout(() => { soon = 0; if (period && watchedVisible()) run(); }, ACTIVITY_READ_MS);
+      soon = window.setTimeout(run, ACTIVITY_READ_MS);
     },
   };
 }
