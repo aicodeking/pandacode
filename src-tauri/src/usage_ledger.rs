@@ -501,7 +501,7 @@ fn file_belongs_to(link: &str, agent: Agent, path: &Path) -> bool {
     match agent {
         Agent::Claude => stem == link,
         Agent::Codex => stem.len() > link.len() && stem.ends_with(link),
-        Agent::Pi => stem.strip_suffix(link).is_some_and(|prefix| prefix.ends_with('_')),
+        Agent::Pi => stem.split_once('_').is_some_and(|(_, id)| id == link),
     }
 }
 

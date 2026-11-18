@@ -429,9 +429,12 @@ fn pi_sessions_are_discovered_deduped_and_linked_to_tasks() {
     assert_eq!((task.input, task.cache_read, task.cache_write, task.output), (390, 12544 + 50000 + 200, 64, 291));
     assert_eq!(slim.files.len(), 1, "unlinked Pi sessions are not read");
 
-    // The id must sit after the file name's last underscore, not be any suffix.
+    // The timestamp ends at the first underscore, and a custom ID can contain others.
     assert!(file_belongs_to("aaaa1111", Agent::Pi, &linked));
     assert!(!file_belongs_to("1111", Agent::Pi, &linked));
+    let custom = sessions.join("2026-10-02T10-00-00_other_project.jsonl");
+    assert!(file_belongs_to("other_project", Agent::Pi, &custom));
+    assert!(!file_belongs_to("project", Agent::Pi, &custom));
     std::fs::remove_dir_all(&root).unwrap();
 }
 

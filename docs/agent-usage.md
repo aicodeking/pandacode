@@ -20,7 +20,7 @@ Each account shows up to two limit windows (5-hour and weekly). Meters are muted
 
 The estimate answers "what would these tokens have cost through the API?". It does not show what a subscription bills.
 
-- **Sources.** Claude Code project logs (`$CLAUDE_CONFIG_DIR` or `~/.claude`, plus `~/.config/claude`, under `projects/`), Codex rollouts (`$CODEX_HOME` or `~/.codex`, under `sessions/` and `archived_sessions/`), and Pi session logs (`~/.pi/agent/sessions/`, or `PI_CODING_AGENT_SESSION_DIR`, or `<PI_CODING_AGENT_DIR>/sessions`). Other harnesses show "Cost not tracked". Their calendars count prompts sent from PandaCode (`prompt_activity`).
+- **Sources.** Claude Code project logs (`$CLAUDE_CONFIG_DIR` or `~/.claude`, plus `~/.config/claude`, under `projects/`), Codex rollouts (`$CODEX_HOME` or `~/.codex`, under `sessions/` and `archived_sessions/`), and Pi session logs (`PI_CODING_AGENT_SESSION_DIR`, then `<PI_CODING_AGENT_DIR>/sessions`, then `~/.pi/agent/sessions/`). PandaCode accepts absolute and home-relative Pi paths. Other harnesses show "Cost not tracked". Their calendars count prompts sent from PandaCode (`prompt_activity`).
 - **Counting.** A Claude reply streams several copies and resumed sessions copy history, so replies are de-duplicated by message ID and request ID across all files. Subagent logs count toward cost but not toward sessions.
   - Codex events carry a running total. An event whose total has not moved is a repeat and is skipped. A September 2026 check across 1,200 local rollouts found no token events duplicated between files.
   - Codex `input_tokens` already includes cached and cache-write tokens, and `output_tokens` includes reasoning, so neither is counted twice.
