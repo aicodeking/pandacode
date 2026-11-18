@@ -445,7 +445,8 @@ pub(crate) async fn set_explore_harness_enabled(app: tauri::AppHandle, provider:
 }
 
 /// How this run's agent has explore: the name it calls it by, and whether the harness is Claude
-/// Code (or a relay of it), whose Edit tool needs its own Read first.
+/// Code (or a relay of it). Every Claude-family writer gets `EDIT_CLAUDE` in lib.rs: Read the
+/// file first, since explore reads do not count for Edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RunExplore {
     pub(crate) name: &'static str,

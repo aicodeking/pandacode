@@ -3,6 +3,12 @@ use super::*;
 use crate::providers::{COMPACTED_OUTPUT, COMPACT_CONTEXT_TOOL};
 use crate::{EDIT_CLAUDE, EDIT_OTHER};
 
+const LEAD_CAP: usize = 6130;
+const WORKER_CAP: usize = 1370;
+
+/// Task instructions with nothing optional on; each test changes only the fields it is about.
+const BASE: InstructionOptions = InstructionOptions { chat: false, role: Role::Task, explore: None, tools: false, cloud: false };
+
 fn claude() -> Option<explore::RunExplore> {
     explore::run_name(false, true, "claude")
 }
@@ -16,33 +22,35 @@ fn harnesses_without_a_system_prompt_are_reminded_every_eighth_turn() {
     assert_eq!(turn_instructions("full".into(), true, 9), Some("full".into()));
     assert_eq!(turn_instructions(GENERATIVE_UI.into(), false, 9), Some(RICH_REMINDER.into()));
     assert_eq!(turn_instructions("full".into(), false, 10), None);
-    let text = app_instructions(false, Role::Task, claude(), false, false);
+    let text = app_instructions(&InstructionOptions { explore: claude(), ..BASE });
     for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Use pandacode_explore to locate", "Generative UI:", "Visual progress:"] {
         assert!(text.contains(part), "{part}");
     }
-    let chat = app_instructions(true, Role::Task, None, false, false);
+    let chat = app_instructions(&InstructionOptions { chat: true, ..BASE });
     assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:"));
 }
 
 #[test]
 fn cloud_runs_are_not_told_about_progress_snapshots_they_never_list() {
     for chat in [false, true] {
-        let local = app_instructions(chat, Role::Task, None, true, false);
-        let cloud = app_instructions(chat, Role::Task, None, true, true);
+        let local = app_instructions(&InstructionOptions { chat, tools: true, ..BASE });
+        let cloud = app_instructions(&InstructionOptions { chat, tools: true, cloud: true, ..BASE });
         // Local bytes are exactly as before: the visual-progress text closes them.
         assert!(local.ends_with(VISUAL_PROGRESS));
         assert_eq!(cloud, local.strip_suffix(VISUAL_PROGRESS).unwrap());
         assert!(!cloud.contains("Visual progress:") && !cloud.contains("pandacode_progress_snapshot"));
     }
     // Managed workers never heard it, cloud or not.
-    assert_eq!(app_instructions(false, Role::Worker, None, false, true), app_instructions(false, Role::Worker, None, false, false));
+    let worker = app_instructions(&InstructionOptions { role: Role::Worker, ..BASE });
+    assert_eq!(app_instructions(&InstructionOptions { role: Role::Worker, cloud: true, ..BASE }), worker);
+    assert!(!worker.contains("Visual progress:"));
 }
 
 #[test]
 fn team_workers_get_only_change_tracking_and_turn_end() {
     let look = look(claude().unwrap());
-    let lead = app_instructions(false, Role::Task, claude(), false, false);
-    let worker = app_instructions(false, Role::Worker, claude(), false, false);
+    let lead = app_instructions(&InstructionOptions { explore: claude(), ..BASE });
+    let worker = app_instructions(&InstructionOptions { role: Role::Worker, explore: claude(), ..BASE });
     assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, &look, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat());
     assert_eq!(worker, [turn_changes::instruction(), TURN_ENDS, &look].concat());
     // The subagent style hint rides the token saver block, only while a style is active.
@@ -52,52 +60,40 @@ fn team_workers_get_only_change_tracking_and_turn_end() {
         assert!(!worker.contains(gone), "{gone}");
     }
     // A run without the tool never hears of it, and still gets the rest.
-    let without = app_instructions(false, Role::Worker, None, false, false);
+    let without = app_instructions(&InstructionOptions { role: Role::Worker, ..BASE });
     assert_eq!(without, [turn_changes::instruction(), TURN_ENDS].concat());
     assert!(!without.contains("explore"));
-    let named = app_instructions(false, Role::Worker, Some(explore::RunExplore { name: "server__tool", claude_code: false }), false, false);
+    let named = app_instructions(&InstructionOptions { role: Role::Worker, explore: Some(explore::RunExplore { name: "server__tool", claude_code: false }), ..BASE });
     assert!(named.contains("Use server__tool to locate") && !named.contains("{explore}"));
     // The stop rule (batch E: 90 of 253 steps came after the gold was shown).
     assert!(look.contains("search again only for a named gap"));
     // Agent-made tools are mentioned only to runs that have them.
     assert!(!lead.contains("pandacode_tool_save") && !worker.contains("pandacode_tool_save"));
-    assert_eq!(app_instructions(false, Role::Worker, None, true, false), [turn_changes::instruction(), TURN_ENDS, REUSE].concat());
+    assert_eq!(app_instructions(&InstructionOptions { role: Role::Worker, tools: true, ..BASE }), [turn_changes::instruction(), TURN_ENDS, REUSE].concat());
     // One fixed sentence: the old empty-project wording is never said.
-    assert!(!app_instructions(false, Role::Task, None, true, false).contains(crate::SAVE));
+    assert!(!app_instructions(&InstructionOptions { tools: true, ..BASE }).contains(crate::SAVE));
     // Managed team workers are never offered agent-made tools, so never hear REUSE.
     assert!(!custom_tools_offered(false, true) && !custom_tools_offered(true, false));
     assert_eq!(custom_tools_offered(false, false), custom_tools::offered(false));
-    let reuse = app_instructions(false, Role::Task, None, true, false);
+    let reuse = app_instructions(&InstructionOptions { tools: true, ..BASE });
     assert!(reuse.contains("If the Project tools note lists a tool") && reuse.contains("or once when it will clearly recur, save it with pandacode_tool_save"));
     assert!(!reuse.contains("pandacode_tool_list"));
     eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
 }
 
-#[test]
-fn edit_advice_follows_the_harness() {
-    // Batch E/E2: Claude Code needs its own Read before an Edit; every harness batches edits.
-    for provider in ["claude", "glm", "mimo"] {
-        let text = app_instructions(false, Role::Worker, explore::run_name(false, true, provider), false, false);
-        assert!(text.contains(&[" for a named gap. ", EDIT_CLAUDE].concat()), "{provider}");
-        assert!(!text.contains(EDIT_OTHER) && !text.contains("Before editing a file"), "{provider}");
-    }
-    for provider in ["codex", "kimi", "opencode", "pi", "omp", "grok"] {
-        let text = app_instructions(false, Role::Worker, explore::run_name(false, true, provider), false, false);
-        assert!(text.contains(&[" for a named gap. ", EDIT_OTHER].concat()), "{provider}");
-        assert!(!text.contains(EDIT_CLAUDE) && !text.contains("Before editing a file"), "{provider}");
-    }
-    // Edit advice rides the explore clause: a run without the tool gets none.
-    assert!(!app_instructions(false, Role::Worker, None, false, false).contains("edit calls"));
-    eprintln!("LOOK claude: {}\nLOOK other: {}", look(claude().unwrap()).trim(), look(explore::run_name(false, true, "codex").unwrap()).trim());
-}
 
 #[test]
 fn read_only_workers_never_hear_of_change_tracking() {
-    let writer = app_instructions(false, Role::Worker, claude(), false, false);
-    let reader = app_instructions(false, Role::ReadOnlyWorker, claude(), false, false);
+    let writer = app_instructions(&InstructionOptions { role: Role::Worker, explore: claude(), ..BASE });
+    let reader = app_instructions(&InstructionOptions { role: Role::ReadOnlyWorker, explore: claude(), ..BASE });
     assert!(writer.contains("File change tracking:"));
-    assert_eq!(reader, [TURN_ENDS, &look(claude().unwrap())].concat());
-    assert_eq!(app_instructions(false, Role::ReadOnlyWorker, None, false, false), TURN_ENDS);
+    // A reader edits nothing: no edit sentence.
+    let reading = look_read_only(claude().unwrap());
+    assert_eq!(reader, [TURN_ENDS, &reading].concat());
+    assert!(reading.ends_with("for a named gap.") && !reading.contains("Edit") && !reading.contains("edit"));
+    assert!(!reader.contains("Read the lines"));
+    eprintln!("read-only worker: {} B (writer {} B)", reader.len(), writer.len());
+    assert_eq!(app_instructions(&InstructionOptions { role: Role::ReadOnlyWorker, ..BASE }), TURN_ENDS);
     assert_eq!(Role::of(false, true), Role::Task, "only team workers are read-only");
     assert_eq!(Role::of(true, false), Role::Worker);
     assert_eq!(Role::of(true, true), Role::ReadOnlyWorker);
@@ -245,7 +241,7 @@ fn worker_instructions_are_resent_until_a_launch_carries_them() {
     assert!(!instructions_due(session, Role::ReadOnlyWorker));
     assert!(instructions_due(session, Role::Worker));
     // A resumed turn hears them only on a flip or a reminder turn.
-    let full = app_instructions(false, Role::Worker, None, false, false);
+    let full = app_instructions(&InstructionOptions { role: Role::Worker, ..BASE });
     assert_eq!(turn_instructions(full.clone(), false, 4), None);
     assert_eq!(turn_instructions(full.clone(), true, 4).as_deref(), Some(full.as_str()));
     assert_eq!(turn_instructions(full.clone(), false, 9).as_deref(), Some(full.as_str()));
@@ -296,7 +292,7 @@ fn the_cached_instructions_are_identical_in_every_mode() {
     // A run not offered the tools hears no sentence, in any mode.
     let plain = crate::providers::tests::config("claude");
     let none = launch_instructions(&plain, Role::Worker, None, false);
-    assert_eq!(none, app_instructions(false, Role::Worker, None, false, false));
+    assert_eq!(none, app_instructions(&InstructionOptions { role: Role::Worker, ..BASE }));
     // Plan's caveat rides the turn's message.
     assert!(plan_tools_note("plan").is_some_and(|note| note.len() < 100));
     for mode in ["ask", "auto", "review", "full"] {
@@ -340,7 +336,7 @@ fn a_stored_compaction_row_resends_the_full_instructions_through_the_launch() {
     let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
     let config = resumed_codex(&store);
     let session = config.session_id.clone();
-    let full = app_instructions(crate::chats::is_chat_folder(&config.cwd), Role::Task, None, false, false);
+    let full = app_instructions(&InstructionOptions { chat: crate::chats::is_chat_folder(&config.cwd), ..BASE });
     assert_eq!(launch_turn(&store, &config, false).0, "", "an ordinary resumed turn");
 
     compaction_row(&store.lock().unwrap(), &session, "run:compaction:1");
@@ -383,7 +379,7 @@ fn a_reported_compaction_resends_the_full_instructions_once() {
     let store = Store::open(std::path::Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let session = store.create_session(&project.id, "codex", "gpt-5", "ask").unwrap().id;
-    let full = app_instructions(false, Role::Task, None, false, false);
+    let full = app_instructions(&BASE);
     // What the launch does on a resumed turn that is neither flipped nor a reminder.
     let turn = |store: &Store| {
         let compaction = new_compaction(store, &session);
@@ -440,7 +436,7 @@ fn compaction_scans_read_only_new_rows_until_a_restart() {
 
 #[test]
 fn periodic_reminders_send_rich_guidance_once_per_conversation() {
-    let full = app_instructions(false, Role::Task, None, false, false);
+    let full = app_instructions(&BASE);
     let periodic = periodic_instructions(&full);
     assert!(full.contains(GENERATIVE_UI) && full.contains(RICH_QUESTIONS));
     assert!(!periodic.contains(GENERATIVE_UI) && !periodic.contains(RICH_QUESTIONS));
@@ -454,8 +450,38 @@ fn periodic_reminders_send_rich_guidance_once_per_conversation() {
         assert!(periodic.contains(kept), "{kept}");
     }
     // Workers never had the rich guidance, so their reminder is unchanged and gains no line.
-    let worker = app_instructions(false, Role::Worker, None, false, false);
+    let worker = app_instructions(&InstructionOptions { role: Role::Worker, ..BASE });
     assert_eq!(periodic_instructions(&worker), worker);
     assert_eq!(full.len() - periodic.len(), RICH_QUESTIONS.len() + GENERATIVE_UI.len() - RICH_REMINDER.len());
     eprintln!("periodic reminder: full {} B, periodic {} B", full.len(), periodic.len());
+}
+
+#[test]
+fn edit_text_follows_the_harness_and_role() {
+    eprintln!("edit text: EDIT_CLAUDE {} B, EDIT_OTHER {} B", EDIT_CLAUDE.len(), EDIT_OTHER.len());
+    let gap = " for a named gap. ";
+    for provider in ["claude", "glm", "mimo"] {
+        let config = crate::providers::tests::config(provider);
+        let text = launch_instructions(&config, Role::Worker, explore::run_name(false, true, provider), false);
+        assert!(text.contains(&[gap, EDIT_CLAUDE].concat()), "{provider}");
+        assert!(!text.contains(EDIT_OTHER), "{provider}");
+        let reader = launch_instructions(&config, Role::ReadOnlyWorker, explore::run_name(false, true, provider), false);
+        assert!(reader.contains("search again only for a named gap.") && !reader.contains("edit calls"), "{provider}");
+    }
+    for provider in ["codex", "kimi", "opencode", "pi", "omp", "grok"] {
+        let text = app_instructions(&InstructionOptions { role: Role::Worker, explore: explore::run_name(false, true, provider), ..BASE });
+        assert!(text.contains(&[gap, EDIT_OTHER].concat()), "{provider}");
+        assert!(!text.contains(EDIT_CLAUDE), "{provider}");
+    }
+    // The edit text rides the explore clause: a run without the tool gets none.
+    assert!(!app_instructions(&InstructionOptions { role: Role::Worker, ..BASE }).contains("edit calls"));
+}
+
+#[test]
+fn instruction_sizes_stay_within_budget() {
+    let lead = app_instructions(&InstructionOptions { explore: claude(), ..BASE }).len();
+    let worker = app_instructions(&InstructionOptions { role: Role::Worker, explore: claude(), ..BASE }).len();
+    eprintln!("budget: lead {lead} B, worker {worker} B");
+    assert!(lead <= LEAD_CAP, "lead instructions are {lead} B, cap {LEAD_CAP} B");
+    assert!(worker <= WORKER_CAP, "worker instructions are {worker} B, cap {WORKER_CAP} B");
 }

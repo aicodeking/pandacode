@@ -45,18 +45,6 @@ pub(super) fn environment() -> Result<Vec<(String, String)>, String> {
         ("ANTHROPIC_DEFAULT_HAIKU_MODEL".into(), HAIKU_MODEL.into()),
     ])
 }
-pub(super) fn configure(command: &mut Command) -> Result<String, String> {
-    let env = environment()?;
-    let key = env
-        .iter()
-        .find(|(name, _)| name == "ANTHROPIC_AUTH_TOKEN")
-        .unwrap()
-        .1
-        .clone();
-    apply_environment(command, &key);
-    Ok(key)
-}
-
 pub(super) fn arguments() -> Vec<String> {
     // Claude applies settings.json env after inherited env. Exclude those files
     // so an unrelated Anthropic credential or gateway cannot replace this key.
@@ -70,7 +58,7 @@ pub(super) fn arguments() -> Vec<String> {
     }}).to_string()]
 }
 
-fn apply_environment(command: &mut Command, key: &str) {
+pub(super) fn apply_environment(command: &mut Command, key: &str) {
     command.args(arguments());
     command
         .env("ANTHROPIC_BASE_URL", ENDPOINT)

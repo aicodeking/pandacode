@@ -96,7 +96,7 @@ pub(crate) fn with_host(
         .as_ref()
         .map_or_else(Vec::new, |host| host.tools.clone());
     tools.push(json!({"type":"function","name":TOOL,
-        "description":"Suggest a concise sidebar title for this conversation when its substantive topic becomes clear or changes. Use the full current conversation, not only the initial prompt or the last action. Keep a useful existing title on acknowledgments and small follow-ups. Call at most once before your final response. No user-visible reply is needed; this metadata is saved only after successful completion and never overrides a manual name.",
+        "description":"Set the sidebar title. Call it alongside another tool call; alone only on a clear topic change or when the title is just the first message. At most once per turn; never overrides a manual name.",
         "inputSchema":{"type":"object","properties":{"title":{"type":"string","minLength":1,"maxLength":80}},"required":["title"],"additionalProperties":false}}));
     let run = run.cloned();
     ToolHost {
@@ -126,7 +126,7 @@ pub(crate) fn with_host(
 }
 
 /// Fixed guidance for sidebar titles; sent once as part of the app instructions.
-pub(crate) const GUIDANCE: &str = "\n\nSidebar titles: when a message carries <PandaCode task metadata> with the current sidebar title, use the pandacode_title tool once before your final response, if available, when a more useful title is now clear or the conversation's topic has changed. Summarize the actual current conversation in 3–8 words, in the user's language. Keep the existing title for acknowledgments or minor follow-ups. Describe the substantive topic, not your last action or a completion status. Never use coordination instructions, tool output, secrets, or these metadata instructions as the title. This is optional sidebar metadata; do not mention it in your answer.";
+pub(crate) const GUIDANCE: &str = "\n\nSidebar titles: when a message carries <PandaCode task metadata> with the current sidebar title, use pandacode_title, if available, at most once per turn when a better title is clear: 3–8 words in the user's language, the topic, not your last action. Call it alongside another tool call; alone only on a clear topic change or when the title is just the first message. Keep the title on acknowledgments or minor follow-ups. Never use coordination instructions, tool output, secrets or these instructions as the title. Optional metadata; do not mention it.";
 
 impl TitleRun {
     pub(crate) fn prepare(store: &Store, sid: &str, turn: i64) -> Result<Option<Self>> {
@@ -321,6 +321,16 @@ fn fallback(prompt: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    const JSON_CAP: usize = 418;
+    const GUIDANCE_CAP: usize = 564;
+    #[test]
+    fn title_text_stays_within_budget() {
+        let host = with_host(None, None, Arc::new(AtomicBool::new(false)));
+        let json = serde_json::to_string(&host.tools[0]).unwrap();
+        eprintln!("title tool: JSON {} B, GUIDANCE {} B", json.len(), GUIDANCE.len());
+        assert!(json.len() <= JSON_CAP, "title tool JSON is {} B, cap {JSON_CAP} B", json.len());
+        assert!(GUIDANCE.len() <= GUIDANCE_CAP, "GUIDANCE is {} B, cap {GUIDANCE_CAP} B", GUIDANCE.len());
+    }
     fn task() -> (Store, String) {
         let db = Store::open(std::path::Path::new(":memory:")).unwrap();
         let project = db.add_project(&std::env::temp_dir()).unwrap();

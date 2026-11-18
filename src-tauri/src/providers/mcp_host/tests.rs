@@ -218,13 +218,15 @@ async fn explore_lists_always_loaded_and_answers_over_mcp() {
     assert_eq!(cut["incomplete"], true, "{cut}");
 }
 #[test]
-fn only_explore_and_change_tracking_skip_tool_search() {
+fn only_explore_change_tracking_and_title_skip_tool_search() {
     let spec = |name: &str| listing(&json!({"name":name,"description":"d","inputSchema":{"type":"object"}}));
-    assert_eq!(spec(crate::turn_changes::TRACK_TOOL)["_meta"]["anthropic/alwaysLoad"], true);
-    assert!(spec(crate::turn_changes::TRACK_TOOL).get("annotations").is_none());
-    for other in [crate::session_titles::TOOL, "pandacode_delegate"] {
-        assert_eq!(spec(other), json!({"name":other,"description":"d","inputSchema":{"type":"object"}}));
+    for loaded in [EXPLORE_TOOL, crate::turn_changes::TRACK_TOOL, crate::session_titles::TOOL] {
+        assert_eq!(spec(loaded)["_meta"]["anthropic/alwaysLoad"], true, "{loaded}");
     }
+    assert!(spec(crate::turn_changes::TRACK_TOOL).get("annotations").is_none());
+    assert!(spec(crate::session_titles::TOOL).get("annotations").is_none());
+    let other = "pandacode_delegate";
+    assert_eq!(spec(other), json!({"name":other,"description":"d","inputSchema":{"type":"object"}}));
 }
 async fn request(server: &Server, body: Value, extra: &str) -> (u16, Value) {
     let bytes = serde_json::to_vec(&body).unwrap();

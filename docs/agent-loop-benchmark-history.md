@@ -322,7 +322,7 @@ Measured on 2026-11-04 with Claude Code 2.1.317 on PandaCode at `df884aa`, compa
 | The regression gate passes | Under the non-inferiority gate it fails (see above). |
 | Later cache writes 1,749 → 4,007 per step | That mixed tasks and was unweighted. Clean-batch localization is 1,624 → 3,109 step-weighted, median 1,233 → 1,652. |
 | "Neither arm called Grep or Glob" | They aren't in `init.tools` on this harness, so the baseline is Bash-only. |
-| Edit needs its own Read, so explore's `read` can't satisfy it | **Retracted.** 36 Sonnet Edits in AFTER across both batches had no refusals, and Opus made 4 Edits after explore reads only. The extra Reads are the model's habit, not a harness rule. |
+| Edit needs its own Read, so explore's `read` can't satisfy it | **Retracted.** 36 Sonnet Edits (first-pass count; the recount below gives 35) in AFTER across both batches had no refusals, and Opus made 7 Edits, 4 of them without a prior Read (see the recount below). Read-before-Edit is a harness check, not only the model's habit: a static reading of the minified 2.1.325 bundle, not verified live, suggests it is skipped only for models off a fixed roster and only for edits already allowed (bypass). No live run has verified that. The app now tells every Claude-family writer to Read first ([edit rule](agent-tools.md#instruction)). |
 | Files "read" for partial credit | The old rule used every Bash word in BEFORE but only outline and read paths in AFTER. Credit now uses any tool input or output, the same in every arm. |
 | Arm order randomized | It came from a fixed hash, so it was the same on every rerun. Round 2 uses a recorded per-batch seed. |
 | Two runs' metrics | Those two runs reported two `result` events, and only the last was read. Per-segment values now add up, and the cost, which is cumulative, comes from the last. Both are BEFORE edit runs in the discarded batch. |
@@ -433,3 +433,22 @@ From the transcripts, using `scripts/agent-bench/dig.mjs`. Fixes are proposals, 
 - The first full Sonnet batch (68 runs) had a runner bug that blocked the event loop during grading and inflated wall time. Its recipe task also failed both arms for an unrelated reason. Its localization steps, duration, API time, cost and recall are unaffected and are used above as a replicate; its wall time and edit runs are not.
 - 4 runs that were in flight when an earlier start was stopped were deleted and rerun. They count for neither arm.
 - Spend was about $32 across 148 runs.
+
+### Edits without a prior Read (recorded recount)
+
+The Haiku observation (it once backed `EDIT_READ_FIRST`, since removed) rests on a hand observation, not a benchmark batch. Known: Claude Code 2.1.323, Edit after reading lines only through explore; Sonnet's Edit was accepted, and Haiku 4.5's was refused until it used Read. Not recorded: the permission mode (bypassPermissions is assumed, not logged), the run count, the task, the exact refusal text, and any stream frame or transcript. No run set or `results/` file holds it and no test replays it, so treat it as two models on one CLI version. If a Haiku batch is run, count refusals with `node scripts/agent-bench/dig.mjs edits --runs <dir>` and replace this entry.
+
+The E, E2 and Fv2 streams are retained under `~/Library/Caches/pandacode-bench/v2/runs/{E,E2,Fv2}` (v1 under `~/Library/Caches/pandacode-bench/runs`). Re-running `node scripts/agent-bench/dig.mjs edits --runs <dir of the AFTER edit runs>` on 2026-11-16 (all in `bypassPermissions` on Claude Code 2.1.317, from the init events) gives the table below. It replaces the first-pass "36 Sonnet + 4 Opus" counts.
+
+| Set (AFTER, edit tasks) | Runs | Edits | Refused | Without a prior Read |
+|---|---:|---:|---:|---:|
+| Sonnet E + E2 | 24 | 35 | 0 | 9 |
+| Sonnet Fv2 `edit` + `edit2` | 40 | 63 | 0 | 10 |
+| Sonnet v1 | 10 | 16 | 0 | 1 |
+| Opus v1 (`--model opus`) | 2 | 7 | 0 | 4 |
+
+"Without a prior Read" counts Edits whose file had no earlier native Read in that run; the rest followed a Read. The command counts every arm in a directory, so the AFTER runs were selected by name into a scratch directory first (`dig.mjs` has `--arm after` and `--model`). In these runs Claude Code 2.1.317 in bypass mode did not enforce Read-before-Edit. The 20 Sonnet Edits without a native Read (9 + 10 + 1 across the three sets) are counts only: `dig.mjs` does not record what preceded each one (an explore read, an explore search or a Bash call naming the file), and no classification of them is recorded. The shortcut text itself has no paid measurement.
+
+### Edit text history
+
+**2026-11-17: the shortcut was removed from the app.** It was told only to the `claude` provider with a Sonnet or Opus model name, the rest got `EDIT_READ_FIRST`, and it never had a paid measurement. Every Claude-family writer (claude, GLM, MiMo, any model) now gets the one Read-first `EDIT_CLAUDE`; `EDIT_READ_FIRST` and the model rule are gone. The counts above stay as evidence of what bypass mode on 2.1.317 allowed, not as a basis for telling models to skip the Read. The current rule is in [agent-tools.md](agent-tools.md#instruction).

@@ -601,11 +601,7 @@ pub(crate) fn update(store: &Store, id: &str, input: &BotInput) -> Result<Bot> {
     }
     log(store, id, "updated", "Settings changed", json!({}))?;
     let bot = get(store, id)?;
-    let session_ids = {
-        let mut statement = store.db.prepare("SELECT session_id FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at").map_err(|e| e.to_string())?;
-        let rows = statement.query_map([id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
-    };
+    let session_ids = thread_session_ids(store, id)?;
     for session_id in session_ids { sync_thread_profile(store, &bot, &session_id)?; }
     Ok(bot)
 }
@@ -943,10 +939,38 @@ pub async fn bot_set_paused(app: tauri::AppHandle, window: tauri::WebviewWindow,
     Ok(bot)
 }
 
+/// Frees each conversation's lingering CLI and warm spare before its row goes (`providers::quiesce`),
+/// all at once. Best effort: a failure is logged and never blocks the reset or delete, and it does
+/// not re-check afterwards that no agent started. The gateway is stopped first, which stops the
+/// bot's running sessions; delete also stops its channels, but reset leaves them running, so an
+/// inbound channel message arriving during a reset can still start a conversation in that window.
+async fn quiesce_threads(state: &AppState, bot_id: &str) {
+    let ids = match state.store.lock().map_err(|e| e.to_string()).and_then(|store| thread_session_ids(&store, bot_id)) {
+        Ok(ids) => ids,
+        Err(error) => {
+            eprintln!("bot {bot_id}: could not list conversations to quiesce: {error}");
+            return;
+        }
+    };
+    let results = futures_util::future::join_all(ids.iter().map(|id| crate::providers::quiesce(id))).await;
+    for (id, result) in ids.iter().zip(results) {
+        if let Err(error) = result {
+            eprintln!("bot {bot_id}: conversation {id} did not quiesce: {error}");
+        }
+    }
+}
+
+fn thread_session_ids(store: &Store, bot_id: &str) -> Result<Vec<String>> {
+    let mut statement = store.db.prepare("SELECT session_id FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([bot_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn bot_reset(app: tauri::AppHandle, window: tauri::WebviewWindow, state: State<'_, AppState>, bot_id: String) -> Result<Bot> {
     guard_main(&window)?;
     gateway::stop_bot(&app, &bot_id).await;
+    quiesce_threads(&state, &bot_id).await;
     let bot = reset(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id)?;
     let _ = app.emit("bot-shared-channel-changed", json!({}));
     let _ = app.emit("bots-changed", ());
@@ -959,6 +983,7 @@ pub async fn bot_delete(app: tauri::AppHandle, window: tauri::WebviewWindow, sta
     guard_main(&window)?;
     gateway::stop_bot(&app, &bot_id).await;
     channels::stop_bot_channels(&app, &bot_id).await;
+    quiesce_threads(&state, &bot_id).await;
     delete(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id)?;
     let _ = app.emit("bot-shared-channel-changed", json!({}));
     let _ = app.emit("bots-changed", ());

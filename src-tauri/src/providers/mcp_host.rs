@@ -140,6 +140,10 @@ impl Server {
     pub(super) fn codex_config(&self) -> Value {
         json!({SERVER_NAME:{"url":format!("http://{}/mcp",self.authority),"http_headers":{"Authorization":format!("Bearer {}",self.token)},"enabled":true,"required":self.required(),"startup_timeout_sec":if self.required() {15} else {3},"tool_timeout_sec":360}})
     }
+    /// The bearer token, for callers that redact text themselves (`exit::reap`).
+    pub(super) fn token(&self) -> &str {
+        &self.token
+    }
     pub(super) fn redact(&self, text: &str) -> String {
         text.replace(&self.token, "[redacted]")
     }
@@ -164,11 +168,11 @@ impl Server {
 
 /// One `tools/list` entry. The hints live here, not in the catalog, because the catalog is part
 /// of the warm-agent key: `alwaysLoad` keeps Claude Code from spending a ToolSearch step on a tool
-/// used in most turns, and `readOnlyHint` tells harnesses that read annotations not to ask.
+/// used in most turns (explore, change tracking and the title, which rides beside another call), and `readOnlyHint` tells harnesses that read annotations not to ask.
 fn listing(spec: &Value) -> Value {
     let mut tool = json!({"name":spec["name"],"description":spec["description"],"inputSchema":spec["inputSchema"]});
     let name = spec["name"].as_str().unwrap_or_default();
-    if name == EXPLORE_TOOL || name == crate::turn_changes::TRACK_TOOL {
+    if name == EXPLORE_TOOL || name == crate::turn_changes::TRACK_TOOL || name == crate::session_titles::TOOL {
         tool["_meta"] = json!({"anthropic/alwaysLoad":true});
     }
     if name == EXPLORE_TOOL {

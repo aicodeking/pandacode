@@ -61,7 +61,7 @@ level is used as given.
 
 **Pack wording for agents.** Caveman's exceptions keep reports to the lead complete and
 unambiguous. Quiet tools leaves the explore tool and Claude Code's
-Read-before-Edit rule to the app instructions (`LOOK`, `EDIT_CLAUDE` in `lib.rs`); the rtk pack offers
+edit guidance to the app instructions (`LOOK`, `EDIT_CLAUDE` in `lib.rs`); the rtk pack offers
 `rtk read` and `rtk grep` only when the explore tool is not listed.
 
 **UI.** The worker card in the team panel shows the packs as chips (`Caveman lite`,

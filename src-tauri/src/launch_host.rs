@@ -311,6 +311,8 @@ impl RunSink {
     }
 
     /// At a turn boundary, persists the files the turn changed.
+    // Runs at the `turn_complete` frame, before the process exits; `boundary()` only compares the
+    // snapshots the tools already took (it never rereads the tree), so it needs no `await_exit`.
     fn finish_turn(&self, session_id: &str) {
         let Some(tracker) = &self.tracker else {
             return;
@@ -325,6 +327,10 @@ impl RunSink {
 /// Start the next turn's agent after a clean run, so a follow-up skips the CLI's own startup.
 /// `next` is this launch and the tools it listed; `launch` the task's launch count read at run end.
 pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, session_id: &str, team: Option<&architect::Admission>, launch: u64, next: (RunConfig, (Vec<serde_json::Value>, HashSet<String>))) {
+    // Once quitting begins (`on_run_event`), no process may start that the quit would then wait for.
+    if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+        return;
+    }
     let (next, (tools, approvals)) = next;
     // A turn that ended without any reply (seen after background commands) may have
     // left the session in a state a spare would inherit: start the next one fresh.

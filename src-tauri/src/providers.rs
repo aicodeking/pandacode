@@ -13,21 +13,26 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
     sync::mpsc::UnboundedReceiver,
 };
 
 mod attachments;
+mod exit;
 mod goals;
+mod launch_input;
 mod host_inputs;
 mod host_tools;
 mod mcp_host;
-mod warm;
+mod redact;
+mod relay;
 #[cfg(test)]
-pub(crate) use warm::launched as warm_launched;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms, Renew as WarmRenew};
-use host_tools::apply_step;
-pub use host_tools::ToolHost;
+mod test_launch;
+#[cfg(test)]
+use test_launch::run_process_with_tools;
+#[cfg(all(test, unix))]
+use test_launch::run_process;
+mod warm;
 pub(crate) mod acp;
 pub(crate) mod acp_catalog;
 #[cfg(test)]
@@ -36,6 +41,8 @@ mod claude_stream_tests;
 mod codex_stream_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
+#[cfg(all(test, unix))]
+mod exit_tests;
 mod cline;
 mod commandcode;
 mod extra_models;
@@ -70,6 +77,19 @@ mod text_stream;
 #[cfg(windows)]
 pub(crate) mod windows_job;
 pub use subagents::SubagentActivity;
+use exit::reap;
+#[cfg(all(test, unix))]
+use exit::{await_exit_with_cap, exit_registry};
+use launch_input::{next_input, stop_requested};
+pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently};
+#[cfg(test)]
+pub(crate) use exit::hold_for_test as hold_exit_for_test;
+use host_tools::apply_step;
+pub use host_tools::ToolHost;
+use redact::redact_run_error;
+#[cfg(test)]
+pub(crate) use warm::launched as warm_launched;
+pub use warm::{begin_quit as warm_begin_quit, discard as discard_warm_agent, quiesce, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms, Renew as WarmRenew};
 
 const MAX_FRAME: usize = 4 * 1024 * 1024;
 /// Capacity the frame buffer keeps after a large message has been consumed.
@@ -2861,28 +2881,50 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// How long a CLI may take to exit after its stdin closes, then after SIGTERM, before SIGKILL.
+pub(crate) const EXIT_WAIT: Duration = Duration::from_millis(1000);
+/// The same wait for the background reap of a clean run, which no longer delays Done: Claude
+/// Code's natural exit after `result` measured 550-1,917 ms (CLI 2.1.325), so 1 s would
+/// SIGTERM about a third of ordinary turns mid-flush.
+pub(crate) const BACKGROUND_EXIT_WAIT: Duration = Duration::from_millis(3000);
+pub(crate) const TERM_WAIT: Duration = Duration::from_millis(500);
+/// Fail a relaunch rather than overlap processes if shutdown is unexpectedly delayed.
+const EXIT_HARD_CAP: Duration = Duration::from_secs(10);
+
 async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup) {
     drop(stdin);
-    if tokio::time::timeout(Duration::from_millis(1000), child.wait())
-        .await
-        .is_err()
-    {
-        #[cfg(unix)]
-        if let Some(pid) = group.0 {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
+    wait_child(child, group, EXIT_WAIT).await;
+}
+
+/// `finish_child` after stdin is closed: wait for the exit with the same escalation and return
+/// the status when the process was reaped.
+/// The flag is true when PandaCode itself escalated (SIGTERM or SIGKILL), so the status says
+/// nothing about the CLI's own health.
+async fn wait_child(child: &mut Child, group: &mut ProcessGroup, wait: Duration) -> (Option<std::process::ExitStatus>, bool) {
+    let mut status = None;
+    let mut escalated = false;
+    match tokio::time::timeout(wait, child.wait()).await {
+        Ok(result) => status = result.ok(),
+        Err(_) => {
+            escalated = true;
+            #[cfg(unix)]
+            if let Some(pid) = group.0 {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGTERM);
+                }
             }
-        }
-        if tokio::time::timeout(Duration::from_millis(500), child.wait())
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
+            match tokio::time::timeout(TERM_WAIT, child.wait()).await {
+                Ok(result) => status = result.ok(),
+                Err(_) => {
+                    let _ = child.kill().await;
+                }
+            }
         }
     }
     // Also clean up provider-created background processes, including orphaned children.
     let cleanup = ProcessGroup(group.0.take());
     drop(cleanup);
+    (status, escalated)
 }
 
 // Protocol fixture entry point.
@@ -3060,7 +3102,10 @@ async fn run_inner(
     // A cloud task runs the same pipeline through a bridge to its machine; local MCP host
     // tools stay on this computer (docs/cloud-agents.md, step 5).
     if let Some(command) = crate::cloud_agents::transport::command(&config, |command| configure_command(command, &config)).await? {
-        return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
+        // The cloud machine's after-run sync (`cloud_agents::tasks::after_run`) depends on the
+        // bridge having closed its stdin and exited, and nothing there proves it tolerates a
+        // background reap, so cloud runs keep the synchronous finish.
+        return run_process_launch(config, sink, input, command, Vec::new(), None, cloud_launch()).await;
     }
     let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
@@ -3087,43 +3132,46 @@ async fn run_inner(
             connection.secrets.push(inline);
         }
     }
-    let key = if config.provider == "glm" {
-        Some(glm::configure(&mut command)?)
-    } else if config.provider == "mimo" {
-        Some(mimo::configure(&mut command)?)
-    } else if config.provider == "deepseek" {
+    // GLM and MiMo resolve one relay snapshot per launch; its key is redacted
+    // below with the others, from every error of the run, early returns included.
+    let relay = relay::configure_relay(&config.provider, &mut command, || relay::saved_relay(&config.provider))?;
+    let relay_key = relay.key().map(str::to_owned);
+    let key = if config.provider == "deepseek" {
         deepseek::configure(&mut command)?
     } else if config.provider == "commandcode" {
         commandcode::key_environment(&mut command)
     } else {
         None
     };
-    run_process_with_tools(
+    let reap_in_background = reaps_in_background(config.worker);
+    // Every secret of this launch, for the log line of a background exit (`exit::exit_note`).
+    let secrets: Vec<String> = key
+        .iter()
+        .chain(relay_key.iter())
+        .chain(connection.iter().flat_map(|connection| connection.secrets.iter()))
+        .filter(|secret| !secret.is_empty())
+        .cloned()
+        .collect();
+    run_process_launch(
         config,
         sink,
         input,
         command,
         image_blocks,
         host,
+        Launch { secrets, reap_in_background },
     )
     .await
-    .map_err(|error| {
-        let error = key
-            .as_ref()
-            .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
-        connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
-    })
+    .map_err(|error| redact_launch_error(&error, &[key.as_deref(), relay_key.as_deref()], connection.as_ref()))
 }
 
-#[cfg(all(test, unix))]
-async fn run_process(
-    config: RunConfig,
-    sink: Sink,
-    input: UnboundedReceiver<RunInput>,
-    command: Command,
-    image_blocks: Vec<Value>,
-) -> Result<(), String> {
-    run_process_with_tools(config, sink, input, command, image_blocks, None).await
+/// Every error `run_inner` returns after launch, with the launch's keys and connection secrets hidden.
+fn redact_launch_error(error: &str, keys: &[Option<&str>], connection: Option<&crate::connections::Launch>) -> String {
+    let error = redact_run_error(error, keys);
+    match connection {
+        Some(connection) => connection.redact(&error),
+        None => error,
+    }
 }
 
 fn optional_metadata_tool(name: &str) -> bool {
@@ -3190,13 +3238,34 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
     ((!host.tools.is_empty()).then_some(host), Some(jev))
 }
 
-async fn run_process_with_tools(
+/// Whether a clean run's process may exit in the background. A managed team worker finishes
+/// synchronously, like a cloud run: its process group (a background build, say) must be gone
+/// before `architect::completed` hands the checkout to the lead's review.
+fn reaps_in_background(worker: Option<WorkerTrim>) -> bool {
+    worker.is_none()
+}
+
+/// What a launch knows beyond its command: the secrets to keep out of logs (relay key, named
+/// connection) and whether a clean run's process may exit in the background (`exit::reap`).
+struct Launch {
+    secrets: Vec<String>,
+    reap_in_background: bool,
+}
+
+/// A cloud run's launch: no secrets of its own, and its process is finished before the run returns.
+fn cloud_launch() -> Launch {
+    Launch { secrets: Vec::new(), reap_in_background: false }
+}
+
+/// Errors carry no relay key redaction here: `run_inner` redacts every error of the run once.
+async fn run_process_launch(
     config: RunConfig,
     sink: Sink,
     mut input: UnboundedReceiver<RunInput>,
     mut command: Command,
     image_blocks: Vec<Value>,
     host: Option<ToolHost>,
+    Launch { secrets, reap_in_background }: Launch,
 ) -> Result<(), String> {
     let mcp_tool_names: HashSet<String> = {
         host.as_ref()
@@ -3211,13 +3280,13 @@ async fn run_process_with_tools(
     let mut spare = match &host {
         Some(tools) if warm::supported(&config) => warm::take(&config.session_id, &warm::key(&config, &tools.tools)),
         _ => {
-            warm::launched(&config.session_id);
+            warm::launched_without_spare(&config.session_id);
             None
         }
     };
     let (host, mcp) = match (config.provider.as_str(), host) {
         ("claude", Some(host)) if spare.is_some() => {
-            let server = spare.as_mut().and_then(|spare| spare.server.take());
+            let server = spare.as_mut().and_then(warm::Adopting::server);
             if let Some(server) = &server {
                 server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
             }
@@ -3270,11 +3339,12 @@ async fn run_process_with_tools(
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
-    reached_harness();
+    let mut early = VecDeque::new();
     let (mut child, mut group) = if let Some(spare) = spare {
-        (spare.child, spare.group)
+        reached_harness();
+        spare.into_parts()
     } else {
-        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo") {
+        if claude_family(&config.provider) {
             if let Some(server) = &mcp {
                 command.args(["--mcp-config", &server.claude_config().to_string()]);
             }
@@ -3287,15 +3357,44 @@ async fn run_process_with_tools(
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        // Stop is serviced while the previous process of the session is still exiting.
+        // `biased`: a finished exit wins over input that is also ready, and a closed input
+        // never ends the launch (only an explicit Stop does).
+        let exited = tokio::select! {
+            biased;
+            exited = await_exit(&config.session_id) => exited,
+            () = stop_requested(&mut input, &mut early) => {
+                if let Some(server) = &mcp { server.stop(); }
+                // The protocol does not exist yet, so the same status event is built directly.
+                sink(AgentEvent {
+                    session_id: config.session_id.clone(),
+                    kind: "status".into(),
+                    text: "Stopping agent".into(),
+                    request_id: None,
+                    data: None,
+                    tool: None,
+                });
+                return Ok(());
+            }
+        };
+        // A failed exit wait is PandaCode's own shutdown cap, not the harness's failure.
+        exited?;
+        reached_harness();
         let child = command
             .spawn()
             .map_err(|e| format!("Could not start {}: {e}", config.provider))?;
         let group = ProcessGroup::register(child.id());
         (child, group)
     };
-    let mut stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
-    let mut stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
+    // The process exists but cannot be driven: register its exit so the next same-session
+    // launch waits for it instead of resuming beside it.
+    let (mut stdin, mut stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        (Some(stdin), Some(stdout), Some(stderr)) => (stdin, stdout, stderr),
+        _ => {
+            exit::retire_parts(&config.session_id, child, group, mcp);
+            return Err("Provider stdio unavailable".into());
+        }
+    };
     let mut stderr_task = StderrReader(tokio::spawn(read_stderr(stderr)));
     let mut protocol = Protocol::new(config);
     protocol.image_blocks = image_blocks;
@@ -3324,7 +3423,7 @@ async fn run_process_with_tools(
         }
         loop {
             tokio::select! {
-                action=input.recv(),if input_open && !stopped=>{
+                action=next_input(&mut early,&mut input),if input_open && !stopped=>{
                     match action {
                         Some(RunInput::Goal{request,reply})=>{let step=protocol.goal_control(request,reply);if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}},
                         Some(RunInput::CodexRequest{method,params,reply})=>{let step=protocol.codex_control(method,params,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
@@ -3415,6 +3514,12 @@ async fn run_process_with_tools(
     for event in protocol.cancel_requests().events {
         sink(event);
     }
+    if reap_in_background && result.is_ok() && !stopped && claude_family(&protocol.config.provider) {
+        let mut secrets = secrets;
+        secrets.extend(mcp.as_ref().map(|server| server.token().to_owned()));
+        reap(protocol.config.session_id.clone(), child, stdin, stdout, group, stderr_task, secrets);
+        return Ok(());
+    }
     finish_child(&mut child, stdin, &mut group).await;
     let diagnostic = tokio::time::timeout(Duration::from_millis(500), &mut stderr_task.0)
         .await
@@ -3485,6 +3590,16 @@ mod coalesce_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn only_plain_tasks_reap_a_clean_run_in_the_background() {
+        assert!(!super::cloud_launch().reap_in_background, "cloud runs finish their bridge synchronously");
+        assert!(super::reaps_in_background(None));
+        for read_only in [false, true] {
+            let worker = super::WorkerTrim { read_only, skills: true, trim: false };
+            assert!(!super::reaps_in_background(Some(worker)), "managed worker, read_only={read_only}");
+        }
+    }
+
     #[test]
     fn frame_buffer_shrinks_only_when_large_and_drained() {
         assert!(super::should_shrink(10, 2 * 1024 * 1024));

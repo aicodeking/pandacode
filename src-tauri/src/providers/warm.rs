@@ -2,6 +2,7 @@
 //! so a follow-up skips the CLI's own startup (about 1.4 s). A warm agent is adopted only
 //! when everything on its command line and in its tool catalog still matches; otherwise it
 //! is discarded and the turn starts cold as before.
+use super::exit::{pending, retire_parts, Pending};
 use super::*;
 use std::sync::LazyLock;
 
@@ -27,8 +28,15 @@ pub type Renew = Arc<dyn Fn() -> bool + Send + Sync>;
 /// expires: a renewal started on old inputs could never be adopted.
 type Inputs = Arc<dyn Fn() -> String + Send + Sync>;
 type Starting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
-/// A started process for a spare: its warm key, the child, its group and its tool server.
-type Spawned = (String, Child, ProcessGroup, Option<mcp_host::Server>);
+/// A started process for a spare: its warm key, the child, its group, its tool server and the
+/// pending exit that covers the time before the spare is registered (dropped right after).
+pub(super) struct Spawned {
+    pub(super) key: String,
+    pub(super) child: Child,
+    pub(super) group: ProcessGroup,
+    pub(super) server: Option<mcp_host::Server>,
+    pub(super) starting: Pending,
+}
 type Spawning = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option<Spawned>, String>> + Send>>;
 
 /// How spares start, how long each waits and which pool keeps them: Claude Code, `IDLE` and
@@ -38,7 +46,7 @@ type Spawning = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option
 struct Lifecycle {
     idle: Duration,
     /// Starts the process for a launch, or `None` when this launch takes no spare.
-    spawn: fn(RunConfig, Vec<Value>, HashSet<String>) -> Spawning,
+    spawn: fn(RunConfig, Vec<Value>, HashSet<String>, u64) -> Spawning,
     /// Whether a renewal's launch inputs still give the expired spare's key and the inputs
     /// read at its spawn (`still_current`).
     current: fn(&str, &RunConfig, &[Value], &str, &Inputs) -> bool,
@@ -122,6 +130,18 @@ static SPARES: LazyLock<Pool> = LazyLock::new(Pool::default);
 static NEXT_LAUNCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static LAUNCHES: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Set once the app begins quitting (`on_run_event` in `lib.rs`): a spare already waiting on
+/// an exit, or a lead's renewal, must not start a process the quit would then wait for.
+static QUITTING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn begin_quit() {
+    QUITTING.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+fn quitting() -> bool {
+    QUITTING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The task's current launch count, read when a turn ends and before the next can begin.
 pub fn epoch(session_id: &str) -> u64 {
     LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(session_id).copied().unwrap_or(0)
@@ -131,7 +151,7 @@ fn spares(pool: &Pool) -> std::sync::MutexGuard<'_, Spares> {
     pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Only plain Claude Code: key-based relays carry per-launch credentials.
+/// Plain Claude only: an idle relay spare made a network request (see docs/worker-tokens.md).
 pub fn supported(config: &RunConfig) -> bool {
     config.provider == "claude" && config.goal.is_none() && config.skill.is_none()
 }
@@ -171,14 +191,43 @@ pub(crate) fn launched(session_id: &str) {
     LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), launch);
 }
 
-pub(super) fn take(session_id: &str, key: &str) -> Option<Spare> {
+pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
     let (spare, note) = take_in(&SPARES, session_id, key);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every lead
     // spare's hit and miss is logged too, so the lead pool's speed-up can be measured.
     if let Some(note) = note {
         eprintln!("{note}");
     }
-    spare
+    spare.map(|spare| Adopting { session_id: session_id.to_owned(), spare: Some(spare) })
+}
+
+/// A spare taken for adoption. Dropping it before `into_parts` (a launch that fails between
+/// taking the spare and owning its streams) retires the process like any other removal, so the
+/// next same-session launch waits for it instead of resuming beside it.
+pub(super) struct Adopting {
+    session_id: String,
+    spare: Option<Spare>,
+}
+
+impl Adopting {
+    /// The spare's tool server, handed to the run.
+    pub(super) fn server(&mut self) -> Option<mcp_host::Server> {
+        self.spare.as_mut().and_then(|spare| spare.server.take())
+    }
+
+    /// Adopted: the run owns the process from here and must retire it itself on failure.
+    pub(super) fn into_parts(mut self) -> (Child, ProcessGroup) {
+        let spare = self.spare.take().expect("an adopted spare is taken once");
+        (spare.child, spare.group)
+    }
+}
+
+impl Drop for Adopting {
+    fn drop(&mut self) {
+        if let Some(spare) = self.spare.take() {
+            retire(&self.session_id, spare);
+        }
+    }
 }
 
 /// The spare this launch adopts, if any, and what to log about it (never any contents: only
@@ -199,8 +248,33 @@ fn take_in(pool: &Pool, session_id: &str, key: &str) -> (Option<Spare>, Option<S
             let note = spare.lead.then(|| lead_decision(pool, None));
             (Some(spare), note)
         }
-        Some(reason) if spare.lead => (None, Some(lead_decision(pool, Some(&reason)))),
-        Some(reason) => (None, Some(format!("Warm Claude agent not used ({reason}); starting cold."))),
+        Some(reason) => {
+            // The cold launch's `await_exit` waits for this process, so two never share a session.
+            let note = if spare.lead { lead_decision(pool, Some(&reason)) } else { format!("Warm Claude agent not used ({reason}); starting cold.") };
+            retire(session_id, spare);
+            (None, Some(note))
+        }
+    }
+}
+
+/// Kill a spare that left the pool without being adopted and register its exit under the session
+/// like a finished turn's (`exit::spawn_exit`), so whatever resumes the session next (a cold
+/// launch, the harness console) waits until the process is really gone instead of overlapping
+/// it. Every removal (a miss, expiry, a refused registration, eviction, replacement, discard)
+/// comes here, never holding the pool lock. Outside a runtime nothing can wait: dropping it
+/// still kills it.
+fn retire(session_id: &str, spare: Spare) {
+    let Spare { child, group, server, .. } = spare;
+    retire_parts(session_id, child, group, server);
+}
+
+/// A launch that takes no spare (a host-less or unsupported one) still counts as a launch and
+/// retires whatever spare the task holds, so none idles beside its cold process.
+pub(super) fn launched_without_spare(session_id: &str) {
+    launched(session_id);
+    let dropped = spares(&SPARES).remove(session_id, Gone::Discarded);
+    if let Some(spare) = dropped {
+        retire(session_id, spare);
     }
 }
 
@@ -240,20 +314,37 @@ fn miss(alive: bool, spare_key: &str, key: &str, age: Duration, idle: Duration) 
     Some(format!("changed: {}", changed.join(", ")))
 }
 
-/// Drop a task's warm agent (its team stopped or paused, the task was deleted, or its model or
-/// mode changed: `update_session` in `lib.rs` calls this so a lead's spare cannot renew on the
-/// old launch until its next wake; an ordinary spare would already miss on its key). It also forgets the task's launch number (so a deleted task leaves nothing
-/// behind): a spare (or a lead's renewal) still starting for the old launch, numbered at least 1,
-/// never matches the forgotten 0 and is dropped instead of idling for `IDLE`.
+/// Drop a task's warm agent: its team stopped or paused, the task was deleted, or its model or
+/// mode changed (`update_session` in `lib.rs` calls this so a lead's spare cannot renew on the
+/// old launch until its next wake; an ordinary spare would already miss on its key).
+/// It also forgets the task's launch number, so a deleted task leaves nothing behind: a spare
+/// (or a lead's renewal) still starting for the old launch, numbered at least 1, never matches
+/// the forgotten 0 and is dropped instead of idling for `IDLE`.
+/// Must run inside a tokio runtime: only there does the killed spare register its exit, so a
+/// later `await_exit` waits for it.
 pub fn discard(session_id: &str) {
     discard_in(&SPARES, session_id);
 }
 
+/// `discard`, then wait (bounded by `await_exit`'s hard cap) until every process of the session
+/// has exited, so nothing holds its conversation or checkout open afterwards: the harness
+/// console, a worktree removal and a task deletion all need that. Never call with a lock held.
+pub async fn quiesce(session_id: &str) -> Result<(), String> {
+    quiesce_in(&SPARES, session_id).await
+}
+
+async fn quiesce_in(pool: &Pool, session_id: &str) -> Result<(), String> {
+    discard_in(pool, session_id);
+    await_exit(session_id).await
+}
+
 fn discard_in(pool: &Pool, session_id: &str) {
     LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(session_id);
-    // Dropping the spare kills its process (outside the lock).
+    // Killed outside the lock; `await_exit` then waits for it (`retire`).
     let dropped = spares(pool).remove(session_id, Gone::Discarded);
-    drop(dropped);
+    if let Some(spare) = dropped {
+        retire(session_id, spare);
+    }
 }
 
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
@@ -321,21 +412,24 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         None => None,
     };
     let session_id = config.session_id.clone();
-    let Some((key, child, group, server)) = (life.spawn)(config, tools, approval_tools).await? else { return Ok(()) };
+    let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch).await? else { return Ok(()) };
     let spare_key = key.clone();
     let born = std::time::Instant::now();
-    if !register(life.pool, &session_id, launch, Spare { key, child, group, server, born, idle: life.idle, lead: renewal.is_some() }) {
+    let registered = register(life.pool, &session_id, launch, Spare { key, child, group, server, born, idle: life.idle, lead: renewal.is_some() });
+    // The spare is now pooled, or killed with its own exit registered (`retire`).
+    drop(starting);
+    if !registered {
         return Ok(());
     }
     tokio::spawn(async move {
         tokio::time::sleep(life.idle).await;
-        // Dropping the expired spare kills its process (outside the lock).
+        // Retired outside the lock: killed, and same-session launches wait for its exit.
         let expired = {
             let mut pool = spares(life.pool);
             if pool.spares.get(&session_id).is_some_and(|spare| spare.born == born) { pool.remove(&session_id, Gone::Expired) } else { None }
         };
         let Some(expired) = expired else { return };
-        drop(expired);
+        retire(&session_id, expired);
         let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else { return };
         // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
         // runs on a blocking thread, never on the timer's runtime worker.
@@ -357,11 +451,11 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
 
 /// Claude Code's process for a spare, with a placeholder tool server; `None` for a launch
 /// that takes no spare (`supported`).
-fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>) -> Spawning {
-    Box::pin(spawn_claude_process(config, tools, approval_tools))
+fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Spawning {
+    Box::pin(spawn_claude_process(config, tools, approval_tools, launch))
 }
 
-async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>) -> Result<Option<Spawned>, String> {
+async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
     if !supported(&config) {
         return Ok(None);
     }
@@ -374,13 +468,13 @@ async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval
         .or_else(|| executable(&config.provider))
         .ok_or("Claude Code is not installed")?;
     config.cwd = external_path(&config.cwd);
-    let key = key(&config, &tools);
     let mut command = command(&path)?;
     crate::provider_settings::apply_environment(&config.provider, &mut command);
     configure_command(&mut command, &config);
     if let Some(connection) = &connection {
         connection.apply(&mut command);
     }
+    let key = key(&config, &tools);
     let server = if tools.is_empty() {
         None
     } else {
@@ -402,41 +496,74 @@ async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
-    let child = command.spawn().map_err(|e| format!("Could not start Claude Code: {e}"))?;
+    // The turn it follows may still be exiting; resuming before then could read a half-flushed session.
+    let exit = await_exit_patiently(&config.session_id);
+    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, exit, &mut command, quitting).await? else {
+        eprintln!("No warm Claude agent prepared: its launch changed or the previous turn did not exit.");
+        return Ok(None);
+    };
     let group = ProcessGroup::register(child.id());
-    Ok(Some((key, child, group, server)))
+    Ok(Some(Spawned { key, child, group, server, starting }))
+}
+
+/// Spawn once the previous process has exited, unless the task launched again meanwhile: that
+/// follow-up missed the pool and waits on the same exit, so spawning now would overlap it on one
+/// session. The returned `Pending` is registered before the spawn: until the caller drops it
+/// (after `register`), `await_exit` waits for this spare, so a launch or the harness console
+/// landing between the spawn and the pool never resumes the session beside it. `Ok(None)`
+/// means nothing was spawned, also once the app is quitting (`quitting`, read at the last moment).
+async fn spawn_when_current(
+    session_id: &str,
+    launch: u64,
+    exit: impl std::future::Future<Output = Result<(), String>>,
+    command: &mut Command,
+    quitting: fn() -> bool,
+) -> Result<Option<(tokio::process::Child, Pending)>, String> {
+    if exit.await.is_err() {
+        return Ok(None);
+    }
+    let starting = pending(session_id);
+    // Checked after registering: a launch before this point moved the epoch and is refused here;
+    // one after it waits for `starting`, and `register` kills the child (epoch moved).
+    if launch == 0 || epoch(session_id) != launch || quitting() {
+        return Ok(None);
+    }
+    command.spawn().map(|child| Some((child, starting))).map_err(|e| format!("Could not start Claude Code: {e}"))
 }
 
 /// Keep a started spare, unless the task launched again (a team review, a queued message) or
 /// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
-/// outdated conversation, or wait for a turn that is not coming. Dropping it kills its process.
+/// outdated conversation, or wait for a turn that is not coming. A refused, replaced or evicted
+/// spare is retired (killed outside the lock, its exit registered).
 fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare) -> bool {
     let evicted = {
         let mut pool = spares(pool);
-        if epoch(session_id) != launch {
+        // Launch 0 is a forgotten task (`discard`): a spare read from it is never current.
+        if launch == 0 || epoch(session_id) != launch {
             drop(pool);
-            // Dropping the refused spare kills its process (outside the lock).
-            drop(spare);
+            retire(session_id, spare);
             return false;
         }
         admit(&mut pool, session_id.to_owned(), spare)
     };
-    // Dropping the evicted spares kills their processes (outside the lock).
-    drop(evicted);
+    for (id, spare) in evicted {
+        retire(&id, spare);
+    }
     true
 }
 
 /// Add a spare, keeping only the newest few in its pool (ordinary or lead); returns the spares
-/// it pushed out (including one it replaced for the same task), which the caller drops (killing their processes) after releasing the lock.
-fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<Spare> {
+/// it pushed out (including one it replaced for the same task) with their tasks, which the
+/// caller retires after releasing the lock.
+fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<(String, Spare)> {
     let lead = spare.lead;
     let limit = if lead { LEAD_LIMIT } else { LIMIT };
     pool.gone.remove(&session_id);
-    let mut evicted: Vec<Spare> = pool.remove(&session_id, Gone::Replaced).into_iter().collect();
+    let mut evicted: Vec<(String, Spare)> = pool.remove(&session_id, Gone::Replaced).map(|old| (session_id.clone(), old)).into_iter().collect();
     pool.spares.insert(session_id, spare);
     while pool.spares.values().filter(|spare| spare.lead == lead).count() > limit {
         let Some(oldest) = pool.spares.iter().filter(|(_, spare)| spare.lead == lead).min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };
-        evicted.extend(pool.remove(&oldest, Gone::Evicted));
+        evicted.extend(pool.remove(&oldest, Gone::Evicted).map(|old| (oldest, old)));
     }
     evicted
 }

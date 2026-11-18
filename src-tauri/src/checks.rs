@@ -58,6 +58,27 @@ pub(crate) fn turn_report(root: &Path) -> Value {
     }
 }
 
+/// `turn_report` once the session's agent process, and with it any dev server or watcher left
+/// in its group, is gone (`providers::await_exit`), so the check never runs beside them. A
+/// session whose exit cannot be confirmed skips the check like any check that cannot run.
+pub(crate) async fn turn_report_after_exit(session_id: &str, root: std::path::PathBuf) -> Value {
+    report_when_exited(crate::providers::await_exit_patiently(session_id), root, turn_report).await
+}
+
+/// Runs `check` (on a blocking thread) only after `exit` resolves `Ok`.
+async fn report_when_exited(
+    exit: impl std::future::Future<Output = Result<(), String>>,
+    root: std::path::PathBuf,
+    check: impl FnOnce(&Path) -> Value + Send + 'static,
+) -> Value {
+    if let Err(error) = exit.await {
+        return json!({"checked": false, "reason": error});
+    }
+    tokio::task::spawn_blocking(move || check(&root))
+        .await
+        .unwrap_or_else(|error| json!({"checked": false, "reason": format!("The check did not finish: {error}")}))
+}
+
 fn run(root: &Path, plan: &Plan) -> Result<Value, String> {
     // npm is npm.cmd on Windows, which std cannot exec directly.
     let mut command = if cfg!(windows) {
@@ -184,6 +205,48 @@ mod tests {
         let plan = Plan { name: "npm test".into(), program: "/nonexistent/pandacode-npm".into(), args: vec![] };
         let report = run(temp.path(), &plan).unwrap_err();
         assert!(report.contains("Could not start"), "{report}");
+    }
+
+    #[test]
+    fn a_session_that_has_not_exited_skips_the_check() {
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = ran.clone();
+        let report = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(report_when_exited(
+            async { Err("still shutting down".to_string()) },
+            PathBuf::from("."),
+            move |_| {
+                seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                json!({"checked": true})
+            },
+        ));
+        assert_eq!(report["checked"], false);
+        assert_eq!(report["reason"], "still shutting down");
+        assert!(!ran.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The check never runs while an exit is still registered for the session, and runs once it ends.
+    #[tokio::test]
+    async fn the_check_waits_for_the_registered_exit_of_its_session() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let session = "turn-check-waits-for-exit";
+        let hold = crate::providers::hold_exit_for_test(session);
+        let ran = std::sync::Arc::new(AtomicBool::new(false));
+        let seen = ran.clone();
+        let waiting = tokio::spawn(report_when_exited(
+            crate::providers::await_exit(session),
+            PathBuf::from("."),
+            move |_| {
+                seen.store(true, Ordering::SeqCst);
+                json!({"checked": true})
+            },
+        ));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!ran.load(Ordering::SeqCst), "the check ran while the session's process was still exiting");
+        assert!(!waiting.is_finished());
+        drop(hold);
+        let report = tokio::time::timeout(Duration::from_secs(5), waiting).await.unwrap().unwrap();
+        assert_eq!(report["checked"], true);
+        assert!(ran.load(Ordering::SeqCst));
     }
 
     #[test]

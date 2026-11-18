@@ -120,10 +120,15 @@ const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then c
 /// Each extra step re-reads the whole cached prompt, so lookups should take as few as they can.
 const LOOK: &str = "\n\nUse {explore} to locate code (search, symbols, outlines, ranged reads), with all your questions in one call. When a reply already names the files and symbols you need, answer; search again only for a named gap. ";
 
-/// Batch E/E2: AFTER agents swapped one scripted edit for a Read and one Edit per hunk. Claude
-/// Code's Edit refuses a file its own Read has not seen, so only it is told to Read first.
-const EDIT_CLAUDE: &str = "Explore's reads are not a Read for your Edit tool: for a file you will edit, read the lines you need with Read, not explore, and make each file's changes in as few edit calls as your editor allows.";
+/// The Claude-family edit text (claude, glm, mimo), read by name by scripts/agent-bench.
+const EDIT_CLAUDE: &str = "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows.";
+/// Edit text for harnesses that are not Claude Code.
 const EDIT_OTHER: &str = "Make each file's changes in as few edit calls as your tools allow.";
+
+/// `LOOK` for a worker that cannot edit: no edit sentence.
+fn look_read_only(explore: explore::RunExplore) -> String {
+    LOOK.replace("{explore}", explore.name).trim_end().to_owned()
+}
 
 fn look(explore: explore::RunExplore) -> String {
     let edit = if explore.claude_code { EDIT_CLAUDE } else { EDIT_OTHER };
@@ -534,6 +539,31 @@ mod task_agent_tests {
         drop(receiver);
         assert!(agent.send(RunInput::Stop).is_err());
         assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn the_worktree_guard_refuses_before_and_after_the_wait() {
+        use std::sync::atomic::AtomicUsize;
+        let waited = Arc::new(AtomicBool::new(false));
+        // Busy at once: refused without waiting.
+        let flag = waited.clone();
+        let error = guard_idle(|| true, async move { flag.store(true, Ordering::SeqCst); Ok(()) }, "busy").await.unwrap_err();
+        assert_eq!(error, "busy");
+        assert!(!waited.load(Ordering::SeqCst), "waited although the agent was running");
+        // Idle throughout: waits, then proceeds.
+        let flag = waited.clone();
+        guard_idle(|| false, async move { flag.store(true, Ordering::SeqCst); Ok(()) }, "busy").await.unwrap();
+        assert!(waited.load(Ordering::SeqCst));
+        // An agent starts during the wait: refused afterwards.
+        let started = Arc::new(AtomicBool::new(false));
+        let (check, flag) = (started.clone(), started.clone());
+        let error = guard_idle(|| check.load(Ordering::SeqCst), async move { flag.store(true, Ordering::SeqCst); Ok(()) }, "busy").await.unwrap_err();
+        assert_eq!(error, "busy");
+        // A failed wait is returned as is, with one check before it.
+        let checks = AtomicUsize::new(0);
+        let error = guard_idle(|| { checks.fetch_add(1, Ordering::SeqCst); false }, async { Err("shutting down".to_string()) }, "busy").await.unwrap_err();
+        assert_eq!(error, "shutting down");
+        assert_eq!(checks.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -2824,9 +2854,14 @@ async fn worktree_status(state: State<'_, AppState>, session_id: String) -> Resu
 
 #[tauri::command]
 async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Result<workspace::WorktreeMerge> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Wait for the agent to finish before merging its worktree.".into());
-    }
+    // A clean Claude-family run leaves the agents map at `result`, before its CLI has exited and
+    // while it may still write to this checkout.
+    guard_idle(
+        || state.agents.lock().map_or(true, |agents| agents.contains_key(&session_id)),
+        providers::await_exit(&session_id),
+        "Wait for the agent to finish before merging its worktree.",
+    )
+    .await?;
     let store = state.store.clone();
     blocking(move || {
         let (main, path, _) = worktree_paths(&store, &session_id)?;
@@ -2835,15 +2870,38 @@ async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Resul
     .await
 }
 
+/// Refuse while `busy()`, wait for `wait` (the session's CLI exits), then refuse again: a run may
+/// have started meanwhile. The one guard of worktree merge and removal.
+async fn guard_idle(
+    busy: impl Fn() -> bool,
+    wait: impl std::future::Future<Output = Result<()>>,
+    message: &str,
+) -> Result<()> {
+    if busy() {
+        return Err(message.into());
+    }
+    wait.await?;
+    if busy() {
+        return Err(message.into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn remove_worktree(
     state: State<'_, AppState>,
     session_id: String,
     delete_branch: Option<bool>,
 ) -> Result<workspace::WorktreeRemoval> {
-    if state.agents.lock().map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err("Stop the agent before removing its worktree.".into());
-    }
+    // A clean Claude-family run ends at `result`, before its CLI has exited (up to
+    // `BACKGROUND_EXIT_WAIT + TERM_WAIT`, less once hurried); that process still has this
+    // checkout as its working directory, and so may its warm spare.
+    guard_idle(
+        || state.agents.lock().map_or(true, |agents| agents.contains_key(&session_id)),
+        providers::quiesce(&session_id),
+        "Stop the agent before removing its worktree.",
+    )
+    .await?;
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
@@ -3369,7 +3427,7 @@ async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Resu
         .session(&session_id)?
         .project_id;
     let root = state.root(&project_id, Some(&session_id))?;
-    blocking(move || Ok(checks::turn_report(&root))).await
+    Ok(checks::turn_report_after_exit(&session_id, root).await)
 }
 #[tauri::command]
 async fn get_run_script_preview(
@@ -3606,6 +3664,48 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     Ok(dir)
 }
 
+/// How long quitting waits, in total, for background CLI exits before killing what is left: the
+/// background exits' own deadline (`BACKGROUND_EXIT_WAIT + TERM_WAIT`) plus 500 ms, so one exit's own escalation
+/// finishes before this gives up. It caps one exit, not a chain: the flushing reap is first in
+/// its session's chain and gets its full budget; a retire queued behind it may be cut by the cap
+/// and is then killed by `shutdown_all`.
+const QUIT_EXIT_WAIT: std::time::Duration = providers::BACKGROUND_EXIT_WAIT
+    .saturating_add(providers::TERM_WAIT)
+    .saturating_add(std::time::Duration::from_millis(500));
+
+/// Quitting: wait for background CLI exits (bounded), then kill what is left. The order matters:
+/// killing first would lose a session file still being flushed.
+async fn exits_then_kill(cap: std::time::Duration, kill: impl FnOnce()) {
+    exits_then_kill_with(providers::await_all_exits(cap), kill).await;
+}
+
+/// `exits_then_kill` over any waiter, so a test can wait on its own registry.
+async fn exits_then_kill_with(waiter: impl std::future::Future<Output = ()>, kill: impl FnOnce()) {
+    waiter.await;
+    kill();
+}
+
+#[cfg(test)]
+mod quit_order_tests {
+    /// A local pending exit stands in for the process-wide registry, which concurrent tests
+    /// also hold entries in.
+    #[tokio::test]
+    async fn quitting_kills_only_after_background_exits_finish() {
+        let (done, mut exiting) = tokio::sync::watch::channel(());
+        let killed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = killed.clone();
+        let quit = tokio::spawn(async move {
+            let waiter = async move { let _ = exiting.changed().await; };
+            super::exits_then_kill_with(waiter, move || flag.store(true, std::sync::atomic::Ordering::SeqCst)).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!killed.load(std::sync::atomic::Ordering::SeqCst), "killed while an exit was still pending");
+        drop(done);
+        tokio::time::timeout(std::time::Duration::from_secs(5), quit).await.unwrap().unwrap();
+        assert!(killed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+}
+
 /// Run-loop events shared by the desktop and serve: an exit request stops local agents
 /// (cloud runs keep going on their machines) within a deadline, then the process exits.
 fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
@@ -3623,13 +3723,16 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         if state.shutdown.swap(1, Ordering::SeqCst) == 1 {
             return;
         }
+        providers::warm_begin_quit();
         jev::shutdown();
         app.state::<file_preview::FilePreviews>().shutdown();
         // Cloud runs keep going on their machines; their bridges are killed below.
         let cloud: HashSet<String> = state.store.lock().ok().and_then(|store| cloud_agents::active_runs(&store).ok()).unwrap_or_default().into_iter().collect();
         if let Ok(agents) = state.agents.lock() {
-            for (_, tx) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
-                let _ = tx.send(RunInput::Stop);
+            // `send` marks the run stopped, as the user's Stop does, so a launch cut short during
+            // its exit wait is never recorded as a clean turn.
+            for (_, agent) in agents.iter().filter(|(id, _)| !cloud.contains(*id)) {
+                let _ = agent.send(RunInput::Stop);
             }
         }
         if let Ok(mut terms) = state.terminals.lock() {
@@ -3645,7 +3748,9 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            providers::shutdown_all();
+            // Clean Claude-family turns reap their CLI in the background; killing one still
+            // flushing its session file would lose the last write. Wait for every one, bounded.
+            exits_then_kill(QUIT_EXIT_WAIT, providers::shutdown_all).await;
             // Let pending pipe EOFs finish persistence after a forced cleanup.
             for _ in 0..20 {
                 if agents.lock().map(|a| a.is_empty()).unwrap_or(true) {

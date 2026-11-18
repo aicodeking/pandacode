@@ -49,8 +49,9 @@ that does not fit its cap keeps at most two lines a file, definitions first. Wit
 file, the part holding a definition is placed first, a part cut short keeps its hit
 lines ahead of their context, and a part with no hit line left is never shown. One
 search takes at most about 1.8 KB and names the files it had no room for in
-`more_files`. With a `glob`, hits
-outside it are counted in `outside_glob` (matches and files); only when nothing
+`more_files`.
+
+With a `glob`, hits outside it are counted in `outside_glob` (matches and files); only when nothing
 matched inside does it also list up to three of those hits (`path:line`), so the
 next call need not widen the glob blindly. `coverage` gives the files searched and
 `files_in_scope` for globs, and `skipped.secret.count` the secret files the walk
@@ -217,17 +218,29 @@ inside the engine, so it is not done yet. In Claude Code, a `permissions.deny` e
 Haiku turn on 2.1.319).
 
 **Instruction.** Runs with the tool get one line in the app instructions (`LOOK` in
-`src-tauri/src/app_instructions.rs`): use it to locate code with all questions in one call; answer
-once a reply names the files and symbols needed, searching again only for a named gap;
-and make each file's changes in as few edit calls as the tools allow. Claude-family
-harnesses (Claude Code and its relays GLM and MiMo; `RunExplore::claude_code`) are
-also told that explore's reads are not a Read for their Edit tool, so a file they will
-edit is read with Read, not explore. In batch E/E2 no explore read was followed by a
-Read of the same file; the edit regression came from agents swapping one scripted edit
-for a Read plus one Edit per hunk. The tool's description repeats only the stop rule. Claude Code lists
-explore and `pandacode_track_files` without a ToolSearch step (`anthropic/alwaysLoad`
-in the MCP listing). Which harnesses get the tool, and the permission frames
-answered for them, are in `src-tauri/src/providers/explore_permissions.rs`.
+`src-tauri/src/lib.rs`): use it to locate code with all questions in one call, and answer
+once a reply names the files and symbols needed, searching again only for a named gap.
+`look()` then appends one edit sentence by harness (`RunExplore::claude_code`). This section
+is the one home of the edit rule; other docs link here.
+
+- **Claude-family writers** (Claude Code and its relays GLM and MiMo, any model) get `EDIT_CLAUDE` (154 B): "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows."
+- **Every other harness** gets `EDIT_OTHER` (66 B): make each file's changes in as few edit calls as the tools allow.
+- **A read-only worker** gets neither, only `LOOK` (`look_read_only`), and a run without the tool gets no edit sentence at all.
+
+The edit rule is unmeasured guidance, not a measured saving or a proven requirement. Why Read
+first, for every model: Claude Code's Edit may refuse a file its own Read has not
+seen, and explore's reads do not count as one. Observed by hand (no transcript kept): on 2.1.323 Sonnet's edits were
+accepted and Haiku's refused. The retained runs (2.1.317, bypass mode) recorded no refusals.
+A static reading of the minified 2.1.325 bundle suggests the CLI enforces the check outside
+bypass and for some models (so Sonnet's acceptance may not hold elsewhere); not verified live.
+The text costs a few bytes. Evidence and history:
+[the history](agent-loop-benchmark-history.md#edits-without-a-prior-read-recorded-recount).
+The text is mode-independent, so it stays in the one cached system prompt. The tool's
+description repeats only the stop rule.
+
+Claude Code lists explore, `pandacode_track_files` and the title tool without a ToolSearch step
+(`anthropic/alwaysLoad` in the MCP listing). Which harnesses get the tool, and the
+permission frames answered for them, are in `src-tauri/src/providers/explore_permissions.rs`.
 
 **Which harnesses get it by default.** Explore is on by default only for Claude Code:
 that is the only harness the benchmark measured

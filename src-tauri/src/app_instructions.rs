@@ -3,7 +3,7 @@
 //! each item.
 use crate::providers::{takes_system_instructions, RunConfig, ToolHost};
 use crate::storage::Store;
-use crate::{custom_tools, explore, look, run_script, session_titles, turn_changes, GENERATIVE_UI, REUSE, RICH_QUESTIONS, TURN_ENDS, VISUAL_PROGRESS};
+use crate::{custom_tools, explore, look, look_read_only, run_script, session_titles, turn_changes, GENERATIVE_UI, REUSE, RICH_QUESTIONS, TURN_ENDS, VISUAL_PROGRESS};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +16,16 @@ pub(crate) use catalog::{build_host, listing as catalog_listing, remember_listed
 pub(crate) use catalog::remember as remember_catalog;
 #[cfg(test)]
 pub(crate) use catalog::{fake, Layers};
+
+/// What decides the app instructions' bytes (see `app_instructions` for each field).
+#[derive(Clone, Copy)]
+pub(crate) struct InstructionOptions {
+    pub chat: bool,
+    pub role: Role,
+    pub explore: Option<explore::RunExplore>,
+    pub tools: bool,
+    pub cloud: bool,
+}
 
 /// Fixed instructions for every task turn: sidebar titles, the run script, change tracking.
 /// Projectless chats have nothing to run, so they skip the run script. Managed team workers
@@ -36,11 +46,15 @@ pub(crate) use catalog::{fake, Layers};
 /// Nothing here depends on the run's mode, allow rules or connection: these bytes are cached
 /// as Claude's system prompt, and a change rewrites the whole history's cache. Mode-dependent
 /// guidance rides the turn's message instead (`turn_changes::turn_note`).
-pub(crate) fn app_instructions(chat: bool, role: Role, explore: Option<explore::RunExplore>, tools: bool, cloud: bool) -> String {
-    let look = explore.map_or_else(String::new, look);
+pub(crate) fn app_instructions(options: &InstructionOptions) -> String {
+    let InstructionOptions { chat, role, explore, tools, cloud } = *options;
+    // A read-only worker edits nothing, so it hears no edit sentence. Fixed per role, so its
+    // cached bytes never change.
+    let writes = role.writes();
+    let look = explore.map_or_else(String::new, |explore| if writes { look(explore) } else { look_read_only(explore) });
     let reuse = if tools { REUSE } else { "" };
     if role.managed() {
-        let track = if role.writes() { turn_changes::instruction() } else { "" };
+        let track = if writes { turn_changes::instruction() } else { "" };
         return [track, TURN_ENDS, &look, reuse].concat();
     }
     let run = if chat { "" } else { run_script::INSTRUCTIONS };
@@ -52,7 +66,7 @@ pub(crate) fn app_instructions(chat: bool, role: Role, explore: Option<explore::
 /// catalog. `config.mode` must not decide anything here (see `app_instructions`).
 pub(crate) fn launch_instructions(config: &RunConfig, role: Role, explore: Option<explore::RunExplore>, offered: bool) -> String {
     let cloud = crate::cloud_agents::transport::is_cloud(&config.session_id);
-    app_instructions(crate::chats::is_chat_folder(&config.cwd), role, explore, offered, cloud)
+    app_instructions(&InstructionOptions { chat: crate::chats::is_chat_folder(&config.cwd), role, explore, tools: offered, cloud })
 }
 
 /// What decides a launch's instructions, besides its config.

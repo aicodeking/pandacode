@@ -143,7 +143,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   counts as silent. A silent worker settles as failed and the architect handles it.
   A silent architect turn shows a notice; its workers keep running, and if
   nothing was dispatched the architect gets one **Continuing the plan** turn.
-- On the Claude harness only (`warm::supported`; GLM and MiMo leads start cold),
+- On plain Claude (`warm::supported`; GLM and MiMo leads start cold, because an idle
+  relay spare is not free of network traffic, see [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)),
   an architect turn that ends while its workers are unsettled starts the next turn's process in the background (`lead_spare.rs`,
   `providers/warm.rs`), so the review wake skips the CLI's startup. Lead spares
   sit in their own pool of 2 that ordinary tasks never evict. An expired spare
@@ -156,7 +157,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   spare is an idle CLI process (about 178–208 MB RSS on a minimal config, one
   machine). It runs your `SessionStart` hooks when it starts, so a renewal chain
   can run them in up to three processes per wake, and hook context can be up to
-  10 minutes old when adopted. The spare saves startup (about 1.4 s); with an API
+  10 minutes old when adopted. The spare saves startup (about 1.4 s (est.), one local
+  measurement on plain Claude); with an API
   key the 5-minute message cache has likely expired before many review wakes, so
   it does not save the history's cache cost, and PandaCode does not set
   `ENABLE_PROMPT_CACHING_1H`. Stopping the task, or the team's Pause or Stop, drops the spare; a
