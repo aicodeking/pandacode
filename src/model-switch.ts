@@ -32,8 +32,6 @@ type Hooks = {
   /** The model's and the effort's names as the composer shows them, for notices. */
   label(task: Session): string;
   effortName(task: Session): string;
-  /** The model picker is open (it shows an effort refusal itself). */
-  pickerShown(): boolean;
   /** Remembers a saved pick as the next new task's default (local picks only). */
   remember(choice: ModelChoice): void;
 };
@@ -41,7 +39,7 @@ const nothing = () => undefined;
 let hooks: Hooks = {
   setBusy: nothing, pickerOpening: () => false, notify: nothing, task: nothing, put: nothing, team: nothing, teamChanged: nothing,
   autoTeam: base => Promise.resolve(base), releaseAccount: () => Promise.resolve(), label: task => task.model, effortName: task => task.reasoningEffort ?? '',
-  pickerShown: () => false, remember: nothing,
+  remember: nothing,
 };
 export function initModelSwitch(next: Hooks): void { hooks = next; readStartAhead(); }
 
@@ -111,7 +109,9 @@ function clearRefusal(id: string): void {
 /** Whether this refusal still needs saying for what it held back: true once per refused change, so several held
  *  presses of Enter (or a send and a board start) show one notice. */
 const announced = new WeakSet<Unchanged>();
-export function announce(refusal: Unchanged): boolean {
+/** An explicit group also claims its shared notice, even if an earlier action said the refusal itself. */
+export function announce(refusal: Unchanged, group?: readonly Unchanged[]): boolean {
+  if (group) saidGroups.add(group);
   if (announced.has(refusal)) return false;
   announced.add(refusal);
   return true;
@@ -130,7 +130,7 @@ const saidGroups = new WeakSet<readonly Unchanged[]>();
 export function unsaidText(refusals: readonly Unchanged[]): string | null {
   if (!refusals.length || saidGroups.has(refusals)) return null;
   saidGroups.add(refusals);
-  const fresh = refusals.filter(announce);
+  const fresh = refusals.filter(refusal => announce(refusal));
   return refusalsText(fresh.length ? fresh : refusals);
 }
 
@@ -180,8 +180,8 @@ export const settled = async (id: string): Promise<boolean> => !await settledCha
 
 /* ----- Keeping a pick on screen through a task read before it saved ----- */
 /** The task fields each kind of pick writes. */
-export type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'mode';
-const MODEL_FIELDS: readonly ChoiceField[] = ['provider', 'model', 'reasoningEffort', 'codexSettings', 'contextUsage'];
+export type ChoiceField = 'provider' | 'model' | 'reasoningEffort' | 'codexSettings' | 'contextUsage' | 'resumeId' | 'goalState' | 'mode';
+const MODEL_FIELDS: readonly ChoiceField[] = ['provider', 'model', 'reasoningEffort', 'codexSettings', 'contextUsage', 'resumeId', 'goalState'];
 const CHOICE_FIELDS: readonly ChoiceField[] = [...MODEL_FIELDS, 'mode'];
 /** Counts every pick's write to a task, and for each task the count at each field's last write. Marks only matter to
  *  a read that began before them, so they are kept only while a read is open (`openReads`) and pruned as reads end. */
@@ -404,11 +404,19 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     let left: string | null = null;
     try {
       left = await leaveTeam(id);
+      const effortBase = modelBase.get(id);
       // task-read-guard: ok the pick's own reply, put with its fields marked
       const saved = await call<Session>('configure_session', { sessionId: id, provider: choice.provider, model: choice.model, ...warmArg(choice.warm) });
-      if (modelBase.has(id)) modelBase.set(id, saved);
+      // saveEffort replaces this base when an effort saves while configure's reply is in flight.
+      const confirmed = modelBase.get(id), effortChanged = Boolean(confirmed && confirmed !== effortBase);
+      if (modelBase.has(id)) modelBase.set(id, effortChanged ? { ...saved, reasoningEffort: confirmed?.reasoningEffort } : saved);
       if (live()) storedPick.set(id, choice);
-      put(superseded() ? keepNewer(saved) : saved, MODEL_FIELDS);
+      const now = hooks.task(id);
+      // The model reply predates queued permissions and effort; those picks own what is shown.
+      put({ ...(superseded() ? keepNewer(saved) : saved),
+        ...(now && modesSaving.has(id) ? { mode: now.mode } : {}),
+        ...(now && (efforts.has(id) || effortChanged) ? { reasoningEffort: now.reasoningEffort } : {}),
+      }, MODEL_FIELDS);
       // Should the newer pick be refused, its notice says the task left this team.
       if (left && superseded() && live()) leftTeams.set(id, left);
       return true;
@@ -419,7 +427,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       left ??= leftTeams.get(id) ?? null;
       const now = hooks.task(id) ?? base;
       // The pick only cleared codexSettings for a new harness; on the same one a speed change saved meanwhile stays.
-      const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage };
+      const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage, resumeId: base.resumeId, goalState: base.goalState };
       put(restored, MODEL_FIELDS);
       const still = `still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}`;
       const refusal: Unchanged = { what: 'model', reason: message(error), still };
@@ -434,8 +442,8 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   const native = modelBase.get(id) ?? previous;
   const shownHarness = choice.provider !== previous.provider;
   const sameModel = !shownHarness && (choice.model || 'default') === (previous.model || 'default');
-  const codexSettings = !shownHarness ? previous.codexSettings : choice.provider === native.provider ? native.codexSettings : null;
-  put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
+  const continuity = !shownHarness ? previous : choice.provider === native.provider ? native : undefined;
+  put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: continuity?.codexSettings ?? null, resumeId: continuity?.resumeId ?? null, goalState: continuity?.goalState ?? null, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
   ui.show();
   return run;
 }
@@ -486,7 +494,7 @@ export function pickMode(id: string, mode: Session['mode'], ui: PickUi & { name(
 
 /** An effort the user picked: shown at once and queued behind any before it (`saveEffort`). A refusal of the newest
  *  choice says which effort stays: in the picker if it is open (the thrown error), else as a notice. */
-export async function pickEffort(id: string, effort: string | null, ui: PickUi): Promise<void> {
+export async function pickEffort(id: string, effort: string | null, ui: PickUi & { /** The originating picker can still show this refusal. */ pickerShown?(): boolean }): Promise<void> {
   clearRefusal(id);
   const still = () => { const now = hooks.task(id); return now ? `still ${hooks.effortName(now) || 'Default'}` : ''; };
   try {
@@ -502,7 +510,7 @@ export async function pickEffort(id: string, effort: string | null, ui: PickUi):
     if (error instanceof SupersededEffort) throw error;
     const failure = new Error(unchangedText({ what: 'effort', reason: message(error), still: still() || 'as before' }, true));
     const refusal = refused.get(id)?.at(-1);
-    if (!hooks.pickerShown()) {
+    if (!ui.pickerShown?.()) {
       console.error(error);
       if (refusal) sayRefusal(id, refusal, failure.message); else hooks.notify(failure.message);
     }

@@ -1907,3 +1907,48 @@ for (const row of ['team', 'speed']) test(`a refused change holding a ${row} row
   await expect(page.locator('#toast')).toContainText(`${row === 'team' ? 'The agent team wasn’t selected' : 'The speed wasn’t changed'} — the permissions weren’t changed (Permissions locked); still `);
   await expect.poll(async () => (await refusalToasts(page)).length).toBe(1);
 });
+
+
+test('an effort refusal after task A closes reaches one notice while task B picker is open', async ({ page }) => {
+  await loadHeld(page, '/');
+  await watchToasts(page);
+  await holdHighEffort(page);
+  await page.locator('.new-task-button').click();
+  await openSettled(page);
+  await releaseCall(page, 'set_reasoning_effort', 'Task A effort refused.');
+  await expect(page.locator('#toast')).toContainText('Effort not changed (Task A effort refused)');
+  await expect(picker(page)).toBeVisible();
+  await expect(picker(page)).not.toContainText('Task A effort refused');
+  await expect.poll(async () => (await refusalToasts(page)).length).toBe(1);
+});
+
+test('a picker row refusal and concurrent held send share one notice', async ({ page }) => {
+  await loadHeld(page, '/?teams');
+  await openSettled(page);
+  // Record each write: two notices in one microtask checkpoint can elude a MutationObserver.
+  await page.evaluate(() => {
+    const w = window as any; w.__toasts = [];
+    const replace = Element.prototype.replaceChildren;
+    Element.prototype.replaceChildren = function (...nodes) {
+      if (this.classList.contains('toast-text')) w.__toasts.push(String(nodes[0]));
+      replace.apply(this, nodes);
+    };
+  });
+  await holdCall(page, 'update_session');
+  await page.evaluate(async () => {
+    const path = '/src/model-switch.ts'; const changes = await import(path);
+    (window as any).__heldMode = changes.pickMode('session-1', 'full', { warm: false, paint() {}, name: (mode: string) => mode, trigger: () => null });
+  });
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await picker(page).getByRole('option', { name: /Ship crew/ }).click();
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  await page.locator('#prompt').fill('keep this draft');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'update_session', 'Shared permissions refusal.');
+  await expect(page.locator('#toast')).toContainText('Shared permissions refusal');
+  await expect(page.locator('#composer .send-button[type="submit"]')).not.toHaveAttribute('aria-busy', 'true');
+  expect(await refusalToasts(page)).toHaveLength(1);
+  await expect(page.locator('#prompt')).toHaveValue('keep this draft');
+});

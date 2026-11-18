@@ -494,6 +494,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       await callback(id);
       current.serviceTier = id;
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') return;
       if (closed) { options.onDismissedError?.(reason); return; }
       error.textContent = reason instanceof Error ? reason.message : String(reason);
       error.hidden = false;
@@ -530,6 +531,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       }
       close();
     } catch (reason) {
+      if (reason instanceof DOMException && reason.name === 'AbortError') {
+        if (!closed) { pending = false; updateControls(); }
+        return;
+      }
       if (closed) { options.onDismissedError?.(reason); return; }
       pending = false;
       error.textContent = reason instanceof Error ? reason.message : String(reason);

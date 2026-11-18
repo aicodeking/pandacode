@@ -19,11 +19,12 @@ const switcher = await import('../src/model-switch.ts');
 const tasks = new Map();
 /** Named teams by task, the notices shown, and the tasks whose account binding was released. */
 const teams = new Map(), notices = [], releases = [], remembered = [];
+let openPickerTask = null;
 switcher.initModelSwitch({
   setBusy() {}, pickerOpening: () => false, notify: text => notices.push(text), task: id => tasks.get(id), put: task => tasks.set(task.id, task),
   team: id => teams.get(id), teamChanged: event => { if (event.removed) teams.delete(event.sessionId); else teams.set(event.sessionId, event.config); },
   autoTeam: base => Promise.resolve(base), releaseAccount: id => { releases.push(id); return Promise.resolve(); },
-  label: task => task.model, effortName: task => task.reasoningEffort ?? '', pickerShown: () => false, remember: choice => remembered.push(choice),
+  label: task => task.model, effortName: task => task.reasoningEffort ?? '', remember: choice => remembered.push(choice),
 });
 const stored = (id, values = {}) => ({ id, provider: 'claude', model: 'sonnet', reasoningEffort: 'low', codexSettings: null, contextUsage: null, mode: 'ask', title: 'Task', ...values });
 const ui = { show() {}, repaint() {} };
@@ -356,7 +357,7 @@ test('two permission picks: the older refused leaves the newer shown and busy; b
 });
 
 test('every command that writes pick fields is authoritative for them in its own reply', () => {
-  assert.deepEqual([...switcher.fieldsWrittenBy('configure_session')].sort(), ['codexSettings', 'contextUsage', 'model', 'provider', 'reasoningEffort']);
+  assert.deepEqual([...switcher.fieldsWrittenBy('configure_session')].sort(), ['codexSettings', 'contextUsage', 'goalState', 'model', 'provider', 'reasoningEffort', 'resumeId']);
   assert.deepEqual(switcher.fieldsWrittenBy('set_reasoning_effort'), ['reasoningEffort']);
 });
 
@@ -730,4 +731,73 @@ test('own model notices attach the reason to the model, before any team left', a
   await reply('configure_session', new Error('Busy.'));
   assert.equal(await saving, false);
   assert.deepEqual(notices, ['Model not changed (Busy); still on sonnet; the task left team Ship crew']);
+});
+
+
+test('a stale read after a harness pick keeps native resume and goal resets', async () => {
+  const before = stored('reset-fields', { resumeId: 'old-harness', goalState: { status: 'active' } });
+  tasks.set(before.id, before);
+  await whileReading(async stale => {
+    const saving = switcher.pickModel(before.id, { provider: 'codex', model: 'astra', warm: false, local: true }, ui);
+    await reply('configure_session', args => stored(before.id, { provider: args.provider, model: args.model, resumeId: null, goalState: null }));
+    assert.equal(await saving, true);
+    const held = stale.hold(before);
+    assert.deepEqual([held.resumeId, held.goalState], [null, null]);
+  });
+});
+
+test('a model reply keeps a newer queued permission choice through its successful save', async () => {
+  const id = 'model-before-mode';
+  tasks.set(id, stored(id));
+  const model = switcher.pickModel(id, { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await ticks();
+  const mode = switcher.pickMode(id, 'full', modeUi);
+  await reply('configure_session', args => stored(id, { model: args.model, mode: 'ask' }));
+  await model;
+  await reply('update_session', () => null);
+  assert.equal(await mode, true);
+  assert.equal(tasks.get(id).mode, 'full');
+});
+
+test('an effort refusal reaches its task once after its picker closes and another opens', async () => {
+  const id = 'effort-origin';
+  tasks.set(id, stored(id)); notices.length = 0;
+  openPickerTask = id;
+  const saving = switcher.pickEffort(id, 'high', { warm: false, paint() {}, pickerShown: () => openPickerTask === id });
+  const rejected = assert.rejects(saving, /Effort not changed/);
+  openPickerTask = 'another-task';
+  await reply('set_reasoning_effort', new Error('A effort refused.'));
+  await rejected;
+  openPickerTask = null;
+  assert.deepEqual(notices, ['Effort not changed (A effort refused); still low']);
+  assert.equal(switcher.announce(await switcher.settledChange(id)), false, 'already announced');
+});
+
+test('a picker announcing a shared refusal group leaves a concurrent held send silent', async () => {
+  const id = 'picker-and-send';
+  tasks.set(id, stored(id)); notices.length = 0;
+  const mode = switcher.pickMode(id, 'full', modeUi);
+  const picker = switcher.holdChange(id);
+  const send = switcher.holdSend(id, () => null);
+  await reply('update_session', new Error('Locked.'));
+  assert.equal(await mode, false);
+  const refusals = await picker;
+  refusals.forEach(refusal => switcher.announce(refusal, refusals));
+  assert.equal(switcher.unsaidText(await send), null);
+  assert.deepEqual(notices, []);
+  assert.match(switcher.unsaidText(await switcher.holdChange(id)), /Locked/, 'a later blocked action still explains');
+});
+
+
+test('a model reply keeps an effort picked and saved while its reply was in flight', async () => {
+  const id = 'model-before-effort';
+  tasks.set(id, stored(id));
+  const model = switcher.pickModel(id, { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await ticks();
+  const effort = switcher.pickEffort(id, 'low', { warm: false, paint() {} });
+  await reply('set_reasoning_effort', args => stored(id, { model: 'opus', reasoningEffort: args.reasoningEffort }));
+  await effort;
+  await reply('configure_session', args => stored(id, { model: args.model, reasoningEffort: null }));
+  assert.equal(await model, true);
+  assert.equal(tasks.get(id).reasoningEffort, 'low');
 });

@@ -287,7 +287,6 @@ modelSwitch.initModelSwitch({
   },
   label: task => modelLabel(task),
   effortName: task => effortLabel(task),
-  pickerShown: () => Boolean(modelPickerCleanup),
   remember: ({ provider, model, local }) => {
     if (!local) { localChoice = undefined; return; }
     if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = provider;
@@ -5748,7 +5747,7 @@ async function deliverBtw(main: Session, text: string): Promise<void> {
   if (modelSwitch.saving(link.sideId)) {
     const refusals = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
     // The panel shows this error itself: it names every refused change, each marked said so no other notice repeats it.
-    if (refusals.length) { refusals.forEach(modelSwitch.announce); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
+    if (refusals.length) { refusals.forEach(refusal => modelSwitch.announce(refusal, refusals)); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
   }
   const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
@@ -6754,7 +6753,11 @@ async function afterPickerChoiceSaved(id: string, refused: string): Promise<void
   if (!modelSwitch.saving(id)) return;
   // Held: the refusals' own notices wait for this one, which the picker shows, naming each and marking it said.
   const refusals = await modelSwitch.holdChange(id);
-  if (refusals.length) { refusals.forEach(modelSwitch.announce); throw new Error(`${refused} — ${modelSwitch.refusalsText(refusals)}.`); }
+  if (refusals.length) {
+    const text = modelSwitch.unsaidText(refusals);
+    if (!text) throw new DOMException('The refused change was already reported.', 'AbortError');
+    throw new Error(`${refused} — ${text}.`);
+  }
 }
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
@@ -6808,7 +6811,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
   // Re-picking the model in use closes the picker, which hands focus back to its trigger: the prompt takes it after.
-  let promptOnClose = false;
+  let promptOnClose = false, pickerClosed = false;
   modelPickerCleanup = openModelPicker({
     onDismissedError: report,
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: () => pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
@@ -6829,6 +6832,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
     recent: device ? undefined : recentModels, onClose: () => {
+      pickerClosed = true;
       if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
       modelPickerCleanup = undefined;
       modelSwitch.flushTranscript();
@@ -6842,7 +6846,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       // Shows at once and saves behind (model-switch.ts); side threads never warm.
-      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel) });
+      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel), pickerShown: () => !pickerClosed && current() && generation === state.generation });
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
