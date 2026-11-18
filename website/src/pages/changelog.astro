@@ -35,7 +35,9 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
             {release.title && <h3>{release.title}</h3>}
             {release.blocks.map(block => block.kind === 'list'
               ? <ul>{block.items.map(item => <li><Fragment set:html={item.html} />{item.children.length > 0 && <ul>{item.children.map(child => <li set:html={child} />)}</ul>}</li>)}</ul>
-              : <p set:html={block.html} />)}
+              : block.kind === 'heading'
+                ? (release.title ? <h4 set:html={block.html} /> : <h3 set:html={block.html} />)
+                : <p set:html={block.html} />)}
           </div>
         </li>
       ))}
