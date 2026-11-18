@@ -1,12 +1,15 @@
 /* Release notes for /changelog, read at build time from the repository's releases/X.Y.Z.md
  * (the same files the release runbook publishes). Notes use a small subset of Markdown:
- * an optional "# Heading", "## Section" headings, paragraphs, "- " bullets (an indented "- " nests one level) with
+ * an optional "# Heading", "## Section" and "### Subsection" headings, paragraphs, "- " bullets (an indented "- " nests one level) with
  * wrapped continuation lines, **bold**, `code` and [links](https://…) (http/https only). The signing boilerplate repeated on every release is dropped here
  * and stated once on the page. */
 import dates from '../data/release-dates.json';
 
 export type Item = { html: string; children: readonly string[] };
-export type Block = { kind: 'heading' | 'paragraph'; html: string } | { kind: 'list'; items: readonly Item[] };
+export type Block =
+  | { kind: 'heading'; level: 2 | 3; html: string }
+  | { kind: 'paragraph'; html: string }
+  | { kind: 'list'; items: readonly Item[] };
 export type Release = { version: string; date?: string; title?: string; blocks: readonly Block[] };
 
 const sources = import.meta.glob('../../../releases/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
@@ -48,12 +51,12 @@ export function parse(source: string): { title?: string; blocks: Block[] } {
     const at = chunk.search(/\n- /);
     return at > 0 && !chunk.startsWith('- ') ? [chunk.slice(0, at), chunk.slice(at + 1)] : [chunk];
   };
-  const chunks = (heading ? lines.slice(1) : lines).join('\n').split(/(^##[ \t]+\S[^\n]*)/m)
+  const chunks = (heading ? lines.slice(1) : lines).join('\n').split(/(^#{2,3}[ \t]+\S[^\n]*)/m)
     .flatMap(chunk => chunk.split(/\n\s*\n/))
     .map(chunk => chunk.trim()).filter(Boolean).flatMap(leadIn);
   const blocks = chunks.flatMap((chunk): Block[] => {
-    const section = chunk.match(/^##[ \t]+(.+)$/)?.[1];
-    if (section) return [{ kind: 'heading', html: inline(section) }];
+    const section = chunk.match(/^(#{2,3})[ \t]+(.+)$/);
+    if (section) return [{ kind: 'heading', level: section[1] === '##' ? 2 : 3, html: inline(section[2]) }];
     if (chunk.startsWith('- ')) return [{ kind: 'list', items: listItems(chunk) }];
     const text = chunk.replace(/\s*\n\s*/g, ' ');
     return BOILERPLATE.test(text) ? [] : [{ kind: 'paragraph', html: inline(text) }];
