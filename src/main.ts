@@ -6596,8 +6596,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       } finally { configuringSessions.delete(selected.id); }
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
-    onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
+    onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });

@@ -628,6 +628,30 @@ test('an open model picker marks the saved correction without losing keyboard fo
   await expect(claude).toBeFocused();
 });
 
+test('an open model picker enables speed tiers after a live correction switches to a supporting model', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => { localStorage.setItem('pandacode.model.claude', 'opus'); });
+  const draft = await heldCorrection(page);
+  const menu = page.locator('.model-menu');
+  const speedGroup = menu.locator('.model-menu-effort[data-kind="speed"]');
+  await expect(speedGroup).toHaveCount(0);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect(page.locator('#model-picker-trigger [data-model-label]')).toHaveText('Claude Opus 5');
+  await expect(speedGroup).toBeVisible();
+
+  const fast = speedGroup.getByRole('radio', { name: 'Fast', exact: true });
+  await fast.click();
+  await expect(fast).toHaveAttribute('aria-checked', 'true');
+  const savedTier = await page.evaluate(async id => {
+    const preview = await import('/src/preview.ts');
+    const task = await preview.invoke('get_task', { sessionId: id }) as { codexSettings?: { serviceTier?: string | null } };
+    return task.codexSettings?.serviceTier ?? null;
+  }, draft);
+  expect(savedTier).toBe('fast');
+});
+
 test('an explicit picker choice during a held correction wins in memory and storage', async ({ page }) => {
   test.setTimeout(45_000);
   const draft = await heldCorrection(page);
