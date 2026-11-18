@@ -194,6 +194,8 @@ node bench/telemetry-compare/run.mjs                  # RUNS=5 IDLE_S=60
 
 # T3 Code analytics payload with canary logins (never reads the real ~/.codex, ~/.claude.json or ~/.t3)
 node bench/telemetry-compare/t3-payload.mjs 45
+# Linux: the same capture from an extracted AppImage (writes results/t3-payload-linux/)
+T3_APP=/path/to/squashfs-root node bench/telemetry-compare/t3-payload.mjs 45
 
 # Extract the T3 Code bundle to check the line numbers above
 mkdir /tmp/t3asar-new && cd /tmp/t3asar-new
