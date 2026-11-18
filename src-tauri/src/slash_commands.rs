@@ -7,6 +7,7 @@ mod kimi;
 mod muse;
 mod pi;
 mod skill_switches;
+mod zcode;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -370,6 +371,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "github-copilot"
             | "muse"
             | "devin"
+            | "zcode"
             | "hermes"
             | "cursor"
     ) {
@@ -402,6 +404,7 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
             "kimi" => kimi::discover(cwd).await,
             "pi" | "omp" => pi::discover(provider, cwd).await,
             "muse" => muse::discover(cwd).await,
+            "zcode" => zcode::discover(cwd).await,
             _ => unreachable!(),
         };
         let committed = CACHE
@@ -432,6 +435,7 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
         "claude" | "glm" | "mimo" | "alibaba" => claude::parse_runtime(data),
         "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
+        "zcode" => zcode::parse_snapshot(data),
         _ => None,
     };
     if let Some(value) = value {
