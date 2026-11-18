@@ -6,6 +6,26 @@ use std::time::{Duration, Instant};
 const QUICK: Timing = Timing { boot_delay: Duration::ZERO, round_timeout: Duration::from_secs(2), blocking_wait: Duration::from_secs(8) };
 const HOUR: u64 = 60 * 60;
 
+#[cfg(unix)]
+#[test]
+fn probe_stdout_inherited_by_descendant_respects_deadline() {
+    let timeout = Duration::from_millis(200);
+    let started = Instant::now();
+    let answer = super::capture(std::process::Command::new("sh"), &["-c", "sleep 5 & printf 1.2.3"], timeout);
+    let elapsed = started.elapsed();
+    assert!(elapsed < timeout + Duration::from_millis(500), "stdout drain exceeded deadline: {elapsed:?}");
+    assert_eq!(answer, None, "an incomplete stdout drain is a failed probe");
+}
+
+#[cfg(unix)]
+#[test]
+fn probe_stdout_from_normal_exit_is_unchanged() {
+    assert_eq!(
+        super::capture(std::process::Command::new("sh"), &["-c", "printf ' 1.2.3\\n'"], Duration::from_secs(1)),
+        Some("1.2.3".to_owned()),
+    );
+}
+
 /// A cache of its own (the shared one is used by parallel tests) whose reports go to the receiver.
 fn fresh_cache(timing: Timing) -> (&'static VersionCache, Receiver<VersionReport>) {
     let cache: &'static VersionCache = Box::leak(Box::new(VersionCache::new(timing)));

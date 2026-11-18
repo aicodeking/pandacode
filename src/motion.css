@@ -138,10 +138,16 @@ html[data-costly-paint] dialog .settings-tabs{background:var(--raised)}
 html[data-costly-paint][data-theme] body .floating-menu{background:var(--panel)}
 html[data-costly-paint] .workspace .action-dock:not(:is(.board-view,.github-view) *),html[data-costly-paint] .workspace :is(.action-dock-tip,.agents-flyout){background:var(--panel)}
 html[data-costly-paint][data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg)}
+/* Keep the composer's card tint over an opaque panel once its frost is removed. The input,
+   model/mode triggers, state chips and attachment trays all sit inside this backing; their
+   translucent hover/state fills can stay intact without revealing sharp scenery. */
+html[data-costly-paint][data-theme] .workspace .conversation-pane .composer-area .composer{background:linear-gradient(var(--ds-card) 0 0),var(--panel)}
 html[data-costly-paint] .workspace :is(.thread-tile-bar,.thread-mirror-composer){background:var(--panel,var(--bg))}
-html[data-costly-paint] .file-window{background:var(--panel-surface,var(--bg))}
+/* A scene sets --panel-surface to transparent inside the main pane, including detached file windows. */
+html[data-costly-paint] .file-window{background:var(--bg)}
 html[data-costly-paint] .desktop-brand-launch::before{background:var(--bg)}
-html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger:not(:hover){background:var(--bg)}
+html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger{background:var(--bg)}
+html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger:hover{background:linear-gradient(var(--ds-row-hover) 0 0),var(--bg)}
 /* The other glass surfaces, each with the background of its own reduced-transparency rule (named per line). */
 html[data-costly-paint] :is(.pp-pill,.pp-card){--pp-fill:var(--panel)} /* progress-pip.css */
 html[data-costly-paint][data-theme] .pp-lb-plate{background:var(--panel)}
@@ -171,6 +177,7 @@ html[data-costly-paint] .workspace[data-wallpaper] :is(.gh-repos,.gh-tabs,.gh-co
 html[data-costly-paint][data-theme] .workspace.browser-open>.inspector:has(.browser-panel){background:var(--panel)} /* browser.css */
 html[data-costly-paint][data-theme] .workspace[data-wallpaper]>.inspector:has(>.simulator-panel:not([hidden])){background:var(--panel)} /* simulator.css */
 html[data-costly-paint] :is(.simulator-panel,.workspace[data-wallpaper] .simulator-panel){--sim-glass:var(--panel)}
+html[data-costly-paint] :is(.vm-panel,.workspace[data-wallpaper] .vm-panel){--vm-glass:var(--panel)} /* vm-panel.css */
 html[data-costly-paint][data-theme] :is(dialog.change-review-dialog,dialog.moodboards-dialog){background:var(--panel)} /* change-review.css, moodboards.css */
 html[data-costly-paint] .moodboard-lightbox{background:var(--panel)}
 html[data-costly-paint] :is(.bp-menu,.bp-avatar-pop){background:var(--panel)} /* bots-settings.css */

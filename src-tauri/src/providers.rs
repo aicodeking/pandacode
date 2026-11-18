@@ -1015,11 +1015,12 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     // Drained on its own thread: a child writing past the OS pipe buffer while we poll
     // must not block forever on the write (read only after exit would never drain it).
     let mut piped = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let (sender, reader) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         use std::io::Read as _;
         let _ = piped.read_to_end(&mut bytes);
-        bytes
+        let _ = sender.send(bytes);
     });
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
@@ -1042,7 +1043,8 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     if !status.success() {
         return None;
     }
-    let mut bytes = reader.join().ok()?;
+    // shortcut: descendants can retain the reader after timeout; use process-group cleanup if this recurs.
+    let mut bytes = reader.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?;
     bytes.truncate(2 * 1024 * 1024);
     Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }

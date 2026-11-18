@@ -529,3 +529,33 @@ test('Send pressed twice during a held correction sends the user draft exactly o
   await page.waitForTimeout(600);
   expect(await sent(page)).toHaveLength(1);
 });
+
+test('early New chat waits for the first session snapshot and keeps its typed text', async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    body = body.replace(/case ["']list_sessions["']\s*:/, '$& if (!window.__bootSnapshotAsked) { window.__bootSnapshotAsked = true; await new Promise(resolve => { window.__releaseBootSnapshot = resolve; }); }');
+    body = body.replace(/case ["']chat_create["']\s*:\s*\{/, '$& window.__earlyChats = (window.__earlyChats ?? 0) + 1;');
+    await route.fulfill({ response, body });
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseBootSnapshot)).toBe('function');
+  const button = page.locator('.sidebar-actions .new-chat-button');
+  await button.click();
+  // No chat may open against a snapshot that boot has yet to apply.
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => (window as any).__earlyChats ?? 0)).toBe(0);
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => (window as any).__releaseBootSnapshot());
+  await expect.poll(() => page.evaluate(() => (window as any).__earlyChats ?? 0)).toBe(1);
+  await expect(button).not.toHaveAttribute('aria-busy', 'true');
+  const prompt = page.locator('#prompt');
+  const chat = await prompt.getAttribute('data-session-id');
+  expect(chat).toBeTruthy();
+  expect(chat).not.toBe('session-1');
+  await prompt.fill('Keep this early chat draft');
+  await page.waitForTimeout(500);
+  await expect(prompt).toHaveAttribute('data-session-id', chat!);
+  await expect(prompt).toHaveValue('Keep this early chat draft');
+});

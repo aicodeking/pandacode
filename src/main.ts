@@ -3943,20 +3943,24 @@ async function openHubTask(id: string): Promise<void> {
  * request or issue, titled, with the prompt filled in and sent when asked. Mentions like `#128`
  * attach the item's content as GitHub context once the project's GitHub status is known. */
 async function startHubTask({ projectId, prompt, title, link, send: start }: { projectId: string; prompt: string; title?: string; link?: TaskLink; send: boolean }): Promise<void> {
-  await github.status(projectId);
-  const task = await createTask(projectId) ? openedDraft(projectId) : undefined;
-  if (!task) return;
-  const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
-  if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
-  if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
-  renderNavigation(); renderHeader();
-  const field = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!field || field.dataset.sessionId !== task.id || !voiceDictation.prepareSubmit()) return;
-  field.value = prompt;
-  field.dispatchEvent(new Event('input', { bubbles: true }));
-  field.focus();
-  field.setSelectionRange(prompt.length, prompt.length);
-  if (start) await send();
+  // Keep creation, linking and sending together so the next action cannot take over this draft.
+  await pressCreation({ key: JSON.stringify(['github', projectId, prompt, title, link, start]), action: 'new-task', work: async () => {
+    await github.status(projectId);
+    const task = await startTask(projectId) ? openedDraft(projectId) : undefined;
+    if (!task) return false;
+    const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
+    if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
+    if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
+    renderNavigation(); renderHeader();
+    const field = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!field || field.dataset.sessionId !== task.id || !voiceDictation.prepareSubmit()) return false;
+    field.value = prompt;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(prompt.length, prompt.length);
+    if (start) await send();
+    return true;
+  } });
 }
 function renderSidebarVisibility(): void {
   // The board and the GitHub view are full-width; both hide the task sidebar.
@@ -6209,9 +6213,8 @@ function drawInspector(): void {
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
-  // The Files tree is a file about to be opened in the editor, which shares the diff engine: warming it here keeps the
-  // first open from waiting seconds on a cold start (the editor shows "Opening editor…" until the engine is up).
-  if (visible && (state.inspectorTab === 'changes' || state.inspectorTab === 'files' || state.selectedKind)) preloadDiffsAfterPaint();
+  // An empty Changes view or file tree is not file-open intent; actual mounts also warm the engine on demand.
+  if (visible && (state.selectedKind || (state.inspectorTab === 'changes' && state.git?.files.length))) preloadDiffsAfterPaint();
   const inspector = $('#inspector');
   // Opening: the column appears at once and the panel slides in. Closing: the panel fades in its
   // column and the column snaps shut after (`inspector-closed`), so the thread never rewraps under a
@@ -6719,6 +6722,7 @@ async function startTask(projectId: string): Promise<boolean> {
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
  *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
 async function createChat(from?: Session): Promise<void> {
+  if (bootPending) await bootPending.catch(() => undefined);
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
