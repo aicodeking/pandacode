@@ -6,7 +6,8 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
+type SavedHarness = { provider: string; model: string };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -19,13 +20,19 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
     const marker = /case ["']list_providers["']\s*:/;
     expect(source).toMatch(marker);
     const body = source.replace(marker, `$&
+      if (args.force && window.__refreshedHarnesses) {
+        result = listPreviewProviders(true).filter(provider => window.__refreshedHarnesses.includes(provider.id));
+        break;
+      }
       if (!args.deviceId) {
         window.__providersAsked = performance.now();
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
       }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
       .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider }); if (args.provider === "codex" && window.__holdExplicit) { await new Promise(resolve => { window.__releaseExplicit = resolve; }); if (window.__failExplicit) throw new Error("Explicit save failed"); } if (window.__holdConfigure) { window.__holdConfigure = false; await new Promise(resolve => { window.__releaseConfigure = resolve; }); }')
-      .replace(/case ["']send_message["']\s*:\s*\{/, '$& (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });')
+      .replace(/case ["']send_message["']\s*:\s*\{/, `$&
+        (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });
+        { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }`)
       .replace(/case ["']cloud_connections["']\s*:\s*result\s*=\s*previewCloud\.connections\(\)\s*;/, '$& if (window.__cloudConnected) result = result.map(item => ({ ...item, connected: true }));');
     await route.fulfill({ response, body: previewBody(body) });
   });
@@ -461,6 +468,7 @@ test('a New task drafted from the last launch\'s list is corrected when the real
  * press waiting for the real list, however long it takes. */
 const NOTHING_INSTALLED = [{ id: 'claude', name: 'Claude Code', installed: false, models: [] }];
 const sent = (page: Page) => page.evaluate(() => (window as BootWindow).__sent ?? []);
+const sentHarnesses = (page: Page) => page.evaluate(() => (window as BootWindow).__sentHarnesses ?? []);
 async function deployToVercel(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Deploy', exact: true }).click();
   await page.getByRole('menu', { name: 'Deploy' }).getByRole('menuitem', { name: 'Deploy to Vercel' }).click();
@@ -594,6 +602,67 @@ test('Send pressed twice during a held correction sends the user draft exactly o
   expect(await sent(page)).toHaveLength(1);
 });
 
+async function refreshHarnesses(page: Page, ids: string[]): Promise<void> {
+  await page.evaluate(ids => { (window as BootWindow).__refreshedHarnesses = ids; }, ids);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]')
+    .filter((provider: { installed: boolean }) => provider.installed).map((provider: { id: string }) => provider.id))).toEqual(ids);
+  await settings.getByRole('button', { name: 'Back to the workspace' }).click();
+}
+
+for (const action of ['Send', 'Deploy', 'Send with no installed harness'] as const) {
+  test(`${action} waiting on a held correction uses the latest Settings catalog`, async ({ page }) => {
+    test.setTimeout(45_000);
+    const draft = await heldCorrection(page, action === 'Deploy');
+    if (action !== 'Deploy') await page.keyboard.press('Escape');
+    const noHarness = action === 'Send with no installed harness';
+    await refreshHarnesses(page, noHarness ? [] : ['codex']);
+
+    const prompt = page.locator('#prompt');
+    const text = 'Keep this message through the harness refresh';
+    if (action === 'Deploy') {
+      await expect(prompt).toHaveValue(/^Deploy this project to Vercel\./);
+    } else {
+      await prompt.fill(text);
+      await prompt.press('Enter');
+      await prompt.press('Enter');
+    }
+    expect(await sent(page)).toEqual([]);
+    await page.evaluate(holdNext => {
+      const w = window as BootWindow;
+      const release = w.__releaseConfigure!;
+      w.__releaseConfigure = undefined;
+      w.__holdConfigure = holdNext;
+      release();
+    }, !noHarness);
+
+    if (noHarness) {
+      await expect(page.locator('.composer-inline-note')).toHaveText(/This agent is not installed/);
+      await expect(prompt).toHaveValue(text);
+      expect(await sent(page)).toEqual([]);
+      await prompt.press('Enter');
+      await expect(page.locator('.composer-inline-note')).toHaveText(/This agent is not installed/);
+      await expect(prompt).toHaveValue(text);
+      expect(await sent(page)).toEqual([]);
+      expect(await page.evaluate(() => (window as BootWindow).__configured)).toEqual([{ sessionId: draft, provider: 'claude' }]);
+      return;
+    }
+    await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure)).toBe('function');
+    expect(await sent(page)).toEqual([]);
+    await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+    await expect.poll(() => sent(page)).toEqual([{
+      sessionId: draft, text: action === 'Deploy' ? expect.stringMatching(/^Deploy this project to Vercel\./) : text,
+    }]);
+    expect(await sentHarnesses(page)).toEqual([{ provider: 'codex', model: 'default' }]);
+    expect(await page.evaluate(() => (window as BootWindow).__configured)).toEqual([
+      { sessionId: draft, provider: 'claude' }, { sessionId: draft, provider: 'codex' },
+    ]);
+    await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'codex');
+  });
+}
+
 test('early New chat waits for the first session snapshot and keeps its typed text', async ({ page }) => {
   test.setTimeout(45_000);
   await page.route('**/src/preview.ts*', async route => {
@@ -696,7 +765,8 @@ for (const outcome of ['success', 'failure', 'switch'] as const) {
       const saved = await page.evaluate(async id => (await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string }).provider, draft);
       expect(saved).toBe('codex');
     } else {
-      await page.waitForTimeout(500);
+      if (outcome === 'failure') await expect(menu.getByRole('alert')).toHaveText('Explicit save failed');
+      else await page.waitForTimeout(500);
       expect(await sent(page)).toEqual([]);
       if (outcome === 'switch') {
         // Drafts are omitted from the sidebar; New task in their project reopens them.
@@ -711,6 +781,22 @@ for (const outcome of ['success', 'failure', 'switch'] as const) {
         await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', draft);
       }
       await expect(page.locator('#prompt')).toHaveValue(text);
+      if (outcome === 'failure') {
+        const trigger = page.locator('#model-picker-trigger');
+        await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'claude');
+        await expect(trigger.locator('[data-model-label]')).toHaveText('Claude Sonnet 5');
+        await menu.locator('[role="tab"][data-view="h:claude"]').click();
+        await expect(menu.locator('[role="option"][aria-current="true"]')).toHaveAttribute('data-model', 'sonnet');
+        const saved = await page.evaluate(async id => {
+          const { provider, model } = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as SavedHarness;
+          return { provider, model };
+        }, draft);
+        expect(saved).toEqual({ provider: 'claude', model: 'sonnet' });
+        await page.keyboard.press('Escape');
+        await page.locator('#prompt').press('Enter');
+        await expect.poll(() => sent(page)).toEqual([{ sessionId: draft, text }]);
+        expect(await sentHarnesses(page)).toEqual([saved]);
+      }
     }
   });
 }

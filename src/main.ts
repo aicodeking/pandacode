@@ -5206,8 +5206,13 @@ async function sendDraft(submitted?: SendIntent): Promise<void> {
     try {
       // The explicit choice can arrive while the correction is saving. Recheck after each await.
       while (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
-        await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
+        const outcome = await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
         if (state.sessionId !== waitingFor || state.generation !== generation) return;
+        if (outcome === 'missing' && !explicitHarnessSaves.has(waitingFor)) {
+          const task = session();
+          if (task) showMissingHarness(task);
+          return;
+        }
       }
       intent = harnessWaitingSends.get(waitingFor) ?? intent;
     } catch { return; } // The picker shows its save error; keep the user's draft.
@@ -6553,6 +6558,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
+  const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
@@ -6572,7 +6578,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
     // an empty list or the last launch's (which may name CLIs no longer installed).
-    anchor, providers: device || !providersKnown ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
+    anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
@@ -8946,20 +8952,28 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
   const pending = provisionalCorrections.get(task.id);
   if (pending) return pending;
   configuringSessions.add(task.id);
+  let missing = false;
   const correction = (async (): Promise<'ok' | 'missing' | 'stale'> => {
-    if (!provisionalTasks.has(task.id)) return 'stale';
-    if (provider(task.provider)?.installed) return 'ok';
-    const harness = pickHarness(state.providers);
-    if (!harness?.installed) return 'missing';
-    const updated = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
-    // An explicit choice cancels this result and saves after it, so both native and UI state keep the user's choice.
-    const now = state.sessions.find(s => s.id === task.id);
-    if (!provisionalTasks.has(task.id) || !now || deletedSessions.has(task.id) || now.lastPromptAt != null || isRunning(task.id)) return 'stale';
-    state.sessions = state.sessions.map(s => s.id === task.id ? updated : s);
-    if (task.id === state.sessionId) { renderComposer(); renderHeader(); }
-    return 'ok';
+    let saved = task;
+    while (provisionalTasks.has(task.id)) {
+      if (provider(saved.provider)?.installed) return 'ok';
+      const harness = pickHarness(state.providers);
+      if (!harness?.installed) { missing = true; return 'missing'; }
+      saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+      const index = state.sessions.findIndex(s => s.id === task.id);
+      if (index < 0 || deletedSessions.has(task.id) || state.sessions[index].lastPromptAt != null || isRunning(task.id)) return 'stale';
+      // A queued picker save can still fail. Publish the successful write before yielding to it.
+      state.sessions[index] = saved;
+      if (task.id === state.sessionId) {
+        if (modelPickerCleanup) refreshModelLabels(); else renderComposer();
+        renderHeader();
+      }
+    }
+    return 'stale';
   })().finally(() => {
-    configuringSessions.delete(task.id); provisionalTasks.delete(task.id); provisionalCorrections.delete(task.id);
+    configuringSessions.delete(task.id);
+    if (!missing) provisionalTasks.delete(task.id);
+    provisionalCorrections.delete(task.id);
   });
   provisionalCorrections.set(task.id, correction);
   return correction;
@@ -8970,8 +8984,11 @@ async function provisionalReadyToSend(s: Session): Promise<boolean> {
   if (!providersKnown || !provisionalTasks.has(s.id)) return true;
   const outcome = await correctProvisionalTask(s);
   if (outcome !== 'missing') return outcome === 'ok';
-  showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
+  showMissingHarness(s);
   return false;
+}
+function showMissingHarness(s: Session): void {
+  showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));
