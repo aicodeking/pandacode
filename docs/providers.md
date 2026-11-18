@@ -630,6 +630,15 @@ waiting for each acknowledgement before sending the prompt. Session loading
 suppresses replayed history, and resumption uses the advertised `resume` or
 `loadSession` capability. Unsupported capabilities fail before prompting.
 
+The model choice stays manual: Default hands the decision to OpenCode, which
+resolves it from its own last-used model. When a prompt is refused with `-32000`
+after the session opened, PandaCode names the model the server actually selected
+(`configOptions.model.currentValue`), the provider that needs credentials, and a
+free model the server advertises (OpenCode only), instead of sending the user back
+to a CLI sign-in that already worked. A prompt error before the session opens
+keeps the sign-in hint. PandaCode never swaps a paid default for a free model on
+its own.
+
 OpenCode's process-local `OPENCODE_CONFIG_CONTENT` sets Standard to approval for
 actions with read/search allowed; Auto edits also allows edits; Plan denies
 non-read actions; Full access allows actions. The selected built-in `build` or
