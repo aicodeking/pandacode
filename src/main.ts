@@ -5399,7 +5399,7 @@ async function sendDraft(): Promise<void> {
   // the old choice. A failed model change (already reported) or another task opened meanwhile sends nothing.
   if (modelSwitch.saving(sessionId)) {
     // A refused model, permission or effort change (already rolled back) or another task opened meanwhile: nothing goes.
-    const refusals = await modelSwitch.holdSend(sessionId, () => document.querySelector('#composer .send-button[type="submit"]'));
+    const refusals = await modelSwitch.holdSend(sessionId, () => state.sessionId === sessionId ? document.querySelector('#composer .send-button[type="submit"]') : null);
     // Each refused change is said once, however many presses of Enter it held.
     if (refusals.length) { const text = modelSwitch.unsaidText(refusals); if (text) notify(`Not sent — ${text}. Your draft is still there.`); return; }
     if (state.sessionId !== sessionId) { notify('Not sent — you switched tasks. Your draft is still there.'); return; }
@@ -5735,20 +5735,28 @@ function sendBtw(text: string): Promise<void> {
   const main = session(); if (!main) return Promise.resolve();
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
-  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text));
+  // Capture this submission's pending choice before it queues: an earlier send may settle its refusal first.
+  const link = btwLink(main.id);
+  const held = link && modelSwitch.saving(link.sideId) ? holdBtwSend(main.id, link.sideId) : undefined;
+  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, held));
   btwSending.set(main.id, next); btwPanel.refresh();
   void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
   return next;
 }
+/** Only the shown side thread's button can carry this held send's cue, even after another task opens. */
+function holdBtwSend(mainId: string, sideId: string): Promise<readonly modelSwitch.Unchanged[]> {
+  return modelSwitch.holdSend(sideId, () => state.sessionId === mainId && btwPanel.shownId() === sideId ? document.querySelector('.btw-panel .btw-send') : null);
+}
+/** The composer restores this text itself; mark each refused change said so no other notice repeats it. */
+function checkBtwChoice(refusals: readonly modelSwitch.Unchanged[]): void {
+  if (refusals.length) { refusals.forEach(refusal => modelSwitch.announce(refusal, refusals)); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
+}
 /** Sends to the side thread with the main thread's news since its last message. */
-async function deliverBtw(main: Session, text: string): Promise<void> {
+async function deliverBtw(main: Session, text: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
+  if (held) checkBtwChoice(await held);
   const link = btwLink(main.id) ?? await createBtw(main, text);
-  // A model or effort change on the side thread still saving: the message waits for it, and a failed change keeps it.
-  if (modelSwitch.saving(link.sideId)) {
-    const refusals = await modelSwitch.holdSend(link.sideId, () => document.querySelector('.btw-panel .btw-send'));
-    // The panel shows this error itself: it names every refused change, each marked said so no other notice repeats it.
-    if (refusals.length) { refusals.forEach(refusal => modelSwitch.announce(refusal, refusals)); throw new Error(`Not sent — ${modelSwitch.refusalsText(refusals)}. Your message is back in the box.`); }
-  }
+  // Also wait for a choice made after submission, while this send was queued.
+  if (modelSwitch.saving(link.sideId)) checkBtwChoice(await holdBtwSend(main.id, link.sideId));
   const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
   // Running from here on: no second send can pass the check above, and a failure below tears down only this run.

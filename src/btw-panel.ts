@@ -172,10 +172,13 @@ export class BtwPanel {
       : this.host.command(side, text).then(done => done === true ? undefined : this.host.send(done || text));
     this.stick = true;
     work.catch(error => {
-      // Put the text back in whichever composer is showing now, unless something new was typed.
+      // Keep the unsent text alongside newer typing, in its own side thread even if another is showing.
       const current = this.root?.querySelector<HTMLTextAreaElement>('.btw-input');
-      if (sideId && !this.host.draft(sideId)) this.host.setDraft(sideId, typed);
-      if (current && !current.value && (!sideId || sideId === this.loadedFor)) current.value = typed;
+      const shown = current && (!sideId || sideId === this.loadedFor);
+      const newer = shown ? current.value : sideId ? this.host.draft(sideId) : '';
+      const restored = newer ? `${typed}\n\n${newer}` : typed;
+      if (sideId) this.host.setDraft(sideId, restored);
+      if (shown) current.value = restored;
       this.host.report(error);
     }).finally(() => this.refresh());
   }

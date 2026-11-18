@@ -1978,3 +1978,86 @@ test('a picker row refusal and concurrent held send share one notice', async ({ 
   expect(await refusalToasts(page)).toHaveLength(1);
   await expect(page.locator('#prompt')).toHaveValue('keep this draft');
 });
+
+
+test('every /btw submitted during a refused side-model change stays unsent', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { panel, sends, before } = await sideSwitchHeld(page);
+  for (const text of ['first held question', 'second held question']) {
+    await page.locator('#prompt').fill(`/btw ${text}`);
+    await page.locator('#prompt').press('Enter');
+    await expect(page.locator('#prompt')).toHaveValue('');
+  }
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
+  await expect(panel.getByRole('button', { name: /^Model: / })).not.toContainText('GPT-6-Astra');
+  await page.waitForTimeout(300);
+  expect(await sends()).toBe(before);
+  const restored = await page.locator('#prompt').inputValue();
+  expect(restored).toContain('/btw first held question');
+  expect(restored).toContain('/btw second held question');
+});
+
+test('a refused side-model change restores the unsent question ahead of a newer draft', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { panel, box, sends, before } = await sideSwitchHeld(page);
+  await box.fill('held question');
+  await box.press('Enter');
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await box.fill('newer draft');
+  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
+  await expect(box).toHaveValue('held question\n\nnewer draft');
+  await expect(page.locator('#toast')).toContainText('Your message is back in the box.');
+  expect(await sends()).toBe(before);
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(box).toHaveValue('held question\n\nnewer draft');
+});
+
+test('finishing task A’s held send keeps task B’s held send busy', async ({ page }) => {
+  await loadHeld(page, '/');
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await page.locator('#prompt').fill('task A question');
+  await page.locator('#prompt').press('Enter');
+  const send = page.locator('#composer .send-button[type="submit"]');
+  await expect(send).toHaveAttribute('aria-busy', 'true');
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await holdCall(page, 'update_session');
+  await page.locator('#mode-picker-trigger').click();
+  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
+  await page.locator('#prompt').fill('task B question');
+  await page.locator('#prompt').press('Enter');
+  await expect(send).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Preview refused task A.');
+  await expect(page.locator('#toast')).toContainText('Preview refused task A');
+  await expect(send).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'update_session', 'Preview refused task B.');
+  await expect(send).not.toHaveAttribute('aria-busy', 'true');
+  expect(await sent(page)).toBe(0);
+});
+
+test('finishing side A’s held send keeps the shown side B’s held send busy', async ({ page }) => {
+  await loadHeld(page, '/');
+  const { panel, box } = await sideSwitchHeld(page);
+  await box.fill('side A question');
+  await box.press('Enter');
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await page.locator('#prompt').fill('/btw side B first question');
+  await page.locator('#prompt').press('Enter');
+  await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
+  await expect(panel.locator('.btw-send')).toBeEnabled();
+  await holdCall(page, 'update_session');
+  await panel.locator('.mode-picker').click();
+  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
+  await box.fill('side B held question');
+  await box.press('Enter');
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Preview refused side A.');
+  await expect(page.locator('#toast')).toContainText('Preview refused side A');
+  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'update_session', 'Preview refused side B.');
+  await expect(panel.locator('.btw-send')).not.toHaveAttribute('aria-busy', 'true');
+  await expect(box).toHaveValue('side B held question');
+});
