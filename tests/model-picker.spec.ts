@@ -707,7 +707,7 @@ test('a refused switch puts the previous model back and says why', async ({ page
   await pickAstra(page);
   await expect(trigger(page)).toContainText('GPT-6-Astra');
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.getByText('Preview refused the switch.')).toBeVisible();
+  await expect(page.getByText('Preview refused the switch', { exact: false })).toBeVisible();
   await expect(trigger(page).locator('[data-model-label]')).toHaveText(before!);
 });
 
@@ -736,7 +736,7 @@ test('a failed switch keeps the draft and sends nothing', async ({ page }) => {
   await page.locator('#prompt').fill('keep this draft');
   await page.locator('#prompt').press('Enter');
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.getByText('Preview refused the switch.')).toBeVisible();
+  await expect(page.getByText('Preview refused the switch', { exact: false })).toBeVisible();
   await expect(page.locator('#prompt')).toHaveValue('keep this draft');
   await page.waitForTimeout(300);
   expect(await sent(page)).toBe(0);
@@ -861,7 +861,7 @@ test('a refused effort change puts the previous effort back', async ({ page }) =
   await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
   await expect(trigger(page).locator('.model-effort')).toHaveText('High');
   await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(picker(page)).toContainText('Preview refused the effort.');
+  await expect(picker(page)).toContainText('Preview refused the effort');
   await expect(trigger(page).locator('.model-effort')).toBeHidden();
   expect((await task(page)).reasoningEffort ?? null).toBeNull();
 });
@@ -1043,7 +1043,7 @@ test('overlapping effort changes: only the latest one paints or rolls back', asy
   await expect(group.getByRole('radio', { name: 'Low', exact: true })).toHaveAttribute('aria-checked', 'true');
   // Low is refused: back to the last confirmed effort (High), not the one before both.
   await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(picker(page)).toContainText('Preview refused the effort.');
+  await expect(picker(page)).toContainText('Preview refused the effort');
   await expect(effortLabel).toHaveText('High');
   await expect(group.getByRole('radio', { name: 'High', exact: true })).toHaveAttribute('aria-checked', 'true');
   expect((await task(page)).reasoningEffort).toBe('high');
@@ -1087,7 +1087,7 @@ test('a refused effort change keeps held sends and their draft, with one notice'
   await prompt.press('Enter');
   await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
   await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(page.locator('#toast')).toHaveText('Not sent — the effort wasn’t changed (Preview refused the effort.); still Default. Your draft is still there.');
+  await expect(page.locator('#toast')).toHaveText('Not sent — the effort wasn’t changed (Preview refused the effort); still Default. Your draft is still there.');
   await expect(prompt).toHaveValue('keep this effort draft');
   await expect(trigger(page).locator('.model-effort')).toBeHidden();
   await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
@@ -1117,10 +1117,10 @@ for (const failed of [false, true]) test(`a model queued after a refused effort 
   await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.configure_session))).toBe(true);
   await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
   expect(await sends()).toBe(0);
-  await expect(page.locator('#toast')).not.toContainText('Preview refused the effort.');
+  await expect(page.locator('#toast')).not.toContainText('Preview refused the effort');
   await releaseCall(page, 'configure_session', failed ? 'Preview refused the newer model.' : undefined);
   if (failed) {
-    await expect(page.locator('#toast')).toHaveText(/^Not sent — the model wasn’t changed \(Preview refused the newer model\.\); still on .+\. Your draft is still there\.$/);
+    await expect(page.locator('#toast')).toHaveText(/^Not sent — the model wasn’t changed \(Preview refused the newer model\); still on .+\. Your draft is still there\.$/);
     await expect(prompt).toHaveValue('after the newer model');
     await expect(trigger(page).locator('.model-effort')).toHaveText('Low');
     await page.waitForTimeout(200);
@@ -1285,10 +1285,10 @@ test('a refused switch says the model was not changed and which one stays', asyn
   await holdCall(page, 'configure_session');
   await pickAstra(page);
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('Model not changed — still on ');
+  await expect(page.locator('#toast')).toContainText('Model not changed (Preview refused the switch); still on ');
   // The notice names the model the trigger is back on.
   const restored = (await trigger(page).getAttribute('aria-label'))!.replace(/^Model: /, '');
-  await expect(page.locator('#toast')).toContainText(`Model not changed — still on ${restored}: Preview refused the switch.`);
+  await expect(page.locator('#toast')).toContainText(`Model not changed (Preview refused the switch); still on ${restored}`);
 });
 
 test('a board start during a model change waits for it', async ({ page }) => {
@@ -1338,7 +1338,7 @@ test('a refused switch out of a named team says the task left the team', async (
   await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
   await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('; the task left team Ship crew: Preview refused the switch.');
+  await expect(page.locator('#toast')).toContainText('; the task left team Ship crew');
 });
 
 test('permissions show at once, save behind, and a refusal puts them back and says so', async ({ page }) => {
@@ -1357,8 +1357,7 @@ test('permissions show at once, save behind, and a refusal puts them back and sa
   await page.waitForTimeout(150);
   await expect(picker(page)).toHaveCount(0);
   await releaseCall(page, 'update_session', 'Preview refused the permissions.');
-  await expect(page.locator('#toast')).toContainText('Permissions not changed — still ');
-  await expect(page.locator('#toast')).toContainText(': Preview refused the permissions.');
+  await expect(page.locator('#toast')).toContainText('Permissions not changed (Preview refused the permissions); still ');
   await expect(mode).toHaveAttribute('data-mode', before!);
   await expect(mode).not.toHaveAttribute('aria-busy', 'true');
   await expect(picker(page)).toBeVisible();
@@ -1411,7 +1410,7 @@ test('a send held by a refused permissions change is not sent, says why and keep
   await page.locator('#prompt').fill('after the permissions change');
   await page.locator('#prompt').press('Enter');
   await releaseCall(page, 'update_session', 'Preview refused the permissions.');
-  await expect(page.locator('#toast')).toHaveText(/^Not sent — the permissions weren’t changed \(Preview refused the permissions\.\); still .+\. Your draft is still there\.$/);
+  await expect(page.locator('#toast')).toHaveText(/^Not sent — the permissions weren’t changed \(Preview refused the permissions\); still .+\. Your draft is still there\.$/);
   await expect(page.locator('#prompt')).toHaveValue('after the permissions change');
   await page.waitForTimeout(200);
   expect(await sent(page)).toBe(0);
@@ -1483,7 +1482,7 @@ test('several held presses of Enter show one notice for one refused change', asy
   await page.locator('#prompt').press('Enter');
   await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('Not sent — the model wasn’t changed (Preview refused the switch.); still on ');
+  await expect(page.locator('#toast')).toContainText('Not sent — the model wasn’t changed (Preview refused the switch); still on ');
   await page.waitForTimeout(300);
   expect(await page.evaluate(() => (window as any).__notSent)).toBe(1);
   await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
@@ -1504,10 +1503,10 @@ test('a refused switch holding a send shows one notice that still names the mode
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
   const restored = async () => (await trigger(page).getAttribute('aria-label'))!.replace(/^Model: /, '');
   await expect(trigger(page)).not.toContainText('GPT-6-Astra');
-  await expect(page.locator('#toast')).toHaveText(`Not sent — the model wasn’t changed (Preview refused the switch.); still on ${await restored()}. Your draft is still there.`);
+  await expect(page.locator('#toast')).toHaveText(`Not sent — the model wasn’t changed (Preview refused the switch); still on ${await restored()}. Your draft is still there.`);
   await page.waitForTimeout(300);
   const toasts: string[] = await page.evaluate(() => (window as any).__toasts);
-  expect(toasts.filter(text => /not changed|wasn’t changed/.test(text)), 'one notice, not the refusal then the held send').toHaveLength(1);
+  expect(toasts.filter(text => /not changed|wasn’t changed|weren’t changed/.test(text)), 'one notice, not the refusal then the held send').toHaveLength(1);
 });
 
 /** Records every distinct text the toast shows, from now on (`window.__toasts`). */
@@ -1516,7 +1515,7 @@ const watchToasts = (page: Page) => page.evaluate(() => {
   new MutationObserver(() => { const text = toast.textContent ?? ''; if (text && text !== w.__toasts.at(-1)) w.__toasts.push(text); }).observe(toast, { childList: true, characterData: true, subtree: true });
 });
 const refusalToasts = async (page: Page): Promise<string[]> =>
-  (await page.evaluate(() => (window as any).__toasts as string[])).filter(text => /not changed|wasn’t changed/.test(text));
+  (await page.evaluate(() => (window as any).__toasts as string[])).filter(text => /not changed|wasn’t changed|weren’t changed/.test(text));
 
 test('a board start held by a refused change is not started and says why', async ({ page }) => {
   await loadHeld(page, '/');
@@ -1530,7 +1529,7 @@ test('a board start held by a refused change is not started and says why', async
     document.body.append(start); start.click(); start.remove();
   });
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toHaveText(/^Not started — the model wasn’t changed \(Preview refused the switch\.\); still on .+\.$/);
+  await expect(page.locator('#toast')).toHaveText(/^Not started — the model wasn’t changed \(Preview refused the switch\); still on .+\.$/);
   await page.waitForTimeout(200);
   expect(await starts()).toBe(0);
   expect(await refusalToasts(page), 'one notice, not the refusal then the held start').toHaveLength(1);
@@ -1544,9 +1543,9 @@ test('a team turned on while a refused switch saves is not turned on, and says s
   await expect(picker(page)).toHaveCount(0);
   const teamSaves = await callCount(page, 'architect_configure');
   await page.locator('#team-trigger').click();
-  await page.getByRole('menuitemradio', { name: 'Team', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
   await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toHaveText(/^Team not turned on — the model wasn’t changed \(Preview refused the switch\.\); still on .+\.$/);
+  await expect(page.locator('#toast')).toHaveText(/^Team not turned on — the model wasn’t changed \(Preview refused the switch\); still on .+\.$/);
   await page.waitForTimeout(300);
   expect(await callCount(page, 'architect_configure')).toBe(teamSaves);
   await expect(page.locator('#team-trigger')).not.toHaveAttribute('data-on');
@@ -1572,6 +1571,7 @@ for (const [label, query, reads] of [['within a harness', 'opus', 0], ['to anoth
     await page.keyboard.press('Enter');
     await expect(picker(page)).toHaveCount(0);
     await expect(sideModel).toContainText(query === 'opus' ? 'Claude Opus' : 'GPT-6-Astra');
+    await expect(page.getByRole('textbox', { name: 'Message the side thread', exact: true })).toBeFocused();
     await page.waitForTimeout(300);
     expect(await sideReads(), 'nothing re-read while it saves').toBe(before);
     await releaseCall(page, 'configure_session');
@@ -1878,4 +1878,32 @@ test('a team turned on while a model change saves waits for it, then turns on', 
   await expect.poll(() => team.getAttribute('data-on')).toBe('');
   const order: string[] = await page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'configure_session' || c === 'architect_configure'));
   expect(order.indexOf('configure_session')).toBeLessThan(order.indexOf('architect_configure'));
+});
+
+for (const row of ['team', 'speed']) test(`a refused change holding a ${row} row still shows its notice after the picker closes`, async ({ page }) => {
+  await loadHeld(page, '/?teams');
+  if (row === 'speed') {
+    await openSettled(page);
+    await search(page).fill('astra');
+    await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+    await expect(picker(page)).toHaveCount(0);
+    await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  }
+  await openSettled(page);
+  await watchToasts(page);
+  await holdCall(page, 'update_session');
+  // A choice saving while this picker is already open (for example from another control).
+  await page.evaluate(async () => {
+    const path = '/src/model-switch.ts'; const changes = await import(path);
+    (window as any).__heldMode = changes.pickMode('session-1', 'full', { warm: false, paint() {}, name: (mode: string) => mode, trigger: () => null });
+  });
+  if (row === 'team') {
+    await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+    await picker(page).getByRole('option', { name: /Ship crew/ }).click();
+  } else await speed(page).getByRole('radio', { name: 'Fast', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  await releaseCall(page, 'update_session', 'Permissions locked.');
+  await expect(page.locator('#toast')).toContainText(`${row === 'team' ? 'The agent team wasn’t selected' : 'The speed wasn’t changed'} — the permissions weren’t changed (Permissions locked); still `);
+  await expect.poll(async () => (await refusalToasts(page)).length).toBe(1);
 });

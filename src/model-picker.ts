@@ -28,6 +28,8 @@ type ModelPickerOptions = {
   /** Model IDs to list first in a shortened catalog, newest first; null lists every model. Search always covers all. */
   recent?: (provider: ProviderId) => string[] | null;
   onClose?: () => void;
+  /** A model/team or speed save rejected after dismissal: the host can still show its error. */
+  onDismissedError?: (error: unknown) => void;
   placement?: 'above' | 'below';
 };
 
@@ -492,7 +494,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       await callback(id);
       current.serviceTier = id;
     } catch (reason) {
-      if (closed) return;
+      if (closed) { options.onDismissedError?.(reason); return; }
       error.textContent = reason instanceof Error ? reason.message : String(reason);
       error.hidden = false;
     } finally {
@@ -528,7 +530,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       }
       close();
     } catch (reason) {
-      if (closed) return;
+      if (closed) { options.onDismissedError?.(reason); return; }
       pending = false;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
       error.hidden = false;

@@ -77,6 +77,8 @@ function busy(id: string, step: 1 | -1): void {
 /** Waits holding a refusal's notice for themselves (`holdChange`: a send, a board start, a picker row), and of those the
  *  held sends, whose button shows it. */
 const waitsHeld = new Map<string, number>();
+/** Concurrent held actions share one notice; a later action gets its own explanation if it is blocked. */
+const heldGroups = new Map<string, { refusals?: readonly Unchanged[] }>();
 const sendsHeld = new Map<string, number>();
 const opensHeld = new Set<string>();
 /** A refused change, kept until the task's next pick starts, so whatever waited on it can say what wasn't changed and
@@ -115,15 +117,21 @@ export function announce(refusal: Unchanged): boolean {
   return true;
 }
 /** "the model wasn't changed (reason); still on X", for notices about something held back by a refused change. */
-export const unchangedText = ({ what, reason, still }: Unchanged): string =>
-  `${what === 'permissions' ? 'the permissions weren’t' : `the ${what} wasn’t`} changed${reason ? ` (${reason})` : ''}${still ? `; ${still}` : ''}`;
+export function unchangedText({ what, reason, still }: Unchanged, own = false): string {
+  const subject = own ? `${what[0].toUpperCase()}${what.slice(1)} not` : what === 'permissions' ? 'the permissions weren’t' : `the ${what} wasn’t`;
+  const because = reason.trim().replace(/\.+$/, '');
+  return `${subject} changed${because ? ` (${because})` : ''}${still ? `; ${still}` : ''}`;
+}
 /** Every refusal a wait was handed, in order: "the permissions weren't changed (…); still Ask; and the model wasn't…". */
-export const refusalsText = (refusals: readonly Unchanged[]): string => refusals.map(unchangedText).join('; and ');
-/** What a wait that held back something should say about the refusals it was handed: those no notice has said yet
- *  (now marked said), or null when every one was already said. */
+export const refusalsText = (refusals: readonly Unchanged[]): string => refusals.map(refusal => unchangedText(refusal)).join('; and ');
+/** What held actions should say: fresh refusals, or what still blocks them if those were already said.
+ *  Concurrent actions share one array from holdChange, so only the first says it. */
+const saidGroups = new WeakSet<readonly Unchanged[]>();
 export function unsaidText(refusals: readonly Unchanged[]): string | null {
+  if (!refusals.length || saidGroups.has(refusals)) return null;
+  saidGroups.add(refusals);
   const fresh = refusals.filter(announce);
-  return fresh.length ? refusalsText(fresh) : null;
+  return refusalsText(fresh.length ? fresh : refusals);
 }
 
 export const saving = (id: string): boolean => switches.has(id) || efforts.has(id);
@@ -416,7 +424,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       const still = `still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}`;
       const refusal: Unchanged = { what: 'model', reason: message(error), still };
       refuse(id, refusal);
-      sayRefusal(id, refusal, `Model not changed — ${still}: ${refusal.reason}`);
+      sayRefusal(id, refusal, unchangedText(refusal, true));
       return false;
     }
   }
@@ -464,7 +472,7 @@ export function pickMode(id: string, mode: Session['mode'], ui: PickUi & { name(
       setField(id, { mode: before }, ui);
       const refusal: Unchanged = { what: 'permissions', reason: message(error), still: `still ${ui.name(before)}` };
       refuse(id, refusal);
-      sayRefusal(id, refusal, `Permissions not changed — ${refusal.still}: ${refusal.reason}`);
+      sayRefusal(id, refusal, unchangedText(refusal, true));
       return false;
     }
   }, () => {
@@ -492,7 +500,7 @@ export async function pickEffort(id: string, effort: string | null, ui: PickUi):
     });
   } catch (error) {
     if (error instanceof SupersededEffort) throw error;
-    const failure = new Error(`Effort not changed — ${still() || 'as before'}: ${message(error)}`);
+    const failure = new Error(unchangedText({ what: 'effort', reason: message(error), still: still() || 'as before' }, true));
     const refusal = refused.get(id)?.at(-1);
     if (!hooks.pickerShown()) {
       console.error(error);
@@ -526,7 +534,7 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
     if (base) modelBase.set(id, { ...base, reasoningEffort: confirmed });
     if (latest()) options.paint(confirmed);
   } catch (error) {
-    if (!latest()) throw new SupersededEffort(error instanceof Error ? error.message : String(error));
+    if (!latest() || !hooks.task(id)) throw new SupersededEffort(message(error));
     options.paint(efforts.get(id)!.confirmed);
     // A model queued behind this save owns the outcome; its rollback still needs the confirmed effort.
     if (switches.has(id)) throw new SupersededEffort(message(error));
@@ -544,11 +552,13 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
  *  own (`unsaidText`). Resolves to every refusal since the task's last pick (none: everything saved). */
 export async function holdChange(id: string): Promise<readonly Unchanged[]> {
   count(waitsHeld, id, 1);
+  const group = heldGroups.get(id) ?? {};
+  heldGroups.set(id, group);
   try {
     const refusals = await settledRefusals(id);
     refusals.forEach(refusal => heldBack.add(refusal));
-    return refusals;
-  } finally { count(waitsHeld, id, -1); }
+    return group.refusals ??= [...refusals];
+  } finally { if (count(waitsHeld, id, -1) === 0) heldGroups.delete(id); }
 }
 /** A send made while the choice saves: held (the button shows it) until it lands; then what was refused (`holdChange`). */
 export async function holdSend(id: string, button: () => Element | null): Promise<readonly Unchanged[]> {

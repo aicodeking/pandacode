@@ -6810,6 +6810,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // Re-picking the model in use closes the picker, which hands focus back to its trigger: the prompt takes it after.
   let promptOnClose = false;
   modelPickerCleanup = openModelPicker({
+    onDismissedError: report,
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: () => pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
@@ -6870,7 +6871,8 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       // A named team's lead is not that model's row: picking it leaves the team (model-switch.ts leaveTeam).
       const now = (inPanel ? btwSideTask() ?? btwDraftTask() : state.sessions.find(item => item.id === selected.id)) ?? selected;
       const sameModel = providerId === now.provider && (model || 'default') === (now.model || 'default');
-      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) { promptOnClose = true; return; }
+      promptOnClose = true;
+      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) return;
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
       // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the

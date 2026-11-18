@@ -581,19 +581,19 @@ test('a refusal holding a send is said once by the send, still naming what stays
   const [unchanged] = await held;
   assert.deepEqual(notices, [], 'the held send says it instead');
   assert.equal(unchanged.still, 'still on sonnet');
-  assert.equal(switcher.unchangedText(unchanged), 'the model wasn’t changed (Busy.); still on sonnet');
+  assert.equal(switcher.unchangedText(unchanged), 'the model wasn’t changed (Busy); still on sonnet');
   // Without a held send, the refusal says it itself.
   tasks.set('hb', stored('hb', { mode: 'ask' }));
   const mode = switcher.pickMode('hb', 'full', modeUi);
   const heldMode = switcher.holdSend('hb', () => null);
   await reply('update_session', new Error('Locked.'));
   assert.equal(await mode, false);
-  assert.equal(switcher.refusalsText(await heldMode), 'the permissions weren’t changed (Locked.); still ask');
+  assert.equal(switcher.refusalsText(await heldMode), 'the permissions weren’t changed (Locked); still ask');
   assert.deepEqual(notices, []);
   const alone = switcher.pickMode('hb', 'full', modeUi);
   await reply('update_session', new Error('Locked.'));
   assert.equal(await alone, false);
-  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.']);
+  assert.deepEqual(notices, ['Permissions not changed (Locked); still ask']);
 });
 
 test('a refused effort holding a send is said once by the send', async () => {
@@ -603,7 +603,7 @@ test('a refused effort holding a send is said once by the send', async () => {
   const held = switcher.holdSend('hc', () => null);
   await reply('set_reasoning_effort', new Error('No.'));
   await assert.rejects(saving);
-  assert.equal(switcher.refusalsText(await held), 'the effort wasn’t changed (No.); still low');
+  assert.equal(switcher.refusalsText(await held), 'the effort wasn’t changed (No); still low');
   assert.deepEqual(notices, []);
 });
 
@@ -617,7 +617,7 @@ test('a refusal kept back for a held send is said when a newer pick replaces it 
   assert.equal(await mode, false);
   assert.deepEqual(notices, [], 'kept back for the held send');
   const again = switcher.pickMode('hd', 'plan', modeUi);
-  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.'], 'said once the newer pick replaces it');
+  assert.deepEqual(notices, ['Permissions not changed (Locked); still ask'], 'said once the newer pick replaces it');
   await reply('configure_session', args => stored('hd', { model: args.model }));
   await reply('update_session', () => null);
   assert.deepEqual([await model, await again, await held], [true, true, []]);
@@ -640,25 +640,28 @@ test('a board start waiting on a refused pick shows one notice, keeping what the
   await reply('configure_session', new Error('Busy.'));
   assert.equal(await saving, false);
   assert.equal(await start, false);
-  assert.deepEqual(notices, ['Not started — the model wasn’t changed (Busy.); still on sonnet.']);
-  // A second waiter on the same refusal (a send after the start) says nothing more.
-  assert.equal(switcher.unsaidText(await switcher.holdChange('bs')), null);
+  assert.deepEqual(notices, ['Not started — the model wasn’t changed (Busy); still on sonnet.']);
+  // A later action still explains why it is blocked.
+  assert.equal(switcher.unsaidText(await switcher.holdChange('bs')), 'the model wasn’t changed (Busy); still on sonnet');
   assert.equal(notices.length, 1);
 });
 
-test('a refusal said on its own is not said again by a wait that began after it', async () => {
+test('a refusal said on its own still explains why a later held start is blocked', async () => {
   tasks.set('bt', stored('bt', { mode: 'ask' }));
   notices.length = 0;
   const mode = switcher.pickMode('bt', 'full', modeUi);
   const model = switcher.pickModel('bt', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
   await reply('update_session', new Error('Locked.'));
   assert.equal(await mode, false);
-  assert.deepEqual(notices, ['Permissions not changed — still ask: Locked.'], 'nothing waited: said at once');
+  assert.equal(notices.length, 1, 'nothing waited: said at once');
   const start = boardStart('bt');
+  const again = boardStart('bt');
   await reply('configure_session', args => stored('bt', { model: args.model }));
   assert.equal(await model, true);
   assert.equal(await start, false, 'the refused permissions still hold the start back');
-  assert.equal(notices.length, 1, 'one notice for the one refusal');
+  assert.equal(await again, false);
+  assert.equal(notices.length, 2, 'the newly blocked action explains why it stopped');
+  assert.deepEqual(notices, ['Permissions not changed (Locked); still ask', 'Not started — the permissions weren’t changed (Locked); still ask.']);
 });
 
 test('a refused permissions pick and a refused model pick holding one send are both said, once', async () => {
@@ -674,7 +677,7 @@ test('a refused permissions pick and a refused model pick holding one send are b
   const refusals = await held;
   assert.deepEqual(refusals.map(refusal => refusal.what), ['permissions', 'model']);
   assert.deepEqual(notices, [], 'the held send says them');
-  assert.equal(switcher.unsaidText(refusals), 'the permissions weren’t changed (Locked.); still ask; and the model wasn’t changed (Busy.); still on sonnet');
+  assert.equal(switcher.unsaidText(refusals), 'the permissions weren’t changed (Locked); still ask; and the model wasn’t changed (Busy); still on sonnet');
   assert.equal(switcher.unsaidText(await again), null, 'a second press of Enter repeats nothing');
   // A newer pick clears them without saying them again.
   const next = switcher.pickMode('bu', 'plan', modeUi);
@@ -703,4 +706,28 @@ test('a newer pick landing while an older one settles: the run settles once (acc
   assert.deepEqual(remembered.map(choice => choice.model), ['nova'], 'only the newest pick is remembered');
   assert.deepEqual(harnesses, [[true, false], [true, true]], 'only the newest pick reloads the thread');
   teams.delete('bv');
+});
+
+test('an effort refusal after deletion keeps no task state or notice', async () => {
+  tasks.set('deleted-effort', stored('deleted-effort'));
+  notices.length = 0;
+  const saving = switcher.pickEffort('deleted-effort', 'high', { warm: false, paint() {} });
+  const rejected = assert.rejects(saving);
+  tasks.delete('deleted-effort'); switcher.forgetTasks(['deleted-effort']);
+  await reply('set_reasoning_effort', new Error('No such task.'));
+  await rejected;
+  assert.equal(switcher.remembersTask('deleted-effort'), false);
+  assert.equal(await switcher.settledChange('deleted-effort'), null);
+  assert.deepEqual(notices, []);
+});
+
+test('own model notices attach the reason to the model, before any team left', async () => {
+  tasks.set('wording', stored('wording'));
+  teams.set('wording', { rosterOnly: true, name: 'Ship crew' });
+  notices.length = 0;
+  const saving = switcher.pickModel('wording', { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await reply('architect_configure', () => null);
+  await reply('configure_session', new Error('Busy.'));
+  assert.equal(await saving, false);
+  assert.deepEqual(notices, ['Model not changed (Busy); still on sonnet; the task left team Ship crew']);
 });
