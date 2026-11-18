@@ -409,3 +409,45 @@ test('file explorer: while the open thread\'s agent works the poll keeps the 2 s
   await agent('done');
   await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'with the agent done, the unfocused poll slows again' }).toEqual([3000]);
 });
+
+
+test('file explorer: read-only tool snapshots keep the regular poll; writes refresh and coalesce with it', async ({ page }) => {
+  test.setTimeout(45_000);
+  await countPolls(page);
+  await item(page, 'src').click();
+  await expect(item(page, 'main.ts')).toBeVisible();
+  const sessionId = await page.locator('#prompt').getAttribute('data-session-id');
+  // Time and count in the page: slow driver round trips must not add whole poll ticks to the measurement.
+  const reads = await page.evaluate(async sessionId => {
+    const w = window as any, preview = await import(w.__pandacodePreviewUrl);
+    const count = () => w.__filePolls as number;
+    const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+    const tool = (name: string) => w.__previewEmit('agent-event', { sessionId, kind: 'tool', text: name, tool: { id: name, name, status: 'completed', input: '', output: '' } });
+    w.__previewEmit('agent-event', { sessionId, kind: 'status', text: 'Working' });
+    const before = count();
+    const timer = setInterval(() => {
+      for (const name of ['Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'read_file', 'list_dir', 'WebSearch']) tool(name);
+    }, 500);
+    await delay(5200);
+    clearInterval(timer);
+    const readOnly = count() - before, tick = count();
+    while (count() === tick) await delay(25);
+    const from = count();
+    await preview.invoke('manage_workspace_entry', { projectId: 'project-1', sessionId, action: 'new-file', path: 'written-by-tool.txt' });
+    tool('Write');
+    await delay(650);
+    const write = count() - from;
+    const shown = [...document.querySelectorAll('#inspector-content .file-row button')].some(button => button.textContent?.trim() === 'written-by-tool.txt');
+    // Just before the regular tick, a second write shares its read instead of adding one 400 ms later.
+    await delay(1050);
+    const nearTick = count();
+    tool('Write');
+    await delay(700);
+    return { readOnly, write, shown, coalesced: count() - nearTick };
+  }, sessionId);
+  // Two expanded folders, at most three regular ticks in 5.2 s; one read of each for a write or nearby poll.
+  expect(reads.readOnly).toBeLessThanOrEqual(6);
+  expect(reads.write).toBe(2);
+  expect(reads.shown).toBe(true);
+  expect(reads.coalesced).toBe(2);
+});

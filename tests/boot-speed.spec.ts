@@ -6,7 +6,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -24,7 +24,7 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
       }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
-      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider });')
+      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider }); if (window.__holdConfigure) { window.__holdConfigure = false; await new Promise(resolve => { window.__releaseConfigure = resolve; }); }')
       .replace(/case ["']send_message["']\s*:\s*\{/, '$& (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });')
       .replace(/case ["']cloud_connections["']\s*:\s*result\s*=\s*previewCloud\.connections\(\)\s*;/, '$& if (window.__cloudConnected) result = result.map(item => ({ ...item, connected: true }));');
     await route.fulfill({ response, body: previewBody(body) });
@@ -456,4 +456,76 @@ test('a Deploy press dropped for a later New task writes nothing anywhere', asyn
   await page.locator('#navigation').getByRole('button', { name: /^pandacode .*Explore the project/ }).click();
   await expect(prompt).toHaveAttribute('data-session-id', elsewhere!);
   await expect(prompt).toHaveValue(typed);
+});
+
+/** A provisional draft whose correction is held before the native save, while its picker stays open. */
+async function heldCorrection(page: Page, deploy = false): Promise<string> {
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.addInitScript(() => { (window as BootWindow).__cloudConnected = true; });
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await page.evaluate(() => { const w = window as BootWindow; w.__holdDraft = true; w.__holdConfigure = true; });
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  if (deploy) await deployToVercel(page);
+  else await page.locator('.sidebar-actions .new-task-button').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseDraft), { timeout: 10_000 }).toBe('function');
+  if (!deploy) {
+    await page.evaluate(() => (window as BootWindow).__releaseDraft!());
+    await expect(page.locator('.new-task-welcome')).toBeVisible();
+    await page.locator('#model-picker-trigger').click();
+    await expect(page.locator('.model-menu')).toBeVisible();
+  }
+  await release(page);
+  await expect.poll(() => answered(page)).not.toBeNull();
+  if (deploy) await page.evaluate(() => (window as BootWindow).__releaseDraft!());
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  return (await page.locator('#prompt').getAttribute('data-session-id'))!;
+}
+
+test('an explicit picker choice during a held correction wins in memory and storage', async ({ page }) => {
+  test.setTimeout(45_000);
+  const draft = await heldCorrection(page);
+  const menu = page.locator('.model-menu');
+  await menu.locator('[role="tab"][data-view="h:codex"]').click();
+  await menu.locator('[role="option"]:not([disabled])').first().click();
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'codex');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__configured ?? [])).toEqual([
+    { sessionId: draft, provider: 'claude' }, { sessionId: draft, provider: 'codex' },
+  ]);
+  const saved = await page.evaluate(async id => {
+    const preview = await import('/src/preview.ts');
+    const task = await preview.invoke('get_task', { sessionId: id }) as { provider: string };
+    return task.provider;
+  }, draft);
+  expect(saved).toBe('codex');
+});
+
+test('Deploy during a held correction sends its brief exactly once after the correction', async ({ page }) => {
+  test.setTimeout(45_000);
+  const draft = await heldCorrection(page, true);
+  await expect(page.locator('#prompt')).toHaveValue(/^Deploy this project to Vercel\./);
+  expect(await sent(page)).toEqual([]);
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(async () => (await sent(page)).length, { timeout: 10_000 }).toBe(1);
+  expect((await sent(page))[0]).toMatchObject({ sessionId: draft, text: expect.stringMatching(/^Deploy this project to Vercel\./) });
+  await page.waitForTimeout(600);
+  expect(await sent(page)).toHaveLength(1);
+});
+
+
+test('Send pressed twice during a held correction sends the user draft exactly once', async ({ page }) => {
+  test.setTimeout(45_000);
+  const draft = await heldCorrection(page);
+  await page.keyboard.press('Escape');
+  await page.locator('#prompt').fill('Keep this send while the harness is corrected');
+  await page.locator('#prompt').press('Enter');
+  await page.locator('#prompt').press('Enter');
+  expect(await sent(page)).toEqual([]);
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(async () => (await sent(page)).length, { timeout: 10_000 }).toBe(1);
+  expect((await sent(page))[0]).toEqual({ sessionId: draft, text: 'Keep this send while the harness is corrected' });
+  await page.waitForTimeout(600);
+  expect(await sent(page)).toHaveLength(1);
 });

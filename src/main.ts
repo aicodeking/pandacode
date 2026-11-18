@@ -73,7 +73,7 @@ import { starPanda } from './star-panda';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
-import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
+import { describeTool, kindIcon, summarizeTools, toolKind, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
@@ -5171,6 +5171,11 @@ async function send(): Promise<void> {
   await sendDraft();
 }
 async function sendDraft(): Promise<void> {
+  const waitingFor = state.sessionId, correction = waitingFor && provisionalCorrections.get(waitingFor);
+  if (correction) {
+    await correction;
+    if (state.sessionId !== waitingFor) return;
+  }
   if (btwFromComposer()) return;
   const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
@@ -5192,9 +5197,7 @@ async function sendDraft(): Promise<void> {
   // A task made from the last launch's list is checked against the real one before it first goes; a corrected task is
   // sent from the start again, with its new harness (it is no longer provisional, so this runs once).
   if (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id)) {
-    configuringSessions.add(s.id);
-    let ready = false;
-    try { ready = await provisionalReadyToSend(s); } finally { configuringSessions.delete(s.id); }
+    const ready = await provisionalReadyToSend(s);
     if (ready && state.sessionId === s.id) await sendDraft();
     return;
   }
@@ -5697,7 +5700,7 @@ function onAgent(event: AgentEvent): void {
   // The open thread's agent at work: the Files tree and open file follow its edits within a poll tick, input or not.
   // After this event is handled, so a run it starts already counts as working (isRunning) when the poll picks its rate.
   if (event.sessionId === state.sessionId) {
-    if (event.kind === 'tool' || event.kind === 'turn_changes') queueMicrotask(noteFilePollActivity);
+    if (event.kind === 'turn_changes' || event.kind === 'tool' && !['read', 'search', 'web', 'fetch'].includes(toolKind(event.tool?.name ?? event.text))) queueMicrotask(noteFilePollActivity);
     else if (RUN_STATE_EVENTS.has(event.kind)) queueMicrotask(noteFilePollChange);
   }
   if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
@@ -6514,6 +6517,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      provisionalTasks.delete(selected.id);
+      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
@@ -6561,6 +6567,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       }
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
+      provisionalTasks.delete(selected.id);
+      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.
@@ -8727,6 +8736,7 @@ let markProvidersOverdue: () => void = () => {};
 const providersOverdueNow = new Promise<void>(resolve => { markProvidersOverdue = () => { providersOverdue = true; resolve(); }; });
 /** Tasks created from the last launch's list (the real one was late), checked again when the real list lands. */
 const provisionalTasks = new Set<string>();
+const provisionalCorrections = new Map<string, Promise<'ok' | 'missing' | 'stale'>>();
 /** The list a choice can use right now: the real one, or the last launch's once the real one is overdue and the last
  *  launch's names an installed harness. */
 function providersForChoiceNow(): Provider[] | undefined {
@@ -8876,8 +8886,7 @@ function providersLanded(found: Provider[], discovery: number): void {
 /** Tasks created from the last launch's list while the real one was late: one whose harness turns out to be missing,
  *  and that has not been sent yet, moves to the harness a New task would pick now (or says to check Settings). */
 async function correctProvisionalTasks(): Promise<void> {
-  // Each id stays provisional until its own correction has finished, and is marked configuring meanwhile: a Send
-  // (sendDraft's guard), the queue and a second pass all hold off it instead of racing configure_session.
+  // Sends and explicit picker choices wait on the same per-task correction, including its native save.
   for (const id of [...provisionalTasks]) {
     // Read afresh after every earlier correction's await: a Send may have taken it or started it since.
     if (!provisionalTasks.has(id) || configuringSessions.has(id)) continue;
@@ -8885,31 +8894,39 @@ async function correctProvisionalTasks(): Promise<void> {
     // Created but not listed yet (its creator is still finishing): it is checked once listed (checkProvisionalTasks).
     if (!task) { if (deletedSessions.has(id)) provisionalTasks.delete(id); continue; }
     if (task.lastPromptAt != null || isRunning(id)) { provisionalTasks.delete(id); continue; }
-    configuringSessions.add(id);
-    let outcome: 'ok' | 'missing' | 'stale';
-    try { outcome = await correctProvisionalTask(task); } finally { configuringSessions.delete(id); provisionalTasks.delete(id); }
+    const outcome = await correctProvisionalTask(task);
     if (outcome === 'missing') notify('Open Settings to check your installed agents.');
   }
 }
 /** Checks one provisional task against the real list: 'ok' when its harness is installed (or it moved to the harness a
  *  New task would pick now), 'missing' when no installed harness is left to move it to, 'stale' when it was deleted or
  *  started while configure_session was out (its newer row is kept). */
-async function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stale'> {
-  if (provider(task.provider)?.installed) return 'ok';
-  const harness = pickHarness(state.providers);
-  if (!harness?.installed) return 'missing';
-  const updated = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
-  // A task that started meanwhile (or was deleted) keeps the row its run has written: this answer would roll it back.
-  const now = state.sessions.find(s => s.id === task.id);
-  if (!now || deletedSessions.has(task.id) || now.lastPromptAt != null || isRunning(task.id)) return 'stale';
-  state.sessions = state.sessions.map(s => s.id === task.id ? updated : s);
-  if (task.id === state.sessionId) { renderComposer(); renderHeader(); }
-  return 'ok';
+function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stale'> {
+  const pending = provisionalCorrections.get(task.id);
+  if (pending) return pending;
+  configuringSessions.add(task.id);
+  const correction = (async (): Promise<'ok' | 'missing' | 'stale'> => {
+    if (!provisionalTasks.has(task.id)) return 'stale';
+    if (provider(task.provider)?.installed) return 'ok';
+    const harness = pickHarness(state.providers);
+    if (!harness?.installed) return 'missing';
+    const updated = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+    // An explicit choice cancels this result and saves after it, so both native and UI state keep the user's choice.
+    const now = state.sessions.find(s => s.id === task.id);
+    if (!provisionalTasks.has(task.id) || !now || deletedSessions.has(task.id) || now.lastPromptAt != null || isRunning(task.id)) return 'stale';
+    state.sessions = state.sessions.map(s => s.id === task.id ? updated : s);
+    if (task.id === state.sessionId) { renderComposer(); renderHeader(); }
+    return 'ok';
+  })().finally(() => {
+    configuringSessions.delete(task.id); provisionalTasks.delete(task.id); provisionalCorrections.delete(task.id);
+  });
+  provisionalCorrections.set(task.id, correction);
+  return correction;
 }
 /** Before a first Send: a task still provisional whose harness the real list says is missing moves to an installed one,
  *  or the send stops with the install note. Until the real list lands the last launch's choice is the best known one. */
 async function provisionalReadyToSend(s: Session): Promise<boolean> {
-  if (!providersKnown || !provisionalTasks.delete(s.id)) return true;
+  if (!providersKnown || !provisionalTasks.has(s.id)) return true;
   const outcome = await correctProvisionalTask(s);
   if (outcome !== 'missing') return outcome === 'ok';
   showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');

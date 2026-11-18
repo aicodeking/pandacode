@@ -68,7 +68,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   // Read, never assumed: a window launched in the background starts unfocused, and focus that leaves the app from inside
   // one of its frames fires no blur here (the window blurred when the frame took focus), so each tick reads it again too.
   // The window's focus, not the page's: the in-app browser (a native child webview) takes the page's focus, not the window's.
-  let timer = 0, period = 0, focused = windowFocused(), mounted = pollMounted, unchanged = 0, active = Date.now(), soon = 0;
+  let timer = 0, period = 0, focused = windowFocused(), mounted = pollMounted, unchanged = 0, active = Date.now(), soon = 0, nextPoll = 0;
   const settled = (): boolean => unchanged >= SETTLE_READS || Date.now() - active >= SETTLE_IDLE_MS;
   const rate = (): number => {
     if (document.hidden || !mounted) return 0;
@@ -80,10 +80,12 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
     if (next === period) return;
     if (timer) { window.clearInterval(timer); timer = 0; }
     period = next;
+    nextPoll = Date.now() + period;
     if (period) timer = window.setInterval(filePollTick, period);
   };
   const wake = (): void => { unchanged = 0; active = Date.now(); sync(); };
   const run = (): void => {
+    window.clearTimeout(soon); soon = 0;
     void refresh().then(changed => {
       if (changed === undefined) return;
       if (changed) wake(); else { unchanged++; sync(); }
@@ -91,6 +93,7 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
   };
   // Named so a test can tell this interval from the app's others.
   function filePollTick(): void {
+    nextPoll = Date.now() + period;
     const now = windowFocused();
     if (now !== focused) { focused = now; sync(); if (!now) return; }
     sync();
@@ -118,8 +121,8 @@ function startPolling(refresh: PollRefresh, busy: () => boolean): Poll {
     changed: wake,
     activity() {
       wake();
-      if (soon || !period) return;
-      soon = window.setTimeout(() => { soon = 0; if (watchedVisible()) run(); }, ACTIVITY_READ_MS);
+      if (soon || !period || nextPoll - Date.now() <= ACTIVITY_READ_MS) return;
+      soon = window.setTimeout(() => { soon = 0; if (period && watchedVisible()) run(); }, ACTIVITY_READ_MS);
     },
   };
 }
