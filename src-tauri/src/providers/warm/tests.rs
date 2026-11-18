@@ -499,6 +499,8 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
     };
     let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "worker", "disallowedTools"].map(String::from).to_vec();
     config_fields.extend(["namedConnection", "connection", "environment", "telemetryOff"].map(String::from));
+    // Read from the session and the provider, which a lead's spare and its wake share.
+    config_fields.extend(["disabledSkills", "executable"].map(String::from));
     let (mut a, mut b) = (field_names, config_fields);
     a.sort();
     b.sort();
@@ -731,4 +733,30 @@ async fn a_spare_whose_adoption_fails_is_retired_and_awaited() {
     assert!(exit_registry().lock().unwrap().contains_key(&session), "the failed adopt registered no exit");
     tokio::time::timeout(Duration::from_secs(10), await_exit(&session)).await.unwrap().unwrap();
     assert!(process_gone(pid), "the next launch would have started beside the dying spare");
+}
+
+#[test]
+fn skill_manager_disabled_skills_invalidate_a_warm_launch() {
+    let config = crate::providers::tests::config("claude");
+    let none = std::collections::BTreeSet::new();
+    let disabled = std::collections::BTreeSet::from(["alpha".into()]);
+    assert_ne!(key_with_disabled(&config, &[], "", &none), key_with_disabled(&config, &[], "", &disabled));
+}
+
+#[test]
+fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch() {
+    let disabled = std::collections::BTreeSet::from(["Friendly skill".into()]);
+    let base = crate::providers::tests::config("claude");
+    // Cold path: run_inner applies the reminder, then keys the launch.
+    let mut cold = base.clone();
+    crate::skill_manager::apply_instructions(&mut cold, &disabled);
+    let spare = prepared(base.clone(), &disabled);
+    assert!(spare.instructions.contains("Friendly skill"));
+    assert_eq!(key_with_disabled(&spare, &[], "", &disabled), key_with_disabled(&cold, &[], "", &disabled));
+    // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
+    assert_eq!(prepared(spare.clone(), &disabled).instructions, spare.instructions);
+    let mut command = Command::new("claude");
+    configure_command_with_skills(&mut command, &spare, &disabled);
+    let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+    assert!(args.windows(2).any(|a| a[0] == "--append-system-prompt" && a[1].contains("Friendly skill")));
 }

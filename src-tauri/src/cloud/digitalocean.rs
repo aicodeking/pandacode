@@ -61,16 +61,37 @@ impl DigitalOcean {
     /// when missing; droplets embed it at create. Matched by material, not name: a second
     /// computer (or a reset app dir) must register its own key, not reuse another machine's.
     async fn key_id(&self, public: &str) -> Result<i64> {
-        let keys = self.api(reqwest::Method::GET, "/account/keys?per_page=200", None).await?;
-        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
-            if key["public_key"].as_str().map(str::trim) == Some(public) {
-                return key["id"].as_i64().ok_or_else(|| "DigitalOcean reported an unreadable SSH key.".to_string());
-            }
+        if let Some(id) = self.listed_key(public).await? {
+            return Ok(id);
         }
         let tail: String = public.chars().rev().filter(|c| c.is_ascii_alphanumeric()).take(6).collect::<Vec<_>>().into_iter().rev().collect();
         let name = if tail.is_empty() { KEY_NAME.to_string() } else { format!("{KEY_NAME}-{tail}") };
-        let made = self.api(reqwest::Method::POST, "/account/keys", Some(json!({"name": name, "public_key": public}))).await?;
-        made["key"]["id"].as_i64().ok_or_else(|| "DigitalOcean did not report the new SSH key.".to_string())
+        let made = self.api(reqwest::Method::POST, "/account/keys", Some(json!({"name": name, "public_key": public}))).await;
+        // The create replies with the key as `ssh_key` (`key` in an alternate shape).
+        if let Ok(made) = &made {
+            if let Some(id) = made["ssh_key"]["id"].as_i64().or_else(|| made["key"]["id"].as_i64()) {
+                return Ok(id);
+            }
+        }
+        // A reply without the id — or a create that lost a race against another task
+        // registering the same material — still leaves the key in the account: match it
+        // there rather than failing or registering a duplicate.
+        if let Some(id) = self.listed_key(public).await? {
+            return Ok(id);
+        }
+        // Nothing matched: the create's own error, else the reply never named the key.
+        Err(made.err().unwrap_or_else(|| "DigitalOcean did not report the new SSH key.".into()))
+    }
+
+    /// The id of the account key whose material matches, from one list page.
+    async fn listed_key(&self, public: &str) -> Result<Option<i64>> {
+        let keys = self.api(reqwest::Method::GET, "/account/keys?per_page=200", None).await?;
+        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
+            if key["public_key"].as_str().map(str::trim) == Some(public) {
+                return key["id"].as_i64().map(Some).ok_or_else(|| "DigitalOcean reported an unreadable SSH key.".to_string());
+            }
+        }
+        Ok(None)
     }
 
     /// The droplet's public IPv4 from one lookup; a fresh droplet's address appears on retry.
@@ -313,7 +334,7 @@ mod tests {
         let (base, seen) = mock::serve(|request, _| match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/account") => (200, br#"{"account":{"status":"active","email":"me@example.com"}}"#.to_vec()),
             ("GET", "/account/keys?per_page=200") => (200, br#"{"ssh_keys":[{"id":7,"name":"other","public_key":"ssh-rsa ZZZ"},{"id":9,"name":"pandacode","public_key":"ssh-ed25519 AAAA pandacode"}]}"#.to_vec()),
-            ("POST", "/account/keys") => (201, br#"{"key":{"id":11,"name":"pandacode"}}"#.to_vec()),
+            ("POST", "/account/keys") => (201, br#"{"ssh_key":{"id":11,"name":"pandacode"}}"#.to_vec()),
             ("GET", "/droplets?tag_name=pandacode&per_page=200") => (200, br#"{"droplets":[{"id":1,"name":"job","status":"active","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":2,"name":"wip","status":"new","size_slug":"s-2vcpu-4gb","region":{"slug":"fra1"}},{"id":3,"name":"off","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}},{"id":5,"name":"done","status":"off","size_slug":"s-2vcpu-4gb","region":{"slug":"nyc1"}}]}"#.to_vec()),
             ("POST", "/droplets") => (202, br#"{"droplet":{"id":42,"name":"job","status":"new"}}"#.to_vec()),
             ("GET", "/droplets/42") => (200, br#"{"droplet":{"id":42,"status":"active","networks":{"v4":[{"type":"private","ip_address":"10.0.0.2"},{"type":"public","ip_address":"203.0.113.9"}]}}}"#.to_vec()),
@@ -351,7 +372,7 @@ mod tests {
         assert_eq!(api.key_id("ssh-ed25519 AAAA pandacode").await.unwrap(), 9);
         let (base, seen2) = mock::serve(|request, _| match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/account/keys?per_page=200") => (200, br#"{"ssh_keys":[]}"#.to_vec()),
-            ("POST", "/account/keys") => (201, br#"{"key":{"id":11,"name":"pandacode"}}"#.to_vec()),
+            ("POST", "/account/keys") => (201, br#"{"ssh_key":{"id":11,"name":"pandacode"}}"#.to_vec()),
             _ => (500, br#"{"message":"unexpected"}"#.to_vec()),
         });
         let fresh = DigitalOcean::new(Some(base), "t".into());
@@ -365,6 +386,53 @@ mod tests {
         // A key with different material gets its own account entry, named after the key.
         assert!(body["name"].as_str().unwrap_or_default().starts_with("pandacode-"));
         let _ = seen;
+    }
+
+    /// One mock whose account list starts without our key and holds it from the first create
+    /// attempt on, answering creates with the given reply. Returns the base URL, the request
+    /// log and the number of list reads.
+    fn key_race_mock(create: (u16, &'static str), key: &'static str, id: i64) -> (String, mock::Seen, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let lists = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = lists.clone();
+        let (base, seen) = mock::serve(move |request, _| match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/account/keys?per_page=200") => {
+                if counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    (200, br#"{"ssh_keys":[]}"#.to_vec())
+                } else {
+                    (200, format!(r#"{{"ssh_keys":[{{"id":{id},"name":"pandacode","public_key":"{key}"}}]}}"#).into_bytes())
+                }
+            }
+            ("POST", "/account/keys") => (create.0, create.1.as_bytes().to_vec()),
+            _ => (500, br#"{"message":"unexpected"}"#.to_vec()),
+        });
+        (base, seen, lists)
+    }
+
+    /// A create that is refused (another task registered the same material first) or answers
+    /// without the key still leaves the key in the account: the re-list hands back its id
+    /// instead of failing or registering a duplicate (issue #206's third failure).
+    #[tokio::test]
+    async fn a_refused_or_unreadable_create_relists_the_registered_key() {
+        let (base, seen, lists) = key_race_mock((422, r#"{"id":"unprocessable","message":"SSH Key is already in use on your account"}"#), "ssh-ed25519 CCCC pandacode", 12);
+        assert_eq!(DigitalOcean::new(Some(base), "t".into()).key_id("ssh-ed25519 CCCC pandacode").await.unwrap(), 12);
+        assert_eq!(lists.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(seen.lock().unwrap().iter().filter(|r| r.method == "POST").count(), 1, "the refused create must not be retried into a duplicate");
+
+        let (base, seen, lists) = key_race_mock((201, r#"{"ssh_key":{}}"#), "ssh-ed25519 DDDD pandacode", 13);
+        assert_eq!(DigitalOcean::new(Some(base), "t".into()).key_id("ssh-ed25519 DDDD pandacode").await.unwrap(), 13);
+        assert_eq!(lists.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let _ = seen;
+    }
+
+    /// A create reply carrying the key as `key` instead of `ssh_key` still parses.
+    #[tokio::test]
+    async fn an_alternate_create_reply_shape_still_parses() {
+        let (base, _) = mock::serve(|request, _| match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/account/keys?per_page=200") => (200, br#"{"ssh_keys":[]}"#.to_vec()),
+            ("POST", "/account/keys") => (201, br#"{"key":{"id":11,"name":"pandacode"}}"#.to_vec()),
+            _ => (500, br#"{"message":"unexpected"}"#.to_vec()),
+        });
+        assert_eq!(DigitalOcean::new(Some(base), "t".into()).key_id("ssh-ed25519 BBBB").await.unwrap(), 11);
     }
 
     #[tokio::test]

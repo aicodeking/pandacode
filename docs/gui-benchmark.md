@@ -408,3 +408,13 @@ Conditions for a future main GO:
 4. The architect gives a separate main GO.
 
 Status: **`smoke-valid-main-no-go-quota`**. G2 has 8 valid billed recovery smoke runs ($1.8843887), excluded from analysis, and 0/480 main runs.
+
+### Merge maintenance: worker report extraction
+
+<!-- deviation:G2-5 -->
+**G2-5** (2026-11-18, maintenance only; no benchmark calls). Merging main removed the worker report's byte-budget clause. `findWorkerReport` now extracts the current wording and still substitutes the default or requested limit in historical inputs. The historical default report still hashes to `dd87a377710ca984afaf4640225b39a6d1f6402c09090e6c2454f4b541dc43f9`; the current report hashes to `953fc360cbe4cd420d7e02fbee23c1e81667b05507bb0ce9ab67abb8345ff732`.
+
+The registration test requires this entry because it checks unsuperseded source hashes. G2-5 supersedes G2-4 to pin the updated `saver.mjs`, repeating the other seven source/task pins and all three analysis pins unchanged. The preceding 30 registration rows and every registered section remain byte-identical, as do historical measurements and their evidence.
+
+Prepared launch texts, metadata, snapshots, seeds and treatment pins are unchanged. Saver's `assertUnchanged` and GUI's `loadMeta` still reject launch-text drift: this parser fix does not make the recorded G2 launches current or authorize a call. Launching with the changed report requires fresh preparation under a separately registered batch; existing evidence must be preserved.
+<!-- /deviation:G2-5 -->

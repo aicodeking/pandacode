@@ -51,7 +51,7 @@ test('row actions stay out of the Tab order and the menu key opens the row menu'
 test('⌘1…9 open the nth task and ⌘⇧[ / ] step through tasks', async ({ page }) => {
   await open(page);
   const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
-  await page.locator('#transcript').click();
+  await page.locator('#transcript').click({ position: { x: 5, y: 200 } });
   await page.keyboard.press(`${mod}+2`);
   await expect(row(page, 'session-2')).toHaveAttribute('aria-current', 'page');
   await page.keyboard.press(`${mod}+Shift+BracketRight`);

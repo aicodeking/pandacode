@@ -1,6 +1,6 @@
 # Agent tools and integrations
 
-PandaCode launches the installed Codex CLI through its app-server. Codex supplies
+PandaCode launches installed coding-agent harnesses. Each harness supplies
 shell commands, file editing, image inspection, search, subagents, skills and
 configured MCP integrations according to its version, configuration and policy.
 PandaCode does not replace those tools with simulated implementations or enable
@@ -8,18 +8,31 @@ features the user's configuration has disabled.
 
 ## App tools
 
-New Codex tasks register `pandacode_*` dynamic functions: project/task discovery,
+Standalone tasks and team leads receive `pandacode_*` app tools: project/task
+discovery,
 task history and subagent activity, creating/starting/following up/renaming/
 archiving tasks, board stages, worktrees, showing tasks/files/terminals, local
 ports, browser navigation/reading/clicking/typing/screenshots, and project
 moodboard discovery/metadata/image reading. See [Moodboards](moodboards.md).
+Team workers retain their scoped coordination tools rather than gaining tools
+to create or start separate tasks outside their assignments. Codex registers the
+app tools as dynamic functions; other supported local harnesses use the
+authenticated, run-local MCP bridge.
 
 Task operations remain within the current project. File previews use the task's
 checkout and existing native path validation. Creating a worktree creates a task
 under its original project. Starting another agent uses the same admission and
 concurrency limits as the UI. Starting/following up on the current running task
-is rejected. Use Codex's shell tool for command execution and its image tool to
-inspect the local PNG returned by `pandacode_capture_browser`.
+is rejected. Use the harness's shell tool for command execution and its image
+tool to inspect the local PNG returned by `pandacode_capture_browser`.
+
+A string argument is held to its field's `maxLength` (8 KiB with none), counted in
+characters: messages and task descriptions take up to the 16 MiB message limit.
+`pandacode_read_task` reads a truncated message to its end with `messageId` and
+`offset`, or the description with `offset` alone. `pandacode_list_subagents` does
+the same for one subagent with `agentId`, `part` (`response`, `prompt` or `tools`)
+and `offset`. A steer that `pandacode_steer_task` could not deliver is an error saying
+`Not delivered: <reason>`, and nothing is queued: use `pandacode_queue_message`.
 
 `pandacode_explore` answers many code questions in one call: `search` regexes
 matched per line (smart case unless `case_sensitive`; `\n` is refused, as in rg),
@@ -278,8 +291,8 @@ own index data in its home directory). Results are untrusted data. When codedb i
 absent the tool says so, and agents keep their harness's own search tools. The tool
 runs without an approval prompt, like the other read-only app tools.
 
-Host callbacks are outside Codex's shell sandbox, so PandaCode enforces its own
-approval boundary: mutations and browser/UI access request approval in Standard
+Host callbacks are outside the harness's shell sandbox, so PandaCode enforces its
+own approval boundary: mutations and browser/UI access request approval in Standard
 and Auto modes, are unavailable in Plan mode, and run without a prompt only when
 the user selected Full access. Browser access requires the calling task to be
 visible; background tasks cannot hijack another task's browser. The browser
@@ -290,12 +303,15 @@ no application IPC access.
 The installed app-server persists dynamic tools with newly created threads.
 Its `thread/resume` API cannot add them to a conversation created without them.
 Older tasks retain their original coding/MCP tools; start a new Codex task to use
-newly added PandaCode app tools. These dynamic functions are Codex's own. Other
-harnesses (Claude, GLM, Kimi, OpenCode, Antigravity and so on) get the optional and
-team tools (preview, explore, simulator, VM, design and so on), not this set, through
-the authenticated, run-local MCP bridge where the provider supports HTTP MCP. Codex
-also takes the per-run tools through that bridge, so resumed threads see them. Provider-owned
-tools and integrations continue through their own protocols and configuration.
+newly added PandaCode app tools. Existing Codex team leads receive the expanded
+catalog through the team's normal context handoff, preserving bounded text history.
+Claude, GLM, Kimi, OpenCode, and other supported local harnesses receive these
+host tools on each run (optional ones such as `pandacode_explore` ride the same bridge). ACP harnesses must advertise HTTP MCP support. ZCode bridges the same
+per-run loopback catalog through `session/create` `mcpServers` (and `mcp/list` connect on resume,
+and before the prompt when the tools are required), and cloud runs do
+not receive local host tools.
+Provider-owned tools and integrations continue through their own protocols and
+configuration.
 
 ## Agent-made tools
 
@@ -321,8 +337,8 @@ history. Unsupported form constraints return an explicit protocol error instead
 of silently accepting incomplete answers. URL authorization always requires a
 separate explicit open and confirmation action.
 
-Callbacks run asynchronously (eight executing at once, at most 64 admitted per
-run), with bounded arguments/results, timeouts and cancellation. A slow callback
+Callbacks run asynchronously (up to 64 executing at once per run, with no cap on
+MCP connections), with bounded arguments/results, timeouts and cancellation. A slow callback
 cannot block provider stdout. Integration discovery is a short-lived process,
 limited to one at a time, and cleans up children on completion/cancellation.
 

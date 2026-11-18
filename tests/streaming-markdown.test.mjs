@@ -9,11 +9,19 @@ const parts = (value, ends = blockBoundaries(value)) => [0, ...ends].map((start,
 const render = async value => renderMarkdown(await parseMarkdown(value));
 
 const SAMPLES = [
+  '## النتيجة!\n\nمرحبا بالعالم!\n\nHello, world!\n\n- عنصر عربي!\n- English item!\n\n| الاسم | Name |\n| --- | --- |\n| أحمد! | Alice! |\n\n```js\nconst label = "مرحبا!";\n```\n',
   `## Plan\n\nSome **bold** text with \`code\` and a [link](https://example.com).\n\n- one\n- two\n  - nested\n\n- loose three\n\nAfter the list.\n\n1. first\n2. second\n\n3) other\n\nDone.\n`,
   "Intro\n\n```ts\nconst a = 1;\n\n\nconst b = 2;\n```\n\n~~~\nx\n\n```\n\ny\n~~~\n\n````md\n```\ninner\n```\n\nstill code\n````\n\nEnd.\n",
   `| a | b |\n| --- | --- |\n| 1 | $x^2$ |\n\n$$\nE = mc^2\n\n$$\n\nInline $a$ math.\n\n> quote\n\n> second quote\n\n    indented code\n\n    more code\n\nText\n===\n\n---\n\n> [!NOTE]\n> Careful.\n\nlast line`,
   `- item\n\n  continued paragraph\n\n      code in item\n\n* star\n\n+ plus\n\n10. ten\n\nplain *emphasis* :followup[Run tests]{prompt="Run the tests"}\n`,
 ];
+
+test('prose blocks choose their own direction and code stays isolated', async () => {
+  const html = await render(SAMPLES[0]);
+  for (const tag of ['h2', 'p', 'li', 'th', 'td']) assert.match(html, new RegExp(`<${tag} dir="auto">`));
+  assert.match(html, /<pre dir="ltr"><code dir="ltr" class="language-js">const label = "مرحبا!";\n<\/code>/);
+  assert.equal(await render('`npm test` مرحبا!'), '<p dir="auto"><code dir="ltr">npm test</code> مرحبا!</p>\n');
+});
 
 test('blank lines inside fences and between list items never settle a block', () => {
   const fenced = 'a\n\n```\nx\n\ny\n```\n\nb\n';

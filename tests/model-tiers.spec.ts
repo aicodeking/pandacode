@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// Settings → Agent teams → Model routing → Rank models: the tier list Panda Router weighs most.
+// Settings → Agents → Model routing → Rank models: the tier list Panda Router weighs most.
 const settings = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 const group = (page: Page) => settings(page).getByRole('group', { name: 'Rank models', exact: true });
 const row = (page: Page, name: string) => group(page).getByRole('group', { name, exact: true });
@@ -30,7 +30,7 @@ async function install(page: Page): Promise<void> {
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => (window as any).__tiers.calls.filter((entry: any) => entry.command === command), command);
 async function openTeams(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Model routing', exact: true }).click();
   await expect(group(page)).toHaveAttribute('aria-busy', 'false');
 }
 
@@ -123,7 +123,7 @@ test('the controls stay disabled until the tiers load', async ({ page }) => {
   await page.addInitScript(() => { (window as any).__tiersDelay = { model_routing_tiers: 1500 }; });
   await install(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Model routing', exact: true }).click();
   await expect(group(page)).toHaveAttribute('aria-busy', 'true');
   await expect(group(page).getByRole('button', { name: 'Reset', exact: true })).toBeDisabled();
   await expect(group(page).locator('.tier-chip')).toHaveCount(0);
@@ -170,7 +170,7 @@ test('Rank models: a failed load shows Retry, and Retry recovers', async ({ page
   await page.addInitScript(() => { (window as any).__tiersFail = { model_routing_tiers: 'disk unreadable' }; });
   await install(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Model routing', exact: true }).click();
   await expect(group(page).getByRole('alert')).toContainText('disk unreadable');
   await expect(group(page).getByText('Loading…')).toHaveCount(0);
   await page.evaluate(() => { (window as any).__tiersFail = {}; });
@@ -211,4 +211,33 @@ test('Add model… picks a limited harness and its added model joins the tray', 
   await expect(dialog).toBeHidden();
   await expect(add).toBeFocused();
   await expect(row(page, 'Unranked').locator('.tier-chip').filter({ hasText: 'Nous Sample 3' })).toHaveCount(1);
+});
+
+test('chips with a shared display name say which harnesses they run on (issue #315)', async ({ page }) => {
+  await page.addInitScript(() => {
+    // Two unrated rows that differ only by their ids, as deepseek/deepseek-flash and opencode-go/deepseek-v4.1-flash do.
+    (window as any).__tiersResult = { model_routing_tier_models: [
+      { key: 'deepseek/deepseek-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['deepseek'], rated: false },
+      { key: 'opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['opencode'], rated: false },
+    ] };
+  });
+  await install(page);
+  await openTeams(page);
+  const unranked = row(page, 'Unranked');
+  await expect(unranked.locator('.tier-chip')).toHaveCount(2);
+  await expect(unranked.locator('.tier-providers')).toHaveText(['DeepSeek', 'OpenCode']);
+  await expect(group(page).getByRole('button', { name: 'Move DeepSeek V4.1 Flash (DeepSeek) to…', exact: true })).toHaveCount(1);
+  await expect(group(page).getByRole('button', { name: 'Move DeepSeek V4.1 Flash (OpenCode) to…', exact: true })).toHaveCount(1);
+});
+
+test('chips sharing a name and a harness show their key', async ({ page }) => {
+  await page.addInitScript(() => {
+    (window as any).__tiersResult = { model_routing_tier_models: [
+      { key: 'opencode/deepseek/deepseek-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['opencode'], rated: false },
+      { key: 'opencode/opencode-go/deepseek-v4.1-flash', name: 'DeepSeek V4.1 Flash', cardId: null, providers: ['opencode'], rated: false },
+    ] };
+  });
+  await install(page);
+  await openTeams(page);
+  await expect(row(page, 'Unranked').locator('.tier-providers')).toHaveText(['opencode/deepseek/deepseek-flash', 'opencode/opencode-go/deepseek-v4.1-flash']);
 });

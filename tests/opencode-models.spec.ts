@@ -20,6 +20,7 @@ async function boot(page: Page): Promise<void> {
 async function openModels(page: Page, firstModel = 'Big Pickle'): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings(page).locator('#settings-panel-agents details.settings-fold>summary').click();
   await expect(settings(page).getByRole('heading', { name: 'OpenCode models', exact: true })).toBeVisible();
   await expect(modelCheckbox(page, firstModel)).toBeVisible();
 }
@@ -31,7 +32,7 @@ async function saveModels(page: Page): Promise<void> {
 
 async function openPicker(page: Page): Promise<void> {
   if (await settings(page).isVisible()) await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^(Model: |Choose harness and model$)/ }).click();
   await picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('OpenCode');
   await expect(picker(page).getByRole('option', { name: 'OpenCode · Default', exact: true })).toBeVisible();
 }
@@ -105,8 +106,8 @@ test('without a saved selection the picker lists Default plus the five most rece
   // Search still reaches models beyond the short list.
   await search.fill('grok-4');
   await picker(page).getByRole('option', { name: 'OpenCode · Grok 4', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('Grok 4');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await expect(page.getByRole('button', { name: /^Model: / })).toContainText('Grok 4');
+  await page.getByRole('button', { name: /^Model: / }).click();
   await expect(openCode).toHaveCount(6);
   await expect(openCode.nth(1)).toHaveAccessibleName('OpenCode · Grok 4');
 });
@@ -118,7 +119,7 @@ test('deselecting a model does not change an existing task using it', async ({ p
   await saveModels(page);
   await openPicker(page);
   await picker(page).getByRole('option', { name: 'OpenCode · Big Pickle', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toContainText('Big Pickle');
+  await expect(page.getByRole('button', { name: /^Model: / })).toContainText('Big Pickle');
   await page.keyboard.press('Escape');
   await openModels(page);
   await modelCheckbox(page, 'Big Pickle').uncheck();

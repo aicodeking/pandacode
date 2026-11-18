@@ -4,7 +4,7 @@ import './message-actions.css';
 /** Keys identify saved messages or a live text buffer; never embed message text. */
 export function messageActionsHtml(sessionId: string, key: string | number, canFork = true, canEdit = false): string {
   const data = `data-message-session="${escape(sessionId)}" data-message-key="${escape(key)}"`;
-  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message" title="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" title="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" title="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
+  return `<div class="message-actions" role="group" aria-label="Message actions"><button type="button" data-message-action="copy" ${data} aria-label="Copy message">${icon('copy')}</button>${canFork ? `<button type="button" data-message-action="fork" ${data} aria-label="Fork from here" aria-description="Fork through this message into a new task in the same checkout">${icon('branch')}</button>` : ''}${canEdit ? `<button type="button" data-message-action="edit" ${data} aria-label="Edit and resend" aria-description="Rewind to before this message in a new task and edit it there">${icon('edit')}</button>` : ''}<span class="message-action-status" role="status" aria-live="polite"></span></div>`;
 }
 
 /** Clipboard APIs can be unavailable in older desktop webviews. */
@@ -74,12 +74,12 @@ export function bindMessageActions(root: HTMLElement, options: {
       if (action !== 'copy' || !button.isConnected) return;
       clearTimeout(feedback.get(button));
       button.innerHTML = icon('check'); button.dataset.copied = 'true';
-      button.title = 'Copied'; button.setAttribute('aria-label', 'Copied');
+      button.setAttribute('aria-label', 'Copied');
       const status = button.parentElement?.querySelector<HTMLElement>('.message-action-status');
       if (status) status.textContent = 'Message copied';
       feedback.set(button, setTimeout(() => {
         feedback.delete(button); delete button.dataset.copied;
-        button.innerHTML = icon('copy'); button.title = 'Copy message'; button.setAttribute('aria-label', 'Copy message');
+        button.innerHTML = icon('copy'); button.setAttribute('aria-label', 'Copy message');
         if (status) status.textContent = '';
       }, 1600));
     }).catch(options.report).finally(() => {

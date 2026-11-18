@@ -111,6 +111,25 @@ test.describe('shared bot channels', () => {
     await expect(channel.locator('.bc-assigned').last()).toContainText('Stopped');
   });
 
+  test('unsent channel text survives a reload, goes when sent, and a deleted channel\'s text goes at boot', async ({ page }) => {
+    await showBots(page);
+    await sidebar(page).getByRole('button', { name: '#launch' }).click();
+    const box = page.getByRole('textbox', { name: 'Message channel' });
+    await box.fill('half a thought');
+    // Written at once, as a crash would find it; a channel that no longer exists has text left too.
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.draft:channel:sample-launch') ?? 'null')?.text)).toBe('half a thought');
+    await page.evaluate(() => localStorage.setItem('pandacode.draft:channel:gone-channel', JSON.stringify({ t: Date.now(), text: 'orphan' })));
+    await showBots(page);
+    await sidebar(page).getByRole('button', { name: '#launch' }).click();
+    await expect(box).toHaveValue('half a thought');
+    await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.draft:channel:gone-channel'))).toBeNull();
+    await box.fill('@Writer half a thought, finished');
+    await box.press('Enter');
+    await expect(page.locator('.conversation-pane.channel-thread .bc-assigned').last()).toContainText('Assigned to Writer');
+    expect(await page.evaluate(() => localStorage.getItem('pandacode.draft:channel:sample-launch'))).toBeNull();
+    await expect(box).toHaveValue('');
+  });
+
   test('uses the channel lead when a post has no bot mention', async ({ page }) => {
     await showBots(page);
     await sidebar(page).getByRole('button', { name: '#launch' }).click();

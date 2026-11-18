@@ -15,4 +15,4 @@
 @media(prefers-contrast:more){.slash-menu-option[aria-selected=true]{outline:1px solid var(--text);outline-offset:-1px}.slash-menu-option:disabled{opacity:1}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.slash-menu-option{transition:background-color 100ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.slash-menu-option{transition:background-color var(--ds-ease-in) ease-out}}

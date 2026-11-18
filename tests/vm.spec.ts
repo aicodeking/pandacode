@@ -119,7 +119,7 @@ test('shares the project read-only when asked, and a VM can be deleted', async (
 async function connect(page: Page, provider: string, fields: Record<string, string>, sandboxes = false): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Connections', exact: true }).click(); await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
   await settings.getByRole('button', { name: `Connect ${provider}`, exact: true }).click();
   const form = settings.getByRole('form', { name: `Connect ${provider}` });
   for (const [label, value] of Object.entries(fields)) await form.getByRole('textbox', { name: `${provider} ${label}` }).or(form.getByLabel(`${provider} ${label}`)).fill(value);
@@ -137,7 +137,7 @@ test('connecting a cloud provider checks the key and offers its machines', async
   await open(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Connections', exact: true }).click(); await settings.getByRole('tab', { name: 'Cloud sandboxes', exact: true }).click();
   await settings.getByRole('button', { name: 'Connect Daytona', exact: true }).click();
   const form = settings.getByRole('form', { name: 'Connect Daytona' });
   await form.locator('[type="submit"]').click();

@@ -44,3 +44,40 @@ export function statusLetter(status: string): string {
   if (code.includes('D')) return 'D';
   return 'M';
 }
+
+export interface NumberedLine extends DiffLine { oldLine?: number; newLine?: number }
+
+const HUNK = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+const FILE_HEADER = /^(diff --git |index |--- |\+\+\+ |new file|deleted file|old mode|new mode)/;
+
+/** One file's lines for the diff view: Git's file headers go (the screen draws its own), and each line
+ * gets its numbers, read from the hunk headers. A removed line has only `oldLine`, an added one only `newLine`. */
+export function numberedLines(diff: string): NumberedLine[] {
+  let oldAt = 0;
+  let newAt = 0;
+  return diffLines(diff).filter(l => l.kind !== 'meta' || !FILE_HEADER.test(l.text)).map(line => {
+    if (line.kind === 'hunk') {
+      const match = line.text.match(HUNK);
+      oldAt = Number(match?.[1] ?? 0);
+      newAt = Number(match?.[2] ?? 0);
+      return line;
+    }
+    if (line.kind === 'add') return { ...line, newLine: newAt++ };
+    if (line.kind === 'del') return { ...line, oldLine: oldAt++ };
+    if (line.kind === 'context') return { ...line, oldLine: oldAt++, newLine: newAt++ };
+    return line;
+  });
+}
+
+/** The file header's numbers and status letter. The headers say it when present; a bare patch's first hunk does otherwise. */
+export function diffSummary(diff: string): { additions: number; deletions: number; letter: string } {
+  const lines = diffLines(diff);
+  const additions = lines.filter(l => l.kind === 'add').length;
+  const deletions = lines.filter(l => l.kind === 'del').length;
+  const has = (prefix: string) => lines.some(l => l.kind === 'meta' && l.text.startsWith(prefix));
+  const hunk = lines.find(l => l.kind === 'hunk')?.text ?? '';
+  const letter = has('new file') || hunk.startsWith('@@ -0,0 ') ? 'A'
+    : has('deleted file') || / \+0,0 @@/.test(hunk) ? 'D'
+    : has('rename ') ? 'R' : 'M';
+  return { additions, deletions, letter };
+}

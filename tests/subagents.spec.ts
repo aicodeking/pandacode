@@ -21,7 +21,7 @@ const child = (id: string, name: string, changes: Partial<Subagent> = {}): Subag
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
 
 // Exercises the real UI/event handlers with deterministic provider snapshots, without running agents.
-async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = {}): Promise<void> {
+async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = {}, lightRows = false): Promise<void> {
   const runtimeErrors: string[] = []; errors.set(page, runtimeErrors);
   page.on('pageerror', error => runtimeErrors.push(error.message));
   await page.route('**/src/preview.ts*', async route => {
@@ -42,14 +42,17 @@ async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = 
           { id: ++id, sessionId: s.id, role: 'assistant', content: 'Parent response for ' + s.title, createdAt: now - 1000 }
         ];
         window.__subagents = {
-          snapshots: ${JSON.stringify(seeds)}, calls: [], hold: {}, release: {}, reject: {},
+          snapshots: ${JSON.stringify(seeds)}, calls: [], hold: {}, release: {}, reject: {}, light: ${lightRows}, failFull: false,
           upsert(sessionId, data) {
             const list = this.snapshots[sessionId] ??= [];
             const index = list.findIndex(item => item.id === data.id);
             if (index < 0) list.push(structuredClone(data)); else list[index] = structuredClone(data);
             agent({ sessionId, kind: 'subagent', text: '', data: structuredClone(data) });
           },
+          partialRow(sessionId, data) { agent({ sessionId, kind: 'subagent', text: '', data: { ...structuredClone(data), partial: true } }); },
           parentText(sessionId, text) { agent({ sessionId, kind: 'text', text }); },
+          runDone(sessionId) { agent({ sessionId, kind: 'done', text: 'Turn complete' }); },
+          endWithNote(sessionId, text) { messages[sessionId].push({ id: ++id, sessionId, role: 'system', content: text, createdAt: Date.now() }); agent({ sessionId, kind: 'note', text }); agent({ sessionId, kind: 'done', text: 'Turn complete' }); },
           publishOverlay(target) { emit('overlay-open-task', structuredClone(target)); },
           refresh() { emit('sessions-changed', {}); },
         };
@@ -57,12 +60,21 @@ async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = 
       const fixture = window.__subagents;
       fixture.calls.push({ command, ...args });
       if (command === 'list_subagents') {
-        const snapshot = structuredClone(fixture.snapshots[args.sessionId] ?? []);
+        // Native sends rows with no tools and a short preview.
+        const snapshot = structuredClone(fixture.snapshots[args.sessionId] ?? []).map(saved => {
+          if (!fixture.light) return saved;
+          const { tools, ...row } = saved;
+          return { ...row, prompt: row.prompt.slice(0, 1025), response: row.response.slice(0, 1025), toolCount: tools.length };
+        });
         if (fixture.hold[args.sessionId]) await new Promise((resolve, reject) => {
           (fixture.release[args.sessionId] ??= []).push(resolve);
           (fixture.reject[args.sessionId] ??= []).push(() => reject(new Error('Subagent history temporarily unavailable')));
         });
         return snapshot;
+      }
+      if (command === 'get_subagent') {
+        if (fixture.failFull) throw new Error('Disk unavailable');
+        return structuredClone((fixture.snapshots[args.sessionId] ?? []).find(saved => saved.id === args.agentId) ?? null);
       }
       switch (command) {`;
     await route.fulfill({ response: original, body: source.replace(marker, fixture) });
@@ -107,12 +119,191 @@ async function subagentSurface(element: Locator) {
 }
 
 test.describe('subagents', () => {
+  test('lists every subagent and settles one past the old cap of 64', async ({ page }) => {
+    await page.goto('/');
+    await expect(page.locator('.task-item.selected')).toBeVisible();
+    const session = await page.locator('.task-item.selected').getAttribute('data-id');
+    const send = (id: number, status: string) => page.evaluate(([session, id, status]) => (window as any).__previewSubagent(session, { id: `agent-${id}`, name: `Agent ${id}`, status }), [session, id, status] as const);
+    for (let id = 1; id <= 70; id++) await send(id, 'running');
+    await trigger(page).click();
+    await expect(panel(page).locator('.subagent-row')).toHaveCount(70);
+    await expect(row(page, 'agent-70').locator('.subagent-row-status')).toHaveText('Working');
+    await send(70, 'completed');
+    await expect(row(page, 'agent-70').locator('.subagent-row-status')).toHaveText('Completed');
+    await expect(row(page, 'agent-1').locator('.subagent-row-status')).toHaveText('Working');
+  });
+
+  test('a whole snapshot survives the panel at the native preview sizes', async ({ page }) => {
+    test.slow();
+    await installSubagents(page);
+    const marker = '[preview truncated]';
+    const tools = Array.from({ length: 64 }, (_, i) => ({ id: `t${i}`, name: 'Read', status: 'completed', input: 'i'.repeat(4096) + marker, output: 'o'.repeat(8192) + marker }));
+    await upsert(page, [child('big', 'Big', { prompt: 'p'.repeat(5000) + marker, response: 'response line\n\n'.repeat(18725) + marker, tools, status: 'completed' })]);
+    await trigger(page).click();
+    await row(page, 'big').click();
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(64);
+    await expect(panel(page).locator('.subagent-response')).toContainText(marker);
+    await expect(panel(page).locator('.subagent-assignment p')).toContainText(marker, { useInnerText: false });
+  });
+
+  const fullCalls = (page: Page) => page.evaluate(() => (window as any).__subagents.calls.filter((call: any) => call.command === 'get_subagent').length);
+  const heavy = (status: Subagent['status'] = 'completed') => child('heavy', 'Heavy', { status, response: 'word '.repeat(600) + 'THE-END', tools: [{ id: 't1', name: 'Read', status: 'completed', input: 'README.md', output: 'contents' }] });
+
+  test('the list loads rows only and an opened row fetches its full snapshot once', async ({ page }) => {
+    await installSubagents(page, { 'session-1': [heavy(), child('other', 'Other', { status: 'completed' })] }, true);
+    await trigger(page).click();
+    await expect(panel(page).locator('.subagent-row')).toHaveCount(2);
+    expect(await fullCalls(page)).toBe(0);
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('THE-END');
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(1);
+    expect(await fullCalls(page)).toBe(1);
+    await panel(page).locator('.subagents-back').click();
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('THE-END');
+    expect(await fullCalls(page)).toBe(1);
+  });
+
+  test('a cut mirror row updates the status and keeps the full work on screen', async ({ page }) => {
+    await installSubagents(page, { 'session-1': [heavy('running')] }, false);
+    await trigger(page).click();
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('THE-END');
+    const cut = { ...child('heavy', 'Heavy', { status: 'completed', response: '', tools: [] }), updatedAt: 1_800_000_060_000 };
+    await page.evaluate(data => {
+      const fixture = (window as any).__subagents;
+      const stored = fixture.snapshots['session-1'][0];
+      Object.assign(stored, { status: data.status, updatedAt: data.updatedAt });
+      fixture.partialRow('session-1', data);
+    }, cut);
+    await expect(panel(page).locator('.subagent-detail-status')).toHaveText('Completed');
+    await expect(response(page)).toContainText('THE-END');
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(1);
+  });
+
+  test('a thread switch keeps an opened child\'s whole prompt', async ({ page }) => {
+    const prompt = 'word '.repeat(600) + 'PROMPT-END';
+    await installSubagents(page, { 'session-1': [child('long', 'Long', { status: 'completed', prompt, response: 'Done' })] }, true);
+    await trigger(page).click();
+    await row(page, 'long').click();
+    const assignment = panel(page).locator('.subagent-assignment p');
+    await expect(assignment).toContainText('PROMPT-END');
+    await selectTask(page, 2, 'conversation');
+    await selectTask(page, 1, 'conversation');
+    if (!await panel(page).isVisible()) await trigger(page).click();
+    if (await row(page, 'long').isVisible()) await row(page, 'long').click();
+    await expect(assignment).toContainText('PROMPT-END');
+  });
+
+  test('says when a child\'s earlier tool calls are hidden', async ({ page }) => {
+    const tools = (count: number) => Array.from({ length: count }, (_, index) => ({ id: `t${index}`, name: 'Read', status: 'completed', input: 'a', output: 'b' }));
+    await installSubagents(page, { 'session-1': [child('many', 'Many', { status: 'completed', response: 'Done', tools: tools(64) }), child('few', 'Few', { status: 'completed', response: 'Done', tools: tools(63) })] });
+    await trigger(page).click();
+    await row(page, 'many').click();
+    await expect(panel(page).getByText('Earlier tool calls are hidden')).toBeVisible();
+    await panel(page).locator('.subagents-back').click();
+    await row(page, 'few').click();
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(63);
+    await expect(panel(page).getByText('Earlier tool calls are hidden')).toBeHidden();
+  });
+
+  test('a light row never overwrites what a live event delivered', async ({ page }) => {
+    await installSubagents(page);
+    await upsert(page, [heavy('running')]);
+    await trigger(page).click();
+    // The run ends with no change to this child: the reread returns its row, cut and without tools.
+    await page.evaluate(() => { const fixture = (window as any).__subagents; fixture.light = true; fixture.runDone('session-1'); });
+    await expect.poll(() => page.evaluate(() => (window as any).__subagents.calls.filter((call: any) => call.command === 'list_subagents').length)).toBeGreaterThan(1);
+    await nextPaint(page);
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('THE-END');
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(1);
+    expect(await fullCalls(page)).toBe(0);
+  });
+
+  test('a settled row with an older clock still ends Working', async ({ page }) => {
+    await installSubagents(page);
+    await upsert(page, [heavy('running')]);
+    await trigger(page).click();
+    await expect(row(page, 'heavy').locator('.subagent-row-status')).toHaveText('Working');
+    // A mirror: the host dated the child's end before the viewer's last live event.
+    await page.evaluate(snapshot => { const fixture = (window as any).__subagents; fixture.light = true; fixture.snapshots['session-1'] = [snapshot]; fixture.runDone('session-1'); }, { ...heavy('completed'), updatedAt: heavy('running').updatedAt - 5000 });
+    await expect(row(page, 'heavy').locator('.subagent-row-status')).toHaveText('Completed');
+  });
+
+  test('a row newer than the live snapshot takes its status and refetches the full one', async ({ page }) => {
+    await installSubagents(page);
+    await upsert(page, [heavy('running')]);
+    await trigger(page).click();
+    await page.evaluate(snapshot => { const fixture = (window as any).__subagents; fixture.light = true; fixture.snapshots['session-1'] = [snapshot]; fixture.runDone('session-1'); }, { ...heavy('stopped'), updatedAt: 1_800_000_000_009, response: 'word '.repeat(600) + 'SETTLED' });
+    await expect(row(page, 'heavy').locator('.subagent-row-status')).toHaveText('Stopped');
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('SETTLED');
+    expect(await fullCalls(page)).toBe(1);
+  });
+
+  test('a child that settles unopened drops to a row, refetches on open and still takes live updates', async ({ page }) => {
+    const seed = (data: Subagent) => page.evaluate(snapshot => (window as any).__subagents.upsert('session-1', snapshot), data);
+    await installSubagents(page, { 'session-1': [child('heavy', 'Heavy')] });
+    await trigger(page).click();
+    await expect(row(page, 'heavy')).toContainText('Working');
+    await seed(heavy());
+    await expect(row(page, 'heavy')).toContainText('Completed');
+    expect(await fullCalls(page)).toBe(0);
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('THE-END');
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(1);
+    expect(await fullCalls(page)).toBe(1);
+    // While open it stays full, with no fetch for the live update.
+    await seed({ ...heavy(), response: 'word '.repeat(600) + 'STILL-OPEN' });
+    await expect(response(page)).toContainText('STILL-OPEN');
+    await expect(panel(page).locator('.subagent-tools [data-tool-key]')).toHaveCount(1);
+    expect(await fullCalls(page)).toBe(1);
+    await panel(page).locator('.subagents-back').click();
+    // A row back at work takes the live update whole.
+    await seed(child('heavy', 'Heavy', { status: 'running', response: 'word '.repeat(600) + 'LIVE-AGAIN', updatedAt: 1_800_000_000_020 }));
+    await expect(row(page, 'heavy')).toContainText('Working');
+    await row(page, 'heavy').click();
+    await expect(response(page)).toContainText('LIVE-AGAIN');
+    expect(await fullCalls(page)).toBe(1);
+  });
+
+  test('a burst of task changes runs one listing and one trailing listing', async ({ page }) => {
+    await installSubagents(page);
+    const listings = () => page.evaluate(() => (window as any).__subagents.calls.filter((call: any) => call.command === 'list_sessions').length);
+    await page.waitForTimeout(300);
+    const before = await listings();
+    await page.evaluate(() => { for (let i = 0; i < 10; i++) (window as any).__subagents.refresh(); });
+    await expect.poll(listings).toBe(before + 2);
+    await page.waitForTimeout(200);
+    expect(await listings()).toBe(before + 2);
+  });
+
+  test('a full snapshot that fails to load says so and keeps the preview', async ({ page }) => {
+    await installSubagents(page, { 'session-1': [heavy()] }, true);
+    await page.evaluate(() => { (window as any).__subagents.failFull = true; });
+    await trigger(page).click();
+    await row(page, 'heavy').click();
+    await expect(panel(page).locator('.subagent-action-notice')).toContainText('Disk unavailable');
+    await expect(response(page)).toContainText('word word');
+  });
+
+  test('a finished run rereads rows still shown as working', async ({ page }) => {
+    await installSubagents(page);
+    await upsert(page, [child('late', 'Late')]);
+    await trigger(page).click();
+    await expect(row(page, 'late').locator('.subagent-row-status')).toHaveText('Working');
+    // Native settled the child, but its snapshot never reached the window.
+    await page.evaluate(snapshot => { const fixture = (window as any).__subagents; fixture.snapshots['session-1'] = [snapshot]; fixture.runDone('session-1'); }, child('late', 'Late', { status: 'stopped', updatedAt: 1_800_000_000_002 }));
+    await expect(row(page, 'late').locator('.subagent-row-status')).toHaveText('Stopped');
+  });
+
   for (const theme of ['light', 'dark'] as const) for (const view of ['conversation', 'board'] as const) {
     test(`subagents are one solid surface and keep detail sharp in ${theme} ${view}`, async ({ page, browserName }) => {
       await page.setViewportSize({ width: 1280, height: 820 });
       await page.addInitScript(theme => {
         localStorage.setItem('pandacode.theme', theme);
-        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ enabled: true, visibility: 35, pinned: 'mon-morning' }));
+        localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 35, pinned: 'mon-morning' }));
       }, theme);
       await installSubagents(page, { 'session-1': [child('reader', 'Reader', {
         response: '**Search is ready.** The index now reuses its cached entries.\n\n```ts\nconst index = cachedIndex;\n```',
@@ -534,4 +725,13 @@ test.describe('subagents', () => {
     expect(await panel(page).evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
     await page.screenshot({ path: '/private/tmp/pandacode-subagents-light.png', animations: 'disabled' });
   });
+});
+
+test('a run-end note shows in the transcript and leaves the reply as the reply', async ({ page }) => {
+  await installSubagents(page);
+  const note = 'The report from "scout" did not reach the agent: its process ended before handing it back.';
+  await page.evaluate(note => (window as any).__subagents.endWithNote('session-1', note), note);
+  await expect(transcript(page).locator('.message-note')).toHaveText(note);
+  await expect(transcript(page).locator('.agent-message', { hasText: 'Parent response for Delegated task 1' })).toBeVisible();
+  await expect(transcript(page).locator('.turn-activity')).toHaveCount(0);
 });

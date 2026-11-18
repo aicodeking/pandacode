@@ -3,7 +3,8 @@
  * Vercel, Railway, Netlify and Google Cloud for deploys. Keys go straight to the OS keychain natively;
  * this view never reads them back. */
 import './cloud-settings.css';
-import { escape } from './dom';
+import { escape, icon } from './dom';
+import { errorText } from './error-text';
 import { infoMark } from './tooltip';
 
 export type CloudConnection = { provider: 'daytona' | 'cloudflare' | 'aws' | 'vercel' | 'railway' | 'netlify' | 'gcloud' | 'docker' | KeyedProvider; connected: boolean; detail: string | null; sandboxes?: boolean; inheritEnvironment?: boolean };
@@ -87,24 +88,19 @@ const PROVIDERS: Record<CloudConnection['provider'], { name: string; summary: st
 type InstaboxImages = { images: { value: string; label: string }[]; selected: string };
 const IMAGE_HELP = 'New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.';
 const CLAUDE_TOKEN_HELP = 'Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.';
-const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
+const INHERIT_HELP = 'When on, cloud agents this provider runs also get the environment variables saved for the harness in Settings → Agents → Providers — a proxy the cloud machine can reach, for example. Off by default: nothing is sent to this cloud. Variables that point at this computer (a localhost HTTP_PROXY) are refused when a task starts, because a cloud machine cannot reach them.';
+
+const failure = (error: unknown) => errorText(error, 'The request failed. Try again.');
 
 export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost): () => void {
-  host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
-      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}<small class="cloud-detail">Optional long-lived token</small></div></div>
-      <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
-        <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
-        <p class="cloud-progress" role="status" hidden></p>
-        <p class="cloud-error" role="alert" hidden></p>
-        <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
-      </form>
-    </div>${(Object.keys(PROVIDERS) as CloudConnection['provider'][]).map(id => {
+  const ids = Object.keys(PROVIDERS) as CloudConnection['provider'][];
+  const providerRow = (id: CloudConnection['provider']) => {
     const provider = PROVIDERS[id];
     const fields = [...(provider.key ? [provider.key] : []), ...provider.fields];
     return `<div class="cloud-provider" data-provider="${id}">
-      <div class="setting-row"><div><strong>${escape(provider.name)}</strong><small class="cloud-detail">${escape(provider.summary)}</small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div></div>
+      <div class="setting-row"><div><strong>${escape(provider.name)}${id in KEYED ? '' : ` <span class="sr-only">${escape(provider.summary)}</span>`}</strong><small class="cloud-detail ds-success"></small></div><div class="cloud-buttons">${id === 'cloudflare' ? '<button type="button" class="secondary-button" data-cloud="sandboxes" hidden>Set up sandboxes</button>' : ''}<button type="button" class="secondary-button" data-cloud="toggle">Connect</button></div>${id in KEYED ? '' : infoMark(provider.summary, `About ${provider.name}`)}</div>
       <p class="cloud-progress cloud-row-status" role="status" hidden></p>
-      <label class="cloud-inherit" data-inherit-row hidden><input type="checkbox" data-cloud-inherit> Include provider environment variables${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</label>${id === 'instabox' ? `
+      <div class="cloud-inherit" data-inherit-row hidden><label><input type="checkbox" data-cloud-inherit> Include provider environment variables</label>${infoMark(INHERIT_HELP, 'About inheriting environment variables')}</div>${id === 'instabox' ? `
       <div class="cloud-image" hidden>
         <div class="cloud-image-row"><label><span>Machine image</span><select aria-label="InstaBox machine image" disabled></select></label>${infoMark(IMAGE_HELP, 'About machine images')}</div>
         <p class="cloud-image-status" role="status" hidden></p>
@@ -119,10 +115,43 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <div class="cloud-actions"><button type="button" class="secondary-button" data-cloud="cancel">Cancel</button><button type="submit" class="primary-button">${escape(provider.connect)}</button></div>
       </form>
     </div>`;
-  }).join('')}</div>`;
+  };
+  // The keyed long tail folds away; the fold opens by itself once one of them is connected.
+  host.innerHTML = `<div class="settings-group cloud-settings" aria-label="Cloud providers">${ids.filter(id => !(id in KEYED)).map(providerRow).join('')}</div>
+    <details class="settings-fold cloud-more"><summary><h3>More cloud machines</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="More cloud machines">${ids.filter(id => id in KEYED).map(providerRow).join('')}</div></details>
+    <details class="settings-fold"><summary><h3>Advanced</h3>${icon('chevron')}</summary><div class="settings-group cloud-settings" aria-label="Cloud sandboxes"><div class="cloud-provider cloud-claude">
+      <div class="setting-row"><div><strong>Claude login for cloud agents</strong>${infoMark(CLAUDE_TOKEN_HELP, 'About the Claude login')}</div></div>
+      <form class="cloud-form cloud-claude-form" novalidate aria-label="Claude login for cloud agents">
+        <label><span>Token</span><input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="From claude setup-token" aria-label="Claude token for cloud agents" required></label>
+        <p class="cloud-progress" role="status" hidden></p>
+        <p class="cloud-error" role="alert" hidden></p>
+        <div class="cloud-actions"><button type="submit" class="primary-button">Save token</button></div>
+      </form>
+    </div></div></details>`;
   let connections: CloudConnection[] = [], disposed = false, busy = '';
   let stopListening: (() => void) | undefined;
   const section = (id: string) => host.querySelector<HTMLElement>(`.cloud-provider[data-provider="${id}"]`)!;
+
+  /* Connected providers first, then the rest, each alphabetical by name. Connected ones are never behind the
+   * fold, which holds only the unconnected one-key providers. The Claude login card is never a provider card. */
+  function arrange(): void {
+    const [grid, more] = host.querySelectorAll<HTMLElement>('.cloud-settings');
+    const name = (id: CloudConnection['provider']) => PROVIDERS[id].name.toLowerCase();
+    const on = (id: CloudConnection['provider']) => connections.some(c => c.provider === id && c.connected);
+    const ids = (Object.keys(PROVIDERS) as CloudConnection['provider'][]).sort((a, b) => Number(on(b)) - Number(on(a)) || name(a).localeCompare(name(b)));
+    const home = (id: CloudConnection['provider']) => on(id) || !(id in KEYED) ? grid : more;
+    if (ids.every(id => section(id).parentElement === home(id)) && [grid, more].every(group => {
+      const shown = [...group.querySelectorAll<HTMLElement>(':scope > .cloud-provider[data-provider]')].map(card => card.dataset.provider);
+      return ids.filter(id => home(id) === group).every((id, index) => shown[index] === id);
+    })) return;
+    // Moving a card blurs whatever inside it had focus (the Disconnect button), so put focus back, opening the fold it landed behind.
+    const active = document.activeElement;
+    for (const id of ids) home(id).append(section(id));
+    if (active instanceof HTMLElement && host.contains(active) && document.activeElement !== active) {
+      if (more.contains(active)) host.querySelector<HTMLDetailsElement>('.cloud-more')!.open = true;
+      active.focus({ preventScroll: true });
+    }
+  }
 
   function render(): void {
     for (const id of Object.keys(PROVIDERS) as CloudConnection['provider'][]) {
@@ -130,7 +159,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const toggle = root.querySelector<HTMLButtonElement>('[data-cloud="toggle"]')!;
       const form = root.querySelector<HTMLFormElement>('form')!;
       const sandboxes = id === 'cloudflare' && connection?.connected ? (connection.sandboxes ? ' · sandboxes ready' : ' · sandboxes not set up') : '';
-      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : PROVIDERS[id].summary;
+      root.querySelector('.cloud-detail')!.textContent = connection?.connected ? `Connected${connection.detail ? ` · ${connection.detail}` : ''}${sandboxes}` : '';
       const setup = root.querySelector<HTMLButtonElement>('[data-cloud="sandboxes"]');
       if (setup) { setup.hidden = !connection?.connected || Boolean(connection.sandboxes); setup.disabled = Boolean(busy); }
       toggle.textContent = connection?.connected ? 'Disconnect' : form.hidden ? 'Connect' : 'Close';
@@ -146,6 +175,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         box.disabled = Boolean(busy);
       }
     }
+    arrange();
   }
   async function load(): Promise<void> {
     try { connections = await options.call<CloudConnection[]>('cloud_connections'); } catch { connections = []; }
@@ -169,7 +199,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   async function loadImages(): Promise<void> {
     imagesLoading = true; imagesError = ''; renderImages();
     try { images = await options.call<InstaboxImages>('cloud_instabox_images'); }
-    catch (error) { images = null; imagesError = `Could not load machine images: ${error instanceof Error ? error.message : String(error)}`; }
+    catch (error) { images = null; imagesError = `Could not load machine images: ${failure(error)}`; }
     finally { imagesLoading = false; if (!disposed) renderImages(); }
   }
   function syncImages(): void {
@@ -186,8 +216,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       status.textContent = `Saved. New machines start from ${images.images.find(image => image.value === images!.selected)?.label ?? images.selected}.`;
     } catch (error) {
       status.hidden = true;
-      imagesError = error instanceof Error ? error.message : String(error);
+      imagesError = failure(error);
     } finally { imageSaving = false; if (!disposed) renderImages(); }
+  }
+  /** The row status line under a provider card; a failure is drawn in the error colour until the next status replaces it. */
+  function rowStatus(root: HTMLElement, text: string, failed = false): void {
+    const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
+    line.hidden = !text; line.textContent = text; line.classList.toggle('cloud-error', failed);
   }
   function say(root: HTMLElement, kind: 'progress' | 'error', text: string): void {
     const line = root.querySelector<HTMLElement>(`.cloud-${kind}`)!;
@@ -206,14 +241,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       form.reset(); form.hidden = true;
       say(root, 'progress', '');
     } catch (error) {
-      if (!disposed) { say(root, 'progress', ''); say(root, 'error', error instanceof Error ? error.message : String(error)); }
+      if (!disposed) { say(root, 'progress', ''); say(root, 'error', failure(error)); }
     } finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
   async function setupSandboxes(root: HTMLElement): Promise<void> {
-    const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
-    busy = 'cloudflare'; line.hidden = false; line.textContent = 'Preparing the sandbox Worker…'; render();
-    try { connections = await options.call<CloudConnection[]>('cloud_setup_sandboxes'); line.textContent = 'Sandboxes are ready.'; }
-    catch (error) { line.textContent = error instanceof Error ? error.message : String(error); line.classList.add('cloud-error'); }
+    busy = 'cloudflare'; rowStatus(root, 'Preparing the sandbox Worker…'); render();
+    try { connections = await options.call<CloudConnection[]>('cloud_setup_sandboxes'); rowStatus(root, 'Sandboxes are ready.'); }
+    catch (error) { rowStatus(root, failure(error), true); }
     finally { busy = ''; if (!disposed) render(); }
   }
   async function saveClaudeToken(form: HTMLFormElement): Promise<void> {
@@ -221,12 +255,12 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     say(root, 'progress', ''); say(root, 'error', '');
     if (!token) { say(root, 'error', 'Paste the token from claude setup-token.'); return; }
     try { await options.call('cloud_agent_set_claude_token', { token }); if (!disposed) { form.reset(); say(root, 'progress', 'Saved. Cloud agents sign in to Claude with this token.'); } }
-    catch (error) { if (!disposed) say(root, 'error', error instanceof Error ? error.message : String(error)); }
+    catch (error) { if (!disposed) say(root, 'error', failure(error)); }
   }
   async function disconnect(id: CloudConnection['provider']): Promise<void> {
     busy = id; render();
     try { connections = await options.call<CloudConnection[]>('cloud_disconnect', { provider: id }); }
-    catch (error) { say(section(id), 'error', error instanceof Error ? error.message : String(error)); }
+    catch (error) { say(section(id), 'error', failure(error)); }
     finally { busy = ''; if (!disposed) { render(); syncImages(); } }
   }
 
@@ -257,6 +291,8 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const id = root.dataset.provider as CloudConnection['provider'];
       if (busy) { target.checked = !target.checked; return; }
       const inherit = target.checked;
+      // A failure from an earlier toggle must not outlive the next attempt.
+      rowStatus(root, '');
       // Optimistic: render() must not read the checkbox back to the old state mid-save.
       const previous = connections;
       connections = connections.map(connection => connection.provider === id ? { ...connection, inheritEnvironment: inherit } : connection);
@@ -268,9 +304,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         connections = previous; target.checked = !inherit;
         // The connect form's own error line is hidden while connected, so the
         // visible row status carries the failure.
-        const line = root.querySelector<HTMLElement>('.cloud-row-status')!;
-        line.hidden = false; line.classList.add('cloud-error');
-        line.textContent = error instanceof Error ? error.message : String(error);
+        rowStatus(root, failure(error), true);
       }).finally(() => { busy = ''; if (!disposed) render(); });
       return;
     }

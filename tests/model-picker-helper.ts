@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 
-export const pickerTrigger = (page: Page) => page.getByRole('button', { name: 'Choose harness and model', exact: true });
+export const pickerTrigger = (page: Page) => page.getByRole('button', { name: /^Model: / });
 export const pickerOf = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 export const pickerSearch = (page: Page) => pickerOf(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true });
 

@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 mod approvals;
 fn host() -> ToolHost {
     ToolHost {
@@ -592,4 +593,233 @@ async fn server_from_host(host: ToolHost) -> Server {
     Server::start(host, "p".into(), Arc::new(|_| {}))
         .await
         .unwrap()
+}
+
+#[tokio::test]
+async fn closed_sees_eof_and_leaves_pipelined_bytes() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
+    let (mut stream, _) = listener.accept().await.unwrap();
+    client.write_all(b"pipelined").await.unwrap();
+    // Bytes pending: not closed, and nothing consumed while it watches.
+    assert!(tokio::time::timeout(Duration::from_millis(50), closed(&stream)).await.is_err());
+    let mut bytes = [0; 9];
+    stream.read_exact(&mut bytes).await.unwrap();
+    assert_eq!(&bytes, b"pipelined");
+    // Nothing pending: it waits, then a close ends it.
+    assert!(tokio::time::timeout(Duration::from_millis(50), closed(&stream)).await.is_err());
+    drop(client);
+    tokio::time::timeout(Duration::from_secs(5), closed(&stream)).await.expect("the client closed");
+}
+
+/// ZCode (2026-07-28 revision) probes HTTP servers with `server/discover`,
+/// and its tool results must carry the revision's wire fields.
+#[tokio::test]
+async fn discover_and_result_fields_satisfy_the_2026_revision() {
+    let server = server().await;
+    // Discover is the same authenticated loopback POST as every other method.
+    let (denied, _) = raw(
+        &server,
+        format!("POST /mcp HTTP/1.1\r\nHost: {}\r\nContent-Length: 0\r\n\r\n", server.authority),
+        vec![],
+    )
+    .await;
+    assert_eq!(denied, 401);
+    let (_, discover) = request(&server, json!({"jsonrpc":"2.0","id":1,"method":"server/discover","params":{}}), "").await;
+    assert_eq!(discover["result"]["supportedVersions"].as_array().unwrap().as_slice(), [json!("2026-07-28"), json!("2025-06-18"), json!("2025-03-26")].as_slice());
+    assert_eq!(discover["result"]["resultType"], "complete");
+    assert_eq!(discover["result"]["ttlMs"], 0);
+    assert_eq!(discover["result"]["cacheScope"], "private");
+    assert_eq!(discover["result"]["capabilities"]["tools"]["listChanged"], false);
+    // A client that negotiated 2026-07-28 sends that header. It must not be
+    // rejected, and initialize echoes the version instead of downgrading it.
+    let (status, initialized) = request(
+        &server,
+        json!({"jsonrpc":"2.0","id":4,"method":"initialize","params":{"protocolVersion":"2026-07-28"}}),
+        "MCP-Protocol-Version: 2026-07-28\r\n",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(initialized["result"]["protocolVersion"], "2026-07-28");
+    let (status, list) = request(
+        &server,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+        "MCP-Protocol-Version: 2026-07-28\r\n",
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(list["result"]["resultType"], "complete");
+    assert_eq!(list["result"]["ttlMs"], 0);
+    assert_eq!(list["result"]["cacheScope"], "private");
+    let tools = list["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 1, "the bridge lists this run's catalog and nothing else");
+    assert_eq!(tools[0]["name"], "pandacode_delegate");
+    let fields = tools[0].as_object().unwrap();
+    assert_eq!(fields.len(), 3);
+    assert!(fields.contains_key("name") && fields.contains_key("description") && fields.contains_key("inputSchema"));
+    let (rejected, _) = request(&server, json!({"jsonrpc":"2.0","id":9,"method":"ping"}), "MCP-Protocol-Version: 2099-01-01\r\n").await;
+    assert_eq!(rejected, 400);
+    let (_, call) = request(
+        &server,
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":{"prompt":"Bridge 🐼"}}}),
+        "",
+    )
+    .await;
+    assert_eq!(call["result"]["resultType"], "complete");
+    // ttl 0 is immediately stale: a host-tool result is not replayed.
+    assert_eq!(call["result"]["ttlMs"], 0);
+    assert_eq!(call["result"]["cacheScope"], "private");
+    // The entry ZCode rides in session/create. It is the Kimi entry plus
+    // session isolation and always-load: same loopback URL, same bearer,
+    // no second credential and no command or env.
+    let entry = server.zcode_config();
+    let kimi = server.kimi_config();
+    assert_eq!(entry["name"], SERVER_NAME);
+    assert_eq!(entry["type"], "http");
+    assert_eq!(entry["url"], kimi["url"]);
+    assert_eq!(entry["headers"], kimi["headers"]);
+    assert_eq!(entry["isolation"], "session");
+    assert_eq!(entry["alwaysLoad"], true);
+    let url = entry["url"].as_str().unwrap();
+    assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+    assert!(url.ends_with("/mcp"));
+    assert_eq!(entry["headers"].as_array().unwrap().len(), 1);
+    assert_eq!(entry["headers"][0]["name"], "Authorization");
+    assert_eq!(entry["headers"][0]["value"], format!("Bearer {}", server.token));
+    assert!(entry.get("env").is_none());
+    assert!(entry.get("command").is_none());
+}
+
+#[tokio::test]
+async fn calls_waiting_for_approval_leave_slots_free_and_requests_have_no_cap() {
+    let mut protected = host();
+    protected.approval_tools.insert("pandacode_delegate".into());
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "ask").await.unwrap();
+    let context = current(&server.context);
+    // Past the old cap of 8 pending approvals, and past the 64 running calls too.
+    const WAITING: usize = 70;
+    let waiting: Vec<_> = (0..WAITING).map(|id| Box::pin(context.respond(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"pandacode_delegate","arguments":{}}})).unwrap()))).collect();
+    let mut waiting = futures_util::future::join_all(waiting);
+    let mut asked = Vec::new();
+    while asked.len() < WAITING {
+        tokio::select! {
+            _ = &mut waiting => panic!("the calls wait for the user"),
+            event = events.recv() => { let event = event.unwrap(); if event.kind == "approval" { asked.push(event.request_id.unwrap()); } }
+        }
+    }
+    assert_eq!(context.calls.available_permits(), host_tools::MAX_CALLS, "a call waiting for the user holds no slot");
+    // Past the old cap of 4096 requests, on a server with every approval slot in use.
+    for _ in 0..4100 {
+        let answer = context.respond(serde_json::to_vec(&json!({"jsonrpc":"2.0","id":100,"method":"ping"})).unwrap()).await;
+        assert_eq!(answer.status, 200);
+    }
+    for pending in &asked {
+        assert!(server.approve(pending, false));
+    }
+    waiting.await;
+}
+
+/// Through real sockets: past the old 16-connection cap (which reset the connection) and the
+/// old 8 slots, every call runs at once, here released only when all of them are running.
+#[tokio::test]
+async fn every_concurrent_client_is_served_up_to_64_running_calls() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(host_tools::MAX_CALLS));
+    let mut slow = host();
+    slow.handler = Arc::new(move |_, args| {
+        let barrier = barrier.clone();
+        Box::pin(async move {
+            barrier.wait().await;
+            Ok(args)
+        })
+    });
+    let server = server_from_host(slow).await;
+    let replies = futures_util::future::join_all((0..host_tools::MAX_CALLS).map(|id| request(&server, call(json!(id), json!({"prompt":"x"})), "")));
+    let replies = tokio::time::timeout(Duration::from_secs(20), replies).await.expect("all 64 run at once");
+    for (status, body) in replies {
+        assert_eq!(status, 200);
+        assert_eq!(body["result"]["isError"], false, "{body}");
+    }
+}
+
+/// A call past every slot says so plainly, whatever the tool is.
+#[tokio::test]
+async fn a_call_past_every_slot_gets_a_neutral_retry_error() {
+    let mut slow = host();
+    slow.handler = Arc::new(|_, _| Box::pin(std::future::pending()));
+    let server = server_from_host(slow).await;
+    let context = current(&server.context);
+    let _held = context.calls.acquire_many(host_tools::MAX_CALLS as u32).await.unwrap();
+    let answer = context.respond(serde_json::to_vec(&call(json!(1), json!({}))).unwrap()).await;
+    let body = String::from_utf8_lossy(&answer.body).into_owned();
+    assert!(body.contains("Too many PandaCode tools are running at once") && !body.contains("architect"), "{body}");
+}
+
+/// Live smoke (ignored by default, like `installed_zcode_lists_models`):
+/// the installed ZCode CLI accepts the bridge entry and connects. `mcp/list`
+/// in connect mode revalidates the strict 2026-07-28 wire — discover,
+/// `resultType`, `ttlMs`, `cacheScope` — so `connected` with tools means the
+/// whole handshake held. Recorded working against CLI 0.17.1 on 2026-11-13.
+#[tokio::test]
+#[ignore = "spawns the installed ZCode CLI"]
+async fn installed_zcode_connects_the_native_bridge() {
+    let Some(path) = zcode::bundled().or_else(|| launch::find("zcode")) else {
+        panic!("ZCode CLI is not installed");
+    };
+    let server = server().await;
+    let entry = server.zcode_config();
+    let workspace = std::env::temp_dir();
+    let mut command = provider_command("zcode", &path).unwrap();
+    command
+        .arg("app-server")
+        .current_dir(&workspace)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let mut child = command.spawn().expect("zcode app-server starts");
+    use tokio::io::AsyncBufReadExt as _;
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+    let workspace = json!({"workspacePath": workspace, "workspaceKey": workspace});
+    let result = tokio::time::timeout(Duration::from_secs(90), async {
+        write_json(&mut stdin, &json!({"id": 1, "method": "session/create", "params": {
+            "workspace": workspace, "mode": "build", "persistence": "deferred",
+            "titleGenerationEnabled": false, "mcpServers": [entry],
+        }})).await?;
+        loop {
+            let mut line = Vec::new();
+            stdout.read_until(b'\n', &mut line).await.map_err(|e| e.to_string())?;
+            let frame: Value = serde_json::from_slice(&line).map_err(|_| "invalid JSON".to_string())?;
+            if frame.get("method").is_some() && frame.get("id").is_some() {
+                write_json(&mut stdin, &json!({"id": frame["id"], "error": {"code": -32601, "message": "Method not found"}})).await?;
+                continue;
+            }
+            if frame["id"] == 1 {
+                if let Some(error) = frame.get("error") {
+                    return Err(format!("create failed: {error}"));
+                }
+                write_json(&mut stdin, &json!({"id": 2, "method": "mcp/list", "params": {
+                    "workspace": workspace, "mode": "connect", "mcpServers": [entry],
+                }})).await?;
+            }
+            if frame["id"] == 2 {
+                return match frame.get("error") {
+                    Some(error) => Err(format!("mcp/list failed: {error}")),
+                    None => Ok(frame["result"]["statuses"][SERVER_NAME].clone()),
+                };
+            }
+        }
+    }).await;
+    drop(stdin);
+    let _ = child.start_kill();
+    // A failure can echo the per-run bearer. Redact it before it reaches the panic.
+    let status = match result {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => panic!("{}", server.redact(&error)),
+        Err(_) => panic!("the bridge check finished in time"),
+    };
+    let shown = server.redact(&status.to_string());
+    assert_eq!(status["status"], "connected", "{shown}");
+    assert!(status["toolCount"].as_u64().unwrap_or(0) > 0, "{shown}");
 }

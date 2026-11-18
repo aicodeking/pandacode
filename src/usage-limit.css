@@ -1,6 +1,5 @@
 /* Limited is its own state: a hollow amber ring, unlike the running dot or the attention dot. */
-.task-indicator.limited,.sidebar .task-item .task-indicator.limited{width:7px;height:7px;background:transparent;box-shadow:inset 0 0 0 1.5px var(--warning);animation:none}
-html[data-theme=dark] .sidebar .task-item .task-indicator.limited{box-shadow:inset 0 0 0 1.5px var(--warning)}
+.task-indicator.limited{width:7px;height:7px;background:transparent;box-shadow:inset 0 0 0 1.5px var(--warning);animation:none}
 .limit-banner{display:flex;align-items:center;gap:9px;margin:0 0 8px;padding:7px 8px 7px 12px;border-radius:var(--radius-sm);font-size:var(--text-sm);background:color-mix(in srgb,var(--warning) 14%,var(--panel))}
 .limit-banner>.icon{width:15px;height:15px;flex:none;color:var(--warning)}
 html[data-theme=dark] .limit-banner>.icon{color:var(--warning)}

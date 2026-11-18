@@ -25,7 +25,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         return Ok(models);
     }
     let discovery = acp_catalog::begin("hermes", path);
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("hermes", path)?;
     configure_command(&mut command, path);
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await.map_err(|error| {
         if error.contains("No LLM provider configured") || error.contains("ProviderNotConfiguredError") {

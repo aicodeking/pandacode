@@ -1,18 +1,21 @@
 import './worktrees.css';
 import { escape, icon } from './dom';
+import { toned } from './approval-modes';
 import { githubEnabled } from './github';
 import type { BranchList, GitStatus, Project, Session, WorktreeMerge, WorktreeStatus, WorktreeRemoval } from './types';
+import { errorText } from './error-text';
 
 /* One branch control for every task. The chip above the prompt names the checkout
  * and opens the only worktree menu; dialogs convert an unstarted task in place,
  * spawn a sibling task for a started one, and never remove work without consent. */
 
-type ChoiceItem = { id: string; label: string; description?: string; icon?: string; disabled?: boolean };
+type ChoiceItem = { id: string; label: string; description?: string; icon?: string; disabled?: boolean; selected?: boolean };
 export type WorktreeHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   modal(title: string, body: string, cls?: string): HTMLDialogElement;
   closeModal(): void;
   notify(text: string): void;
+  notifyError?(text: string): void;
   showChoices(anchor: HTMLElement, options: { title: string; items: ChoiceItem[]; actions?: boolean; width?: number; onSelect: (id: string) => void | Promise<void> }): Promise<void>;
   session(): Session | undefined;
   project(): Project | undefined;
@@ -65,22 +68,19 @@ export function createWorktrees(host: WorktreeHost) {
     return session.worktreePath ? 'Worktree' : 'Local';
   }
 
-  /** The context bar for the prompt: project, checkout kind, branch chip, and linked work. */
+  /** The tray's checkout items: computer, checkout kind, branch chip, and linked work. */
   function contextBar(session: Session, fresh: boolean): string {
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const branch = session.worktreePath && (missing || !git?.branch) ? session.worktreeBranch || '' : git?.branch || '';
     const path = session.worktreePath ?? project?.path ?? '';
-    const projectControl = fresh
-      ? `<button type="button" id="composer-project" class="composer-project" data-action="change-task-project" aria-label="Change task project" aria-haspopup="dialog" aria-expanded="false" title="${escape(project?.path)}" ${session.worktreePath ? 'disabled' : ''}>${icon('folder')}<span>${escape(project?.name)}</span>${icon('down')}</button>`
-      : `<span class="composer-project composer-project-fixed" title="${escape(project?.path)}">${icon('folder')}<span>${escape(project?.name)}</span></span>`;
     // A task on another computer has its checkout there: name the branch, offer no local actions.
     const chip = session.remoteDevice
-      ? `<span class="branch-chip branch-chip-fixed" title="Branch actions run on ${escape(session.remoteDevice.name)}, not here.">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || 'Remote checkout')}</span></span>`
+      ? `<span class="branch-chip branch-chip-fixed" data-tip="${escape(`Branch ${session.worktreeBranch || 'unknown'} · actions run on ${session.remoteDevice.name}, not here`)}">${icon(session.worktreePath ? 'worktree' : 'branch')}<span class="branch-chip-name">${escape(session.worktreeBranch || 'Remote checkout')}</span></span>`
       : git?.isRepo || session.worktreePath
-      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" title="${escape(path)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
+      ? `<button type="button" id="branch-chip" class="branch-chip ${missing ? 'branch-chip-missing' : ''}" data-action="branch-menu" aria-label="${escape(missing ? 'Worktree missing' : `Branch ${branch || 'detached HEAD'}`)}" aria-description="Branch and worktree actions" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(missing ? `Worktree missing · was at ${path}` : `Branch ${branch || 'detached HEAD'} · ${session.worktreePath ? 'worktree' : 'checkout'} at ${path}`)}">${icon(missing ? 'alert' : 'branch')}<span class="branch-chip-name">${escape(missing ? 'Worktree missing' : branch || 'Detached HEAD')}</span>${icon('down')}</button>`
       : '';
     const links = [session.issue, session.pullRequest].filter(Boolean).map(link => linkChip(link!, session.id)).join('');
-    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${projectControl}${host.computer(session, fresh)}<span class="composer-local" title="${escape(path)}">${icon(session.worktreePath ? 'worktree' : 'terminal')}${checkoutLabel(session)}</span>${chip}${links}</div>`;
+    return `<div class="composer-context ${fresh ? '' : 'composer-context-compact'}">${host.computer(session, fresh)}<span class="composer-local" data-checkout="${session.worktreePath ? 'worktree' : 'local'}" role="img" tabindex="0" aria-label="${escape(`${checkoutLabel(session)}: ${path}`)}" data-tip="${escape(`${checkoutLabel(session)}: ${path}`)}">${icon(session.worktreePath ? 'worktree' : 'folder')}<span class="sr-only">${checkoutLabel(session)}</span></span>${chip}${links}</div>`;
   }
 
   async function showMenu(anchor: HTMLElement): Promise<void> {
@@ -88,7 +88,7 @@ export function createWorktrees(host: WorktreeHost) {
     const project = host.project(), git = host.git(), missing = worktreeMissing(session, host.gitError());
     const path = session.worktreePath ?? project?.path ?? '';
     const branch = missing ? session.worktreeBranch || 'unknown branch' : git?.branch || session.worktreeBranch || 'Detached HEAD';
-    const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, icon: session.worktreePath ? 'worktree' : 'branch', disabled: true }];
+    const items: ChoiceItem[] = [{ id: 'checkout', label: branch, description: `${checkoutLabel(session)} · ${path}`, ...session.worktreePath ? { leading: toned(icon('worktree'), 'worktree') } : { icon: 'branch' }, selected: true }];
     if (missing) {
       items.push({ id: 'worktree-recreate', label: 'Recreate worktree', description: 'Check the branch out again at the same path.', icon: 'refresh' });
       items.push({ id: 'settle-task', label: 'Settle task', description: 'Keep the history; forget the checkout.', icon: 'check' });
@@ -139,7 +139,7 @@ export function createWorktrees(host: WorktreeHost) {
       // Refresh once the menu has closed: an open menu keeps the context bar from redrawing its chip.
       window.setTimeout(() => void host.branchChanged(), 0);
     } catch (cause) {
-      host.notify(`Couldn’t switch branches: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t switch branches: ${errorText(cause)}`);
     }
   }
 
@@ -249,7 +249,7 @@ export function createWorktrees(host: WorktreeHost) {
     try {
       merged = await host.call<WorktreeMerge>('merge_worktree', { sessionId: session.id });
     } catch (cause) {
-      host.notify(`Couldn’t merge: ${cause instanceof Error ? cause.message : String(cause)}`);
+      (host.notifyError ?? host.notify)(`Couldn’t merge: ${errorText(cause)}`);
       return;
     }
     const moved = merged.switchedFrom ? ` (the project checkout moved from ${merged.switchedFrom})` : '';

@@ -1,4 +1,4 @@
-import { preview } from './bridge';
+import { call, preview } from './bridge';
 import { icon } from './dom';
 import { appUpdates, describeUpdate, type UpdateMode } from './app-updates';
 
@@ -8,6 +8,8 @@ export const PROJECT_LINKS = {
   issues: 'https://github.com/aicodeking/pandacode/issues',
   releases: 'https://github.com/aicodeking/pandacode/releases',
   license: 'https://github.com/aicodeking/pandacode/blob/main/LICENSE',
+  /** The browser preview's fallback; the app opens its bundled copy (tauri.conf.json resources). */
+  notices: 'https://github.com/aicodeking/pandacode/blob/main/THIRD_PARTY_NOTICES.md',
 } as const;
 
 const link = (label: string, url: string) =>
@@ -17,7 +19,7 @@ const link = (label: string, url: string) =>
 export function aboutSettingsHtml(): string {
   return `<div class="settings-group settings-about" aria-labelledby="settings-about-heading">
     <div class="setting-row"><div><strong id="settings-about-heading">About PandaCode</strong><small class="settings-about-version">Version …</small></div></div>
-    <div class="setting-row"><div><strong>License</strong><small>Open source (MIT-based). No account, no telemetry.</small></div>${link('PandaCode License', PROJECT_LINKS.license)}</div>
+    <div class="setting-row"><div><strong>License</strong><small>Open source (MIT-based). No account, no telemetry.</small></div><div class="settings-row-actions">${link('PandaCode License', PROJECT_LINKS.license)}<button type="button" class="secondary-button" data-about-notices>Third-party notices${icon('forward')}</button></div></div>
     <div class="setting-row settings-updates"><div><strong>Updates</strong><small class="settings-update-status" aria-live="polite">Checks GitHub Releases automatically.</small></div><div class="settings-row-actions"><button type="button" class="secondary-button settings-update-action" hidden></button>${link('Releases', PROJECT_LINKS.releases)}</div></div>
     <div class="setting-row settings-updates-auto"><div><strong>Update mode</strong><small>Automatic restarts when no agent is working; Notify me asks first.</small></div><select class="settings-select" data-update-mode aria-label="Update mode"><option value="automatic">Automatic</option><option value="notify">Notify me</option><option value="off">Off</option></select></div>
     <div class="setting-row"><div><strong>Source code</strong><small>Report bugs and follow development.</small></div><div class="settings-row-actions">${link('GitHub repository', PROJECT_LINKS.repository)}${link('Issues', PROJECT_LINKS.issues)}</div></div>
@@ -34,12 +36,23 @@ export function mountAboutSettings(host: HTMLElement): () => void {
   const version = host.querySelector<HTMLElement>('.settings-about-version');
   let disposed = false;
   const cleanupUpdates = mountUpdates(host);
+  const notices = host.querySelector<HTMLButtonElement>('[data-about-notices]');
+  notices?.addEventListener('click', openNotices);
   if (version) {
     appVersion()
       .then(value => { if (!disposed) version.textContent = `Version ${value}`; })
       .catch(() => { if (!disposed) version.textContent = 'Version unavailable'; });
   }
-  return () => { disposed = true; cleanupUpdates(); };
+  return () => { disposed = true; cleanupUpdates(); notices?.removeEventListener('click', openNotices); };
+}
+
+/** Opens the notices bundled with the app; the preview (no bundle) opens the GitHub copy. */
+function openNotices(): void {
+  const online = () => call('open_external_url', { url: PROJECT_LINKS.notices });
+  void (preview ? online() : call('open_third_party_notices').catch(error => {
+    console.error('Could not open the bundled third-party notices', error);
+    return online();
+  })).catch(error => console.error('Could not open the third-party notices', error));
 }
 
 /** The Updates rows follow the updater: status, Check now / Install / Restart now, and the mode. */

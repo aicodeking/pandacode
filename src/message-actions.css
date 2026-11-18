@@ -1,5 +1,5 @@
-.message-actions{display:flex;align-items:center;gap:2px;min-height:28px;margin-top:6px;color:var(--muted);opacity:.62;transition:opacity 140ms ease}
-.message-actions button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:var(--radius-sm);background:transparent;color:inherit;cursor:pointer;transition:background-color 120ms ease,color 120ms ease,transform 120ms ease}
+.message-actions{display:flex;align-items:center;gap:2px;min-height:28px;margin-top:6px;color:var(--muted);opacity:.62;transition:opacity var(--ds-ease-out) ease-out}
+.message-actions button{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;min-height:28px;padding:5px;border:0;border-radius:var(--ds-radius-control);background:transparent;color:inherit;cursor:pointer;transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .message-actions .icon{width:15px;height:15px;flex:none}
 .message>.message-actions{padding-left:31px}
 .turn-activity-body .message>.message-actions{padding-left:0}
@@ -7,19 +7,23 @@
 /* A reply followed by more tool calls is mid-turn: only the turn's last reply keeps copy and fork. */
 .live-tools>.live-message>.message-actions{display:none}
 .activity-commentary-message>.activity-commentary{margin-bottom:0}
-.message-actions button:hover{color:var(--text);background:color-mix(in srgb,currentColor 9%,transparent)}
+.message-actions button:hover{color:var(--text);background:var(--ds-row-hover)}
 .message-actions button:active{scale:.92}
 .message-actions button:focus-visible{outline:2px solid var(--focus,var(--accent));outline-offset:2px}
 .message-actions button:disabled,.message-actions button[aria-disabled="true"]{cursor:wait;opacity:.5}
 /* Rewinding while the thread runs would fork a moving target; the handler refuses it too. */
 #transcript[data-running] [data-message-action="edit"]{opacity:.35;pointer-events:none}
-.message-actions button[data-copied]{color:var(--accent-ink,var(--text))}
+.message-actions button[data-copied]{color:var(--ds-success)}
+/* The Copied tick holds the row at full strength until it reverts. */
+.message-actions:has(button[data-copied]){opacity:1}
+/* A turn card's reply row rests at full --muted ink, so Copy and Fork clear 4.5:1 without a hover. */
+html .turn-card .turn-card-reply .message-actions{opacity:1}
 :where(.message,.activity-commentary-message,.launcher-thread-message,.architect-history article,.subagent-assignment,.subagent-detail):hover>.message-actions,.message-actions:focus-within,.message-actions:hover{opacity:1}
 .message-action-status{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 @media(hover:none){.message-actions{opacity:1}.message-actions button{width:34px;height:34px}}
 @media(max-width:650px){.message>.message-actions{padding-left:0}}
 @media(prefers-contrast:more){.message-actions{opacity:1;color:var(--text)}}
-@media(prefers-reduced-motion:reduce){.message-actions,.message-actions button{transition:none}.message-actions button:active{transform:none}}
+@media(prefers-reduced-motion:reduce){.message-actions,.message-actions button{transition:none}.message-actions button:active{scale:none}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.message-actions button[data-copied]{transition:color 160ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.message-actions button[data-copied]{transition:color var(--ds-ease-out) ease-out}}

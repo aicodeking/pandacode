@@ -19,6 +19,11 @@ test.beforeEach(async ({ page }) => {
       if (command === 'send_message' && window.__holdAgent) { session(args.sessionId).status = 'running'; return; }
       if (command === 'steer_task' && window.__rejectSteer) throw new Error('No live run to steer.');
       if (command === 'queue_add' && window.__slowQueue) await new Promise(resolve => setTimeout(resolve, 300));
+      if (command === 'get_task' && args.sessionId === window.__holdDetails) {
+        window.__holdDetails = undefined;
+        const snapshot = structuredClone(session(args.sessionId));
+        return await new Promise(resolve => { window.__releaseDetails = () => resolve(snapshot); });
+      }
       switch (command) {`);
     await route.fulfill({ response, body: body + '\nwindow.__queueEmit = emit; window.__queueSession = session; window.__queueInvoke = invoke;\n' });
   });
@@ -44,7 +49,7 @@ test('queues messages during a run, edits and reorders them, and steers mid-turn
   await expect(rows(page).locator('.queue-text')).toHaveText(['First follow-up', 'Second follow-up']);
   await expect(prompt(page)).toHaveValue('');
   await expect(panel(page)).toContainText(/Waiting – .+ is working/);
-  await panel(page).getByRole('button', { name: 'Move queued message 2 up' }).click();
+  await rows(page).nth(1).dragTo(rows(page).nth(0));
   await expect(rows(page).locator('.queue-text')).toHaveText(['Second follow-up', 'First follow-up']);
   await panel(page).getByRole('button', { name: 'Edit queued message 1' }).click();
   await panel(page).getByRole('textbox', { name: 'Edit queued message' }).fill('Second follow-up, edited');
@@ -108,6 +113,25 @@ test('a follow-up queued by an agent for an idle task is sent right away', async
   await expect.poll(async () => (await calls(page, 'send_message')).map(c => [c.args.sessionId, c.args.text])).toEqual([['session-2', 'Queued by the architect']]);
 });
 
+test('a queued message waiting on a thread load that a switch left still goes once its details land', async ({ page }) => {
+  // session-2's details are held, so its first load is still waiting for them when a follow-up is queued for it.
+  await page.evaluate(() => { (window as any).__holdDetails = 'session-2'; });
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseDetails)).toBe('function');
+  await page.evaluate(async () => {
+    await (window as any).__queueInvoke('queue_add', { sessionId: 'session-2', text: 'Queued while loading', attachments: [] });
+    (window as any).__queueEmit('queue-changed', { sessionId: 'session-2' });
+  });
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Queued while loading']);
+  // Nothing goes while the load that knows the team is pending; then the reader moves on before it lands.
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(page.locator('.task-item[data-id="session-1"]')).toHaveAttribute('aria-current', 'page');
+  expect(await calls(page, 'send_message')).toHaveLength(0);
+  await page.evaluate(() => (window as any).__releaseDetails());
+  await expect.poll(async () => (await calls(page, 'send_message')).map(c => [c.args.sessionId, c.args.text])).toEqual([['session-2', 'Queued while loading']]);
+});
+
 test('Send now delivers a held entry right away and keeps the rest held', async ({ page }) => {
   await startRun(page);
   for (const text of ['Later', 'Urgent']) { await prompt(page).fill(text); await prompt(page).press('Enter'); }
@@ -147,3 +171,81 @@ test('Steer sends a queued entry into a steerable running turn', async ({ page }
   await expect(rows(page).locator('.queue-text')).toHaveText(['Keep']);
   expect(await calls(page, 'stop_session')).toEqual([]);
 });
+
+test('queue ignores the Enter that commits an IME composition', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Enter', keyCode: 229 });
+  await expect(prompt(page)).toHaveValue('変換');
+  await expect(rows(page)).toHaveCount(0);
+  await prompt(page).press('Enter');
+  await expect(rows(page).locator('.queue-text')).toHaveText(['変換']);
+});
+
+test('an Escape that cancels an IME conversion does not stop the run, and a normal one does', async ({ page }) => {
+  await startRun(page);
+  await prompt(page).fill('変換');
+  await prompt(page).dispatchEvent('keydown', { key: 'Escape', keyCode: 229 });
+  // A stop would be recorded by the time this later command is.
+  await page.evaluate(() => (window as any).__queueInvoke('list_projects'));
+  expect(await calls(page, 'stop_session')).toEqual([]);
+  await expect(prompt(page)).toHaveValue('変換');
+  await prompt(page).press('Escape');
+  await expect.poll(async () => (await calls(page, 'stop_session')).length).toBe(1);
+});
+
+for (const [name, ime] of [['keyCode 229', { keyCode: 229 }], ['isComposing', { isComposing: true }]] as const) {
+  const enter = { key: 'Enter', ...ime };
+
+  test(`the composer and its pickers ignore an Enter with ${name}`, async ({ page }) => {
+    await prompt(page).fill('変換');
+    await prompt(page).dispatchEvent('keydown', enter);
+    await expect(prompt(page)).toHaveValue('変換');
+    expect(await calls(page, 'send_message')).toEqual([]);
+    const picker = page.getByRole('listbox').first();
+    // An open picker makes the prompt a combobox, so reach it by id.
+    const draft = page.locator('#prompt');
+    for (const text of ['/c', 'Read @s']) {
+      await draft.fill(text);
+      await expect(picker).toBeVisible();
+      await draft.dispatchEvent('keydown', enter);
+      await expect(draft).toHaveValue(text);
+      await expect(picker).toBeVisible();
+    }
+    expect(await calls(page, 'send_message')).toEqual([]);
+  });
+
+  test(`the command palette ignores an Enter with ${name}`, async ({ page }) => {
+    await page.keyboard.press('ControlOrMeta+k');
+    const search = page.getByRole('textbox', { name: 'Search tasks and commands' });
+    await search.fill('Settings');
+    await search.dispatchEvent('keydown', enter);
+    await expect(search).toBeVisible();
+    await search.press('Enter');
+    await expect(search).toBeHidden();
+  });
+
+  test(`the model picker ignores an Enter with ${name}`, async ({ page }) => {
+    await page.getByRole('button', { name: /^Model: / }).click();
+    const search = page.getByRole('combobox').first();
+    await expect(search).toBeFocused();
+    await search.dispatchEvent('keydown', enter);
+    await expect(search).toBeVisible();
+    await search.press('Enter');
+    await expect(search).toBeHidden();
+  });
+
+  test(`find in thread ignores an Enter with ${name}`, async ({ page }) => {
+    await prompt(page).fill('needle needle');
+    await prompt(page).press('Enter');
+    await page.keyboard.press('ControlOrMeta+f');
+    const find = page.getByRole('search');
+    await find.getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('needle');
+    const input = find.getByRole('searchbox', { name: 'Find in thread', exact: true });
+    await expect(find.locator('.thread-find-count')).toHaveText('1 of 2');
+    await input.dispatchEvent('keydown', enter);
+    await expect(find.locator('.thread-find-count')).toHaveText('1 of 2');
+    await input.press('Enter');
+    await expect(find.locator('.thread-find-count')).toHaveText('2 of 2');
+  });
+}

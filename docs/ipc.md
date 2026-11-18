@@ -116,6 +116,8 @@ unarchived, completed (Settled) one.
 |---|---|---|
 | architect_get | {sessionId} | TeamSnapshot or null |
 | architect_configure | {sessionId, config: TeamConfig or null, architect?: ModelSelection, profileId?: string} | TeamSnapshot or null; atomically remembers default; active parent turns queue a durable pendingSetup, applied after completion; existing assignments retain their selections |
+| architect_set_council | {sessionId, council: CouncilConfig or null} | TeamSnapshot; errors when the task has no team. `CouncilConfig` is `{target: 1-10, maxRounds: 1-100 rounds that may start this cycle (default 10), reviewers: 0-8 (0 = the lead decides)}`. Takes effect at once, even during a run; it starts a lead turn only when it ends the `asking` state (see below); a task on another computer refuses it. The snapshot carries `config.council`, each reviewer's `council: {round, lens, score, startedAt}` (`startedAt` once it has run), `councilSince`, `changedAt`, and, while Council is on, `councilStatus: {state: "accepted" or "waiting" or "reviewing" or "dispatch" or "asking" or "fixing" or "passed" or "limit", round, lowest: number or null, target, stale, notice?: string}`, computed natively from the gate's checks and authoritative for the UI: `reviewing` only while a seat is live, `dispatch` when the latest round is incomplete with no live seat, `asking` when the team rests with its below-target refusal as its error, `accepted` when the user accepted this cycle's scores; `notice` is a plain sentence for the user whenever a Council refusal holds the team as its error (asking or paused), else absent. Its wordings: "The lead is asking how to continue: lowest score 8.3, target 9.5, after round 3."; "The team stopped before Council reviewed the work."; "The team stopped with Council round 2 unfinished."; "The team stopped: the work changed after Council round 2."; "The team stopped after Council round 2: lowest score 8.0, target 9.0." Scores print with one decimal. Never match refusal prose. `architect_get` returns it up to date too. Turning Council on while the team is ready or completed sets `councilSince` to now. Turning it off stops the cycle's reviewers that are still out (stopped, abandoned, with a note). A setting that ends `asking` queues one lead turn: with the refusal that now stands, else to verify and finish with each lens's first and final score. A setting that gives a resting team (`ready` or `completed`, Council passed or at its limit) a refusal again, such as a raised `maxRounds` after a round below the target, queues one lead turn quoting it ("The user raised the Council round limit to N, so Council refuses again: …") and the team returns to `running`; a paused team waits for Resume. A setup's `config.council` is never saved as the default or in a team profile. A `turn_changes` summary that rolled up workers' changes carries `ownFiles`, the count of files its own conversation changed, and any summary may carry `lastWriteAt`, when its turn's last write tool ran |
+| architect_council_accept | {sessionId} | TeamSnapshot; errors when the task has no team or Council is off, and on a task run from another computer. Accepts this cycle's Council scores (Accept and finish on the Council card): `councilAccepted` holds this cycle's `councilSince`, the gate lets the lead finish, Council stays on, `councilStatus.state` reads `accepted` with `lowest` and `target` kept, the refusal leaves the team's error, the cycle's live reviewers stop, and, when it lifted a refusal, an idle lead is woken once to finish with the first-and-final table. `councilReopened` marks a cycle whose finish was reopened once; a second reopen rests the team. The next cycle reviews as usual |
 | architect_profiles | none | TeamLibrary (default setup and named profiles) |
 | architect_save_profile | {id?: string, name, setup: TeamSetup} | TeamLibrary; saves template without applying it |
 | architect_delete_profile | {id} | TeamLibrary; applied setup and histories retained |
@@ -126,6 +128,7 @@ unarchived, completed (Settled) one.
 | add_project | {path} | Project |
 | remove_project | {projectId} | void |
 | list_sessions | {} | Session[] (metadata, maximum 500) |
+| sessions_missing | {ids: string[]} (at most 2000, each at most 128 characters) | string[]: the asked ids with no task row at all (archived tasks, draft sessions and architect workers have one), in the order given; errors past either limit. Main webview only; boot uses it to drop drafts of threads deleted while the app was closed (see [crash recovery](crash-recovery.md#what-a-launch-restores)) |
 | get_task | {sessionId} | Session (full task description) |
 | create_board_task | {projectId, provider, model, mode, title, description} | Session |
 | update_task_details | {sessionId, title, description} | Session |
@@ -186,6 +189,8 @@ its `done` event before releasing its execution slot for another start of that t
 delta. Its optional data contains a bounded `messageId` and `phase`; it creates no
 history row. New tool calls also end the preceding text segment, while progress
 and completion updates to existing tool IDs leave the current response intact.
+`note` is PandaCode's own run-end line: it ends the current text segment and saves as a
+`system` row, shown in the transcript but never counted as the agent's reply.
 
 Conversation and Board share the same live response buffer. Incoming text is
 painted on the next frame and sanitized Markdown updates are coalesced at 32 ms,
@@ -232,20 +237,22 @@ Unfinished tools are settled with an explanatory failure note when a turn ends o
 an interrupted session is recovered at startup. Tool updates do not change a task's
 last assistant response timestamp.
 
-`AgentEvent` kind `subagent` carries a full bounded snapshot in `data`:
+`AgentEvent` kind `subagent` carries a full snapshot in `data` (per child, previews keep 64 tools, 4 KiB of tool input, 8 KiB of output and 256 KiB of response; there is no cap on children):
 `{id, parentId, name, prompt, status, response, tools, startedAt, updatedAt}`.
 Timestamps are Unix milliseconds; status is `running`, `waiting`, `completed`,
 `failed`, or `stopped`. The run UUID scopes child and parent IDs, while nested
 tool IDs also include the child ID. Snapshots replace by ID and never become
-parent transcript messages. `list_subagents({sessionId})` returns up to 64
-snapshots, combining current in-memory work with persisted history. The UI must
-preserve events received after a history request started when merging its reply.
+parent transcript messages. `list_subagents({sessionId})` returns a light row for
+every child (no tools, a short response preview, `toolCount`), combining current
+in-memory work with persisted history; `get_subagent({sessionId, agentId})` returns one full
+snapshot. The UI must preserve events received after a history request started when
+merging its reply, and a light row never replaces full data.
 
 Schema version 9 stores child snapshots in a separate indexed `subagents` table,
 independent of the parent message window. First sightings and status transitions
 are saved immediately; intermediate text/tool snapshots checkpoint at most once
-per second per child and flush when the parent turn ends. Stored history retains
-the latest 64 children per task, preserving active children. A successful or
+per second per child and flush when the parent turn ends. Stored history keeps
+every child. A successful or
 stopped parent settles children that never reported completion as `stopped`;
 a failed parent marks them `failed`. Startup recovery settles leftover live
 children as `stopped`, preserving their last saved work. Abrupt process loss can
@@ -364,3 +371,14 @@ notice. Worker snapshots use the worker's session ID. See
 Task-scoped Run Script discovery, execution, and preview readiness commands are
 documented in [Run and preview](run-project.md). Execution uses the existing
 managed terminal event/lifecycle contract; it never interpolates shell commands.
+
+## Crash recovery
+
+Main webview only; see [crash recovery](crash-recovery.md).
+
+- `crash_recovery_take()` returns `{ crashedAt, summary, hasReport, restarted, restartsPaused, agentsInterrupted } | null` (the stored notice's report file name is never sent): the notice for a launch that follows a crash, which `crash_guard::start` took out of `crash-guard.json` (the desktop state file; `serve` uses `crash-guard-serve.json`) during setup, after the single-instance plugin (so a duplicate instance never consumes it, and a guard still pausing before its relaunch sees it taken and starts nothing), and kept in memory; the same notice on every call until `crash_recovery_shown`, so a page that died or reloaded before showing it gets it again, and `null` after that for the rest of the run (a notice never reported shown is written back to `crash-guard.json` at a deliberate exit, for the next launch; it stays held, and if the page then shows it after all, `crash_recovery_shown` removes that copy again); `null` too when this run is not set up for a guard (the guard is off, or no relaunch target), in which case the notice was dropped at startup, and when the startup could not take it (lock not had within 2 s, or a notice that could be neither cleared nor removed). `crashedAt` is ms since the epoch; `summary` is `null` or one of a closed set of causes (`Panic`, `Crashed with <signal name>`, `Crashed with <Windows exception phrase>`; `policy::public_cause`), never panic text, and the frontend still only shows it through `plainCause`; `restarted` is true only when this launch is the guard's own relaunch for that crash (its `--crash-restart` mark matches; `Pending::confirmed`), or the notice was put back by such a launch (false when restarts were paused, the switch was off, the relaunch failed or died before taking the notice, or the user opened PandaCode meanwhile); `agentsInterrupted` is true when this launch's database recovery marked at least one non-archived task that was running when PandaCode stopped as Interrupted, or when the notice carried that from an earlier run that never showed it (a second crash or a quit before the page showed the notice; `Pending.agentsInterrupted`); the frontend treats it as optional: when present it alone decides, and only when it is absent does a task heuristic (a non-archived task Interrupted within a day before the crash) decide.
+- `crash_recovery_shown()` returns nothing: the page reports that the crash notice is on screen, and `crash_recovery_take` answers `null` for the rest of the run (`crash_report_reveal` still knows the notice's report); the guard is told `shown`, and `interrupted` stops being sent, so stopped agents are never claimed by a later crash. The frontend calls it once, right after the notice is shown; a failure is logged.
+- `crash_restart_enabled()` returns `boolean`: the switch as saved in `crash-restart.json` right now (another process on the same data directory, such as a desktop app beside a `serve` host, may have changed it), or, when that file is missing or cannot be read, the value this process loaded at startup or last set (on by default). Settings reads its switch from this call, and the crash notice asks it when the guard did not restart.
+- `set_crash_restart_enabled({ enabled })` saves `crash-restart.json` and sends `arm`/`disarm` to the guard (a dropped line is resent with the next resync; with no guard in this run the saved value applies from the next launch). Rejects with "Could not save the setting: …" when the file cannot be written.
+- `crash_report_reveal()` (the notice's Show crash report, which leaves the notice showing, and Settings' Show latest crash report) shows in the file manager the report of the notice this run took (its `report` file name, kept natively) while that file exists and is not dated more than a day ahead, otherwise the newest panic or crash report in `crash-reports/` (never a webview report); rejects with "There is no crash report on this computer." when there is none, also when the report was pruned before the file manager could show it. The path never reaches the webview.
+- Event `app-quitting` (no payload), sent to the main webview by `on_run_event` on the first `ExitRequested` of a deliberate exit (Quit from the app menu, Cmd+Q, the menu bar item or a quitting window close, an update restart, the window dialog's Restart PandaCode), before shutdown and without waiting for the page, or at `RunEvent::Exit` when no such shutdown began (on macOS the Dock's Quit and logout, which skip `ExitRequested`; the page may not handle it by then): the page clears its restoring mark and window-death note (`leavePage` in `src/launch-restore.ts`; drafts need nothing, since each change is already written), since WKWebView may not fire `pagehide` on Cmd+Q.

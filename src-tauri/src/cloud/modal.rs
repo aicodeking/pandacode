@@ -136,11 +136,14 @@ impl Sandbox for Modal {
         self.run(native, command, None, timeout)
     }
     fn keep_alive(&self, native: &str, minutes: u32) -> Result<()> {
-        let seconds = minutes.min(MAX_MINUTES) as i64 * 60;
+        let mut seconds = minutes.min(MAX_MINUTES) as i64 * 60;
+        // Modal's timeout can't be extended: ask for what is left. `state` reports a sandbox
+        // near its end as "error", so the next run recreates it.
         if let (_, Some(remaining)) = self.status(native)? {
-            if seconds > remaining {
-                return Err(format!("This Modal sandbox expires in {} minutes; delete it to start a fresh one.", remaining.max(0) / 60));
+            if remaining <= 0 {
+                return Ok(());
             }
+            seconds = seconds.min(remaining);
         }
         checked(self.exec(native, &format!("echo $(( $(date +%s) + {seconds} )) > /tmp/.pandacode-deadline"), Duration::from_secs(60))?)
     }
@@ -294,13 +297,24 @@ class Sandbox:
     }
 
     #[test]
-    fn old_sandboxes_refuse_long_runs_and_report_error_near_their_end() {
+    fn old_sandboxes_clamp_long_runs_and_report_error_near_their_end() {
         let Some((modal, dir)) = fake(FAKE) else { return };
         let left = |seconds: u32| std::fs::write(dir.0.join("modal/left"), seconds.to_string()).unwrap();
+        // The fake exits 7, so `keep_alive` fails with the deadline command in its output.
+        let deadline = |error: String| -> i64 {
+            let after = error.split("+ ").nth(1).unwrap_or_else(|| panic!("{error}"));
+            after.split(' ').next().unwrap().parse().unwrap()
+        };
         left(4 * 3600);
         assert_eq!(modal.state("sb-1").unwrap(), "running");
-        let error = modal.keep_alive("sb-1", 5 * 60).unwrap_err();
-        assert!(error.contains("expires in 239 minutes") || error.contains("expires in 240 minutes"), "{error}");
+        // A request past the end gets the time left (a slow helper call can eat a few seconds).
+        let clamped = deadline(modal.keep_alive("sb-1", 5 * 60).unwrap_err());
+        assert!((4 * 3600 - 60..=4 * 3600).contains(&clamped), "{clamped}");
+        // A request that fits is untouched.
+        assert_eq!(deadline(modal.keep_alive("sb-1", 60).unwrap_err()), 3600);
+        // Nothing left: no command runs, so the fake's exit code never shows.
+        left(0);
+        modal.keep_alive("sb-1", 60).unwrap();
         left(29 * 60);
         assert_eq!(modal.state("sb-1").unwrap(), "error");
     }

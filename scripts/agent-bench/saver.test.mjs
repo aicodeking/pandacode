@@ -61,6 +61,20 @@ test('the lead guidance is read from the Rust source, escapes and all', () => {
   assert.equal(findLeadGuidance([{ path: 'a.rs', text: description.replace('tokenSaver: \\"none', 'saver: \\"none') }]), null);
 });
 
+test('worker reports preserve current wording and historical byte limits', () => {
+  const report = 'Provide a concise final report with changes, exact files, checks performed, and blockers. Do not claim tests that you did not run.';
+  const sources = text => [{ path: 'architect.rs', text: `format!("Worker. ${text}", limit)` }];
+  assert.deepEqual(findWorkerReport(sources(report)), { source: 'architect.rs: worker rules', text: report });
+  const historical = report.replace('final report', 'final report (under {} UTF-8 bytes)');
+  for (const limit of [undefined, 1536]) {
+    assert.equal(findWorkerReport(sources(historical), limit).text, historical.replace('{}', String(limit ?? 3072)));
+  }
+  assert.equal(findWorkerReport(sources('No worker report.')), null);
+  const hash = text => createHash('sha256').update(text).digest('hex');
+  const meta = { leadGuidance: { sha256: 'a' }, workerReport: { sha256: hash(historical.replace('{}', '3072')) }, look: { sha256: 'c' } };
+  assert.throws(() => assertUnchanged(meta, { lead: { sha256: 'a' }, report: { sha256: hash(report) }, look: { sha256: 'c' } }), /workerReport changed since --prepare/);
+});
+
 test('the guidance and the worker brief come from the real architect sources', () => {
   const sources = architectSources();
   const lead = findLeadGuidance(sources);
@@ -69,7 +83,7 @@ test('the guidance and the worker brief come from the real architect sources', (
   for (const pack of shipped.PACKS) assert.ok(lead.text.includes(pack.id), pack.id);
   const report = findWorkerReport(sources);
   assert.ok(report, 'worker report sentence not found');
-  assert.match(report.text, /^Provide a concise final report \(under 3072 UTF-8 bytes\).*Do not claim tests that you did not run\.$/);
+  assert.equal(report.text, 'Provide a concise final report with changes, exact files, checks performed, and blockers. Do not claim tests that you did not run.');
   assert.equal(workerMessage('R.', 'Do it.', '\n\nB'), 'R.\n\nDo it.\n\nB');
   const meta = { leadGuidance: { sha256: 'a' }, workerReport: { sha256: 'b' }, look: { sha256: 'c' } };
   assert.doesNotThrow(() => assertUnchanged(meta, { lead: { sha256: 'a' }, report: { sha256: 'b' }, look: { sha256: 'c' } }));

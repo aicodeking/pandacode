@@ -54,6 +54,43 @@ test('dragging a row onto another reorders the queue', async ({ page }) => {
   await expect(rows(page).locator('.queue-text')).toHaveText(['Three', 'One', 'Two']);
 });
 
+test('a queue has no move buttons: a drop saves once, and the line shows where it lands', async ({ page }) => {
+  await startRun(page);
+  await queue(page, ['One', 'Two', 'Three']);
+  await expect(panel(page).locator('[data-action="queue-up"], [data-action="queue-down"]')).toHaveCount(0);
+  await expect(panel(page).getByRole('button', { name: /^Move queued message/ })).toHaveCount(0);
+  // Send now is not drawn as an up arrow, which would read as moving the row.
+  expect(await rows(page).first().getByRole('button', { name: /^Send now/ }).locator('svg').innerHTML()).not.toContain('M12 19V5');
+  const before = (await calls(page, 'queue_reorder')).length;
+  // Dragged down, it lands below the row under the pointer.
+  const first = (await rows(page).nth(0).boundingBox())!, last = (await rows(page).nth(2).boundingBox())!;
+  await page.mouse.move(first.x + 80, first.y + first.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(first.x + 90, first.y + first.height / 2 + 6, { steps: 3 });
+  await page.mouse.move(last.x + 80, last.y + last.height / 2, { steps: 5 });
+  await expect(rows(page).nth(2)).toHaveClass(/drag-over-after/);
+  await page.mouse.up();
+  await expect(rows(page).locator('.queue-text')).toHaveText(['Two', 'Three', 'One']);
+  await expect(page.locator('#queue-live')).toHaveText('Moved queued message to position 3 of 3.');
+  expect((await calls(page, 'queue_reorder')).length - before).toBe(1);
+  // Dropped back on itself nothing is saved, and the row's own click still works afterwards.
+  const again = (await rows(page).nth(0).boundingBox())!;
+  await page.mouse.move(again.x + 80, again.y + again.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(again.x + 90, again.y + again.height / 2 + 2, { steps: 3 });
+  await page.mouse.up();
+  expect((await calls(page, 'queue_reorder')).length - before).toBe(1);
+});
+
+test('a lone queued message has nothing to reorder against', async ({ page }) => {
+  await startRun(page);
+  await queue(page, ['One']);
+  await expect(rows(page).first()).toHaveAttribute('draggable', 'false');
+  await rows(page).first().focus();
+  await page.keyboard.press('Alt+ArrowDown');
+  expect((await calls(page, 'queue_reorder')).length).toBe(0);
+});
+
 test('edit shows the notice and Editing badge; cancel restores the row', async ({ page }) => {
   await startRun(page);
   await queue(page, ['One']);

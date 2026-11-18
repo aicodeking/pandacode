@@ -9,6 +9,7 @@ const row = (page: Page, provider: string) => privacy(page).locator(`li[data-pro
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings(page).locator('#settings-panel-agents details.settings-fold>summary').click();
   await expect(settings(page).getByRole('heading', { name: 'Privacy', exact: true })).toBeVisible();
 }
 
@@ -73,7 +74,8 @@ test('a failed save puts the switch back and offers a retry', async ({ page }) =
 });
 
 test('a failed load offers a retry', async ({ page }) => {
-  await failing(page, 'harness_privacy', 1);
+  // Twice: Recommended, where Settings opens, asks first and shows no status when it can't tell.
+  await failing(page, 'harness_privacy', 2);
   await page.goto('/');
   await openAgents(page);
   await expect(privacy(page).getByRole('status')).toHaveText('Agent telemetry settings couldn’t load.');

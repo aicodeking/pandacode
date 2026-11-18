@@ -8,14 +8,12 @@ fn forget_drops_in_flight_briefs_of_deleted_teams_and_conversations_only() {
     for (parent, sid) in &keys {
         unconfirmed().insert((parent.clone(), sid.clone()), 1);
         brief_pending(parent, sid, briefing::Briefing::default());
-        pending_cursors().insert((parent.clone(), sid.clone()), ("actor".into(), 1));
     }
     forget(&[id("team")]);
     for (index, key) in keys.iter().enumerate() {
         let kept = index == 2;
         assert_eq!(unconfirmed().contains_key(key), kept);
         assert_eq!(pending_briefings().contains_key(key), kept);
-        assert_eq!(pending_cursors().contains_key(key), kept);
     }
     forget(&[id("kept")]);
 }
@@ -32,6 +30,9 @@ fn worker(session_id: &str) -> Worker {
         provider: "codex".into(),
         model: "default".into(),
         reasoning_effort: None,
+        note: None,
+        effort_retried: false,
+        started_at: None,
         status: "running".into(),
         assignment: "Small task".into(),
         summary: String::new(),
@@ -52,6 +53,11 @@ fn worker(session_id: &str) -> Worker {
         tool_catalog_version: TOOL_CATALOG_VERSION,
         parent_worker: None,
         token_saver: Default::default(),
+        nudged: false,
+        reported: false,
+        council: None,
+        score_nudged: false,
+        wrote_at: 0,
     }
 }
 
@@ -62,7 +68,7 @@ fn team_state() -> (AppState, String, Admission) {
     let parent = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
     let sid = store.create_session(&project.id, "codex", "default", "ask").unwrap().id;
     store.db.execute("UPDATE sessions SET resume_id='native-1' WHERE id=?1", [&sid]).unwrap();
-    let mut team = new_team(parent.clone(), TeamConfig { auto: false, roster_only: false, name: None, workers: vec![], catalog: vec![], max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None });
+    let mut team = new_team(parent.clone(), TeamConfig { auto: false, roster_only: false, name: None, workers: vec![], catalog: vec![], max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None, council: None });
     team.generation = 1;
     team.status = "running".into();
     team.workers.push(worker(&sid));
@@ -153,7 +159,6 @@ fn a_launch_end_without_the_store_refuses_its_brief() {
     let key = (admission.parent.clone(), sid.clone());
     unconfirmed().insert(key.clone(), 1);
     brief_pending(&admission.parent, &sid, briefing::Briefing::default());
-    pending_cursors().insert(key.clone(), ("w1".into(), 1));
     let store = state.store.clone();
     let _ = std::thread::spawn(move || {
         let _guard = store.lock().unwrap();
@@ -164,5 +169,4 @@ fn a_launch_end_without_the_store_refuses_its_brief() {
     completed_state(&state, &sid, Some(&admission), true, false, &mut |_| {});
     assert!(!unconfirmed().contains_key(&key));
     assert!(!pending_briefings().contains_key(&key));
-    assert!(!pending_cursors().contains_key(&key));
 }

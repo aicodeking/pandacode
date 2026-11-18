@@ -21,6 +21,8 @@ const MAX_IMAGE_SOURCE: usize = 24 * 1024 * 1024;
 /// What `providers::attachments::load` accepts per image.
 const MAX_IMAGE_PNG: usize = 5 * 1024 * 1024;
 const MAX_IMAGE_EDGE: u32 = 2048;
+/// Largest edge any image may decode to; also bounds raw clipboard pixels.
+const MAX_DECODE_EDGE: usize = 12_000;
 /// Shared with project-file context blocks, so one message stays bounded.
 pub const MAX_TEXT: usize = 32 * 1024;
 const MAX_DOCUMENT_BYTES: u64 = 64 * 1024 * 1024;
@@ -115,8 +117,8 @@ fn decode(bytes: &[u8]) -> Result<(DynamicImage, ImageFormat), String> {
     }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = Limits::default();
-    limits.max_image_width = Some(12_000);
-    limits.max_image_height = Some(12_000);
+    limits.max_image_width = Some(MAX_DECODE_EDGE as u32);
+    limits.max_image_height = Some(MAX_DECODE_EDGE as u32);
     limits.max_alloc = Some(256 * 1024 * 1024);
     reader.limits(limits);
     let image = reader
@@ -227,6 +229,46 @@ pub fn import_image(dir: &Path, source: ImageSource) -> Result<ImportedImage, St
         height,
         thumbnail: thumbnail(&image)?,
     })
+}
+
+/// The clipboard's image, if any, as base64 PNG bytes for the composer's paste
+/// fallback: WebKitGTK does not expose OS clipboard images as pasted files, so a
+/// paste that carries no files and no text is read here instead (Flameshot on
+/// Fedora Wayland). None when the clipboard holds no image, and always None off
+/// Linux, whose webviews hand pasted images over as files. Read only on a paste.
+#[cfg(target_os = "linux")]
+pub fn clipboard_image() -> Result<Option<String>, String> {
+    let mut clipboard = arboard::Clipboard::new()
+        .map_err(|e| format!("Could not open the clipboard: {e}"))?;
+    let shot = match clipboard.get_image() {
+        Ok(shot) => shot,
+        // An empty clipboard is a plain no-op paste, not an error worth reporting.
+        Err(arboard::Error::ContentNotAvailable) => return Ok(None),
+        Err(e) => return Err(format!("Could not read the clipboard image: {e}")),
+    };
+    clipboard_png(shot.width, shot.height, shot.bytes.into_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn clipboard_image() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+/// RGBA pixels straight off the clipboard, scaled to the attachment edge and
+/// encoded as the PNG `import_image` accepts, so the paste stays inside its caps.
+#[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
+fn clipboard_png(width: usize, height: usize, rgba: Vec<u8>) -> Result<Option<String>, String> {
+    if width == 0 || height == 0 {
+        return Ok(None);
+    }
+    // Same bound `decode` puts on any other image source.
+    if width > MAX_DECODE_EDGE || height > MAX_DECODE_EDGE {
+        return Err("This image is damaged or too large to decode.".into());
+    }
+    let rgba = image::RgbaImage::from_raw(width as u32, height as u32, rgba)
+        .ok_or("Could not read the clipboard image.")?;
+    let png = encode_png(&DynamicImage::ImageRgba8(rgba), MAX_IMAGE_EDGE)?;
+    Ok(Some(STANDARD.encode(png)))
 }
 
 /// A sent image or screenshot as a `data:` URL, so the transcript can show it again.
@@ -509,8 +551,71 @@ impl Listing {
     }
 }
 
+/// The files in the current drag. HTML5 drops carry no paths, but AppKit's shared drag
+/// pasteboard still holds them when the drop event arrives.
+#[cfg(target_os = "macos")]
+pub fn dragged_file_paths() -> Vec<String> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSString;
+    #[link(name = "AppKit", kind = "framework")]
+    extern "C" {
+        static NSPasteboardNameDrag: &'static NSString;
+    }
+    // SAFETY: a class method taking a valid NSString, returning a shared pasteboard.
+    let board: Retained<AnyObject> = unsafe { msg_send![class!(NSPasteboard), pasteboardWithName: NSPasteboardNameDrag] };
+    file_paths_on(&board)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn dragged_file_paths() -> Vec<String> {
+    Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn file_paths_on(board: &objc2::runtime::AnyObject) -> Vec<String> {
+    use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+    use objc2_foundation::NSURL;
+    // SAFETY: documented NSPasteboard and NSArray calls; asking for NSURL objects means
+    // every returned item is an NSURL.
+    unsafe {
+        let classes: Retained<AnyObject> = msg_send![class!(NSArray), arrayWithObject: class!(NSURL)];
+        let none: *const AnyObject = std::ptr::null();
+        let items: Option<Retained<AnyObject>> = msg_send![board, readObjectsForClasses: &*classes, options: none];
+        let Some(items) = items else { return Vec::new() };
+        let count: usize = msg_send![&*items, count];
+        (0..count)
+            .filter_map(|index| {
+                let url: Retained<NSURL> = msg_send![&*items, objectAtIndex: index];
+                // `filePathURL` resolves the file reference URLs Finder publishes.
+                Some(url.filePathURL()?.path()?.to_string())
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dragged_paths_keep_file_urls_and_skip_web_links() {
+        use objc2::{class, msg_send, rc::Retained, runtime::AnyObject};
+        use objc2_foundation::{NSString, NSURL};
+        // SAFETY: a private pasteboard, written and read with documented calls.
+        unsafe {
+            let board: Retained<AnyObject> = msg_send![class!(NSPasteboard), pasteboardWithUniqueName];
+            let file = NSURL::fileURLWithPath(&NSString::from_str("/tmp/My Folder"));
+            let web = NSURL::URLWithString(&NSString::from_str("https://example.com/page")).unwrap();
+            let items: Retained<AnyObject> = msg_send![class!(NSMutableArray), array];
+            let _: () = msg_send![&*items, addObject: &*file];
+            let _: () = msg_send![&*items, addObject: &*web];
+            let _: isize = msg_send![&*board, clearContents];
+            let written: bool = msg_send![&*board, writeObjects: &*items];
+            assert!(written);
+            assert_eq!(super::file_paths_on(&board), ["/tmp/My Folder"]);
+            let _: () = msg_send![&*board, releaseGlobally];
+        }
+    }
+
     use super::*;
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
@@ -524,6 +629,35 @@ mod tests {
         assert_eq!(image_data_url(&dir, &uuid::Uuid::new_v4().to_string()).unwrap(), None);
         assert!(image_data_url(&dir, "../secret").is_err());
         assert!(image_data_url(&dir, &id.to_uppercase()).is_err());
+    }
+
+    #[test]
+    fn clipboard_image_becomes_base64_png() {
+        use image::GenericImageView;
+        let base64 = clipboard_png(2, 1, vec![255, 0, 0, 255, 0, 255, 0, 255]).unwrap().unwrap();
+        let (image, format) = decode(&STANDARD.decode(base64).unwrap()).unwrap();
+        assert_eq!(format, ImageFormat::Png);
+        assert_eq!((image.width(), image.height()), (2, 1));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn empty_clipboard_dimensions_are_ignored() {
+        assert_eq!(clipboard_png(0, 0, Vec::new()).unwrap(), None);
+    }
+
+    #[test]
+    fn clipboard_buffers_that_do_not_match_their_dimensions_are_refused() {
+        assert!(clipboard_png(1, 2, vec![1, 2, 3, 4]).is_err());
+        assert!(clipboard_png(12_001, 1, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn large_clipboard_images_are_scaled_to_the_attachment_edge() {
+        let base64 = clipboard_png(4000, 10, vec![200; 4000 * 10 * 4]).unwrap().unwrap();
+        let (image, _) = decode(&STANDARD.decode(base64).unwrap()).unwrap();
+        assert_eq!(image.width(), MAX_IMAGE_EDGE);
     }
 
     fn temp_dir(label: &str) -> PathBuf {

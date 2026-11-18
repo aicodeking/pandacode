@@ -9,9 +9,45 @@ async function openThread(page: Page, width = 1200): Promise<void> {
   await page.goto('/');
   await page.locator('.task-item[data-id="session-1"]').evaluate(node => (node as HTMLElement).click());
   await expect(page.locator('#transcript .message').first()).toBeVisible();
+  // Geometry is read once the thread has settled in (its short cross-fade and rise).
+  await page.locator('#transcript').evaluate(node => Promise.all(node.getAnimations().map(animation => animation.finished.catch(() => undefined))));
 }
 
 test.describe('thread header overlay', () => {
+  for (const width of [1200, 620]) {
+    for (const kind of ['light', 'dark'] as const) {
+      for (const preference of ['none', 'contrast', 'transparency'] as const) {
+        test(`the header stays bare with an imported ${kind} theme and ${preference} preference at ${width}px`, async ({ page, browserName }) => {
+          test.skip(preference === 'transparency' && browserName !== 'chromium', 'Reduced transparency emulation requires CDP.');
+          if (preference === 'contrast') await page.emulateMedia({ contrast: 'more' });
+          if (preference === 'transparency') {
+            const cdp = await page.context().newCDPSession(page);
+            await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
+          }
+          await page.addInitScript(kind => {
+            // Nonwhite light surface from #338; the dark control uses Dracula's surface.
+            localStorage.setItem('pandacode.palette', JSON.stringify({ vsix: {
+              id: 'header-test', name: 'Header test', extension: 'header-test', kind,
+              colors: { 'editor.background': kind === 'light' ? '#f1f5e0' : '#282a36', 'editor.foreground': kind === 'light' ? '#2c3320' : '#f8f8f2' },
+            } }));
+          }, kind);
+          await openThread(page, width);
+          await expect(page.locator('html')).toHaveAttribute('data-vsix', '');
+          await expect(page.locator('html')).toHaveAttribute('data-theme', kind);
+          await expect(page.locator('.workspace-header')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+          if (preference !== 'none') {
+            // The panel supplies the solid themed accessibility fallback beneath the bare header.
+            await expect(page.locator('.workspace')).not.toHaveAttribute('data-scene');
+            await expect(page.locator('.main-pane')).toHaveCSS('background-color', kind === 'light' ? 'rgb(241, 245, 224)' : 'rgb(40, 42, 54)');
+          }
+          const header = await box(page, '.workspace-header'), main = await box(page, '.main-pane');
+          expect(header.left).toBeGreaterThanOrEqual(main.left);
+          expect(header.right).toBeLessThanOrEqual(main.right);
+        });
+      }
+    }
+  }
+
   for (const width of [1200, 900, 620]) {
     test(`the transcript scrolls under the bare header with no fade at ${width}px`, async ({ page }) => {
       await openThread(page, width);
@@ -26,17 +62,29 @@ test.describe('thread header overlay', () => {
 
       const transcript = page.locator('#transcript');
       const top = (await box(page, '#transcript')).top;
-      // The transcript starts at the window's top edge, under the header, and its first message
-      // sits just below the mask's fade (fully opaque at rest): flush with the top unless the
-      // collapsed sidebar's buttons sit over the pane.
-      expect(top).toBeLessThanOrEqual(1);
-      const fade = await transcript.evaluate(node => parseFloat(getComputedStyle(node).getPropertyValue('--header-fade-under')) || 0);
+      // The transcript starts at the conversation panel's top edge, under the header, clipped to the
+      // panel's radius. The panel is inset 8px from the window's top while the sidebar shows (full
+      // bleed when it is hidden, and in the narrow rail), and the header is the title bar less that
+      // inset above and below, so its items centre on the traffic lights.
+      const main = await box(page, '.main-pane');
       const collapsed = await page.locator('.workspace').evaluate(node => node.classList.contains('sidebar-collapsed'));
-      expect(fade).toBeGreaterThan(0);
+      const inset = width > 650 && !collapsed ? 8 : 0;
+      expect(main.top).toBe(inset);
+      const headerBox = await box(page, '.workspace-header');
+      expect(headerBox.top + headerBox.height / 2).toBeCloseTo(55 / 2, 0);
+      // At ≤650px the action dock is a row in the header, so the transcript starts below it (action-dock.css
+      // `--header-under: 0`) and nothing scrolls behind the row's icons.
+      const row = width <= 650, under = row ? 0 : headerBox.height;
+      expect(Math.abs(top - (row ? headerBox.top + headerBox.height : main.top))).toBeLessThanOrEqual(1);
+      // At rest the first row sits just below the header, so nothing clickable lies under its drag band.
+      const padding = await transcript.evaluate(node => ({ top: parseFloat(getComputedStyle(node).paddingTop), scroll: parseFloat(getComputedStyle(node).scrollPaddingTop) }));
+      if (!row) expect(padding.top).toBeCloseTo(headerBox.height, 0);
+      // scrollIntoView and focus land rows below the header band too.
+      expect(padding.scroll).toBeGreaterThanOrEqual(under);
       await transcript.evaluate(node => { node.scrollTop = 0; });
       const first = (await box(page, '#transcript .message')).top - top;
-      expect(first).toBeGreaterThanOrEqual(fade);
-      expect(first).toBeLessThanOrEqual(collapsed ? 64 : 20);
+      expect(first).toBeGreaterThanOrEqual(row ? 0 : headerBox.height - 0.5);
+      expect(first).toBeLessThanOrEqual((row ? padding.top : headerBox.height) + 4);
 
       await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
       await transcript.evaluate(node => { node.scrollTop = 90; });
@@ -55,7 +103,7 @@ test.describe('thread header overlay', () => {
     const transcript = page.locator('#transcript');
     await transcript.evaluate(node => { node.scrollTop = 0; });
     const before = (await box(page, '#transcript .message')).top;
-    await page.getByRole('button', { name: 'Team', exact: true }).click();
+    await page.getByRole('button', { name: 'Team: off', exact: true }).click();
     await page.getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
     const agents = page.locator('#action-dock #agents-toggle');
     await expect(agents).toBeVisible();
@@ -73,6 +121,25 @@ test.describe('thread header overlay', () => {
     expect(panel.bottom).toBeLessThanOrEqual(520);
   });
 
+  test('find in thread stays on a match in a folded turn while the thread was following its end', async ({ page }) => {
+    await openThread(page);
+    await page.waitForTimeout(400);
+    await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
+    await page.locator('#transcript').evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await page.keyboard.press('ControlOrMeta+f');
+    await page.getByRole('search').getByRole('searchbox', { name: 'Find in thread', exact: true }).fill('search');
+    await expect(page.getByRole('search').locator('.thread-find-count')).toHaveText(/^\d+ of \d+$/);
+    const inView = () => page.evaluate(() => {
+      const [range] = [...(CSS as any).highlights.get('thread-find-current')] as Range[];
+      const match = range.getBoundingClientRect(), view = document.querySelector('#transcript')!.getBoundingClientRect();
+      return match.top >= view.top && match.bottom <= view.bottom;
+    });
+    await expect.poll(inView).toBe(true);
+    // It holds: the fold's height change does not pull the thread back to its end.
+    await page.waitForTimeout(400);
+    expect(await inView()).toBe(true);
+  });
+
   test('find in thread lands every match below the fade and the find bar', async ({ page }) => {
     await openThread(page);
     // Let the thread's refresh redraw land first; it restores the scroll position it remembered.
@@ -80,7 +147,7 @@ test.describe('thread header overlay', () => {
     const transcript = page.locator('#transcript');
     // Room to scroll, then put the first "search" match just under the header, inside the fade.
     await page.locator('#stream-region').evaluate(node => { node.style.minHeight = '900px'; });
-    const fadeBottom = (await box(page, '#transcript')).top + await transcript.evaluate(node => parseFloat(getComputedStyle(node).getPropertyValue('--header-fade-under')) || 0);
+    const fadeBottom = (await box(page, '#transcript')).top + await transcript.evaluate(node => parseFloat(getComputedStyle(node).paddingTop)); // the header band (--header-fade-under = --transcript-top)
     // Retry until the position holds: the taller stream region can still pull the transcript to
     // the bottom for a frame or two after the first scroll.
     await expect.poll(async () => {
@@ -103,8 +170,9 @@ test.describe('thread header overlay', () => {
     // the thread a match can sit above the bar, since the first message is flush with the top.
     for (const [index, key] of ['', 'Shift+Enter', ...Array(total).fill('Enter')].entries()) {
       if (key) await input.press(key);
+      // A match in a folded turn lands once its turn has opened.
+      await expect.poll(async () => (await current()).top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       const rect = await current();
-      expect(rect.top, `step ${index}`).toBeGreaterThanOrEqual(fadeBottom);
       expect(rect.bottom, `step ${index}`).toBeLessThanOrEqual(bottom);
       const underBar = rect.left < bar.x + bar.width && bar.x < rect.right && rect.top < bar.y + bar.height && bar.y < rect.bottom;
       expect(underBar, `step ${index}`).toBe(false);

@@ -77,9 +77,8 @@ test('architect preview validates setup and restores only owned configurations a
   assert.equal(reloaded.get('parent').status, 'ready');
   assert.equal(reloaded.get('other'), null);
   for (const invalid of [
-    { ...config(), maxParallel: -1 }, { ...config(), maxRounds: 0 },
-    { ...config(), maxAssignments: 51 }, { ...config(), summaryLimit: 511 },
-    { ...config(), workers: [] }, { ...config(), workers: config(7).workers },
+    { ...config(), maxParallel: -1 },
+    { ...config(), workers: [] },
     { ...config(), workers: [config().workers[0], config().workers[0]] },
     { ...config(), workers: [{ ...config().workers[0], reasoningEffort: 'unsupported' }] },
   ]) assert.throws(() => api.configure('other', invalid));
@@ -104,14 +103,14 @@ test('architect preview persists unlimited parallel workers and starts every ass
   assert.equal(api.get('other').config.maxParallel, 128);
 });
 
-test('architect preview streams separate workers under concurrency and assignment caps', t => {
+test('architect preview streams separate workers under the concurrency limit', t => {
   const { api, events, timers, tick, history, parents } = fixture(t);
   api.configure('parent', { ...config(5), maxParallel: 2, maxAssignments: 3 });
   api.start('parent', 'Inspect the sample project');
   const initial = api.get('parent');
-  assert.equal(initial.workers.length, 3);
+  assert.equal(initial.workers.length, 5);
   assert.equal(initial.workers.filter(worker => worker.status === 'running').length, 2);
-  assert.equal(initial.workers.filter(worker => worker.status === 'queued').length, 1);
+  assert.equal(initial.workers.filter(worker => worker.status === 'queued').length, 3);
   assert.equal(workerQueueReason(initial.workers.find(worker => worker.status === 'queued'), initial.workers, initial.config.maxParallel), 'Waiting for an available worker slot');
   assert.throws(() => api.workerMessages('other', initial.workers[0].id), /belong/);
   assert.throws(() => api.workerMessages('parent', initial.workers[0].id, -1), /cursor/);
@@ -187,7 +186,7 @@ test('architect preview rejects a concurrent goal and isolates returned snapshot
   api.control('parent', 'stop');
 });
 
-test('architect preview preserves earlier worker logs and enforces the lifetime assignment cap', t => {
+test('architect preview preserves earlier worker logs and ignores an old assignment limit', t => {
   const { api, timers, tick, history } = fixture(t);
   api.configure('parent', { ...config(2), maxAssignments: 3 });
   api.start('parent', 'First sample request');
@@ -195,25 +194,19 @@ test('architect preview preserves earlier worker logs and enforces the lifetime 
   const firstWorker = api.get('parent').workers[0];
   const firstLog = api.workerMessages('parent', firstWorker.id);
   api.start('parent', 'Second sample request');
-  assert.equal(api.get('parent').workers.length, 3);
-  assert.equal(api.get('parent').workers.filter(worker => worker.status === 'running').length, 1);
+  assert.equal(api.get('parent').workers.length, 4);
   while (timers.size) tick();
   assert.deepEqual(api.workerMessages('parent', firstWorker.id), firstLog);
-  assert.throws(() => api.start('parent', 'Over the assignment cap'), /assignment limit/);
-  assert.equal(history.filter(message => message.role === 'user').length, 2, 'rejected work must not create a user message');
-  api.configure('parent', { ...api.get('parent').config, maxAssignments: 4 });
-  api.start('parent', 'Continue after increasing the cap');
-  while (timers.size) tick();
-  assert.equal(api.get('parent').workers.length, 4);
+  assert.equal(history.filter(message => message.role === 'user').length, 2);
 });
 
-test('architect preview bounds Unicode summaries by bytes without broken characters', t => {
+test('architect preview keeps whole Unicode summaries, whatever an old setup says', t => {
   const { api, timers, tick } = fixture(t);
   const unicode = config(1); unicode.workers[0].name = '漢'.repeat(80);
   api.configure('parent', unicode); api.start('parent', 'Unicode sample');
   while (timers.size) tick();
   const summary = api.get('parent').workers[0].summary;
-  assert(new TextEncoder().encode(summary).length <= unicode.summaryLimit);
+  assert(new TextEncoder().encode(summary).length > unicode.summaryLimit);
   assert(!summary.includes('\uFFFD'));
 });
 
@@ -317,9 +310,14 @@ test('team profiles validate ownership names cap and application atomically', t 
   assert.deepEqual(api.profiles(), initialLibrary);
   assert.deepEqual(parents.get('parent'), initialParent);
   assert.equal(api.get('parent'), null);
-  for (let i = 1; i < 20; i++) api.saveProfile(undefined, `Team ${i}`, setup());
-  assert.throws(() => api.saveProfile(undefined, 'Over cap', setup()), /20/);
-  assert.equal(api.saveProfile(profile.id, 'Rename at cap', setup()).profiles.length, 20);
+  for (let i = 1; i <= 20; i++) api.saveProfile(undefined, `Team ${i}`, setup());
+  assert.equal(api.saveProfile(profile.id, 'Rename past the old cap', setup()).profiles.length, 21);
+});
+
+test('saved team profiles all survive a reload', t => {
+  const { api, host } = fixture(t);
+  for (let i = 1; i <= 25; i++) api.saveProfile(undefined, `Team ${i}`, setup());
+  assert.equal(createPreviewArchitect(host).profiles().profiles.length, 25);
 });
 
 test('team defaults migrate the latest owned legacy config once and never overwrite explicit disable', t => {
@@ -343,7 +341,6 @@ test('used teams apply valid profile changes without losing history and reject i
   api.control('parent', 'pause');
   const before = api.get('parent'), library = api.profiles(), parentHistory = structuredClone(history);
   const workerLogs = before.workers.map(worker => api.workerMessages('parent', worker.id));
-  assert.throws(() => api.configure('parent', { ...config(3), maxAssignments: 1 }), /existing assignment count/);
   assert.throws(() => api.configure('parent', config(2), { ...setup().architect, reasoningEffort: 'unsupported' }), /effort/);
   assert.deepEqual(api.profiles(), library);
   assert.deepEqual(api.get('parent'), before);
@@ -395,9 +392,6 @@ test('active team profile changes keep the latest pending setup and can cancel i
   assert.equal(api.profiles().activeProfileId, latest.id);
   replaced.pendingSetup.config.workers.length = 0;
   assert.deepEqual(api.get('parent').pendingSetup, latest.setup, 'pending snapshots do not expose scheduler state');
-  const remembered = api.profiles();
-  assert.throws(() => api.configure('parent', { ...latest.setup.config, maxAssignments: 1 }, latest.setup.architect), /existing assignment count/);
-  assert.deepEqual(api.profiles(), remembered);
   assert.deepEqual(api.get('parent').pendingSetup, latest.setup);
   const cancelled = api.configure('parent', effective.config, effective.architect);
   assert.equal(cancelled.pendingSetup, null);
@@ -422,14 +416,12 @@ test('active team profile changes keep the latest pending setup and can cancel i
   assert.equal(history.filter(message => message.role === 'user').length, 2);
 });
 
-test('architect preview carries lead guidance and rejects oversized guidance', t => {
+test('architect preview carries lead guidance of any size', t => {
   const { api } = fixture(t);
   assert.equal(api.configure('parent', { ...config(), leadGuidance: '  You only lead.  ' }).config.leadGuidance, 'You only lead.');
   assert.equal(api.configure('parent', { ...config(), leadGuidance: '   ' }).config.leadGuidance, undefined);
-  assert.throws(() => api.configure('parent', { ...config(), leadGuidance: 'x'.repeat(2001) }), /Lead guidance/);
-  // Native counts UTF-8 bytes: 700 three-byte characters are 2100 bytes but 700 UTF-16 units.
-  assert.throws(() => api.configure('parent', { ...config(), leadGuidance: '界'.repeat(700) }), /Lead guidance/);
-  assert.equal(api.configure('parent', { ...config(), leadGuidance: '界'.repeat(666) }).config.leadGuidance.length, 666);
+  assert.equal(api.configure('parent', { ...config(7), leadGuidance: 'x'.repeat(2001) }).config.workers.length, 7);
+  assert.equal(api.configure('parent', { ...config(), leadGuidance: '界'.repeat(700) }).config.leadGuidance.length, 700);
 });
 
 test('a guidance-only edit is a different team setup', () => {
@@ -446,4 +438,12 @@ test('named teams keep lead guidance and a separate effort per role', () => {
   assert.deepEqual(setup.config.workers.map(worker => worker.reasoningEffort), ['medium', null]);
   assert.equal(setup.config.leadGuidance, 'Lead only.');
   assert.equal('leadGuidance' in namedTeamSetup('Sol', sol, [sol]).config, false);
+});
+
+test('a trailing slash on either scope still overlaps and explains the wait', () => {
+  const worker = (id, status, files) => ({ id, name: id, status, files, dependsOn: [], readOnly: false, parentWorker: null });
+  const running = worker('A', 'running', ['src/']);
+  assert.equal(workerQueueReason(worker('B', 'queued', ['src/app.ts']), [running], 0), 'Waiting for A to finish editing shared files');
+  assert.equal(workerQueueReason(worker('B', 'queued', ['SRC']), [running], 0), 'Waiting for A to finish editing shared files');
+  assert.equal(workerQueueReason(worker('B', 'queued', ['lib//']), [running], 0), undefined);
 });

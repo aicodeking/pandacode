@@ -41,3 +41,39 @@ export async function olderByAfterId(fetch: Fetch, first: number, start: Message
   }
   return found;
 }
+
+/** A window of a worker's transcript. `hasOlder`: `workerOlder` can go on backward. `hasMore`:
+ * newer rows were left unread at the page cap. */
+export interface WorkerPage { messages: Message[]; hasOlder: boolean; hasMore: boolean }
+
+/** Worker rows after `afterId`, forward. `start` is a reply already in hand for that position. */
+export async function workerNewer(fetch: Fetch, afterId: number, maxPages: number, start?: MessagePage): Promise<WorkerPage> {
+  let found: Message[] = [];
+  let cursor = afterId;
+  let reply = start;
+  for (let n = 0; n < maxPages; n++) {
+    reply ??= await fetch(cursor ? { afterId: cursor } : {});
+    const fresh = pageMessages(reply).filter(m => typeof m?.id === 'number' && m.id > cursor);
+    found = [...found, ...fresh];
+    if (!reply?.hasMore || !fresh.length) return { messages: found, hasOlder: false, hasMore: false };
+    cursor = fresh[fresh.length - 1].id;
+    reply = undefined;
+  }
+  return { messages: found, hasOlder: false, hasMore: true };
+}
+
+/** A worker's newest page, whatever the transcript's size. An older host ignores `tail` and has
+ * no backward pages, so it is read forward from the start, up to the page cap. */
+export async function workerNewest(fetch: Fetch, maxPages: number): Promise<WorkerPage> {
+  const reply = await fetch({ tail: true });
+  if (reply?.tail !== true) return workerNewer(fetch, 0, maxPages, reply);
+  return { messages: pageMessages(reply), hasOlder: reply.hasOlder === true, hasMore: false };
+}
+
+/** The page before `beforeId`; an older host has none to give. */
+export async function workerOlder(fetch: Fetch, beforeId: number): Promise<WorkerPage> {
+  const reply = await fetch({ beforeId });
+  if (reply?.tail !== true) return { messages: [], hasOlder: false, hasMore: false };
+  const messages = pageMessages(reply).filter(m => m.id < beforeId);
+  return { messages, hasOlder: reply.hasOlder === true && messages.length > 0, hasMore: false };
+}

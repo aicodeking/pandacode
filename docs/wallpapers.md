@@ -1,10 +1,10 @@
-# Daily wallpapers
+# Wallpapers
 
-PandaCode includes 21 original anime scenery wallpapers: seven weekday sets with a morning, afternoon, and night scene each. One shared image spans the sidebar, thread, project board, top toolbar, and bottom status bar. The sidebar uses a translucent tint and soft blur, with its bamboo decorations removed. The toolbar and status bar are transparent and have no divider while a wallpaper is visible. Thread surfaces use translucent tints so the scenery carries through the composer, subagent panel, code blocks, and attachments. Rounded board task cards share the sidebar and thread panel's frosted material, with translucent hover, selection, and pressed states. Card text remains opaque; Start/Retry controls use translucent backgrounds without an additional blur. Disabling wallpapers or requesting increased contrast/reduced transparency restores solid cards and removes their blur. The inspector retains its normal surface.
+The thread is a window. By default it shows a live sky that follows the local time of day (sun, clouds, dawn and dusk, moon and stars); the clouds pick up wind while the agent works and part around the pointer. **Settings → Appearance → Wallpapers** (off by default) swaps the sky for PandaCode's 21 original anime scenery wallpapers: seven weekday sets with a morning, afternoon, and night scene each. The scene shows inside the conversation panel and the project board; the sidebar and the frame around the panels keep one fixed tint (translucent over the desktop on macOS). The toolbar and status bar are transparent and have no divider while a wallpaper is visible. Thread surfaces use translucent tints so the scenery carries through the composer, subagent panel, code blocks, and attachments. Rounded board task cards share the sidebar and thread panel's frosted material, with translucent hover, selection, and pressed states. Card text remains opaque; Start/Retry controls use translucent backgrounds without an additional blur. Disabling wallpapers or requesting increased contrast/reduced transparency restores solid cards and removes their blur. The inspector retains its normal surface.
 
 ## Schedule and preferences
 
-Daily wallpapers are on by default and follow the computer's local weekday and time:
+With the switch on, wallpapers follow the computer's local weekday and time:
 
 | Period | Local time |
 | --- | --- |
@@ -14,7 +14,7 @@ Daily wallpapers are on by default and follow the computer's local weekday and t
 
 At midnight the weekday changes, selecting the new day's night scene. The app also checks the current local time when its window regains focus or becomes visible, so it catches up after sleep or a timezone change. A scene does not change with the light/dark theme; the interface's protective treatment changes instead.
 
-Open **Settings → General → Wallpapers → Customize** for a live preview and these controls:
+Turn on **Settings → Appearance → Wallpapers** for a live preview and these controls:
 
 - **Wallpaper visibility:** drag or use the arrow keys to blend from **Solid (0%)** to **Wallpaper (100%)**. The default is 20%, keeping the original muted appearance. Zero removes the wallpaper image and restores normal workspace surfaces; 100% removes the protective scrim entirely. Text and controls remain fully opaque.
 - **Wallpaper blur:** soften the scenery from **Sharp (0 px)** to **Soft (24 px)**. Blur is saved independently of visibility, set, or favorite; changing it never turns a disabled wallpaper on. Existing preferences start at zero blur. The preview scales the blur for its smaller size. Only wallpaper images are filtered, and they extend three blur radii beyond the workspace to avoid faded edges. Text, controls, and conversation content remain sharp.
@@ -22,7 +22,7 @@ Open **Settings → General → Wallpapers → Customize** for a live preview an
 - **A weekday set:** keep that set and switch between its three scenes as the local time changes.
 - **A default wallpaper:** choose a morning, afternoon, or night card to keep that single scene across all times and days. **Resume rotation** returns to the selected set's schedule; choosing Automatic resumes the full weekly rotation.
 
-Settings also includes an on/off switch that preserves the selected set and favorite. Selecting a scene turns wallpapers on; choosing Solid leaves the selection saved for later. Visibility, blur, set, favorite, and enabled state are stored in `pandacode.wallpaperPreferences` and restored on launch. The earlier `pandacode.wallpapers` on/off preference is read on migration and continues to be written for compatibility. Invalid saved values fall back to validated defaults; only the 21 bundled scene identifiers can be selected. Changes synchronize between app windows.
+Settings also includes an on/off switch that preserves the selected set and favorite. Wallpapers saved before the live scenes arrived start switched off, with their choices kept: turning the switch on brings them back and stays on. Selecting a scene turns wallpapers on; choosing Solid leaves the selection saved for later. Visibility, blur, set, favorite, and enabled state are stored in `pandacode.wallpaperPreferences` and restored on launch. Saves carry `version: 2`; an older save still at the untouched defaults (on, 20%, sharp, automatic) migrates to off, and one the user customised keeps its on/off choice. The earlier `pandacode.wallpapers` flag is still written for compatibility. Invalid saved values fall back to validated defaults; only the 21 bundled scene identifiers can be selected. Changes synchronize between app windows.
 
 A request for increased contrast or reduced transparency automatically uses the solid surface and explains the override in the picker, without overwriting the saved choice. Reduced motion skips the transition.
 

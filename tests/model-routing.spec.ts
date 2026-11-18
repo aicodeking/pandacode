@@ -3,13 +3,14 @@ import { expect, test, type Page } from '@playwright/test';
 // Settings → Agents → Model routing, and the uncapped model catalog sent with an automatic team.
 const settings = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 
-async function install(page: Page, init?: () => void): Promise<void> {
+async function install(page: Page, init?: () => void, prepare?: (source: string) => string): Promise<void> {
   if (init) await page.addInitScript(init);
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch(); const source = await response.text();
     const marker = /async function invoke\(command, args\) \{/;
     expect(source).toMatch(marker);
-    await route.fulfill({ response, body: source.replace(marker, `async function invoke(command, args) {
+    const patched = prepare ? prepare(source) : source;
+    await route.fulfill({ response, body: patched.replace(marker, `async function invoke(command, args) {
       (window.__routing ??= { calls: [] }).calls.push({ command, args: structuredClone(args) });
       // Test hook: \`__routingFail[command] = message\` rejects that command until cleared.
       const failure = window.__routingFail?.[command];
@@ -28,7 +29,7 @@ async function install(page: Page, init?: () => void): Promise<void> {
 const calls = (page: Page, command: string): Promise<any[]> => page.evaluate(command => (window as any).__routing.calls.filter((entry: any) => entry.command === command), command);
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Agent teams', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click(); await settings(page).getByRole('tab', { name: 'Model routing', exact: true }).click();
 }
 async function closeSettings(page: Page): Promise<void> {
   await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
@@ -129,7 +130,7 @@ async function pickTeam(page: Page, name: string): Promise<void> {
 
 test('Team opens a menu of team kinds, turns the team on with the uncapped catalog and prepares routing', async ({ page }) => {
   await install(page);
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).toHaveAttribute('aria-haspopup', 'dialog');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
   await teamButton(page).click();
@@ -137,7 +138,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   await expect(page.getByRole('menuitemradio')).toHaveText([/No team/, /Cheap team/, /Balanced team/, /Best team/]);
   await expect(kind(page, 'No team')).toHaveAttribute('aria-checked', 'true');
   await kind(page, 'Cheap team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   const { config } = (await calls(page, 'architect_configure')).at(-1).args;
@@ -151,7 +152,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   await expect(kind(page, 'Cheap team')).toHaveAttribute('aria-checked', 'true');
   await page.keyboard.press('ArrowDown');
   await kind(page, 'Best team').press('Enter');
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   expect(await calls(page, 'architect_configure')).toHaveLength(configures);
   // Picking the current kind only closes the menu.
   const modes = (await calls(page, 'model_routing_configure')).length;
@@ -159,7 +160,7 @@ test('Team opens a menu of team kinds, turns the team on with the uncapped catal
   expect(await calls(page, 'model_routing_configure')).toHaveLength(modes);
   // No team turns the team off and leaves the mode for next time.
   await pickTeam(page, 'No team');
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
   expect((await calls(page, 'architect_configure')).at(-1).args.config).toBeNull();
   expect(await calls(page, 'model_routing_configure')).toHaveLength(modes);
@@ -169,14 +170,14 @@ test('the last team kind is remembered for new tasks and across reloads, and fol
   await install(page);
   await pickTeam(page, 'Best team');
   await page.locator('.task-item[data-id="session-1"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await teamButton(page).click();
   await expect(kind(page, 'Best team')).toHaveAttribute('aria-checked', 'false');
   await expect(page.getByRole('menuitemradio', { checked: true })).toHaveText(/No team/);
   await page.keyboard.press('Escape');
   await page.reload();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   await openAgents(page);
   await expect(settings(page).getByRole('radio', { name: 'Best' })).toHaveAttribute('aria-checked', 'true');
   // A change in Settings reaches the button without a reload; the modal makes the composer inert, so read its text.
@@ -190,7 +191,7 @@ test('the last team kind is remembered for new tasks and across reloads, and fol
   await expect(kind(page, 'Team')).toHaveAttribute('aria-checked', 'true');
   // A kind turns routing back on.
   await kind(page, 'Cheap team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   await openAgents(page);
   await expect(settings(page).getByRole('checkbox', { name: 'Pick worker models with Panda Router', exact: true })).toBeChecked();
@@ -235,7 +236,7 @@ test('a team that cannot turn on leaves the global mode alone', async ({ page })
   await kind(page, 'Best team').click();
   await expect(page.locator('.choice-menu-error')).toHaveText('The team could not be saved.');
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: off');
   await expect(teamButton(page)).not.toHaveAttribute('data-on');
 });
 
@@ -251,12 +252,12 @@ test('with routing off the menu offers a lead-picks team, and kinds say they tur
   // The lead-picks team leaves routing off.
   await kind(page, 'Team').click();
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: on');
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
   // A kind turns routing on, keeping the team.
   const configures = (await calls(page, 'architect_configure')).length;
   await pickTeam(page, 'Cheap team');
-  await expect(teamButton(page)).toHaveAccessibleName('Cheap team');
+  await expect(teamButton(page)).toHaveAccessibleName('Cheap team: on');
   expect((await calls(page, 'model_routing_configure')).at(-1).args).toEqual({ enabled: true, mode: 'cheapest' });
   expect(await calls(page, 'architect_configure')).toHaveLength(configures);
   await teamButton(page).click();
@@ -272,11 +273,11 @@ test('a status read during a pending change never overrides it', async ({ page }
   await kind(page, 'Balanced team').click();
   // The read starts after the change and answers first, with the old mode.
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   await page.waitForTimeout(300);
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   await page.evaluate(() => { delete (window as any).__routingDelay; window.dispatchEvent(new Event('focus')); });
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
 });
 
 test('without a routing status the menu still offers every choice, and recovers on the next render or focus', async ({ page }) => {
@@ -285,12 +286,12 @@ test('without a routing status the menu still offers every choice, and recovers 
   await expect(page.getByRole('menuitemradio')).toHaveText([/No team/, /Team/, /Cheap team/, /Balanced team/, /Best team/]);
   await expect(page.getByRole('group', { name: 'Worker models for every team · turns routing on' })).toBeVisible();
   await kind(page, 'Team').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Team');
+  await expect(teamButton(page)).toHaveAccessibleName('Team: on');
   await expect(teamButton(page)).toHaveAttribute('data-on', '');
   expect((await calls(page, 'architect_configure')).at(-1).args.config.auto).toBe(true);
   expect(await calls(page, 'model_routing_configure')).toHaveLength(0);
   await page.evaluate(() => { delete (window as any).__routingFail; window.dispatchEvent(new Event('focus')); });
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   // A render recovers too, and once loaded renders ask nothing.
   await page.evaluate(() => { (window as any).__routingFail = { model_routing_status: 'Router unavailable.' }; });
   await page.reload();
@@ -301,11 +302,11 @@ test('without a routing status the menu still offers every choice, and recovers 
   await page.waitForTimeout(3100);
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   const loads = (await calls(page, 'model_routing_status')).length;
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(teamButton(page)).toHaveAccessibleName('Balanced team');
+  await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
   expect(await calls(page, 'model_routing_status')).toHaveLength(loads);
 });
 
@@ -316,11 +317,11 @@ test('a routing change keeps the prompt focus and caret', async ({ page }) => {
   await prompt.fill('hello world'); await prompt.focus();
   await prompt.evaluate((el: HTMLTextAreaElement) => el.setSelectionRange(5, 5));
   await page.evaluate(() => window.dispatchEvent(new CustomEvent('pandacode:routing', { detail: { enabled: true, mode: 'quality', minP: 0.5, profiler: 'ready', error: null } })));
-  await expect(teamButton(page)).toHaveAccessibleName('Best team');
+  await expect(teamButton(page)).toHaveAccessibleName('Best team: on');
   expect(await prompt.evaluate((el: HTMLTextAreaElement) => [document.activeElement === el, el.selectionStart, el.value])).toEqual([true, 5, 'hello world']);
 });
 
-test('the Team button keeps its label and fits the toolbar from wide to the narrowest window', async ({ page }) => {
+test('the Team button keeps its accessible label and fits the toolbar from wide to the narrowest window', async ({ page }) => {
   await install(page);
   await pickTeam(page, 'Balanced team');
   for (const theme of ['light', 'dark']) {
@@ -332,11 +333,13 @@ test('the Team button keeps its label and fits the toolbar from wide to the narr
       const layout = await page.evaluate(() => {
         const toolbar = document.querySelector('.composer-toolbar')!, tools = document.querySelector('.composer-tools')!.getBoundingClientRect();
         const button = document.querySelector('#team-trigger')!, box = button.getBoundingClientRect(), mode = document.querySelector('#mode-picker-trigger')!.getBoundingClientRect();
-        const label = button.querySelector('span')!;
-        return { toolsRight: tools.right, right: box.right, overflow: toolbar.scrollWidth - toolbar.clientWidth, center: box.top + box.height / 2, modeCenter: mode.top + mode.height / 2, shown: label.offsetWidth > 0, fits: label.scrollWidth <= label.clientWidth };
+        const label = button.querySelector('.sr-only')!;
+        return { toolsRight: tools.right, right: box.right, width: box.width, overflow: toolbar.scrollWidth - toolbar.clientWidth, center: box.top + box.height / 2, modeCenter: mode.top + mode.height / 2, label: label.textContent };
       });
-      expect(layout.shown).toBe(width > 650);
-      expect(layout.fits).toBe(true);
+      // The tray is icons at every width; the label stays in the DOM, clipped, as the accessible name.
+      expect(layout.label).toBe('Balanced team');
+      await expect(teamButton(page)).toHaveAccessibleName('Balanced team: on');
+      expect(layout.width).toBeLessThan(44);
       expect(layout.right).toBeLessThanOrEqual(layout.toolsRight);
       expect(layout.overflow).toBeLessThanOrEqual(0);
       expect(Math.abs(layout.center - layout.modeCenter)).toBeLessThanOrEqual(2);
@@ -453,24 +456,82 @@ test('a long catalog shows its recent models and Add model… adds one for teams
   const dialog = page.getByRole('dialog', { name: 'Models for teams: Hermes Agent' });
   const search = dialog.getByRole('searchbox', { name: 'Search Hermes Agent models' });
   await expect(search).toBeFocused();
-  await expect(dialog.getByRole('checkbox', { name: /Nous Sample 1\b/ })).toBeDisabled();
-  await expect(dialog.getByText('Recently used, always included').first()).toBeVisible();
+  // A recent model is on but no longer forced: it can be turned off (issue #315).
+  const first = dialog.getByRole('checkbox', { name: /Nous Sample 1\b/ });
+  await expect(first).toBeChecked();
+  await expect(first).toBeEnabled();
+  await expect(dialog.getByText('Recently used').first()).toBeVisible();
   await search.fill('sample 12');
   await dialog.getByRole('checkbox', { name: /Nous Sample 12/ }).check();
   await expect(dialog.getByRole('status')).toHaveText('1 added');
+  await search.fill('');
+  await first.uncheck();
+  await expect(dialog.getByRole('status')).toHaveText('1 added');
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.team-models.excluded.hermes'))).toBe('["nous/sample-1"]');
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(settings(page)).toBeVisible();
   await expect(list.getByRole('button', { name: 'Add model…', exact: true })).toBeFocused();
-  await expect(list.locator('.routing-pool-limit')).toHaveText('Showing 11 of 14 models · Add model…');
+  await expect(list.locator('.routing-pool-limit')).toHaveText('Showing 10 of 14 models · Add model…');
   await expect(list.getByRole('checkbox', { name: 'Use Nous Sample 12 (Hermes Agent) for teams' })).toBeChecked();
+  await expect(list.getByRole('checkbox', { name: 'Use Nous Sample 1 (Hermes Agent) for teams' })).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('pandacode.team-models.added.hermes'))).toBe('["nous/sample-12"]');
-  // The team catalog follows: Try it routes over the limited set plus the added model.
+  // The team catalog follows: Try it routes over the limited set plus the added model; the dropped one is out.
   await settings(page).getByRole('textbox', { name: 'Task to route' }).fill('Fix the failing login test');
   await settings(page).getByRole('button', { name: 'Route', exact: true }).click();
   await expect.poll(async () => (await calls(page, 'model_routing_route')).length).toBe(1);
   const hermes = (await calls(page, 'model_routing_route'))[0].args.pool.filter((m: any) => m.provider === 'hermes').map((m: any) => m.model);
   expect(hermes).toContain('nous/sample-12');
   expect(hermes).not.toContain('nous/sample-11');
+  expect(hermes).not.toContain('nous/sample-1');
   expect(hermes).not.toContain('anthropic/claude-sonnet-4');
+  // Turning the dropped model back on clears its exclusion.
+  await list.getByRole('button', { name: 'Add model…', exact: true }).click();
+  await dialog.getByRole('checkbox', { name: /Nous Sample 1\b/ }).check();
+  await expect(list.locator('.routing-pool-limit')).toHaveText('Showing 11 of 14 models · Add model…');
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.team-models.excluded.hermes'))).toBe('[]');
+});
+
+test('duplicate model names show their id and stay individually togglable (issue #315)', async ({ page }) => {
+  // The sample Hermes catalog gains a second endpoint under a name it already uses, as
+  // deepseek/deepseek-flash and opencode-go/deepseek-v4.1-flash both display “DeepSeek V4.1 Flash”.
+  await install(page, () => {
+    (window as any).__dupHermes = true;
+    localStorage.setItem('pandacode.recent-models.hermes', JSON.stringify(['anthropic/claude-sonnet-4', ...Array.from({ length: 10 }, (_, i) => `nous/sample-${i + 1}`)]));
+  }, source => {
+    const marker = /switch\s*\(command\)\s*\{/;
+    expect(source).toMatch(marker);
+    return source.replace(marker, `if (window.__dupHermes && command === 'list_provider_models' && args.provider === 'hermes') catalogs.hermes.push({ id: 'opencode-go/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'The same card through a second endpoint.' });
+      ${source.match(marker)![0]}`);
+  });
+  await openAgents(page);
+  const group = settings(page).getByRole('group', { name: 'Models for teams', exact: true });
+  await group.getByRole('button', { name: 'Hermes Agent models', exact: true }).click();
+  const list = group.locator('#routing-pool-hermes');
+  // Both team rows show their id; the unique names show none.
+  await expect(list.getByRole('checkbox', { name: 'Use Claude Sonnet 4 · anthropic/claude-sonnet-4 (Hermes Agent) for teams' })).toBeChecked();
+  await expect(list.getByRole('checkbox', { name: 'Use Claude Sonnet 4 · opencode-go/claude-sonnet-4 (Hermes Agent) for teams' })).toHaveCount(0); // Not in the recent set: not in teams yet.
+  await expect(list.getByRole('checkbox', { name: 'Use Nous Sample 1 (Hermes Agent) for teams' })).toBeChecked();
+  await list.getByRole('button', { name: 'Add model…', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Models for teams: Hermes Agent' });
+  const dupe = dialog.getByRole('checkbox', { name: /Claude Sonnet 4 opencode-go\/claude-sonnet-4/ });
+  const other = dialog.getByRole('checkbox', { name: /Claude Sonnet 4 anthropic\/claude-sonnet-4/ });
+  // The eleventh recent model has no slot, and its switch says so until a slot opens.
+  const next = dialog.getByRole('checkbox', { name: /Nous Sample 10\b/ });
+  await expect(next).not.toBeChecked();
+  await expect(dialog.getByRole('checkbox', { name: /Nous Sample 1\b/ })).toBeChecked();
+  await expect(dupe).not.toBeChecked();
+  await expect(other).toBeChecked();
+  await dupe.check();
+  await expect(dupe).toBeChecked();
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.team-models.added.hermes'))).toBe('["opencode-go/claude-sonnet-4"]');
+  await other.uncheck();
+  await expect(other).not.toBeChecked();
+  await expect(next).toBeChecked();
+  expect(await page.evaluate(() => localStorage.getItem('pandacode.team-models.excluded.hermes'))).toBe('["anthropic/claude-sonnet-4"]');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  // The pool keeps one row per id, tells them apart, and follows the switch: the added endpoint is on, the dropped one gone.
+  await expect(list.getByRole('checkbox', { name: 'Use Claude Sonnet 4 · opencode-go/claude-sonnet-4 (Hermes Agent) for teams' })).toBeChecked();
+  await expect(list.getByRole('checkbox', { name: 'Use Claude Sonnet 4 · anthropic/claude-sonnet-4 (Hermes Agent) for teams' })).toHaveCount(0);
 });

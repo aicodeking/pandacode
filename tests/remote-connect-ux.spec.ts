@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 
 async function showRemoteSettings(page: Page) {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click(); await page.getByRole('tab', { name: 'Remote access' }).click();
   return page.getByRole('tabpanel', { name: 'Remote access' });
 }
 async function openRemoteSettings(page: Page) {
@@ -153,7 +153,8 @@ test('mirror stop feedback is immediate for the button and Escape', async ({ pag
 test('remote settings distinguish loading, empty, and retryable status/device failures', async ({ page }) => {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
-  await page.evaluate(() => { (window as any).__remoteStatusFailures = 1; });
+  // Twice: Recommended, where Settings opens, asks first and shows no status when it can't tell.
+  await page.evaluate(() => { (window as any).__remoteStatusFailures = 2; });
   const panel = await showRemoteSettings(page);
   await expect(panel.getByRole('alert')).toContainText('Couldn’t load remote access');
   await expect(panel.getByText('No devices yet.')).toHaveCount(0);

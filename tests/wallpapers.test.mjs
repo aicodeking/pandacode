@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import { wallpaperAt, nextWallpaperChange, normalizeWallpaperPreferences } from '../src/wallpapers.ts';
+import { wallpaperAt, nextWallpaperChange, normalizeWallpaperPreferences, migrateWallpaperPreferences, WALLPAPER_PREFERENCES_VERSION } from '../src/wallpapers.ts';
 
 test('wallpaper preferences default safely and validate persisted fields independently', () => {
-  const defaults = { enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null };
+  const defaults = { enabled: false, visibility: 20, blur: 0, set: 'automatic', pinned: null };
   for (const invalid of [undefined, null, false, 'mon', 10, [], { visibility: '60', enabled: 'false', set: 'Monday', pinned: '../mon-night' }]) {
     assert.deepEqual(normalizeWallpaperPreferences(invalid), defaults);
   }
@@ -34,7 +34,7 @@ test('wallpaper preferences accept only the bundled scene identifiers', () => {
   for (const set of ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun']) {
     for (const period of ['morning', 'afternoon', 'night']) {
       const pinned = `${set}-${period}`;
-      assert.deepEqual(normalizeWallpaperPreferences({ set, pinned }), { enabled: true, visibility: 20, blur: 0, set, pinned });
+      assert.deepEqual(normalizeWallpaperPreferences({ set, pinned }), { enabled: false, visibility: 20, blur: 0, set, pinned });
     }
   }
   for (const pinned of ['mon-noon', 'mon-night.webp', 'MON-night', '/wallpapers/mon-night', 'mon-night?x=1', 1, {}, []]) {
@@ -104,4 +104,17 @@ test('ships 21 distinct local WebP scenes within a five MiB collection budget', 
   }
   assert.equal(hashes.size, 21);
   assert.ok(bytes < 5 * 1024 * 1024);
+});
+
+test('wallpapers are off by default, and an older save starts off with its choices kept', () => {
+  assert.equal(WALLPAPER_PREFERENCES_VERSION, 3);
+  assert.equal(migrateWallpaperPreferences(null).enabled, false);
+  // An older save starts off whatever it held, and keeps its choices for when the switch is turned on again.
+  for (const version of [undefined, 1, 2]) {
+    const migrated = migrateWallpaperPreferences({ version, enabled: true, visibility: 45, blur: 6, set: 'fri', pinned: 'tue-night' });
+    assert.deepEqual(migrated, { enabled: false, visibility: 45, blur: 6, set: 'fri', pinned: 'tue-night' }, String(version));
+  }
+  assert.equal(migrateWallpaperPreferences({}).enabled, false);
+  assert.equal(migrateWallpaperPreferences({ version: 3, enabled: true, visibility: 20 }).enabled, true, 'a current save is taken as it is');
+  assert.equal(migrateWallpaperPreferences({ version: 3, visibility: 20 }).enabled, false);
 });

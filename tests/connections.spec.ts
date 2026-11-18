@@ -1,12 +1,11 @@
 import { expect, test } from '@playwright/test';
 
-test('a named connection is added in Settings, chosen for a task in the model picker, and kept', async ({ page }) => {
+test('a named connection is managed in Settings and never becomes a picker account', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('#named-connections');
   await card.getByRole('button', { name: 'Add connection', exact: true }).click();
   await card.getByLabel('Harness', { exact: true }).selectOption('claude');
@@ -19,10 +18,12 @@ test('a named connection is added in Settings, chosen for a task in the model pi
   await card.getByLabel('Secret').check();
   await expect(card.getByLabel('Value')).toHaveAttribute('type', 'password');
   await card.getByRole('button', { name: 'Save connection', exact: true }).click();
-  await expect(card.getByRole('status')).toHaveText('Connection saved. Choose it in the model picker.');
-  await expect(card.locator('.named-connection')).toHaveText(/Claude Work\s*Claude Code/);
+  await expect(card.getByRole('status')).toHaveText('Connection saved.');
+  // A Claude Code connection is an account row in the Claude Code accounts card.
+  await expect(card.locator('[data-pool="claude"] [data-pool-member]').filter({ hasText: 'Claude Work' })).toHaveCount(1);
   // Editing shows the secret by name only; its value never comes back.
-  await card.getByRole('button', { name: 'Edit Claude Work', exact: true }).click();
+  await card.getByRole('button', { name: 'More for Claude Work', exact: true }).click();
+  await page.getByRole('menu', { name: 'Actions for Claude Work' }).getByRole('menuitem', { name: 'Edit…' }).click();
   await expect(card.getByLabel('Variable name')).toHaveValue('ANTHROPIC_API_KEY');
   await expect(card.getByLabel('Value')).toHaveValue('');
   await card.getByRole('button', { name: 'Cancel', exact: true }).click();
@@ -30,21 +31,10 @@ test('a named connection is added in Settings, chosen for a task in the model pi
 
   await page.locator('#model-picker-trigger').click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
-  await picker.getByRole('tab', { name: 'Claude Work', exact: true }).click();
-  await picker.getByRole('option', { name: 'Claude Work · Claude Sonnet 5', exact: true }).click();
-  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Work · Claude Sonnet 5');
-
-  // Another task keeps the harness's own setup; returning shows the connection again.
-  await page.locator('.task-item:not(.selected)').first().click();
-  await expect(page.locator('#model-picker-trigger')).not.toContainText('Claude Work');
-  await page.locator(`.task-item[data-id="${taskId}"]`).click();
-  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Work · Claude Sonnet 5');
-  await page.locator('#model-picker-trigger').click();
-  await expect(picker.getByRole('tab', { name: 'Claude Work', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(picker.locator('.model-menu-option[aria-current="true"]')).toHaveAttribute('aria-label', 'Claude Work · Claude Sonnet 5');
-  // The plain harness clears it.
-  await picker.getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await expect(picker.getByRole('tab', { name: 'Claude Work', exact: true })).toHaveCount(0);
+  await expect(picker.getByRole('tab', { name: 'Claude Code', exact: true })).toHaveCount(1);
   await picker.getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true }).click();
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Sonnet 5');
   await expect(page.locator('#model-picker-trigger')).not.toContainText('Claude Work');
   expect(errors).toEqual([]);
 });
@@ -79,5 +69,156 @@ test('a task at its plan limit can continue on another connection of the same ha
     ['send_message', 'Continue where you left off. (Moved to the connection “Claude Personal” because Claude Work reached its usage limit.)'],
   ]);
   await expect(banner).toHaveCount(0);
-  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Personal');
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Sonnet 5');
+  await expect(page.locator('#model-picker-trigger')).not.toContainText('Claude Personal');
+});
+
+const seedConnection = async (page: import('@playwright/test').Page, pooled = false) => {
+  const connection = { id: 'work', provider: 'claude', name: 'Claude Work', args: [], env: {}, secretEnv: [], configDir: '/Users/sample/.claude-work', revision: 1 };
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const body = source.replace(/switch\s*\(command\)\s*\{/, `(window.__calls ??= []).push({ command, args: structuredClone(args) });
+      if (command === window.__failCommand) throw new Error('Could not save the connection.');
+      switch (command) {`);
+    await route.fulfill({ response, body: `${body}\npreviewConnections = ${JSON.stringify({ connections: [connection], tasks: {}, pools: pooled ? ['claude'] : [] })};\nwindow.__fixtureAssign = sessionId => { previewConnections.tasks[sessionId] = 'work'; };\n` });
+  });
+};
+const callsNamed = (page: import('@playwright/test').Page, ...names: string[]) => page.evaluate(wanted => (window as any).__calls.filter((c: any) => wanted.includes(c.command)), names);
+async function restoreSavedConnection(page: import('@playwright/test').Page, sessionId: string | null) {
+  await page.evaluate(id => (window as any).__fixtureAssign(id), sessionId);
+  // Read the saved native snapshot through the normal picker load, without selecting an account.
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await expect(async () => {
+    if (!await picker.isVisible()) await page.locator('#model-picker-trigger').click();
+    await expect(picker).toBeVisible({ timeout: 1000 });
+  }).toPass();
+  await page.keyboard.press('Escape');
+}
+
+
+test('a new pooled task leaves account selection to native routing instead of inheriting another task', async ({ page }) => {
+  await seedConnection(page, true);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await restoreSavedConnection(page, 'session-1');
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Sonnet 5');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  await page.locator('#model-picker-trigger').click();
+  const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
+  await expect(picker.getByRole('tab', { name: 'Claude Work', exact: true })).toHaveCount(0);
+  await picker.getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await picker.getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true }).click();
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+  await prompt.fill('Let the native pool choose'); await prompt.press('Enter');
+  await expect(page.locator('.user-message')).toContainText('Let the native pool choose');
+  expect(await callsNamed(page, 'create_session', 'chat_create')).toHaveLength(1);
+  expect(await callsNamed(page, 'connection_assign')).toEqual([]);
+  await expect.poll(async () => (await callsNamed(page, 'send_message')).length).toBe(1);
+  const [{ args: sent }] = await callsNamed(page, 'send_message');
+  expect(sent.sessionId).not.toBe('session-1');
+  await expect(page.locator(`#navigation .task-item[data-id="${sent.sessionId}"]`)).toHaveCount(1);
+});
+
+for (const pooled of [false, true]) test(`issue 252: moving a saved draft to No project preserves text with pooling ${pooled ? 'on' : 'off'}`, async ({ page }) => {
+  await seedConnection(page, pooled);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  // Restore a legacy saved draft binding; there is no manual account picker.
+  const draftId = await page.locator('#prompt').getAttribute('data-session-id');
+  await restoreSavedConnection(page, draftId);
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+  await prompt.fill('Typed before moving');
+  const draft = draftId!;
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(prompt).toHaveValue('Typed before moving');
+  await expect.poll(async () => (await callsNamed(page, 'discard_draft')).map((c: any) => c.args.sessionId)).toEqual([draft]);
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Sonnet 5');
+  const [{ args: chat }] = await callsNamed(page, 'chat_create');
+  expect([chat.provider, chat.model]).toEqual(['claude', 'sonnet']);
+  await prompt.press('Enter');
+  await expect(page.locator('.user-message')).toContainText('Typed before moving');
+  await expect.poll(async () => (await callsNamed(page, 'send_message')).length).toBe(1);
+  const sent = await callsNamed(page, 'send_message');
+  const assigned = await callsNamed(page, 'connection_assign');
+  if (pooled) expect(assigned).toEqual([]);
+  else expect(assigned.map((c: any) => c.args)).toEqual([{ sessionId: sent[0].args.sessionId, connectionId: 'work' }]);
+  expect(await callsNamed(page, 'connection_pool_set')).toEqual([]);
+  await expect(page.locator(`#navigation .task-item[data-id="${sent[0].args.sessionId}"]`)).toHaveCount(1);
+  await expect(page.locator(`#navigation .task-item[data-id="${draft}"]`)).toHaveCount(0);
+});
+
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==';
+const pasteImage = (page: import('@playwright/test').Page) => page.evaluate(base64 => {
+  const data = new DataTransfer();
+  data.items.add(new File([Uint8Array.from(atob(base64), c => c.charCodeAt(0))], 'shot.png', { type: 'image/png' }));
+  document.querySelector('#prompt')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+}, PNG);
+const draftWithTextAndImage = async (page: import('@playwright/test').Page) => {
+  await seedConnection(page);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+  await prompt.fill('Look at this');
+  await pasteImage(page);
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  await expect(prompt).toHaveValue('Look at this');
+  return prompt;
+};
+
+test('a new task moved to No project ends as one chat holding its text and attachment, with no draft left', async ({ page }) => {
+  const prompt = await draftWithTextAndImage(page);
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(page.locator('.chat-welcome')).toBeVisible();
+  await expect(prompt).toHaveValue('Look at this');
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  await expect.poll(async () => (await callsNamed(page, 'discard_draft')).length).toBe(1);
+  expect(await callsNamed(page, 'chat_create')).toHaveLength(1);
+  await prompt.press('Enter');
+  await expect.poll(async () => (await callsNamed(page, 'send_message')).length).toBe(1);
+  const [{ args: sent }] = await callsNamed(page, 'send_message');
+  expect(sent.imageIds).toHaveLength(1);
+  expect(sent.text).toContain('Look at this');
+  // New task finds no hidden draft to reopen: it creates a fresh one with an empty composer.
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  await expect(prompt).toHaveValue('');
+  await expect(page.locator('#attachments .prompt-chip')).toHaveCount(0);
+});
+
+test('a failed move to No project reports the error and leaves the text and attachment on the new task', async ({ page }) => {
+  const prompt = await draftWithTextAndImage(page);
+  const savedDraft = await page.locator('#prompt').getAttribute('data-session-id');
+  await restoreSavedConnection(page, savedDraft);
+  await expect(page.locator('#model-picker-trigger')).toContainText('Claude Sonnet 5');
+  const draft = await page.locator('#prompt').getAttribute('data-session-id');
+  await page.evaluate(() => { (window as any).__failCommand = 'connection_assign'; });
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(page.getByText('Could not save the connection.')).toBeVisible();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', draft!);
+  await expect(prompt).toHaveValue('Look at this');
+  await expect(page.locator('#attachments .prompt-chip-image')).toContainText('shot.png');
+  expect(await callsNamed(page, 'discard_draft')).toHaveLength(0);
+});
+
+test('issue 193: New chat opens one chat, even when the native refresh lands first and on a second click', async ({ page }) => {
+  await seedConnection(page);
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  const before = await page.locator('#navigation .task-item').count();
+  await page.getByRole('button', { name: 'New chat', exact: true }).click();
+  const prompt = page.getByRole('textbox', { name: 'Message your coding agent', exact: true });
+  await expect(page.locator('.chat-welcome')).toBeVisible();
+  await expect(page.locator('#navigation .task-item')).toHaveCount(before + 1);
+  await page.getByRole('button', { name: 'New chat', exact: true }).click();
+  await expect(prompt).toBeFocused();
+  await expect(page.locator('#navigation .task-item')).toHaveCount(before + 1);
+  expect(await callsNamed(page, 'chat_create')).toHaveLength(1);
 });

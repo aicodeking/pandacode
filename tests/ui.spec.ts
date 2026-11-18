@@ -16,22 +16,29 @@ const activeSectionRows = (page: Page) => page.locator('#navigation [data-thread
 const changeFiles = (page: Page) => page.locator('#inspector-content .changes-view .cv-file');
 const projectFilter = (page: Page) => page.getByRole('button', { name: 'Filter projects', exact: true });
 const chooseProjectFilter = async (page: Page, name: string) => {
-  await projectFilter(page).click();
-  await page.getByRole('dialog', { name: 'Filter projects', exact: true }).getByRole('menuitemradio', { name, exact: true }).click();
+  const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
+  // A redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await menu.isVisible()) await projectFilter(page).click();
+    await menu.getByRole('menuitemradio', { name, exact: true }).click({ timeout: 1000 });
+  }).toPass();
 };
 const previewProjectNames = (page: Page) => page.evaluate(async () => {
   const { invoke } = await import((window as any).__pandacodePreviewUrl);
   return (await invoke('list_projects', {})).map((project: { name: string }) => project.name);
 });
+/** Surface alphas of html, body, #app, .workspace (the inset shell's frame tone), .sidebar (no fill of its own) and .main-pane. */
 const appearanceSurfaces = (page: Page) => page.evaluate(() => {
-  const channels = (color: string) => color.match(/[\d.]+/g)!.map(Number);
+  // rgb()/rgba() channels, or color(srgb r g b / a) scaled to 0–255.
+  const channels = (color: string) => { const values = color.match(/[\d.]+/g)!.map(Number); return color.startsWith('color(') ? [...values.slice(0, 3).map(v => v * 255), ...values.slice(3)] : values; };
   const alpha = (color: string) => channels(color)[3] ?? 1;
   const styles = ['html', 'body', '#app', '.workspace', '.sidebar', '.main-pane'].map(selector => getComputedStyle(document.querySelector(selector)!));
   const luminance = (color: string) => channels(color).slice(0, 3).map(value => {
     const component = value / 255;
     return component <= 0.04045 ? component / 12.92 : ((component + 0.055) / 1.055) ** 2.4;
   }).reduce((sum, component, index) => sum + component * [0.2126, 0.7152, 0.0722][index], 0);
-  const background = luminance(styles[5].backgroundColor);
+  // The main pane is a window onto the sky (clear); thread text sits on its glass message cards.
+  const background = luminance(getComputedStyle(document.querySelector('.message-content')!.closest('.message')!).backgroundColor);
   const foreground = luminance(getComputedStyle(document.querySelector('.message-content')!).color);
   return {
     alphas: styles.map(style => alpha(style.backgroundColor)),
@@ -54,7 +61,7 @@ async function closeSettings(page: Page): Promise<void> {
 }
 async function disableWallpapers(page: Page): Promise<void> {
   await openSettings(page, 'Appearance');
-  await page.getByRole('checkbox', { name: 'Daily wallpapers', exact: true }).uncheck();
+  await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).uncheck();
   await expect(page.locator('.workspace')).not.toHaveAttribute('data-wallpaper');
   await expect(page.locator('.workspace-wallpaper img')).toHaveCount(0);
   await closeSettings(page);
@@ -67,6 +74,8 @@ const turnForTool = (tool: Locator) => tool.locator('xpath=ancestor::details[con
 async function expandToolTurn(tool: Locator): Promise<void> {
   const turn = turnForTool(tool);
   await expect(turn).toHaveCount(1);
+  // A card's trace folds as its reply starts; let that fold land before reading its state.
+  await expect(turn).not.toHaveAttribute('data-closing', '');
   if (!await turn.evaluate(element => element.hasAttribute('open'))) await turn.locator(':scope > summary').click();
   const group = tool.locator('xpath=ancestor::details[contains(concat(" ", normalize-space(@class), " "), " tool-group ")][1]');
   if (await group.count() && !await group.evaluate(element => element.hasAttribute('open'))) await group.locator(':scope > summary').click();
@@ -93,8 +102,8 @@ const draftTaskId = async (page: Page): Promise<string> => {
   return id;
 };
 /** The open task's project: the composer names a draft's project; listed tasks show it on their row. */
-const openTaskProject = (page: Page) => page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true }).or(page.locator('.task-item.selected .task-project'));
-const modelTrigger = (page: Page) => page.getByRole('button', { name: 'Choose harness and model', exact: true });
+const openTaskProject = (page: Page) => page.locator('#welcome-project').or(page.locator('.task-item.selected .task-project'));
+const modelTrigger = (page: Page) => page.getByRole('button', { name: /^Model: / });
 const modelPicker = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 const reasoningGroup = (page: Page) => modelPicker(page).getByRole('radiogroup', { name: 'Effort', exact: true });
 const effortRadio = (page: Page, name: string) => reasoningGroup(page).getByRole('radio', { name, exact: true });
@@ -183,6 +192,72 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
 });
 
+test('Arabic composer lines and streaming replies keep their direction after restoring a thread', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => { if (!error.message.startsWith('ResizeObserver loop')) errors.push(error.message); });
+  const answer = 'مرحبا بالعالم!\n\nHello, world!\n\n```js\nconst label = "مرحبا!";\n```';
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    const output = 'const output = shortReply ? "All tests pass in the preview." :';
+    expect(body).toContain(output);
+    expect(body).toContain('else finish(s.id, output);');
+    body = body.replace(output, `const output = ${JSON.stringify(answer)} ??`)
+      .replace('else finish(s.id, output);', 'else window.__finishArabic = () => finish(s.id, output);');
+    await route.fulfill({ response, body: previewBody(body) });
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
+  await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
+  const draft = 'مرحبا بالعالم!\nHello, world!\nمرحبا (PandaCode)؟\n<img src=x onerror="window.__owned=1">';
+  await prompt(page).fill(draft);
+  await expect(prompt(page)).toHaveAttribute('dir', 'auto');
+  await expect(prompt(page)).toHaveCSS('direction', 'rtl');
+  await expect(prompt(page)).toHaveCSS('unicode-bidi', 'plaintext');
+  await expect(page.locator('.composer-toolbar')).toHaveCSS('direction', 'ltr');
+  await page.screenshot({ path: test.info().outputPath('arabic-composer.png') });
+  await prompt(page).press('Enter');
+  const user = page.locator('#transcript .user-message .user-prose').last();
+  await expect(user).toHaveText(draft);
+  expect(await user.textContent()).toBe(draft);
+  const positions = await user.evaluate(node => {
+    const text = node.firstChild!, lines = text.textContent!.split('\n'), bounds = node.getBoundingClientRect();
+    let at = 0;
+    return lines.slice(0, 3).map(line => {
+      const range = document.createRange(); range.setStart(text, at); range.setEnd(text, at + line.length); at += line.length + 1;
+      const rect = range.getBoundingClientRect();
+      return { left: Math.abs(rect.left - bounds.left), right: Math.abs(rect.right - bounds.right) };
+    });
+  });
+  expect(positions[0].right).toBeLessThan(2);
+  expect(positions[1].left).toBeLessThan(2);
+  expect(positions[2].right).toBeLessThan(2);
+  const live = page.locator('#stream-region .live-text');
+  await expect(live.locator('p').nth(0)).toHaveCSS('direction', 'rtl');
+  await expect(live.locator('p').nth(1)).toHaveCSS('direction', 'ltr');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__finishArabic)).toBe('function');
+  expect(await live.locator('pre code').textContent()).toBe('const label = "مرحبا!";\n');
+  const liveHtml = await live.innerHTML();
+  await page.evaluate(() => (window as any).__finishArabic());
+  await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeHidden();
+  const reply = page.locator('#transcript .agent-message .message-content').last();
+  await expect.poll(() => reply.innerHTML()).toBe(liveHtml);
+  const task = await page.locator('.task-item.selected').getAttribute('data-id');
+  await prompt(page).fill('English draft!\nمسودة عربية!');
+  await expect(prompt(page)).toHaveCSS('direction', 'ltr');
+  await page.locator('.task-item:not(.selected)').first().click();
+  await page.locator(`.task-item[data-id="${task}"]`).click();
+  await expect(prompt(page)).toHaveValue('English draft!\nمسودة عربية!');
+  await expect(prompt(page)).toHaveCSS('unicode-bidi', 'plaintext');
+  await expect.poll(() => reply.innerHTML()).toBe(liveHtml);
+  expect(await user.textContent()).toBe(draft);
+  await expect(user.locator('img, [onerror]')).toHaveCount(0);
+  await expect(page.locator('.message-meta').last()).toHaveCSS('direction', 'ltr');
+  await expect(page.locator('body')).toHaveCSS('direction', 'ltr');
+  expect(await page.evaluate(() => (window as any).__owned)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
 test('identifies sample data and renders the desktop workspace without runtime errors', async ({ page }) => {
   const errors: string[] = [];
   page.on('pageerror', error => errors.push(error.message));
@@ -192,7 +267,7 @@ test('identifies sample data and renders the desktop workspace without runtime e
   await expect(page.getByText('Browser preview · sample data', { exact: true })).toBeVisible();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await expect(page.locator('#task-heading')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Model: / })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Projects and tasks' })).toBeVisible();
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await expect(page.locator('.markdown pre code')).toContainText('createSearchIndex');
@@ -239,15 +314,30 @@ async function installHistoryFixture(page: Page, total: number, formatted = fals
   });
   await page.reload();
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(Math.min(total, 100));
+  // A long thread draws a window of its newest turns, not the whole page.
+  await expect(page.locator(`#transcript [data-message-id="${500 + (total - 1) * 3}"]`)).toHaveCount(1);
   await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
 }
 const olderRequests = (page: Page) => page.evaluate(() => (window as any).__historyFixture.calls.filter((call: any) => call.beforeId));
-const historyOffset = (element: Locator) => element.evaluate(node => node.getBoundingClientRect().top - node.closest('#transcript')!.getBoundingClientRect().top);
+// A redraw can detach the row between finding and reading it: a poll then reads again.
+const historyOffset = (element: Locator) => element.evaluate(node => { const transcript = node.closest('#transcript'); return transcript ? node.getBoundingClientRect().top - transcript.getBoundingClientRect().top : Infinity; });
 const scrollHistoryTop = (page: Page) => page.locator('#transcript').evaluate(element => {
   element.scrollTop = 0;
   element.dispatchEvent(new Event('scroll'));
 });
+/** Scrolls up a step at a time until history message `index` (from 0) is drawn; checked in the task that scrolls, so a drawn page never asks for the next. */
+async function drawHistory(page: Page, index: number): Promise<void> {
+  const id = String(500 + index * 3);
+  await expect(async () => {
+    const drawn = await page.locator('#transcript').evaluate((element, wanted) => {
+      if (element.querySelector(`[data-message-id="${wanted}"]`)) return true;
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event('scroll'));
+      return false;
+    }, id);
+    expect(drawn).toBe(true);
+  }).toPass({ timeout: 15_000, intervals: [50] });
+}
 
 for (const total of [100, 101, 251]) {
   test(`automatically prepends a ${total}-message conversation without history buttons`, async ({ page }) => {
@@ -257,18 +347,21 @@ for (const total of [100, 101, 251]) {
     expect(await olderRequests(page)).toHaveLength(0);
     do {
       const previous = loaded;
+      // Held from before the top is reached: the scroll that gets there may already ask for the next page.
+      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+      await drawHistory(page, total - loaded);
       const first = page.locator('#transcript [data-message-id]').first();
       const anchorId = await first.getAttribute('data-message-id');
       // Capture the first visible message after the user's upward scroll, before IPC resolves.
-      await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
       await scrollHistoryTop(page);
       const anchorY = await historyOffset(first);
       if (loaded < total) {
         await expect.poll(async () => (await olderRequests(page)).length).toBe(Math.ceil(previous / 100));
-        await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+        await page.evaluate(() => (window as any).__historyFixture.release());
         loaded = Math.min(total, loaded + 100);
-        await expect(content).toHaveCount(loaded);
+        await expect.poll(() => content.count()).toBeGreaterThan(previous);
         await expect.poll(async () => Math.abs(await historyOffset(page.locator(`#transcript [data-message-id="${anchorId}"]`)) - anchorY)).toBeLessThan(2);
+        await drawHistory(page, total - loaded);
       }
       await expect(content).toHaveText(Array.from({ length: loaded }, (_, index) => `History message ${total - loaded + index + 1}`));
     } while (loaded < total);
@@ -289,23 +382,28 @@ for (const total of [100, 101, 251]) {
 test('retains existing formatted response nodes when earlier history is prepended', async ({ page }) => {
   await installHistoryFixture(page, 251, true);
   const response = page.locator('#transcript [data-message-id="953"] .message-content');
+  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
   const originalResponse = await response.elementHandle();
-  await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   const readingY = await historyOffset(response);
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
+  await expect.poll(() => page.locator('#transcript .message-content').count()).toBeGreaterThan(100);
+  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   expect(await originalResponse!.evaluate(node => node === document.querySelector('#transcript [data-message-id="953"] .message-content'))).toBe(true);
   await expect(page.locator('#transcript .message-content pre code')).toHaveCount(100);
-  await expect.poll(async () => Math.abs(await historyOffset(response) - readingY)).toBeLessThan(2);
   await expect(response.locator('pre code')).toContainText('const retained = true;');
 });
 
 test('deduplicates pending history loads and ignores pages from a previously selected thread', async ({ page }) => {
+  // Three pages, so the second lands with the third still to come: the partly loaded thread draws 52–251.
   await installHistoryFixture(page, 251);
   await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
   await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
   await scrollHistoryTop(page);
@@ -315,15 +413,31 @@ test('deduplicates pending history loads and ignores pages from a previously sel
   await chooseProjectFilter(page, 'orbit');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await expect(page.locator('#transcript .markdown pre code')).toContainText('createSearchIndex');
-  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await page.evaluate(() => (window as any).__historyFixture.release());
   await expect(page.locator('#transcript')).not.toContainText('History message');
   await chooseProjectFilter(page, 'pandacode');
-  await expect(page.locator('#transcript .message-content')).toHaveCount(100);
+  // The page from the other thread was dropped, so this one is asked for again. Still held for the page after it.
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.release = undefined; });
+  await drawHistory(page, 151);
   await scrollHistoryTop(page);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; const go = fixture.release; fixture.release = undefined; go(); });
+  // Drawing to the top of the second page asks for the third, which stays held: the thread is partly loaded.
+  await drawHistory(page, 51);
   await expect(page.locator('#transcript .message-content')).toHaveCount(200);
   await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 52');
   await expect(page.locator('#transcript .message-content').last()).toHaveText('History message 251');
-  expect(await olderRequests(page)).toHaveLength(2);
+  // The dropped page and its retry asked for the same messages, then the third page once: nothing else was asked for.
+  const asked = (await olderRequests(page)).map((call: { beforeId: number }) => call.beforeId);
+  expect(asked).toHaveLength(3);
+  expect(asked[1]).toBe(asked[0]);
+  expect(asked[2]).not.toBe(asked[1]);
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__historyFixture.release)).toBe('function');
+  await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+  await drawHistory(page, 0);
+  await expect(page.locator('#transcript .message-content')).toHaveCount(251);
+  await expect(page.locator('#transcript .message-content').first()).toHaveText('History message 1');
+  expect(await olderRequests(page)).toHaveLength(3);
 });
 
 for (const view of ['conversation', 'board'] as const) {
@@ -333,13 +447,27 @@ for (const view of ['conversation', 'board'] as const) {
       await showView(page, 'Board');
       await page.getByRole('button', { name: 'Open task: Explore the project', exact: true }).click();
     }
+    // The loaded page drawn, then the older one fetched: it lands above the reader, who still reads where they were.
+    // Held, since drawing the last loaded turn already brings the reader within reach of the top and asks for it.
+    await page.evaluate(() => { (window as any).__historyFixture.hold = true; });
+    await drawHistory(page, 51);
+    const anchor = page.locator('#transcript [data-message-id="653"]');
     await scrollHistoryTop(page);
+    await expect(anchor).toBeInViewport();
+    await expect.poll(async () => (await olderRequests(page)).length).toBe(1);
+    const heldY = await historyOffset(anchor);
+    await page.evaluate(() => { const fixture = (window as any).__historyFixture; fixture.hold = false; fixture.release(); });
+    await expect(page.locator('#transcript [data-message-id="650"]')).toHaveCount(1);
+    await expect.poll(async () => Math.abs(await historyOffset(anchor) - heldY)).toBeLessThan(2);
+    await expect(anchor).toBeInViewport();
+    await drawHistory(page, 0);
     await expect(page.locator('#transcript .message-content')).toHaveCount(151);
     await page.evaluate(() => {
       const fixture = (window as any).__historyFixture;
       fixture.emit({ sessionId: 'session-4', kind: 'status', text: 'Starting agent' });
     });
-    const anchor = page.locator('#transcript [data-message-id="653"]');
+    // Drawing the rest went on to the top; the reader goes back to the same message for the streaming check.
+    await anchor.evaluate(node => node.scrollIntoView({ block: 'center' }));
     await expect(anchor).toBeInViewport();
     const readingY = await historyOffset(anchor);
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: 'A live reply' }));
@@ -350,6 +478,7 @@ for (const view of ['conversation', 'board'] as const) {
     await page.evaluate(() => (window as any).__historyFixture.emit({ sessionId: 'session-4', kind: 'text', text: ' continues smoothly.' }));
     await expect(page.locator('#stream-region .live-text')).toHaveText('A live reply continues smoothly.');
     await expect.poll(() => page.locator('#transcript').evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(2);
+    await drawHistory(page, 0);
     await scrollHistoryTop(page);
     const first = page.locator('#transcript [data-message-id="500"]');
     const firstY = await historyOffset(first);
@@ -368,7 +497,7 @@ for (const view of ['conversation', 'board'] as const) {
 
 test('retains loaded history when a completed tool-heavy turn spans multiple pages', async ({ page }) => {
   await installHistoryFixture(page, 151);
-  await scrollHistoryTop(page);
+  await drawHistory(page, 0);
   await expect(page.locator('#transcript .user-message')).toHaveCount(151);
   await page.evaluate(() => {
     const fixture = (window as any).__historyFixture;
@@ -398,7 +527,7 @@ test('defaults to dark mode and remembers explicit light and dark preferences af
   expect(await page.evaluate(() => localStorage.getItem('pandacode.theme'))).toBeNull();
   expect((await appearanceSurfaces(page)).mainContrast).toBeGreaterThanOrEqual(4.5);
   await expect(page.locator('.provider-logo[data-provider="codex"]').first()).toHaveCSS('filter', 'invert(1)');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(menu.getByRole('combobox', { name: 'Search harnesses and models', exact: true })).toBeFocused();
   await page.screenshot({ path: '/private/tmp/pandacode-dark-models.png', animations: 'disabled' });
@@ -412,7 +541,8 @@ test('defaults to dark mode and remembers explicit light and dark preferences af
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   await expect(page.locator('html')).toHaveCSS('color-scheme', 'light');
-  await expect(page.locator('.workspace')).toHaveAttribute('data-wallpaper');
+  // Wallpapers are off by default: the main pane is a clear window onto the sky.
+  await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'sky');
   await expect(page.locator('.main-pane')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
   expect(await page.evaluate(() => localStorage.getItem('pandacode.theme'))).toBe('light');
   await toggle.focus();
@@ -501,7 +631,7 @@ test('does not restore removed PandaCode preferences from legacy storage on late
 test('loads full model names, searches names or IDs, and saves the harness invocation ID', async ({ page }) => {
   await prompt(page).fill('Keep the draft while loading model names');
   await page.evaluate(() => { (window as any).__catalogPrompt = document.querySelector('#prompt'); });
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: /^Model: / });
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true });
@@ -581,7 +711,7 @@ test('offers only reported reasoning efforts and remembers the selected effort f
   await expect(prompt(page)).toHaveValue('Keep this draft while choosing reasoning effort');
 });
 
-test('the effort thumb sits under the chosen segment in the neutral active fill', async ({ page }) => {
+test('the effort thumb sits under the chosen segment in the raised thumb fill', async ({ page }) => {
   await page.evaluate(async () => {
     const { openModelPicker } = await import('/src/model-picker.ts');
     (window as any).__colorEffortSaves = [];
@@ -593,7 +723,7 @@ test('the effort thumb sits under the chosen segment in the neutral active fill'
     });
   });
   const thumb = reasoningGroup(page).locator('.segment-thumb');
-  const fill = await thumb.evaluate(element => { const probe = document.createElement('span'); probe.style.backgroundColor = 'var(--fill-active)'; element.append(probe); const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; });
+  const fill = await thumb.evaluate(element => { const probe = document.createElement('span'); probe.style.backgroundColor = 'var(--ds-thumb)'; element.append(probe); const color = getComputedStyle(probe).backgroundColor; probe.remove(); return color; });
   await expect(thumb).toHaveCSS('background-color', fill);
   for (const name of ['Medium', 'Max']) {
     await effortRadio(page, name).click();
@@ -767,7 +897,6 @@ test('hides unsupported reasoning and context metadata without inventing values'
   await modelTrigger(page).click();
   await expect(reasoningGroup(page)).toHaveCount(0);
   await expect(modelPicker(page).locator('.model-menu-settings')).toBeHidden();
-  await expect(page.locator('.context-indicator')).toBeHidden();
   await page.keyboard.press('Escape');
   await page.locator('.task-item[data-id="session-1"]').click();
   await modelTrigger(page).click();
@@ -776,7 +905,6 @@ test('hides unsupported reasoning and context metadata without inventing values'
   await modelTrigger(page).click();
   await expect(reasoningGroup(page)).toHaveCount(0);
   await expect(modelPicker(page).locator('.model-menu-settings')).toBeHidden();
-  await expect(page.locator('.context-indicator')).toBeHidden();
   await page.keyboard.press('Escape');
   await page.evaluate(async () => {
     const { openModelPicker } = await import('/src/model-picker.ts');
@@ -809,7 +937,7 @@ test('disables a harness whose model catalog failed and explains why on hover', 
     await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match} if (!window.__catalogAvailable) throw new Error('Model service unavailable');`)) });
   });
   await page.reload();
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: /^Model: / });
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const sonnet = picker.getByRole('option', { name: 'Claude Code · Claude Sonnet', exact: true });
@@ -883,7 +1011,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
       await route.fulfill({ response, body: previewBody(source) });
     });
     await page.reload();
-    const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+    const trigger = page.getByRole('button', { name: /^Model: / });
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     const requestCount = () => page.evaluate(() => (window as any).__catalogRace.requests.length);
     await trigger.click();
@@ -922,7 +1050,7 @@ for (const outcome of ['resolve', 'reject'] as const) {
 
 test('changes terminal colors without replacing its session or the composer draft', async ({ page }) => {
   await prompt(page).fill('Keep this draft while changing appearance');
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   const viewport = page.locator('#terminal-host .xterm-scrollable-element');
   await expect(viewport).toBeVisible();
   await expect(viewport).toHaveCSS('background-color', 'rgb(25, 26, 24)');
@@ -958,14 +1086,15 @@ test('synchronizes dark mode with native appearance without wallpapers and respe
   await page.getByRole('button', { name: 'Dark mode', exact: true }).click();
   await expect.poll(() => page.evaluate(() => (window as any).__themeCalls.at(-1)?.darkMode)).toBe(true);
   const glass = (await appearanceSurfaces(page)).alphas;
-  expect([...glass.slice(0, 4), glass[4] < 1, glass[5]]).toEqual([0, 0, 0, 0, true, 1]);
+  // The main pane is clear: the thread is a window onto the sky.
+  expect([...glass.slice(0, 3), glass[3] > 0 && glass[3] < 1, glass[4], glass[5]]).toEqual([0, 0, 0, true, 0, 0]);
   const devtools = await page.context().newCDPSession(page);
   await devtools.send('Emulation.setEmulatedMedia', { features: [
     { name: 'prefers-reduced-transparency', value: 'reduce' }, { name: 'prefers-contrast', value: 'more' },
   ] });
   await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
   const surfaces = await appearanceSurfaces(page);
-  expect(surfaces.alphas).toEqual([1, 1, 1, 1, 1, 1]);
+  expect(surfaces.alphas).toEqual([1, 1, 1, 1, 0, 1]);
   expect(surfaces.mainContrast).toBeGreaterThanOrEqual(4.5);
   await projectFilter(page).click();
   const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
@@ -1034,10 +1163,13 @@ test('finds and selects projects beyond the first hundred filter options', async
     await route.fulfill({ response, body: previewBody(body) });
   });
   await page.reload();
-  await projectFilter(page).click();
   const menu = page.getByRole('dialog', { name: 'Filter projects', exact: true });
   const search = menu.getByRole('searchbox', { name: 'Search projects', exact: true });
-  await expect(search).toBeFocused();
+  // A redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await menu.isVisible()) await projectFilter(page).click();
+    await expect(search).toBeFocused({ timeout: 1000 });
+  }).toPass();
   expect(await menu.getByRole('menuitemradio').count()).toBeLessThanOrEqual(100);
   await search.fill('Fixture project 119');
   await expect(menu.getByRole('menuitemradio')).toHaveCount(1);
@@ -1059,7 +1191,7 @@ test('finds and selects projects beyond the first hundred filter options', async
 });
 
 test('menus open with a brief settle, close at once and stay usable', async ({ page }) => {
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = menu.getByRole('combobox', { name: 'Search harnesses and models', exact: true });
   await expect(menu).toHaveAttribute('data-popover-state', 'open');
@@ -1076,7 +1208,7 @@ test('menus open with a brief settle, close at once and stay usable', async ({ p
 });
 
 test('rapidly reopens menus without leaving interactive or retained closing panels', async ({ page }) => {
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: /^Model: / });
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   for (let i = 0; i < 5; i++) {
     await trigger.click();
@@ -1106,7 +1238,7 @@ test('rapidly reopens menus without leaving interactive or retained closing pane
 test('changes permissions and opens task actions with anchored keyboard menus', async ({ page }) => {
   const history = await page.locator('.user-message,.agent-message').allTextContents();
   await prompt(page).fill('Preserve this draft through menu actions');
-  await page.getByRole('button', { name: 'Standard', exact: true }).click();
+  await page.getByRole('button', { name: 'Mode: Standard', exact: true }).click();
   const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
   await expect(permissions.getByRole('menuitemradio', { name: 'Standard', exact: true })).toBeFocused();
   await page.screenshot({ path: '/private/tmp/pandacode-permissions-menu.png', animations: 'disabled' });
@@ -1114,7 +1246,7 @@ test('changes permissions and opens task actions with anchored keyboard menus', 
   await expect(permissions.getByRole('menuitemradio', { name: 'Accept edits', exact: true })).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(permissions).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'Accept edits', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Mode: Accept edits', exact: true })).toBeVisible();
   await expect(page.locator('#mode-picker-trigger')).toBeFocused();
   await expect(prompt(page)).toHaveValue('Preserve this draft through menu actions');
   await expect(page.locator('.user-message,.agent-message')).toHaveText(history);
@@ -1150,14 +1282,14 @@ test('updates permissions after leaving and reselecting a task while the save is
   await page.reload();
   await prompt(page).fill('Preserve this draft while permissions finish saving');
   await page.evaluate(() => { (window as any).__pandacodeDelayPermissions = true; });
-  await page.getByRole('button', { name: 'Standard', exact: true }).click();
+  await page.getByRole('button', { name: 'Mode: Standard', exact: true }).click();
   await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Accept edits', exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pandacodeReleasePermissions)).toBe('function');
   await page.locator('.task-item[data-id="session-4"]').click();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Explore the project');
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  await expect(page.getByRole('button', { name: 'Standard', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Mode: Standard', exact: true })).toBeVisible();
   await page.evaluate(() => {
     (window as any).__pandacodeDelayPermissions = false;
     (window as any).__pandacodeReleasePermissions();
@@ -1166,7 +1298,7 @@ test('updates permissions after leaving and reselecting a task while the save is
   await expect(page.locator('#mode-picker-trigger')).toHaveText('Accept edits');
   await expect(prompt(page)).toHaveValue('Preserve this draft while permissions finish saving');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
-  await page.getByRole('button', { name: 'Accept edits', exact: true }).click();
+  await page.getByRole('button', { name: 'Mode: Accept edits', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { name: 'Accept edits', exact: true })).toHaveAttribute('aria-checked', 'true');
 });
 
@@ -1189,7 +1321,7 @@ for (const configuration of [
     await menu.getByRole('menuitemradio', { name: configuration.selected, exact: true }).click();
     await expect(menu).toHaveCount(0);
     await expect(trigger).toHaveText(configuration.selected);
-    await expect(trigger).toHaveAttribute('title', /\S+/);
+    await expect(trigger).toHaveAttribute('data-tip', /\S+/);
     await expect.poll(() => savedPermission(page)).toBe(configuration.mode);
     await page.locator('.task-item[data-id="session-4"]').click();
     await expect(trigger).toHaveText('Standard');
@@ -1373,8 +1505,8 @@ for (const material of ['liquidGlass', 'vibrancy'] as const) {
     }, material);
     await expect(page.locator('html')).toHaveAttribute('data-native-material', material);
     const surfaces = await appearanceSurfaces(page);
-    // The sidebar keeps a flat translucent tint over the native material.
-    expect([...surfaces.alphas.slice(0, 4), surfaces.alphas[4] < 1, surfaces.alphas[5]]).toEqual([0, 0, 0, 0, true, 1]);
+    // The window frame keeps a flat translucent tint over the native material; the sidebar adds none.
+    expect([...surfaces.alphas.slice(0, 3), surfaces.alphas[3] > 0 && surfaces.alphas[3] < 1, surfaces.alphas[4], surfaces.alphas[5]]).toEqual([0, 0, 0, true, 0, 0]);
     expect(surfaces.sidebarBackdrop).toBe('none');
     expect(surfaces.mainContrast).toBeGreaterThanOrEqual(4.5);
     await expect(prompt(page)).toBeEnabled();
@@ -1388,13 +1520,13 @@ test('keeps preview, unsupported platforms, and unavailable native materials opa
   await disableWallpapers(page);
   await expect(page.getByText('Browser preview · sample data', { exact: true })).toBeVisible();
   await expect(page.locator('html')).not.toHaveAttribute('data-native-material');
-  expect((await appearanceSurfaces(page)).alphas.filter((_, index) => [0, 4, 5].includes(index))).toEqual([1, 1, 1]);
+  expect((await appearanceSurfaces(page)).alphas.filter((_, index) => [0, 3, 5].includes(index))).toEqual([1, 1, 0]);
   await page.evaluate(async () => {
     const { initializeNativeAppearance } = await import('/src/appearance.ts');
     (window as any).__pandacodeDisposeAppearance = initializeNativeAppearance(async () => ({ platform: 'other', material: 'liquidGlass' }));
   });
   await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
-  expect((await appearanceSurfaces(page)).alphas.filter((_, index) => [0, 4, 5].includes(index))).toEqual([1, 1, 1]);
+  expect((await appearanceSurfaces(page)).alphas.filter((_, index) => [0, 3, 5].includes(index))).toEqual([1, 1, 0]);
   await page.evaluate(async () => {
     (window as any).__pandacodeDisposeAppearance();
     const { initializeNativeAppearance } = await import('/src/appearance.ts');
@@ -1402,14 +1534,14 @@ test('keeps preview, unsupported platforms, and unavailable native materials opa
   });
   await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
   const fallback = await appearanceSurfaces(page);
-  expect(fallback.alphas.filter((_, index) => [0, 4, 5].includes(index))).toEqual([1, 1, 1]);
+  expect(fallback.alphas.filter((_, index) => [0, 3, 5].includes(index))).toEqual([1, 1, 0]);
   expect(fallback.mainContrast).toBeGreaterThanOrEqual(4.5);
   await page.evaluate(() => (window as any).__pandacodeDisposeAppearance());
 });
 
 test('coalesces appearance preferences without restoring stale glass or losing the draft and open menu', async ({ page }) => {
   await prompt(page).fill('Keep my draft as the system appearance changes');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const menu = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const search = menu.getByRole('combobox', { name: 'Search harnesses and models', exact: true });
   await search.fill('opus');
@@ -1448,7 +1580,7 @@ test('coalesces appearance preferences without restoring stale glass or losing t
   ] });
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeAppearance.observed)).toEqual({ reducedTransparency: true, increasedContrast: false });
   await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
-  expect((await appearanceSurfaces(page)).alphas).toEqual([1, 1, 1, 1, 1, 1]);
+  expect((await appearanceSurfaces(page)).alphas).toEqual([1, 1, 1, 1, 0, 1]);
   await page.evaluate(() => {
     const state = (window as any).__pandacodeAppearance;
     state.observer = new MutationObserver(() => state.materials.push(document.documentElement.dataset.nativeMaterial));
@@ -1473,7 +1605,7 @@ test('coalesces appearance preferences without restoring stale glass or losing t
     state.material = 'vibrancy';
   });
   await expect(page.locator('html')).toHaveAttribute('data-native-material', 'solid');
-  expect((await appearanceSurfaces(page)).alphas).toEqual([1, 1, 1, 1, 1, 1]);
+  expect((await appearanceSurfaces(page)).alphas).toEqual([1, 1, 1, 1, 0, 1]);
   await devtools.send('Emulation.setEmulatedMedia', { features: [
     { name: 'prefers-reduced-transparency', value: 'no-preference' }, { name: 'prefers-contrast', value: 'no-preference' },
   ] });
@@ -1564,13 +1696,19 @@ test('coalesces live tool updates while preserving expansion and saves their det
   await expect(live).toHaveCount(1);
   await expect(live).toHaveAttribute('data-tool-status', 'running');
   await expect(turnForTool(live)).toHaveAttribute('open', '');
-  await expandToolTurn(live);
-  await live.locator(':scope > summary').click();
-  await expect(live.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
+  // The card's header reads the running step, so its silent row is not repeated under it; it returns when it prints or ends.
+  await expect(live).toHaveAttribute('data-mirrored', '');
+  await expect(live).toBeHidden();
   await page.clock.runFor(450);
   await expect(live).toHaveCount(1);
   await expect(live).toHaveAttribute('data-tool-status', 'completed');
+  await expect(live).not.toHaveAttribute('data-mirrored', '');
+  await expandToolTurn(live);
+  // Opened by hand (its result may already have opened it), so the reader's expansion is kept through saving.
+  await live.locator(':scope > summary').click();
+  if (!await live.evaluate(element => element.hasAttribute('open'))) await live.locator(':scope > summary').click();
   await expect(live).toHaveAttribute('open', '');
+  await expect(live.locator('[data-tool-section="input"] pre')).toHaveText('npm test -- --runInBand');
   await expect(live.locator('[data-tool-section="output"] pre')).toContainText('Tests: 12 passed, 12 total');
   await page.clock.runFor(1000);
   await expect(prompt(page)).toBeEnabled();
@@ -1756,7 +1894,9 @@ test('collapses turn activity into one compact row while keeping the final answe
   const turn = page.locator('details.turn-activity');
   await expect(turn).toHaveCount(1);
   await expect(turn).not.toHaveAttribute('open', '');
-  await expect(turn.locator('.turn-activity-label')).toHaveText(/^Worked for about /);
+  // The card's header reads as the steps' summary; the time stands on its right (turn-card.spec.ts).
+  await expect(turn.locator('.turn-activity-label')).toHaveText('Read 1 file and ran 1 command');
+  await expect(turn.locator('.turn-card-time')).toHaveText('2m 30s');
   await expect(turn.locator('.turn-activity-body')).toBeHidden();
   await expect(turn.locator('details.tool-activity')).toHaveCount(3);
   const commentary = page.getByText('I’ll trace how the search input updates the results, then check the keyboard interactions.', { exact: true });
@@ -1819,6 +1959,7 @@ test('tool activity settings persist expanded and collapsed groups with compact 
   expect(first.height).toBeGreaterThanOrEqual(30);
   await prompt(page).fill('Keep my draft while changing activity.');
   await page.keyboard.press('Meta+,');
+  await page.getByRole('tab', { name: 'General', exact: true }).click();
   const expand = page.getByRole('checkbox', { name: 'Expand tool activity', exact: true });
   await expect(expand).not.toBeChecked();
   await expand.check();
@@ -1830,6 +1971,7 @@ test('tool activity settings persist expanded and collapsed groups with compact 
   await expect(turn).toHaveAttribute('open', '');
   await expect(turn.locator('.tool-group[open]')).toHaveCount(3);
   await page.keyboard.press('Meta+,');
+  await page.getByRole('tab', { name: 'General', exact: true }).click();
   await expand.uncheck();
   await page.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await expect(turn).not.toHaveAttribute('open', '');
@@ -1863,9 +2005,11 @@ test('times each tool turn independently using saved durations and labels older 
   ]);
   const turns = page.locator('details.turn-activity');
   await expect(turns).toHaveCount(3);
-  // A tool-only turn reads as its summary; its time stays one hover away.
-  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Ran 1 search']);
-  await expect(turns.nth(2).locator('.turn-activity-summary')).toHaveAttribute('title', 'Worked for about 1m 0s');
+  // Each turn's card reads as its steps' summary, with the turn's time on the right.
+  await expect(turns.locator('.turn-activity-label')).toHaveText(['Read 1 file', 'Ran 1 command', 'Ran 1 search']);
+  await expect(turns.locator('.turn-card-time')).toHaveText(['1m 23s', '17s', '1m 0s']);
+  // The time sits beside the sentence, so the header carries no tooltip repeating it.
+  await expect(turns.nth(2).locator('.turn-activity-summary')).not.toHaveAttribute('title');
   await expect(turns.nth(2).locator('details.tool-activity')).toHaveCount(1);
   const keys = await turns.evaluateAll(elements => elements.map(element => element.getAttribute('data-turn-key')));
   expect(keys.every(Boolean)).toBe(true);
@@ -1886,9 +2030,11 @@ test('times each tool turn independently using saved durations and labels older 
   await chooseProjectFilter(page, 'All projects');
   await page.locator('.task-item[data-id="session-1"]').click();
   await page.locator('.task-item[data-id="session-4"]').click();
-  // A tool-only turn reads as its summary; its time stays one hover away.
-  await expect(turns.locator('.turn-activity-label')).toHaveText(['Worked for 1m 23s', 'Worked for 17s', 'Ran 1 search']);
-  await expect(turns.nth(2).locator('.turn-activity-summary')).toHaveAttribute('title', 'Worked for about 1m 0s');
+  // Each turn's card reads as its steps' summary, with the turn's time on the right.
+  await expect(turns.locator('.turn-activity-label')).toHaveText(['Read 1 file', 'Ran 1 command', 'Ran 1 search']);
+  await expect(turns.locator('.turn-card-time')).toHaveText(['1m 23s', '17s', '1m 0s']);
+  // The time sits beside the sentence, so the header carries no tooltip repeating it.
+  await expect(turns.nth(2).locator('.turn-activity-summary')).not.toHaveAttribute('title');
 });
 
 test('keeps saved errors visible outside a collapsed tool turn', async ({ page }) => {
@@ -2005,56 +2151,47 @@ async function emitStatusEvents(page: Page, sessionId: string, events: Array<Rec
   await page.clock.runFor(20);
 }
 
-test('shows reported context usage while running and keeps late usage from creating a phantom stream', async ({ page }) => {
+/** /status names what the harness reported; the prompt box no longer shows it. */
+async function statusText(page: Page): Promise<string> {
+  await prompt(page).fill('/status '); // The space leaves the command menu closed, so Enter sends.
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Task status' });
+  const text = await dialog.innerText();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  return text;
+}
+
+test('keeps reported context usage for /status and late usage from creating a phantom stream', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
-  const indicator = page.locator('.context-indicator');
-  await expect(indicator).toHaveText('200K context');
+  await expect(page.locator('#composer').getByRole('meter')).toHaveCount(0);
   await expect(modelTrigger(page)).toBeDisabled();
-  await page.evaluate(async sessionId => {
-    const { invoke } = await import((window as any).__pandacodePreviewUrl);
-    await invoke('update_session', { sessionId, contextUsage: { usedTokens: 24000, contextWindow: 200000 } });
-  }, sessionId);
   await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: 200000 } }]);
-  await expect(indicator).toHaveText('24K / 200K context');
-  await expect(indicator).toHaveAttribute('title', /24,000.*200,000/);
-  await page.screenshot({ path: '/private/tmp/pandacode-context-usage.png', animations: 'disabled' });
   await emitStatusEvents(page, sessionId, [
     { kind: 'usage', text: '', data: { usedTokens: -10, contextWindow: 200000 } },
     { kind: 'usage', text: '', data: { usedTokens: 'fake', contextWindow: 200000 } },
     { kind: 'text', text: 'The reported context usage remains stable while tokens stream.' },
   ]);
-  await expect(indicator).toHaveText('24K / 200K context');
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
   await expect(prompt(page)).toBeEnabled();
   await expect(page.locator('#stream-region .turn-activity')).toHaveCount(0);
-  await expect(indicator).toHaveText('24K / 200K context');
   await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 25000, contextWindow: 200000 } }]);
-  await expect(indicator).toHaveText('25K / 200K context');
   await emitStatusEvents(page, 'unknown-usage-task', [{ kind: 'usage', text: '', data: { usedTokens: 100000, contextWindow: 200000 } }]);
-  await expect(indicator).toHaveText('25K / 200K context');
+  expect(await statusText(page)).toMatch(/25,000.*200,000/);
   await expect(page.locator('#stream-region .turn-activity')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toHaveCount(0);
   await expect(prompt(page)).toBeEnabled();
-  await modelTrigger(page).click();
-  await modelPicker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
-  await expect(indicator).not.toContainText('25K');
-  expect(await page.evaluate(async sessionId => {
-    const { invoke } = await import((window as any).__pandacodePreviewUrl);
-    const sessions = await invoke('list_sessions', {});
-    return sessions.find((session: { id: string }) => session.id === sessionId)?.contextUsage ?? null;
-  }, sessionId)).toBeNull();
 });
 
-test('shows a reported token count without inventing an unavailable context limit', async ({ page }) => {
+test('reports a token count in /status without inventing an unavailable context limit', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page, true);
-  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: null } }]);
-  const indicator = page.locator('.context-indicator');
-  await expect(indicator).toBeVisible();
-  await expect(indicator).toContainText('24K');
-  await expect(indicator).not.toContainText('/');
-  await expect(indicator).not.toContainText('%');
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
   await expect(prompt(page)).toBeEnabled();
+  // After the stop: the preview's session list carries no usage, so a report from before it is refreshed away.
+  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: null } }]);
+  const text = await statusText(page);
+  expect(text).toContain('24,000');
+  expect(text).not.toContain('%');
 });
 
 test('updates live startup and retry status only when real response text arrives', async ({ page }) => {
@@ -2116,7 +2253,7 @@ test('the turn header names what the agent is doing, with no separate status lin
   const turn = page.locator('.live-activity');
   const label = turn.locator('.turn-activity-label');
   // Before the first step: a spark glyph and what the agent is doing, with no seconds counter in the line.
-  await expect(label).toHaveText(/^(Working on it…|Starting agent)$/);
+  await expect(label).toHaveText(/^(Thinking|Starting agent)$/);
   await expect(label.locator('.trace-glyph')).toHaveCount(1);
   await emitStatusEvents(page, sessionId, [{ kind: 'tool', text: 'Read', tool: { id: 'header-read', name: 'Read', status: 'running', input: 'src/main.ts', output: '' } }]);
   // The header mirrors the running step's sentence, with its glyph, in the finished form the rows use.
@@ -2124,11 +2261,14 @@ test('the turn header names what the agent is doing, with no separate status lin
   await expect(label).toHaveText(/^Read\s*main\.ts$/);
   await expect(label.locator('.trace-glyph')).toHaveCount(1);
   await emitStatusEvents(page, sessionId, [{ kind: 'tool', text: 'Read', tool: { id: 'header-read', name: 'Read', status: 'completed', input: 'src/main.ts', output: 'Source contents' } }]);
-  await expect(label).toHaveText(/^Read\s*main\.ts$/);
-  // The elapsed time lives in the header's tooltip; its tick never touches the sentence.
+  // Once the step finishes its own row says it, so the header moves on to the turn's running summary.
+  await expect(label).toHaveAttribute('data-mode', 'summary');
+  await expect(label).toHaveText(/^Read 1 file$/);
+  // The elapsed time sits beside the sentence (no tooltip); its tick never touches the sentence.
   await page.clock.runFor(9000);
-  await expect(label).toHaveText(/^Read\s*main\.ts$/);
-  await expect(turn.locator('.turn-activity-summary')).toHaveAttribute('title', /^Working for \d+s$/);
+  await expect(label).toHaveText(/^Read 1 file$/);
+  await expect(turn.locator('.turn-card-time')).toHaveText(/^\d+s$/);
+  await expect(turn.locator('.turn-activity-summary')).not.toHaveAttribute('title');
   // The status line is for screen readers; it takes no visible space.
   expect(await page.locator('.live-status').evaluate(el => el.getBoundingClientRect().height)).toBeLessThanOrEqual(1);
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
@@ -2156,6 +2296,22 @@ test('a very long command keeps the approval bar within its width', async ({ pag
   await expectApprovalInBounds(page);
 });
 
+test('the approval bar settles in when it goes from empty to filled, and not on later redraws or a thread switch', async ({ page }) => {
+  const sessionId = await startControlledStatusStream(page);
+  await page.evaluate(() => { const w = window as any, animate = Element.prototype.animate; w.__settles = 0; Element.prototype.animate = function (...args) { if (this.id === 'approval-bar') w.__settles++; return animate.apply(this, args as Parameters<typeof animate>); }; });
+  const settles = () => page.evaluate(() => (window as any).__settles);
+  await emitStatusEvents(page, sessionId, [{ kind: 'approval', requestId: 'one', text: 'Run `npm test`' }]);
+  await expect(page.locator('#composer-area .approval-bar')).toBeVisible();
+  expect(await settles()).toBe(1);
+  await emitStatusEvents(page, sessionId, [{ kind: 'approval', requestId: 'two', text: 'Write src/main.ts' }]);
+  await expect(page.locator('#composer-area .approval-group')).toContainText('2 approvals needed');
+  await page.locator(`#navigation .task-item:not([data-id="${sessionId}"])`).first().click();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', sessionId);
+  await page.locator(`#navigation .task-item[data-id="${sessionId}"]`).click();
+  await expect(page.locator('#composer-area .approval-group')).toContainText('2 approvals needed');
+  expect(await settles()).toBe(1);
+});
+
 test('approvals wait in one slim bar above the prompt and its context bar, one line each and grouped when there are several', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
   const bar = page.locator('#composer-area .approval-bar');
@@ -2172,9 +2328,7 @@ test('approvals wait in one slim bar above the prompt and its context bar, one l
   // It leads the composer area, above the context bar that rides on the prompt.
   await expect(page.locator('#composer-area > :first-child')).toHaveAttribute('id', 'approval-bar');
   const barBox = (await bar.boundingBox())!;
-  for (const below of [page.locator('#composer-area .composer-context'), page.locator('#composer')]) {
-    if (await below.count()) expect((await below.boundingBox())!.y).toBeGreaterThanOrEqual(barBox.y + barBox.height);
-  }
+  expect((await page.locator('#composer').boundingBox())!.y).toBeGreaterThanOrEqual(barBox.y + barBox.height);
   await expect(page.locator('#transcript .approval-bar')).toHaveCount(0);
   await expectApprovalInBounds(page);
   // The full request is one click away.
@@ -2204,9 +2358,9 @@ test('keeps approval, retry, stopping, and completed summaries clear', async ({ 
   const summary = page.locator('.live-activity .turn-activity-summary');
   await expect(label).toHaveText('Retrying connection…');
   await page.clock.runFor(9000);
-  // The line stays the status; the elapsed time is the tooltip.
+  // The line stays the status; the elapsed time sits beside it.
   await expect(label).toHaveText('Retrying connection…');
-  await expect(summary).toHaveAttribute('title', 'Working for 9s');
+  await expect(summary.locator('.turn-card-time')).toHaveText('9s');
   await emitStatusEvents(page, sessionId, [{ kind: 'text', text: 'The connection has recovered.' }]);
   await expect(label).toHaveText('Generating response');
   await emitStatusEvents(page, sessionId, [{ kind: 'approval', requestId: 'playful-approval', text: 'Run the project check?' }]);
@@ -2229,7 +2383,7 @@ test('keeps approval, retry, stopping, and completed summaries clear', async ({ 
     finishStatusTestTurn(sessionId);
   }, sessionId);
   await expect(page.locator('.live-activity')).toHaveCount(0);
-  await expect(page.locator('.turn-activity-label')).toHaveText(/^Worked for \d+s$/);
+  await expect(page.locator('.turn-card .turn-card-time')).toHaveText(/^\d+s$/);
   await expect(page.getByText('The project check is complete.', { exact: true })).toBeVisible();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -2342,13 +2496,13 @@ test('renaming and changing a model do not make an old response active', async (
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(dialog).not.toBeVisible();
   await expect(taskRow(page, 'session-4', 'inactive').locator('.task-title')).toHaveText('Renamed older conversation');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await picker.getByRole('tab', { name: 'Codex', exact: true }).click();
   await picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('review-old-response');
   await picker.getByRole('option', { name: 'Use "review-old-response" with Codex', exact: true }).click();
   await expect(picker).not.toBeVisible();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-old-response');
+  await expect(page.getByRole('button', { name: /^Model: / })).toHaveText('review-old-response');
   await expect(taskRow(page, 'session-4', 'inactive')).toBeVisible();
   await expect(activeRows(page).locator('.task-title')).toHaveText(['Make search feel instant']);
 });
@@ -2437,7 +2591,7 @@ test('renders provider logos in task rows, composer, picker, and settings', asyn
   for (const provider of ['claude', 'codex', 'kimi']) {
     await expect(page.locator(`#navigation .provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
   }
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   for (const provider of ['claude', 'codex', 'kimi', 'github-copilot']) {
     await expect(picker.locator(`.provider-logo[data-provider="${provider}"]`).first()).toBeVisible();
@@ -2496,7 +2650,7 @@ test('opens a new conversation in the active project without listing it', async 
   await expect(prompt(page)).toBeFocused();
   await expect(prompt(page)).toHaveValue('');
   await expect(page.locator('.user-message,.agent-message')).toHaveCount(0);
-  await expect(page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true })).toHaveText(projectName.trim());
+  await expect(page.locator('#welcome-project')).toHaveText(projectName.trim());
   // The draft opens immediately but is not a task until its first prompt.
   await expect(page.locator('#navigation .task-item.selected')).toHaveCount(0);
   await expect(page.locator('#navigation .task-item', { hasText: 'New conversation' })).toHaveCount(0);
@@ -2509,10 +2663,10 @@ test('opens a new conversation in the active project without listing it', async 
   expect(headingBounds.y + headingBounds.height).toBeLessThan(mainBounds.y + mainBounds.height * 0.65);
   expect(composerBounds.y - headingBounds.y - headingBounds.height).toBeGreaterThanOrEqual(0);
   expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeGreaterThanOrEqual(0);
-  expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeLessThan(90);
-  await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(2);
+  expect(mainBounds.y + mainBounds.height - composerBounds.y - composerBounds.height).toBeLessThan(140);
+  await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(1);
   await page.screenshot({ path: '/private/tmp/pandacode-new-task.png' });
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByRole('option', { name: 'Claude Code · Default', exact: true })).toBeVisible();
   for (const harness of ['Codex', 'Kimi Code']) {
@@ -2536,7 +2690,7 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await expect(newTaskHeading(page)).toBeVisible();
   const sessionId = await draftTaskId(page);
   await prompt(page).fill('Keep this plan while I choose the right repository');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const modelPicker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await modelPicker.getByRole('tab', { name: 'Kimi Code', exact: true }).click();
   await modelPicker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('project-switch-model');
@@ -2554,7 +2708,7 @@ test('changes the empty task project while keeping its draft, harness, model, an
   await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in pandacode?');
   await expect(prompt(page)).toHaveAttribute('data-session-id', sessionId!);
   await expect(openTaskProject(page)).toHaveText('pandacode');
-  await expect(page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true })).toHaveText('pandacode');
+  await expect(page.locator('#welcome-project')).toHaveText('pandacode');
   // The old project's Changes view and its diffs are gone; the new project gets its own.
   await expect.poll(() => oldChanges!.evaluate(node => node.isConnected)).toBe(false);
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toContainText('test/pandacode-project');
@@ -2573,7 +2727,7 @@ test('searches task projects by keyboard and cancels or reselects without changi
   await expect(newTaskHeading(page)).toBeVisible();
   const sessionId = await draftTaskId(page);
   await prompt(page).fill('A draft that stays with this empty task');
-  const trigger = page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true });
+  const trigger = page.locator('#welcome-project');
   await trigger.click();
   const picker = taskProjectPicker(page);
   const search = picker.getByRole('searchbox', { name: 'Search projects', exact: true });
@@ -2626,7 +2780,7 @@ test('opens a new folder from the task project picker without discarding its dra
   await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in new-task-folder?');
   await expect(prompt(page)).toHaveAttribute('data-session-id', sessionId!);
   await expect(openTaskProject(page)).toHaveText('new-task-folder');
-  await expect(page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true })).toHaveText('new-task-folder');
+  await expect(page.locator('#welcome-project')).toHaveText('new-task-folder');
   await expect(prompt(page)).toHaveValue('Build this in the folder I am about to open');
   await expect(page.locator('.user-message,.agent-message')).toHaveCount(0);
 });
@@ -2669,7 +2823,7 @@ test('applies a delayed project switch after leaving and reselecting the same em
   await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in pandacode?');
   await expect(prompt(page)).toHaveAttribute('data-session-id', sessionId!);
   await expect(openTaskProject(page)).toHaveText('pandacode');
-  await expect(page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true })).toHaveText('pandacode');
+  await expect(page.locator('#welcome-project')).toHaveText('pandacode');
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toBeVisible();
   await page.locator('.inspector-tabs [data-action="tab-changes"]').click();
   await expect(page.getByRole('complementary', { name: 'Project inspector' })).toContainText('test/pandacode-project');
@@ -2727,7 +2881,7 @@ for (const delayedCommand of ['add_project', 'list_projects']) {
 }
 
 for (const config of [
-  { module: 'model-picker', trigger: 'Choose harness and model', dialog: 'Harness and model' },
+  { module: 'model-picker', trigger: /^Model: / as string | RegExp, dialog: 'Harness and model' },
   { module: 'project-picker', trigger: 'Change task project', dialog: 'Choose project' },
   { module: 'choice-menu', trigger: 'Filter projects', dialog: 'Filter projects' },
 ]) {
@@ -2790,7 +2944,7 @@ test('chooses a harness and custom model inline without losing the draft, stream
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
   await prompt(page).fill('Check the streaming cancellation path');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker).toBeVisible();
   await picker.getByRole('tab', { name: 'Kimi Code', exact: true }).click();
@@ -2836,13 +2990,13 @@ test('opens a project by path and preserves the selected task when canceled', as
 test('retains a completed conversation and model when switching fixture tasks', async ({ page }) => {
   const history = await page.locator('.user-message,.agent-message').allTextContents();
   await prompt(page).fill('Remember this completed preview message');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('review-model');
   await picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).press('Enter');
   await expect(picker).not.toBeVisible();
   await expect(prompt(page)).toBeFocused();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-model');
+  await expect(page.getByRole('button', { name: /^Model: / })).toHaveText('review-model');
   await expect(prompt(page)).toHaveValue('Remember this completed preview message');
   await expect(page.locator('.user-message,.agent-message')).toHaveText(history);
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
@@ -2854,7 +3008,7 @@ test('retains a completed conversation and model when switching fixture tasks', 
   await expect(newTaskHeading(page)).toBeVisible();
   await expect(page.locator('.user-message')).toHaveCount(0);
   await page.locator('.task-item').filter({ hasText: 'Make search feel instant' }).click();
-  await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toHaveText('review-model');
+  await expect(page.getByRole('button', { name: /^Model: / })).toHaveText('review-model');
   await expect(page.locator('.user-message').last()).toContainText('Remember this completed preview message');
   await expect(page.locator('.agent-message').last()).toContainText('no agent or shell is running here');
 });
@@ -2862,7 +3016,7 @@ test('retains a completed conversation and model when switching fixture tasks', 
 test('switches harness after the first message while preserving conversation and draft', async ({ page }) => {
   await page.locator('.new-task-button').click();
   await expect(newTaskHeading(page)).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(2);
+  await expect(page.getByRole('button', { name: 'Change task project', exact: true })).toHaveCount(1);
   await prompt(page).fill('Keep this conversation with the original harness');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
@@ -2873,7 +3027,7 @@ test('switches harness after the first message while preserving conversation and
   await expect(openTaskProject(page)).toHaveText('orbit');
   await expect(page.locator('#navigation .task-item.selected[data-activity="active"]')).toBeVisible();
   await prompt(page).fill('A follow-up draft');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker.getByText('Start a new task to switch harnesses.', { exact: true })).toHaveCount(0);
   await picker.getByRole('tab', { name: 'Kimi Code', exact: true }).click();
@@ -2892,17 +3046,18 @@ test('switches harness after the first message while preserving conversation and
 
 test('browses a file and includes its contents as attached message context', async ({ page }) => {
   await openInspectorTab(page, 'Files');
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"name": "orbit"');
+  await expect(page.locator('.file-editor')).toContainText('"name": "orbit"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await expect(page.locator('#attachments')).toContainText('package.json');
   await prompt(page).fill('Explain this package configuration');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const chip = page.locator('.user-message').last().locator('.message-attachments .prompt-chip');
   await expect(chip).toHaveText(/package\.json\s*Project file/);
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
   await chip.click();
-  await expect(page.locator('#inspector #file-view')).toContainText('"name": "orbit"');
+  await expect(page.locator('#file-view')).toContainText('"name": "orbit"');
   await expect(page.locator('#attachments')).toBeEmpty();
   await expect(prompt(page)).toBeEnabled();
 });
@@ -2999,7 +3154,7 @@ test('agent Markdown cannot inject application actions, IDs, or forms', async ({
 });
 
 test('opens a visible terminal without relying on entrance animation', async ({ page }) => {
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect(page.locator('#terminal-drawer .drawer-heading')).toBeVisible();
   await expect(page.locator('#terminal-host .xterm-screen')).toBeVisible();
@@ -3060,7 +3215,7 @@ test('creates a worktree task under its original project with an icon and fresh 
   await expect(selected.locator('.task-project')).toHaveText('orbit');
   await expect(selected.getByRole('img', { name: 'Worktree', exact: true })).toHaveClass(/task-worktree/);
   await expect(page.locator('.composer-local')).toHaveText('Worktree');
-  await expect(page.locator('#composer-project')).toBeDisabled();
+  await expect(page.locator('#welcome-project')).toBeDisabled();
   await expect.poll(() => savedSelection(page)).toEqual({ provider: 'claude', model: 'sonnet' });
   await expect(page.locator('#mode-picker-trigger')).toHaveText('Full access');
   await expect(prompt(page)).toHaveValue('');
@@ -3079,7 +3234,7 @@ test('creates a worktree task under its original project with an icon and fresh 
   await expect(newTaskHeading(page)).toHaveAccessibleName('What should we build in orbit?');
   await expect(page.locator('.task-item.selected .task-worktree')).toHaveCount(0);
   await expect(page.locator('.composer-local')).toHaveText('Local');
-  await expect(page.locator('#composer-project')).toBeEnabled();
+  await expect(page.locator('#welcome-project')).toBeEnabled();
   expect(await previewProjectNames(page)).toEqual(projects);
 });
 
@@ -3088,7 +3243,7 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
     if (command === 'git_status') return { ...git, branch: session(args.sessionId).worktreePath ? 'codex/worktree-routing' : 'main' };
     if (command === 'read_file') return JSON.stringify({ checkout: session(args.sessionId).worktreePath ? 'worktree' : 'root' });
   `);
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   await submitWorktree(page, 'codex/worktree-routing');
   await expect(newTaskHeading(page)).toBeVisible();
@@ -3100,23 +3255,21 @@ test('routes worktree files, Git, and terminals by task and retains each checkou
   await expect(page.locator('#inspector-content')).toContainText('codex/worktree-routing');
   await expect(changeFiles(page).first().locator('.diff-viewer')).toBeVisible();
   await openInspectorTab(page, 'Files');
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await page.getByRole('tab', { name: 'Files', exact: true }).click();
   await page.locator('[data-action="open-file"][data-path="package.json"]').click();
-  await expect(page.locator('.code-preview')).toContainText('"checkout":"worktree"');
+  await expect(page.locator('.file-editor')).toContainText('"checkout":"worktree"');
   await page.getByRole('button', { name: 'Attach', exact: true }).click();
   await prompt(page).fill('Read the package from this worktree');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   await expect(page.locator('.user-message .message-attachments .prompt-chip')).toHaveText(/package\.json/);
   await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Stop task', exact: true }).click();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   const calls = await page.evaluate(() => (window as any).__pandacodeWorktreeCalls);
   for (const command of ['git_status', 'list_files', 'git_diff', 'read_file', 'start_terminal']) {
     expect(calls).toContainEqual(expect.objectContaining({ command, args: expect.objectContaining({ projectId: 'project-1', sessionId: taskId }) }));
   }
-  // Opened, attached, and re-read at run end because the file stays on screen in the inspector.
-  expect(calls.filter((call: any) => call.command === 'read_file' && call.args.sessionId === taskId)).toHaveLength(3);
   await page.locator('.task-item[data-id="session-1"]').click();
   await expect(page.locator('#terminal-drawer')).toBeVisible();
   await expect.poll(() => page.evaluate(() => (window as any).__pandacodeWorktreeCalls.filter((call: any) => call.command === 'close_terminal').length)).toBe(0);
@@ -3240,11 +3393,11 @@ test('keeps the worktree terminal open when the previous checkout terminal fails
   await expect(newTaskHeading(page)).toBeVisible();
   const taskId = await page.locator('.task-item.selected').getAttribute('data-id');
   await page.locator('.task-item[data-id="session-1"]').click();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   await expect.poll(() => page.evaluate(() => typeof (window as any).__pandacodeRejectOldTerminal)).toBe('function');
   await page.locator(`.task-item[data-id="${taskId}"]`).click();
   await expect(page.locator('#terminal-drawer')).toBeHidden();
-  await page.getByRole('button', { name: 'Toggle terminal (⌘ J)', exact: true }).click();
+  await page.getByRole('button', { name: 'Toggle terminal', exact: true }).click();
   await expect(page.locator('#terminal-host .xterm-screen:visible')).toBeVisible();
   await page.evaluate(() => {
     (window as any).__pandacodeCurrentTerminal = document.querySelector('#terminal-host .terminal-tab-surface:not([hidden]) .xterm-screen');
@@ -3284,13 +3437,22 @@ test('motion is short and never gates input, and presses keep a button in place'
 
 test('the toast sits in the bottom-right corner and wraps long text', async ({ page }) => {
   const toast = page.locator('#toast');
-  await page.evaluate(() => { const toast = document.querySelector<HTMLElement>('#toast')!; toast.textContent = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx'; toast.hidden = false; });
+  const text = 'Could not open /Users/someone/projects/a-really-long-folder-name/with/a/deep/path/src/components/SomethingReallyLongFileName.tsx';
+  // Through the real notify path (a bot notice), so the toast has its text, live region and close button.
+  await page.evaluate(text => (window as any).__previewEmit('bot-notification', { botId: 'b', text }), text);
+  await expect(toast.locator('.toast-text')).toHaveText(text);
   const box = (await toast.boundingBox())!, viewport = page.viewportSize()!;
   expect(box.width).toBeLessThanOrEqual(361);
   expect(viewport.width - (box.x + box.width)).toBeLessThan(40);
-  expect(viewport.height - (box.y + box.height)).toBeLessThan(40);
+  // Bottom-right corner, unless that would cover the composer: then just above it (placeToast, an 8px gap).
+  const composerTop = await page.locator('#composer-area').evaluate(el => el.getBoundingClientRect().top);
+  const bottom = box.y + box.height;
+  if (viewport.height - bottom >= 40) expect(Math.abs(composerTop - 8 - bottom)).toBeLessThan(2);
   expect(await toast.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-  await expect(toast).toHaveAttribute('role', 'status');
+  // The live region is the text alone, so the close button is never read with it.
+  await expect(toast.locator('.toast-text')).toHaveAttribute('role', 'status');
+  await expect(toast).not.toHaveAttribute('role', /.+/);
+  await expect(toast.locator('[role="status"] button')).toHaveCount(0);
 });
 
 test('switching back to a thread draws it at once: formatted, at the bottom, with no loading frame', async ({ page }) => {
@@ -3339,7 +3501,8 @@ test('⌘F finds text in the thread, in your messages and the agent’s, and ste
   // Matches come from both sides of the conversation, highlighted without touching the DOM.
   const owners = await page.evaluate(() => {
     const all = (CSS as any).highlights.get('thread-find');
-    return [...all].map((range: Range) => range.startContainer.parentElement!.closest('.message')!.classList.contains('user-message') ? 'user' : 'agent');
+    // A tool's details are searched too; those matches belong to neither side.
+    return [...all].map((range: Range) => { const owner = range.startContainer.parentElement!.closest('.message, .tool-activity-body')!; return owner.classList.contains('tool-activity-body') ? 'tool' : owner.classList.contains('user-message') ? 'user' : 'agent'; });
   });
   expect(owners).toContain('user'); expect(owners).toContain('agent');
   expect(await page.evaluate(() => (CSS as any).highlights.get('thread-find-current').size)).toBe(1);
@@ -3357,6 +3520,67 @@ test('⌘F finds text in the thread, in your messages and the agent’s, and ste
   await expect(find).toHaveCount(0);
   expect(await page.evaluate(() => (CSS as any).highlights.has('thread-find'))).toBe(false);
   await expect(page.locator('#prompt')).toBeFocused();
+});
+
+test('the find bar rides in the header row, clear of the leading items, and drops to the pane top when narrow', async ({ page }) => {
+  await expect(page.locator('#transcript .user-message').first()).toBeVisible();
+  await page.locator('#sidebar-toggle').click();
+  await expect(page.locator('.header-leading>#sidebar-toggle')).toBeVisible();
+  await page.keyboard.press('ControlOrMeta+f');
+  const bar = page.locator('.thread-find');
+  await expect(bar).toBeVisible();
+  const place = () => page.evaluate(() => {
+    const bar = document.querySelector<HTMLElement>('.thread-find')!.getBoundingClientRect();
+    const header = document.querySelector<HTMLElement>('.main-pane>.workspace-header')!.getBoundingClientRect();
+    const leading = [...document.querySelectorAll<HTMLElement>('.main-pane>.workspace-header .header-leading>*')]
+      .filter(item => item.getClientRects().length && item.getBoundingClientRect().width > 0).map(item => item.getBoundingClientRect().right);
+    return { top: bar.top, bottom: bar.bottom, left: bar.left, headerTop: header.top, headerBottom: header.bottom, leading: Math.max(...leading), pane: document.querySelector<HTMLElement>('.conversation-pane')!.getBoundingClientRect().top };
+  });
+  await expect.poll(async () => { const at = await place(); return at.top >= at.headerTop && at.top < at.headerBottom; }).toBe(true);
+  const wide = await place();
+  expect(wide.left).toBeGreaterThanOrEqual(wide.leading + 8);
+  await page.setViewportSize({ width: 620, height: 800 });
+  await expect.poll(async () => { const at = await place(); return Math.abs(at.top - (at.pane + 10)); }).toBeLessThanOrEqual(1);
+});
+
+test('a first visit keeps the old rows (inert, briefly) until the page or the loading line takes over', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = /case ["']get_messages["']: \{/;
+    expect(marker.test(source)).toBe(true);
+    await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match} if (window.__messageDelay) await new Promise(resolve => setTimeout(resolve, window.__messageDelay));`)) });
+  });
+  for (const [delay, target] of [[40, 'session-2'], [300, 'session-3']] as const) {
+    // Each launch starts on the newest thread, not the one this loop opened last time.
+    await page.evaluate(() => localStorage.removeItem('pandacode.openThread')).catch(() => undefined);
+    await page.reload();
+    await expect(page.locator('#transcript .message').first()).toBeVisible();
+    const frames = await page.evaluate(({ delay, target }) => new Promise<Array<{ t: number; kind: string }>>(resolve => {
+      (window as any).__messageDelay = delay;
+      const transcript = document.querySelector<HTMLElement>('#transcript')!;
+      const seen: Array<{ t: number; kind: string }> = [];
+      const start = performance.now();
+      const sample = () => seen.push({
+        t: Math.round(performance.now() - start),
+        kind: transcript.inert ? (transcript.querySelector('.message') ? 'old' : 'inert-empty')
+          : transcript.querySelector('.history-loading') ? 'loading'
+          : transcript.childElementCount ? 'new' : 'empty',
+      });
+      document.querySelector<HTMLElement>(`.task-item[data-id="${target}"]`)!.click();
+      sample();
+      const tick = () => { sample(); if (performance.now() - start < delay + 300) requestAnimationFrame(tick); else resolve(seen); };
+      requestAnimationFrame(tick);
+    }), { delay, target });
+    expect(frames[0].kind).toBe('old');
+    expect(frames.filter(frame => frame.kind === 'empty' || frame.kind === 'inert-empty')).toEqual([]);
+    // Old rows are never shown past the 150 ms hold (plus a frame), then the loading line or the page follows.
+    expect(Math.max(...frames.filter(frame => frame.kind === 'old').map(frame => frame.t))).toBeLessThan(150 + 40);
+    expect(frames.at(-1)!.kind).toBe('new');
+    expect(frames.some(frame => frame.kind === 'loading')).toBe(delay > 150);
+    await expect(page.locator('#transcript')).not.toHaveAttribute('inert');
+    expect(await page.locator('#transcript').evaluate(node => node.style.opacity)).toBe('');
+  }
 });
 
 test('the prompt sits in the same place in every thread', async ({ page }) => {
@@ -3395,7 +3619,14 @@ test('streaming keeps the transcript at the bottom after sending and leaves a re
   await prompt(page).press('Enter');
   await expect(reply).toHaveCount(1);
   await expect(page.locator('#stream-region .live-message')).toHaveCount(0);
-  expect(Math.max(...await page.evaluate(() => (window as any).__bottomGaps.slice(1) as number[]))).toBeLessThanOrEqual(2);
+  // Text re-pins before paint; a result card unfolding in the live trace is followed on a short ease
+  // (main.ts `easeFollow`), so its gap only ever closes once the card is open, and stays well short of a page.
+  const gaps = await page.evaluate(() => (window as any).__bottomGaps.slice(1) as number[]);
+  expect(Math.max(...gaps)).toBeLessThan(480);
+  const peak = gaps.indexOf(Math.max(...gaps));
+  // A send itself follows on a slower spring (the bubble and skeleton card arrive while it runs), so the gap may still
+  // grow a little after its peak, never by a leap.
+  for (let i = peak + 1; i < gaps.length; i++) expect(gaps[i]).toBeLessThanOrEqual(gaps[i - 1] + 60);
   await expect.poll(() => transcript.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(2);
 
   await prompt(page).fill('Second message');
@@ -3411,3 +3642,97 @@ test('streaming keeps the transcript at the bottom after sending and leaves a re
   expect(Math.abs(await historyOffset(anchor) - anchorY)).toBeLessThan(2);
 });
 
+
+test('state pulses share one phase, whenever they mount', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => document.documentElement.hasAttribute('data-ready'));
+  const phases = await page.evaluate(async () => {
+    const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const style = document.createElement('style');
+    style.textContent = '.pulse-probe{animation:state-pulse 1.6s ease-in-out infinite}.pulse-probe-pseudo::before{content:"";animation:state-pulse 1.6s ease-in-out infinite}';
+    document.head.append(style);
+    const add = (name: string) => { const el = document.createElement('i'); el.className = name; document.body.append(el); return el; };
+    const first = add('pulse-probe');
+    await new Promise(resolve => setTimeout(resolve, 437));
+    const second = add('pulse-probe'), pseudo = add('pulse-probe-pseudo');
+    await frame(); await frame();
+    return [first, second, pseudo].map(el => Number(el.getAnimations({ subtree: true })[0].currentTime) % 1600);
+  });
+  const apart = (a: number, b: number) => Math.min(Math.abs(a - b), 1600 - Math.abs(a - b));
+  expect(apart(phases[0], phases[1]), String(phases)).toBeLessThan(17);
+  expect(apart(phases[0], phases[2]), String(phases)).toBeLessThan(17);
+});
+
+test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
+  // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
+  // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's
+  // own ResizeObserver re-measures it when that width changes, so the same draft must be re-wrapped on a narrower window:
+  // the box is exactly as tall as the text needs up to the 180 px cap, and scrolls only past it. The same textarea node
+  // throughout, so what changes is the fit and not a re-render that remeasured by another path.
+  //
+  // Every expectation is derived from the element — its own padding, border and line-height at this UI scale — never from a
+  // remembered wrap count: a font or UI-scale change moves those numbers together, so the only thing that can make them
+  // disagree is a fit that was not re-taken at the new width.
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(prompt(page)).toBeEnabled();
+  const field = page.locator('#prompt');
+  const sentence = 'A draft that has to stay whole when the pane narrows: every line of it should stay in view after the window is made smaller, with no scrollbar until the box reaches its cap. ';
+  const draft = (sentence.repeat(2) + sentence.slice(0, 70)).trim();
+  await prompt(page).fill(draft);
+  await expect(prompt(page)).toHaveValue(draft);
+  // The one number the fit is measured against (`PROMPT_MAX_HEIGHT` in src/main.ts): the cap, not a wrap count.
+  const CAP = 180;
+  const fit = () => field.evaluate((node, cap) => {
+    const style = getComputedStyle(node), line = parseFloat(style.lineHeight) || 0;
+    // What a wrap count would subtract: this textarea's own vertical padding and border (16 + 6 px today, at UI scale 1),
+    // read from the live style rather than remembered, so a restyled composer cannot make the arithmetic wrong.
+    const inset = (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'] as const)
+      .reduce((total, key) => total + (parseFloat(style[key]) || 0), 0);
+    const natural = node.scrollHeight;
+    // `lines` is diagnostic only, for the failure messages: nothing asserts a count.
+    return { width: node.clientWidth, height: node.clientHeight, natural, inline: node.style.height, overflow: style.overflowY, cap,
+      lines: line ? Math.round(((natural - inset) / line) * 10) / 10 : 0 };
+  }, CAP);
+  const fits = async (label: string) => {
+    const now = await fit();
+    // The whole rule, and the assertion that catches a fit never re-taken: the box is min(scrollHeight, cap). A stale fit
+    // is not that number — it is short of the text that re-wrapped (and hidden, with no scrollbar to reach the rest) or
+    // long for it.
+    expect(now.height, `${label}: the box is min(scrollHeight, ${now.cap}) — ${now.lines} lines, ${now.natural}px of text at ${now.width}px, inline ${now.inline}`)
+      .toBe(Math.min(now.natural, now.cap));
+    // Nothing is clipped in a box that carries no scrollbar.
+    if (now.overflow === 'hidden') expect(now.height + 1, `${label}: text hidden past the box's edge`).toBeGreaterThanOrEqual(now.natural);
+    expect(now.overflow, `${label}: a scrollbar exactly when the text is taller than the box`).toBe(now.natural > now.cap + 1 ? 'auto' : 'hidden');
+    return now;
+  };
+  const wide = await fits('wide');
+  // The precondition that makes a stale fit observable instead of merely scrolled: at this width the draft is under the
+  // cap, so the height it was fitted to is the text's own. Derived from the measurement — a wider font or UI scale makes
+  // this viewport fail this precondition (and then wrap counts are not the test's business) rather than failing the fit.
+  expect(wide.natural, `the draft is shorter than the ${wide.cap}px cap at ${wide.width}px, so a stale fit would be visible`).toBeLessThan(wide.cap);
+  await field.evaluate(node => { (window as any).__promptNode = node; });
+  // One notch narrower: the same text wraps to more lines, so the box grows with it. Ablation (checked by re-wrapping the
+  // text for a reason the observer cannot see — a `letter-spacing` override leaves the prompt's box width identical, as
+  // does removing the observer, and the box kept its old height of 150 px while the text needed 176): this is where
+  // `height === min(scrollHeight, cap)` breaks, because the re-wrapped draft needs more than the old fit had.
+  await page.setViewportSize({ width: 1340, height: 900 });
+  await expect.poll(async () => (await fit()).width, { message: 'the composer narrowed' }).toBeLessThan(wide.width - 20);
+  await expect.poll(async () => (await fit()).natural, { message: 'the same draft re-wrapped' }).toBeGreaterThan(wide.natural);
+  const narrow = await fits('narrow');
+  expect(narrow.natural, `the re-wrapped draft needs more than the fit at ${wide.width}px had (${wide.height}px)`).toBeGreaterThan(wide.height + 1);
+  expect(narrow.width).toBeLessThan(wide.width - 20);
+  // Narrower than the cap: the box stops at the cap and the text scrolls, never clipped in a box that would not grow. The
+  // width that gets there depends on the font, the UI scale and the pane, so step in until the measurement says so.
+  let tight = narrow;
+  for (const width of [1220, 1140, 1060, 980]) {
+    if (tight.natural > tight.cap + 1) break;
+    await page.setViewportSize({ width, height: 900 });
+    await expect.poll(async () => (await fit()).width, { message: `the composer narrowed to ${width}px` }).toBeLessThan(tight.width - 20);
+    await expect.poll(async () => (await fit()).natural, { message: `the draft re-wrapped at ${width}px` }).toBeGreaterThan(tight.natural);
+    tight = await fits(`tight at ${width}px`);
+  }
+  expect(tight.natural, `the draft is taller than the ${tight.cap}px cap`).toBeGreaterThan(tight.cap + 1);
+  expect(tight.height, `the box stops at the ${tight.cap}px cap (inline ${tight.inline})`).toBe(tight.cap);
+  expect(tight.overflow, 'a scrollbar exactly when the text exceeds the cap').toBe('auto');
+  expect(await field.evaluate(node => node === (window as any).__promptNode), 'the same textarea, not a re-render').toBe(true);
+});

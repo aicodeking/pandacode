@@ -1,9 +1,9 @@
-/* Machine orchestration above the prompt (link card, lineage strip, waiting line) and the
- * Link a machine dialog. Always loaded: main.ts imports the module statically. */
+/* Machine orchestration above the prompt (link card, waiting line), the Lineage panel in the
+ * Agents flyout and the Link a machine dialog. Always loaded: main.ts imports the module statically. */
 #machine-orchestration:empty{display:none}
 #machine-orchestration{display:grid;gap:4px;margin:0 0 6px;min-width:0}
-.machine-link-card,.lineage,.lineage-wait{min-width:0;border-radius:6px;background:var(--panel);color:var(--text);font-size:.82rem}
-.machine-link-card{display:flex;align-items:center;gap:9px;min-height:40px;padding:3px 4px 3px 10px;box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .28),0 6px 18px -10px rgb(0 0 0 / .35)}
+.machine-link-card,.lineage-wait{min-width:0;border-radius:6px;color:var(--text);font-size:.82rem}
+.machine-link-card{display:flex;align-items:center;gap:9px;min-height:40px;padding:3px 4px 3px 10px;background:rgb(var(--accent-rgb) / .1)}
 .machine-link-mark{width:15px;height:15px;flex:none;color:var(--accent-ink)}
 html[data-theme="dark"] .machine-link-mark{color:var(--accent)}
 .machine-link-text{flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;overflow:hidden;white-space:nowrap}
@@ -12,30 +12,42 @@ html[data-theme="dark"] .machine-link-mark{color:var(--accent)}
 .machine-actions{display:flex;flex:none;align-items:center;gap:4px}
 :is(.machine-quiet,.machine-primary){height:24px;padding:0 10px;border-radius:4px;font-size:.76rem;font-weight:550;--press:1}
 .machine-quiet{color:var(--muted);background:none}
-.machine-quiet:hover:not(:disabled){color:var(--text);background:var(--raised)}
+.machine-quiet:hover:not(:disabled){color:var(--text);background:var(--fill-hover)}
+.machine-quiet[hidden]{display:none}
 .machine-primary{background:var(--accent);color:var(--on-accent)}
 .machine-primary:hover:not(:disabled){background:var(--accent-hover,var(--accent))}
 
-/* Lineage: one line that expands to a line per launched thread. */
-.lineage{padding:2px 4px 2px 8px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--border) 80%,transparent)}
-.lineage-line,.lineage-row,.lineage-wait{display:flex;align-items:center;gap:8px;min-width:0}
-.lineage-line{min-height:32px}
+/* Lineage rows: harness initials with a status dot, title, where and state, then Stop. */
+.lineage-panel{display:flex;flex-direction:column;min-height:0;font-size:.82rem;overflow:hidden}
+.lineage-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:8px;min-height:38px;padding:6px 8px 2px 12px}
+.lineage-count{min-width:0;color:var(--muted);font-size:.76rem;font-weight:550;font-variant-numeric:tabular-nums;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lineage-rows{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:minmax(0,1fr)}
+.lineage-panel .lineage-rows{min-height:0;padding:0 4px 6px;overflow:auto;overscroll-behavior:contain}
+.lineage-row,.lineage-wait{display:flex;align-items:center;gap:8px;min-width:0}
+.lineage-row{position:relative;min-height:30px;padding:0 8px;border-radius:6px}
+.lineage-panel .lineage-row:is(:hover,:focus-within){background:var(--fill-hover)}
 .lineage-faces{display:flex;flex:none}
-.lineage-faces span,.lineage-face{display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--raised);box-shadow:0 0 0 1.5px var(--panel);color:var(--muted);font-family:var(--mono);font-size:.56rem;font-weight:650;letter-spacing:.02em}
+.lineage-faces span,.lineage-face{position:relative;display:inline-grid;place-items:center;width:20px;height:20px;border-radius:50%;background:var(--raised);color:var(--muted);font-family:var(--mono);font-size:.56rem;font-weight:650;letter-spacing:.02em}
+.lineage-faces span{box-shadow:0 0 0 1.5px var(--panel)}
 .lineage-faces span+span{margin-left:-5px}
-.lineage-summary{justify-content:flex-start;flex:1;min-width:0;display:flex;align-items:baseline;gap:8px;padding:0;background:none;color:var(--text);text-align:left;white-space:nowrap;cursor:pointer;--press:1}
-.lineage-summary strong{flex:none;font-weight:600}
-.lineage-summary span{color:var(--accent-ink);font-size:.76rem}
-html[data-theme="dark"] .lineage-summary span{color:var(--accent)}
-.lineage-chevron{width:12px;height:12px;flex:none;align-self:center;margin-left:auto;color:var(--muted)}
-.lineage.is-open .lineage-chevron{rotate:90deg}
-.lineage-rows{list-style:none;margin:0 0 2px;padding:3px 0 0;border-top:1px solid color-mix(in srgb,var(--border) 70%,transparent);display:grid;grid-template-columns:minmax(0,1fr)}
-.lineage-row{min-height:30px}
+.lineage-chevron{width:12px;height:12px;flex:none;align-self:center;margin-left:auto;color:var(--muted);transition:rotate 150ms ease-out}
 .lineage-face{width:18px;height:18px;flex:none}
-.lineage-open{display:block;flex:1;min-width:0;padding:0;overflow:hidden;background:none;color:var(--text);text-align:left;white-space:nowrap;text-overflow:ellipsis;cursor:pointer}
+.lineage-face::after{content:"";position:absolute;right:-1px;bottom:-1px;width:6px;height:6px;border-radius:50%;background:var(--faint);transition:background-color 150ms ease-out}
+.lineage-row[data-state="Running"] .lineage-face::after{background:var(--accent)}
+.lineage-row[data-state="Needs you"] .lineage-face::after{background:var(--accent-ink)}
+.lineage-row[data-state="Done"] .lineage-face::after{background:var(--success)}
+.lineage-row[data-state="Failed"] .lineage-face::after{background:var(--danger)}
+.lineage-row:is([data-state="Done"],[data-state="Stopped"],[data-state="Offline"]) .lineage-open{color:var(--muted)}
+.lineage-open{display:block;flex:1;min-width:0;padding:0;overflow:hidden;background:none;color:var(--text);text-align:left;white-space:nowrap;text-overflow:ellipsis;cursor:pointer;--press:1;transition:color 150ms ease-out}
 .lineage-open:hover{text-decoration:underline}
-.lineage-where{flex:none;color:var(--muted);font-size:.76rem;white-space:nowrap}
-.lineage-wait{min-height:30px;padding:0 4px 0 10px;background:none;color:var(--muted)}
+.lineage-where{flex:none;color:var(--muted);font-size:.76rem;white-space:nowrap;transition:color 150ms ease-out,opacity 120ms ease-out}
+.lineage-row[data-state="Failed"] .lineage-where{color:var(--danger)}
+/* Stop shows over the row's end under a pointer or keyboard focus, so 40 rows don't read as 40 buttons. */
+.lineage-stop{position:absolute;right:4px;top:3px;background:var(--panel);opacity:0;transition:opacity 120ms ease-out}
+.lineage-row:is(:hover,:focus-within) .lineage-stop{opacity:1}
+@media(hover:hover){.lineage-row:has(.lineage-stop:not([hidden])):is(:hover,:focus-within) .lineage-where{opacity:0}}
+@media(hover:none){.lineage-stop{position:static;opacity:1}}
+.lineage-wait{min-height:30px;padding:0 4px 0 10px;color:var(--muted)}
 .lineage-wait strong{flex:none;color:var(--text);font-weight:550}
 .lineage-titles{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:.76rem}
 .lineage-wait .machine-quiet{margin-left:auto;flex:none}
@@ -51,9 +63,8 @@ html[data-theme="dark"] .lineage-summary span{color:var(--accent)}
 .machine-steps li>span{display:inline-grid;place-items:center;width:18px;height:18px;flex:none;border-radius:50%;background:var(--raised);font-size:.7rem}
 .machine-steps li>span .icon{width:11px;height:11px}
 .machine-steps li:first-child:not([aria-current]) > span{background:var(--accent);color:var(--on-accent)}
-.machine-list{min-width:0;margin:0;padding:0;border:1px solid var(--glass-line);border-radius:6px;background:var(--glass-fill);overflow:hidden}
+.machine-list{min-width:0;margin:0;padding:0;border:0;border-radius:6px;background:var(--glass-fill);overflow:hidden}
 .machine-row{display:flex;align-items:center;gap:8px;min-height:38px;padding:0 12px;font-size:.84rem;white-space:nowrap;cursor:pointer}
-.machine-row+.machine-row{border-top:1px solid var(--glass-line)}
 .machine-row:hover:not(.is-disabled){background:var(--glass-fill-hover)}
 .machine-row.is-disabled{cursor:default;color:var(--muted)}
 .machine-row input{width:auto;margin:0;padding:0;flex:none;border:0;background:none;accent-color:var(--accent)}
@@ -66,8 +77,9 @@ html[data-theme="dark"] .lineage-summary span{color:var(--accent)}
 .machine-access-help{margin:8px 0 0;color:var(--muted);font-size:.78rem;line-height:1.45}
 .machine-link-form select{width:100%}
 .machine-linked select{flex:none;width:auto}
-@media (prefers-contrast:more){.machine-link-card,.lineage{box-shadow:inset 0 0 0 1px var(--text)}}
+@media (prefers-contrast:more){.machine-link-card{outline:1px solid var(--text)}}
 .settings-page-root .setting-row.machine-linked{grid-template-columns:minmax(0,1fr) auto auto}
+.settings-page-root .setting-row.machine-linked.is-departed{grid-template-columns:minmax(0,1fr) auto}
 
 /* Transcript card for a turn's launched threads (like a subagents card). */
 .machine-threads{margin:6px 0 10px;min-width:0;max-width:100%;font-size:.82rem}
@@ -79,7 +91,8 @@ html[data-theme="dark"] .machine-threads-copy small{color:var(--accent)}
 .machine-threads-time{margin-left:auto;color:var(--muted);font-size:.74rem}
 .machine-threads.is-open .lineage-chevron{rotate:90deg}
 .machine-threads .lineage-rows{margin-left:4px}
+.machine-threads .lineage-row{padding:0}
 /* An action on a notice, e.g. opening a task that asks to link a machine. */
 .toast-action{flex:none;margin-left:4px;padding:3px 9px;border-radius:4px;background:var(--accent);color:var(--on-accent);font-size:.8rem;font-weight:550;--press:1}
 .toast-action:hover{background:var(--accent-hover,var(--accent))}
-.machine-threads-time+.lineage-chevron{margin-left:0}
+.machine-threads-time:not([hidden])+.lineage-chevron{margin-left:0}

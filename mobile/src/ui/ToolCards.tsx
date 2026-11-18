@@ -4,14 +4,15 @@
 // `server › tool` with its arguments pretty-printed.
 import { Image } from 'expo-image';
 import { createContext, useContext, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import type { ToolActivity } from '../connect/types.ts';
 import { assignmentsOf, imageOf, type Assignment, type WorkerNames } from '../store/pandacode-tools.ts';
 import { mcpParts } from '../store/trace.ts';
 import { HarnessLogo, harnessName } from './harness.tsx';
-import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
+import { modelLabel } from './model-label.ts';
 import { mono, useColors } from './theme.ts';
+import { Chevron, Collapse, geometry, InnerCard, PressScale, type as textStyle } from './ds/index.ts';
 
 /** Worker id → name for the task on screen (from its team), so sentences read `Asked GPT-6…`. */
 export const WorkerNamesContext = createContext<WorkerNames>({});
@@ -29,7 +30,7 @@ function pretty(input: string, fields: Fields): string {
 
 function Label({ children }: { children: string }) {
   const colors = useColors();
-  return <Text style={[styles.label, { color: colors.secondary }]}>{children}</Text>;
+  return <Text style={[styles.label, { color: colors.muted }]}>{children}</Text>;
 }
 
 function Mono({ text }: { text: string }) {
@@ -42,9 +43,9 @@ export function ModelBadge({ provider, model }: { provider: string; model: strin
   const colors = useColors();
   if (!provider && !model) return null;
   return (
-    <View style={[styles.badge, { backgroundColor: colors.fill }]} accessible accessibilityLabel={[model, provider && harnessName(provider)].filter(Boolean).join(', ')}>
+    <View style={[styles.badge, { backgroundColor: colors.fill, borderColor: colors.chipBorder }]} accessible accessibilityLabel={[model && modelLabel(model), provider && harnessName(provider)].filter(Boolean).join(', ')}>
       {!!provider && <HarnessLogo id={provider} size={12} />}
-      <Text style={[styles.badgeText, { color: colors.secondary }]} numberOfLines={1}>{model || harnessName(provider)}</Text>
+      <Text style={[styles.badgeText, { color: colors.muted }]} numberOfLines={1}>{model ? modelLabel(model) : harnessName(provider)}</Text>
     </View>
   );
 }
@@ -54,22 +55,22 @@ function AssignmentCard({ a, names }: { a: Assignment; names: WorkerNames }) {
   const [open, setOpen] = useState(false);
   const deps = a.dependsOn.map(id => names[id] || id);
   return (
-    <View style={[styles.card, { borderColor: colors.separator }]}>
+    <InnerCard style={styles.card}>
       <View style={styles.row}>
         <Text style={[styles.title, { color: colors.text }]} numberOfLines={2}>{a.name}</Text>
         <ModelBadge provider={a.provider} model={a.model || a.profileId} />
       </View>
-      <Text style={[styles.meta, { color: colors.tertiary }]} numberOfLines={3}>
+      <Text style={[styles.meta, { color: colors.faint }]} numberOfLines={3}>
         {[a.key && `key ${a.key}`, a.readOnly && 'read-only', a.files.length ? a.files.join(', ') : 'whole checkout', deps.length && `after ${deps.join(', ')}`].filter(Boolean).join(' · ')}
       </Text>
       {!!a.prompt && (
-        <Pressable onPress={() => setOpen(o => !o)} accessibilityRole="button" accessibilityState={{ expanded: open }} style={styles.fold}>
-          <Icon ios={open ? 'chevron.down' : 'chevron.right'} android={open ? 'expand_more' : 'chevron_right'} size={10} color={colors.secondary} />
-          <Text style={[styles.meta, { color: colors.secondary }]}>Assignment</Text>
-        </Pressable>
+        <PressScale onPress={() => setOpen(o => !o)} accessibilityState={{ expanded: open }} style={styles.fold}>
+          <Chevron expanded={open} size={10} color={colors.muted} />
+          <Text style={[styles.meta, { color: colors.muted }]}>Assignment</Text>
+        </PressScale>
       )}
-      {open && <Markdown text={a.prompt} />}
-    </View>
+      <Collapse expanded={open}><Markdown text={a.prompt} /></Collapse>
+    </InnerCard>
   );
 }
 
@@ -114,7 +115,7 @@ function OwnCard({ own, fields, names }: { own: string; fields: Fields; names: W
         <View style={styles.gap}>
           {!!str(fields, 'summary') && <Text selectable style={[styles.body, { color: colors.text }]}>{str(fields, 'summary')}</Text>}
           {!!str(fields, 'nextSteps') && <><Label>Next</Label><Text selectable style={[styles.body, { color: colors.text }]}>{str(fields, 'nextSteps')}</Text></>}
-          {!!str(fields, 'blocker') && <><Label>Blocker</Label><Text selectable style={[styles.body, { color: colors.red }]}>{str(fields, 'blocker')}</Text></>}
+          {!!str(fields, 'blocker') && <><Label>Blocker</Label><Text selectable style={[styles.body, { color: colors.danger }]}>{str(fields, 'blocker')}</Text></>}
         </View>
       );
     default: return null;
@@ -135,7 +136,7 @@ export function McpBody({ tool, fields, own }: { tool: ToolActivity; fields: Fie
       {hasCard ? card : !!tool.input.trim() && tool.input.trim() !== '{}' && <Mono text={pretty(tool.input, fields)} />}
       {image ? <Image source={{ uri: image }} style={styles.shot} contentFit="contain" accessibilityLabel="Screenshot" />
         : !hasCard && !!tool.output.trim() && <Mono text={tool.output.length > MAX_ARGS ? `${tool.output.slice(0, MAX_ARGS)}\n…` : tool.output} />}
-      {!tool.output.trim() && !hasCard && <Text style={[styles.body, { color: colors.secondary }]}>{tool.status === 'running' ? 'Waiting for output…' : 'No output was returned.'}</Text>}
+      {!tool.output.trim() && !hasCard && <Text style={[styles.body, { color: colors.muted }]}>{tool.status === 'running' ? 'Waiting for output…' : 'No output was returned.'}</Text>}
     </View>
   );
 }
@@ -143,14 +144,14 @@ export function McpBody({ tool, fields, own }: { tool: ToolActivity; fields: Fie
 const styles = StyleSheet.create({
   gap: { gap: 8 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  card: { borderWidth: StyleSheet.hairlineWidth, borderRadius: 10, padding: 10, gap: 4, borderCurve: 'continuous' },
-  title: { flex: 1, fontSize: 14, fontWeight: '600' },
-  meta: { fontSize: 12.5, lineHeight: 17 },
-  fold: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 2 },
-  label: { fontSize: 12, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.3 },
-  body: { fontSize: 14, lineHeight: 19 },
-  code: { fontFamily: mono, fontSize: 12, lineHeight: 16 },
-  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: 8, maxWidth: 150 },
-  badgeText: { fontSize: 12, fontWeight: '500', flexShrink: 1 },
+  card: { padding: 10, gap: 4 },
+  title: { ...textStyle.subheadMedium, flex: 1 },
+  meta: textStyle.footnote,
+  fold: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 2, alignSelf: 'flex-start' },
+  label: textStyle.footnoteMedium,
+  body: textStyle.subhead,
+  code: { ...textStyle.caption, fontFamily: mono },
+  badge: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 7, paddingVertical: 3, borderRadius: geometry.chipRadius, borderWidth: geometry.hairline, borderCurve: 'continuous', maxWidth: 150 },
+  badgeText: { ...textStyle.caption, flexShrink: 1 },
   shot: { width: '100%', aspectRatio: 0.5, borderRadius: 8 },
 });

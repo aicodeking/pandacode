@@ -7,10 +7,10 @@ use crate::providers::{self, AgentEvent, RunConfig, RunInput, ToolHost};
 use crate::storage::{self, ContextUsage, Store};
 use crate::{
     agent_tools, architect, blocking_snapshot, bots, bounded_tail, cloud, custom_tools, design, emit_coalesced, explore, goal_state, lead_spare,
-    persist_turn_changes, progress, remote, run_tool_id, save_agent_activity, save_approval_with_pending, schedules, session_titles, simulator,
-    subagent_state, tray, turn_changes, vm, Agents, AppState,
+    lock_agents, persist_turn_changes, progress, record_request_event, remote, run_tool_id, save_agent_activity, schedules, session_titles, settle_account_switch,
+    simulator, subagent_state, tray, turn_changes, vm, worker_approvals, Agents, AppState,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, AtomicI64, Ordering},
@@ -52,11 +52,18 @@ struct AppLayers<'a, F> {
 }
 
 impl<F: FnOnce(Option<ToolHost>) -> ToolHost> app_instructions::HostLayers for AppLayers<'_, F> {
-    fn base(&mut self, plan: &HostPlan) -> (Option<ToolHost>, bool) {
+    fn base(&mut self, _plan: &HostPlan) -> (Option<ToolHost>, bool) {
         let (app, sid, stopped) = (self.at.app, self.at.session_id, self.at.stopped);
         let host = match self.at.team {
-            Some(admission) => architect::host(app.clone(), sid.to_owned(), stopped.clone(), admission),
-            None => plan.codex.then(|| agent_tools::host(app.clone(), sid.to_owned(), stopped.clone())),
+            // Workers keep their scoped team tools; only the lead may manage other tasks.
+            Some(admission) => architect::host(app.clone(), sid.to_owned(), stopped.clone(), admission).map(|host| {
+                if admission.parent == sid {
+                    agent_tools::with_app_host(host, agent_tools::host(app.clone(), sid.to_owned(), stopped.clone()))
+                } else {
+                    host
+                }
+            }),
+            None => Some(agent_tools::host(app.clone(), sid.to_owned(), stopped.clone())),
         };
         let missing = self.at.team.is_some() && host.is_none();
         let host = agent_tools::with_jev(host, app.clone(), sid.to_owned(), stopped.clone());
@@ -152,8 +159,10 @@ pub(crate) struct RunSink {
     pub(crate) assistant: Arc<Mutex<String>>,
     pub(crate) subagents: Arc<Mutex<subagent_state::SubagentState>>,
     pub(crate) store: Arc<Mutex<Store>>,
-    pub(crate) pending_approvals: Arc<Mutex<HashSet<String>>>,
-    pub(crate) pending_requests: Arc<Mutex<HashMap<String, AgentEvent>>>,
+    /// The run's own pending requests and stop handle (`worker_approvals`).
+    pub(crate) own_run: worker_approvals::Run,
+    /// Whether the run is a team worker's: its requests are resolved by the team, not asked.
+    pub(crate) team_worker: bool,
     /// The first persistence error of the run.
     pub(crate) errors: Arc<Mutex<Option<String>>>,
     pub(crate) agents: Agents,
@@ -179,7 +188,7 @@ impl RunSink {
             return;
         }
         self.last_event.store(storage::now(), Ordering::SeqCst);
-        if e.kind == "done" {
+        if e.kind == "done" || e.kind == providers::HEARTBEAT {
             return;
         }
         let usage = if e.kind == "usage" {
@@ -194,6 +203,14 @@ impl RunSink {
             None
         };
         self.track(native_turn, &mut e);
+        if e.kind == providers::ACCOUNT_SWITCHED {
+            self.account_switched(&e);
+            return;
+        }
+        if e.kind == providers::UNANSWERED_APPROVAL {
+            worker_approvals::stop_unanswered(self.team_worker, &self.own_run, &e);
+            return;
+        }
         self.record(&mut e, usage.as_ref());
         if e.kind == "goal_ready" {
             self.answer_goal(&e);
@@ -207,6 +224,19 @@ impl RunSink {
         if let Some(session_id) = completed {
             self.finish_turn(&session_id);
         }
+    }
+
+    /// A pooled run moved to another account (any run, a user's too): the old account's requests
+    /// can no longer be answered, so their cards go.
+    fn account_switched(&self, e: &AgentEvent) {
+        let cancelled = settle_account_switch(&self.store, &self.own_run, &e.session_id);
+        if cancelled.is_empty() {
+            return;
+        }
+        for event in cancelled {
+            emit_coalesced(&self.app, &self.coalescer, event);
+        }
+        tray::refresh(&self.app);
     }
 
     /// Turn starts, run-scoped tool ids and the change tracker's view of tools and subagents.
@@ -252,7 +282,7 @@ impl RunSink {
             *slot = Some(error);
         }
         if matches!(e.kind.as_str(), "goal" | "goal_input") {
-            if let Ok(registry) = self.agents.lock() {
+            if let Ok(registry) = lock_agents(&self.agents) {
                 if let Some(agent) = registry.get(&e.session_id) {
                     let _ = agent.send(RunInput::Stop);
                 }
@@ -275,10 +305,12 @@ impl RunSink {
                 .map_err(|error| error.to_string())
                 .and_then(|db| save_agent_activity(&db, &self.assistant, e, usage));
         }
-        let saved = save_approval_with_pending(&self.store, &self.pending_approvals, Some(&self.pending_requests), &self.run_id, e);
+        // Locks `agents`: this sink is never called with that lock held (see its doc).
+        let saved = record_request_event(&self.store, &self.own_run, self.team_worker, &self.agents, e);
         if saved.is_ok() && e.kind == "approval" {
             if let Some(request_id) = &e.request_id {
-                bots::approval_requested(&self.app, &e.session_id, request_id, &e.text);
+                let lasting_only = e.data.as_ref().is_some_and(|data| data[providers::LASTING_ONLY] == true);
+                bots::approval_requested(&self.app, &e.session_id, request_id, &e.text, lasting_only);
             }
             tray::refresh(&self.app);
         }
@@ -317,9 +349,14 @@ impl RunSink {
         let Some(tracker) = &self.tracker else {
             return;
         };
-        let capture = blocking_snapshot(|| tracker.lock().ok().and_then(|mut tracker| tracker.boundary()));
-        if let Some(capture) = capture {
-            persist_turn_changes(&self.app, &self.store, session_id, capture);
+        let capture = blocking_snapshot(|| {
+            tracker.lock().ok().and_then(|mut tracker| {
+                let last_write = tracker.last_write();
+                tracker.boundary().map(|capture| (capture, last_write))
+            })
+        });
+        if let Some((capture, last_write)) = capture {
+            persist_turn_changes(&self.app, &self.store, session_id, capture, last_write);
         }
     }
 }

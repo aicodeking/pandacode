@@ -3,8 +3,8 @@ use super::*;
 use crate::providers::{COMPACTED_OUTPUT, COMPACT_CONTEXT_TOOL};
 use crate::{EDIT_CLAUDE, EDIT_OTHER};
 
-const LEAD_CAP: usize = 6130;
-const WORKER_CAP: usize = 1370;
+const LEAD_CAP: usize = 6428;
+const WORKER_CAP: usize = 1668;
 
 /// Task instructions with nothing optional on; each test changes only the fields it is about.
 const BASE: InstructionOptions = InstructionOptions { chat: false, role: Role::Task, explore: None, tools: false, cloud: false };
@@ -53,6 +53,11 @@ fn team_workers_get_only_change_tracking_and_turn_end() {
     let worker = app_instructions(&InstructionOptions { role: Role::Worker, explore: claude(), ..BASE });
     assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, &look, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat());
     assert_eq!(worker, [turn_changes::instruction(), TURN_ENDS, &look].concat());
+    // A harness whose turn end closes its subagents waits for them (it was in main's tests).
+    for text in [&lead, &worker] {
+        assert!(text.contains("wait for every subagent you started"), "a harness whose turn end closes its subagents waits for them");
+    }
+    assert!(TURN_ENDS.contains("wait for every subagent you started"));
     // The subagent style hint rides the token saver block, only while a style is active.
     assert!(!lead.contains("Response style:") && !worker.contains("Response style:"));
     assert!(worker.contains("File change tracking:") && worker.contains("Your turn ends when you reply") && worker.contains("pandacode_explore"));

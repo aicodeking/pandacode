@@ -37,6 +37,48 @@ async function pasteImage(page: Page, name = 'shot.png'): Promise<void> {
   }, [PNG, name]);
 }
 
+/** Dispatches a paste whose clipboardData carries the given types but no files, as
+ * WebKitGTK delivers an OS clipboard image (issue #272: Flameshot on Fedora Wayland). */
+async function pasteWithoutFiles(page: Page, types: string[] = []): Promise<boolean> {
+  return page.evaluate(types => {
+    const data = new DataTransfer();
+    for (const type of types) data.setData(type, `sample ${type}`);
+    const event = new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true });
+    document.querySelector('#prompt')!.dispatchEvent(event);
+    return event.defaultPrevented;
+  }, types);
+}
+
+test('a paste that carries no files reads the clipboard image natively', async ({ page }) => {
+  await probe(page, `if (command === 'read_clipboard_image') return ${JSON.stringify(PNG)};`);
+  await prompt(page).focus();
+  const prevented = await pasteWithoutFiles(page);
+  expect(prevented).toBe(true);
+  await expect(chips(page)).toHaveCount(1);
+  await expect(chips(page).first()).toContainText('Pasted image.png');
+  await expect(page.locator('#toast')).not.toContainText('Attached');
+  const imported = await calls(page, 'import_prompt_image');
+  expect(imported[0].args.dataUrl).toBe(`data:image/png;base64,${PNG}`);
+  expect(imported[0].args.name).toBe('Pasted image.png');
+});
+
+test('pasting text never reads the clipboard, and an empty clipboard read leaves the paste alone', async ({ page }) => {
+  await probe(page, `if (command === 'read_clipboard_image') throw new Error('clipboard read refused');`);
+  await prompt(page).focus();
+  const prevented = await pasteWithoutFiles(page, ['text/plain']);
+  expect(prevented).toBe(false);
+  expect(await pasteWithoutFiles(page, ['text/html'])).toBe(false);
+  await expect(chips(page)).toHaveCount(0);
+  await expect(prompt(page)).toBeFocused();
+  expect(await calls(page, 'read_clipboard_image')).toHaveLength(0);
+  // An unreadable or imageless clipboard: the paste is cancelled but nothing attaches.
+  const second = await pasteWithoutFiles(page);
+  expect(second).toBe(true);
+  await expect(chips(page)).toHaveCount(0);
+  expect(await calls(page, 'read_clipboard_image')).toHaveLength(1);
+  await expect(page.locator('#toast')).not.toContainText('clipboard');
+});
+
 test('the attach menu offers files, a folder, project files and a sketch, and attaches picker results as chips', async ({ page }) => {
   await probe(page);
   await attachButton(page).click();
@@ -166,10 +208,10 @@ test('a sent message shows its attachments as chips that open what they carried'
   await expect(message.locator('.message-content')).not.toContainText('# Orbit');
   await expect(message.locator('script')).toHaveCount(0);
 
-  // A document inside the workspace opens in a file tab in the inspector, beside the conversation.
   await sentChips.nth(0).click();
-  await expect(page.locator('#inspector #file-tabs').getByRole('tab', { name: 'README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.locator('#file-tabs').getByRole('tab', { name: 'README.md', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(message).toBeVisible();
+  await page.getByRole('button', { name: 'Hide editor', exact: true }).click();
 
   // The image shows at full size from the capture registry.
   await expect(sentChips.nth(2).locator('img')).toHaveAttribute('src', /^data:image\/png;base64,/);
@@ -197,6 +239,59 @@ test('dropped items that cannot be attached go into the prompt as paths', async 
   await expect(prompt(page)).toHaveValue('Look at\n/Users/you/Downloads/build.zip\n"/Users/you/Downloads/My Archive.zip"');
   await expect(page.locator('#toast')).toContainText('Inserted paths for 2 files');
   await expect(page.locator('#toast')).not.toContainText('No readable text');
+});
+
+/** A real-shaped file drop: the DOM event carries File objects and no paths. */
+async function dropFile(page: Page, name: string): Promise<void> {
+  await page.evaluate(name => {
+    const data = new DataTransfer();
+    data.items.add(new File([new Uint8Array([0, 1, 2])], name));
+    document.dispatchEvent(new DragEvent('dragenter', { dataTransfer: data, bubbles: true }));
+    document.dispatchEvent(new DragEvent('drop', { dataTransfer: data, bubbles: true, cancelable: true }));
+  }, name);
+}
+
+test('a dropped folder attaches with its real path from the drag pasteboard', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/Downloads/assets'];`);
+  await dropFile(page, 'assets');
+  await expect(chips(page)).toHaveCount(1);
+  await expect(page.locator('#attachments .prompt-chip-folder')).toHaveAttribute('title', '/Users/you/Downloads/assets');
+});
+
+test('a dropped file that cannot attach inserts its real path', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/Downloads/build.zip'];`);
+  await prompt(page).fill('Look at');
+  await dropFile(page, 'build.zip');
+  await expect(prompt(page)).toHaveValue('Look at /Users/you/Downloads/build.zip');
+  await expect(chips(page)).toHaveCount(0);
+});
+
+test('a drag pasteboard holding other files is not trusted for this drop', async ({ page }) => {
+  await probe(page, `if (command === 'dragged_file_paths') return ['/Users/you/old.md'];`);
+  await dropFile(page, 'firmware.bin');
+  await expect(prompt(page)).toHaveValue('firmware.bin (dropped file; PandaCode could not read it or find its path)');
+  await expect.poll(() => calls(page, 'read_document')).toHaveLength(0);
+});
+
+test('a text drag is left to the webview, which inserts it at the caret', async ({ page }) => {
+  await probe(page);
+  const cancelled = await page.evaluate(() => ['dragover', 'drop'].map(type => {
+    const data = new DataTransfer();
+    data.setData('text/plain', 'Some text');
+    return !document.querySelector('#prompt')!.dispatchEvent(new DragEvent(type, { dataTransfer: data, bubbles: true, cancelable: true }));
+  }));
+  expect(cancelled).toEqual([false, false]);
+  await expect(chips(page)).toHaveCount(0);
+});
+
+test('a dragged link can land in the prompt but never navigates the window', async ({ page }) => {
+  await probe(page);
+  const cancelled = await page.evaluate(() => ['#transcript', '#prompt'].map(selector => {
+    const data = new DataTransfer();
+    data.setData('text/uri-list', 'https://example.com/');
+    return !document.querySelector(selector)!.dispatchEvent(new DragEvent('dragover', { dataTransfer: data, bubbles: true, cancelable: true }));
+  }));
+  expect(cancelled).toEqual([true, false]);
 });
 
 test('a browser drop that cannot be read inserts the file name with a note', async ({ page }) => {

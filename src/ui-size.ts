@@ -3,7 +3,9 @@ import { preview } from './bridge';
 import { commandKey } from './platform';
 
 /* Interface size. In the app it zooms the whole webview, like Safari's ⌘+, so icons, spacing and
- * layout grow with the text. The browser preview has no native zoom and scales only the root font. */
+ * layout grow with the text. A page cannot set the browser's zoom, so in the preview ⌘+ goes to the
+ * browser, which does the same; the Settings buttons (and specs, which have no real browser zoom)
+ * scale only the root font. */
 
 const preferenceKey = 'pandacode.uiScale';
 const minimum = .8, maximum = 1.6, step = .1;
@@ -57,6 +59,7 @@ export function initializeUiSizing(): () => void {
     if (!(event.metaKey || event.ctrlKey) || event.altKey || event.isComposing || event.defaultPrevented) return;
     const direction = event.key === '+' || event.key === '=' ? 1 : event.key === '-' ? -1 : 0;
     if (!direction && event.key !== '0') return;
+    if (preview && !navigator.webdriver) return;
     event.preventDefault();
     // Capture before terminal/menu handlers so the shortcut never becomes agent input.
     event.stopPropagation();

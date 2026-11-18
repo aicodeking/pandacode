@@ -1,37 +1,56 @@
 .turn-changes-row{padding-left:31px}
 .side-thread .turn-changes-row{padding-left:28px}
-.turn-changes{position:relative;margin:12px 0 25px;padding:10px 12px;border-radius:var(--radius-md);background:color-mix(in srgb,var(--panel) 56%,transparent);font-size:var(--thread-font);min-width:0}
-.turn-change-list>summary{display:flex;align-items:center;gap:var(--space-2);min-height:var(--row-lg);font-size:var(--text-sm);font-weight:var(--weight-strong);cursor:pointer;list-style:none;flex-wrap:wrap}
+.turn-changes{position:relative;display:flex;flex-direction:column;container-type:inline-size;margin:12px 0 25px;padding:10px 12px;border-radius:var(--ds-radius-card);background:var(--ds-card);font-size:var(--thread-font);min-width:0}
+.turn-change-list>summary{display:flex;align-items:center;gap:var(--space-2);min-height:var(--row-lg);font-size:var(--text-sm);font-weight:var(--weight-strong);cursor:pointer;list-style:none;flex-wrap:nowrap;min-width:0;padding-right:var(--tc-actions,112px)}
+.turn-change-list>summary>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.turn-change-list>summary>:not(strong){flex:none}
 .turn-changes summary::-webkit-details-marker{display:none}
 .turn-changes summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--radius-xs)}
-.turn-changes summary>.icon:first-child{width:13px;height:13px;transition:transform 150ms ease;color:var(--muted)}
-.turn-changes details[open]>summary>.icon:first-child{transform:rotate(90deg)}
-.turn-changes-actions{float:right;display:flex;gap:6px;margin:0 0 4px 10px}
+.turn-changes summary>.icon:first-child{width:13px;height:13px;transition:rotate var(--ds-ease-out) ease-out;color:var(--muted)}
+.turn-changes details[open]>summary>.icon:first-child{rotate:90deg}
+/* Actions end the header line; a card too narrow for them puts them on their own row at the end. */
+.turn-changes-actions{position:absolute;top:10px;right:12px;z-index:1;display:flex;gap:6px;margin:0}
+.turn-changes:has(.turn-changes-run:not([hidden])){--tc-actions:186px}
+@container (max-width:400px){.turn-change-list>summary{padding-right:0}.turn-changes-actions{position:static;order:1;justify-content:flex-end;margin-top:6px}}
 .turn-changes-open,.turn-changes-run{min-height:var(--control);border-radius:var(--radius-sm);padding:4px 9px;background:color-mix(in srgb,var(--raised) 78%,transparent);font-size:var(--text-sm);font-weight:var(--weight-medium)}
 .turn-changes-run{color:var(--accent)}
 .turn-change-tree{clear:both}
 .turn-changes:after{content:'';display:block;clear:both}
 .header-run{border-radius:var(--radius-sm);padding:5px 9px;color:var(--accent);font-size:var(--text-sm);background:color-mix(in srgb,var(--raised) 55%,transparent)}
-@media(max-width:650px){.turn-changes-actions{float:none;margin-left:0;justify-content:flex-end}.header-run span{display:none}}
+@media(max-width:650px){.header-run span{display:none}}
 .turn-changes-open:hover,.turn-change-file:hover,.turn-change-folder>summary:hover{background:color-mix(in srgb,var(--raised) 86%,transparent)}
 .turn-changes-open>.icon{width:14px;height:14px}
 .change-counts{display:inline-flex;align-items:center;gap:8px;white-space:nowrap;font-size:var(--text-xs);font-variant-numeric:tabular-nums;font-weight:var(--weight-medium)}
 .turn-changes .change-counts{font-size:inherit}
-.change-additions{color:var(--success)}.change-deletions{color:var(--danger)}.change-count-unknown{color:var(--muted);font-weight:400}
+.change-additions{color:var(--ds-success)}.change-deletions{color:var(--ds-danger)}.change-count-unknown{color:var(--muted);font-weight:400}
 .turn-change-tree{margin:5px 0 1px;max-height:260px;overflow:auto;scrollbar-width:thin}
 .turn-change-folder>summary,.turn-change-file{display:flex;width:100%;align-items:center;gap:7px;min-height:var(--row);border-radius:var(--radius-xs);padding:4px 5px;text-align:left;color:var(--muted);list-style:none;cursor:pointer;font-size:var(--thread-font)}
 .turn-change-file{padding-left:25px}
 .turn-change-file>.icon,.turn-change-folder>summary>.icon{width:15px;height:15px}
 .turn-change-children{padding-left:15px}
 .change-path{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.change-file-status{font-size:var(--text-2xs);color:var(--faint)}
+.change-file-status{font-size:var(--text-2xs);color:var(--ds-info)}
+.change-file-status[title="added"]{color:var(--ds-success)}
+.change-file-status[title="deleted"]{color:var(--ds-danger)}
 .turn-change-list>summary>.info-mark{margin-left:2px;color:var(--muted)}
 .architect-worker-history .turn-changes{margin:10px 0 18px}
 .inspector-content:has(>.inspector-diff-host){display:flex;flex-direction:column;overflow:hidden}
 .inspector-content:has(>.inspector-diff-host)>.file-preview-header,.inspector-content:has(>.inspector-diff-host)>.file-preview-title{flex-shrink:0}
 .inspector-diff-host{display:flex;flex-direction:column;min-height:0;flex:1;padding:0 8px 8px}
-@media(max-width:650px){.turn-changes-row{padding-left:0}.turn-change-list>summary{column-gap:6px}.turn-change-list>summary>.change-counts{flex-basis:100%;padding-left:21px}.turn-change-children{padding-left:8px}}
+@media(max-width:650px){.turn-changes-row{padding-left:0}.turn-change-list>summary{column-gap:6px}.turn-change-children{padding-left:8px}}
 @media(prefers-reduced-motion:reduce){.turn-changes summary>.icon{transition:none}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.turn-changes-open,.turn-change-file,.turn-change-folder>summary{transition:background-color 130ms ease-out,color 130ms ease-out}.turn-changes details[open]>.turn-change-children,.turn-changes details[open]>.turn-change-tree{animation:tc-fade 160ms ease-out}@keyframes tc-fade{from{opacity:0}}}
+@media(prefers-reduced-motion:no-preference){.turn-changes-open,.turn-change-file,.turn-change-folder>summary{transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out}.turn-changes details[open][data-opened]>.turn-change-children,.turn-changes details[open][data-opened]>.turn-change-tree{animation:tc-fade 160ms ease-out}@keyframes tc-fade{from{opacity:0}}}
+
+/* A merged card's single footer says it spans runs; its viewer lists each file once with one tab per run. */
+.turn-card-foot-runs{flex:none;color:var(--muted);font-size:var(--ds-text-sub);white-space:nowrap}
+.change-review-times{color:var(--muted)}
+.change-review-runs{display:flex;flex-wrap:wrap;gap:6px;padding:0 1px 10px;flex-shrink:0}
+.change-review-runs:empty{display:none}
+.change-review-runs>button{min-height:28px;padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:transparent;color:var(--muted);font-size:var(--text-xs);transition:background-color 150ms var(--ds-ease-out),color 150ms var(--ds-ease-out)}
+.change-review-runs>button:hover{background:var(--ds-row-hover);color:var(--text)}
+.change-review-runs>button[aria-pressed=true]{background:color-mix(in srgb,var(--accent-dim) 66%,transparent);color:var(--text)}
+.change-review-runs>button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+@media(forced-colors:active){.change-review-runs>button{border-color:ButtonText}.change-review-runs>button[aria-pressed=true]{background:Highlight;color:HighlightText}}
+@media(prefers-reduced-motion:reduce){.change-review-runs>button{transition:none}}

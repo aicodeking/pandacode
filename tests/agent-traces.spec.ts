@@ -76,20 +76,15 @@ test('Morning brief replays the reference: header mirrors the step, two newest c
   await expect(page.locator(STEP).nth(3).locator('.trace-mark.is-pull')).toHaveCount(3);
   await expect(page.locator(STEP).nth(4).locator('.trace-mark.is-issue')).toHaveCount(3);
 
-  // Measured at 30 fps: GitHub and Linear stay open while the answer's first block streams, fold ~1.05 s
-  // after it starts, and the turn folds to its summary ~2.45 s after it starts.
+  // In a card the trace folds as the answer starts (CARD_TRACE_FOLD_MS in), so the live card reaches its saved shape
+  // before the run ends; its cards close with the trace and the header reads the turn's summary.
   await advanceUntil(page, async () => ((await page.locator('#stream-region .live-text').textContent()) ?? '').includes('Meetings'));
-  const answerAt = await page.evaluate(() => Date.now());
   await expect(page.locator(STEP)).toHaveCount(5);
-  expect(await openSteps(page)).toEqual([3, 4]);
-  await advanceUntil(page, async () => (await keptSteps(page)).length === 0);
-  const cardsAt = await page.evaluate(() => Date.now());
-  expect(cardsAt - answerAt).toBeGreaterThanOrEqual(900);
-  expect(cardsAt - answerAt).toBeLessThanOrEqual(1300);
-  await advanceUntil(page, async () => ((await page.locator('.turn-activity-label').first().textContent()) ?? '').includes('Ran 2 searches'));
-  const turnAt = await page.evaluate(() => Date.now());
-  expect(turnAt - answerAt).toBeGreaterThanOrEqual(2250);
-  expect(turnAt - answerAt).toBeLessThanOrEqual(2750);
+  await expect(page.locator('.turn-activity-label').first()).toHaveAttribute('data-mode', 'folded');
+  await expect(page.locator('.turn-activity-label').first()).toContainText('Ran 2 searches');
+  await expect(page.locator('#stream-region details.turn-activity')).toHaveAttribute('data-folded', '');
+  await advanceUntil(page, async () => !await page.locator('#stream-region details.turn-activity[open]').count());
+  expect(await keptSteps(page)).toEqual([]);
 
   // Finished: one folded summary with brand marks, then the answer with citation chips.
   await advanceUntil(page, async () => !await page.locator('#stream-region .live-activity').count() && !await page.locator('.task-item.selected.running').count());

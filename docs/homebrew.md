@@ -22,7 +22,10 @@ brew install aicodeking/pandacode/pandacode          # Linux x86_64 or aarch64
   (`depends_on :linux`); on macOS use the cask. AppImages may need FUSE 2 (`libfuse2`).
 
 The cask has no preflight or postflight scripts and does not remove the quarantine
-flag, so macOS shows its usual first-launch prompt for an unsigned app.
+flag. The official macOS builds are Developer ID signed and notarized by Apple
+([verified for v0.3.103](https://github.com/aicodeking/pandacode/actions/runs/42462913784));
+macOS may still ask you to confirm opening a downloaded app. See
+[optional signing](releasing.md#optional-signing) for local and fork builds.
 
 ## How it stays current
 

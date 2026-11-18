@@ -16,7 +16,8 @@ export function fileIconId(name: string, isDir: boolean, isLight = false): strin
   const lower = name.toLowerCase();
   if (isDir) return find('folderNames', lower, isLight) ?? 'folder';
   const exact = find('fileNames', lower, isLight);
-  if (exact) return exact;
+  // README's own icon is a blue info circle, which reads as a warning in change lists: it takes its extension's icon.
+  if (exact && exact !== 'readme') return exact;
   for (let dot = lower.indexOf('.'); dot !== -1; dot = lower.indexOf('.', dot + 1)) {
     const id = find('fileExtensions', lower.slice(dot + 1), isLight);
     if (id) return id;

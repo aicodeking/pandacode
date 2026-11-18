@@ -17,7 +17,7 @@ export interface AgentsDockSnapshot { agents: AgentsDockAgent[] }
 export interface AgentsDockPreferences { enabled: boolean; keepOnScreen: boolean; pinned: boolean }
 export interface AgentsDockDeps { openTask(id: string): void }
 
-const DEFAULT_PREFERENCES: AgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+const DEFAULT_PREFERENCES: AgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
 export const subscribeDockEvent = subscribe as unknown as <T>(name: string, callback: (event: T) => void) => Promise<() => void>;
 const statusLabel: Record<AgentsDockStatus, string> = {
   running: 'Running',
@@ -86,9 +86,9 @@ export function startElapsedTick(root: HTMLElement): () => void {
 /** Eagerly mount the live running-agents button in the workspace header. */
 export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => void {
   host.classList.add('agents-dock-host');
-  host.innerHTML = `<button type="button" class="icon-button agents-dock-trigger" aria-label="Running agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-dock-popover" title="Running agents">${icon('bot')}<span class="agents-dock-count" aria-hidden="true" hidden></span></button>
+  host.innerHTML = `<button type="button" class="icon-button agents-dock-trigger" aria-label="Running agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-dock-popover" data-tip="Running agents">${icon('bot')}<span class="agents-dock-count" aria-hidden="true" hidden></span></button>
     <section class="agents-dock-popover" id="agents-dock-popover" role="dialog" aria-label="Running agents" hidden>
-      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" title="Pin widget">${icon('pin')}</button></header>
+      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" data-tip="Pin widget">${icon('pin')}</button></header>
       <div class="agents-dock-list"></div>
     </section>`;
   const trigger = host.querySelector<HTMLButtonElement>('.agents-dock-trigger')!;
@@ -123,7 +123,7 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
     popover.hidden = !open || !preferences.enabled;
     summary.textContent = agents.length ? `${agents.length} active` : '';
     pin.setAttribute('aria-pressed', String(preferences.pinned));
-    pin.title = preferences.pinned ? 'Widget pinned' : 'Pin widget';
+    pin.dataset.tip = preferences.pinned ? 'Widget pinned' : 'Pin widget';
     pin.setAttribute('aria-label', preferences.pinned ? 'Widget pinned' : 'Pin widget');
     pin.classList.toggle('is-pinned', preferences.pinned);
     renderAgentRows(list, agents, receivedAt, 'agents-dock-empty');
@@ -184,15 +184,21 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
     void promise.then(cleanup => { if (disposed) cleanup(); else cleanups.push(cleanup); }).catch(() => undefined);
   };
   rememberCleanup(subscribeDockEvent<AgentsDockSnapshot>('agents-dock-changed', next => { accept(next); draw(); }));
-  rememberCleanup(subscribeDockEvent<Partial<AgentsDockPreferences>>('agents-dock-preferences-changed', next => { preferences = { ...preferences, ...next }; draw(); }));
-  void Promise.all([
-    call<AgentsDockPreferences>('agents_dock_preferences').catch(() => DEFAULT_PREFERENCES),
-    call<AgentsDockSnapshot>('agents_dock_snapshot').catch(() => ({ agents: [] })),
-  ]).then(([saved, current]) => {
+  // Off, native sends no updates and nothing here asks, so turning it on has to catch up.
+  const refresh = () => call<AgentsDockSnapshot>('agents_dock_snapshot').then(current => {
+    if (!disposed) { accept(current); draw(); }
+  }).catch(() => undefined);
+  rememberCleanup(subscribeDockEvent<Partial<AgentsDockPreferences>>('agents-dock-preferences-changed', next => {
+    const turnedOn = next.enabled && !preferences.enabled;
+    preferences = { ...preferences, ...next };
+    draw();
+    if (turnedOn) void refresh();
+  }));
+  void call<AgentsDockPreferences>('agents_dock_preferences').catch(() => DEFAULT_PREFERENCES).then(saved => {
     if (disposed) return;
     preferences = { ...DEFAULT_PREFERENCES, ...saved };
-    accept(current);
     draw();
+    if (preferences.enabled) void refresh();
   });
   draw();
   return () => {

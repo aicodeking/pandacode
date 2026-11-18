@@ -9,7 +9,10 @@ carry besides text:
 - **Sketch a mockup…** — draw a wireframe and attach it as an image.
 
 Images can also be **pasted** into the message box or **dropped** anywhere on the
-window (the composer lights up while you drag). Attachments belong to their task
+window (the composer lights up while you drag), and files and folders can be
+dropped too. On macOS and Linux plain text can be dragged into the message box and
+lands at the caret; on Windows the native drop handler still takes every drag, so
+it cannot yet. Attachments belong to their task
 and stay put while you switch tasks; they leave with the message that sends them
 and come back if that send fails.
 
@@ -80,7 +83,14 @@ your message, so the conversation reads as what you said.
 - `import_prompt_image { path | dataUrl, name }` → `{ id, name, width, height, thumbnail }`
 - `read_document { path }` → `{ name, path, size, text, truncated, method }`
 - `describe_folder { path }` → `{ name, path, files, folders, listing, truncated }`
+- `dragged_file_paths` → the file paths on macOS's drag pasteboard
 
-All three are main-window commands (`src-tauri/src/prompt_attachments.rs`); the
+All four are main-window commands (`src-tauri/src/prompt_attachments.rs`); the
 launcher's allowlist does not include them. Paths come from native pickers, drops
 and pastes in the trusted webview; agents only ever see the resulting IDs and text.
+
+Drops differ by platform. On macOS the main window's native drag handler is off,
+so the webview gets ordinary HTML5 drags, and a file drop reads its real paths from
+the drag pasteboard, checked against the dropped names. Without a match (a file
+promise from Photos or Mail) the File objects attach instead, with no path. Windows
+and Linux use Tauri's native drop events, which carry paths.

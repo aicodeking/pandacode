@@ -21,7 +21,8 @@ pub(crate) async fn call(app: &tauri::AppHandle, device_id: &str, method: &str, 
 }
 
 pub(crate) async fn call_within(app: &tauri::AppHandle, device_id: &str, method: &str, params: Value, timeout: Duration) -> Result<Value> {
-    if !super::host::METHODS.contains(&method) {
+    // Built-in or registry methods: a newer host serves both (an older one answers 'Unknown method.').
+    if !super::host::is_method(method) {
         return Err("Unknown remote method.".into());
     }
     if params.to_string().len() > MAX_PARAMS {

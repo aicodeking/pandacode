@@ -1,5 +1,12 @@
 import './sidebar-resize.css';
 
+/** The grid track an element fills: its box plus horizontal margins (the inset shell's panels sit inside their tracks). */
+function trackWidth(element: HTMLElement): number {
+  const style = getComputedStyle(element);
+  // offsetWidth ignores transforms, so a panel mid-entrance (scaled) reads its real width.
+  return element.offsetWidth + (parseFloat(style.marginLeft) || 0) + (parseFloat(style.marginRight) || 0);
+}
+
 /** Resize the existing grid track without rebuilding navigation or conversation UI. */
 export function initializeSidebarResizing(workspace: HTMLElement, sidebar: HTMLElement, right = false): () => void {
   const preferenceKey = right ? 'pandacode.inspectorWidth' : 'pandacode.sidebarWidth';
@@ -68,7 +75,7 @@ export function initializeSidebarResizing(workspace: HTMLElement, sidebar: HTMLE
     let inspectorWidth = 0;
     if (inspector && !inspector.hidden && (right || !workspace.classList.contains('inspector-closed'))) {
       const inspectorStyle = getComputedStyle(inspector);
-      if (inspectorStyle.display !== 'none' && inspectorStyle.position !== 'absolute') inspectorWidth = inspector.getBoundingClientRect().width;
+      if (inspectorStyle.display !== 'none' && inspectorStyle.position !== 'absolute') inspectorWidth = trackWidth(inspector);
     }
     const overlay = right && getComputedStyle(sidebar).position === 'absolute';
     const remaining = Math.floor(workspace.clientWidth - inspectorWidth - (overlay ? 0 : conversationMinimum));
@@ -78,7 +85,7 @@ export function initializeSidebarResizing(workspace: HTMLElement, sidebar: HTMLE
     if (right && preferredWidth === undefined && !drag) {
       // Keep the wider Browser default and responsive overlay sizes until resized.
       workspace.style.removeProperty(widthProperty);
-      paint(sidebar.getBoundingClientRect().width, true);
+      paint(trackWidth(sidebar), true);
     } else paint(drag ? width : preferredWidth ?? defaultWidth);
   }
 
@@ -99,7 +106,7 @@ export function initializeSidebarResizing(workspace: HTMLElement, sidebar: HTMLE
     if (event.button !== 0 || !event.isPrimary || separator.hidden || drag) return;
     event.preventDefault();
     refreshConstraints();
-    drag = { id: event.pointerId, startX: event.clientX, startWidth: sidebar.getBoundingClientRect().width, moved: false };
+    drag = { id: event.pointerId, startX: event.clientX, startWidth: trackWidth(sidebar), moved: false };
     separator.setPointerCapture(event.pointerId);
     separator.focus({ preventScroll: true });
     workspace.classList.add(resizingClass);

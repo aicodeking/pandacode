@@ -200,7 +200,8 @@ pub(crate) struct HostTrim {
 pub(crate) struct HostPlan {
     /// A team task: the team's coordination tools (and no machine tools).
     pub team: bool,
-    /// Codex without a team gets PandaCode's agent tools.
+    /// Codex: its thread persists the tool schema, so a family can flip on its first turn
+    /// (`catalog::History`). Every harness gets PandaCode's agent tools, a team's only on its lead.
     pub codex: bool,
     /// A cloud agent's checkout is on its machine: no progress snapshots, ever.
     pub cloud: bool,

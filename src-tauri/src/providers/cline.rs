@@ -10,6 +10,11 @@ pub(super) const SIGN_IN: &str = "Cline is not signed in. Run `cline auth` in a 
 /// The efforts `cline --thinking` accepts, least to most.
 pub(super) const EFFORTS: [&str; 5] = ["none", "low", "medium", "high", "xhigh"];
 
+const MCP_SETTINGS_ENV: &str = "CLINE_MCP_SETTINGS_PATH";
+const MCP_SETTINGS_DIR: &str = "cline-mcp";
+const MCP_SETTINGS_FILE: &str = "cline_mcp_settings.json";
+const MCP_SETTINGS_FAILED: &str = "Could not prepare the PandaCode tools connection for Cline.";
+
 pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     configure_environment(command);
     if !config.model.is_empty() && config.model != "default" {
@@ -22,6 +27,72 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     // Full access skips Cline's per-tool prompts; every other mode keeps them so
     // PandaCode decides (and Plan declines edits).
     command.args(["--auto-approve", if config.mode == "full" { "true" } else { "false" }]);
+}
+
+/// Cline's ACP server ignores `mcpServers` and advertises no HTTP MCP (3.0.74), but it
+/// reads its servers from the file `CLINE_MCP_SETTINGS_PATH` names. A run's tools go in a
+/// private copy of the user's settings, so their own file is never touched. The returned
+/// folder is removed when dropped; `sweep_mcp_settings` clears what a crash left behind.
+pub(super) fn mcp_settings(command: &mut Command, server: &Value) -> Result<AgentTemp, String> {
+    let root = crate::secret_store::dir().ok_or(MCP_SETTINGS_FAILED)?.join(MCP_SETTINGS_DIR);
+    let (name, entry) = loopback_entry(server).ok_or(MCP_SETTINGS_FAILED)?;
+    let user = user_mcp_settings_path(command).and_then(|path| std::fs::read_to_string(path).ok());
+    let folder = write_mcp_settings(&root, &merged_mcp_settings(user.as_deref(), &name, entry)).ok_or(MCP_SETTINGS_FAILED)?;
+    command.env(MCP_SETTINGS_ENV, launch::external_path(&folder.0.join(MCP_SETTINGS_FILE)));
+    Ok(folder)
+}
+
+pub(super) fn sweep_mcp_settings(data: &Path) {
+    AgentTemp::sweep(&data.join(MCP_SETTINGS_DIR));
+}
+
+/// Cline's entry for PandaCode's tools server, only for the loopback host it always binds.
+fn loopback_entry(server: &Value) -> Option<(String, Value)> {
+    let url = server["url"].as_str()?;
+    url.strip_prefix("http://127.0.0.1:")?.strip_suffix("/mcp")?.parse::<u16>().ok()?;
+    let headers: serde_json::Map<String, Value> = server["headers"].as_array()?.iter()
+        .filter_map(|header| Some((header["name"].as_str()?.to_string(), header["value"].clone())))
+        .collect();
+    Some((server["name"].as_str()?.to_string(), json!({"transport":{"type":"streamableHttp","url":url,"headers":headers}})))
+}
+
+/// The user's settings with PandaCode's server over them. A file that can't be read as
+/// settings counts as empty: their mistake must not stop the run or reach its errors.
+fn merged_mcp_settings(user: Option<&str>, name: &str, entry: Value) -> Value {
+    let mut settings = user.and_then(|text| serde_json::from_str::<Value>(text).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
+    if !settings["mcpServers"].is_object() { settings["mcpServers"] = json!({}); }
+    settings["mcpServers"][name] = entry;
+    settings
+}
+
+/// Where Cline itself looks, under the environment this run will have.
+fn user_mcp_settings_path(command: &Command) -> Option<PathBuf> {
+    let variable = |name: &str| -> Option<PathBuf> {
+        let set = command.as_std().get_envs().find(|(key, _)| *key == name).map(|(_, value)| value.map(ToOwned::to_owned));
+        set.unwrap_or_else(|| std::env::var_os(name)).filter(|value| !value.to_string_lossy().trim().is_empty()).map(PathBuf::from)
+    };
+    if let Some(path) = variable(MCP_SETTINGS_ENV) { return Some(path); }
+    let data = variable("CLINE_DATA_DIR")
+        .or_else(|| variable("CLINE_DIR").map(|dir| dir.join("data")))
+        .or_else(|| Some(crate::agent_usage_providers::home()?.join(".cline/data")))?;
+    Some(data.join("settings").join("cline_mcp_settings.json"))
+}
+
+fn write_mcp_settings(root: &Path, settings: &Value) -> Option<AgentTemp> {
+    use std::io::Write;
+    let folder = AgentTemp::create_in(root)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(folder.0.join(MCP_SETTINGS_FILE)).ok()?;
+    file.write_all(settings.to_string().as_bytes()).ok()?;
+    Some(folder)
+}
+
+/// The PandaCode tool a Cline permission request names, from its `server__tool: input` title.
+pub(super) fn host_tool(title: &str) -> Option<&str> {
+    title.strip_prefix("pandacode_architect__")?.split(':').next()
 }
 
 /// Cline's ACP prompt keeps only text blocks, but its `read_files` tool opens
@@ -550,6 +621,185 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn mcp_settings_keep_the_users_servers_and_win_a_name_clash() {
+        let entry = json!({"transport":{"type":"streamableHttp","url":"http://127.0.0.1:9/mcp"}});
+        let user = r#"{"theme":"x","mcpServers":{"mine":{"command":"run-me"},"pandacode_architect":{"command":"impostor"}}}"#;
+        let merged = merged_mcp_settings(Some(user), "pandacode_architect", entry.clone());
+        assert_eq!(merged["theme"], "x");
+        assert_eq!(merged["mcpServers"]["mine"]["command"], "run-me");
+        assert_eq!(merged["mcpServers"]["pandacode_architect"], entry);
+    }
+
+    #[test]
+    fn malformed_user_mcp_settings_count_as_empty() {
+        let entry = json!({"transport":{}});
+        for user in [None, Some("{ not json SECRET"), Some("[1]"), Some(r#"{"mcpServers":[1]}"#)] {
+            let merged = merged_mcp_settings(user, "pandacode_architect", entry.clone());
+            assert_eq!(merged["mcpServers"], json!({"pandacode_architect":entry}), "{user:?}");
+            assert!(!merged.to_string().contains("SECRET"));
+        }
+    }
+
+    #[test]
+    fn mcp_entry_is_loopback_only() {
+        let server = |url: &str| json!({"type":"http","name":"pandacode_architect","url":url,"headers":[{"name":"Authorization","value":"Bearer t"}]});
+        let (name, entry) = loopback_entry(&server("http://127.0.0.1:4310/mcp")).unwrap();
+        assert_eq!(name, "pandacode_architect");
+        assert_eq!(entry["transport"]["headers"]["Authorization"], "Bearer t");
+        for url in ["http://example.com/mcp", "https://127.0.0.1:4310/mcp", "http://127.0.0.1:1@example.com/mcp", "http://127.0.0.1.example.com:1/mcp", "http://127.0.0.1:4310/other"] {
+            assert!(loopback_entry(&server(url)).is_none(), "{url}");
+        }
+    }
+
+    #[test]
+    fn user_mcp_settings_path_follows_clines_own_lookup() {
+        let mut command = Command::new("cline");
+        command.env("CLINE_DIR", "/c").env("CLINE_DATA_DIR", "").env(MCP_SETTINGS_ENV, " ");
+        assert_eq!(user_mcp_settings_path(&command).unwrap(), Path::new("/c/data/settings/cline_mcp_settings.json"));
+        command.env("CLINE_DATA_DIR", "/d");
+        assert_eq!(user_mcp_settings_path(&command).unwrap(), Path::new("/d/settings/cline_mcp_settings.json"));
+        command.env(MCP_SETTINGS_ENV, "/e.json");
+        assert_eq!(user_mcp_settings_path(&command).unwrap(), Path::new("/e.json"));
+    }
+
+    #[test]
+    fn mcp_settings_file_is_private_and_removed_on_drop() {
+        let root = std::env::temp_dir().join(format!("cline-mcp-test-{}", uuid::Uuid::new_v4()));
+        let folder = write_mcp_settings(&root, &json!({"mcpServers":{}})).unwrap();
+        let (directory, file) = (folder.0.clone(), folder.0.join(MCP_SETTINGS_FILE));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), r#"{"mcpServers":{}}"#);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+            assert_eq!(std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777, 0o700);
+            assert_eq!(std::fs::metadata(&root).unwrap().permissions().mode() & 0o777, 0o700);
+        }
+        drop(folder);
+        for _ in 0..50 {
+            if !directory.exists() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!directory.exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_token_reaches_cline_only_through_the_settings_file() {
+        crate::secret_store::setup(&std::env::temp_dir().join(format!("cline-mcp-setup-{}", uuid::Uuid::new_v4())));
+        let token = "Bearer token-7741";
+        let server = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:4310/mcp","headers":[{"name":"Authorization","value":token}]});
+        let mut command = Command::new("cline");
+        command.env(MCP_SETTINGS_ENV, "/nonexistent/settings.json");
+        let folder = mcp_settings(&mut command, &server).unwrap();
+        let std_command = command.as_std();
+        assert!(std_command.get_args().all(|arg| !arg.to_string_lossy().contains("token-7741")));
+        assert!(std_command.get_envs().all(|(_, value)| !value.is_some_and(|value| value.to_string_lossy().contains("token-7741"))));
+        let path = std_command.get_envs().find(|(key, _)| *key == MCP_SETTINGS_ENV).and_then(|(_, value)| value).unwrap();
+        assert!(Path::new(path).starts_with(&folder.0));
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["pandacode_architect"]["transport"]["headers"]["Authorization"], token);
+        // A server that is not the loopback host gets no file and leaves the command alone.
+        let mut command = Command::new("cline");
+        let remote = json!({"name":"pandacode_architect","url":"http://example.com/mcp","headers":[]});
+        assert_eq!(mcp_settings(&mut command, &remote).err().unwrap(), MCP_SETTINGS_FAILED);
+        assert_eq!(command.as_std().get_envs().count(), 0);
+    }
+
+    #[test]
+    fn a_host_tool_shows_one_row_from_the_host_not_a_second_from_cline() {
+        let update = |title: &str| json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"tool_call","toolCallId":title,"title":title,"status":"in_progress","rawInput":{}}}});
+        let mut p = Protocol::new(super::super::tests::config("cline"));
+        p.remote_id = "s".into();
+        p.phase = 1;
+        p.mcp_tool_names.insert("pandacode_probe".into());
+        let rows = |step: Step| step.events.iter().filter(|event| event.tool.is_some()).count();
+        assert_eq!(rows(p.receive(update("pandacode_architect__pandacode_probe: {}")).unwrap()), 0);
+        assert_eq!(rows(p.receive(update("other__pandacode_probe: {}")).unwrap()), 1);
+    }
+
+    #[test]
+    fn permission_titles_name_host_tools_only_for_pandacode() {
+        assert_eq!(host_tool(r#"pandacode_architect__pandacode_title: {"title":"a:b"}"#), Some("pandacode_title"));
+        assert_eq!(host_tool("other__pandacode_title: {}"), None);
+        assert_eq!(host_tool("run_commands: {}"), None);
+    }
+
+    #[test]
+    fn registered_self_scoped_tools_skip_the_prompt_and_others_keep_it() {
+        let permission = |title: &str| json!({"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{"sessionId":"s","toolCall":{"toolCallId":"c","title":title,"kind":"other"},"options":[{"optionId":"y","kind":"allow_once"},{"optionId":"n","kind":"reject_once"}]}});
+        let mut p = Protocol::new(super::super::tests::config("cline"));
+        p.remote_id = "s".into();
+        p.mcp_tool_names.insert("pandacode_title".into());
+        p.mcp_tool_names.insert("pandacode_run_project".into());
+        let step = p.receive(permission("pandacode_architect__pandacode_title: {}")).unwrap();
+        assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "y");
+        for title in ["pandacode_architect__pandacode_run_project: {}", "other__pandacode_title: {}"] {
+            assert!(p.receive(permission(title)).unwrap().write.is_empty(), "{title} must wait for the user");
+        }
+        // Not registered for this run: the host would refuse it, so it never skips the prompt.
+        let mut p = Protocol::new(super::super::tests::config("cline"));
+        p.remote_id = "s".into();
+        assert!(p.receive(permission("pandacode_architect__pandacode_title: {}")).unwrap().write.is_empty());
+    }
+
+    /// The gate for this route: Cline lists a tool from the real host and calls reach it.
+    /// Sends one short prompt on a free model. PANDACODE_CLINE_LIVE_MODEL overrides it.
+    #[tokio::test]
+    #[ignore = "needs the Cline CLI and a sign-in; sends one short prompt"]
+    async fn live_cline_calls_pandacode_tools_through_the_real_host() {
+        super::super::widen_process_path();
+        let root = std::env::temp_dir().join(format!("cline-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        crate::secret_store::setup(&root);
+        let path = executable("cline").expect("Install Cline first");
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = calls.clone();
+        let host = ToolHost {
+            tools: ["pandacode_title", "pandacode_probe"].iter().map(|name| json!({"type":"function","name":name,"description":"Call this once with a short text.","inputSchema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"]}})).collect(),
+            approval_tools: Default::default(),
+            handler: Arc::new(move |name, _| {
+                seen.lock().unwrap().push(name);
+                Box::pin(async { Ok(json!({"content":[{"type":"text","text":"HOST-OK-7741"}]})) })
+            }),
+        };
+        let mut cfg = super::super::tests::config("cline");
+        cfg.session_id = "cline-live-tools".into();
+        cfg.model = std::env::var("PANDACODE_CLINE_LIVE_MODEL").unwrap_or_else(|_| "recursive/flint-v1.0:free".into());
+        cfg.mode = "ask".into();
+        cfg.cwd = root.clone();
+        cfg.prompt = "Call the tool whose name ends in pandacode_title with title \"probe\", then the tool whose name ends in pandacode_probe with title \"probe\". Then reply with what they returned.".into();
+        let mut command = crate::providers::provider_command("cline", &path).unwrap();
+        super::super::configure_command(&mut command, &cfg);
+        // The free model is on the signed-in account, whatever provider this machine last used.
+        command.env_remove("CLINE_PROVIDER").env_remove("CLINE_API_KEY");
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let events = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = events.clone();
+        let sink: Sink = Arc::new(move |event| {
+            if event.kind == "approval" {
+                println!("approval requested: {}", event.text);
+                if let Some(request_id) = event.request_id.clone() {
+                    let _ = sender.send(RunInput::Approval { request_id, approved: true });
+                }
+            }
+            if let Some(tool) = &event.tool { println!("tool row: {} {}", tool.name, tool.status); }
+            log.lock().unwrap().push(event.text);
+        });
+        let run = run_process_with_tools(cfg, sink, receiver, command, Vec::new(), Some(host));
+        tokio::time::timeout(std::time::Duration::from_secs(150), run).await.expect("timed out").expect("run failed");
+        let calls = calls.lock().unwrap().clone();
+        println!("host calls: {calls:?}");
+        assert!(calls.iter().any(|name| name == "pandacode_title"), "{calls:?}");
+        assert!(calls.iter().any(|name| name == "pandacode_probe"), "{calls:?}");
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let left = std::fs::read_dir(root.join(MCP_SETTINGS_DIR)).unwrap().count();
+        assert_eq!(left, 0, "the settings file must be gone after the run");
+        assert!(!events.lock().unwrap().join("\n").contains("Bearer "));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

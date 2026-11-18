@@ -29,6 +29,8 @@ html[data-theme=dark] .model-tiers{--tier-s:color-mix(in srgb,#e5484d 38%,transp
 .tier-chip:focus-visible,.tier-chip-menu:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .tier-chip:disabled,.tier-chip-menu:disabled{cursor:default}
 .tier-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Harness names on a chip whose display name is shared with another row (issue #315). */
+.tier-providers{flex:none;max-width:9rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:.75em}
 .tier-logos{display:inline-flex;flex:none}
 .tier-logo{width:14px;height:14px;flex:none;border-radius:3px}
 .tier-logos>.tier-logo+.tier-logo{margin-left:-4px}

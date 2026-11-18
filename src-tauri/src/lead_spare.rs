@@ -153,7 +153,7 @@ mod tests {
     fn save_team(store: &Store, lead: &str, workers: &[(&str, &str)]) -> u64 {
         let config = architect::TeamConfig {
             auto: false, roster_only: false, name: None, workers: vec![], catalog: vec![],
-            max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None,
+            max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None, council: None,
         };
         let mut team = architect::new_team(lead.into(), config);
         team.status = "running".into();

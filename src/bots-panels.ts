@@ -2,11 +2,13 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import type { Activity, BotDetail, Channel, Schedule } from './bots';
 import { channelGuide, connectChange, connectClick, connectSection, connectSubmit, kindLabel } from './bots-connect';
+import { errorText } from './error-text';
 
 export type Tab = 'skills' | 'conversations' | 'memory' | 'schedules' | 'channels' | 'rules' | 'activity';
 export interface PanelContext {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
+  notifyError?(text: string): void;
   openTask(sessionId: string): void;
   running(sessionId: string): boolean;
   detail(): BotDetail | null;
@@ -130,7 +132,7 @@ async function loadActivity(context: PanelContext, older: boolean): Promise<void
     activity = { botId, items: older ? [...activity.items, ...items] : items, done: items.length < 100, loading: false };
   } catch (cause) {
     activity = { ...activity, done: true, loading: false };
-    context.notify(cause instanceof Error ? cause.message : String(cause));
+    (context.notifyError ?? context.notify)(errorText(cause));
   }
   context.rerender();
 }
@@ -168,8 +170,8 @@ function skillsPanel(detail: BotDetail, context: PanelContext): string {
     const status = own ? `From ${own.source}` : `Unsupported for this bot's harness`;
     return `<li class="${own ? '' : 'off'}"><span class="bots-item-main"><b>${escape(name)}</b><small data-mcp-status>${escape(status)}</small></span><input type="checkbox" class="bots-switch" data-bot-mcp="${escape(name)}" ${bot.mcp.includes(name) ? 'checked' : ''} aria-label="Use MCP server ${escape(name)}"></li>`;
   };
-  return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Harness-wide and project settings in Skills & rules are unchanged.', 'About bot skills')}</h4>
-    ${skills.length ? `<ul class="bots-items bots-skills">${skills.map(skillRow).join('')}</ul>` : '<p class="bots-empty-note">The skills library is empty. Import skills in Settings → Skills & rules.</p>'}
+  return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Switches in Settings → Tools → Skills also apply to bots: a skill switched off there stays off here.', 'About bot skills')}</h4>
+    ${skills.length ? `<ul class="bots-items bots-skills">${skills.map(skillRow).join('')}</ul>` : '<p class="bots-empty-note">The skills library is empty. Add skills in Settings → Tools → Skills → Add skill, with Install to set to Bot library.</p>'}
     <h4>MCP servers ${infoMark('Servers come from each harness\'s own configuration and keep their credentials there. PandaCode passes no server definitions per run, so a server is usable only when the bot\'s harness already has it; others show as unsupported.', 'About MCP servers')}</h4>
     ${names.length ? `<ul class="bots-items bots-mcp">${names.map(mcpRow).join('')}</ul>` : '<p class="bots-empty-note">No MCP servers are configured in your harnesses.</p>'}`;
 }

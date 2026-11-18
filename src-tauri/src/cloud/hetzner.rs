@@ -58,16 +58,35 @@ impl Hetzner {
     /// The project SSH key holding our public key, creating one named after the key's tail
     /// when missing; servers embed it at create. Matched by material, not name.
     async fn key_name(&self, public: &str) -> Result<String> {
-        let keys = self.api(reqwest::Method::GET, "/ssh_keys?per_page=50", None).await?;
-        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
-            if key["public_key"].as_str().map(str::trim) == Some(public) {
-                return key["name"].as_str().map(str::to_string).ok_or_else(|| "Hetzner reported an unreadable SSH key.".to_string());
-            }
+        if let Some(name) = self.listed_key(public).await? {
+            return Ok(name);
         }
         let tail: String = public.chars().rev().filter(|c| c.is_ascii_alphanumeric()).take(6).collect::<Vec<_>>().into_iter().rev().collect();
         let name = if tail.is_empty() { KEY_NAME.to_string() } else { format!("{KEY_NAME}-{tail}") };
-        let made = self.api(reqwest::Method::POST, "/ssh_keys", Some(json!({"name": name, "public_key": public}))).await?;
-        made["ssh_key"]["name"].as_str().map(str::to_string).ok_or_else(|| "Hetzner did not report the new SSH key.".to_string())
+        let made = self.api(reqwest::Method::POST, "/ssh_keys", Some(json!({"name": name, "public_key": public}))).await;
+        if let Ok(made) = &made {
+            if let Some(name) = made["ssh_key"]["name"].as_str() {
+                return Ok(name.to_string());
+            }
+        }
+        // A reply without the name, or a create that lost a race against another task
+        // registering the same material, still leaves the key in the project.
+        if let Some(name) = self.listed_key(public).await? {
+            return Ok(name);
+        }
+        // Nothing matched: the create's own error, else the reply never named the key.
+        Err(made.err().unwrap_or_else(|| "Hetzner did not report the new SSH key.".into()))
+    }
+
+    /// The name of the project key whose material matches, from one list page.
+    async fn listed_key(&self, public: &str) -> Result<Option<String>> {
+        let keys = self.api(reqwest::Method::GET, "/ssh_keys?per_page=50", None).await?;
+        for key in keys["ssh_keys"].as_array().into_iter().flatten() {
+            if key["public_key"].as_str().map(str::trim) == Some(public) {
+                return key["name"].as_str().map(|name| Some(name.to_string())).ok_or_else(|| "Hetzner reported an unreadable SSH key.".to_string());
+            }
+        }
+        Ok(None)
     }
 
     pub async fn create(&self, name: &str) -> Result<Machine> {
@@ -346,6 +365,27 @@ mod tests {
         // One GET for the raw ip() probe and one for the first cached address; the second
         // address() call hits the cache.
         assert_eq!(seen.lock().unwrap().iter().filter(|r| r.path == "/servers/42").count(), 2);
+    }
+
+    /// A create refused because another task registered the same material first still finds
+    /// the key; a refusal with no such key keeps the create's own error.
+    #[tokio::test]
+    async fn a_refused_or_unreadable_create_relists_the_registered_key() {
+        let race = |create: (u16, &'static str), key: &'static str| {
+            let lists = std::sync::atomic::AtomicUsize::new(0);
+            mock::serve(move |request, _| match request.method.as_str() {
+                "GET" if lists.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 => (200, r#"{"ssh_keys":[]}"#.to_string()),
+                "GET" => (200, format!(r#"{{"ssh_keys":[{{"id":5,"name":"pandacode-won","public_key":"{key}"}}]}}"#)),
+                _ => (create.0, create.1.to_string()),
+            })
+        };
+        let (base, seen) = race((409, r#"{"error":{"code":"uniqueness_error","message":"SSH key with the same fingerprint already exists"}}"#), "ssh-ed25519 CCCC pandacode");
+        assert_eq!(Hetzner::new(Some(base), "t".into()).key_name("ssh-ed25519 CCCC pandacode").await.unwrap(), "pandacode-won");
+        assert_eq!(seen.lock().unwrap().iter().filter(|r| r.method == "POST").count(), 1, "the refused create must not be retried");
+        let (base, _) = race((201, r#"{"ssh_key":{}}"#), "ssh-ed25519 DDDD pandacode");
+        assert_eq!(Hetzner::new(Some(base), "t".into()).key_name("ssh-ed25519 DDDD pandacode").await.unwrap(), "pandacode-won");
+        let (base, _) = race((422, r#"{"error":{"code":"invalid_input","message":"invalid public key"}}"#), "ssh-ed25519 OTHER");
+        assert_eq!(Hetzner::new(Some(base), "t".into()).key_name("ssh-ed25519 EEEE pandacode").await.unwrap_err(), "Hetzner: invalid public key");
     }
 
     #[tokio::test]

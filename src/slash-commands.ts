@@ -1,5 +1,5 @@
 import './slash-commands.css';
-import { icon } from './dom';
+import { icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { hidePopover, showPopover } from './popover-motion';
 import type { ProviderId } from './types';
@@ -190,7 +190,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     options.select(command);
   }
   function keydown(event: KeyboardEvent): void {
-    if (event.isComposing || composing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.defaultPrevented) return;
+    if (isImeKey(event) || composing || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey || event.defaultPrevented) return;
     if (!opened) return;
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(true); return; }
     const enabled = visibleCommands.filter(command => command.kind !== 'unsupported');

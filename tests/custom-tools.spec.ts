@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// Settings → Tools & add-ons → Agent-made tools, against the seeded preview store (src/preview-custom-tools.ts).
+// Settings → Tools → Agent-made tools, against the seeded preview store (src/preview-custom-tools.ts).
 // Preview projects: orbit (no tools) and pandacode.
 const settings = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 const group = (page: Page, name: string) => settings(page).getByRole('region', { name, exact: true });
@@ -11,7 +11,7 @@ const menuItem = (page: Page, name: string) => page.getByRole('menuitem', { name
 async function openTools(page: Page, path = '/'): Promise<void> {
   await page.goto(path);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Tools', exact: true }).click();
 }
 async function more(page: Page, list: string, tool: string): Promise<void> {
   await expect(group(page, 'Global')).toBeVisible();
@@ -151,7 +151,7 @@ test('agent-made tools are off by default, and the switch saves', async ({ page 
   await page.keyboard.press('Escape');
   await expect(settings(page)).toBeHidden();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settings(page).getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Tools', exact: true }).click();
   await expect(optIn(page)).toBeChecked();
 });
 
@@ -159,5 +159,53 @@ test('an agent-made tools switch that cannot be read stays off and cannot be fli
   await openTools(page, '/?custom-tools-fail');
   await expect(settings(page).getByText('Couldn’t read this setting.')).toBeVisible();
   await expect(optIn(page)).toBeDisabled();
+  await expect(optIn(page)).not.toBeChecked();
+});
+
+test('agent-made tools saves stay ordered when Settings reopens during a save', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    const marker = /async function invoke\(command, args\) \{/;
+    expect(source).toMatch(marker);
+    await route.fulfill({ response, body: source.replace(marker, `$&
+      if (command === 'set_custom_tools_enabled') {
+        (window.__settingsSaves ??= []).push(args.enabled);
+        await new Promise(resolve => { window.__releaseSettingsSave = resolve; });
+      }
+    `) });
+  });
+  await openTools(page);
+  await expect(optIn(page)).toBeEnabled();
+  await optIn(page).focus();
+  await page.keyboard.press('Space');
+  await expect.poll(() => page.evaluate(() => (window as any).__settingsSaves)).toEqual([true]);
+  await expect(optIn(page)).toBeDisabled();
+  await expect(optIn(page)).toHaveAttribute('aria-busy', 'true');
+
+  // The new mount must not read the old value and allow a competing write.
+  await page.keyboard.press('Escape');
+  await expect(settings(page)).toBeHidden();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Tools', exact: true }).click();
+  await expect(optIn(page)).toBeDisabled();
+  await page.evaluate(() => (window as any).__releaseSettingsSave());
+  await expect(optIn(page)).toBeEnabled();
+  await expect(optIn(page)).toBeChecked();
+
+  await optIn(page).focus();
+  await page.keyboard.press('Space');
+  await expect.poll(() => page.evaluate(() => (window as any).__settingsSaves)).toEqual([true, false]);
+  await expect(optIn(page)).toBeDisabled();
+  await page.evaluate(() => (window as any).__releaseSettingsSave());
+  await expect(optIn(page)).toBeEnabled();
+  await expect(optIn(page)).not.toBeChecked();
+  await expect(optIn(page)).toBeFocused();
+  await expect(optIn(page)).not.toHaveAttribute('aria-busy');
+  await page.keyboard.press('Escape');
+  await expect(settings(page)).toBeHidden();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await settings(page).getByRole('tab', { name: 'Tools', exact: true }).click();
+  await expect(optIn(page)).toBeEnabled();
   await expect(optIn(page)).not.toBeChecked();
 });

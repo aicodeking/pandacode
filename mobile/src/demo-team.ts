@@ -17,7 +17,7 @@ const ASSIGNMENTS = [
 /** The team as task.team sends it. */
 export function demoTeam(now: number) {
   return {
-    mode: 'auto', status: 'running', rounds: { used: 2, max: 8 },
+    mode: 'auto', status: 'running', rounds: { used: 2 },
     workers: [
       { id: 'w-host', name: ASSIGNMENTS[0].name, provider: 'codex', model: 'gpt-6', status: 'completed', attempt: 1, sessionId: 'demo-w-host', files: ASSIGNMENTS[0].files, dependsOn: [], assignment: ASSIGNMENTS[0].prompt,
         summary: 'Added `task.team` and `task.workerMessages` with a live `team` event per changed worker. 14 host tests pass.', checkpoint: null, startedAt: now - 18 * MIN, updatedAt: now - 9 * MIN },

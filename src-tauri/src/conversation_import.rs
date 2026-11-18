@@ -211,8 +211,9 @@ async fn import_codex(state: &AppState, id: &str, fallback_model: &str) -> Resul
     if let Some(problem) = folder_problem(&folder) {
         return Err(problem);
     }
-    let cwd = Path::new(&folder).canonicalize().map_err(|e| e.to_string())?;
-    let history = command_operations::conversation_messages(&cwd, id).await?;
+    // Compare the folder exactly as Codex reported it: canonicalizing here would
+    // turn it into a verbatim or resolved path that never matches the report.
+    let history = command_operations::conversation_messages(Path::new(&folder), id).await?;
     let updated = thread["updatedAt"].as_i64().map_or_else(crate::storage::now, |seconds| seconds * 1000);
     let created = thread["createdAt"].as_i64().map_or(updated, |seconds| seconds * 1000);
     let entries: Vec<(&str, String, i64)> = history

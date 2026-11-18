@@ -1,81 +1,117 @@
-/* The pull request view in the inspector. Loaded with main.ts so the tab never changes size on first open. */
-/* A fourth tab fits the default inspector width when the others tighten a little. */
-.inspector-tabs:has(>[data-action="tab-pull"]:not([hidden]))>button{padding:0 7px}
-.pull-view{display:flex;flex-direction:column;min-height:0;font-size:var(--text-sm)}
+/* The pull request view in the inspector, on the design-system cards (src/design-system.css). Loaded with main.ts so the tab never changes size on first open. */
+.pull-view{display:flex;flex-direction:column;gap:14px;min-height:0;padding:14px 12px 20px;font-size:var(--ds-text-ui)}
 .pull-view[aria-busy="true"] .pull-actions [data-pull-action="refresh"] .icon{animation:pull-spin 900ms linear infinite}
 @keyframes pull-spin{to{transform:rotate(360deg)}}
-.pull-header{display:flex;flex-direction:column;gap:6px;padding:14px 14px 10px}
-.pull-topline{display:flex;align-items:center;gap:8px;min-width:0}
-.pull-state{display:inline-flex;align-items:center;gap:5px;padding:2px 9px 2px 7px;border-radius:999px;font-size:var(--text-2xs);font-weight:var(--weight-strong);color:#fff;background:var(--success)}
-.pull-state .icon{width:12px;height:12px}
-.pull-state-draft,.pull-state-closed{background:var(--muted)}
-.pull-state-closed{background:var(--danger)}
-.pull-state-merged{background:#7a4fc9}
-.pull-number{color:var(--muted);font-variant-numeric:tabular-nums}
-.pull-actions{display:flex;gap:2px;margin-left:auto}
-.pull-actions .icon-button{width:26px;height:26px}
-.pull-title{margin:2px 0 0;font-size:var(--text-md);font-weight:var(--weight-strong);line-height:1.35;overflow-wrap:anywhere;text-wrap:pretty}
-.pull-meta{display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin:0;color:var(--muted);font-size:var(--text-xs);min-width:0}
-.pull-meta strong{color:var(--text);font-weight:var(--weight-medium)}
-.pull-meta code{font-family:var(--mono);font-size:var(--text-2xs);background:var(--raised);border-radius:var(--radius-xs);padding:1px 5px;max-width:14rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pull-into{color:var(--faint)}
-.pull-stats{display:flex;flex-wrap:wrap;gap:4px 10px;margin:0;color:var(--muted);font-size:var(--text-2xs);font-variant-numeric:tabular-nums}
-.pull-added{color:var(--success);font-variant-numeric:tabular-nums}
-.pull-removed{color:var(--danger);font-variant-numeric:tabular-nums}
-.pull-badges,.pull-labels{display:flex;flex-wrap:wrap;gap:5px}
-.pull-badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8px;border-radius:999px;font-size:var(--text-2xs);font-weight:var(--weight-medium);background:var(--raised);color:var(--text)}
-.pull-badge .icon{width:12px;height:12px}
-.pull-review-approved,.pull-tone-success{color:var(--success)}
-.pull-review-changes_requested,.pull-tone-failure{color:var(--danger)}
-.pull-tone-pending{color:var(--accent-ink)}
-.pull-labels span{font-size:var(--text-2xs);padding:1px 8px;border-radius:999px;background:var(--fill-hover);color:var(--muted)}
-.pull-tabs{display:flex;gap:4px;margin:2px 14px 4px;padding:3px;border-radius:var(--radius-sm);background:var(--raised)}
-.pull-tabs button{flex:1;min-height:26px;font-size:var(--text-xs);color:var(--muted);border-radius:var(--radius-xs);gap:5px}
-.pull-tabs button[aria-selected="true"]{color:var(--text);font-weight:var(--weight-medium)}
-.pull-tabs button small{font-size:var(--text-2xs);color:var(--faint);font-variant-numeric:tabular-nums}
-.pull-tabs>.segment-thumb{border-radius:var(--radius-xs);background:var(--bg)}
-html[data-theme="dark"] .pull-tabs>.segment-thumb{background:#3a3a35}
-.pull-content{padding:4px 0 18px;min-width:0}
-.pull-section{padding:10px 14px;margin-top:2px;background:var(--surface-1)}
-.pull-section:first-child{border-top:0}
-.pull-section h4{margin:0 0 8px;font-size:var(--text-xs);font-weight:var(--weight-strong);color:var(--muted)}
-.pull-section h4 small{font-weight:var(--weight-medium);margin-left:3px}
-.pull-body{font-size:var(--text-sm);overflow-wrap:anywhere}
+
+/* Header, as in the reference's right column: a quiet state line, the large title, then author + age
+ * with the base ← head chips pushed to the row's end, then the full-width segmented control. */
+.pull-header{display:flex;flex-direction:column;gap:8px;padding:0 2px}
+.pull-topline{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;color:var(--muted);font-size:var(--ds-text-meta)}
+.pull-state{--tone:var(--ds-success);display:inline-flex;align-items:center;gap:6px;color:var(--text);font-weight:var(--weight-medium)}
+.pull-state>.ds-dot{color:var(--tone)}
+.pull-state-draft{--tone:var(--muted)}
+.pull-state-closed{--tone:var(--ds-danger)}
+.pull-state-merged{--tone:var(--ds-info)}
+.pull-number{font-variant-numeric:tabular-nums}
+.pull-actions{display:flex;gap:2px;margin-left:auto;margin-right:-6px}
+.pull-actions .icon-button{width:28px;height:28px;color:var(--muted)}
+.pull-actions .icon-button:hover{color:var(--text)}
+.pull-title{overflow-wrap:anywhere;text-wrap:pretty}
+.pull-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
+.pull-author{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--faint);font-size:var(--ds-text-body)}
+.pull-author strong{color:var(--text);font-weight:var(--weight-regular)}
+.pull-avatar{--ds-avatar:var(--accent);color:var(--on-accent)}
+.pull-refs{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;margin-left:auto;color:var(--muted)}
+.pull-refs .ds-chip{min-width:0;max-width:14rem;flex:0 1 auto}
+.pull-into{flex:none;display:inline-grid}
+.pull-into>.icon{--icon-size:var(--icon-sm);width:14px;height:14px}
+.pull-labels{display:flex;flex-wrap:wrap;gap:6px}
+
+/* The segmented sections, full width, with room below as in the reference. */
+.pull-tabs{flex:none;margin-bottom:12px}
+.pull-content{display:flex;flex-direction:column;gap:26px;min-width:0}
+
+/* Status card: rows straight on the outer card, a hairline, then the merge buttons. */
+.pull-status{gap:0;padding:4px}
+.pull-status>.ds-row{min-height:43px}
+.pull-section-head .icon-button .icon{--icon-size:22px}
+.pull-status>.ds-row .ds-row-icon>.icon{--icon-size:var(--icon-lg)}
+.pull-tone-success{color:var(--ds-success)}
+.pull-tone-failure{color:var(--ds-danger)}
+.pull-tone-pending{color:var(--ds-info)}
+.pull-tone-skipped,.pull-tone-neutral{color:var(--muted)}
+.ds-row-sub.pull-tone-failure{color:var(--ds-danger)}
+.ds-row-sub.pull-tone-pending{color:var(--ds-info)}
+.pull-status .ds-row-meta{color:var(--faint)}
+.pull-chevron{margin-left:0}
+.pull-status .ds-row-meta+.pull-chevron{margin-left:0}
+.pull-status .ds-row-main+.pull-chevron{margin-left:auto}
+.pull-chevron>.icon{--icon-size:var(--icon-sm);width:14px;height:14px;transition:rotate var(--ds-ease-out) ease-out}
+.pull-checks-toggle[aria-expanded="true"] .pull-chevron>.icon{rotate:90deg}
+.pull-checks{list-style:none;margin:0 0 2px;padding:0}
+.pull-checks .ds-row{min-height:36px;padding:6px 14px 6px 42px;gap:10px}
+.pull-checks .ds-row-title{font-size:var(--ds-text-ui)}
+.pull-check-icon{flex:none;display:inline-grid;place-items:center}
+.pull-check-icon>.icon{width:14px;height:14px}
+/* The foot is a fill step off the rows (the reference's #1d on #19), rounded to the card's bottom corners; the card's 4px padding is pulled in. */
+.pull-merge{display:flex;flex-direction:column;gap:8px;margin:2px -4px -4px;padding:8px 14px 14px;border-top:1px solid var(--ds-border);border-radius:0 0 calc(var(--ds-radius-card) - 1px) calc(var(--ds-radius-card) - 1px);background:color-mix(in srgb,var(--text) 2%,transparent)}
+.pull-view .ds-row-title{font-size:var(--ds-text-check)}
+.pull-status>.pull-merge:first-child{margin-top:-4px;border-top:0;border-radius:inherit}
+.pull-merge>:is(.ds-btn-primary,.ds-btn-split){width:100%}
+.pull-merge .ds-btn-primary{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.pull-merge .pull-merge-main{min-width:0;padding:0 10px;gap:6px}
+.pull-merge .pull-merge-main .icon{width:16px;height:16px;flex:none}
+.pull-merge small{color:var(--muted);font-size:var(--ds-text-meta);text-align:center}
+.pull-merge select{width:100%;min-height:var(--ds-btn-h);padding:0 10px;color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
+.pull-merge .ds-btn-split>.ds-btn:not(:first-child){width:auto;padding:0 14px}
+
+/* Sections: Description and Conversation. */
+.pull-section{display:flex;flex-direction:column;gap:14px;min-width:0}
+.pull-section-head{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 2px;color:var(--muted)}
+.pull-section-head>h4{margin:0;font-size:var(--ds-text-body);font-weight:var(--weight-strong);color:var(--text)}
+.pull-section-head>.icon{--icon-size:var(--icon-sm);width:14px;height:14px}
+.pull-section-head>.pull-stats{margin-left:auto}
+.pull-section-head>.icon-button{width:28px;height:28px;margin:0 -6px 0 auto;color:var(--muted)}
+.pull-section-head>.pull-stats+.icon-button{margin-left:4px}
+.pull-section-head>.icon-button:hover{color:var(--text)}
+.pull-count{color:var(--faint);font-weight:var(--weight-regular)}
+.pull-stats{display:inline-flex;gap:4px}
+.pull-body{padding:0 2px;color:var(--text);font-size:var(--ds-text-body);line-height:1.55;overflow-wrap:anywhere}
+.pull-body>:first-child{margin-top:0}
 .pull-body>:last-child,.pull-comment-body>:last-child{margin-bottom:0}
+.pull-added{color:var(--ds-success);font-variant-numeric:tabular-nums}
+.pull-removed{color:var(--ds-danger);font-variant-numeric:tabular-nums}
 .pull-muted{color:var(--muted);margin:0}
 .pull-pad{padding:12px 14px}
 .pull-error{color:var(--danger);overflow-wrap:anywhere}
 .pull-error-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
-.pull-checks{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
-.pull-checks li{display:flex;align-items:center;gap:7px;min-width:0}
-.pull-checks .icon{width:13px;height:13px;flex-shrink:0}
-.pull-checks li>button,.pull-checks li>span{color:var(--text);font-size:var(--text-xs);padding:3px 0;min-height:0;text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pull-checks li>button:hover{text-decoration:underline}
-.pull-timeline{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:10px}
-.pull-comment{padding-left:10px;background:var(--fill-hover)}
-.pull-verdict-approved{background:var(--tone-success-bg)}
-.pull-verdict-changes_requested{background:var(--tone-danger-bg)}
-.pull-comment-meta{margin:0 0 4px;font-size:var(--text-2xs);color:var(--muted)}
+.pull-timeline{list-style:none;margin:0;gap:2px}
+.pull-comment{padding:10px var(--ds-row-pad-x);border-radius:var(--ds-radius-inner)}
+.pull-verdict-approved .pull-comment-meta{color:var(--ds-success)}
+.pull-verdict-changes_requested .pull-comment-meta{color:var(--ds-danger)}
+.pull-comment-meta{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--ds-text-meta);color:var(--muted)}
+.pull-comment-meta .pull-avatar{display:inline-grid;place-items:center;flex:none;width:20px;height:20px;border-radius:50%;background:var(--accent);font-size:var(--text-2xs);font-weight:var(--weight-strong)}
 .pull-comment-meta strong{color:var(--text);font-weight:var(--weight-medium)}
-.pull-comment-body{font-size:var(--text-xs);overflow-wrap:anywhere}
-.pull-files{list-style:none;margin:0;padding:0 6px}
-.pull-file{display:flex;align-items:center;gap:7px;width:100%;min-height:34px;padding:4px 8px;border-radius:var(--radius-sm);text-align:left;font-size:var(--text-xs)}
-.pull-file:hover{background:color-mix(in srgb,var(--text) 5%,transparent)}
-.pull-file>.icon{width:12px;height:12px;flex-shrink:0;color:var(--muted);transition:transform 160ms}
-.pull-file[aria-expanded="true"]>.icon{transform:rotate(90deg)}
-.pull-file-name{display:flex;flex-direction:column;min-width:0;flex:1}
-.pull-file-name strong{font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pull-file-name small{color:var(--muted);font-size:var(--text-2xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pull-file-diff{margin:2px 0 8px;background:var(--surface-sunken);border-radius:var(--radius-sm);overflow:hidden}
-.pull-commits{list-style:none;margin:0;padding:6px 14px;display:flex;flex-direction:column;gap:10px}
-.pull-commits li{display:flex;flex-direction:column;gap:2px;min-width:0}
-.pull-commit-headline{font-size:var(--text-xs);overflow-wrap:anywhere}
-.pull-commit-meta{font-size:var(--text-2xs);color:var(--muted)}
-.pull-commit-meta code{font-family:var(--mono);font-size:var(--text-2xs)}
-@media(prefers-reduced-motion:reduce){.pull-view[aria-busy="true"] .pull-actions [data-pull-action="refresh"] .icon{animation:none}.pull-file>.icon{transition:none}}
-@media(prefers-contrast:more){.pull-badge,.pull-labels span{outline:1px solid var(--text)}}
-.pull-merge{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px}
-.pull-merge .primary-button,.pull-merge .secondary-button{display:inline-flex;align-items:center;gap:6px;min-height:28px;padding:0 12px;font-size:var(--text-xs)}
-.pull-merge .icon{width:13px;height:13px}
-.pull-merge small{color:var(--muted);font-size:var(--text-xs)}
-.pull-merge select{min-height:28px;padding:0 8px;border-radius:var(--radius-sm);background:var(--fill-hover);color:var(--text);font:inherit;font-size:var(--text-xs)}
+.pull-comment-body{margin:6px 0 0 28px;font-size:var(--ds-text-ui);overflow-wrap:anywhere}
+
+/* Files and Commits: rows in one card. */
+.pull-files{list-style:none;margin:0}
+.pull-file>.icon{width:12px;height:12px;flex-shrink:0;color:var(--muted);transition:rotate var(--ds-ease-out) ease-out}
+.pull-file[aria-expanded="true"]>.icon{rotate:90deg}
+.pull-file .ds-row-title{font-size:var(--ds-text-ui)}
+.pull-file-diff{margin:2px 0 6px;background:var(--surface-sunken);border-radius:var(--ds-radius-inner);overflow:hidden}
+.pull-commits{list-style:none;margin:0}
+.pull-commits .ds-row-icon>.icon{--icon-size:10px;width:10px;height:10px}
+.pull-commits .ds-row-title{font-size:var(--ds-text-ui);white-space:normal;overflow-wrap:anywhere}
+.pull-commit-meta code{font-family:var(--mono);font-size:var(--ds-text-chip)}
+
+@media(prefers-reduced-motion:reduce){.pull-view[aria-busy="true"] .pull-actions [data-pull-action="refresh"] .icon{animation:none}.pull-file>.icon,.pull-chevron>.icon{transition:none}}
+
+/* The inspector is narrow: status titles wrap rather than clip, and meta yields first. */
+/* Titles stay on one line; the subtitle (the checks count) wraps rather than clipping. */
+.pull-status .ds-row-sub{white-space:normal;overflow-wrap:anywhere}
+.pull-status .ds-row-main{flex:1 1 auto}
+.pull-view{container:pull / inline-size}
+@container pull (max-width:360px){.pull-merge .pull-merge-main{padding:0 6px}.pull-merge .pull-merge-main .icon{display:none}.pull-merge .ds-btn-split>.ds-btn:not(:first-child){padding:0 10px}.pull-merge-meta,.pull-stats{display:none}.pull-section-head>.pull-stats+.icon-button{margin-left:auto}}
+
+@media(prefers-reduced-motion:no-preference){.pull-check-icon.pull-tone-pending>.icon{animation:state-pulse 1.6s ease-in-out infinite}}

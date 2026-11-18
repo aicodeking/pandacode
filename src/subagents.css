@@ -15,10 +15,15 @@
 .subagent-row-status,.subagent-detail-status{font-size:var(--text-2xs);color:var(--muted);flex-shrink:0}
 .subagent-row>.icon{width:11px;height:11px;color:var(--faint)}
 .subagent-state{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0}
-[data-status=running]>.subagent-state,[data-status=running] .subagent-detail-meta>.subagent-state{background:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 12%,transparent)}
-[data-status=waiting]>.subagent-state,[data-status=waiting] .subagent-detail-meta>.subagent-state{background:var(--accent-ink)}
-[data-status=completed]>.subagent-state,[data-status=completed] .subagent-detail-meta>.subagent-state{background:var(--success)}
-[data-status=failed]>.subagent-state,[data-status=failed] .subagent-detail-meta>.subagent-state{background:var(--danger)}
+[data-status=running]>.subagent-state,[data-status=running] .subagent-detail-meta>.subagent-state{background:var(--ds-tone-team);box-shadow:0 0 0 3px var(--ds-tone-team-fill)}
+[data-status=waiting]>.subagent-state,[data-status=waiting] .subagent-detail-meta>.subagent-state{background:var(--ds-warn)}
+[data-status=completed]>.subagent-state,[data-status=completed] .subagent-detail-meta>.subagent-state{background:var(--ds-success)}
+[data-status=failed]>.subagent-state,[data-status=failed] .subagent-detail-meta>.subagent-state{background:var(--ds-danger)}
+@media(prefers-reduced-motion:no-preference){[data-status=running]>.subagent-state,[data-status=running] .subagent-detail-meta>.subagent-state{animation:state-pulse 1.6s ease-in-out infinite}}
+.subagent-row[data-status=running] .subagent-row-status,[data-status=running] .subagent-detail-status{color:var(--ds-tone-team)}
+.subagent-row[data-status=waiting] .subagent-row-status,[data-status=waiting] .subagent-detail-status{color:var(--ds-warn)}
+.subagent-row[data-status=completed] .subagent-row-status,[data-status=completed] .subagent-detail-status{color:var(--ds-success)}
+.subagent-row[data-status=failed] .subagent-row-status,[data-status=failed] .subagent-detail-status{color:var(--ds-danger)}
 .subagent-detail{padding:8px 8px 12px}
 .subagent-detail-meta{display:flex;align-items:center;gap:8px;margin-bottom:13px}
 .subagent-detail-name{font-size:var(--text-md);font-weight:600;line-height:1.35;margin:0;flex:1;overflow-wrap:anywhere}
@@ -37,4 +42,4 @@
 .subagent-tools .tool-activity pre{font-size:var(--text-2xs);padding:9px}
 .subagent-tools .tool-activity summary{min-height:25px}
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.subagents-trigger,.subagent-row{transition:background-color 140ms ease-out,border-color 140ms ease-out}.subagent-state{transition:background-color 200ms}.subagent-assignment[open]>p{animation:sa-fade 160ms ease-out}@keyframes sa-fade{from{opacity:0}}}
+@media(prefers-reduced-motion:no-preference){.subagents-trigger,.subagent-row{transition:background-color var(--ds-ease-out) ease-out,border-color var(--ds-ease-out) ease-out}.subagent-state{transition:background-color var(--ds-ease-out) ease-out}.subagent-assignment[open]>p{animation:sa-fade 160ms ease-out}@keyframes sa-fade{from{opacity:0}}}

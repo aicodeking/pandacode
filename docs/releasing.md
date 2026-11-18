@@ -25,7 +25,7 @@ uncommitted work.
 Each asset has a `NAME.sha256` file beside it (`sha256sum` format). Asset names
 do not contain the version, so
 `https://github.com/aicodeking/pandacode/releases/latest/download/<asset>`
-always serves the newest build. There is no Windows ARM release target. The Intel Mac build runs natively on
+always serves the newest build. The Intel Mac build runs natively on
 `macos-15-intel` because `build.mjs` refuses to cross-build.
 
 ## Automatic updates
@@ -39,6 +39,9 @@ also carries:
   update key;
 - `latest.json`, written by `scripts/release/updater-manifest.mjs`, naming the version,
   notes and each platform's file and signature.
+
+The check and the download verify TLS with the operating system's certificate store,
+so a root installed there is trusted.
 
 Settings → About → Updates is Automatic (install when idle and no agent works), Notify
 me (check, then ask with Install and restart / Later in the header) or Off; the old
@@ -77,10 +80,17 @@ incomplete, which is why the lockfile SBOMs are published beside them. The WebVi
 other operating-system libraries are supplied by the host, not bundled, and not scanned.
 The same summary appears on the workflow run page. Findings are reported, not gating;
 record any reviewed exception (scope, reason, owner, expiry) in the release notes.
+If the report is missing or empty, the job summary explicitly says coverage is
+unavailable and the step fails; publishing remains non-blocking. A missing report
+is never evidence of a clean scan.
 
 syft and grype are pinned by version and SHA-256 in the job's `env`. To upgrade, take the
 new Linux amd64 tarball's checksum from the tool's `*_checksums.txt` release asset and
-change the version and checksum together. Actions in the workflow are pinned by full
+change the version and checksum together. Downloads retry transient failures up to
+three times, with a 15-second connection timeout, a 120-second limit per attempt and
+a 300-second retry window. An attempt already started can finish beyond that window;
+exhausted downloads and checksum mismatches still fail before extraction.
+Actions in the workflow are pinned by full
 commit SHA; keep it that way. Run the helper's tests with `npm run test:release`.
 
 ## `npx pandacode`
@@ -118,8 +128,8 @@ records today's date in `website/src/data/release-dates.json` (the website's
 are rejected.
 
 Write `releases/X.Y.Z.md` with the user-facing changes and known limitations.
-The release workflow appends an "Installing" section with the unsigned-build
-instructions, so do not repeat those.
+The release workflow appends an "Installing" section based on whether macOS signing
+is configured, so do not repeat those instructions.
 
 ## 2. Check
 
@@ -129,28 +139,114 @@ Run what CI runs, plus the browser suites for any UI change:
 npm run build          # typecheck + frontend bundle (tests read dist/)
 npm test
 npm run test:release
-cargo test --manifest-path src-tauri/Cargo.toml
+npm ci --prefix website && npm run site:build   # the website build CI runs
+cargo test --manifest-path src-tauri/Cargo.toml --locked --lib   # the Rust tests CI runs
+cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D warnings
 npx playwright test    # or a focused subset; see AGENTS.md
 ```
 
-## 3. Tag and push
+Local checks are not enough. Push the release commit to `main` first and wait
+for CI to pass on it before tagging (step 3): every row, including the per-platform
+clippy rows. CI installs the floating stable Rust toolchain, so a new clippy lint can
+appear on any push, even one that changes no Rust, and fail a row your local toolchain
+passes. The Release workflow installs floating stable Rust too, so a release built
+later can use a newer `rustc` than the CI run that passed: if a new stable Rust
+lands between CI passing and tagging, re-run CI on the commit first. The Release
+workflow refuses a tag whose commit has not passed CI.
+
+## 3. Commit, wait for CI, preflight, then tag
 
 ```sh
 git add -A package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml \
   src-tauri/Cargo.lock website/src/data/release-dates.json "releases/$release_version.md"
 git commit -m "chore: release $release_version"
-git tag "v$release_version"
-git push origin main "v$release_version"
+git push origin main
+release_commit=$(git rev-parse HEAD)
+# Wait for CI on this exact commit (polls up to ~2 min for GitHub to create the
+# run); exits non-zero if it fails or never appears.
+run_id=; for i in $(seq 24); do
+  run_id=$(gh run list --workflow ci.yml --commit "$release_commit" --event push \
+    --branch main --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+  [ -n "$run_id" ] && break; sleep 5
+done
+[ -n "$run_id" ] && gh run watch --exit-status "$run_id"
+```
+
+For an **official release**, freeze this final commit on `main`. Before creating
+or pushing any tag, inspect the newest exact-SHA `ci.yml` main-push run and require
+success across all jobs. Then run the existing artifact-only workflow:
+
+```sh
+# Stop if remote main differs from the frozen release commit.
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit" &&
+  gh workflow run release.yml --ref main -f publish=false
+gh run list --workflow release.yml --event workflow_dispatch --commit "$release_commit" --limit 5
+# Set preflight_run to this dispatch's run ID; do not reuse an older run.
+gh run watch --exit-status "$preflight_run"
+gh run view "$preflight_run" --json headSha,status,conclusion,jobs
+```
+
+Require `run.headSha` to equal `$release_commit`, all six build jobs to succeed,
+and `main` to remain at that SHA. Download that run's six
+`pandacode-X.Y.Z-<target>` artifacts with `gh run download` into a fresh directory
+and collect their contents into one assets directory. Before tagging, require:
+
+- All six installers in the table above, each matching its `.sha256`.
+- Developer ID signing and successful notarization, stapling and Gatekeeper
+  assessment in both macOS build logs. **Do not tag while Apple's legal-agreement
+  HTTP 403 remains unresolved.**
+- All six updater files with valid `.sig` signatures, cryptographically verified
+  against `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (the existing
+  `verifyMinisign(data, sigFile, pubkey)` export in `packages/npx/installer.mjs`
+  supports this; presence of `.sig` alone is insufficient).
+- Generate `latest.json` from those downloaded files with
+  `node scripts/release/updater-manifest.mjs ASSETS_DIR "$release_version" "releases/$release_version.md"`.
+  Inspect the version, all six platform entries, signatures and versioned asset
+  URLs; the generator permits partial manifests, so explicitly require all six.
+
+These are official-release gates; local and fork signing remains optional.
+If `main` drifts or the release commit changes, repeat CI and this preflight for
+the new final commit. Once all gates pass, recheck remote `main` immediately
+before tagging the frozen commit (the tag workflow rebuilds and publishes):
+
+```sh
+test "$(git ls-remote origin refs/heads/main | cut -f1)" = "$release_commit" &&
+  git tag "v$release_version" "$release_commit" &&
+  git push origin "v$release_version"
 ```
 
 The workflow refuses a tag that does not match the version in
-`tauri.conf.json`, and a missing or empty `releases/X.Y.Z.md`. Never move a
-published tag; fix problems in a higher version.
+`tauri.conf.json`, a missing or empty `releases/X.Y.Z.md`, and a commit whose
+newest `ci.yml` run from a push to `main` is missing, still running or not
+successful (its `prepare` job checks with `gh run list --commit --event push
+--branch main`, using only `actions: read`; pull request and other branch runs
+of the same commit do not count, so the commit must be on `main` and pushed).
+If CI was still running, re-run the Release workflow once it passes; if CI was
+cancelled (the `ci.yml` concurrency group is per ref and only a pull request
+run is cancelled in progress, so a push or manual `workflow_dispatch` run on
+`main` that holds the slot is never cancelled, even one still `queued` for a
+runner; a `pending` run waiting for the slot is replaced when a newer push or
+manual run on `main` arrives, and a manual cancel also does this. A manual run
+on `main` holds the slot like a push run and replaces a pending push run, so do
+not dispatch CI on `main` while waiting for a release gate run), the gate names the run: re-run it with `gh run rerun <id>`, push
+nothing newer to `main` until it finishes, then re-run the Release workflow. If
+CI failed, the gate reads the run's latest conclusion and names the run: if the
+failure was flaky or infrastructure (for example a job cancelled because the
+runner never picked it up), re-run that run's failed jobs with `gh run rerun <id> --failed` and re-run
+the Release workflow once it is green; otherwise fix it in a new commit and
+release a higher version. Because CI never cancels a `main` push run holding the
+concurrency slot, a job stuck waiting for a runner (GitHub keeps a queued job up
+to 24 hours, and `timeout-minutes` does not apply while it is queued) blocks
+every later `main` CI run: cancel that run with `gh run cancel <id>` to unblock
+`main`, and if it is a release commit re-run it with `gh run rerun <id>` once
+runners are available. Never move a published tag; fix problems in a higher
+version.
 
 To try the build without publishing, run the workflow manually (Actions →
 Release → Run workflow) and leave **publish** unchecked: the installers are kept
-as workflow artifacts for 14 days. Checking **publish** on a manual run creates
-the release and the `vX.Y.Z` tag at the selected commit.
+as workflow artifacts for 14 days, and the CI check is skipped. Checking
+**publish** on a manual run requires the same green CI run, then creates the
+release and the `vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 
@@ -159,6 +255,11 @@ gh run list --workflow release.yml --limit 5
 gh run watch RUN_ID
 gh release view "v$release_version"
 ```
+
+After publishing, validate the release's versioned download URLs and the
+`releases/latest/download/<asset>` URLs for all six installers, checksums, updater
+files and signatures, plus `latest.json`. Require the expected version, complete
+six-platform manifest, matching checksums and valid updater signatures again.
 
 The Windows and Linux jobs install or launch the packaged app on the runner and
 check that it stays alive (`scripts/release/ci-startup-smoke.mjs`). That proves
@@ -198,9 +299,13 @@ raw `tauri build` output.
 
 ## Optional signing
 
-Builds are unsigned by default: macOS gets an ad-hoc signature, Windows and
-Linux are not signed. Users see first-launch warnings, which the release notes
-explain.
+Signing is optional for local and fork builds: without Apple credentials, macOS
+gets an ad-hoc signature. The official
+[v0.3.103 macOS release builds](https://github.com/aicodeking/pandacode/actions/runs/42462913784)
+passed Apple notarization and Gatekeeper assessment as `Notarized Developer ID` on
+both Apple silicon and Intel. Notarization does not suppress macOS's normal
+confirmation when opening an app downloaded from the internet. Windows and Linux
+builds are not code-signed.
 
 An ad-hoc macOS build is not notarized, and Gatekeeper refuses to open it.
 **Open Anyway** in System Settings → Privacy & Security does not always clear

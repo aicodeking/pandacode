@@ -1,4 +1,4 @@
-/** A thread's wake-ups: the strip above the composer, the quick-add popover, transcript markers,
+/** A thread's wake-ups: the row at the top of the prompt box, the quick-add popover, transcript markers,
  *  `/wake` and the sidebar glyph. Data comes from `schedules-api.ts`; main.ts passes callbacks in. */
 import { subscribe } from './bridge';
 import { escape, icon, morph } from './dom';
@@ -22,6 +22,9 @@ export const DEFAULT_WAKE_PROMPT = 'Continue where you left off.';
 
 let host: WakeHost | undefined;
 let schedules: TaskSchedule[] = [];
+/** Bumped whenever `schedules` changes: a user message's wake-up mark (scheduledMark) is drawn from them. */
+let version = 0;
+export const schedulesVersion = (): number => version;
 let runs: ScheduleRun[] = [], runsFor = '';
 let settings: SchedulerSettings | null = null;
 let paused = false, expanded = false, confirming = '', loading = 0, ticker = 0;
@@ -40,6 +43,8 @@ export async function initWakeups(next: WakeHost): Promise<void> {
     expanded = false; confirming = ''; paint();
     strip.querySelector<HTMLElement>('.wake-toggle')?.focus();
   }, true);
+  // The strip sits inside the composer form: Enter on a switch must not send the prompt.
+  document.addEventListener('keydown', event => { if (event.key === 'Enter' && (event.target as HTMLElement).closest?.('.wake-switch')) event.preventDefault(); }, true);
   document.addEventListener('visibilitychange', paint);
   await subscribe('schedules-changed', () => void refreshWakeups());
   await refreshWakeups();
@@ -53,6 +58,8 @@ export async function refreshWakeups(): Promise<void> {
       schedulesApi.list(null), id ? schedulesApi.runs({ sessionId: id, limit: HISTORY }) : Promise.resolve([]), schedulesApi.settings(),
     ]);
     if (request !== loading) return;
+    // Only a list that changed redraws the user messages that mark a wake-up (main.ts markupEnv reads `version`).
+    if (JSON.stringify(list) !== JSON.stringify(schedules)) version++;
     schedules = list; runs = history; runsFor = id; settings = loaded; paused = loaded.paused;
   } catch (error) { if (request === loading) host.report(error); return; }
   paint(); host.changed();
@@ -67,14 +74,15 @@ function upcoming(sessionId: string): TaskSchedule | undefined {
 export function wakeGlyph(sessionId: string): string {
   const next = upcoming(sessionId); if (!next) return '';
   const label = paused ? 'Schedules paused' : `Wakes ${when(next.nextRunAt)}`;
-  return `<span class="task-wake${paused ? ' is-paused' : ''}" role="img" aria-label="${escape(label)}" title="${escape(label)}">${icon('clock')}</span>`;
+  const due = !paused && (next.nextRunAt! <= Date.now() || runningSince(next) !== null);
+  return `<span class="task-wake${paused ? ' is-paused' : due ? ' is-due' : ''}" role="img" aria-label="${escape(label)}" title="${escape(label)}">${icon('clock')}</span>`;
 }
 
-/** Markup for the strip above the composer; main.ts places it and `paint()` keeps it current. */
+/** Markup for the prompt box's wake-up row; main.ts places it and `paint()` keeps it current. */
 export function wakeStrip(sessionId: string): string {
   if (runsFor !== sessionId) void refreshWakeups();
   const inner = stripInner(sessionId);
-  if (inner) startTicker();
+  if (inner) { startTicker(); queueMicrotask(paint); }
   return `<section id="wake-strip" class="wake-strip${paused ? ' is-paused' : ''}" aria-label="Wake-ups"${inner ? '' : ' hidden'}>${inner}</section>`;
 }
 
@@ -95,13 +103,31 @@ function stripInner(sessionId: string): string {
   return `${line}<div id="wake-body" class="wake-body">${list}${trace}</div>`;
 }
 
+/** While this thread's agent works on a turn this schedule sent (the newest user message carries its
+ *  mark), when that run started; otherwise null. Read from the transcript, which main.ts keeps current. */
+function runningSince(s: TaskSchedule): number | null {
+  if (s.sessionId !== host?.sessionId()) return null;
+  const transcript = document.getElementById('transcript');
+  if (!transcript?.hasAttribute('data-running')) return null;
+  const users = transcript.querySelectorAll('.user-message'), last = users[users.length - 1];
+  if (!last?.querySelector(`.scheduled-mark[data-schedule="${CSS.escape(s.id)}"]`)) return null;
+  return (runsFor === s.sessionId ? runs.find(run => run.scheduleId === s.id)?.at : undefined) ?? Date.now();
+}
+function runningFor(since: number): string {
+  const minutes = Math.max(1, Math.round((Date.now() - since) / MINUTE));
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+
 function row(s: TaskSchedule): string {
-  const name = escape(s.title);
-  const timing = s.enabled ? `${escape(cadence(s))}${s.nextRunAt !== null ? ` · ${escape(when(s.nextRunAt))}` : ''}` : `${escape(cadence(s))} · ${isFinished(s) ? 'Done' : 'Paused'}`;
+  const name = escape(s.title), since = runningSince(s);
+  const timing = since !== null ? `Running for ${runningFor(since)}`
+    : s.enabled ? `${escape(cadence(s))}${s.nextRunAt !== null ? ` · ${escape(when(s.nextRunAt))}` : ''}` : `${escape(cadence(s))} · ${isFinished(s) ? 'Done' : 'Paused'}`;
+  // The source's switch: on = enabled. A finished schedule cannot be resumed (refused natively).
+  const toggle = `<input type="checkbox" role="switch" class="ds-toggle wake-switch" data-wake="enable" aria-label="Wake-up ${name}"${s.enabled ? ' checked' : ''}${isFinished(s) ? ' disabled' : ''}>`;
   const actions = confirming === s.id
     ? `<span class="wake-confirm">Remove?</span><button type="button" class="wake-text-button danger" data-wake="remove-yes" aria-label="Remove ${name}">Remove</button><button type="button" class="wake-text-button" data-wake="remove-no">Keep</button>`
-    : `<button type="button" class="wake-text-button" data-wake="run" aria-label="Run now: ${name}">${icon('play')}<span>Run now</span></button><button type="button" class="icon-button" data-wake="more" aria-haspopup="menu" aria-label="More actions for ${name}" title="More">${icon('more')}</button>`;
-  return `<li class="wake-row" data-id="${escape(s.id)}" data-enabled="${s.enabled}"><span class="wake-title" title="${escape(s.prompt)}">${name}</span><span class="wake-meta">${timing}</span><span class="wake-origin" data-origin="${s.createdBy}">${s.createdBy === 'agent' ? 'Agent' : 'You'}</span><span class="wake-actions">${actions}</span></li>`;
+    : `<button type="button" class="wake-text-button" data-wake="run" aria-label="Run now: ${name}" title="Run now">${icon('play')}<span>Run now</span></button>${toggle}<button type="button" class="icon-button" data-wake="more" aria-haspopup="menu" aria-label="More actions for ${name}" title="More">${icon('more')}</button>`;
+  return `<li class="wake-row" data-id="${escape(s.id)}" data-enabled="${s.enabled}"${since !== null ? ' data-running=""' : ''}><span class="wake-title" title="${escape(s.prompt)}">${name}</span><span class="wake-meta">${timing}</span><span class="wake-origin" data-origin="${s.createdBy}">${s.createdBy === 'agent' ? 'Agent' : 'You'}</span><span class="wake-actions">${actions}</span></li>`;
 }
 
 function paint(): void {
@@ -109,6 +135,8 @@ function paint(): void {
   if (!strip || !host) return stopTicker();
   const inner = stripInner(host.sessionId());
   strip.hidden = !inner; strip.classList.toggle('is-paused', paused); morph(strip, inner, 6);
+  // morph patches attributes; a switch the user already flipped keeps its property, so sync it.
+  strip.querySelectorAll<HTMLInputElement>('.wake-switch').forEach(input => { input.checked = input.hasAttribute('checked'); });
   if (inner && !document.hidden) startTicker(); else stopTicker();
 }
 function startTicker(): void { if (!ticker) ticker = window.setInterval(() => { if (document.hidden || document.getElementById('wake-strip')?.hidden !== false) stopTicker(); else { paint(); host?.changed(); } }, TICK); }
@@ -135,6 +163,11 @@ async function act(target: HTMLElement): Promise<void> {
   if (!schedule || !host) return;
   if (action === 'run') { target.setAttribute('disabled', ''); const run = await schedulesApi.runNow(id); host.notify(`${OUTCOME[run.outcome]}: ${run.detail || schedule.title}`); }
   else if (action === 'more') { await showMore(target, schedule); return; }
+  else if (action === 'enable') {
+    const input = target as HTMLInputElement, on = input.checked;
+    try { await schedulesApi.setEnabled(id, on); } catch (error) { input.checked = !on; throw error; }
+    await refreshWakeups(); focusRow(id, 'enable'); return;
+  }
   else if (action === 'remove-no') { confirming = ''; paint(); focusRow(id, 'more'); return; }
   else if (action === 'remove-yes') { confirming = ''; await schedulesApi.remove(id); host.notify(`Removed “${schedule.title}”`); }
   else return;

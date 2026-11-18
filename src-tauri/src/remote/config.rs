@@ -103,6 +103,10 @@ pub(crate) struct Link {
     /// key, so a changed (or missing) key makes it count for nothing.
     #[serde(default)]
     pub key: String,
+    /// The device's name when it was linked, for Settings once it has left the account. Older
+    /// links have none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 impl Link {
@@ -296,9 +300,11 @@ mod tests {
         assert!(serde_json::to_value(&parsed).unwrap().get("trusted").is_none());
         assert!(!parsed.orchestration && parsed.links.is_empty(), "orchestration is off by default");
         let linked: Settings = serde_json::from_str(r#"{"orchestration":true,"links":{"d1":{"access":"full","at":5,"key":"k1"}}}"#).unwrap();
-        assert_eq!(linked.links["d1"], Link { access: Access::Full, at: 5, key: "k1".into() });
+        assert_eq!(linked.links["d1"], Link { access: Access::Full, at: 5, key: "k1".into(), name: String::new() });
         assert!(serde_json::to_string(&linked).unwrap().contains(r#""links":{"d1":{"access":"full","at":5,"key":"k1"}}"#));
         assert!(serde_json::from_str::<Settings>(r#"{"links":{"d1":{"access":"root"}}}"#).is_err());
+        let named = Link { name: "Studio".into(), ..linked.links["d1"].clone() };
+        assert_eq!(serde_json::from_str::<Link>(&serde_json::to_string(&named).unwrap()).unwrap().name, "Studio");
         assert_eq!((Access::parse("ask"), Access::parse("admin")), (Some(Access::Ask), None));
         assert!(linked.links["d1"].counts_for("k1") && !linked.links["d1"].counts_for("k2"), "a changed key drops the link");
         let keyless: Settings = serde_json::from_str(r#"{"links":{"d1":{"access":"ask"}}}"#).unwrap();

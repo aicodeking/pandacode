@@ -1,7 +1,8 @@
 import type { ProviderId } from './types';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
+import { trackSegment } from './motion';
 import { infoMark } from './tooltip';
 
 /** Label plus detail up to this length fit on one row; longer details move behind an info mark. */
@@ -146,7 +147,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
         const first = items[index - 1]?.segment !== item.segment, last = items[index + 1]?.segment !== item.segment;
         const start = first ? `${open ? '</div>' : ''}${index ? '<div class="choice-menu-separator" role="separator"></div>' : ''}<div class="choice-menu-segments" role="group" aria-label="${escape(item.segment)}"><span class="choice-menu-label" aria-hidden="true">${escape(item.segment)}</span><span class="choice-menu-segment-list">` : '';
         if (first) open = false;
-        return `${start}<button type="button" class="choice-menu-option choice-menu-segment" role="menuitemradio" aria-checked="${Boolean(item.selected)}" aria-label="${escape(item.label)}" data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${escape(item.short ?? item.label)}</button>${last ? '</span></div>' : ''}`;
+        return `${start}<button type="button" class="choice-menu-option choice-menu-segment${item.selected ? ' selected' : ''}" role="menuitemradio" aria-checked="${Boolean(item.selected)}" aria-label="${escape(item.label)}" data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${escape(item.short ?? item.label)}</button>${last ? '</span></div>' : ''}`;
       }
       const heading = grouped && item.heading ? `${open ? '</div>' : ''}${index ? '<div class="choice-menu-separator" role="separator"></div>' : ''}<div class="choice-menu-group" role="group" aria-label="${escape(item.heading)}"><div class="choice-menu-heading" aria-hidden="true">${escape(item.heading)}</div>` : '';
       if (heading) open = true;
@@ -157,11 +158,13 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
       const detail = item.description ? brief
         ? `<span id="${descriptionId}" class="choice-menu-description">${escape(item.description)}</span>`
         : `<span id="${descriptionId}" class="sr-only">${escape(item.description)}</span>` : '';
-      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description) : ''}${!actions && item.selected ? icon('check') : ''}</button>`;
+      // In an action menu a selected row is the current state (the branch checked out): checked, never re-run.
+      return `${heading}${separator}<button type="button" class="choice-menu-option${item.danger ? ' is-danger' : ''}" role="${actions ? 'menuitem' : 'menuitemradio'}" ${actions ? item.selected ? 'aria-current="true"' : '' : `aria-checked="${Boolean(item.selected)}"`} aria-label="${escape(item.label)}" ${item.description ? `aria-describedby="${descriptionId}"` : ''} data-choice-index="${index}" tabindex="-1" ${item.disabled ? 'disabled aria-disabled="true"' : ''}>${item.provider ? providerLogo(item.provider) : item.leading ? item.leading : item.icon ? icon(item.icon) : ''}<span class="choice-menu-copy"><span class="choice-menu-label">${escape(item.label)}</span>${detail}</span>${item.description && !brief ? infoMark(item.description, undefined, true) : ''}${item.selected ? icon('check') : ''}</button>`;
     }).join('') + (open ? '</div>' : '');
     buttons = [...list.querySelectorAll<HTMLButtonElement>('.choice-menu-option')];
-    const current = items.findIndex(item => item.selected && !item.disabled);
-    markActive(current >= 0 ? current : items.findIndex(item => !item.disabled));
+    for (const group of list.querySelectorAll<HTMLElement>('.choice-menu-segment-list')) trackSegment(group, group.querySelector<HTMLElement>(':scope>.selected'));
+    const current = actions ? -1 : items.findIndex(item => item.selected && !item.disabled);
+    markActive(current >= 0 ? current : items.findIndex(item => !item.disabled && !(actions && item.selected)));
     renderPending();
     buttons[active]?.scrollIntoView({ block: 'nearest' });
   }
@@ -175,6 +178,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
   }
   async function select(index: number): Promise<void> {
     if (closed || pending || !items[index] || items[index].disabled) return;
+    if (actions && items[index].selected) { close(); return; }
     pending = true; error.hidden = true;
     panel.focus({ preventScroll: true });
     renderPending();
@@ -210,7 +214,7 @@ export function openChoiceMenu(options: ChoiceMenuOptions): () => void {
     error.hidden = true; typed = ''; renderChoices();
   });
   panel.addEventListener('keydown', event => {
-    if (event.isComposing) return;
+    if (isImeKey(event)) return;
     // Restore the trigger before the browser's default Tab step, so the menu
     // does not jump to the end of the body or trap focus in a parent dialog.
     if (event.key === 'Tab') { close(); return; }

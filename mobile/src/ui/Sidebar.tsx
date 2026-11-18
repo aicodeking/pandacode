@@ -1,80 +1,114 @@
 // The iPhone Duo's sidebar (split.tsx), on the Inbox tab and in tasks: the PandaCode header, every
-// computer's tasks in one compact list (the open task highlighted), its bots after Unsent, and a floating glass search
-// field that filters it. Tasks open as the current task route in the pane beside it.
+// computer's tasks in the inbox's section cards (the open task highlighted, only Archived folded), an Undo
+// toast after an archive, and a floating
+// glass search field that filters them, with the inbox's "In conversations" matches under them
+// (SearchResults.tsx). Tasks open as the current task route in the pane beside it.
 import { Image } from 'expo-image';
-import { useGlobalSearchParams, usePathname } from 'expo-router';
+import { router, useGlobalSearchParams, useRootNavigationState } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { filterBots, filterRows, type BotRow as BotItem, type InboxRow as Row, type Section } from '../store/inbox.ts';
+import { emptyCopy, filterInbox, inboxItems, type InboxItem } from '../store/inbox.ts';
 import { useConnect } from '../store/index.ts';
 import { BotRow } from './BotRow.tsx';
-import { Material, useWallpaperShown } from './Backdrop.tsx';
+import { useColors } from './theme.ts';
+import { EmptyState, geometry, type, useStagger } from './ds/index.ts';
 import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
+import { CardSlice, ComputerFilter, InboxNotices, InboxSkeleton, SectionHead, TravelCell, useFolds } from './InboxCard.tsx';
 import { InboxRow } from './InboxRow.tsx';
-import { useColors } from './theme.ts';
+import { SearchResults, useThreadSearch } from './SearchResults.tsx';
+import { rootStack, sidebarOpen, sidebarSelection, type StackState } from './sidebar-nav.ts';
+import { sidebarWidth } from './sidebar-width.ts';
 import { useInbox } from './useInbox.ts';
 
-const SHARE = 0.32;
-const MIN_WIDTH = 300;
 const SEARCH = 48;
-const ORDER: (Section | 'bots')[] = ['running', 'needs', 'recent', 'unsent', 'bots', 'settled', 'snoozed'];
+const MARGIN = geometry.screenMargin;
 
-export const useSidebarWidth = () => Math.max(MIN_WIDTH, Math.round(useWindowDimensions().width * SHARE));
-
-type Item = { section: Section; row: Row } | { section: 'bots'; row: BotItem };
+export const useSidebarWidth = () => sidebarWidth(useWindowDimensions().width);
 
 export function Sidebar() {
   const colors = useColors();
-  const wallpaper = useWallpaperShown();
   const insets = useSafeAreaInsets();
   const width = useSidebarWidth();
-  const { hosts, inbox, bots, minute, load, updating } = useInbox();
+  const { hosts, inbox, bots, minute, problems, load, updating, connected, loading } = useInbox();
   const [query, setQuery] = useState('');
-  const pathname = usePathname();
-  const { device, session } = useGlobalSearchParams<{ device?: string; session?: string }>();
-  const inTask = pathname.startsWith('/task/');
-  const selected = inTask ? `${device}/${session}` : '';
-  const selectedBot = useConnect(s => (inTask ? s.bots[device ?? '']?.find(b => b.desktopSession === session)?.id : undefined));
+  const { computer } = useGlobalSearchParams<{ computer?: string }>();
+  // From the navigation state, not the path: the open task stays lit under Changes, Files... over it.
+  const stack = rootStack(useRootNavigationState() as StackState | undefined);
+  const selected = sidebarSelection(stack);
+  // How a pick opens (sidebar-open.ts): pushed over the root, replacing the open task, or over a
+  // feature screen back to the root first.
+  const how = sidebarOpen(stack);
+  const [device, session] = selected ? selected.split('/') : ['', ''];
+  const selectedBot = useConnect(s => (selected ? s.bots[device]?.find(b => b.desktopSession === session)?.id : undefined));
 
   // The client keeps lists fresh (presence, foreground, run ends, a timer); this covers a new host.
   useEffect(() => { void load(); }, [load]);
 
-  const items = useMemo(() => ORDER.flatMap((section): Item[] => (section === 'bots'
-    ? filterBots(bots, query).map(row => ({ section, row }))
-    : filterRows(inbox[section], query).map(row => ({ section, row })))), [inbox, bots, query]);
-  const empty = query.trim() ? 'No matching threads.' : !hosts.length ? 'Turn on remote access on a computer signed in to the same GitHub account to see its tasks here.' : 'No tasks yet.';
+  // Everything open but Archived, which can hold every settled task the computers list.
+  const folds = useFolds();
+  const archivedOpen = !!folds.shown.archived;
+  const items = useMemo(() => {
+    const shown = filterInbox(inbox, bots, { query, computer });
+    return inboxItems(shown.inbox, shown.bots, query.trim() ? 'all' : { snoozed: true, settled: true, archived: archivedOpen });
+  }, [inbox, bots, query, computer, archivedOpen]);
+  // Conversation text from computers that search it, under the title matches (not repeating them), as the inbox.
+  const titled = useMemo(() => new Set(items.flatMap(item => (item.type === 'row' ? [item.row.key] : []))), [items]);
+  const conversations = useThreadSearch(query, computer, titled);
+  const searched = !!query.trim();
+  const stagger = useStagger(items.length > 0);
+  const empty = emptyCopy(hosts, { query, computer });
+  const filterName = computer ? hosts.find(h => h.id === computer)?.name ?? 'This computer' : undefined;
+
+  const render = ({ item, index }: { item: InboxItem; index: number }) => {
+    const entering = stagger(index);
+    if (item.type === 'head') {
+      const folding = item.section === 'archived' && item.open !== undefined;
+      return <SectionHead section={item.section} count={item.count} open={folding ? item.open && !folds.closing(item.section) : undefined} computer={item.computer} entering={entering} onToggle={folding ? () => folds.toggle(item.section) : undefined} />;
+    }
+    return (
+      <CardSlice first={item.first} last={item.last} attention={item.type === 'row' && item.section === 'needs'} leaving={item.type === 'row' && folds.closing(item.section)} entering={entering}>
+        {item.type === 'bot'
+          ? <BotRow row={item.row} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.deviceId === device && item.row.bot.id === selectedBot} how={how} />
+          : <InboxRow row={item.row} snoozed={item.section === 'snoozed'} showComputer={item.showComputer} minute={minute} sidebar selected={item.row.key === selected} how={how} />}
+      </CardSlice>
+    );
+  };
 
   return (
-    <KeyboardAvoidingView behavior="padding" style={[styles.sidebar, { width: width + insets.left, paddingLeft: insets.left, backgroundColor: wallpaper ? undefined : colors.grouped }]}>
-      {/* Over the wallpaper the sidebar is a system blur material, like iPadOS. */}
-      {wallpaper && <Material material="systemThinMaterial" style={StyleSheet.absoluteFill} />}
+    <KeyboardAvoidingView behavior="padding" style={[styles.sidebar, { width: width + insets.left, paddingLeft: insets.left, backgroundColor: colors.background }]}>
       <View style={[styles.header, { paddingTop: insets.top + 18 }]}>
         <View style={styles.brand} accessibilityRole="header" accessible accessibilityLabel="PandaCode">
           <Image source={require('../../assets/images/icon.png')} style={styles.mark} />
-          <Text style={[styles.brandText, { color: colors.text }]}>PandaCode</Text>
+          <Text style={[type.title3, { color: colors.text }]}>PandaCode</Text>
         </View>
-        {updating && <Text style={[styles.updating, { color: colors.secondary }]} accessibilityLiveRegion="polite">Updating…</Text>}
       </View>
       <FlatList
         data={items}
-        keyExtractor={(item: Item) => `${item.section}/${item.row.key}`}
-        renderItem={({ item, index }) => (item.section === 'bots'
-          ? <BotRow row={item.row} last={index === items.length - 1} minute={minute} sidebar selected={item.row.deviceId === device && item.row.bot.id === selectedBot} replace={inTask} />
-          : <InboxRow row={item.row} snoozed={item.section === 'snoozed'} last={index === items.length - 1} minute={minute}
-            sidebar selected={item.row.key === selected} replace={inTask} />
-        )}
+        keyExtractor={item => item.key}
+        renderItem={render}
+        CellRendererComponent={TravelCell}
         contentContainerStyle={[styles.list, { paddingBottom: SEARCH + Math.max(insets.bottom, 12) + 16 }]}
-        ListEmptyComponent={<Text style={[styles.empty, { color: colors.secondary }]}>{empty}</Text>}
+        ListHeaderComponent={
+          <>
+            {!!filterName && <ComputerFilter name={filterName} onClear={() => router.setParams({ computer: undefined })} />}
+            <InboxNotices connected={connected} updating={updating} hasRows={items.length > 0} hosts={hosts} problems={problems} retry={() => void load()} style={styles.notices} />
+          </>
+        }
+        ListFooterComponent={searched ? <SearchResults hits={conversations.hits} query={query} searching={conversations.searching} how={how} /> : undefined}
+        ListEmptyComponent={loading && !searched ? <InboxSkeleton /> : conversations.hits.length || conversations.searching ? undefined : (
+          <EmptyState icon={{ ios: searched ? 'magnifyingglass' : 'tray', android: searched ? 'search' : 'inbox' }} title={empty.title} body={empty.body} />
+        )}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         initialNumToRender={14}
       />
-      <Glass style={[styles.search, { left: insets.left + 12, bottom: Math.max(insets.bottom, 12) }]} interactive>
-        <Icon ios="magnifyingglass" android="search" size={16} color={colors.secondary} />
-        <TextInput value={query} onChangeText={setQuery} placeholder="Search threads" placeholderTextColor={colors.secondary as string}
-          style={[styles.searchInput, { color: colors.text }]} returnKeyType="search" autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" accessibilityLabel="Search threads" />
+      <Glass style={[styles.search, { left: insets.left + geometry.rowInset, bottom: Math.max(insets.bottom, 12) }]} interactive>
+        <Icon ios="magnifyingglass" android="search" size={16} color={colors.muted} />
+        <TextInput value={query} onChangeText={setQuery} placeholder="Search tasks" placeholderTextColor={colors.muted}
+          style={[type.callout, styles.searchInput, { color: colors.text }]} returnKeyType="search" autoCorrect={false} autoCapitalize="none" clearButtonMode="while-editing" accessibilityLabel="Search tasks" />
       </Glass>
     </KeyboardAvoidingView>
   );
@@ -82,13 +116,11 @@ export function Sidebar() {
 
 const styles = StyleSheet.create({
   sidebar: { height: '100%' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: 20, paddingRight: 12, paddingBottom: 10 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingLeft: MARGIN + geometry.rowInset, paddingRight: geometry.rowInset, paddingBottom: geometry.sectionGap },
   brand: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  mark: { width: 26, height: 26, borderRadius: 7 },
-  brandText: { fontSize: 21, fontWeight: '700', letterSpacing: -0.4 },
-  updating: { fontSize: 13 },
-  list: { gap: 2, paddingTop: 4 },
-  empty: { fontSize: 15, textAlign: 'center', marginTop: 40, paddingHorizontal: 24 },
-  search: { position: 'absolute', right: 12, height: SEARCH, borderRadius: SEARCH / 2, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16 },
-  searchInput: { flex: 1, fontSize: 16, height: '100%' },
+  mark: { width: 26, height: 26, borderRadius: 7, borderCurve: 'continuous' },
+  list: { paddingTop: 4, paddingHorizontal: MARGIN },
+  notices: { marginBottom: geometry.sectionGap },
+  search: { position: 'absolute', right: geometry.rowInset, height: SEARCH, borderRadius: SEARCH / 2, flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: geometry.rowInset },
+  searchInput: { flex: 1, height: '100%' },
 });

@@ -164,7 +164,7 @@ test('the GitHub view is reachable from Go to anything', async ({ page }) => {
   await page.locator('#navigation .task-item').first().waitFor();
   await page.locator('.search-trigger').click();
   await page.getByRole('textbox', { name: 'Search tasks and commands' }).fill('github');
-  await page.locator('#command-results').getByRole('button', { name: 'GitHub' }).click();
+  await page.locator('#command-results').getByRole('button', { name: 'GitHub', exact: true }).click();
   await expect(hub(page)).toBeVisible();
 });
 

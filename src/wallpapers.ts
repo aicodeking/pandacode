@@ -28,11 +28,13 @@ export interface WallpaperController {
 const days = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const;
 const preferenceKey = 'pandacode.wallpaperPreferences';
 const legacyKey = 'pandacode.wallpapers';
+/** Version 3 turns wallpapers off once for everyone, so the live scenes are seen; the chosen scene, set and sliders stay, ready for the switch. */
+export const WALLPAPER_PREFERENCES_VERSION = 3;
 
 export function normalizeWallpaperPreferences(value: unknown): WallpaperPreferences {
   const input = value && typeof value === 'object' ? value as Record<string, unknown> : {};
   return {
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : true,
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : false,
     visibility: typeof input.visibility === 'number' && Number.isFinite(input.visibility)
       ? Math.max(0, Math.min(100, Math.round(input.visibility))) : 20,
     blur: typeof input.blur === 'number' && Number.isFinite(input.blur)
@@ -43,13 +45,21 @@ export function normalizeWallpaperPreferences(value: unknown): WallpaperPreferen
   };
 }
 
+/** A save from an older version keeps its choices and starts off; only turning the switch on saves it as on. */
+export function migrateWallpaperPreferences(value: unknown): WallpaperPreferences {
+  const input = value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  if (input?.version === WALLPAPER_PREFERENCES_VERSION) return normalizeWallpaperPreferences(input);
+  return { ...normalizeWallpaperPreferences(input), enabled: false };
+}
+
 function readPreferences(): WallpaperPreferences {
   try {
     const stored = localStorage.getItem(preferenceKey);
     if (stored) {
-      try { return normalizeWallpaperPreferences(JSON.parse(stored)); } catch { /* Fall back to the previous on/off preference. */ }
+      try { return migrateWallpaperPreferences(JSON.parse(stored)); } catch { /* Fall back to the default. */ }
     }
-    return normalizeWallpaperPreferences({ enabled: localStorage.getItem(legacyKey) !== 'false' });
+    // The pre-preferences on/off flag was on unless turned off, so either way it is an untouched default: off.
+    return normalizeWallpaperPreferences(null);
   } catch { return normalizeWallpaperPreferences(null); }
 }
 
@@ -69,18 +79,28 @@ export function nextWallpaperChange(date = new Date()): Date {
   return next;
 }
 
-/** One shared scene for the thread and board; a new scene replaces the old one at once. */
-export function mountWallpapers(host: HTMLElement): WallpaperController {
+/** One shared scene for the thread and board, drawn inside `sceneHost` (the main pane: the thread is the window);
+ * `host` carries `data-wallpaper` and the appearance variables. A new scene replaces the old one at once. */
+export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host): WallpaperController {
   const layer = document.createElement('div');
   layer.className = 'workspace-wallpaper';
   layer.setAttribute('aria-hidden', 'true');
-  host.prepend(layer);
+  sceneHost.prepend(layer);
   const contrast = matchMedia('(prefers-contrast: more)');
   const transparency = matchMedia('(prefers-reduced-transparency: reduce)');
   let preferences = Object.freeze(readPreferences());
   const listeners = new Set<() => void>();
   let disposed = false, generation = 0, timer = 0, pendingId = '';
   let current: HTMLImageElement | undefined, pending: HTMLImageElement | undefined;
+  // The launch scene decodes after the startup gate (palette.ts) has opened, so its colours would fade in.
+  let startup = true;
+  /** Close the startup gate around the first scene and reopen it two frames later, as palette.ts does. */
+  function holdStartupGate(): void {
+    const root = document.documentElement;
+    if (!startup || !root.hasAttribute('data-ready') || typeof requestAnimationFrame !== 'function') return;
+    root.removeAttribute('data-ready');
+    requestAnimationFrame(() => requestAnimationFrame(() => root.setAttribute('data-ready', '')));
+  }
 
   function emit(): void { listeners.forEach(listener => listener()); }
   function applyAppearance(): void {
@@ -95,7 +115,7 @@ export function mountWallpapers(host: HTMLElement): WallpaperController {
   }
   function persist(): void {
     try {
-      localStorage.setItem(preferenceKey, JSON.stringify(preferences));
+      localStorage.setItem(preferenceKey, JSON.stringify({ ...preferences, version: WALLPAPER_PREFERENCES_VERSION }));
       localStorage.setItem(legacyKey, String(preferences.enabled && preferences.visibility > 0));
     } catch { /* Still works for this launch if storage is unavailable. */ }
   }
@@ -107,6 +127,7 @@ export function mountWallpapers(host: HTMLElement): WallpaperController {
     if (pending) { remove(pending); pending = undefined; }
     layer.querySelectorAll('img').forEach(remove);
     current = undefined;
+    startup = false;
     delete host.dataset.wallpaper;
   }
   async function load(id: string): Promise<void> {
@@ -124,6 +145,8 @@ export function mountWallpapers(host: HTMLElement): WallpaperController {
       await image.decode();
       if (disposed || requested !== generation || document.hidden) { remove(image); return; }
       const previous = current;
+      if (!previous) holdStartupGate();
+      startup = false;
       layer.append(image);
       current = image;
       host.dataset.wallpaper = id;
@@ -157,7 +180,6 @@ export function mountWallpapers(host: HTMLElement): WallpaperController {
     if (disposed) return;
     const previous = preferences;
     const next = normalizeWallpaperPreferences({ ...previous, ...patch });
-    if (patch.visibility !== undefined && patch.enabled === undefined) next.enabled = next.visibility > 0;
     preferences = Object.freeze(next);
     applyAppearance();
     if (save) persist();

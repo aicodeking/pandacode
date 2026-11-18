@@ -22,7 +22,7 @@ export function mountHarnessPrivacy(host: HTMLElement): () => void {
   let disposed = false, saving = false, loaded = false;
   let retry: (() => void) | undefined;
   host.innerHTML = `<div class="settings-group">
-      <div class="setting-row"><div><strong>${TITLE} ${infoMark(ABOUT, 'About agent telemetry')}</strong><small>Uses each agent’s own opt-outs.</small><span class="sr-only" id="harness-telemetry-about" aria-hidden="true">${escape(ABOUT)}</span></div><input type="checkbox" class="settings-switch" id="harness-telemetry-off" aria-label="${TITLE}" aria-describedby="harness-telemetry-about harness-telemetry-status" disabled></div>
+      <div class="setting-row"><div><strong>${TITLE}</strong><small>Uses each agent’s own opt-outs.</small><span class="sr-only" id="harness-telemetry-about" aria-hidden="true">${escape(ABOUT)}</span></div><input type="checkbox" class="settings-switch" id="harness-telemetry-off" aria-label="${TITLE}" aria-describedby="harness-telemetry-about harness-telemetry-status" disabled>${infoMark(ABOUT, 'About agent telemetry')}</div>
     </div>
     <div class="harness-privacy-feedback"><p class="harness-privacy-status" id="harness-telemetry-status" role="status"></p><button type="button" class="secondary-button" data-privacy-retry hidden>Try again</button></div>
     <ul class="settings-group harness-privacy-list" aria-label="Telemetry by agent"></ul>`;

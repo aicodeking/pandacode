@@ -2,6 +2,16 @@
 mod linux_fonts;
 
 fn main() {
+    // The crash guard (crash_guard.rs): no GUI, watches the app and relaunches it after a crash.
+    if pandacode_lib::handle_crash_guard() {
+        return;
+    }
+    // A speech worker child (voice/local): engine only, no app, exits when its pipe closes.
+    if pandacode_lib::handle_speech_worker() {
+        return;
+    }
+    // Before anything spawns: Finder starts apps with room for only about 45 workers.
+    pandacode_lib::raise_open_file_limit();
     // Before any GTK/WebKit init (Linux emoji freeze, issue #179).
     #[cfg(target_os = "linux")]
     linux_fonts::hide_colrv1_fonts();

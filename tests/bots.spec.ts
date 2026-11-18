@@ -158,7 +158,7 @@ test.describe('bots', () => {
     await expect(crumb(page).locator('.bot-crumb-state')).toHaveText('Ready');
     // The task composer, model picker included; bots own their workspace, so no project bar.
     await expect(page.locator('#prompt')).toHaveAttribute('placeholder', 'Message Scout…');
-    await expect(page.getByRole('button', { name: 'Choose harness and model', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Model: / })).toBeVisible();
     await expect(page.locator('#composer-area .composer-context')).toBeHidden();
     await expect(sidebar(page).locator('.bot-row.selected')).toContainText('Scout');
     await expect(page.locator('#navigation')).not.toContainText('Scout');
@@ -255,7 +255,7 @@ test.describe('bots', () => {
 
   test('the model can be changed in a bot conversation', async ({ page }) => {
     await newBot(page);
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    await page.getByRole('button', { name: /^Model: / }).click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     await picker.getByRole('tab', { name: 'Kimi Code' }).click();
     await picker.getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill('bot-thread-model');
@@ -297,7 +297,7 @@ test.describe('bots', () => {
     await expect(panel(page, 'Copilot bot')).toBeHidden();
     await expect(page.locator('#composer .provider-logo[data-provider="github-copilot"]')).toBeVisible();
 
-    await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+    await page.getByRole('button', { name: /^Model: / }).click();
     const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
     const choice = picker.locator('.model-menu-option[data-provider="github-copilot"][data-model="default"]');
     await expect(choice).toContainText('Default');
@@ -541,7 +541,7 @@ test.describe('bots', () => {
     await panel(page).getByRole('menuitem', { name: 'Delete bot' }).click();
     await panel(page).getByRole('alertdialog', { name: 'Delete Scout?' }).getByRole('button', { name: 'Delete', exact: true }).click();
     await expect(panel(page)).toBeHidden();
-    await expect(sidebar(page).getByRole('button', { name: 'Create your first bot' })).toBeVisible();
+    await expect(sidebar(page).getByRole('button', { name: 'New bot or channel' })).toBeVisible();
     await expect(crumb(page)).toHaveCount(0);
   });
 
@@ -687,7 +687,7 @@ test.describe('bots', () => {
     await expect(sidebar(page).locator('.bot-row-skeleton')).toHaveCount(3);
     await expect(sidebar(page).getByText('No bots yet')).toBeVisible({ timeout: 10_000 });
     await expect(sidebar(page).locator('.bot-row-skeleton')).toHaveCount(0);
-    await sidebar(page).getByRole('button', { name: 'Create your first bot or channel' }).click();
+    await sidebar(page).getByRole('button', { name: 'New bot or channel' }).click();
     await sidebar(page).getByRole('menu', { name: 'Create' }).getByRole('menuitem', { name: 'New bot' }).click();
     await expect(bots(page)).toBeVisible();
   });

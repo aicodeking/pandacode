@@ -99,7 +99,7 @@ where
 pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSessions> {
     // Agent, harness, team and Jev admissions share this lock. No process or
     // filesystem operations happen here; running work must be stopped first.
-    let agents = state.agents.lock().map_err(|e| e.to_string())?;
+    let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let ids = refuse_if_busy(state, &agents, sid)?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
     delete_owned(&store, sid, &ids)?;
@@ -133,7 +133,7 @@ pub async fn delete_session(
     // task's waiting agent (workers too) and wait until it is gone.
     let ids = {
         let state = app.state::<AppState>();
-        let agents = state.agents.lock().map_err(|e| e.to_string())?;
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         refuse_if_busy(&state, &agents, &session_id)?
     };
     quiesce_all(&ids, |id| async move { crate::providers::quiesce(&id).await }).await?;

@@ -1,0 +1,195 @@
+/* Redesign: sidebar area. Owned by the sidebar area worker; built on src/design-system.css.
+ * Loaded after sidebar-tree.css and wallpapers.css, so these rules win at equal specificity.
+ *
+ * The look follows the reference's middle column: the top actions, every task section and the Bots bar
+ * are outer cards (hairline, soft shadow, 16px); a section card holds its muted heading and an inner card
+ * of rows; task rows read like .ds-row: a 20px project tile with a status dot on its corner, the title
+ * and a muted (or status-coloured) subtitle, the harness and age as trailing meta. Hover and selection are neutral tone steps on the
+ * card's 10px inner radius; the accent stays for the selected row's leading bar and focus. */
+
+/* Every sidebar fill that used --raised (hover, --row-bg, folders, Show more, Bots bar) becomes the
+ * design system's row hover. Same specificity as wallpapers.css' frost rule, loaded after it. */
+html[data-theme] .workspace>.sidebar,html[data-theme] .workspace[data-wallpaper]>.sidebar{--raised:var(--ds-row-hover)}
+
+/* ---------- Top actions: one card of 36px rows ---------- */
+.sidebar .sidebar-actions{margin:2px 8px 6px;padding:var(--ds-card-pad);gap:2px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.sidebar .sidebar-actions>button,
+html[data-theme] .sidebar .sidebar-actions>.new-task-button{height:36px;padding:0 var(--ds-row-pad-x);gap:var(--ds-row-gap);border-radius:var(--ds-radius-inner);font-size:var(--ds-text-ui);font-weight:var(--weight-regular)}
+.sidebar .sidebar-actions>button>.icon{--icon-size:var(--icon-lg);--icon-stroke:var(--icon-stroke-lg);color:var(--muted)}
+.sidebar .sidebar-actions>button:hover,
+html[data-theme] .sidebar .sidebar-actions>.new-task-button:hover{background:var(--ds-row-hover)}
+html[data-theme] .sidebar .sidebar-actions>.new-task-button:not(:disabled):active,
+.sidebar .sidebar-actions>button:not(:disabled):active{background:var(--ds-row-press);scale:var(--ds-press)}
+.sidebar .sidebar-actions kbd,html[data-theme] .sidebar .new-task-button kbd{font-size:var(--ds-text-chip);color:var(--faint)}
+/* Over a light wallpaper the frost under the card varies by scene; the hint takes the muted tone to keep 4.5:1. */
+html:not([data-theme=dark]) .workspace[data-wallpaper]>.sidebar .sidebar-actions kbd{color:var(--muted)}
+
+/* ---------- Scope bar and filter: a section head, then a quiet track field ---------- */
+.sidebar .sidebar-projects{height:32px;padding:0 10px 0 var(--ds-row-pad-x)}
+.sidebar .project-filter{font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted)}
+.sidebar .sidebar-projects>.icon-button{width:28px;height:28px;border-radius:var(--ds-radius-control)}
+.sidebar .sidebar-projects>.icon-button:hover{background:var(--ds-row-hover);color:var(--text)}
+.sidebar .sidebar-projects>.icon-button[aria-expanded=true]{background:var(--ds-fill-hover)}
+.sidebar-search{height:34px;margin:0 8px 10px;padding:0 4px 0 var(--ds-row-pad-x);gap:8px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-track)}
+.sidebar-search:has(:focus-visible){border-color:var(--focus);box-shadow:none}
+.sidebar-search input{font-size:var(--ds-text-ui)}
+
+/* ---------- Sections: one outer card each, as the source's "Automations" card ----------
+ * .task-group is the outer card (.ds-card: hairline, soft shadow, 6px pad) holding its heading
+ * (.ds-section-head: muted label, trailing count) and the rows directly, with no inner card. */
+.sidebar .task-group:not(.completed-group){padding:0 var(--ds-card-pad) var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.sidebar .task-group+.task-group,.sidebar .sidebar-section,.sidebar .pinned-group{margin-bottom:0}
+.sidebar .task-group+.task-group{margin-top:var(--ds-section-gap)}
+.sidebar .navigation{padding-top:1px}
+.sidebar .group-heading{height:34px;padding:0 var(--ds-row-pad-x) 0 8px;gap:8px;font-size:var(--ds-text-ui);font-weight:var(--weight-regular);color:var(--muted)}
+.sidebar .group-heading>span{font-size:var(--ds-text-meta);color:var(--muted)}
+.sidebar .group-heading>.icon{color:var(--muted)}
+/* No rule between label and count; it keeps its flex so the count stays at the right edge. */
+.sidebar .section-fold>.section-rule{background:none}
+.sidebar .section-fold>.icon{right:var(--ds-row-pad-x)}
+.sidebar .section-toggle,.sidebar .section-fold{border-radius:var(--ds-radius-inner)}
+.sidebar .section-toggle:hover,.sidebar .section-fold:hover{background:none;color:var(--text)}
+/* A folded section is just its heading row inside the card. */
+.sidebar .task-group:has(>.section-fold[aria-expanded=false]){padding-bottom:0}
+
+/* Rows sit straight on the section's card. */
+.sidebar .task-group>.task-list,.sidebar .folder-tasks{gap:2px}
+.sidebar .folder-tasks{margin-left:0}
+/* Settled docks in the frame (main.ts measures the section's height), so its card is drawn behind it,
+ * inside the dock's padding. */
+.sidebar .sidebar-section.completed-group{isolation:isolate;padding:8px 14px 14px}
+.sidebar .completed-group::before{content:"";position:absolute;z-index:-1;inset:2px 8px 8px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);pointer-events:none}
+.sidebar .completed-group:has(>.section-toggle[aria-expanded=false]){padding-bottom:8px}
+.sidebar .completed-group>.section-toggle{margin-top:-6px}
+.sidebar .completed-group>.task-list{margin-bottom:-6px}
+
+/* ---------- Rows: .ds-row with a subtitle (title, then the where/status line) ---------- */
+.sidebar .task-item{row-gap:1px;min-height:var(--ds-row-h-sub);padding:5px 10px 5px 42px;border-radius:var(--ds-radius-inner)}
+.sidebar .task-item>.task-top{order:-1;height:20px}
+/* Title 15px and subtitle 14px: the reference's 16/15 scaled one step for a ~240px column. */
+.sidebar .task-title{font-size:var(--ds-text-sub);font-weight:450}
+.sidebar .task-item.unread .task-title{font-weight:var(--weight-strong)}
+.sidebar .task-head{height:18px;font-size:var(--ds-text-ui);letter-spacing:var(--ds-row-tracking);color:var(--muted)}
+.sidebar .task-age{font-size:var(--ds-text-ui);color:var(--faint)}
+.sidebar .task-status{font-size:var(--ds-text-ui);font-weight:var(--weight-regular)}
+.sidebar .task-status.attention{color:var(--ds-warn)}
+.sidebar .task-status.limited{color:var(--ds-warn)}
+.sidebar .task-status.failed{color:var(--ds-danger)}
+.sidebar .task-runtime{color:var(--ds-info)}
+/* The project tile leads the row like a .ds-row-icon, centred on both lines; the status dot rides
+ * its top-right corner, ringed in the card's tone (blue running, amber needs you, a hollow amber ring limited, red failed). */
+.sidebar .task-item:not(.task-oneline){position:relative}
+.sidebar .task-item:not(.task-oneline)>.task-head>.task-app-icon{position:absolute;left:10px;top:50%;translate:0 -50%;width:20px;height:20px;border-radius:6px}
+.sidebar .task-item:not(.task-oneline)>.task-head>.task-app-default{font-size:.72rem}
+/* One indicator node per row, in a 6px slot left of the age, so a state change never moves anything:
+ * unread paints the node, every other state its ::before (a card's dot on the tile, a one-line row's
+ * 14px glyph over the slot), and plain is both transparent. morph() keeps the node, so colour fades. */
+.sidebar .task-item>.task-line>.task-indicator{position:static;width:6px;height:6px;margin:0 0 0 auto;flex:none;background:transparent;box-shadow:none;animation:none;transition:background-color var(--ds-ease-out) ease-out}
+.sidebar .task-item>.task-line>.task-indicator.unread{background:var(--accent-ink);transition-duration:var(--ds-ease-in)}
+html[data-theme=dark] .sidebar .task-item>.task-line>.task-indicator.unread{background:var(--accent)}
+.sidebar .task-item>.task-line>.task-indicator+.task-age{margin-left:0}
+.sidebar .task-item>.task-line>.task-indicator::before{content:"";position:absolute;background:transparent;transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out}
+.sidebar .task-item>.task-line>.task-indicator:is(.running,.attention,.failed,.limited)::before{transition-duration:var(--ds-ease-in)}
+.sidebar .task-item>.task-line>.task-indicator.running::before{background:var(--ds-info)}
+.sidebar .task-item>.task-line>.task-indicator.attention::before{background:var(--ds-warn)}
+.sidebar .task-item>.task-line>.task-indicator.failed::before{background:var(--ds-danger)}
+.sidebar .task-item:not(.task-oneline)>.task-head>.task-indicator::before{left:26px;top:calc(50% - 14px);width:8px;height:8px;border-radius:50%;box-shadow:inset 0 0 0 2px transparent,0 0 0 2px transparent}
+.sidebar .task-item:not(.task-oneline)>.task-head>.task-indicator:is(.running,.attention,.failed,.limited)::before{box-shadow:inset 0 0 0 2px transparent,0 0 0 2px var(--ds-ring,color-mix(in srgb,var(--text) 4.5%,var(--frame,var(--sidebar))))}
+.sidebar .task-item:not(.task-oneline)>.task-head>.task-indicator.limited::before{box-shadow:inset 0 0 0 2px var(--ds-warn),0 0 0 2px var(--ds-ring,color-mix(in srgb,var(--text) 4.5%,var(--frame,var(--sidebar))))}
+/* On the tile it is not in the trailing slot the row actions cover, so it stays on hover. */
+.sidebar .task-row:is(:hover,:focus-within)>.task-item:not(.task-oneline)>.task-head>.task-indicator:is(.running,.attention,.failed,.limited){visibility:visible}
+/* Where a row sits in one line the word gives way to its glyph; the word stays in the DOM and the name on the indicator.
+ * The dot is a glyph too, so a fading state keeps a shape; going back to it holds the old glyph until the colour has gone. */
+.sidebar .task-item.task-oneline>.task-line>.task-indicator{position:relative;--state-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 14'%3E%3Ccircle cx='7' cy='7' r='3' /%3E%3C/svg%3E")}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator::before{left:-4px;top:-4px;width:14px;height:14px;-webkit-mask:var(--state-glyph) center/contain no-repeat;mask:var(--state-glyph) center/contain no-repeat}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator:not(.attention,.failed,.limited)::before{transition:background-color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out,mask-image 0s linear var(--ds-ease-out) allow-discrete,-webkit-mask-image 0s linear var(--ds-ease-out) allow-discrete}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator.limited::before{background:var(--ds-warn)}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator.attention{--state-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='11' width='14' height='9' rx='2'/%3E%3Cpath d='M8 11V8a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E")}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator.attention[aria-label="Needs your answer"]{--state-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M9.5 9.5a2.5 2.5 0 1 1 3.6 2.2c-.7.4-1.1 1-1.1 1.8M12 17h.01'/%3E%3C/svg%3E")}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator.failed{--state-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4 2.8 20h18.4zM12 10v4.5M12 17.5h.01'/%3E%3C/svg%3E")}
+.sidebar .task-item.task-oneline>.task-line>.task-indicator.limited{--state-glyph:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E")}
+@media(prefers-reduced-motion:no-preference){.sidebar .task-item>.task-line>.task-indicator.running::before{animation:state-pulse 1.6s ease-in-out infinite}}
+/* One-line rows (a chosen project, Settled): .ds-row without a subtitle. */
+/* --ds-row-h less 6px, so a chosen project's list stays compact (under 36px). */
+.sidebar .task-item.task-oneline{min-height:0;height:calc(var(--ds-row-h) - 6px);padding:0 10px}
+.sidebar .task-provider{width:16px;height:16px;opacity:.75}
+
+/* Hover is a neutral tone step; the open thread is an inner card (fill, hairline, soft shadow) with the accent bar. */
+.sidebar .task-row{--row-bg:var(--ds-row-hover)}
+.sidebar .task-row:has(>.task-item.selected),
+html[data-theme] .workspace[data-wallpaper]>.sidebar .task-row:has(>.task-item.selected){--row-bg:var(--ds-card-inner)}
+.sidebar .task-row:is(:hover,:focus-within)>.task-item:not(.selected){background:var(--row-bg)}
+.sidebar .task-item.selected,
+html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{background:var(--row-bg);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+.sidebar .task-row:not(.task-row-oneline)>.task-item:not(:disabled):active{scale:var(--ds-press)}
+.sidebar .task-row::before{left:2px;top:16px;bottom:16px;width:3px;border-radius:2px}
+.sidebar .task-row-oneline::before{top:9px;bottom:9px}
+
+/* Row actions sit over the trailing edge, centred on the row; the harness steps aside with the age. */
+.sidebar .task-actions{top:0;bottom:0;padding-right:6px;border-radius:0 var(--ds-radius-inner) var(--ds-radius-inner) 0}
+.sidebar .task-row:is(:hover,:focus-within)>.task-item>.task-top>.task-provider{visibility:hidden}
+/* Only the buttons take the pointer: the gaps between them and the fade-in edge click through to the row. */
+.sidebar .task-row:is(:hover,:focus-within)>.task-actions{pointer-events:none}
+.sidebar .task-row:is(:hover,:focus-within)>.task-actions>.task-action{pointer-events:auto}
+.sidebar .task-action{width:28px;height:28px;border-radius:var(--ds-radius-control)}
+.sidebar .task-action .icon{--icon-size:var(--icon-md);--icon-stroke:var(--icon-stroke-md)}
+.sidebar .task-action:hover{background:var(--ds-fill-hover)}
+
+.folder-more{height:36px;padding:0 var(--ds-row-pad-x) 0 8px;border-radius:calc(var(--ds-radius-inner) - 2px);font-size:var(--ds-text-meta)}
+.sidebar .sidebar-no-match{padding:8px var(--ds-row-pad-x);font-size:var(--ds-text-meta)}
+.sidebar .folder-heading,.folder-row{border-radius:calc(var(--ds-radius-inner) - 2px)}
+
+/* Colour eases in 120 ms and out 180 ms (design-system tokens); press keeps its spring. */
+.sidebar .task-item,.folder-more,.sidebar .sidebar-actions>button,.bot-row,.bot-row-add,.sidebar-bots-bar,.sidebar-bottom>button{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,scale var(--spring-fast-duration,200ms) var(--spring-fast,ease-out)}
+.sidebar-bots-bar:hover,.sidebar-bottom>button:hover{transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration,200ms)}
+
+/* ---------- Bots bar and bottom bar ---------- */
+.sidebar-bots{padding:0 8px}
+.sidebar-bots-bar{height:44px;padding:0 var(--ds-row-pad-x) 0 16px;gap:var(--ds-row-gap);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card);font-size:var(--ds-text-ui)}
+.sidebar-bots-bar>.icon:first-child{--icon-size:var(--icon-lg);--icon-stroke:var(--icon-stroke-lg);color:var(--muted)}
+.sidebar-bots-bar:hover{background:var(--ds-row-hover)}
+.sidebar-bots-bar[aria-pressed="true"]{background:var(--ds-fill-hover)}
+.sidebar-bots-bar small{font-size:var(--ds-text-meta);color:var(--muted)}
+.sidebar-bottom>button{border-radius:var(--ds-radius-control)}
+.sidebar-bottom>button:hover,.sidebar-bottom>button.active{background:var(--ds-row-hover);color:var(--text)}
+.bot-row,.bot-row-open,.bot-row-add{border-radius:calc(var(--ds-radius-inner) - 2px)}
+
+/* A narrow sidebar (under ~220px, e.g. a 900px window) gives the title the row: the harness and the
+ * age step aside (status words stay), and the scope bar's secondary buttons tighten. */
+@container sidebar (max-width:219px){
+  .sidebar .task-item .task-provider,.sidebar .task-item .task-age{display:none}
+  .sidebar .task-item>.task-line>.task-indicator.unread{background:transparent}
+  .sidebar .task-item:not(.task-oneline)>.task-head>.task-indicator{width:0;margin-right:-6px}
+  .sidebar .task-item{padding-right:8px}
+  .sidebar .sidebar-projects{gap:0;padding-right:6px}
+  .sidebar .sidebar-projects>.icon-button{width:24px}
+  .sidebar .sidebar-projects>.import-trigger{display:none}
+}
+
+/* The narrow rail is icons only: no cards, square actions. */
+@media(max-width:650px){
+  .sidebar .sidebar-actions{margin:0;padding:8px;border:0;background:none;box-shadow:none;border-radius:0;gap:10px}
+  .sidebar-bots-bar{border:0;background:none;box-shadow:none}
+}
+/* Increase Contrast: the hairlines turn solid through --ds-border; shadows go. */
+@media(prefers-contrast:more){
+  .sidebar :is(.sidebar-actions,.task-group,.completed-group::before),.sidebar-bots-bar{box-shadow:none}
+  .sidebar .task-item.selected,html[data-theme] .workspace[data-wallpaper]>.sidebar .task-item.selected{box-shadow:inset 0 0 0 1px var(--ds-border)}
+}
+@media(forced-colors:active){
+  .sidebar :is(.sidebar-actions,.task-group:not(.completed-group),.completed-group::before),.sidebar-bots-bar{border-color:CanvasText}
+  .sidebar .task-item>.task-line>.task-indicator{forced-color-adjust:none}
+}
+
+/* Meta text on the selected row clears 4.5:1 on its fill. */
+.sidebar .task-item.selected :is(.task-checkout,.task-age,.task-link){color:color-mix(in srgb,var(--muted) 80%,var(--text))}
+
+/* State colours, the one vocabulary (dock, board, bots, tray, launcher): running info, needs you warn, limited a hollow warn,
+ * failed danger, unread accent. Only colour eases, so a morph()ed row fades between states and a replaced one lands at once. */
+.sidebar .task-status{transition:color var(--ds-ease-out) ease-out}
+.sidebar .task-item.task-oneline .task-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+@container sidebar-nav (max-width:210px){.sidebar .task-item:not(.task-oneline) .task-status{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}}
+/* Where a task runs: its small icon carries the tone, the branch text stays neutral. */
+.sidebar .task-worktree{color:var(--ds-tone-worktree)}
+.sidebar .task-cloud{color:var(--ds-tone-remote)}
+.sidebar .task-branch :is(.task-worktree,.task-cloud) .icon{opacity:1}

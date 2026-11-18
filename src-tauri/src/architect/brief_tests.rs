@@ -163,10 +163,10 @@ fn notes_shown_only_as_previews_arrive_in_full_next_turn_unless_fetched() {
     let (store, team) = fixture();
     let parent = team.session_id.clone();
     coordination::notes::ensure(&store).unwrap();
-    let old = format!("Old fact. {}", "a".repeat(1000));
-    let fetched = format!("Fetched fact. {}", "c".repeat(1000));
-    let mid = format!("Mid fact. {}", "d".repeat(1000));
-    let new = format!("New fact. {}", "b".repeat(1000));
+    let old = format!("Old fact. {}", "a".repeat(1200));
+    let fetched = format!("Fetched fact. {}", "c".repeat(1200));
+    let mid = format!("Mid fact. {}", "d".repeat(1200));
+    let new = format!("New fact. {}", "b".repeat(1200));
     for (key, value) in [("old", &old), ("fetched", &fetched), ("mid", &mid), ("new", &new)] {
         coordination::notes::tool(&store, &parent, "w1", json!({"action":"set","key":key,"value":value})).unwrap();
     }

@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
 test('agent tools inventory is lazy, distinguishes sample data and keeps task catalog limits visible', async ({ page }) => {
   expect(await page.evaluate(() => (window as any).__toolCalls.some((c: any) => c.command === 'list_agent_integrations'))).toBe(false);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await page.getByRole('tab', { name: 'Tools', exact: true }).click();
   await page.getByRole('button', { name: 'Manage', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Tools & integrations' })).toBeVisible();
   await expect(page.getByText('Browser preview · integration status is sample data.')).toBeVisible();

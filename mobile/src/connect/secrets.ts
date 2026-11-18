@@ -27,7 +27,8 @@ export async function getAccount(): Promise<Account | null> {
 }
 export const setAccount = (account: Account) => set(KEYS.account, JSON.stringify(account));
 
-/** Signing out drops the token and account; the device id and key stay for the next sign-in. */
+/** Signing out drops the token and account; the device id and key stay for the next sign-in.
+ * client.ts clears the phone's own state (store/local.ts) first, in `signOutSteps`. */
 export const clearSession = () => Promise.all([remove(KEYS.token), remove(KEYS.account)]);
 
 export async function getDeviceId(): Promise<string> {

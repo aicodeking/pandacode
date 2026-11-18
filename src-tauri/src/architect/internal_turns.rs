@@ -136,10 +136,10 @@ pub(crate) fn legacy_kind_in_db(
     let Some(object) = summary.as_object() else {
         return Ok(None);
     };
-    if object.len()!=3 || !summary["round"].as_u64().is_some_and(|n|(1..=20).contains(&n)) || !matches!(summary["readMore"].as_str(),Some("Use read_worker for a bounded full result when required." | "Use read_worker for bounded full results and checkpoints. Read every active worker's checkpoint when handling a blocker if its checkpoint was omitted by this context budget.")) { return Ok(None); }
+    if object.len()!=3 || summary["round"].as_u64().is_none_or(|n| n < 1) || !matches!(summary["readMore"].as_str(),Some("Use read_worker for a bounded full result when required." | "Use read_worker for bounded full results and checkpoints. Read every active worker's checkpoint when handling a blocker if its checkpoint was omitted by this context budget." | READ_MORE)) { return Ok(None); }
     let Some(workers) = summary["workers"]
         .as_array()
-        .filter(|workers| !workers.is_empty() && workers.len() <= 50)
+        .filter(|workers| !workers.is_empty())
     else {
         return Ok(None);
     };
@@ -170,13 +170,12 @@ pub(crate) fn legacy_kind_in_db(
                     | "error"
                     | "abandoned"
                     | "checkpoint"
+                    | "summaryTruncated"
             )
         }) || !worker["id"].as_str().is_some_and(|id| ids.contains(id))
             || !worker["name"].is_string()
             || !worker["status"].is_string()
-            || !worker["attempt"]
-                .as_u64()
-                .is_some_and(|n| (1..=3).contains(&n))
+            || worker["attempt"].as_u64().is_none_or(|n| n < 1)
             || !worker["changed"].is_boolean()
             || !worker["summary"].is_string()
             || !(worker["error"].is_null() || worker["error"].is_string())

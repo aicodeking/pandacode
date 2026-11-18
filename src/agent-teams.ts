@@ -8,6 +8,8 @@ import { providerLogo } from './provider-logos';
 import { classicTeamSetup, modelKey, namedTeams, namedTeamSetup, setClassicTeamSetup, teamDetail, TEAM_MODELS_MAX, type TeamModel } from './team-mode';
 import type { Provider, ProviderId, ProviderModel } from './types';
 
+const TEAM_FULL = `${TEAM_MODELS_MAX} models is the limit, to keep the lead's prompt short.`;
+
 export interface AgentTeamsOptions {
   providers: Provider[];
   loadModels(provider: ProviderId): Promise<ProviderModel[]>;
@@ -19,7 +21,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     <div class="setting-row"><div><strong>Classic team setup</strong><small>Team opens Architect & workers.</small></div><input type="checkbox" class="settings-switch" aria-label="Classic team setup" ${classicTeamSetup() ? 'checked' : ''}></div>
     <div class="setting-row"><div><strong>Agent teams</strong><small>Pick one in the model picker.</small></div><button type="button" class="secondary-button agent-team-new">${icon('plus')}New team</button></div>
     <div class="setting-row"><div><strong>Lead guidance</strong><small>Added to the architect's built-in rules for every team.</small></div><button type="button" class="secondary-button agent-guidance-save">Save</button></div>
-    <div class="agent-guidance-row"><textarea class="agent-guidance" aria-label="Lead guidance" rows="3" maxlength="2000" spellcheck="false" placeholder="Leave empty for the built-in rules. For example: you only lead; never edit files yourself."></textarea></div>
+    <div class="agent-guidance-row"><textarea class="agent-guidance" aria-label="Lead guidance" rows="3" spellcheck="false" placeholder="Leave empty for the built-in rules. For example: you only lead; never edit files yourself."></textarea></div>
     <p class="agent-guidance-status" role="status" hidden></p>
     <ul class="agent-team-list" aria-label="Agent teams"></ul>
     <form class="agent-team-editor" aria-label="Agent team" hidden>
@@ -100,6 +102,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
       const box = row.querySelector<HTMLInputElement>('input[type=checkbox]')!, radio = row.querySelector<HTMLInputElement>('input[type=radio]')!;
       radio.disabled = !box.checked; if (!box.checked) radio.checked = false;
       box.disabled = !box.checked && included.length >= TEAM_MODELS_MAX;
+      row.title = box.disabled ? TEAM_FULL : '';
       const effort = row.querySelector<HTMLSelectElement>('.agent-team-effort'); if (effort) effort.disabled = !box.checked;
     });
     if (included.length && !models.querySelector('input[type=radio]:checked')) models.querySelector<HTMLInputElement>(`input[type=radio][value="${CSS.escape(included[0].value)}"]`)!.checked = true;
@@ -108,7 +111,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     const leadModel = shown.find(model => modelKey(model) === lead);
     if (lead !== leadSelected) { leadEffort.innerHTML = effortOptions(leadModel); leadSelected = lead; }
     leadEffort.parentElement!.hidden = !leadModel?.efforts?.length;
-    count.textContent = included.length ? `${included.length} model${included.length === 1 ? '' : 's'}` : 'Choose models';
+    count.textContent = included.length >= TEAM_MODELS_MAX ? TEAM_FULL : included.length ? `${included.length} model${included.length === 1 ? '' : 's'}` : 'Choose models';
   }
   function applyFilter(): void {
     const query = filter.value.trim().toLowerCase();
@@ -184,7 +187,6 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     if (busy) return;
     busy = true; error.hidden = true; guidanceSave.disabled = true;
     const wanted = guidance.value.trim();
-    if (new TextEncoder().encode(wanted).length > 2000) { busy = false; guidanceSave.disabled = false; showError(new Error('Lead guidance must be under 2000 bytes.')); return; }
     void (async () => {
       try {
         library = await options.call<TeamLibrary>('architect_set_lead_guidance', { guidance: wanted || null });

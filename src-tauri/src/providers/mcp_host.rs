@@ -1,7 +1,6 @@
 //! Short-lived, authenticated loopback MCP for team and opt-in browser tools.
 //! No credentials or server definitions are written into the user's configuration.
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::{
     net::{TcpListener, TcpStream},
     sync::Semaphore,
@@ -9,10 +8,11 @@ use tokio::{
 };
 
 const HEADER_LIMIT: usize = 8192;
-// Room for a full batch of team assignments (12 × 8 KiB prompts) plus JSON-RPC framing.
-const BODY_LIMIT: usize = 160 * 1024;
 const RESULT_LIMIT: usize = 128 * 1024;
 const SERVER_NAME: &str = "pandacode_architect";
+/// Versions this loopback server speaks. `2026-07-28` is the revision ZCode
+/// probes for; the older two are what the other harnesses negotiate.
+const MCP_VERSIONS: &[&str] = &["2026-07-28", "2025-06-18", "2025-03-26"];
 
 pub(super) struct Server {
     authority: String,
@@ -98,8 +98,13 @@ impl Server {
             loop {
                 tokio::select! {
                     result = listener.accept() => {
-                        let Ok((mut stream, peer)) = result else { break };
-                        if !peer.ip().is_loopback() || clients.len() >= 16 { continue; }
+                        // No connection cap: every subagent of a run may sit in a slow or approval-gated
+                        // call here at once. Running out of descriptors passes, so it never ends the server.
+                        let Ok((mut stream, peer)) = result else {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            continue;
+                        };
+                        if !peer.ip().is_loopback() { continue; }
                         let context = current(&context);
                         clients.spawn(async move {
                             let response = match tokio::time::timeout(Duration::from_secs(5), read_request(&mut stream, &context)).await {
@@ -108,7 +113,7 @@ impl Server {
                                 // expires and a late Approve runs nothing.
                                 Ok(Ok(body)) => tokio::select! {
                                     response = context.respond(body) => response,
-                                    () = closed(&mut stream) => return,
+                                    () = closed(&stream) => return,
                                 },
                                 Ok(Err(status)) => HttpResponse::empty(status),
                                 Err(_) => HttpResponse::empty(408),
@@ -143,6 +148,15 @@ impl Server {
     /// The bearer token, for callers that redact text themselves (`exit::reap`).
     pub(super) fn token(&self) -> &str {
         &self.token
+    }
+    /// ZCode's `session/create` `mcpServers` entry. Session isolation keeps the
+    /// per-run bridge out of the user's server registry, and `alwaysLoad` is
+    /// what lifts the tools into the model's list — ZCode defers every
+    /// MCP tool it does not always load behind its tool search.
+    pub(super) fn zcode_config(&self) -> Value {
+        json!({"type":"http","name":SERVER_NAME,"url":format!("http://{}/mcp",self.authority),
+            "headers":[{"name":"Authorization","value":format!("Bearer {}",self.token)}],
+            "isolation":"session","alwaysLoad":true})
     }
     pub(super) fn redact(&self, text: &str) -> String {
         text.replace(&self.token, "[redacted]")
@@ -188,6 +202,9 @@ fn current(context: &std::sync::RwLock<Arc<Context>>) -> Arc<Context> {
     }
 }
 
+/// How long a call waits for one of the running slots.
+const SLOT_WAIT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(30) };
+
 struct Context {
     authority: String,
     authorization: String,
@@ -196,7 +213,6 @@ struct Context {
     sink: Sink,
     calls: Semaphore,
     active: Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
-    requests: AtomicUsize,
     mode: String,
     approvals: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
 }
@@ -209,9 +225,8 @@ impl Context {
             host,
             session_id,
             sink,
-            calls: Semaphore::new(8),
+            calls: Semaphore::new(host_tools::MAX_CALLS),
             active: Mutex::new(HashMap::new()),
-            requests: AtomicUsize::new(0),
             mode: mode.into(),
             approvals: Mutex::new(HashMap::new()),
         }
@@ -290,10 +305,14 @@ impl HttpResponse {
     }
 }
 
-/// Returns once the client closes the connection (or it fails).
-async fn closed(stream: &mut TcpStream) {
+/// Returns once the client closes the connection (or it fails). It only peeks, so bytes the
+/// client sends during a call stay in the socket. EOF can't be seen past unread bytes, so a
+/// client that sends some stops being watched and the call ends on its own limits.
+async fn closed(stream: &TcpStream) {
     let mut byte = [0; 1];
-    while matches!(stream.read(&mut byte).await, Ok(1..)) {}
+    if matches!(stream.peek(&mut byte).await, Ok(1..)) {
+        std::future::pending::<()>().await;
+    }
 }
 
 async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u8>, u16> {
@@ -352,7 +371,7 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
     }
     if headers
         .get("mcp-protocol-version")
-        .is_some_and(|version| !matches!(*version, "2025-03-26" | "2025-06-18"))
+        .is_some_and(|version| !MCP_VERSIONS.contains(version))
     {
         return Err(400);
     }
@@ -369,7 +388,7 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
         .ok_or(400u16)?
         .parse::<usize>()
         .map_err(|_| 400u16)?;
-    if length > BODY_LIMIT {
+    if length > host_tools::REQUEST_LIMIT {
         return Err(413);
     }
     let expected = header_end + length;
@@ -389,9 +408,6 @@ async fn read_request(stream: &mut TcpStream, context: &Context) -> Result<Vec<u
 
 impl Context {
     async fn respond(&self, bytes: Vec<u8>) -> HttpResponse {
-        if self.requests.fetch_add(1, Ordering::Relaxed) >= 4096 {
-            return HttpResponse::empty(429);
-        }
         let request: Value = match serde_json::from_slice(&bytes) {
             Ok(request) => request,
             Err(_) => return HttpResponse::error(Value::Null, -32700, "Invalid JSON"),
@@ -428,14 +444,31 @@ impl Context {
             "initialize" => {
                 let version = request["params"]["protocolVersion"]
                     .as_str()
-                    .filter(|version| matches!(*version, "2025-03-26" | "2025-06-18"))
+                    .filter(|version| MCP_VERSIONS.contains(version))
                     .unwrap_or("2025-03-26");
                 json!({"protocolVersion":version,"capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
             }
+            // ZCode (2026-07-28 revision) probes every HTTP server with
+            // `server/discover` and drops the ones that cannot name a version it
+            // speaks; it never falls back to `initialize` for them. The cache
+            // hints are part of that revision's discover result: ttl 0 is
+            // immediately stale, and private keeps the answer on this bearer.
+            "server/discover" => {
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private",
+                       "supportedVersions":MCP_VERSIONS,
+                       "capabilities":{"tools":{"listChanged":false}},
+                       "serverInfo":{"name":"PandaCode architect","version":"0.1.0"}})
+            }
             "ping" => json!({}),
+            // Results carry the revision's wire fields unconditionally: modern
+            // clients reject a `tools/list` or `tools/call` without
+            // `resultType` outright, and legacy SDKs ignore the extra keys.
+            // `ttlMs: 0` means immediately stale, so a client must not replay a
+            // host-tool call from cache. Each tool is name, description and
+            // input schema from this run's catalog — nothing else.
             "tools/list" => {
                 let tools:Vec<Value> = self.host.tools.iter().map(listing).collect();
-                json!({"tools":tools})
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","tools":tools})
             }
             "tools/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or_default();
@@ -449,10 +482,6 @@ impl Context {
                 if !args.is_object() {
                     return HttpResponse::error(id, -32602, "Tool arguments must be an object");
                 }
-                // Models often read several workers at once: wait briefly for a slot.
-                let Ok(Ok(_permit)) = tokio::time::timeout(Duration::from_secs(30), self.calls.acquire()).await else {
-                    return HttpResponse::error(id, -32000, "Too many active architect tools; retry this call alone.");
-                };
                 let key = id.to_string();
                 let cancel = Arc::new(tokio::sync::Notify::new());
                 {
@@ -474,6 +503,11 @@ impl Context {
                 let result = tokio::select! {
                     result = async {
                         let args = self.authorize(name, args).await?;
+                        // Models often read several workers at once: wait briefly for a slot,
+                        // which a call waiting on the user's approval does not take up.
+                        let Ok(Ok(_permit)) = tokio::time::timeout(SLOT_WAIT, self.calls.acquire()).await else {
+                            return Err("Too many PandaCode tools are running at once; retry this call in a moment.".to_string());
+                        };
                         tokio::time::timeout(Duration::from_secs(60),(self.host.handler)(name.into(),args)).await
                             .unwrap_or_else(|_|Err("PandaCode tool timed out".into()))
                     } => result,
@@ -511,7 +545,9 @@ impl Context {
                     &input,
                     &output,
                 );
-                json!({"content":content,"isError":error})
+                // Same cache hints as tools/list. ttl 0 keeps a call from being
+                // served again; the spec's call result allows the extra keys.
+                json!({"resultType":"complete","ttlMs":0,"cacheScope":"private","content":content,"isError":error})
             }
             _ => return HttpResponse::error(id, -32601, "Method not found"),
         };
@@ -520,6 +556,10 @@ impl Context {
     /// Asks the user when `name` needs it, and returns the arguments the handler gets: an
     /// approved agent-made tool run carries its approval id (`custom_tools::approval`).
     async fn authorize(&self, name: &str, mut args: Value) -> Result<Value, String> {
+        // A team worker never gets an always-ask tool, however the harness words the prompt.
+        if let Some(reason) = crate::providers::worker_tool_refusal(&self.session_id, name) {
+            return Err(reason);
+        }
         // Only an approval below may name an approved snapshot.
         crate::custom_tools::approval::strip(&mut args);
         if !self.host.approval_tools.contains(name) {
@@ -543,10 +583,6 @@ impl Context {
                 crate::custom_tools::approval::forget(&id);
                 return Err("Approval state is unavailable".into());
             };
-            if pending.len() >= 8 {
-                crate::custom_tools::approval::forget(&id);
-                return Err("Too many pending app approvals".into());
-            }
             pending.insert(id.clone(), send);
         }
         let _pending = PendingApproval {
@@ -563,12 +599,17 @@ impl Context {
         });
         let wait = crate::remote::orchestrate::approval_wait(name).unwrap_or(Duration::from_secs(300));
         match tokio::time::timeout(wait, receive).await {
-            Ok(Ok(true)) => {
-                crate::custom_tools::approval::approve(&id, &mut args);
-                Ok(args)
+            Ok(Ok(false)) => Err(crate::providers::decline_text(&self.session_id, &id)),
+            outcome => {
+                crate::providers::take_decline_reason(&self.session_id, &id);
+                match outcome {
+                    Ok(Ok(true)) => {
+                        crate::custom_tools::approval::approve(&id, &mut args);
+                        Ok(args)
+                    }
+                    _ => Err("App approval expired or was cancelled".into()),
+                }
             }
-            Ok(Ok(false)) => Err("Declined by the user".into()),
-            _ => Err("App approval expired or was cancelled".into()),
         }
     }
     fn activity(&self, id: &str, name: &str, status: &str, input: &str, output: &str) {
@@ -595,131 +636,3 @@ impl Context {
 
 #[cfg(test)]
 mod tests;
-
-#[cfg(test)]
-mod protocol_tests {
-    use super::*;
-    #[test]
-    fn kimi_requires_http_capability_and_injects_on_new_load_and_resume() {
-        for (saved, resume, method) in [
-            (false, false, "session/new"),
-            (true, false, "session/load"),
-            (true, true, "session/resume"),
-        ] {
-            let mut config = super::super::tests::config("kimi");
-            config.resume_id = saved.then(|| "saved".into());
-            let mut protocol = Protocol::new(config);
-            protocol.mcp_server = Some(
-                json!({"type":"http","name":SERVER_NAME,"url":"http://127.0.0.1:1/mcp","headers":[]}),
-            );
-            let mut capabilities = json!({"mcpCapabilities":{"http":true}});
-            if resume {
-                capabilities["sessionCapabilities"] = json!({"resume":{}});
-            }
-            let step = protocol
-                .receive(
-                    json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":capabilities}}),
-                )
-                .unwrap();
-            assert_eq!(step.write[0]["method"], method);
-            assert_eq!(
-                step.write[0]["params"]["mcpServers"][0]["name"],
-                SERVER_NAME
-            );
-            assert_eq!(step.write[0]["params"]["cwd"], "/tmp");
-        }
-        let mut protocol = Protocol::new(super::super::tests::config("kimi"));
-        protocol.mcp_server = Some(json!({}));
-        assert!(protocol
-            .receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}))
-            .is_err());
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn claude_and_kimi_fixture_processes_invoke_the_authenticated_native_bridge() {
-        let _lock = concurrent_process_tests::process_test_lock().lock().await;
-        const FIXTURE: &str = r#"
-import sys,json,urllib.request
-provider=sys.argv[1]
-def receive():
-    return json.loads(sys.stdin.readline())
-def emit(value):
-    print(json.dumps(value),flush=True)
-receive()
-if provider == 'claude':
-    assert '--strict-mcp-config' not in sys.argv
-    server=json.loads(sys.argv[sys.argv.index('--mcp-config')+1])['mcpServers']['pandacode_architect']
-    headers=server['headers']
-    emit({'type':'control_response','response':{'request_id':'pandacode-init','subtype':'success','response':{}}})
-    receive()
-else:
-    emit({'id':1,'result':{'protocolVersion':1,'agentCapabilities':{'mcpCapabilities':{'http':True}}}})
-    session=receive()
-    server=session['params']['mcpServers'][0]
-    assert server['type']=='http'
-    headers={entry['name']:entry['value'] for entry in server['headers']}
-    emit({'id':2,'result':{'sessionId':'fixture','modes':{'availableModes':[{'id':'default'}]}}})
-    assert receive()['method']=='session/set_mode'
-    emit({'id':4,'result':{}})
-    assert receive()['method']=='session/prompt'
-headers['Content-Type']='application/json'
-headers['Accept']='application/json, text/event-stream'
-for request in [
-    {'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18'}},
-    {'jsonrpc':'2.0','id':2,'method':'tools/list'},
-    {'jsonrpc':'2.0','id':3,'method':'tools/call','params':{'name':'pandacode_delegate','arguments':{'prompt':provider}}}
-]:
-    req=urllib.request.Request(server['url'],data=json.dumps(request).encode(),headers=headers)
-    with urllib.request.urlopen(req,timeout=5) as response:
-        result=json.load(response)
-assert json.loads(result['result']['content'][0]['text'])['prompt']==provider
-if provider=='claude':
-    emit({'type':'assistant','message':{'id':'message','content':[{'type':'tool_use','id':'native','name':'mcp__pandacode_architect__pandacode_delegate','input':{}},{'type':'text','text':'Worker dispatched'}]}})
-    emit({'type':'user','message':{'content':[{'type':'tool_result','tool_use_id':'native','content':'dispatched'}]}})
-    emit({'type':'result','subtype':'success','result':'Worker dispatched'})
-else:
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'tool_call','toolCallId':'native','title':'pandacode_delegate','status':'in_progress'}}})
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'tool_call_update','toolCallId':'native','status':'completed'}}})
-    emit({'method':'session/update','params':{'sessionId':'fixture','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'Worker dispatched'}}}})
-    emit({'id':3,'result':{'stopReason':'end_turn'}})
-"#;
-        for provider in ["claude", "kimi"] {
-            let config = super::super::tests::config(provider);
-            let host = ToolHost {
-                tools: vec![
-                    json!({"type":"function","name":"pandacode_delegate","description":"delegate","inputSchema":{"type":"object"}}),
-                ],
-                approval_tools: HashSet::new(),
-                handler: Arc::new(|_, args| Box::pin(async move { Ok(args) })),
-            };
-            let observed = Arc::new(Mutex::new(Vec::new()));
-            let saved = observed.clone();
-            let sink: Sink = Arc::new(move |event| saved.lock().unwrap().push(event));
-            let (_sender, input) = tokio::sync::mpsc::unbounded_channel();
-            let mut command = Command::new("/usr/bin/python3");
-            command.args(["-c", FIXTURE, provider]);
-            tokio::time::timeout(
-                Duration::from_secs(15),
-                run_process_with_tools(config, sink, input, command, vec![], Some(host)),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            let events = observed.lock().unwrap();
-            assert_eq!(
-                events
-                    .iter()
-                    .filter(|event| event.kind == "text")
-                    .map(|event| event.text.as_str())
-                    .collect::<String>(),
-                "Worker dispatched"
-            );
-            assert_eq!(
-                events.iter().filter(|event| event.kind == "tool").count(),
-                2,
-                "native and MCP tool events must not duplicate"
-            );
-        }
-    }
-}

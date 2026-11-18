@@ -1,6 +1,8 @@
-.task-pin{display:inline-flex;color:var(--accent);flex:none}
+.task-pin{display:inline-flex;color:var(--accent-ink);flex:none}
+html[data-theme=dark] .task-pin{color:var(--accent)}
 .task-pin .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
-.activity-heading>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent)}
+.activity-heading>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--accent-ink)}
+html[data-theme=dark] .activity-heading>.icon{color:var(--accent)}
 .task-item[draggable=true]{position:relative;cursor:grab}
 .task-item[draggable=true]:active{cursor:grabbing}
 .task-item.task-dragging{opacity:.45}
@@ -9,3 +11,10 @@
 .task-item.drop-after::after{bottom:-2px}
 .navigation[aria-busy=true] .task-item{cursor:progress}
 @media(prefers-contrast:more){.task-item.drop-before::before,.task-item.drop-after::after{height:3px}}
+/* What follows the pointer during a drag inside the window (src/pointer-drag.ts). */
+.drag-ghost{position:fixed;left:0;top:0;z-index:10000;max-width:260px;padding:6px 10px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;border:1px solid var(--glass-border);border-radius:var(--ds-radius-control);background:var(--glass-warm);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);box-shadow:var(--ds-shadow-raised);color:var(--text);font-size:var(--ds-text-ui);pointer-events:none}
+html[data-pointer-drag],html[data-pointer-drag] *{cursor:grabbing!important;user-select:none;-webkit-user-select:none}
+/* What floats over the thread is not a place to drop: the drag sees the thread under it. */
+html[data-pointer-drag] :is(.action-dock,.workspace-header),html[data-pointer-drag] :is(.action-dock,.workspace-header) *{pointer-events:none!important}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){.drag-ghost{background:var(--raised);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(forced-colors:active){.drag-ghost{background:Canvas;color:CanvasText;border-color:CanvasText}}

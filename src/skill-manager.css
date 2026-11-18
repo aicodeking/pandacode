@@ -1,0 +1,349 @@
+/* Settings → Tools → Skills (src/skill-manager*.ts). Tokens only; transitions per AGENTS.md motion rules. */
+.skill-manager{display:flex;flex-direction:column;gap:var(--ds-row-gap);min-width:0}
+
+/* Top bar: 'Show skills for' and the scope, then search + Add skill as one group. The group wraps whole onto a
+ * second line when the scope leaves it less than its basis, so Add never sits alone. The scope is a labelled
+ * filter (small separate pills, or a select styled as a field), never a second segmented tab row. */
+.skill-manager-bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-width:0}
+.skill-manager-scope-slot{display:contents}
+.skill-manager-scope-field{flex:none;display:flex;align-items:center;gap:8px;min-width:0;max-width:100%}
+.skill-manager-scope-label{flex:none;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap}
+.skill-manager-scope{display:flex;flex-wrap:wrap;gap:4px;min-width:0}
+.skill-manager-scope>button{display:inline-flex;align-items:center;max-width:12rem;height:calc(var(--ds-toggle-h) + 4px);padding:0 10px;border-radius:var(--radius-full);background:transparent;box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font-size:var(--ds-text-meta);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+.skill-manager-scope>button:hover{background:var(--ds-fill-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+.skill-manager-scope>button[aria-checked=true]{background:rgb(var(--accent-rgb) / .16);box-shadow:inset 0 0 0 1px rgb(var(--accent-rgb) / .6);color:var(--text);font-weight:var(--weight-medium)}
+.skill-manager-scope>button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+.skill-manager-scope-select{height:var(--ds-btn-h);flex:none;max-width:16rem}
+/* The info mark right after the scope: where switches act (in PandaCode, for the scope picked) and what they reach. */
+.skill-manager-bar>.skill-manager-info{margin-left:-6px}
+.skill-manager-find{flex:1 1 16rem;display:flex;align-items:center;gap:8px;min-width:0}
+.skill-manager-search{position:relative;flex:1 1 0;display:flex;align-items:center;min-width:0}
+.skill-manager-search>.icon{position:absolute;left:10px;--icon-size:var(--icon-sm);color:var(--faint);pointer-events:none}
+.skill-manager-search>input{width:100%;min-width:0;height:var(--ds-btn-h);padding:0 10px 0 32px;border-radius:var(--ds-radius-control);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-ui)}
+.skill-manager-search>input:focus{box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
+/* Keyboard ring (styles.css keys it off html[data-keyboard-focus]); restated here because the field's own shadow is more specific. */
+:where(html[data-keyboard-focus]) .skill-manager-search>input:focus-visible,:where(html[data-keyboard-focus]) .skill-add-source>input:focus-visible{box-shadow:inset 0 0 0 1px var(--ds-border-strong),0 0 0 2px var(--focus)}
+.skill-manager-find>.ds-btn-primary{flex:none;height:var(--ds-btn-h);padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-ui)}
+
+/* One line: count and notes (wrapping rather than cutting the counts, only on a page too narrow for them). Once a
+ * switch changes, 'Applies from the next turn' joins the summary on that line, shown whole or not at all: its slot
+ * takes only the room the summary leaves (basis 0, never shrinking the summary), is one line tall, and when the note
+ * doesn't fit there it wraps inside the slot, out of sight (the scope's info mark says the same). Hidden, the slot
+ * has no width and cancels its gap. So a switch never adds a line and the rows under the pointer stay put. */
+.skill-manager-head{display:flex;flex-wrap:nowrap;align-items:baseline;gap:6px;padding:0 var(--ds-row-pad-x);margin-top:2px;font-size:var(--ds-text-meta);line-height:1.4;color:var(--faint)}
+.skill-manager-summary{flex:0 1 auto;min-width:8rem;margin:0;white-space:normal;overflow-wrap:break-word;font-variant-numeric:tabular-nums}
+.skill-manager-applies-slot{flex:1 1 0;min-width:0;margin-left:-6px;height:1.4em;overflow:hidden;color:var(--muted)}
+.skill-manager-applies-slot:has(>.skill-manager-applies[hidden]){flex:0 0 0}
+/* A zero-width break opportunity before the note: when the slot is narrower than the note, it drops to the hidden
+ * second line instead of overflowing the first. */
+.skill-manager-applies-slot::before{content:"\200b"}
+.skill-manager-applies{display:inline-block;padding-left:6px;white-space:nowrap}
+.skill-manager-applies::before{content:"· "}
+.skill-manager-applies[hidden]{display:none}
+.skill-manager-info{display:inline-flex;flex:none;align-self:center}
+.skill-manager-info[hidden]{display:none}
+.skill-manager-info>.info-mark{margin-left:0}
+/* Everything said above the list shares one compact area: the unreadable-settings warning (the area is a card
+ * while it shows), a failed read with Retry, and native's calm lines, separated by hairlines. */
+.skill-manager-notices{display:grid;gap:0;min-width:0;margin:0;font-size:var(--ds-text-meta)}
+.skill-manager-notices[hidden],.skill-manager-notices>[hidden]{display:none}
+.skill-manager-notices.ds-card{padding:8px var(--ds-row-pad-x)}
+.skill-manager-notices.ds-card>:not([hidden])~:not([hidden]){margin-top:6px;padding-top:6px;border-top:1px solid var(--ds-border)}
+/* Calm lines line up with the text beside the icons above them. */
+.skill-manager-notices.ds-card>.skill-manager-notice{padding-left:calc(var(--icon-sm) + 8px)}
+.skill-manager-notices:not(.ds-card){gap:4px;padding:0 var(--ds-row-pad-x)}
+.skill-manager-warning{display:grid;gap:1px;min-width:0;color:var(--ds-row-ink)}
+/* Icon beside the title, Reset at the end of that line; the explanation and native detail sit under the title,
+ * never larger than it. */
+.skill-manager-warning-head{display:flex;flex-direction:row;align-items:center;gap:8px;min-width:0}
+.skill-manager-warning-head>strong{flex:1 1 auto;min-width:0;font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text)}
+.skill-manager-warning-icon{flex:none;display:inline-flex}
+.skill-manager-warning-icon>.icon{--icon-size:var(--icon-sm)}
+.skill-manager-warning-body{display:grid;gap:4px;min-width:0;padding-left:calc(var(--icon-sm) + 8px)}
+.skill-manager-warning-body p{margin:0}
+.skill-manager-warning-detail{font-size:var(--ds-text-meta);color:var(--faint);white-space:normal;overflow-wrap:anywhere}
+/* Compact buttons that don't make a line taller than its text (Reset, Retry, the reset confirmation). */
+.skill-manager-notices .ds-btn,.skill-manager-notices .ds-btn-primary{flex:none;justify-self:start;height:24px;margin-block:-2px;padding:0 10px;font-size:var(--ds-text-meta)}
+.skill-manager-warning .ds-btn.ds-danger{color:var(--ds-danger)}
+/* A refresh that failed over a list already shown: one line, then Retry. */
+.skill-manager-load-error{display:flex;align-items:center;gap:8px;min-width:0;color:var(--ds-row-ink)}
+.skill-manager-load-error-icon{flex:none;display:inline-flex}
+.skill-manager-load-error-icon>.icon{--icon-size:var(--icon-sm)}
+.skill-manager-load-error-text{flex:1 1 auto;min-width:0;overflow-wrap:anywhere}
+.skill-manager-load-error-text>strong{font-weight:var(--weight-medium);color:var(--text)}
+.skill-manager-reset-actions{display:inline-flex;flex-wrap:wrap;gap:6px}
+/* Rules & library (skills-library.ts) borrows these; settings.ts always loads this sheet. The cross-link at
+ * its top, which opens this page. */
+.skills-link{font:inherit;color:var(--text);text-decoration:underline;text-underline-offset:2px}
+/* Its rule import labels each select in quiet text beside it. */
+.skills-field{flex:0 1 auto;display:inline-flex;align-items:center;gap:8px;min-width:0;font-size:var(--ds-text-meta);color:var(--muted)}
+.skills-field>span{flex:none;white-space:nowrap}
+.skill-manager-body.is-stale .skill-manager-list{opacity:.6}
+
+/* The list: one card, one row per skill. A row is the design system's flex .ds-row: the lead (the disclosure
+ * button, a two-column grid of arrow then title and description, with the meta line under it) grows, chips and
+ * the switch keep their size. The meta line sits outside the button so a locked row's 'Manage' link can live there. */
+.skill-manager-list{transition:opacity var(--ds-ease-in) ease-out;list-style:none;margin:0;padding:0;display:grid;gap:2px}
+/* Dividers are straight hairlines: the row itself is square; only its hover/focus fill (the .ds-row and the lead) is rounded. */
+.skill-row{min-width:0;border-radius:0}
+.skill-row+.skill-row{border-top:1px solid var(--ds-border)}
+.skill-row>.ds-row{gap:var(--ds-row-gap);padding-right:12px;transition:background-color var(--ds-ease-out) ease-out}
+.skill-row:has(.skill-row-lead:hover)>.ds-row{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
+.skill-row-lead{flex:1;min-width:calc(6rem + var(--icon-sm) + var(--ds-row-gap) + var(--ds-row-pad-x));display:flex;flex-direction:column;justify-content:center;gap:1px;align-self:stretch;margin:calc(-1 * var(--ds-row-pad-y)) 0 calc(-1 * var(--ds-row-pad-y)) calc(-1 * var(--ds-row-pad-x));padding:var(--ds-row-pad-y) 0 var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);cursor:pointer}
+.skill-row-body{min-width:0;display:grid;grid-template-columns:var(--icon-sm) minmax(0,1fr);gap:var(--ds-row-gap);align-items:start;padding:0;border-radius:var(--ds-radius-chip);text-align:left;color:inherit}
+.skill-row-lead>.skill-row-meta{padding-left:calc(var(--icon-sm) + var(--ds-row-gap))}
+.skill-row-body>.ds-row-main{min-width:0}
+/* Descriptions get two lines before they ellipsize, so a narrow list still says what a skill does. */
+.skill-row-body .ds-row-sub{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;white-space:normal;overflow-wrap:anywhere}
+.skill-row-body>.icon{--icon-size:var(--icon-sm);margin-top:calc((var(--ds-text-row-lg) * 1.3 - var(--icon-sm)) / 2);color:var(--faint);transition:rotate var(--ds-ease-out) ease-out}
+.skill-row[data-open] .skill-row-body>.icon{rotate:90deg}
+.skill-row-body:not(:disabled):active{scale:.995}
+.skill-row-body:focus-visible{outline:none}
+.skill-row-lead:has(>.skill-row-body:focus-visible){outline:2px solid var(--focus);outline-offset:-2px}
+/* Off: the title steps back; logos and descriptions keep their contrast. */
+.skill-row.is-off .ds-row-title{color:var(--faint)}
+
+/* Chips: harness logos, project names, 'Off in …'. */
+.skill-row-tags{flex:0 1 auto;max-width:40%;display:flex;gap:4px;min-width:0;overflow:hidden;justify-content:flex-end}
+.skill-row-tags>.ds-chip{flex:none}
+.skill-chip{justify-content:center;min-width:var(--ds-toggle-h);padding:0 var(--ds-card-pad);font-family:inherit;font-size:var(--ds-text-chip);font-variant-numeric:tabular-nums}
+.skill-chip .provider-logo{width:var(--icon-sm);height:var(--icon-sm);border-radius:var(--ds-radius-chip)}
+/* Agent names beside the logos, decided for the whole view: skill-manager.ts marks the body data-names when the list
+ * is about 680px wide or more (Settings at 1200px), no row has more than two chips, and named chips leave every title
+ * and description at least 60% of its row. Otherwise every row keeps logos only. A row that also carries a tag (a
+ * project chip, 'May still load') always keeps logos only (data-compact), so its description keeps the room. Names
+ * stay in tooltips, accessible names and the details. */
+.skill-chip-name{display:none}
+.skill-manager-body[data-names] .skill-chip{gap:5px}
+.skill-manager-body[data-names] .skill-chip-name{display:inline;white-space:nowrap;color:var(--ds-row-ink)}
+.skill-chip .provider-logo-tile{display:inline-grid;place-items:center;font-size:var(--ds-text-chip);background:var(--ds-fill-hover)}
+/* Marks drawn on their own black tile would read as a black square on a dark chip: screen drops the tile
+ * and keeps the light mark. (Codex is inverted for dark themes in styles.css.) */
+html[data-theme=dark] .skill-chip .provider-logo:is([data-provider=opencode],[data-provider=grok],[data-provider=commandcode]){mix-blend-mode:screen}
+/* A missing agent app always names itself in text, with or without data-names and on compact rows too: its name over
+ * 'missing', two short lines inside a dashed outline, no logo. Stacked, it is no wider than a logo-and-'missing' chip,
+ * so no row's description wraps differently; the chip stays within the row's height (32px of the 38px minimum). */
+.skill-row-tags>.skill-chip[data-missing]{flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;height:auto;min-height:var(--ds-toggle-h);padding-block:2px;line-height:1.1;box-shadow:none;outline:1px dashed var(--ds-border-strong);outline-offset:-1px;background:transparent}
+.skill-chip[data-missing] .provider-logo{display:none}
+.skill-chip-missing{white-space:nowrap;color:var(--faint)}
+.skill-manager-body .skill-row[data-compact] .skill-chip-name{display:none}
+.skill-manager-body .skill-chip[data-missing] .skill-chip-name{display:inline;white-space:nowrap;color:var(--muted)}
+.skill-row-tags>.skill-chip-project{flex:0 1 auto;min-width:2rem;max-width:12rem;overflow:hidden;white-space:nowrap;color:var(--ds-row-ink)}
+.skill-chip-project>.icon{flex:none;--icon-size:var(--icon-xs)}
+.skill-chip-project>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+/* Every state tag in the meta line looks alike ('Off in all projects', 'Off in orbit', 'Not installed', 'Quarantined',
+ * 'Copy quarantined'), and like 'May still load' beside the switch: a quiet hairline chip, its glyph (if any) first. */
+.skill-row-tag{display:inline-flex;align-items:center;gap:4px;min-width:0;max-width:100%;padding:0 6px;border-radius:var(--ds-radius-chip);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-chip);line-height:1.6;color:var(--muted);white-space:nowrap}
+.skill-row-tag>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.skill-row-tag>.icon{flex:none;--icon-size:var(--icon-xs)}
+.skill-row-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--ds-row-gap);min-width:0;white-space:normal;cursor:pointer}
+/* The meta line's links, one look: a locked row's 'Manage' (after '🔒 Off in all projects', opens All projects on
+ * this skill) and a quarantined skill's or copy's 'Restore'. Link ink and an underline in the same ink, legible on
+ * light themes. */
+.skill-row-change{padding:0;font:inherit;color:var(--accent-ink);text-decoration:underline;text-decoration-color:currentColor;text-decoration-thickness:1px;text-underline-offset:2px;cursor:pointer;transition:color var(--ds-ease-out) ease-out}
+.skill-row-change:hover{color:var(--text);transition-duration:var(--ds-ease-in)}
+.skill-row-change:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--ds-radius-chip)}
+.skill-row-change:disabled{color:var(--muted);text-decoration-color:transparent;cursor:default}
+/* Restore puts flagged files back, so it reads apart from 'Manage' before its confirm: the warning tone. */
+.skill-row-change[data-sm-restore]{display:inline-flex;align-items:baseline;gap:3px}
+.skill-row-change[data-sm-restore]>.icon{flex:none;align-self:center;--icon-size:var(--icon-xs)}
+.skill-row-change[data-sm-restore]:not(:disabled){color:var(--ds-warn)}
+.skill-row-change[data-sm-restore]:not(:disabled):hover{color:var(--text)}
+/* A location's 'App missing' or 'Quarantined' marker in the details: dashed, like a missing harness chip. */
+.skill-detail-missing{padding:0 6px;border-radius:var(--ds-radius-chip);outline:1px dashed var(--ds-border-strong);outline-offset:-1px;font-size:var(--ds-text-chip)}
+.skill-row-confirm{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin:0 var(--ds-row-pad-x) 8px;padding:8px 12px;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-meta);color:var(--ds-row-ink)}
+.skill-row-confirm-text{flex:1 1 16rem;display:grid;gap:4px;min-width:0}
+.skill-row-confirm-text>p{margin:0}
+.skill-row-confirm-why{display:flex;align-items:baseline;gap:6px;min-width:0}
+/* In the narrower confirm the excerpt may drop to its own line rather than shrink to a few letters. */
+.skill-row-confirm-why{flex-wrap:wrap;row-gap:2px}
+.skill-row-confirm-why>.skill-flag{flex:0 1 auto;flex-wrap:wrap;row-gap:2px}
+.skill-row-confirm-why .skill-flag-excerpt{max-width:100%}
+.skill-row-confirm-actions{display:inline-flex;gap:6px;margin-left:auto}
+.skill-row-confirm .ds-btn{padding:4px var(--ds-row-pad-x);font-size:var(--ds-text-meta)}
+.skill-row-confirm .ds-btn.ds-danger{color:var(--ds-danger)}
+
+/* Controls take only their own width (no reserved column), so descriptions keep theirs. A quarantined row, which
+ * has no switch, keeps an empty slot as wide as one so its chips line up with the rest. */
+.skill-row-controls{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:var(--ds-row-gap)}
+.skill-row-no-switch{flex:none;width:var(--ds-toggle-w);height:var(--ds-toggle-h)}
+.skill-row-hint{flex:none;display:inline-flex;align-items:center;gap:3px;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap}
+.skill-row-hint>.icon{--icon-size:var(--icon-xs)}
+/* Off, but some agent may still load it: one quiet tag beside the switch (who and why in its tooltip, which opens on
+ * hover and on keyboard focus). */
+.skill-row-asked{flex:none;padding:0 6px;border-radius:var(--ds-radius-chip);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-chip);line-height:1.6;color:var(--muted);white-space:nowrap;cursor:default}
+.skill-row-asked:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+/* A switch that can't change here stays legible (the design system's .45 fade is too faint on light
+ * themes): full-strength track with a firm hairline, a flat knob, and the lock beside it. */
+.skill-row .ds-toggle:disabled{opacity:1;box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
+.skill-row .ds-toggle:disabled:not(:checked){background:var(--ds-toggle-off)}
+.skill-row .ds-toggle:disabled::before{box-shadow:0 0 0 1px var(--ds-border-strong)}
+.skill-row .ds-toggle:disabled:checked{opacity:.75}
+/* A locked switch (held off in All projects) can't be mistaken for a live one: a quiet filled track and, where the
+ * knob would be, a lock glyph in muted ink (legible on light and dark surfaces), with the not-allowed cursor. */
+.skill-row .ds-toggle[data-locked]:disabled{background:var(--ds-fill);cursor:not-allowed}
+.skill-row .ds-toggle[data-locked]::before{border-radius:0;box-shadow:none;background:var(--muted);scale:.85;-webkit-mask:var(--skill-lock-mask) center/contain no-repeat;mask:var(--skill-lock-mask) center/contain no-repeat}
+.skill-manager{--skill-lock-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='5' y='10.5' width='14' height='10' rx='2.2' fill='%23000'/%3E%3Cpath d='M8 10.5V7.5a4 4 0 0 1 8 0v3'/%3E%3C/svg%3E")}
+/* A switch whose save is in flight. */
+.skill-row [data-sm-toggle][aria-busy=true]{opacity:.7}
+@media(prefers-reduced-motion:no-preference){.skill-row [data-sm-toggle][aria-busy=true]{opacity:1;animation:state-pulse 1.6s ease-in-out infinite}}
+.skill-row-error{margin:0;padding:0 var(--ds-row-pad-x) 8px;font-size:var(--ds-text-meta)}
+
+/* Details: each harness with its scope and what it does with an off skill, its path, the source. */
+.skill-row-details{display:grid;gap:6px;margin:0 var(--ds-row-pad-x) 8px;padding:10px 12px;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-meta);color:var(--muted)}
+@media(prefers-reduced-motion:no-preference){.skill-row-details{animation:skill-details-in var(--ds-ease-in) ease-out}}
+@keyframes skill-details-in{from{opacity:0}}
+.skill-row-details p{margin:0}
+.skill-detail-description{color:var(--text);white-space:normal}
+/* Why a quarantined skill was flagged: one line per finding (rule, file:line, redacted excerpt that ellipsizes). */
+.skill-flags{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.skill-flag{display:flex;align-items:baseline;gap:6px;min-width:0}
+.skill-flag-rule{flex:none;color:var(--text)}
+.skill-flag-place{flex:none}
+.skill-flag-excerpt{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
+.skill-row-confirm code,.skill-flags code{font-family:var(--mono);font-size:var(--ds-text-meta);color:var(--text)}
+.skill-row-confirm .skill-flag-excerpt,.skill-flags .skill-flag-excerpt{color:var(--muted);overflow-wrap:normal}
+.skill-flag-more{flex:none;color:var(--faint)}
+/* One compact layout at every width: a label column shared by every location (subgrid) holding only the agent's
+ * name (capped at 11.5rem; a longer name wraps inside it), each path right beside it, and scope and enforcement on a
+ * full-width line under the two. Paths break after a slash (<wbr>). */
+.skill-detail-table{display:grid;grid-template-columns:fit-content(11.5rem) minmax(0,1fr);gap:6px 8px}
+.skill-detail-agents>li>.skill-detail-harness{display:contents}
+.skill-detail-agents>li>.skill-detail-harness>.skill-detail-name{grid-column:1;grid-row:1;color:var(--text)}
+.skill-detail-agents>li>code{grid-column:2;grid-row:1}
+.skill-detail-agents>li>.skill-detail-harness>small{grid-column:1/-1;grid-row:2}
+.skill-detail-agents{list-style:none;margin:0;padding:0;grid-column:1/-1;display:grid;grid-template-columns:subgrid;row-gap:6px}
+.skill-detail-agents>li{grid-column:1/-1;display:grid;grid-template-columns:subgrid;row-gap:2px;align-items:baseline}
+/* A long caveat ('Typed /commands still run in the console') gets a full-width line under its location. */
+.skill-detail-agents>li>.skill-detail-note{grid-column:1/-1;color:var(--faint);font-size:var(--ds-text-meta)}
+/* The source is one short line of its own: label, then the value right beside it. */
+.skill-detail-source{display:flex;align-items:baseline;gap:8px;min-width:0}
+.skill-detail-source>span{flex:none}
+.skill-detail-harness{color:var(--text)}
+.skill-detail-harness>small{display:block;color:var(--faint);font-size:var(--ds-text-meta)}
+.skill-detail-missing{display:inline-block;margin-left:4px;color:var(--muted);white-space:nowrap}
+/* A quarantined skill's plain reason leads its details, in body ink. */
+.skill-detail-reason{color:var(--text)}
+/* Calm notices, nothing to do: names native kept off because they no longer pass validation, native's links note. */
+.skill-manager-notice{display:grid;gap:2px;margin:0;color:var(--muted)}
+.skill-manager-notice>p{margin:0;overflow-wrap:anywhere}
+.skill-row-details code{font-family:var(--mono);font-size:var(--ds-text-meta);color:var(--text);overflow-wrap:anywhere}
+
+/* Loading, empty, no results, load error. */
+.skill-row-skeleton .ds-row-main{gap:6px}
+.skeleton-bar{display:block;width:38%;height:calc(var(--ds-text-body) * .65);border-radius:var(--ds-radius-chip);background:var(--ds-fill-hover)}
+.skeleton-bar-short{width:62%;height:calc(var(--ds-text-sub) * .5);background:var(--ds-fill)}
+.skeleton-switch{flex:none;width:var(--ds-toggle-w);height:var(--ds-toggle-h);border-radius:var(--radius-full);background:var(--ds-fill)}
+@media(prefers-reduced-motion:no-preference){.skill-row-skeleton{animation:state-pulse 1.6s ease-in-out infinite}}
+.skill-manager-empty{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 16px;text-align:center;font-size:var(--ds-text-ui);color:var(--muted)}
+.skill-manager-empty>strong{font-weight:var(--weight-medium);color:var(--text)}
+.skill-manager-empty>.ds-btn{margin-top:6px;height:var(--ds-btn-h);padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-ui)}
+
+/* Add skill dialog. */
+.skill-add-dialog{width:min(520px,calc(100vw - 32px))}
+.skill-add{display:flex;flex-direction:column;gap:12px}
+.skill-add-field{display:grid;gap:6px;font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-add-source{display:flex;align-items:center;gap:8px;min-width:0}
+.skill-add-source>input{flex:1 1 0;min-width:0;padding:0 10px}
+.skill-add-source>.ds-btn{flex:none;display:inline-flex;align-items:center;gap:6px}
+.skill-add-source>.ds-btn>.icon{--icon-size:var(--icon-sm)}
+.skill-add-source>input,.skill-add-field>select{height:var(--ds-btn-h);border-radius:var(--ds-radius-control);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-ui)}
+/* Their text matches the button labels ('Choose folder…'): the dialog's generic field rule (html[data-theme]
+ * dialog …, in motion.css) would otherwise set it smaller. */
+.skill-add .skill-add-source>input,.skill-add .skill-add-field>select{font-size:var(--ds-text-ui)}
+.skill-add-hint{margin:-4px 0 0;font-size:var(--ds-text-meta);color:var(--faint)}
+.skill-add-hint a{color:var(--text);text-decoration:underline;text-underline-offset:2px}
+.skill-add-found{display:flex;flex-direction:column;gap:12px}
+.skill-add-found:empty{display:none}
+.skill-add-group{position:relative;display:flex;flex-direction:column;gap:2px;margin:0;padding:0;border:0;min-width:0}
+.skill-add-group>legend{width:100%;padding:0 0 6px;font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-add-group>legend>.skill-add-bulk{float:right}
+.skill-add-inline{flex-direction:row;flex-wrap:wrap;gap:4px 14px}
+.skill-add-bulk{display:flex;gap:var(--ds-row-gap)}
+.skill-add-link{font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-add-link:not(:disabled):hover{color:var(--text)}
+.skill-add-skills{display:grid;gap:2px;max-height:calc(var(--ds-btn-h) * 7);overflow:auto;padding:2px;border:1px solid var(--ds-border-inner);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.skill-add-check{display:flex;align-items:center;gap:8px;min-width:0;min-height:30px;padding:0 6px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui);color:var(--text);cursor:pointer}
+.skill-add-skills>.skill-add-check:hover{background:var(--ds-row-hover)}
+.skill-add-check>input{flex:none;width:15px;height:15px;margin:0;padding:0;accent-color:var(--ds-primary-bg)}
+.skill-add-check>span{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* A found skill: its name (and 'Installed') on the first line, its description under it for two lines before it
+ * ellipsizes. */
+.skill-add-skills>.skill-add-check{align-items:flex-start;padding-block:5px}
+.skill-add-skills>.skill-add-check>input{margin-top:calc((var(--ds-text-ui) * 1.3 - 15px) / 2)}
+.skill-add-check>.skill-add-skill-text{flex:1 1 0;overflow:visible;min-width:0;display:grid;gap:1px}
+.skill-add-skill-name{display:flex;align-items:center;gap:8px;min-width:0;line-height:1.3}
+.skill-add-skill-name>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-add-skill-text>small{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;white-space:normal;overflow-wrap:anywhere;font-size:var(--ds-text-meta);line-height:1.35;color:var(--faint)}
+.skill-add-installed{flex:none;padding:0 6px;border-radius:var(--ds-radius-chip);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-chip);color:var(--muted)}
+.skill-add-installed[hidden]{display:none}
+/* An agent not installed on this computer: listed, unchecked, marked in quiet text. */
+.skill-add-inline .skill-add-check>.skill-add-missing{flex:none;font-size:var(--ds-text-meta);color:var(--faint)}
+/* A found skill whose name can't be switched off: disabled, a short reason where the description would be. */
+.skill-add-check[data-locked]{cursor:default}
+.skill-add-check[data-locked] .skill-add-skill-name{color:var(--muted)}
+.skill-add-check>input:disabled{cursor:default}
+.skill-add-skills>.skill-add-check[data-locked]:hover{background:transparent}
+.skill-add-skill-text>.skill-add-reason{color:var(--muted)}
+.skill-add-target{display:grid;gap:6px}
+.skill-add-target>.skill-add-hint{margin:0}
+.skill-add-error{margin:0;font-size:var(--ds-text-meta)}
+.skill-add-error:empty{display:none}
+.skill-add .dialog-footer{display:flex;align-items:center;justify-content:flex-end;gap:8px}
+.skill-add-status{margin-right:auto;font-size:var(--ds-text-meta);color:var(--faint)}
+.skill-add .ds-btn-primary,.skill-add .ds-btn{height:var(--ds-btn-h);padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-ui)}
+.skill-add .ds-btn-primary:disabled{opacity:.45;cursor:not-allowed}
+/* The result after an install that needs reading. Source, Choose folder and the hint step aside; a warning heading
+ * leads the flagged skills, each a quiet inset (like a row's details) with its name and one action on a line, one
+ * line per finding as in the rows (rule, file:line, ellipsized excerpt), then what PandaCode did, and where. Then
+ * 'Installed: …' for the clean ones, then failures. */
+.skill-add[data-result]>.skill-add-field,.skill-add[data-result]>.skill-add-hint{display:none}
+.skill-add-result-head{display:flex;align-items:center;gap:8px;min-width:0}
+.skill-add-result-icon{flex:none;display:inline-flex}
+.skill-add-result-icon>.icon{--icon-size:var(--icon-sm)}
+.skill-add-result-head>h3{margin:0;font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text)}
+.skill-add-review{display:grid;gap:4px;min-width:0;padding:8px 12px;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-add-review-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.skill-add-review-head>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text)}
+.skill-add .skill-add-review-head>.ds-btn{flex:none;height:24px;padding:0 10px;font-size:var(--ds-text-meta)}
+.skill-add-review p,.skill-add-summary,.skill-add-installed-line,.skill-add-failure{margin:0}
+.skill-add-summary,.skill-add-installed-line,.skill-add-failure{font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-add-failure{color:var(--ds-danger)}
+
+@media(prefers-reduced-transparency:reduce){.skill-manager-float{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(prefers-contrast:more){
+  .skill-manager-float{background:var(--bg);border-color:var(--text);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+  .skill-row.is-off .ds-row-title{color:var(--text);text-decoration:line-through}
+  .skill-chip[data-missing],.skill-detail-missing{outline-color:var(--text)}
+  .skill-row-asked,.skill-row-tag{box-shadow:inset 0 0 0 1px var(--text);color:var(--text)}
+  .skill-manager-scope>button{box-shadow:inset 0 0 0 1px var(--text)}
+  .skill-manager-scope>button[aria-checked=true]{box-shadow:inset 0 0 0 2px var(--text)}
+  .skill-row .ds-toggle:disabled{box-shadow:inset 0 0 0 1px var(--text)}
+  .skill-row .ds-toggle[data-locked]::before{background:var(--text)}
+}
+@media(prefers-reduced-motion:reduce){.skill-row-body>.icon{transition:none}}
+@media(forced-colors:active){
+  .skill-manager-float{border-color:CanvasText;background:Canvas}
+  .skeleton-bar,.skeleton-switch{background:GrayText}
+  .skill-chip[data-missing],.skill-detail-missing{outline-color:GrayText}
+  .skill-row-asked,.skill-row-tag{border:1px solid CanvasText}
+  .skill-row .ds-toggle[data-locked]::before{background:GrayText}
+  .skill-manager-scope>button{border:1px solid ButtonText}
+  .skill-manager-scope>button[aria-checked=true]{forced-color-adjust:none;background:Highlight;color:HighlightText}
+}
+/* Uninstall: a quiet link closing the open details (muted, like the details text). Its Undo (and a switch save that
+ * failed in a view no longer shown) floats on one glass line at the bottom of the view until the next change: sticky
+ * after the list, so it never pushes a row, and over the list's lower edge while the list scrolls. */
+/* Uninstall… sits at the right end of the Source line. */
+.skill-detail-source>.skill-detail-actions{margin-left:auto}
+.skill-detail-actions .skill-row-change{color:var(--muted)}
+.skill-detail-actions .skill-row-change:hover{color:var(--text)}
+.skill-manager-float{position:sticky;bottom:12px;z-index:2;align-self:center;display:grid;gap:4px;max-width:calc(100% - 2 * var(--ds-row-pad-x));padding:8px 14px;border:1px solid var(--glass-border);border-radius:var(--glass-radius);background:var(--glass-warm);box-shadow:0 18px 40px -16px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);backdrop-filter:blur(28px) saturate(1.6);-webkit-backdrop-filter:blur(28px) saturate(1.6);font-size:var(--ds-text-meta);color:var(--muted)}
+.skill-manager-float[hidden]{display:none}
+@media(prefers-reduced-motion:no-preference){.skill-manager-float{animation:skill-details-in var(--ds-ease-in) ease-out}}
+.skill-manager-undo,.skill-manager-save-error{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px;margin:0}
+.skill-manager-undo[hidden],.skill-manager-save-error[hidden]{display:none}
+.skill-manager-save-error-text{min-width:0;overflow-wrap:anywhere}
+.skill-manager-undo-text{min-width:0;overflow-wrap:anywhere}
+/* Older uninstalls whose Undo native dropped: one quiet line under it. */
+.skill-manager-undo-expired{flex:1 0 100%;color:var(--faint)}

@@ -10,7 +10,10 @@ mod crypto;
 pub(crate) mod diagnostics;
 pub(crate) mod grants;
 mod host;
+mod methods;
 mod images;
+#[cfg(test)]
+mod loopback;
 pub(crate) mod mirror;
 pub(crate) mod orchestrate;
 pub(crate) mod routes;
@@ -173,6 +176,9 @@ pub(crate) struct Remote {
 
 impl Remote {
     fn lock(&self) -> MutexGuard<'_, Inner> {
+        // Remote code locks this, then the store: the reverse order deadlocks.
+        #[cfg(debug_assertions)]
+        debug_assert!(!crate::run_requests::store_held(), "the remote state was locked while the store is held");
         self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
@@ -244,6 +250,16 @@ impl Remote {
 
 fn remote(app: &tauri::AppHandle) -> tauri::State<'_, Remote> {
     app.state::<Remote>()
+}
+
+/// The host switch "Full access for remote tasks" as it is now (off before remote access is set up).
+pub(crate) fn full_access_for_remote_tasks(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Remote>().is_some_and(|remote| remote.lock().settings.remote_full_access)
+}
+
+/// Whether this computer hosts remote devices (PandaConnect), so a phone could be driving a task.
+pub(crate) fn hosting(app: &tauri::AppHandle) -> bool {
+    app.try_state::<Remote>().is_some_and(|remote| remote.lock().settings.host_enabled)
 }
 
 fn emit_status(app: &tauri::AppHandle) {
@@ -717,6 +733,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "remote state was locked while the store is held")]
+    fn locking_the_remote_state_under_the_store_fails_in_debug_builds() {
+        let remote = Remote { dir: std::env::temp_dir(), inner: Mutex::new(Inner::default()), key: Mutex::new(None), saving: Mutex::new(()) };
+        let store = Mutex::new(crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap());
+        let _held = crate::run_requests::lock_store(&store).unwrap();
+        let _ = remote.lock().settings.host_enabled;
+    }
+
+    #[test]
     fn concurrent_saves_never_leave_an_older_snapshot() {
         let dir = std::env::temp_dir().join(format!("pandacode-remote-save-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -725,7 +751,7 @@ mod tests {
             .map(|n| {
                 let remote = remote.clone();
                 std::thread::spawn(move || {
-                    remote.lock().settings.links.insert(format!("d{n}"), config::Link { access: config::Access::Read, at: n as i64, key: "k".into() });
+                    remote.lock().settings.links.insert(format!("d{n}"), config::Link { access: config::Access::Read, at: n as i64, key: "k".into(), name: String::new() });
                     remote.save();
                 })
             })
@@ -741,7 +767,7 @@ mod tests {
     fn a_stale_token_never_signs_out_a_newer_sign_in() {
         let mut inner = Inner { token: Some("new".into()), generation: 3, ..Default::default() };
         inner.settings.account = Some(config::Account::default());
-        inner.settings.links.insert("studio".into(), config::Link { access: config::Access::Full, at: 1, key: "k".into() });
+        inner.settings.links.insert("studio".into(), config::Link { access: config::Access::Full, at: 1, key: "k".into(), name: String::new() });
         assert!(!inner.clear_sign_in(Some("old")));
         assert_eq!(inner.settings.links.len(), 1);
         assert_eq!((inner.token.as_deref(), inner.generation, inner.settings.account.is_some()), (Some("new"), 3, true));

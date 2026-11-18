@@ -1,4 +1,5 @@
 import { escape, icon } from './dom.ts';
+import { toned } from './approval-modes.ts';
 import type { ProviderId, Session } from './types';
 
 /* Cloud agents (docs/cloud-agents.md): the "Run on" menu's Cloud section, the fixed chip and
@@ -22,7 +23,7 @@ export const cloudIcon = (): string => CLOUD_ICON;
  * ponytail: the "Cloud · " label prefix stands in for a section heading; choice-menu.ts has none. */
 export function cloudItems(targets: CloudTarget[], chosen: string) {
   return [
-    ...targets.filter(target => target.ready).map(target => ({ id: cloudChoice(target.provider), label: `Cloud · ${target.label}`, leading: CLOUD_ICON, selected: chosen === cloudChoice(target.provider) })),
+    ...targets.filter(target => target.ready).map(target => ({ id: cloudChoice(target.provider), label: `Cloud · ${target.label}`, leading: toned(CLOUD_ICON, 'remote'), selected: chosen === cloudChoice(target.provider) })),
     { id: SETUP_CHOICE, label: 'Set up cloud providers…', icon: 'settings' },
   ];
 }
@@ -54,7 +55,7 @@ export const busyStage = (stage: CloudStage): boolean => BUSY.has(stage);
 /** The context bar's computer control for a cloud task: fixed, like a Connect mirror's. */
 export function cloudChip(session: Session): string {
   const cloud = session.cloud!, label = escape(cloud.label), stage = escape(stageText(cloud.stage, cloud.detail, session.provider));
-  return `<span class="composer-computer composer-computer-fixed" aria-label="Computer: ${label} cloud machine (fixed for this task) · ${stage}" title="This task runs on a ${label} cloud machine. ${stage}.">${CLOUD_ICON}<span>on ${label}</span></span>`;
+  return `<span class="composer-computer composer-computer-fixed" data-remote="cloud" role="img" tabindex="0" aria-label="Computer: ${label} cloud machine (fixed for this task) · ${stage}" data-tip="This task runs on a ${label} cloud machine. ${stage}.">${CLOUD_ICON}<span class="sr-only">on ${label}</span></span>`;
 }
 
 /** The status strip above a cloud task's composer. */

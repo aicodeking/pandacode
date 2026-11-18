@@ -58,6 +58,7 @@ test('the GitHub switch hides mentions, imports, and pull requests without runni
   await probe(page);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Connections', exact: true }).click();
   await settings.getByRole('tab', { name: 'GitHub', exact: true }).click();
   await expect(settings.locator('.github-settings-status')).toContainText('Connected as you · orbit-labs/orbit');
   await settings.getByRole('checkbox', { name: 'GitHub integration', exact: true }).uncheck();
@@ -278,18 +279,18 @@ test('a linked open pull request merges from its inspector tab after choosing a 
   await dialog.locator('[data-pull-number="130"]').click();
   const view = page.locator('#inspector .pull-view');
   await expect(view.locator('.pull-state')).toHaveText('Open');
-  await view.getByRole('button', { name: 'Merge', exact: true }).click();
+  await view.getByRole('button', { name: 'Merge: Squash and merge', exact: true }).click();
   // Nothing reaches GitHub until the method is confirmed; Cancel backs out.
   const confirm = view.getByRole('group', { name: 'Merge pull request #130' });
   await expect(confirm.getByRole('combobox', { name: 'Merge method' })).toHaveValue('squash');
   await confirm.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(confirm).toHaveCount(0);
   expect(await calls(page, 'github_merge_pull_request')).toHaveLength(0);
-  await view.getByRole('button', { name: 'Merge', exact: true }).click();
+  await view.getByRole('button', { name: 'Merge: Squash and merge', exact: true }).click();
   await confirm.getByRole('combobox', { name: 'Merge method' }).selectOption('rebase');
   await confirm.getByRole('button', { name: 'Confirm merge', exact: true }).click();
   await expect(page.locator('#toast')).toContainText('Merged pull request #130');
   expect((await calls(page, 'github_merge_pull_request')).at(-1).args).toEqual({ sessionId: 'session-1', method: 'rebase' });
   await expect(view.locator('.pull-state')).toHaveText('Merged');
-  await expect(view.getByRole('button', { name: 'Merge', exact: true })).toHaveCount(0);
+  await expect(view.getByRole('button', { name: 'Merge: Squash and merge', exact: true })).toHaveCount(0);
 });

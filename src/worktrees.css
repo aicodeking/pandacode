@@ -2,7 +2,6 @@
 /* One line at any width: names shorten with an ellipsis and the PR/issue chip keeps its size. */
 .composer-context{flex-wrap:nowrap}
 .composer-context>.link-chip{flex-shrink:0}
-.composer-context .composer-project>span{min-width:3ch}
 .composer-area{container:composer/inline-size}
 @container composer (max-width:560px){.composer-context .composer-local{display:none}.composer-context.composer-context-compact{gap:10px}.composer-context .branch-chip{max-width:none}}
 .composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:var(--text-xs);background:transparent;border-color:transparent}
@@ -27,17 +26,19 @@
 .branch-chip-missing>.icon:first-child{color:var(--danger)}
 html[data-theme="dark"] .branch-chip[aria-expanded="true"]{background:var(--accent-dim);box-shadow:none}
 html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(in srgb,var(--accent) 35%,var(--bg))}
-.workspace[data-wallpaper] .conversation-pane .branch-chip:is(:active,[aria-expanded="true"]){background:var(--thread-accent)}
-.workspace[data-wallpaper] .conversation-pane .branch-chip:hover{background:var(--thread-hover)}
+.workspace[data-scene] .conversation-pane .branch-chip:is(:active,[aria-expanded="true"]){background:var(--thread-accent)}
+.workspace[data-scene] .conversation-pane .branch-chip:hover{background:var(--thread-hover)}
 
 /* Linked GitHub work reads as a small tag; its state is named, never only colored. */
-.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:var(--radius-full);font-size:var(--text-2xs);font-weight:var(--weight-medium);color:var(--accent-ink);background:var(--accent-dim);white-space:nowrap;--press:.96}
+/* PR and issue chips are the neutral .ds-chip: fill, hairline, muted mono text; status colour only on the icon. */
+.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:var(--ds-radius-chip);font-family:var(--mono);font-size:var(--ds-text-chip);font-weight:var(--weight-regular);color:var(--muted);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);white-space:nowrap;--press:.96}
 .link-chip>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
-.link-chip-state{font-weight:var(--weight-regular);color:var(--muted);text-transform:capitalize}
-.link-chip:not(:disabled):hover{background:color-mix(in srgb,var(--accent) 28%,var(--accent-dim));color:var(--text)}
-.link-chip-merged,.link-chip-closed{color:var(--muted);background:var(--raised);border-color:transparent}
-.link-chip-merged .link-chip-state{color:var(--success)}
-.link-chip-closed .link-chip-state{color:var(--danger)}
+.link-chip-state{font-family:inherit;font-weight:var(--weight-regular);color:var(--muted);text-transform:capitalize}
+.link-chip>.icon{color:var(--ds-success)}
+.link-chip-merged>.icon{color:var(--ds-info)}
+.link-chip-closed>.icon{color:var(--ds-danger)}
+.link-chip-draft>.icon{color:var(--muted)}
+.link-chip:not(:disabled):hover{background:var(--ds-fill-hover);color:var(--text)}
 .link-chip-draft .link-chip-state{color:var(--muted)}
 .board-card .link-chip,.task-detail-project .link-chip{font-size:var(--text-2xs);padding:2px 7px 2px 5px}
 .board-card-meta .link-chip{margin-left:auto}
@@ -58,4 +59,4 @@ dialog .worktree-cleanup-option{background:color-mix(in srgb,var(--panel) 72%,tr
 @media(prefers-contrast:more){.link-chip{border:1px solid var(--text)}.branch-chip[aria-expanded="true"]{outline:1px solid var(--focus);outline-offset:-1px}}
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer{transition:background-color 140ms ease-out,color 140ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.branch-chip,.link-chip,.composer-computer{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}}

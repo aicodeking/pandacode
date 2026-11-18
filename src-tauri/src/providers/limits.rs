@@ -36,6 +36,16 @@ impl Protocol {
     /// Claude Code reports each limit check; `rejected` means the account is out until `resetsAt`.
     pub(super) fn claude_rate_limit(&self, value: &Value, step: &mut Step) {
         let info = &value["rate_limit_info"];
+        // An account pool leaves an account near its limit for the next turn.
+        if self.config.provider == "claude" {
+            let window = info["rateLimitType"].as_str().unwrap_or("unknown");
+            let resets = info["resetsAt"].as_i64().map(|seconds| seconds * 1000);
+            match info["status"].as_str() {
+                Some("allowed_warning") => crate::account_pool::note_usage(&self.config.session_id, "claude", window, crate::account_pool::NEAR_PERCENT, resets),
+                Some("allowed") => crate::account_pool::note_usage(&self.config.session_id, "claude", window, 0.0, None),
+                _ => {}
+            }
+        }
         if info["status"] == "rejected" {
             let resets = info["resetsAt"].as_i64().filter(|seconds| *seconds > 0).map(|seconds| seconds * 1000);
             step.events.push(self.limited_event(resets, info["rateLimitType"].as_str()));
@@ -44,6 +54,13 @@ impl Protocol {
 
     pub(super) fn codex_rate_limits(&mut self, params: &Value) {
         self.codex_limits = params["rateLimits"].clone();
+        // Each window tells an account pool how near the account is to a limit.
+        for name in ["primary", "secondary"] {
+            let window = &self.codex_limits[name];
+            if let Some(percent) = window["usedPercent"].as_f64() {
+                crate::account_pool::note_usage(&self.config.session_id, "codex", name, percent, window["resetsAt"].as_i64().map(|s| s * 1000));
+            }
+        }
     }
 
     /// The event for a Codex usage-limit error, using the last snapshot for the reset time.

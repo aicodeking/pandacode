@@ -158,3 +158,13 @@ test('a whole copy replaces a held message the host had cut', () => {
   const whole = [m(1), m(2)];
   assert.equal(mergeMessages(whole, [{ ...m(2), content: 'other' }]), whole, 'whole messages are never replaced');
 });
+
+test('subagentsCut follows the latest reply that carries subagents', () => {
+  const row = { id: 'a', status: 'running', name: 'A', prompt: '', response: '', tools: [], startedAt: 1, updatedAt: 1 };
+  const cut = withHostActivity(idleLive(), { subagents: [row], subagentsTruncated: true });
+  assert.equal(cut.subagentsCut, true);
+  // A reply without subagents says nothing about them.
+  assert.equal(withHostActivity(cut, { lastEventAt: 5 }).subagentsCut, true);
+  assert.equal(withHostActivity(cut, { subagents: [row] }).subagentsCut, undefined);
+  assert.equal(withHostActivity(cut, { subagents: [] }).subagentsCut, undefined);
+});

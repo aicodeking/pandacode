@@ -3,8 +3,9 @@
 // A macOS build without a Developer ID carries an ad-hoc signature only. Gatekeeper
 // refuses to open it, and "Open Anyway" in System Settings does not always clear that
 // warning, so the notes name the step that does: removing the quarantine attribute a
-// download leaves behind. A notarized build needs none of that, so the notes do not
-// ask for it.
+// download leaves behind. A notarized build needs none of that: macOS still shows its
+// usual confirmation for an app downloaded from the internet, then opens it, so the
+// notes do not ask for any extra step.
 //
 //   node scripts/release/install-notes.mjs [--signed]
 import { resolve } from 'node:path';
@@ -16,7 +17,7 @@ export const UNQUARANTINE = 'xattr -dr com.apple.quarantine /Applications/PandaC
 /// What a macOS user is told before the app opens for the first time.
 export function macosNote(signed) {
   if (signed) {
-    return 'This build is signed and notarized, so macOS opens it without a warning.';
+    return 'This build is signed and notarized, so macOS opens it after its usual confirmation for apps downloaded from the internet, with no extra steps.';
   }
   return [
     'This build is not signed with a Developer ID, so macOS refuses to open it the first',
@@ -44,7 +45,7 @@ export function installNotes({ signed = false } = {}) {
     '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.',
     '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.',
     '',
-    'Each file has a `.sha256` checksum beside it. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
+    'The installers each have a `.sha256` checksum beside them. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
     '',
   ].join('\n');
 }

@@ -1,0 +1,68 @@
+/* The brand panda's tones (brand-mark.css), with the dark fur held below the brand's white so it sits among the footer icons. */
+.star-panda{
+  --panda-fur:var(--bg);
+  --panda-ink:color-mix(in srgb,var(--text) 88%,var(--bg));
+  --panda-pupil:var(--text);
+  --panda-shade:color-mix(in srgb,var(--bg),var(--text) 8%);
+  --panda-belly:color-mix(in srgb,var(--bg),var(--text) 5%);
+  --panda-rim:color-mix(in srgb,var(--bg),var(--text) 14%);
+  --panda-ear-rim:var(--panda-ink);
+  --panda-star:var(--accent);
+  --panda-star-edge:var(--accent-ink);
+}
+html[data-theme="dark"] .star-panda{
+  --panda-fur:color-mix(in srgb,var(--text) 70%,var(--bg));
+  --panda-ink:color-mix(in srgb,var(--bg),var(--text) 29%);
+  --panda-pupil:var(--bg);
+  --panda-shade:color-mix(in srgb,var(--panda-fur),var(--bg) 14%);
+  --panda-belly:color-mix(in srgb,var(--panda-fur),var(--bg) 6%);
+  --panda-rim:transparent;
+  --panda-ear-rim:color-mix(in srgb,var(--panda-ink),var(--panda-fur) 35%);
+}
+.sidebar-bottom>button.star-panda{flex:0 0 32px;width:32px;height:32px;padding:0;overflow:visible}
+.star-panda-art{display:block;width:24px;height:24px;overflow:visible;pointer-events:none}
+.star-panda-ink{fill:var(--panda-ink)}
+.star-panda-pupil{fill:var(--panda-pupil)}
+.star-panda-fur{fill:var(--panda-fur)}
+.star-panda-shade{fill:var(--panda-shade)}
+.star-panda-belly{fill:var(--panda-belly)}
+.star-panda-rim{fill:var(--panda-rim)}
+.star-panda-ear-rim{fill:var(--panda-ear-rim)}
+.star-panda-blush{fill:var(--ds-tone-worktree);opacity:.35}
+.star-panda-lids{fill:none;stroke:var(--panda-fur);stroke-width:1;stroke-linecap:round}
+.star-panda-frown{fill:none;stroke:var(--panda-ink);stroke-width:.7;stroke-linecap:round}
+.star-panda-star{fill:var(--panda-star);stroke:var(--panda-star-edge);stroke-width:.4;stroke-linejoin:round}
+.star-panda-glint{fill:none;stroke:var(--panda-fur);stroke-width:.6;stroke-linecap:round;opacity:0}
+/* Only these wrappers move, and none has a transform attribute for fill-box to re-anchor. */
+.star-panda-art :is(.star-panda-head,.star-panda-offer,.star-panda-ear,.star-panda-glint){transform-box:fill-box;transform-origin:center}
+.star-panda-art .star-panda-head{transform-origin:50% 85%}
+.star-panda-art .star-panda-offer{transform-origin:50% 100%}
+.star-panda-art .star-panda-ear-left{transform-origin:75% 80%}
+.star-panda-art .star-panda-ear-right{transform-origin:25% 80%}
+
+/* Five controls at the minimum sidebar width: 160px + 12px gaps + 14px padding. */
+@container sidebar (max-width:219px){.sidebar-bottom{gap:3px;padding-inline:7px}}
+
+/* One small offering gesture per hover/focus; no timers or idle loop. */
+@media(prefers-reduced-motion:no-preference){
+  html[data-ready]:not([data-star-panda-hidden]) .star-panda:is(:hover,:focus-visible) .star-panda-head{animation:star-panda-look-up 760ms ease-out}
+  html[data-ready]:not([data-star-panda-hidden]) .star-panda:is(:hover,:focus-visible) .star-panda-offer{animation:star-panda-offer 760ms ease-out}
+  html[data-ready]:not([data-star-panda-hidden]) .star-panda:is(:hover,:focus-visible) .star-panda-ear-left{animation:star-panda-ear 600ms 70ms ease-out}
+  html[data-ready]:not([data-star-panda-hidden]) .star-panda:is(:hover,:focus-visible) .star-panda-ear-right{--panda-ear-turn:8deg;animation:star-panda-ear 600ms 110ms ease-out}
+  html[data-ready]:not([data-star-panda-hidden]) .star-panda:is(:hover,:focus-visible) .star-panda-glint{animation:star-panda-glint 420ms 180ms ease-out}
+}
+@keyframes star-panda-look-up{0%,100%{rotate:0deg;scale:1}25%,65%{rotate:-3deg;scale:1.025}}
+@keyframes star-panda-offer{0%,100%{rotate:0deg;scale:1}30%,65%{rotate:3deg;scale:1.1}}
+@keyframes star-panda-ear{0%,100%{rotate:0deg}35%,60%{rotate:var(--panda-ear-turn,-8deg)}}
+@keyframes star-panda-glint{0%,100%{opacity:0;scale:.65}45%{opacity:1;scale:1}}
+
+@media(prefers-contrast:more){
+  html[data-theme] .star-panda{--panda-rim:var(--ds-row-ink);--panda-ear-rim:var(--ds-row-ink)}
+  .star-panda-star{stroke-width:.8}
+}
+@media(forced-colors:active){
+  html[data-theme] .star-panda{--panda-fur:Canvas;--panda-ink:CanvasText;--panda-pupil:CanvasText;--panda-shade:Canvas;--panda-belly:Canvas;--panda-rim:CanvasText;--panda-ear-rim:CanvasText;--panda-star:Highlight;--panda-star-edge:CanvasText}
+  .star-panda-art{forced-color-adjust:none}
+  .star-panda-glint{stroke:HighlightText}
+  .star-panda-blush{display:none}
+}

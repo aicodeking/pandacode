@@ -111,7 +111,7 @@ test.describe('Agent updates', () => {
   test('does not interrupt an existing dialog and shows the popup after it closes', async ({ page }) => {
     await open(page);
     await page.keyboard.press('Meta+,');
-    await page.getByRole('region', {name:'Settings', exact:true}).getByRole('tab', {name:'Tools & add-ons', exact:true}).click();
+    await page.getByRole('region', {name:'Settings', exact:true}).getByRole('tab', {name:'Tools', exact:true}).click();
     await page.getByRole('button', {name:'Manage', exact:true}).click();
     const tools = page.getByRole('dialog', {name:'Tools & integrations', exact:true});
     await expect(tools).toBeVisible();

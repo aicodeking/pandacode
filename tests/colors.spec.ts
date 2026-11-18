@@ -6,7 +6,7 @@ const token = (page: Page, name: string) => page.evaluate(name => getComputedSty
 const pin = (page: Page, scene: string) => page.addInitScript(scene => {
   if (sessionStorage.getItem('pinned') === scene) return;
   sessionStorage.setItem('pinned', scene);
-  localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: scene }));
+  localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: scene }));
 }, scene);
 async function openColors(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -35,6 +35,20 @@ test('the accent follows the wallpaper scene and falls back to classic yellow wi
   expect(blue).not.toBe('#ffd43b');
   await page.reload();
   await expect.poll(() => accent(page)).toBe(blue);
+});
+
+test('with Wallpapers off the scene accent is the Sky: a calm blue, and Wallpaper again once a scene shows', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'sky');
+  // A blue: blue channel well above red.
+  await expect.poll(async () => { const value = await accent(page); return parseInt(value.slice(5, 7), 16) - parseInt(value.slice(1, 3), 16); }).toBeGreaterThan(60);
+  await openColors(page);
+  await expect(page.getByRole('radio', { name: 'Sky', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('radio', { name: 'Wallpaper', exact: true })).toHaveCount(0);
+  await page.getByRole('radio', { name: 'Classic', exact: true }).click();
+  await expect.poll(() => accent(page)).toBe('#ffd43b');
+  await page.getByRole('radio', { name: 'Sky', exact: true }).click();
+  await expect.poll(() => accent(page)).not.toBe('#ffd43b');
 });
 
 test('a VS Code theme from Open VSX recolors the app and holds still when the wallpaper changes', async ({ page }) => {

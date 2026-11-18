@@ -17,10 +17,81 @@ const ID_THOUGHT: u64 = 3;
 const ID_SUBSCRIBE: u64 = 4;
 const ID_MODE: u64 = 5;
 const ID_STOP: u64 = 1 << 40;
+/// `mcp/list` connect for a resumed session's fresh per-run bridge. High, like
+/// stop, so it can never collide with the growing prompt ids.
+const ID_MCP: u64 = 1 << 41;
 const FIRST_PROMPT_ID: u64 = 6;
 
 pub(super) const SIGN_IN: &str =
     "ZCode requires sign-in. Run `zcode` in a terminal and sign in, then send again.";
+
+/// The CLI bundled with ZCode Desktop (`…/resources/glm/zcode.cjs`), for installs
+/// without `zcode` on PATH. The launch layer runs it on the app's own Electron
+/// runtime, so no system node is needed.
+pub(super) fn bundled() -> Option<PathBuf> {
+    bundled_candidates().into_iter().find(|path| runnable(path))
+}
+
+/// The launch layer can run the script: it carries an exec bit (direct shebang
+/// exec) or a desktop app runtime sits beside it to launch it, so a bundled copy
+/// that lost its mode still counts when its app can run it.
+#[cfg(unix)]
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata().is_ok_and(|metadata| {
+        metadata.is_file()
+            && (metadata.permissions().mode() & 0o111 != 0
+                || super::launch::electron_runtime(path).is_some())
+    })
+}
+
+#[cfg(not(unix))]
+fn runnable(path: &Path) -> bool {
+    path.is_file()
+}
+
+#[cfg(target_os = "macos")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    let home = crate::agent_usage_providers::home();
+    [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))]
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("ZCode.app/Contents/Resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's NSIS defaults: per-user under %LOCALAPPDATA%\Programs,
+    // per-machine under %ProgramFiles%; the inner layout matches every platform.
+    let roots = std::env::var_os("LOCALAPPDATA")
+        .filter(|value| !value.is_empty())
+        .map(|local| PathBuf::from(local).join("Programs"))
+        .into_iter()
+        .chain(
+            std::env::var_os("ProgramFiles")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
+        );
+    roots
+        .flat_map(|root| ["ZCode", "zcode"].map(|name| root.join(name)))
+        .map(|root| root.join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(target_os = "linux")]
+fn bundled_candidates() -> Vec<PathBuf> {
+    // electron-builder's deb/rpm default installs under /opt/<product name>.
+    ["/opt/ZCode", "/opt/zcode"]
+        .iter()
+        .map(|root| PathBuf::from(root).join("resources/glm/zcode.cjs"))
+        .collect()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn bundled_candidates() -> Vec<PathBuf> {
+    Vec::new()
+}
 
 /// PandaCode mode → ZCode session mode. `auto` is Accept edits (edits run
 /// free, the rest ask); Standard (`ask`) and the reviewer mode run `build`.
@@ -53,6 +124,10 @@ pub(super) struct State {
     reasoning: bool,
     /// Latest turn failure, held until the turn's completed frame decides the run.
     error: Option<String>,
+    /// `mcp/list` was sent and has not answered. The prompt waits for it.
+    bridge_pending: bool,
+    /// `session/subscribe` already answered while the bridge check was in flight.
+    prompt_held: bool,
 }
 
 fn same_ref(a: &Value, b: &Value) -> bool {
@@ -70,6 +145,13 @@ fn context_window_of(settings: &Value, reference: &Value) -> Option<u64> {
         .find(|entry| same_ref(&entry["ref"], reference))
         .and_then(|entry| entry["contextWindow"].as_u64())
         .filter(|n| *n > 0 && *n <= 1_000_000_000)
+}
+
+/// The catalog entry offers this reasoning level.
+fn lists_level(entry: &Value, level: &str) -> bool {
+    entry["reasoning"]["levels"]
+        .as_array()
+        .is_some_and(|levels| levels.iter().any(|item| field(item, "value") == level))
 }
 
 fn workspace_of(cwd: &std::path::Path) -> Value {
@@ -141,6 +223,7 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
             .filter(|level| efforts.iter().any(|effort| effort.id.as_str() == *level))
             .map(str::to_owned);
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             name: model_text(entry["label"].as_str(), &label, 160),
             description: model_text(entry["providerLabel"].as_str(), "", 200),
             id: label,
@@ -155,7 +238,7 @@ fn parse_models(snapshot: &Value) -> Result<Vec<ModelInfo>, String> {
 }
 
 async fn discover(path: &Path) -> Result<Vec<ModelInfo>, String> {
-    let mut command = super::command(path)?;
+    let mut command = super::provider_command("zcode", path)?;
     command.arg("app-server");
     let workspace = std::env::temp_dir();
     command
@@ -240,17 +323,26 @@ impl Protocol {
     /// Opens the run's session. Deferred persistence keeps captures and failed
     /// starts out of the user's ZCode history; resume attaches by saved id.
     pub(super) fn zcode_initial(&self) -> Value {
-        let workspace = workspace_of(&self.config.cwd);
         match &self.config.resume_id {
             Some(id) => json!({"id": ID_CREATE, "method": "session/resume",
-                "params": {"sessionId": id, "workspace": workspace}}),
-            None => json!({"id": ID_CREATE, "method": "session/create", "params": {
-                "workspace": workspace,
-                "mode": mode(&self.config.mode),
-                "persistence": "deferred",
-                "titleGenerationEnabled": false,
-            }}),
+                "params": {"sessionId": id, "workspace": workspace_of(&self.config.cwd)}}),
+            None => self.zcode_create(),
         }
+    }
+
+    fn zcode_create(&self) -> Value {
+        let mut request = json!({"id": ID_CREATE, "method": "session/create", "params": {
+            "workspace": workspace_of(&self.config.cwd),
+            "mode": mode(&self.config.mode),
+            "persistence": "deferred",
+            "titleGenerationEnabled": false,
+        }});
+        // A fresh session takes its tools server inline; a resumed one cannot
+        // (its schema has no mcpServers) and gets `mcp/list` instead.
+        if let Some(server) = &self.mcp_server {
+            request["params"]["mcpServers"] = json!([server]);
+        }
+        request
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -260,6 +352,33 @@ impl Protocol {
             return Ok(step);
         }
         if let Some(error) = value.get("error") {
+            // The bridge check reads the error itself: a CLI without `mcp/list`
+            // only loses optional tools, or fails clearly when they are required.
+            if value["id"] == ID_MCP {
+                self.finish_bridge(&value, &mut step)?;
+                return Ok(step);
+            }
+            // Deferred persistence promotes a session on its first send, so a
+            // start that failed before it left nothing on disk and this
+            // per-run server cannot resume it. Start fresh instead of failing
+            // the thread for good; a create's own error is never swallowed.
+            if value["id"] == ID_CREATE
+                && self.config.resume_id.is_some()
+                && (error["code"] == -32004
+                    || field(error, "message")
+                        .to_lowercase()
+                        .starts_with("session not found"))
+            {
+                self.config.resume_id = None;
+                self.remote_id.clear();
+                step.events.push(self.event(
+                    "status",
+                    "The saved ZCode session is gone, so a new session started without its history",
+                    None,
+                ));
+                step.write.push(self.zcode_create());
+                return Ok(step);
+            }
             let message = short(field(error, "message"));
             let auth = field(error, "data").to_lowercase().contains("auth")
                 || message.to_lowercase().contains("account")
@@ -300,7 +419,14 @@ impl Protocol {
                     return Err("ZCode did not apply the selected thinking level".into());
                 }
             }
-            Some(ID_SUBSCRIBE) => self.zcode_prompt(self.config.prompt.clone(), &mut step),
+            Some(ID_MCP) => self.finish_bridge(&value, &mut step)?,
+            Some(ID_SUBSCRIBE) => {
+                if self.zcode.bridge_pending {
+                    self.zcode.prompt_held = true;
+                } else {
+                    self.zcode_prompt(self.config.prompt.clone(), &mut step);
+                }
+            }
             _ => {}
         }
         Ok(step)
@@ -310,12 +436,16 @@ impl Protocol {
     /// get `-32601`, which recorded servers answer and carry on from.
     fn zcode_frame(&mut self, value: Value, step: &mut Step) -> Result<(), String> {
         match (field(&value, "method"), value.get("id").is_some()) {
-            ("interaction/requestPermission", true) if self.config.mode == "full" => {
+            ("interaction/requestPermission", true)
+                if self.config.mode == "full" && !super::lasting_only(&value) =>
+            {
                 // yolo should not ask; a policy request that still arrives takes
                 // the offered one-time allow, never a standing grant.
                 step.write.push(permission_decision(&value, true));
             }
             ("interaction/requestPermission", true) => {
+                // Offering only a lasting allow (e.g. `allow_project` adding rules) is
+                // never answered automatically, even in Full: it asks, marked `LASTING_ONLY`.
                 let params = &value["params"];
                 let text = format!(
                     "{}\n{}\n{}",
@@ -323,7 +453,14 @@ impl Protocol {
                     field(params, "reason"),
                     preview_json(&params["input"], TOOL_INPUT_LIMIT),
                 );
-                self.approval(value, text, step)?;
+                self.approval(value, text, step);
+                // A denial needs no offered option (`permission_decision` falls back to a
+                // plain deny), so a team worker's automatic answer can always decline it.
+                if let Some(data) = step.events.last_mut().and_then(|event| event.data.as_mut()) {
+                    if data[super::LASTING_ONLY] == true {
+                        data[super::LASTING_DECLINABLE] = json!(true);
+                    }
+                }
             }
             ("interaction/requestUserInput", true) => step.write.push(
                 json!({"id": value["id"], "result": {"action": "decline",
@@ -462,17 +599,32 @@ impl Protocol {
         }
         let catalog = &settings["model"]["available"];
         let wanted = &self.config.model;
+        let mut thought = self.config.reasoning_effort.clone();
         if !wanted.is_empty() && wanted != "default" {
             let entry = catalog
                 .as_array()
                 .into_iter()
                 .flatten()
                 .find(|entry| field(entry, "label") == *wanted);
-            let reference = match entry {
+            let mut reference = match entry {
                 Some(entry) => entry["ref"].clone(),
                 // A custom model id rides the session's current provider.
                 None => json!({"providerId": current["providerId"], "modelId": wanted}),
             };
+            // The selection itself must carry the reasoning level: the server
+            // validates `options.reasoningLevel` inside setModel and rejects the
+            // frame without it, so the later setThoughtLevel cannot repair it.
+            // An effort this model does not list falls to its default, and is
+            // not sent to setThoughtLevel either, which would fail the run.
+            if let Some(entry) = entry {
+                thought = thought.filter(|effort| lists_level(entry, effort));
+                let default = entry["reasoning"]["defaultLevel"]
+                    .as_str()
+                    .filter(|level| lists_level(entry, level));
+                if let Some(level) = thought.as_deref().or(default) {
+                    reference["options"] = json!({"reasoningLevel": level});
+                }
+            }
             self.zcode.requested_model = Some((
                 string(&reference, "providerId"),
                 string(&reference, "modelId"),
@@ -482,17 +634,76 @@ impl Protocol {
                 "params": {"sessionId": self.remote_id, "model": reference},
             }));
         }
-        if let Some(effort) = &self.config.reasoning_effort {
-            self.zcode.requested_thought = Some(effort.clone());
+        if let Some(effort) = thought {
             step.write.push(json!({
                 "id": ID_THOUGHT, "method": "session/setThoughtLevel",
                 "params": {"sessionId": self.remote_id, "thoughtLevel": effort},
+            }));
+            self.zcode.requested_thought = Some(effort);
+        }
+        // Resume cannot carry mcpServers (`session/update` is not implemented),
+        // so the fresh per-run server rides `mcp/list`. A required fresh session
+        // confirms the inline server the same way: an unreachable one does not
+        // fail `session/create`, and the prompt waits until this check settles.
+        // An optional fresh bridge (title suggestions) stays inline only.
+        if let Some(server) = self.mcp_server.clone().filter(|_| self.config.resume_id.is_some() || self.mcp_required) {
+            self.zcode.bridge_pending = true;
+            step.write.push(json!({
+                "id": ID_MCP, "method": "mcp/list",
+                "params": {"workspace": workspace_of(&self.config.cwd),
+                           "mode": "connect", "mcpServers": [server]},
             }));
         }
         step.write.push(json!({
             "id": ID_SUBSCRIBE, "method": "session/subscribe",
             "params": {"sessionId": self.remote_id, "deliveryKind": "desktop-continuous"},
         }));
+        Ok(())
+    }
+
+    /// Applies the bridge check, then sends a prompt that was held for it.
+    /// A required failure drops the held prompt: the run is not started.
+    fn finish_bridge(&mut self, value: &Value, step: &mut Step) -> Result<(), String> {
+        let settled = self.zcode_bridge(value);
+        self.zcode.bridge_pending = false;
+        if let Err(error) = settled {
+            self.zcode.prompt_held = false;
+            return Err(error);
+        }
+        if self.zcode.prompt_held {
+            self.zcode.prompt_held = false;
+            self.zcode_prompt(self.config.prompt.clone(), step);
+        }
+        Ok(())
+    }
+
+    /// Reads the `mcp/list` connect answer. A server that did not come up leaves
+    /// the session without host tools: when they are required (a team worker,
+    /// or a solo task whose tools are required) the run fails instead of
+    /// prompting a session that cannot answer; an optional bridge (title
+    /// suggestions) drops out quietly, as the ACP path does. `connecting` counts
+    /// as up: the recorded CLI can report it while the handshake finishes, and
+    /// this reply is the only check before the prompt.
+    fn zcode_bridge(&mut self, value: &Value) -> Result<(), String> {
+        let name = self.mcp_server.as_ref().map(|server| field(server, "name")).unwrap_or_default();
+        let status = field(&value["result"]["statuses"][name], "status");
+        let connected = value.get("error").is_none()
+            && (status == "connected" || status == "connecting");
+        if connected {
+            return Ok(());
+        }
+        let detail = if let Some(error) = value.get("error") {
+            short(field(error, "message"))
+        } else if !status.is_empty() {
+            format!("the PandaCode tools server reported {status:?}")
+        } else {
+            "the PandaCode tools server did not report a status".into()
+        };
+        if self.mcp_required {
+            return Err(format!("ZCode cannot load the PandaCode tools this task needs: {detail}"));
+        }
+        self.mcp_server = None;
+        self.mcp_tool_names.clear();
         Ok(())
     }
 
@@ -542,6 +753,19 @@ pub(super) fn permission_decision(request: &Value, approved: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    fn bundled_candidates_cover_the_desktop_app_bundle() {
+        let expected = if cfg!(target_os = "macos") {
+            "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs"
+        } else {
+            "/opt/ZCode/resources/glm/zcode.cjs"
+        };
+        assert!(bundled_candidates()
+            .iter()
+            .any(|path| path == Path::new(expected)), "missing {expected}");
+    }
 
     /// Recorded from the CLI bundled with ZCode.app (user-agent ZCode/3.16.3);
     /// session IDs, models and paths anonymized, catalog shortened to one entry.
@@ -605,6 +829,7 @@ mod tests {
         assert_eq!(step.write.len(), 3);
         assert_eq!(step.write[0]["method"], "session/setModel");
         assert_eq!(step.write[0]["params"]["model"]["modelId"], "zcproxy/GLM-5.3");
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "high");
         assert_eq!(step.write[1]["method"], "session/setThoughtLevel");
         assert_eq!(step.write[1]["params"]["thoughtLevel"], "high");
         assert_eq!(step.write[2]["method"], "session/subscribe");
@@ -620,6 +845,227 @@ mod tests {
         assert_eq!(prompt.write[0]["method"], "session/send");
         assert_eq!(prompt.write[0]["params"]["inputId"], "pandacode-1");
         assert_eq!(p.phase, 1);
+    }
+
+    /// The bridge entry `mcp_host::zcode_config` produces, as recorded from the
+    /// live CLI handshake: session isolation and always-load are what put the
+    /// tools in the model's list.
+    /// Dummy loopback entry. The bearer is a fixture literal, not a credential.
+    fn bridge() -> Value {
+        json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp",
+            "headers":[{"name":"Authorization","value":"Bearer test-token"}],
+            "isolation":"session","alwaysLoad":true})
+    }
+
+    fn bridged(resume: bool) -> Protocol {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        if resume {
+            config.resume_id = Some("sess_saved".into());
+        }
+        let mut p = Protocol::new(config);
+        p.mcp_server = Some(bridge());
+        p
+    }
+
+    #[test]
+    fn a_fresh_session_carries_the_tools_server_inline() {
+        let p = bridged(false);
+        let request = p.initial();
+        assert_eq!(request["method"], "session/create");
+        assert_eq!(request["params"]["mcpServers"][0]["name"], "pandacode_architect");
+        assert_eq!(request["params"]["mcpServers"][0]["isolation"], "session");
+        assert_eq!(request["params"]["mcpServers"][0]["alwaysLoad"], true);
+        assert_eq!(request["params"]["mcpServers"][0]["url"], "http://127.0.0.1:9/mcp");
+        assert_eq!(request["params"]["mcpServers"][0]["headers"][0]["value"], "Bearer test-token");
+        let wire = request.to_string();
+        assert!(!wire.contains("sk-") && !wire.contains("ghp_") && !wire.contains("github_pat_"));
+        // A run without host tools keeps the field off the wire.
+        let mut plain = Protocol::new(super::super::tests::config("zcode"));
+        plain.config.cwd = PathBuf::from("/tmp");
+        assert!(plain.initial()["params"].get("mcpServers").is_none());
+    }
+
+    #[test]
+    fn a_resumed_session_reconnects_its_per_run_tools_server() {
+        let mut p = bridged(true);
+        assert_eq!(p.initial()["method"], "session/resume");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect = step
+            .write
+            .iter()
+            .find(|write| write["method"] == "mcp/list")
+            .expect("the fresh bridge rides mcp/list after a resume");
+        assert_eq!(connect["params"]["mode"], "connect");
+        assert_eq!(connect["params"]["mcpServers"][0]["name"], "pandacode_architect");
+        assert_eq!(connect["params"]["workspace"]["workspaceKey"], "/tmp");
+        assert!(step.write.iter().any(|write| write["method"] == "session/subscribe"));
+        let step = p
+            .receive(json!({"id": ID_MCP, "result": {"statuses": {
+                "pandacode_architect": {"status": "connected", "toolCount": 2}}}}))
+            .unwrap();
+        assert!(step.write.is_empty());
+        assert!(p.mcp_server.is_some(), "a connected bridge stays for the run");
+    }
+
+    #[test]
+    fn a_failed_reconnect_fails_required_runs_and_drops_optional_tools() {
+        let failed = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "failed", "error": "dial failed"}}}});
+        let mut required = bridged(true);
+        required.mcp_required = true;
+        required.mcp_tool_names.insert("mcp__pandacode_architect__dispatch_worker".into());
+        required.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(required.receive(failed).is_err(), "a team worker cannot run without its tools");
+
+        // A CLI without `mcp/list` answers an error; an optional bridge (title
+        // suggestions) drops out quietly and the run carries on.
+        let mut optional = bridged(true);
+        optional.mcp_required = false;
+        optional.mcp_tool_names.insert("mcp__pandacode_architect__suggest_title".into());
+        optional.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let step = optional
+            .receive(json!({"id": ID_MCP, "error": {"code": -32601, "message": "Method not found"}}))
+            .unwrap();
+        assert!(step.write.is_empty());
+        assert!(optional.mcp_server.is_none());
+        assert!(optional.mcp_tool_names.is_empty());
+    }
+
+    #[test]
+    fn the_prompt_waits_until_a_required_bridge_settles() {
+        let connected = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "connected", "toolCount": 1}}}});
+        let mut fresh = bridged(false);
+        fresh.mcp_required = true;
+        fresh.config.prompt = "dispatch".into();
+        let step = fresh.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect_at = step.write.iter().position(|write| write["method"] == "mcp/list").unwrap();
+        let subscribe_at = step.write.iter().position(|write| write["method"] == "session/subscribe").unwrap();
+        assert!(connect_at < subscribe_at, "the check is on the wire before subscribe");
+        // Subscribe can answer first. The prompt stays held until the bridge does.
+        let early = fresh
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert!(early.write.iter().all(|write| write["method"] != "session/send"));
+        let step = fresh.receive(connected).unwrap();
+        assert_eq!(step.write[0]["method"], "session/send");
+        assert_eq!(step.write[0]["params"]["content"], "dispatch");
+
+        let mut resumed = bridged(true);
+        resumed.mcp_required = true;
+        resumed.config.prompt = "follow up".into();
+        resumed.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let early = resumed
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert!(early.write.is_empty());
+        let failed = json!({"id": ID_MCP, "result": {"statuses": {
+            "pandacode_architect": {"status": "failed", "error": "dial failed"}}}});
+        let Err(error) = resumed.receive(failed) else {
+            panic!("a required bridge failure must stop the run before the prompt");
+        };
+        assert!(error.contains("cannot load"), "{error}");
+
+        // An optional resume that loses the bridge still prompts, once the check
+        // has dropped the tools. A fresh optional bridge never sends mcp/list.
+        let mut optional = bridged(true);
+        optional.mcp_required = false;
+        optional.config.prompt = "title".into();
+        optional.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        optional
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        let step = optional
+            .receive(json!({"id": ID_MCP, "error": {"code": -32601, "message": "Method not found"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/send");
+        assert!(optional.mcp_server.is_none());
+
+        let mut titles = bridged(false);
+        titles.mcp_required = false;
+        titles.config.prompt = "title".into();
+        let step = titles.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(step.write.iter().all(|write| write["method"] != "mcp/list"));
+        let prompt = titles
+            .receive(json!({"id": ID_SUBSCRIBE, "result": {"eventSeq": 0, "events": []}}))
+            .unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/send");
+    }
+
+    #[test]
+    fn a_dead_resume_keeps_a_required_bridge_on_the_fresh_create() {
+        let mut p = bridged(true);
+        p.mcp_required = true;
+        assert!(p.initial()["params"].get("mcpServers").is_none());
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004, "message": "Session not found: sess_saved"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert_eq!(step.write[0]["params"]["mcpServers"][0]["url"], "http://127.0.0.1:9/mcp");
+        assert_eq!(step.write[0]["params"]["mcpServers"][0]["headers"][0]["value"], "Bearer test-token");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert!(step.write.iter().any(|write| write["method"] == "mcp/list"));
+    }
+
+    #[test]
+    fn set_model_without_an_effort_sends_the_catalog_default_level() {
+        let (mut p, _) = created();
+        p.config.model = "zcproxy/GLM-5.3".into();
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+
+        // A custom id has no catalog entry to default from; the bare
+        // reference stands and the server validates it.
+        let mut custom = super::super::tests::config("zcode");
+        custom.cwd = PathBuf::from("/tmp");
+        custom.model = "pandacode/custom-model".into();
+        let mut p = Protocol::new(custom);
+        assert_eq!(p.initial()["method"], "session/create");
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.write[0]["method"], "session/setModel");
+        assert!(step.write[0]["params"]["model"].get("options").is_none());
+    }
+
+    #[test]
+    fn set_model_sends_an_explicit_effort_only_when_the_catalog_lists_it() {
+        let chain = |model: &str, effort: &str, snapshot: Value| {
+            let mut config = super::super::tests::config("zcode");
+            config.cwd = PathBuf::from("/tmp");
+            config.model = model.into();
+            config.reasoning_effort = Some(effort.into());
+            let mut p = Protocol::new(config);
+            p.receive(json!({"id": ID_CREATE, "result": snapshot})).unwrap().write
+        };
+        let glm = "zcproxy/GLM-5.3";
+
+        let write = chain(glm, "low", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "low");
+        assert_eq!(write[1]["params"]["thoughtLevel"], "low");
+
+        // An unlisted effort takes the model's default, and setThoughtLevel is
+        // skipped: the server would not apply it and the run would fail.
+        let write = chain(glm, "medium", snapshot());
+        assert_eq!(write[0]["params"]["model"]["options"]["reasoningLevel"], "max");
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A model with no levels has no default to fall back to.
+        let mut levelless = snapshot();
+        levelless["settings"]["model"]["available"][0]["reasoning"] = json!({"levels": []});
+        let write = chain(glm, "high", levelless);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["method"], "session/subscribe");
+
+        // A default the entry does not list is not sent either.
+        let mut stale = snapshot();
+        stale["settings"]["model"]["available"][0]["reasoning"]["defaultLevel"] = json!("ultra");
+        let write = chain(glm, "medium", stale);
+        assert!(write[0]["params"]["model"].get("options").is_none());
+
+        // A custom id has no entry to check: no options, setThoughtLevel still runs.
+        let write = chain("pandacode/custom-model", "high", snapshot());
+        assert!(write[0]["params"]["model"].get("options").is_none());
+        assert_eq!(write[1]["params"]["thoughtLevel"], "high");
     }
 
     #[test]
@@ -650,6 +1096,50 @@ mod tests {
         // Protocol::new pre-seeds the resume id, so a stop before the snapshot
         // already names the saved session.
         assert_eq!(p.cancel()["params"]["sessionId"], "sess_saved");
+    }
+
+    #[test]
+    fn a_dead_resume_id_falls_back_to_a_fresh_create() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        assert_eq!(p.initial()["method"], "session/resume");
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.write[0]["method"], "session/create");
+        assert!(p.config.resume_id.is_none(), "the dead id is dropped");
+
+        // The fresh create answers like any other and runs the chain.
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        assert_eq!(step.events[0].kind, "session");
+        assert_eq!(step.write[0]["method"], "session/subscribe");
+
+        // A create's own error is never swallowed into another create.
+        let Err(message) = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a"}}))
+        else {
+            panic!("a fresh create's error must fail the run");
+        };
+        assert_eq!(message, "Session not found: sess_540e3d16-8f19-449f-8576-7b0133fea47a");
+    }
+
+    #[test]
+    fn a_dead_resume_id_reports_the_lost_history() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.resume_id = Some("sess_gone".into());
+        let mut p = Protocol::new(config);
+        let step = p
+            .receive(json!({"id": ID_CREATE, "error": {"code": -32004,
+                            "message": "Session not found: sess_gone"}}))
+            .unwrap();
+        assert_eq!(step.events.len(), 1);
+        assert_eq!(step.events[0].kind, "status");
+        assert!(step.events[0].text.contains("without its history"), "{}", step.events[0].text);
     }
 
     #[test]
@@ -847,6 +1337,37 @@ mod tests {
     }
 
     #[test]
+    fn full_access_asks_when_only_a_lasting_allow_is_offered() {
+        let mut config = super::super::tests::config("zcode");
+        config.cwd = PathBuf::from("/tmp");
+        config.mode = "full".into();
+        let mut p = Protocol::new(config);
+        p.initial();
+        p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let step = p
+            .receive(json!({"id": "perm_1", "method": "interaction/requestPermission", "params": {
+                "requestId": "perm_1", "sessionId": "sess_test", "toolCallId": "call_1",
+                "toolName": "Bash", "reason": "Organization policy", "riskLevel": "medium",
+                "input": {"command": "ls"},
+                "options": [
+                    {"optionId": "allow_project", "kind": "allow_always", "name": "Always",
+                     "response": {"decision": "allow", "permissionUpdates": [{"type": "addRules"}]}},
+                ],
+            }}))
+            .unwrap();
+        assert!(step.write.is_empty(), "never granted automatically");
+        let approval = step.events.iter().find(|e| e.kind == "approval").expect("asks instead");
+        let data = approval.data.as_ref().unwrap();
+        assert_eq!(data[super::super::LASTING_ONLY], true);
+        assert_eq!(data[super::super::LASTING_DECLINABLE], true);
+        // The automatic decline answers with a plain denial, no rule updates.
+        let id = approval.request_id.clone().unwrap();
+        let denied = p.approve(&id, false).unwrap();
+        assert_eq!(denied["result"]["decision"], "deny");
+        assert!(denied["result"].get("permissionUpdates").is_none());
+    }
+
+    #[test]
     fn catalog_effort_values_are_validated_before_use() {
         let mut mixed = snapshot();
         mixed["settings"]["model"]["available"][0]["reasoning"]["levels"] = json!([
@@ -890,8 +1411,137 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs the ZCode CLI; metadata only, never sends a prompt"]
     async fn installed_zcode_lists_models() {
-        let path = executable("zcode").expect("Install ZCode first");
+        // Prefer the desktop bundle: a PATH shim (or a stale install) may not
+        // speak the current protocol, and the bundle is what the pin records.
+        let path = bundled().unwrap_or_else(|| executable("zcode").expect("Install ZCode first"));
         let models = models(&path).await.unwrap();
         assert!(models.len() > 1, "{models:?}");
+    }
+
+    /// Metadata re-verification against the current desktop CLI: the create
+    /// snapshot carries per-model capability properties and slash commands,
+    /// and `session/usage` answers a zero-state session. Never sends a prompt,
+    /// so turn event names stay pinned to the recorded frames.
+    #[tokio::test]
+    #[ignore = "needs the ZCode CLI; metadata only, never sends a prompt"]
+    async fn installed_zcode_snapshot_capabilities() {
+        // Prefer the desktop bundle: a PATH shim (or a stale install) may not
+        // speak the current protocol, and the bundle is what the pin records.
+        let path = bundled().unwrap_or_else(|| executable("zcode").expect("Install ZCode first"));
+        // The bundled CLI runs on the desktop app's Electron runtime, so the
+        // launch layer builds the process (direct exec of zcode.cjs fails).
+        let mut command = super::launch::command(&path).unwrap();
+        command.arg("app-server");
+        let workspace = std::env::temp_dir();
+        command
+            .current_dir(&workspace)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command.spawn().expect("start ZCode");
+        let group = ProcessGroup::register(child.id());
+        let snapshot = tokio::time::timeout(Duration::from_secs(25), async {
+            let mut stdin = child.stdin.take().unwrap();
+            write_json(
+                &mut stdin,
+                &json!({"id": ID_CREATE, "method": "session/create", "params": {
+                    "workspace": workspace_of(&workspace),
+                    "persistence": "deferred",
+                    "mode": "plan",
+                    "titleGenerationEnabled": false,
+                }}),
+            )
+            .await
+            .unwrap();
+            let mut stdout = tokio::io::BufReader::new(child.stdout.take().unwrap());
+            loop {
+                let mut line = String::new();
+                let count = stdout.read_line(&mut line).await.unwrap();
+                assert!(count > 0, "ZCode exited before the create reply");
+                let value: Value = serde_json::from_str(&line).unwrap();
+                if value.get("method").is_some() && value.get("id").is_some() {
+                    // Decline reverse requests like the run path does; the
+                    // create waits on them (runtime preferences).
+                    write_json(
+                        &mut stdin,
+                        &json!({"id": value["id"], "error": {"code": -32601, "message": "Method not found"}}),
+                    )
+                    .await
+                    .unwrap();
+                    continue;
+                }
+                if value["id"] == ID_CREATE {
+                    assert!(value.get("error").is_none(), "create failed: {value}");
+                    let session_id = value["result"]["session"]["sessionId"].clone();
+                    let result = value["result"].clone();
+                    // A fresh deferred session may be known to usage only
+                    // after its first send; a zero-state reply proves the
+                    // method, a session-not-found error proves the same on
+                    // builds that defer harder. Anything else has changed.
+                    write_json(
+                        &mut stdin,
+                        &json!({"id": 90, "method": "session/usage", "params": {"sessionId": session_id}}),
+                    )
+                    .await
+                    .unwrap();
+                    loop {
+                        let mut line = String::new();
+                        stdout.read_line(&mut line).await.unwrap();
+                        let value: Value = serde_json::from_str(&line).unwrap();
+                        if value.get("method").is_some() && value.get("id").is_some() {
+                            write_json(
+                                &mut stdin,
+                                &json!({"id": value["id"], "error": {"code": -32601, "message": "Method not found"}}),
+                            )
+                            .await
+                            .unwrap();
+                            continue;
+                        }
+                        if value["id"] == 90 {
+                            if let Some(result) = value.get("result") {
+                                assert_eq!(result["totalTokens"], 0, "{result}");
+                                assert!(result["inputTokens"].is_number(), "{result}");
+                            } else {
+                                assert_eq!(value["error"]["code"], -32004, "{value}");
+                            }
+                            break;
+                        }
+                    }
+                    return result;
+                }
+            }
+        })
+        .await
+        .expect("ZCode snapshot timed out");
+        drop(group);
+        let _ = child.start_kill();
+
+        let entries = snapshot["settings"]["model"]["available"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            let input = &entry["properties"]["inputFormat"];
+            assert!(input["supportsText"].is_boolean(), "no inputFormat on {entry}");
+            assert!(input["supportsImage"].is_boolean(), "no supportsImage on {entry}");
+            assert!(input["supportsPdf"].is_boolean(), "no supportsPdf on {entry}");
+            // The catalog schema is strict and carries no speed or tier
+            // field; the GLM Coding Plan sells speed per plan, not per model.
+            assert!(entry.get("capabilities").is_none(), "{entry}");
+            assert!(entry.get("speedTiers").is_none(), "{entry}");
+            assert!(entry.get("serviceTiers").is_none(), "{entry}");
+        }
+        let commands = snapshot["slashCommands"].as_array().unwrap();
+        assert!(
+            commands.iter().any(|c| c["name"] == "goal" && c["source"] == "builtin"),
+            "expected the builtin /goal command in {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|c| c["name"] == "compact"),
+            "expected /compact in {commands:?}"
+        );
+        assert!(snapshot["projection"]["contextWindow"].is_number());
+        assert!(snapshot["todos"].is_array());
     }
 }

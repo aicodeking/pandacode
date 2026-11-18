@@ -237,16 +237,33 @@ async fn a_steer_during_the_exit_wait_is_held_and_answered_after_spawn() {
     let held = exit::hold_for_test("exit-steer-wait");
     let journal = std::env::temp_dir().join(format!("pandacode-exit-{}-steerwait", std::process::id()));
     let _ = std::fs::remove_file(&journal);
-    let (task, mut events, input) = start("exit-steer-wait", QUICK, &[&journal]);
+    // Unlike QUICK, keep stdin open until both the prompt and held steer arrive.
+    let answers_held_steer = r#"
+printf 'new-start\n' >> "$1"
+IFS= read -r init
+printf '%s\n' '{"type":"control_response","response":{"request_id":"pandacode-init","subtype":"success","response":{}}}'
+IFS= read -r prompt || exit 1
+IFS= read -r steer || { printf '%s\n' 'missing held steer' >&2; exit 1; }
+case "$steer" in *'"type":"user"'*) ;; *) printf '%s\n' 'held steer is not a user frame' >&2; exit 1 ;; esac
+case "$steer" in *'"role":"user"'*) ;; *) printf '%s\n' 'held steer has no user role' >&2; exit 1 ;; esac
+case "$steer" in *'"text":"also this"'*) ;; *) printf '%s\n' 'held steer text differs' >&2; exit 1 ;; esac
+printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$$"
+printf '%s\n' '{"type":"result","subtype":"success","result":"done"}'
+"#;
+    let (task, mut events, input) = start("exit-steer-wait", answers_held_steer, &[&journal]);
     let (reply, answered) = tokio::sync::oneshot::channel();
     input.send(RunInput::Steer { id: "s1".into(), text: "also this".into(), reply }).unwrap();
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert!(!journal.exists(), "spawned before the earlier exit finished");
     drop(held);
     let answer = tokio::time::timeout(Duration::from_secs(10), answered).await.expect("the steer was never answered");
-    assert!(answer.expect("the steer's reply was dropped").is_ok(), "the held steer failed");
+    // Check the run before reading events so a write error is not hidden by channel EOF.
+    tokio::time::timeout(Duration::from_secs(10), task).await
+        .expect("the held-steer run timed out")
+        .expect("the held-steer task panicked")
+        .expect("the held-steer run failed");
+    answer.expect("the steer's reply was dropped").expect("the held steer failed");
     tokio::time::timeout(Duration::from_secs(10), event(&mut events, "session")).await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(10), task).await;
     let _ = std::fs::remove_file(&journal);
 }
 
@@ -305,7 +322,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
     let reaper = tokio::spawn(async move {
         gate.await.unwrap();
         child.kill().await.unwrap();
-        finish_child(&mut child, stdin, &mut group).await;
+        finish_child(&mut child, stdin, &mut group, EXIT_WAIT).await;
         exit_registry().lock().unwrap().remove(session);
         drop(done);
     });

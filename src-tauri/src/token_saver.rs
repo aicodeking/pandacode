@@ -15,8 +15,8 @@ const RTK_INSTALL: &str = "brew install rtk";
 #[serde(rename_all = "camelCase")]
 pub struct Tools {
     /// RTK (Rust Token Killer) compresses command output before agents read it.
-    rtk: bool,
-    rtk_version: String,
+    pub rtk: bool,
+    pub rtk_version: String,
     rtk_install: String,
 }
 

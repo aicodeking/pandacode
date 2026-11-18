@@ -139,6 +139,26 @@ test.describe('project run', () => {
     expect(await calls(page, 'browser_open')).toHaveLength(1);
   });
 
+  test('the dock Run item is green while the script runs, and pulses only while starting', async ({ page }) => {
+    await open(page, { hold: { 'start:session-1': true } });
+    const glyph = runButton(page).locator('.icon');
+    const pulsing = () => glyph.evaluate(el => getComputedStyle(el).animationName === 'state-pulse');
+    // The dock sits in the main pane's header, where a scene steps the status tones (sky.css), so the probe reads the tone there.
+    const green = () => glyph.evaluate(el => { const probe = document.createElement('i'); probe.style.color = 'var(--ds-success)'; el.closest('#action-dock')!.parentElement!.append(probe); const success = getComputedStyle(probe).color; probe.remove(); return getComputedStyle(el).color === success; });
+    await expect(runButton(page)).not.toHaveAttribute('data-running');
+    await runButton(page).click();
+    await expect(runButton(page)).toHaveAttribute('aria-busy', 'true');
+    expect(await pulsing()).toBe(true);
+    await release(page, 'start:session-1');
+    await expect(runButton(page)).toHaveAttribute('data-running', '');
+    await expect(runButton(page)).toHaveAttribute('aria-busy', 'false');
+    await expect.poll(green).toBe(true);
+    expect(await pulsing()).toBe(false);
+    await page.evaluate(() => (window as any).__runTest.emit('terminal-event', { terminalId: 'run-1', data: '', exit: true }));
+    await expect(runButton(page)).not.toHaveAttribute('data-running');
+    await expect.poll(green).toBe(false);
+  });
+
   test('restarts an exited Run terminal without accumulating tabs', async ({ page }) => {
     await open(page, { scripts: { 'session-1': { path: 'pandacode-run.sh' } } });
     await runButton(page).click();

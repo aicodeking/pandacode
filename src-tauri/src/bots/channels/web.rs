@@ -111,7 +111,7 @@ fn history(app: &tauri::AppHandle, channel: &Channel) -> Value {
             Some(rows.flatten().map(|(role, content, at)| json!({"role": role, "text": if role == "user" { visible(&content) } else { content }, "at": at})).collect())
         })
         .unwrap_or_default();
-    let busy = session.as_deref().is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(session)).unwrap_or(false));
+    let busy = session.as_deref().is_some_and(|session| crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(session)).unwrap_or(false));
     json!({
         "bot": bot.map(|bot| json!({"name": bot.name, "role": bot.role, "avatar": bot.avatar, "paused": bot.paused})),
         "messages": messages,
@@ -128,7 +128,7 @@ fn busy(app: &tauri::AppHandle, channel: &Channel) -> bool {
             .query_row("SELECT session_id FROM bot_threads WHERE bot_id=?1 AND channel_id=?2 AND external_id=?3", rusqlite::params![channel.bot_id, channel.id, THREAD], |r| r.get(0))
             .ok()
     });
-    session.is_some_and(|session| state.agents.lock().map(|agents| agents.contains_key(&session)).unwrap_or(false))
+    session.is_some_and(|session| crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session)).unwrap_or(false))
 }
 
 async fn events(app: &tauri::AppHandle, channel: &Channel, after: u64) -> Value {

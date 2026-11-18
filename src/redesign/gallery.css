@@ -1,0 +1,54 @@
+/* Preview-only layout for the design-system gallery (`?ds`). The primitives themselves live in src/design-system.css. */
+.ds-gallery{position:absolute;inset:0;z-index:40;overflow:auto;padding:calc(var(--header-height,47px) + 8px) 28px 40px;background:var(--panel-surface,var(--bg));color:var(--text)}
+.ds-gallery-bar{display:flex;align-items:center;gap:16px;margin-bottom:20px}
+.ds-gallery-bar>.ds-title{flex:1}
+.ds-gallery-theme{width:200px}
+.ds-gallery-wall{display:inline-flex;align-items:center;gap:8px;font-size:var(--ds-text-meta);color:var(--muted)}
+.ds-gallery-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:28px;align-items:start}
+.ds-gallery-col{display:grid;gap:16px;min-width:0}
+.ds-gallery-chips{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.ds-gallery-pad{padding:8px 10px}
+.ds-gallery-wrap{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.ds-gallery-wrap input:not([type=checkbox]),.ds-gallery-wrap select{width:180px}
+/* The gallery stands in for the conversation; the pane's other content is hidden behind it, so a wallpaper still shows through. */
+.main-pane:has(>.ds-gallery)>:not(.ds-gallery){visibility:hidden}
+.ds-gallery{background:transparent}
+
+/* `?ds=source`: the reference screenshot rebuilt from the primitives, over the whole window on the page colour.
+ * Proportions follow the image at 1/1.45 (a 1412x581 viewport at 1.45 device pixels reproduces it). */
+.ds-gallery.ds-source{position:fixed;z-index:100;inset:0;padding:0;display:grid;grid-template-columns:441px 366px 1fr;gap:0 14px;align-items:start;overflow:hidden;background:var(--bg);--ds-src-avatar:#6c60cc}
+.ds-src-col{display:flex;flex-direction:column;gap:8px;min-width:0}
+.ds-src-left{margin-left:-30px;padding-top:10px}
+.ds-src-mid{padding-top:12px;margin-left:-7px}
+.ds-src-right{padding:10px 12px 0 0;gap:0}
+.ds-src-faint{color:var(--faint)}
+.ds-src-bubble{padding:14px 18px;border-radius:var(--ds-radius-card);background:var(--ds-card-inner);font-size:var(--ds-text-body);line-height:1.55;color:var(--text);max-width:420px}
+.ds-src-turn{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin:26px 10px 0;font-size:var(--ds-text-body);font-variant-numeric:tabular-nums}
+.ds-src-turn>.ds-dots{margin-left:8px}
+.ds-src-rule{width:100%;height:1px;margin:12px 0 0;border:0;background:var(--ds-border)}
+.ds-src-text{margin:24px 0 0 6px;font-size:var(--ds-text-body);line-height:1.6;color:var(--text)}
+.ds-src-composer{margin-top:92px;padding:6px;gap:6px}
+.ds-src-steer{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-height:36px;padding:0 8px;color:var(--muted)}
+.ds-src-steer-btn{gap:6px;font-size:var(--ds-text-body);color:var(--muted)}
+.ds-src-input{flex-direction:row;align-items:center;gap:8px;min-height:62px;padding:8px 8px 8px 14px}
+.ds-src-ph{flex:1;font-size:var(--ds-text-body);color:var(--faint);white-space:nowrap;overflow:hidden;direction:rtl;text-align:left}
+.ds-src-pill{display:inline-flex;align-items:center;gap:6px;padding:4px;border-radius:12px;background:color-mix(in srgb,var(--bg) 60%,black);box-shadow:inset 0 0 0 1px var(--ds-border)}
+.ds-src-pill>.icon-button{width:40px;height:36px}
+.ds-src-stop{width:14px;height:14px;border-radius:3px;background:var(--ds-danger)}
+.ds-src-tray{display:flex;gap:18px;min-height:40px;padding:0 10px;align-items:center}
+.ds-src-tray>button{gap:6px;font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--muted)}
+.ds-src-tray .icon{--icon-size:var(--icon-md)}
+.ds-src-meta{display:flex;align-items:center;gap:8px;margin:8px 0 14px;font-size:var(--ds-text-body)}
+.ds-src-author{color:var(--text)}
+.ds-src-chips{display:inline-flex;align-items:center;gap:6px;margin-left:auto;color:var(--muted)}
+.ds-src-chips>.icon{--icon-size:var(--icon-sm)}
+.ds-src-right>.ds-seg{margin-bottom:30px}
+.ds-src-checks{gap:0;padding:4px}
+.ds-src-merge{padding:6px 10px 10px;border-top:1px solid var(--ds-border);margin-top:2px}
+.ds-src-desc-head{display:flex;align-items:center;gap:6px;margin-top:26px;color:var(--muted)}
+.ds-src-desc-head>h2{margin:0;font-size:var(--ds-text-body);font-weight:var(--weight-strong);color:var(--text)}
+.ds-src-desc-head>.icon{--icon-size:var(--icon-sm)}
+.ds-src-desc-head>.icon-button{margin-left:auto}
+.ds-src-body{margin:16px 0 0;font-size:var(--ds-text-body);line-height:1.6;color:var(--text)}
+.ds-src-closes{margin:8px 0 0;font-size:var(--ds-text-body);color:var(--faint);opacity:.35}
+html:not([data-theme="dark"]) .ds-src-pill{background:var(--ds-fill)}

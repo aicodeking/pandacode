@@ -1,7 +1,9 @@
 export const MAX_DEVICES = 10;
 export const MAX_FRAME_BYTES = 256 * 1024;
-/** A rate-limited frame longer than this is rejected unparsed. */
+/** A rate-limited frame longer than this is not parsed; only its ends are scanned for `to`/`ref`. */
 export const RATE_LIMITED_PARSE_CHARS = 4096;
+/** How many characters at each end of a large rate-limited frame are scanned for `to`/`ref`. */
+export const RATE_LIMITED_SCAN_CHARS = 512;
 export const RATE_PER_SEC = 20;
 export const RATE_BURST = 100;
 export const TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;

@@ -7,7 +7,8 @@
 --space-0-5:.1429rem;--space-1:.2857rem;--space-2:.5714rem;--space-3:.8571rem;--space-4:1.1429rem;--space-5:1.4286rem;--space-6:1.7143rem;--space-8:2.2857rem;
 --radius-xs:2px;--radius-sm:4px;--radius-md:6px;--radius-lg:10px;--radius-full:999px;
 --icon-xs:12px;--icon-sm:14px;--icon-md:16px;--icon-lg:20px;
---icon-stroke-xs:2.1;--icon-stroke-sm:1.85;--icon-stroke-md:1.65;--icon-stroke-lg:1.35;
+/* Line icons match the reference's weight: ≈1.7 units at 20px (≈1.4px drawn), a touch heavier as they shrink. */
+--icon-stroke-xs:2.1;--icon-stroke-sm:1.9;--icon-stroke-md:1.75;--icon-stroke-lg:1.65;
 --row-sm:24px;--row:28px;--row-lg:32px;
 --control-sm:24px;--control:28px;--control-lg:32px;
 --switch-w:30px;--switch-h:18px;
@@ -25,4 +26,4 @@
 --tone-warning-bg:color-mix(in srgb,var(--warning) 12%,transparent);
 --diff-add-bg:var(--tone-success-bg);--diff-del-bg:var(--tone-danger-bg);
 }
-html[data-theme="dark"]{--info:#6aa2f0;--warning:#e3b24f}
+html[data-theme="dark"]{--info:#15a0ec;--warning:#e3b24f}

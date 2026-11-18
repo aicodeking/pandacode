@@ -17,12 +17,14 @@ const logos: Partial<Record<ProviderId, string>> = {
   antigravity: new URL('./assets/providers/antigravity.png', import.meta.url).href,
   grok: new URL('./assets/providers/grok.png', import.meta.url).href,
   mimo: new URL('./assets/providers/mimo.png', import.meta.url).href,
+  alibaba: new URL('./assets/providers/alibaba.svg', import.meta.url).href,
   pi: new URL('./assets/providers/pi.png', import.meta.url).href,
   deepseek: new URL('./assets/providers/deepseek.png', import.meta.url).href,
   commandcode: new URL('./assets/providers/commandcode.png', import.meta.url).href,
   muse: new URL('./assets/providers/muse.svg', import.meta.url).href,
   omp: new URL('./assets/providers/omp.svg', import.meta.url).href,
   hermes: new URL('./assets/providers/hermes.svg', import.meta.url).href,
+  cursor: new URL('./assets/providers/cursor.svg', import.meta.url).href,
 };
 
 /** Decorative provider mark. The surrounding control supplies its accessible name. */

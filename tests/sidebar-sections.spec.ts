@@ -32,7 +32,7 @@ test.describe('sidebar sections', () => {
     await expect(row(page, 'sections-approval').locator('.task-status')).toHaveText('Approval');
     await expect(row(page, 'sections-failed').locator('.task-indicator')).toHaveAttribute('aria-label', 'Failed');
     await expect(row(page, 'sections-limited').locator('.task-indicator')).toHaveAttribute('aria-label', /^Usage limit · /);
-    await expect(row(page, 'sections-limited').locator('.task-status')).toHaveText(/^Limited · \d/);
+    await expect(row(page, 'sections-limited').locator('.task-status')).toHaveText(/^Limited · (?:[A-Z][a-z]{2} )?\d/);
     await expect(row(page, 'sections-running').locator('.task-runtime')).toBeVisible();
     await expect(row(page, 'sections-review-1')).toHaveClass(/\bunread\b/);
     await expect(row(page, 'sections-review-1').locator('.task-indicator.unread')).toHaveAttribute('aria-label', 'Unread');
@@ -51,6 +51,11 @@ test.describe('sidebar sections', () => {
     await page.addInitScript(() => localStorage.setItem('pandacode.sidebar.sort', JSON.stringify({ perProject: 3 })));
     await open(page);
     await expect(section(page, 'review').locator('.task-item')).toHaveCount(3);
+    // Its text starts where the section's heading does.
+    const textLeft = (node: Element) => { const range = document.createRange(); range.selectNodeContents(node); return range.getBoundingClientRect().left; };
+    const headingLeft = await section(page, 'review').locator('.group-heading').evaluate(textLeft);
+    const moreLeft = await section(page, 'review').getByRole('button', { name: 'Show 15 more', exact: true }).evaluate(textLeft);
+    expect(Math.abs(moreLeft - headingLeft)).toBeLessThan(1);
     await section(page, 'review').getByRole('button', { name: 'Show 15 more', exact: true }).click();
     await expect(section(page, 'review').locator('.task-item')).toHaveCount(18);
     await section(page, 'review').getByRole('button', { name: 'Show less', exact: true }).click();
@@ -264,7 +269,7 @@ test.describe('sidebar sections', () => {
     // Finished follows the sidebar sort, so its rows can move.
     await expect(menu(page).getByRole('menuitem', { name: 'Move up', exact: true })).toBeVisible();
     await expect(menu(page).getByRole('menuitem', { name: 'Copy task ID', exact: true })).toBeVisible();
-    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Rename…', 'Schedule a wake-up…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
+    expect((await items.allTextContents()).map(text => text.trim())).toEqual(['Pin task', 'Move up', 'Move down', 'Open beside', 'Rename…', 'Schedule a wake-up…', 'Mark as read', 'Copy project path', 'Copy task ID', 'Settle', 'Delete task…']);
     await page.keyboard.press('Escape');
     // A worktree task offers its branch.
     await showAllFinished(page);
@@ -377,7 +382,7 @@ $&`);
 
   for (const [theme, wallpaper] of [['light', false], ['dark', false], ['light', true], ['dark', true]] as const) {
     test(`Settled shows the sidebar's own surface and rows never pass under it (${theme}${wallpaper ? ', wallpaper' : ''})`, async ({ page }) => {
-      await page.addInitScript(([theme, wallpaper]) => { localStorage.setItem('pandacode.theme', theme); localStorage.setItem('pandacode.wallpapers', String(wallpaper)); }, [theme, wallpaper] as const);
+      await page.addInitScript(([theme, wallpaper]) => { localStorage.setItem('pandacode.theme', theme); localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: wallpaper, visibility: 20, blur: 0, set: 'automatic', pinned: null })); }, [theme, wallpaper] as const);
       await page.setViewportSize({ width: 1280, height: 640 });
       await open(page);
       expect(await page.locator('.workspace').evaluate(node => node.hasAttribute('data-wallpaper'))).toBe(wallpaper);
@@ -392,4 +397,63 @@ $&`);
       expect(Math.abs(clip - (await dock.boundingBox())!.y)).toBeLessThan(1);
     });
   }
+});
+
+test('every row keeps one indicator node: a state change fades and moves nothing', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.sidebar.completedOpen', 'true'));
+  await page.goto('/?sections');
+  const unread = page.locator('#navigation .task-item[data-id="sections-review-1"]');
+  await expect(unread.locator('.task-indicator.unread')).toHaveAttribute('aria-label', 'Unread');
+  for (const rowLocator of await page.locator('#navigation .task-item').all()) await expect(rowLocator.locator('.task-indicator')).toHaveCount(1);
+
+  // Mark as read: the same node loses its class and its colour fades; the age never moves.
+  const age = () => unread.locator('.task-age').evaluate(el => { const box = el.getBoundingClientRect(), row = el.closest('.task-item')!.getBoundingClientRect(); return [box.left - row.left, box.top - row.top, box.width, row.height]; });
+  const before = await age();
+  await unread.locator('.task-indicator').evaluate(node => {
+    (window as any).__indicator = node; (window as any).__faded = [];
+    node.addEventListener('transitionrun', event => (window as any).__faded.push((event as TransitionEvent).propertyName));
+  });
+  await unread.hover();
+  await page.locator('#task-row-sections-review-1 .task-more').click();
+  await page.getByRole('menuitem', { name: 'Mark as read' }).click();
+  await expect(unread).not.toHaveClass(/\bunread\b/);
+  await page.mouse.move(0, 0);
+  const after = await unread.locator('.task-indicator').evaluate(node => ({ same: node === (window as any).__indicator, faded: (window as any).__faded, cls: node.className, hidden: node.getAttribute('aria-hidden'), role: node.getAttribute('role') }));
+  expect(after).toMatchObject({ same: true, cls: 'task-indicator', hidden: 'true', role: null });
+  expect(after.faded).toContain('background-color');
+  expect(await age()).toEqual(before);
+
+  // Every state, on a card and on a one-line row: the slot's neighbours stay put, the paint changes.
+  const states = ['running', 'attention', 'failed', 'limited', 'unread', ''];
+  for (const selector of ['#navigation .task-item:not(.task-oneline)', '#navigation .completed-group .task-item.task-oneline']) {
+    const results = await page.locator(selector).first().evaluate((item, states) => {
+      const node = item.querySelector<HTMLElement>('.task-indicator')!, next = node.nextElementSibling!;
+      return states.map(state => {
+        node.className = `task-indicator ${state}`.trim();
+        document.documentElement.style.setProperty('--ds-ease-in', '0s'); document.documentElement.style.setProperty('--ds-ease-out', '0s');
+        const self = getComputedStyle(node), mark = getComputedStyle(node, '::before'), box = next.getBoundingClientRect(), row = item.getBoundingClientRect();
+        return { state, place: [box.left, box.top, row.height], slot: self.width, dot: self.backgroundColor, mark: mark.backgroundColor, ring: mark.boxShadow };
+      });
+    }, states);
+    const clear = 'rgba(0, 0, 0, 0)';
+    for (const result of results) {
+      expect(result.place).toEqual(results[0].place);
+      expect(result.slot).toBe('6px');
+      expect(result.dot === clear).toBe(result.state !== 'unread');
+      if (result.state === 'limited' && selector.includes(':not')) expect(result.ring).not.toContain(`${clear} 0px 0px 0px 2px inset`);
+      else expect(result.mark === clear).toBe(result.state === 'unread' || result.state === '');
+    }
+    await page.evaluate(() => { document.documentElement.style.removeProperty('--ds-ease-in'); document.documentElement.style.removeProperty('--ds-ease-out'); });
+  }
+});
+
+test('rows sit on the section card with no inner panel, and the open thread is an inset card with a shadow', async ({ page }) => {
+  await page.goto('/?sections');
+  const row = page.locator('#navigation .task-item.selected').first();
+  await expect(row).toBeVisible();
+  const list = page.locator('#navigation .task-group:not(.completed-group) > .task-list').first();
+  expect(await list.evaluate(el => { const style = getComputedStyle(el); return [style.borderTopWidth, style.backgroundColor, style.boxShadow]; })).toEqual(['0px', 'rgba(0, 0, 0, 0)', 'none']);
+  const shadow = await row.evaluate(el => getComputedStyle(el).boxShadow);
+  expect(shadow).toContain('inset');
+  expect(shadow.split(/,\s*(?![^(]*\))/).length).toBeGreaterThan(1);
 });

@@ -6,7 +6,7 @@ test('global and per-provider environment variables are added, toggled, removed,
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
 
   // The global set applies to every harness and its values are never shown again.
   const global = page.locator('#global-environment');
@@ -51,10 +51,69 @@ test('global and per-provider environment variables are added, toggled, removed,
   expect(errors).toEqual([]);
 });
 
+test('every harness has environment settings, and all but GLM, MiMo and Alibaba an executable location', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await expect(page.locator('form[data-env-provider="codex"]')).toHaveCount(1);
+
+  const editors = await page.evaluate(() => ({
+    env: [...document.querySelectorAll<HTMLFormElement>('form[data-env-provider]')].map(form => form.dataset.envProvider!),
+    toggles: [...document.querySelectorAll<HTMLInputElement>('input[data-use-global]')].map(input => input.dataset.useGlobal!),
+    executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
+  }));
+  // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
+  expect([...editors.toggles].sort()).toEqual([...roster].sort());
+  expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
+  expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo' && id !== 'alibaba').sort());
+
+  // A generated card works like a hand-written one, and never echoes a value.
+  const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await expect(codex.locator('h3')).toContainText('Codex');
+  await expect(codex.locator('.connection-state')).toHaveText(/Installed/);
+  await codex.locator('summary').first().click();
+  await codex.locator('details.connection-env > summary').click();
+  await expect(codex.getByRole('checkbox', { name: 'Use global environment variables' })).toBeChecked();
+  await codex.getByLabel('Variable name').fill('CODEX_EXTRA');
+  await codex.getByLabel('Variable value').fill('proxy-secret-value');
+  await codex.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(codex.locator('.connection-env-var code')).toHaveText('CODEX_EXTRA');
+  await expect(codex).not.toContainText('proxy-secret-value');
+  await codex.getByRole('button', { name: 'Remove CODEX_EXTRA' }).click();
+  await expect(codex.locator('.connection-env-var')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('generated cards draw a roster name as text and drop an id that is not plain', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_configuration') return Promise.resolve({ executablePaths: {}, providers: [['codex', '<img src=x onerror="window.__xss=1">'], ['bad"><img src=x onerror="window.__xss=1">', 'Bad']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: null, mimoEndpoints: [], secureStorageAvailable: false });
+      switch (command) {
+    `) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const codex = page.locator('.connection-card', { has: page.locator('form[data-env-provider="codex"]') });
+  await expect(codex.locator('h3')).toContainText('<img src=x');
+  await expect(page.locator('.provider-connections img[src="x"]')).toHaveCount(0);
+  await expect(page.locator('[data-executable^="bad"]')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__xss)).toBeUndefined();
+  expect(errors).toEqual([]);
+});
+
 test('provider connections expose Kilo models, approval modes and executable settings', async ({ page }, testInfo) => {
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: /^Model: / });
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await showHarness(page, 'kilo');
@@ -70,7 +129,7 @@ test('provider connections expose Kilo models, approval modes and executable set
   await expect(page.locator('#mode-picker-trigger')).toContainText('Plan mode');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Kilo Code', exact: false }) });
   await expect(card.locator('h3 .provider-logo[data-provider="kilo"]')).toBeVisible();
   const ompCard = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Oh My Pi', exact: false }) });
@@ -87,7 +146,7 @@ test('provider connections show the ZCode sign-in card', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'ZCode', exact: false }) });
   await expect(card).toContainText('Run zcode in a terminal and sign in');
   await expect(card.getByRole('link', { name: 'ZCode docs' })).toHaveAttribute('href', 'https://github.com/zai-org/ZCode');
@@ -109,7 +168,7 @@ test('provider connections show Claude credential conflicts and let users prefer
   });
   await page.goto('/');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('#claude-connection');
   await expect(card.getByRole('status')).toContainText('Environment API key');
   await expect(card).toContainText('https://gateway.example');
@@ -125,16 +184,48 @@ test('provider connections show Claude credential conflicts and let users prefer
   await expect(card.getByRole('status')).toContainText('Environment API key');
 });
 
+test('the Claude Code card lets PandaCode run Claude Code to refresh an expired login, on by default', async ({ page }) => {
+  const calls: unknown[] = [];
+  await page.exposeFunction('__refreshCall', (args: unknown) => { calls.push(args); });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_set_claude_cli_refresh') { await window.__refreshCall(args); await new Promise(resolve => setTimeout(resolve, 400)); }
+      switch(command) {`) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#claude-connection');
+  await card.locator(':scope > summary').click();
+  const refresh = card.getByRole('switch', { name: 'Let PandaCode ask Claude Code for usage when it can’t read it' });
+  await expect(refresh).toBeChecked(); // on by default
+  await expect(refresh).toHaveAccessibleDescription(/^On by default\..*an expired login, a login it can’t read, a network error, or a rate limit once the server’s wait is over.*no model call.*never writes Claude Code credentials/);
+  await expect(card.getByRole('img', { name: 'About asking Claude Code for usage' })).toBeVisible();
+  await refresh.click();
+  await expect(refresh).toBeDisabled(); // while saving, like the other controls
+  await expect(refresh).toBeEnabled();
+  await expect(refresh).not.toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode no longer runs Claude Code.');
+  await refresh.click();
+  await expect(refresh).toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('PandaCode asks Claude Code for usage when it can’t read it.');
+  expect(calls).toEqual([{ enabled: false }, { enabled: true }]);
+});
+
 async function delayedConnections(page: Page): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     const source = await response.text();
     await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
       if (command === 'provider_configuration') return new Promise(resolve => {
-        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
+        window.releaseProviderConfiguration = () => resolve({ executablePaths: { opencode: '/installed/opencode', antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, providers: [['claude', 'Claude Code'], ['codex', 'Codex'], ['kimi', 'Kimi Code']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false });
       });
       if (command === 'provider_set_executable') return new Promise(resolve => {
-        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par' }, glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
+        window.releaseProviderSave = () => { delete window.releaseProviderSave; resolve({ executablePaths: { opencode: args.path.replaceAll('//', '/'), antigravity: '/installed/agy_acp_server.par', claude: '/installed/claude', codex: '/installed/codex', kimi: '/installed/kimi' }, providers: [['claude', 'Claude Code'], ['codex', 'Codex'], ['kimi', 'Kimi Code']], glmKeySaved: false, glmKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: 'token-plan-ams', mimoEndpoints: [{ id: 'token-plan-ams', url: 'https://token-plan-ams.xiaomimimo.com/anthropic', label: 'Token Plan · Europe cluster' }], secureStorageAvailable: false }); };
       });
       switch (command) {
     `) });
@@ -142,20 +233,25 @@ async function delayedConnections(page: Page): Promise<void> {
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   await expect(page.getByLabel('OpenCode executable', { exact: true })).toHaveCount(1);
-  for (const summary of await page.locator('#settings-panel-providers details summary').all()) await summary.click();
+  for (const summary of await page.locator('#settings-panel-providers details:not(.connection-card)>summary').all()) await summary.click();
 }
 
 test('provider connections preserve other drafts and edits made during a save', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await delayedConnections(page);
+  await expect(page.locator('#settings-panel-providers')).toContainText('agy acp --process-per-session');
   const opencode = page.getByLabel('OpenCode executable', { exact: true });
   const antigravity = page.getByLabel('Antigravity ACP executable', { exact: true });
   await antigravity.fill('/draft/agy_acp_server.par');
   await page.evaluate(() => (window as any).releaseProviderConfiguration());
   await expect(opencode).toHaveValue('/installed/opencode');
   await expect(antigravity).toHaveValue('/draft/agy_acp_server.par');
+  // Generated cards and the Claude form hydrate like the hand-written ones.
+  await expect(page.getByLabel('Codex executable', { exact: true })).toHaveValue('/installed/codex');
+  await expect(page.getByLabel('Kimi Code executable', { exact: true })).toHaveValue('/installed/kimi');
+  await expect(page.getByLabel('Claude Code executable', { exact: true })).toHaveValue('/installed/claude');
   await opencode.fill('/opt//bin/opencode');
   const apply = page.locator('form[data-provider="opencode"]').getByRole('button', { name: 'Apply', exact: true });
   await apply.click();
@@ -194,14 +290,13 @@ test('provider connections are grouped in Providers and never accept secrets in 
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   const dialog = settings.getByRole('tabpanel', { name: 'Providers', exact: true });
   await expect(dialog.getByRole('heading', { name: 'Providers', exact: true })).toBeVisible();
   await expect(dialog.getByLabel('Z.ai API key', { exact: true })).toBeDisabled();
   await expect(dialog.locator('#glm-key-form').getByRole('button', { name: 'Save key', exact: true })).toBeDisabled();
   await expect(dialog.getByText('opencode auth login', { exact: true })).toBeVisible();
-  await expect(dialog.getByText('Each sign-in, key or plan here is used only by the agent it belongs to.')).toBeVisible();
   await expect(dialog.getByRole('img', { name: 'How providers relate to agents', exact: true })).toHaveAttribute('data-tip', /the global environment variables are the one thing every harness gets/);
   // OpenCode models are chosen once, in Settings → Agents.
   await expect(dialog.getByRole('button', { name: 'Choose models', exact: true })).toHaveCount(0);
@@ -218,12 +313,30 @@ test('provider connections are grouped in Providers and never accept secrets in 
   expect(errors).toEqual([]);
 });
 
+test('every folded provider card says its state', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const cards = page.locator('#settings-panel-providers details.connection-card');
+  await expect(cards.locator('#claude-connection .connection-state, .connection-state').first()).not.toBeEmpty();
+  await expect(page.locator('#claude-connection .connection-state')).toHaveText(/\S/);
+  const states = await cards.evaluateAll(list => list.map(card => [card.querySelector('h3')?.textContent?.trim(), card.querySelector('.connection-state')?.textContent ?? '', card.querySelector<HTMLElement>('.connection-state')?.dataset.tone ?? '']));
+  expect(states.filter(([, text]) => !text)).toEqual([]);
+  // Saved keys and sign-ins are success; nothing saved stays neutral.
+  for (const [, text, tone] of states) {
+    if (/^(Signed in|Key saved)$/.test(text!)) expect(tone).toBe('success');
+    if (/^(No key|Not signed in|Not installed|Installed|None)$/.test(text!)) expect(tone).toBe('');
+  }
+});
+
 test('the MiMo Token Plan card offers the documented clusters and keeps the key native-only', async ({ page }) => {
   const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card', { hasText: 'MiMo Token Plan' });
   await expect(card).toBeVisible();
   await expect(card.getByRole('link', { name: /Token Plan/ })).toHaveAttribute('href', 'https://platform.xiaomimimo.com/token-plan');
@@ -240,6 +353,22 @@ test('the MiMo Token Plan card offers the documented clusters and keeps the key 
   expect(errors).toEqual([]);
 });
 
+test('the Alibaba Token Plan card shows the Singapore endpoint and keeps the key native-only', async ({ page }) => {
+  const errors: string[] = []; page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  const card = page.locator('.connection-card', { hasText: 'Alibaba Token Plan' });
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('https://token-plan.ap-southeast-1.maas.aliyuncs.com/apps/anthropic');
+  await expect(card).toContainText('401');
+  await expect(card.getByRole('link', { name: /Token Plan setup/ })).toHaveAttribute('href', 'https://www.alibabacloud.com/help/en/model-studio/claude-code-token-plan');
+  await expect(card.getByLabel('Alibaba Token Plan API key', { exact: true })).toBeDisabled();
+  await expect(card.locator('#alibaba-key-status')).toContainText('ALIBABA_TOKEN_PLAN_API_KEY');
+  expect(errors).toEqual([]);
+});
+
 test('a delayed configuration fills the saved MiMo cluster and its URL', async ({ page }) => {
   await delayedConnections(page);
   await page.evaluate(() => (window as any).releaseProviderConfiguration());
@@ -251,7 +380,7 @@ test('a delayed configuration fills the saved MiMo cluster and its URL', async (
 test('provider connections expose all harnesses and real GLM model names', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   await expect(page.getByText('OpenCode', { exact: true }).first()).toBeVisible();
   await expect(page.getByText('GLM Coding Plan', { exact: true }).first()).toBeVisible();
   await expect(page.getByRole('dialog', { name: 'Harness and model', exact: true })).not.toContainText('Antigravity'); // not installed in the preview
@@ -262,7 +391,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {
@@ -287,7 +416,7 @@ for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigra
     await permissions.click();
     await page.getByRole('dialog', {name:'Permissions',exact:true}).getByRole('menuitemradio', {name:providerId === 'codex' ? 'Read only' : 'Plan mode',exact:true}).click();
     await expect.poll(readTask).toMatchObject({mode:'plan'});
-    await page.getByRole('button', {name:'Choose harness and model',exact:true}).click();
+    await page.getByRole('button', { name: /^Model: / }).click();
     const next = providerId === 'codex' ? 'claude' : 'codex';
     await pickModel(page, next, next === 'codex' ? 'gpt-6-astra' : 'sonnet');
     await expect.poll(readTask).toMatchObject({provider:next, mode:'plan'});
@@ -311,7 +440,7 @@ test('GitHub Copilot CLI has CLI sign-in guidance, a path override, Default mode
   await expect(modes.filter({ hasText: 'Accept edits' })).toHaveCount(0);
   await expect(modes.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');
-  const model = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const model = page.getByRole('button', { name: /^Model: / });
   await model.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await showHarness(page, 'github-copilot');
@@ -326,7 +455,7 @@ test('GitHub Copilot CLI has CLI sign-in guidance, a path override, Default mode
   await expect(model.locator('.provider-logo[data-provider="github-copilot"]')).toBeVisible();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'GitHub Copilot CLI', exact: false }) });
   await expect(card).toContainText('copilot login');
   await expect(card.getByRole('link', { name: 'Install and sign in' })).toHaveAttribute('href', 'https://docs.github.com/en/copilot/how-tos/set-up/install-copilot-cli');
@@ -354,7 +483,7 @@ test('Devin CLI lists its models with their own thinking levels, Devin modes, an
   await expect(modes.filter({ hasText: 'Plan mode' })).toContainText('edits wait until you approve the plan');
   await page.keyboard.press('Escape');
 
-  const model = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const model = page.getByRole('button', { name: /^Model: / });
   const search = page.getByRole('combobox', { name: 'Search harnesses and models' });
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   const group = picker;
@@ -385,7 +514,7 @@ test('Devin CLI lists its models with their own thinking levels, Devin modes, an
 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click(); await settings.getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Devin CLI', exact: false }) });
   await expect(card).toContainText('devin auth login');
   await expect(card.getByRole('link', { name: 'Install and sign in' })).toHaveAttribute('href', 'https://docs.devin.ai/cli');
@@ -400,7 +529,7 @@ test('GitHub Copilot model discovery does not crash the picker in an existing ch
   page.on('pageerror', error => errors.push(error.message));
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await expect(picker).toBeVisible();
   await showHarness(page, 'github-copilot');
@@ -413,9 +542,12 @@ test('Pi offers four approval modes with Accept edits', async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'pi'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
 });
 
@@ -423,7 +555,7 @@ test('settings organization supports Pi models and executable settings', async (
   await page.goto('/');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
   await page.locator('.new-task-button').click();
-  const trigger = page.getByRole('button', { name: 'Choose harness and model', exact: true });
+  const trigger = page.getByRole('button', { name: /^Model: / });
   await trigger.click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await showHarness(page, 'pi');
@@ -434,7 +566,7 @@ test('settings organization supports Pi models and executable settings', async (
   await expect(picker.locator('.model-menu-option[data-provider="pi"]').filter({ hasText: 'Claude Sonnet 4.5' })).toContainText('200K');
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Pi', exact: true }) });
   await expect(card.getByRole('link', { name: 'Install Pi' })).toHaveAttribute('href', 'https://github.com/earendil-works/pi');
   await card.locator('details.connection-path > summary').click();
@@ -445,13 +577,16 @@ test('DeepSeek has a key card, four approval modes and effort levels', async ({ 
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'deepseek'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'DeepSeek', exact: false }) });
   await expect(card.getByRole('link', { name: 'Get an API key' })).toHaveAttribute('href', 'https://platform.deepseek.com/api_keys');
   await expect(card.getByLabel('DeepSeek API key', { exact: true })).toHaveAttribute('type', 'password');
@@ -463,13 +598,16 @@ test('Command Code has a key card, four approval modes and its own model list', 
   await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'commandcode'));
   await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Command Code', exact: false }) });
   await expect(card.getByRole('link', { name: 'Command Code docs' })).toHaveAttribute('href', 'https://commandcode.ai/docs/acp');
   await expect(card.getByLabel('Command Code API key', { exact: true })).toHaveAttribute('type', 'password');
@@ -485,14 +623,17 @@ test('Cline has a sign-in card, four approval modes and thinking levels', async 
   await page.goto('/');
   await page.locator('.new-task-button').click();
   await expect(page.locator('.new-task-welcome')).toBeVisible();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Cline', exact: false }) });
   await expect(card).toContainText('cline auth');
   await expect(card.getByRole('link', { name: 'Cline CLI docs' })).toHaveAttribute('href', 'https://docs.cline.bot/usage/cli-overview');
@@ -510,14 +651,17 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await page.goto('/');
   await page.locator('.new-task-button').click();
   await expect(page.locator('.new-task-welcome')).toBeVisible();
-  await page.locator('#mode-picker-trigger').click();
   const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
-  await expect(items).toHaveCount(4);
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
   await expect(items.filter({ hasText: 'Accept edits' })).toHaveCount(1);
   await expect(items.filter({ hasText: 'Plan mode' })).toHaveCount(1);
   await page.keyboard.press('Escape');
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
   const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Hermes Agent', exact: false }) });
   await expect(card).toContainText('hermes acp');
   await expect(card.getByRole('link', { name: 'Hermes docs' })).toHaveAttribute('href', 'https://hermes-agent.org');

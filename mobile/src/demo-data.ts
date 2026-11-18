@@ -89,6 +89,15 @@ export function seedDemo() {
     toolMessage(tool('a1', 'Read', 'app/account/page.tsx', ''), 3.8),
     m('assistant', 'I need the `@simplewebauthn/server` package for the registration and assertion checks.', 2.5, 90_000),
   ];
+  const migrate: Message[] = [
+    m('user', 'Move the billing webhooks onto the new queue.', 96),
+    { ...m('assistant', 'The handlers are moved. Running the integration suite against the staging queue next.', 95.5, 40_000), turnChanges: { id: 'demo-migrate', attributed: true, files: [{ path: 'CHANGELOG.md' }, { path: 'src/index.ts' }], additions: 2, deletions: 1 } },
+    m('error', 'Could not reach the staging queue: connection refused on port 5672.', 95),
+  ];
+  const perf: Message[] = [
+    m('user', 'Speed up the sidebar morph on large projects.', 42),
+    m('assistant', 'Most of the time goes to measuring every row. I started caching those heights, then you stopped the run.', 40, 120_000),
+  ];
   const leo: Message[] = [
     m('user', 'What should I look at first today?', 13),
     m('assistant', 'Good morning. Three things:\n\n1. **Passkeys PR #482** is approved and its checks are green, so it can merge.\n2. The upload test is still flaky on CI; Codex is on it.\n3. The billing webhook migration failed overnight.', 12, 18_000),
@@ -150,7 +159,7 @@ export function seedDemo() {
     account: { id: '1', login: 'pandadev', avatarUrl: '' },
     devices, tasks,
     bots: { studio: bots, laptop: [] }, pulls: {}, teams: {}, outdated: {},
-    messages: { [`studio/${DEMO_TEAM_TASK}`]: team, 'studio/bot-leo': leo, 'studio/docs': docs, 'studio/auth': auth, 'studio/flaky': flaky },
+    messages: { [`studio/${DEMO_TEAM_TASK}`]: team, 'studio/bot-leo': leo, 'studio/migrate': migrate, 'studio/perf': perf, 'studio/docs': docs, 'studio/auth': auth, 'studio/flaky': flaky },
     live,
     providers: { studio: [
       { id: 'claude', name: 'Claude Code', installed: true, models: [] },

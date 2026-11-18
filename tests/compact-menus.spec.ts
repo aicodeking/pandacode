@@ -53,7 +53,8 @@ test('long menu details move behind an info mark with a tooltip on hover and on 
   await expect(row).toBeFocused();
   await expect(page.getByRole('tooltip')).toHaveText(detail);
   await page.keyboard.press('Escape');
-  await expect(page.getByRole('tooltip')).toHaveCount(0);
+  // The row's bubble goes; focus back on the trigger may show the trigger's own tip.
+  await expect(page.getByRole('tooltip')).not.toHaveText(detail);
   await expect(menu).toHaveCount(0);
 });
 
@@ -84,26 +85,28 @@ test('dialogs fold long descriptions and static field hints behind marks while k
   await expect(dialog).toBeHidden();
 });
 
-test('setting rows on the Settings page stay one line tall with notes and live status inline', async ({ page }) => {
+test('setting rows on the Settings page stay one line tall with notes behind marks and live status inline', async ({ page }) => {
   await open(page);
   await page.keyboard.press('Meta+,');
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   const group = (name: string) => settings.getByRole('tab', { name, exact: true });
+  await group('General').click();
   const rows = settings.locator('.settings-panel:not([hidden]) .setting-row');
   await expect(rows.first()).toBeVisible();
   const heights = await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height));
   for (const height of heights) expect(height).toBeLessThanOrEqual(64);
-  // The page is wide enough for notes to stay readable beside each title, without marks.
-  const compact = rows.filter({ hasText: 'Compact conversation' });
-  await expect(compact.locator('small')).toBeVisible();
-  await expect(compact.locator('.info-mark')).toHaveCount(0);
-  await group('Tools & add-ons').click();
+  // Notes moved behind info marks (Settings: `help()`), with the text still in the DOM for screen readers.
+  await expect(rows.filter({ hasText: 'Compact conversation' })).toBeVisible();
+  await group('Tools').click();
   const jev = rows.filter({ hasText: 'Jev' });
-  await expect(jev.locator('small')).toBeVisible();
-  await expect(jev.locator('small')).toHaveText('Browser tests and decision assistance. Your agents work without it.');
-  await expect(jev.locator('.info-mark')).toHaveCount(0);
+  await expect(jev.locator('.info-mark')).toHaveAttribute('data-tip', 'Optional add-on for browser tests and decision assistance. Your agents work without it.');
+  await expect(jev.locator('.sr-only')).toHaveText('Optional add-on for browser tests and decision assistance. Your agents work without it.');
   expect((await jev.boundingBox())!.height).toBeLessThanOrEqual(64);
+  // The mark is named after its row and follows the row's control in Tab order.
+  await expect(jev.getByRole('img', { name: 'About Jev', exact: true })).toBeVisible();
+  expect(await jev.evaluate(row => row.lastElementChild?.matches('.info-mark') && row.lastElementChild.previousElementSibling?.matches('button'))).toBe(true);
   // The GitHub status stays live and inline.
+  await group('Connections').click();
   await group('GitHub').click();
   const github = rows.filter({ hasText: 'GitHub' });
   await expect(github.locator('.github-settings-status')).toHaveText('Connected as you · orbit-labs/orbit');
@@ -136,4 +139,21 @@ test('the project menu is flat glass with equal insets, a borderless search and 
   expect(layout.ticks).toBe(1);
   // The flat --glass-* material (AGENTS.md): a translucent solid fill, no gradient; reduced transparency/contrast fall back to a solid panel.
   expect(layout.surface).toEqual({ glass: true, blur: true, width: 300 });
+});
+
+test('a Settings info mark is a Tab stop: keyboard focus shows its tip, which is also its description', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Connections', exact: true }).click();
+  const mark = settings.getByRole('img', { name: 'About Daytona' });
+  const tip = (await mark.getAttribute('data-tip'))!;
+  await expect(mark).toHaveAttribute('tabindex', '0');
+  await expect(mark).toHaveAttribute('aria-description', tip);
+  await mark.focus();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Shift+Tab');
+  await expect(mark).toBeFocused();
+  await expect(page.getByRole('tooltip')).toHaveText(tip);
+  expect(await mark.evaluate(el => getComputedStyle(el).outlineStyle)).toBe('solid');
 });

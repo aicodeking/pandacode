@@ -56,7 +56,8 @@ Settings → Agents → Model routing:
   becomes 0.5; any other saved value is kept.
 - **Profiler**: *Ready*, *Downloading…*, *Not downloaded* or *Failed*, with
   **Download** (or **Retry**). *Keyword heuristic: …* (no button) means the profiler
-  cannot run on this system — macOS older than 13.4, or ONNX Runtime failed to start —
+  cannot run on this system — a build without the profiler (Intel Mac, x86_64 Linux,
+  x86_64 Windows), macOS older than 13.4, or ONNX Runtime failed to start —
   and the heuristic routes for the rest of the session.
 - **Route**: describe a task to see the pick and the alternatives, with
   P(success) and estimated cost.
@@ -132,7 +133,10 @@ one row per key in pool order, named after its first entry without the trailing
   (`pandacode.team-models.added.<harness>`, at most 50). The same set feeds the team catalog sent to
   `architect_configure`, Models for teams ("Showing N of M models · Add model…") and Rank models (whose Add model…
   asks for the harness first); both open `src/team-model-add.ts`, a searchable list where recent models are
-  always on and the others toggle the added list. A ranked model that leaves the set keeps its tier, unshown.
+  on by default and any row can be turned off — dropping a recent model adds it to
+  `pandacode.team-models.excluded.<harness>`, which hides it until it is turned on again. Rows whose display
+  name another model in the harness shares show their model id beside it, and Rank models chips of a shared
+  name list their harnesses (their key when those match too). A ranked model that leaves the set keeps its tier, unshown.
 - When you name models in your message, the lead uses those.
 
 ## Privacy
@@ -146,8 +150,8 @@ content from your work. It happens only while routing is enabled and only when a
 on, or a team's first routed dispatch) or when you click **Download** or **Route** in
 Settings, never at launch. After a failed attempt it waits 10 minutes before trying again
 (**Retry** works any time). On macOS older than 13.4 it never happens: the bundled ONNX
-Runtime needs 13.4, so routing keeps the keyword heuristic there. Builds for Intel Macs
-and x86_64 Linux have no ONNX profiler at all (no compatible prebuilt ONNX Runtime;
+Runtime needs 13.4, so routing keeps the keyword heuristic there. Builds for Intel Macs,
+x86_64 Linux and x86_64 Windows have no ONNX profiler at all (no baseline-compatible prebuilt ONNX Runtime;
 `panda_onnx` in `src-tauri/build.rs`), so they also route with the heuristic and never
 download it. Routing itself makes no
 network request.

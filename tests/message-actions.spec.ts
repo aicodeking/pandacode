@@ -325,21 +325,22 @@ for (const width of [1600, 1000]) {
     await expect(bubble).toBeVisible();
     const edges = await page.evaluate(() => {
       const transcript = document.querySelector('#transcript')!;
-      const agent = transcript.querySelector('.agent-message')!.getBoundingClientRect();
+      // Replies sit in the turn card, which spans the column.
+      const agent = transcript.querySelector('.turn-card')!.getBoundingClientRect();
       const user = transcript.querySelector('.user-message')!.getBoundingClientRect();
       return { agentRight: agent.right, userRight: user.right, userLeft: user.left, agentLeft: agent.left };
     });
     expect(Math.abs(edges.userRight - edges.agentRight)).toBeLessThanOrEqual(1);
     expect(edges.userLeft).toBeGreaterThan(edges.agentLeft);
-    // Bubble text reads left to right, and "Worked for" starts at the column edge like replies.
+    // Bubble text reads left to right, and the turn header starts at its card's edge.
     expect(await bubble.locator('.message-content').evaluate(el => getComputedStyle(el).textAlign)).toBe('left');
-    const activity = page.locator('#transcript>.turn-activity').first();
+    const activity = page.locator('#transcript>.turn-card>.turn-activity').first();
     const [box, summary] = await Promise.all([activity.boundingBox(), activity.locator('.turn-activity-summary').boundingBox()]);
     expect(Math.abs(summary!.x - box!.x)).toBeLessThanOrEqual(1);
     // The live "Working…" row of a running turn starts there too.
     await page.getByRole('textbox', { name: 'Message your coding agent', exact: true }).fill('Keep going.');
     await page.keyboard.press('Enter');
-    const live = page.locator('#stream-region>.turn-activity');
+    const live = page.locator('#stream-region>.turn-card>.turn-activity');
     await expect(live).toBeVisible();
     const [liveBox, liveSummary, column] = await Promise.all([live.boundingBox(), live.locator('.turn-activity-summary').boundingBox(), activity.boundingBox()]);
     expect(Math.abs(liveSummary!.x - liveBox!.x)).toBeLessThanOrEqual(1);

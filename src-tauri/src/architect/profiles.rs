@@ -34,6 +34,7 @@ impl ModelSelection {
             "antigravity",
             "grok",
             "mimo",
+            "alibaba",
             "pi",
             "deepseek",
             "commandcode",
@@ -44,6 +45,7 @@ impl ModelSelection {
             "muse",
             "devin",
             "hermes",
+            "cursor",
         ]
         .contains(&self.provider.as_str())
             || self.model.len() > 200
@@ -57,7 +59,7 @@ impl ModelSelection {
         )
     }
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TeamSetup {
     pub architect: ModelSelection,
@@ -138,11 +140,26 @@ pub(crate) fn read(store: &Store) -> Result<TeamLibrary> {
         .map_err(|e| e.to_string())?;
     serde_json::from_str(&content).map_err(|e| format!("Saved team library is invalid: {e}"))
 }
+/// A saved profile never carries a team's model catalog (every installed model, up to 1000): it is
+/// rebuilt when the team turns on. `last_setup` keeps it, so a new task inheriting an auto team
+/// routes over every model and not just the roster.
+fn strip_catalog(setup: &mut TeamSetup) {
+    setup.config.catalog = Vec::new();
+}
+/// Whether a profile is this setup: a catalog is no part of a profile's identity.
+fn same_setup(profile: &TeamSetup, setup: Option<&TeamSetup>) -> bool {
+    setup.is_some_and(|setup| {
+        let mut setup = setup.clone();
+        strip_catalog(&mut setup);
+        let mut profile = profile.clone();
+        strip_catalog(&mut profile);
+        profile == setup
+    })
+}
 fn write(store: &Store, library: &TeamLibrary) -> Result<()> {
-    let content = serde_json::to_string(library).map_err(|e| e.to_string())?;
-    if content.len() > 256 * 1024 {
-        return Err("Saved team setups exceed their storage limit.".into());
-    }
+    let mut library = library.clone();
+    library.profiles.iter_mut().for_each(|p| strip_catalog(&mut p.setup));
+    let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
         .db
         .execute(
@@ -163,9 +180,11 @@ pub(crate) fn save_profile(
     store: &Store,
     id: Option<String>,
     name: String,
-    setup: TeamSetup,
+    mut setup: TeamSetup,
 ) -> Result<TeamLibrary> {
     setup.validate()?;
+    // Council is per task: a saved team profile never carries it.
+    setup.config.council = None;
     let name = validate_name(&name)?;
     let transaction = store
         .db
@@ -189,9 +208,6 @@ pub(crate) fn save_profile(
         profile.setup = setup;
         profile.updated_at = storage::now();
     } else {
-        if library.profiles.len() >= 20 {
-            return Err("Save up to 20 team profiles. Update or delete one first.".into());
-        }
         library.profiles.push(TeamProfile {
             id: storage::id(),
             name,
@@ -205,7 +221,7 @@ pub(crate) fn save_profile(
             .profiles
             .iter()
             .find(|p| p.id == *id)
-            .is_none_or(|p| Some(&p.setup) != library.last_setup.as_ref())
+            .is_none_or(|p| !same_setup(&p.setup, library.last_setup.as_ref()))
     }) {
         library.active_profile_id = None;
     }
@@ -250,11 +266,14 @@ pub(super) fn remember(
                     .ok_or("This team profile no longer exists.")
             })
             .transpose()?;
-        if profile.is_some_and(|p| p.setup != setup) {
+        if profile.is_some_and(|p| !same_setup(&p.setup, Some(&setup))) {
             return Err("The selected profile does not match this team setup. Save it as a custom setup or update the profile first.".into());
         }
         library.active_profile_id = profile.map(|p| p.id.clone());
         library.enabled = true;
+        // Council is per task: it never becomes the default for new tasks.
+        let mut setup = setup;
+        setup.config.council = None;
         library.last_setup = Some(setup);
     } else {
         library.enabled = false;
@@ -304,6 +323,30 @@ pub(crate) fn create_user_task(
     mode: Option<&str>,
     details: Option<(&str, &str)>,
 ) -> Result<Session> {
+    create_task_with(store, project_id, provider, model, mode, details, true)
+}
+/// A user task without the saved default team. Callers: a remote `task.start` on a host without
+/// "Full access for remote tasks" (a team's workers always run in full access), the desktop's
+/// /btw side task (`create_session` with `team: false`), the remote `btw.ask`, and chat creation.
+pub(crate) fn create_task_without_team(
+    store: &Store,
+    project_id: &str,
+    provider: &str,
+    model: &str,
+    mode: Option<&str>,
+    details: Option<(&str, &str)>,
+) -> Result<Session> {
+    create_task_with(store, project_id, provider, model, mode, details, false)
+}
+fn create_task_with(
+    store: &Store,
+    project_id: &str,
+    provider: &str,
+    model: &str,
+    mode: Option<&str>,
+    details: Option<(&str, &str)>,
+    team: bool,
+) -> Result<Session> {
     let transaction = store
         .db
         .unchecked_transaction()
@@ -317,7 +360,9 @@ pub(crate) fn create_user_task(
     if let Some((title, description)) = details {
         store.update_task_details(&task.id, title, description)?;
     }
-    apply_default(store, &task.id)?;
+    if team {
+        apply_default(store, &task.id)?;
+    }
     let task = store.session(&task.id)?;
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(task)
@@ -332,11 +377,8 @@ pub(crate) fn set_lead_guidance(
         .map(|text| text.trim().to_owned())
         .filter(|text| !text.is_empty());
     if let Some(guidance) = &library.lead_guidance {
-        if guidance.len() > super::MAX_LEAD_GUIDANCE || guidance.contains('\0') {
-            return Err(format!(
-                "Lead guidance must be under {} bytes.",
-                super::MAX_LEAD_GUIDANCE
-            ));
+        if guidance.contains('\0') {
+            return Err("Lead guidance must be plain text.".into());
         }
     }
     write(store, &library)?;

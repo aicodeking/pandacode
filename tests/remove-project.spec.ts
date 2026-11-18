@@ -16,6 +16,7 @@ async function open(page: Page) {
   await page.goto('/');
   await expect(page.locator('.task-item.selected')).toBeVisible();
   await page.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('tab', { name: 'General', exact: true }).click();
   await expect(page.locator('#projects-settings .project-row').first()).toBeVisible();
 }
 const rows = (page: Page) => page.locator('#projects-settings .project-row');

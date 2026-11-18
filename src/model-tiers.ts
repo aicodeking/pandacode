@@ -1,10 +1,10 @@
-/* Settings → Agent teams → Model routing → Rank models: a tier list that Panda Router weighs most. */
+/* Settings → Agents → Model routing → Rank models: a tier list that Panda Router weighs most. */
 import './model-tiers.css';
 import { escape, icon } from './dom';
 import { openChoiceMenu } from './choice-menu';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
-import { CATALOG_MAX, teamModels, TEAM_MODELS_EVENT } from './team-catalog';
+import { CATALOG_MAX, dupModelNames, teamModels, TEAM_MODELS_EVENT } from './team-catalog';
 import type { Exclusions, Unhealthy } from './model-routing';
 import type { ProviderId, ProviderModel } from './types';
 
@@ -61,14 +61,23 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
 
   const placeOf = (key: string): Tier | null => held?.key === key ? held.at : shown[key] ?? null;
   const nameOf = (key: string) => models.find(m => m.key === key)?.name ?? key;
+  const harnessName = (id: string) => options.providers.find(p => p.id === id)?.name ?? id;
+  // Two tier rows can share a display name (issue #315): those chips say which harnesses they run on,
+  // or their key when the harnesses match too (two endpoints inside OpenCode).
+  let dupeNames = new Set<string>();
   const announce = (text: string) => { live.textContent = text; };
   const chip = (m: TierModel) => {
     const tier = placeOf(m.key), unrated = m.rated ? '' : ', unrated';
+    const dupe = dupeNames.has(m.name);
+    const twin = dupe && models.some(o => o.key !== m.key && o.name === m.name && o.providers.join() === m.providers.join());
+    const detail = twin ? m.key : m.providers.map(harnessName).join(', ');
+    const label = dupe ? `${m.name} (${detail})` : m.name;
     return `<span class="tier-chip-wrap" data-key="${escape(m.key)}"${held?.key === m.key ? ' data-held' : ''}>`
-      + `<button type="button" class="tier-chip" data-key="${escape(m.key)}" aria-pressed="${held?.key === m.key}" aria-label="${escape(m.name)}, ${rowName(tier)}${unrated}"${loaded ? '' : ' disabled'}>`
+      + `<button type="button" class="tier-chip" data-key="${escape(m.key)}" aria-pressed="${held?.key === m.key}" aria-label="${escape(label)}, ${rowName(tier)}${unrated}"${loaded ? '' : ' disabled'}>`
       + `<span class="tier-logos">${m.providers.map(p => providerLogo(p, 'tier-logo')).join('')}</span><span class="tier-name">${escape(m.name)}</span>`
+      + (dupe ? `<span class="tier-providers" data-tip="${escape(detail)}">${escape(detail)}</span>` : '')
       + (m.rated ? '' : `<span class="tier-unrated" data-tip="${escape(UNRATED)}" aria-hidden="true"></span>`) + '</button>'
-      + `<button type="button" class="tier-chip-menu" data-key="${escape(m.key)}" aria-haspopup="menu" aria-label="Move ${escape(m.name)} to…"${loaded ? '' : ' disabled'}>${icon('more')}</button></span>`;
+      + `<button type="button" class="tier-chip-menu" data-key="${escape(m.key)}" aria-haspopup="menu" aria-label="Move ${escape(label)} to…"${loaded ? '' : ' disabled'}>${icon('more')}</button></span>`;
   };
   const render = () => {
     if (dragging) { renderLater = true; return; }
@@ -214,6 +223,7 @@ export function mountModelTiers(group: HTMLElement, options: ModelTiersOptions):
         const [rows, tiers] = await Promise.all([options.call<TierModel[]>('model_routing_tier_models', { pool }), loaded ? null : options.call<Tiers>('model_routing_tiers')]);
         if (disposed || ticket !== poolTicket) return;
         models = rows; held = null; loadError = '';
+        dupeNames = dupModelNames(rows);
         if (tiers) { saved = shown = tiers; loaded = true; }
         render();
         if (document.activeElement === group) (list.querySelector<HTMLElement>('.tier-chip') ?? group).focus();

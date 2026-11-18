@@ -84,6 +84,7 @@ pub(super) fn parse_models(data: &Value) -> Result<Vec<ModelInfo>, String> {
             continue;
         }
         models.push(ModelInfo {
+            speed_tiers: Vec::new(),
             name: model_text(entry["name"].as_str(), model, 160),
             description: model_text(Some(provider), "", 200),
             id,
@@ -586,7 +587,7 @@ impl Protocol {
                 value.clone(),
                 format!("{}\n{}", field(&value, "title"), field(&value, "message")),
                 step,
-            )?,
+            ),
             // PandaCode's question form speaks Codex/MCP shapes; Pi dialogs decline for now.
             "select" | "input" | "editor" => step.write.push(
                 json!({"type":"extension_ui_response","id":value["id"],"cancelled":true}),

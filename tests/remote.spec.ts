@@ -6,7 +6,7 @@ async function openRemoteSettings(page: Page) {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
+  await page.getByRole('tab', { name: 'Connections', exact: true }).click(); await page.getByRole('tab', { name: 'Remote access' }).click();
   return page.getByRole('tabpanel', { name: 'Remote access' });
 }
 
@@ -134,7 +134,7 @@ test('GitHub behind this computer asks first: Cancel keeps the draft, Continue s
 
 test('a project without a GitHub remote cannot start on another computer', async ({ page }) => {
   await signedInNewTask(page);
-  await page.locator('#composer-area').getByRole('button', { name: 'Change task project', exact: true }).click();
+  await page.locator('#welcome-project').click();
   await page.getByRole('dialog', { name: 'Choose project', exact: true }).getByRole('option', { name: /^pandacode — / }).click();
   await chooseStudio(page);
   const prompt = page.getByRole('textbox', { name: 'Message your coding agent' });
@@ -167,7 +167,7 @@ test('device fingerprints are listed without trust controls when host mode is of
 
 const harnesses = (page: Page) => page.getByRole('dialog', { name: 'Harness and model', exact: true });
 async function openPicker(page: Page) {
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   return harnesses(page);
 }
 

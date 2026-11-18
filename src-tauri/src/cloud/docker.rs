@@ -474,7 +474,10 @@ impl Sandbox for Docker {
             (remote, Box::new(cleanup))
         } else {
             let temporary = std::env::temp_dir().join(&staging);
-            std::fs::write(&temporary, bytes).map_err(|_| "Could not stage the file for the upload.".to_string())?;
+            write_private(&temporary, bytes).map_err(|_| {
+                let _ = std::fs::remove_file(&temporary);
+                "Could not stage the file for the upload.".to_string()
+            })?;
             let for_cleanup = temporary.display().to_string();
             let path_for_cleanup = for_cleanup.clone();
             let cleanup = move || { let _ = std::fs::remove_file(&path_for_cleanup); Ok(()) };
@@ -492,16 +495,37 @@ impl Sandbox for Docker {
         drop(args);
         cleanup()?;
         super::sandbox::checked(copy?)?;
-        if private {
-            super::sandbox::checked(self.exec(native, &format!("chmod 600 {}", shell_quote(path)), Duration::from_secs(60))?)?;
-        }
-        Ok(())
+        // `cp` keeps the staging file's 0600, so a file that is not private gets its mode back.
+        let mode = if private { "600" } else { "644" };
+        super::sandbox::checked(self.exec(native, &format!("chmod {mode} {}", shell_quote(path)), Duration::from_secs(60))?)
     }
+}
+
+/// A new staging file only this user can read, from its first byte (the temp dir is shared).
+fn write_private(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(file)?.write_all(bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staged_uploads_are_private_and_never_reuse_a_file() {
+        let file = std::env::temp_dir().join(format!("pandacode-docker-test-{}", uuid::Uuid::new_v4()));
+        write_private(&file, b"secret").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"secret");
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
+        assert!(write_private(&file, b"other").is_err());
+        std::fs::remove_file(&file).unwrap();
+    }
+
 
     fn docker(endpoint: Option<&str>, tls: Option<(&str, &str, &str)>) -> Docker {
         Docker::new(endpoint.map(str::to_string), None, tls.map(|(ca, cert, key)| Tls { ca: ca.into(), cert: cert.into(), key: key.into() }), Engine::Docker)

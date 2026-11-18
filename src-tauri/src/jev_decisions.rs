@@ -1166,6 +1166,7 @@ mod tests {
             workspace: "shared".into(),
             summary_limit: 2000,
             lead_guidance: None,
+            council: None,
         };
         let team = architect::new_team(task.id.clone(), config);
         store

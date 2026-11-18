@@ -13,6 +13,8 @@ export interface TaskSummary extends HostActivity {
   sessionId: string; title: string; status: TaskStatus; projectId: string; projectName: string;
   provider: string; model: string; effort: string | null; mode: string; pinned: boolean;
   updatedAt: number; lastPromptAt: number | null; branch?: string; chat?: boolean;
+  /** The desktop's task stage (`completed` once settled) and its legacy archive flag, from newer hosts. */
+  stage?: string; archived?: boolean;
   /** A bot's conversation: listed under Bots, not its project. */
   botId?: string; botName?: string;
   /** Approvals and questions waiting on the host now. */
@@ -25,7 +27,7 @@ export interface TaskSummary extends HostActivity {
 
 /** Newer hosts: when the run's newest event came and when it started (ms), and its subagents.
  * `team` (architect tasks only, checked by decodeTeamRun in src/store/team.ts): `{ status, activeWorkers }`. */
-export interface HostActivity { lastEventAt?: number | null; runStartedAt?: number | null; subagents?: unknown; team?: unknown }
+export interface HostActivity { lastEventAt?: number | null; runStartedAt?: number | null; subagents?: unknown; subagentsTruncated?: boolean; team?: unknown }
 
 export interface TasksList { tasks: TaskSummary[]; projects: Project[] }
 
@@ -45,9 +47,11 @@ export interface SubscribeReply { tasks: SubscribedTask[]; epoch?: string; more?
 export interface AgentEventsFrame { events: AgentEvent[]; epoch?: string; lagged?: boolean }
 
 /** `attachments`: newer hosts' rows (checked by parseAttachments in src/store/attachments.ts). */
-export interface Message { id: number; role: string; content: string; createdAt: number; turnDurationMs: number | null; attachments?: unknown; /** The host cut this (oversized) message to fit a small page; same id, refetched whole. */ cut?: boolean }
+export interface Message { id: number; role: string; content: string; createdAt: number; turnDurationMs: number | null; attachments?: unknown; /** Newer hosts: what this turn changed; decoded by changesOf in src/store/turns.ts. */ turnChanges?: unknown; /** The host cut this (oversized) message to fit a small page; same id, refetched whole. */ cut?: boolean }
 /** `hasMore`: newer messages follow the page; `hasOlder` (newer hosts, tail/beforeId pages): older ones precede it. */
-export interface MessagePage { messages: Message[]; hasMore: boolean; title: string; hasOlder?: boolean; lastId?: number | null }
+export interface MessagePage { messages: Message[]; hasMore: boolean; title: string; hasOlder?: boolean; lastId?: number | null;
+  /** task.workerMessages: this host pages backward. */
+  tail?: boolean }
 
 export interface ReasoningEffort { id: string; name: string; description: string }
 export interface ProviderModel { id: string; name: string; description: string; reasoningEfforts?: ReasoningEffort[]; defaultReasoningEffort?: string | null; contextWindow?: number | null }
@@ -55,8 +59,9 @@ export interface Provider { id: string; name: string; installed: boolean; path?:
 
 export interface ToolActivity { id: string; name: string; status: 'running' | 'completed' | 'failed'; input: string; output: string }
 
-/** The host's raw AgentEvent (src/types.ts). */
-export interface AgentEvent { sessionId: string; kind: string; text: string; requestId?: string; data?: unknown; tool?: ToolActivity; seq?: number }
+/** The host's raw AgentEvent (src/types.ts). Newer hosts (feature `prevSeq`) add `prev`: the `seq`
+ * of the task's previous agent event, so a viewer whose position is behind it knows it missed one. */
+export interface AgentEvent { sessionId: string; kind: string; text: string; requestId?: string; data?: unknown; tool?: ToolActivity; seq?: number; prev?: number }
 
 /** Newer hosts, architect tasks: `status` as tasks.list shows it ('running' while the team works),
  * `team` (`{ status, activeWorkers }`), and `teamSettled` on the extra run.finished sent when the team settles. */
@@ -66,6 +71,8 @@ export interface RunFinished { sessionId: string; successful: boolean; stopped: 
 export interface StartParams {
   repo?: string; projectId?: string; branch?: string; worktree: boolean; prompt: string;
   provider: string; model: string; mode?: string; effort?: string; startId?: string;
+  /** Images uploaded first (`image.upload*`) to attach to the first message. */
+  imageIds?: string[];
 }
 
 /** `task.startStatus`: how a start by `startId` stands on its host ('unknown': never seen, or forgotten after an hour or a restart). */

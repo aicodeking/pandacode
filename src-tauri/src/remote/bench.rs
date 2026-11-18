@@ -421,6 +421,12 @@ impl Peer {
         let mut request = format!("ws://{}/v1/connect?host=1", relay.addr).into_client_request().unwrap();
         request.headers_mut().insert("Authorization", format!("Bearer {}", me.id).parse().unwrap());
         let (stream, _) = tokio_tungstenite::connect_async_with_config(request, None, !nagle).await.unwrap();
+        let peer = Self::over(stream, &me.id, keys, handler).await;
+        (peer, started.elapsed())
+    }
+
+    /// A peer on an open socket, once the first presence frame arrives.
+    async fn over(stream: tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, me: &str, keys: HashMap<String, crypto::Key>, handler: Option<Handler>) -> Peer {
         let (mut write, read) = stream.split();
         let (out, mut outgoing) = mpsc::unbounded_channel::<String>();
         let writer = tokio::spawn(async move {
@@ -435,7 +441,7 @@ impl Peer {
         let (presence_tx, mut presence) = mpsc::unbounded_channel();
         let worker = handler.map(|handler| {
             let (tx, rx) = std::sync::mpsc::channel::<(String, crypto::Key, Value)>();
-            let (me, out) = (me.id.clone(), out.clone());
+            let (me, out) = (me.to_owned(), out.clone());
             tokio::task::spawn_blocking(move || {
                 while let Ok((from, key, message)) = rx.recv() {
                     let reply = handler(&from, message["method"].as_str().unwrap_or_default(), &message["params"]);
@@ -457,10 +463,9 @@ impl Peer {
             tx
         });
         let parsed: Arc<std::sync::atomic::AtomicUsize> = Arc::default();
-        let reader = tokio::spawn(read_loop(read, me.id.clone(), keys.clone(), pending.clone(), event_tx, presence_tx, worker, parsed.clone()));
+        let reader = tokio::spawn(read_loop(read, me.to_owned(), keys.clone(), pending.clone(), event_tx, presence_tx, worker, parsed.clone()));
         presence.recv().await;
-        let took = started.elapsed();
-        (Peer { id: me.id.clone(), keys, out, pending, events: tokio::sync::Mutex::new(events), tasks: vec![writer, reader], z: false, parsed }, took)
+        Peer { id: me.to_owned(), keys, out, pending, events: tokio::sync::Mutex::new(events), tasks: vec![writer, reader], z: false, parsed }
     }
 
     /// Queues a request now (frames leave in call order) and returns its answer.
@@ -1034,6 +1039,174 @@ async fn first_event_after_send() {
         }
     }
     table.print();
+}
+
+// ---------------------------------------------------------------------------------------
+// 5b. machine_launch to the first look at its thread (docs/machine-orchestration.md)
+
+/// The viewer's steps from `machine_launch` to the new thread's transcript, before and now, and
+/// the host's real start steps on a checkout with a `file://` origin. Harness start and model
+/// latency are excluded; `providers.models` runs the real local catalog (cold cache) of
+/// `PANDACODE_BENCH_PROVIDER`, default claude.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn machine_launch_phases() {
+    let root = temp_root("launch");
+    let viewer_repo = std::env::var("PANDACODE_BENCH_REPO").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from(sh(Path::new(env!("CARGO_MANIFEST_DIR")), "git", &["rev-parse", "--show-toplevel"])));
+    let bare = root.join("origin.git");
+    sh(&root, "git", &["clone", "--quiet", "--bare", "--no-local", &viewer_repo.to_string_lossy(), &bare.to_string_lossy()]);
+    let checkout = root.join("checkout");
+    sh(&root, "git", &["clone", "--quiet", &format!("file://{}", bare.display()), &checkout.to_string_lossy()]);
+    let branch = sh(&checkout, "git", &["symbolic-ref", "--short", "HEAD"]);
+    let projects: Vec<crate::storage::Project> = (0..10)
+        .map(|n| {
+            let dir = root.join(format!("project-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            sh(&dir, "git", &["init", "--quiet"]);
+            sh(&dir, "git", &["remote", "add", "origin", &format!("https://github.com/bench/p{n}.git")]);
+            crate::storage::Project { id: n.to_string(), name: n.to_string(), path: dir.to_string_lossy().into_owned(), added_order: n }
+        })
+        .collect();
+
+    let provider = std::env::var("PANDACODE_BENCH_PROVIDER").unwrap_or_else(|_| "claude".into());
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let project = store.add_project(&checkout).unwrap().id;
+    let store = Arc::new(Mutex::new(store));
+    let worktrees = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let handler: Handler = {
+        let (store, checkout, branch) = (store.clone(), checkout.clone(), branch.clone());
+        Arc::new(move |_, method, params| match method {
+            "providers.models" => {
+                let models = tauri::async_runtime::block_on(crate::local_provider_models(params["provider"].as_str().unwrap_or_default(), true));
+                ok(serde_json::to_value(models.unwrap_or_default()).unwrap())
+            }
+            "task.start" => {
+                let Ok(host::Call::Start(request)) = host::parse(true, method, params) else { return refuse("bad start") };
+                start::origins(projects.clone());
+                start::pick_branch(&checkout, Some(&branch), true).unwrap();
+                let name = format!("pandacode/bench-{}", worktrees.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+                crate::workspace::create_worktree_with(&checkout, &name, Some(&format!("origin/{branch}")), false).unwrap();
+                let store = store.lock().unwrap();
+                let task = start::create_task(&store, &project, &request).unwrap();
+                store.begin_task_turn(&task.id, &request.prompt).unwrap();
+                let event = json!({"type": "event", "name": "agent.events", "data": {"events": [{"sessionId": task.id, "kind": "status", "text": "running"}]}});
+                Reply { result: Ok(json!({"sessionId": task.id})), event: Some((Duration::ZERO, event)) }
+            }
+            "subscribe" => {
+                let id = params["sessionIds"][0].as_str().unwrap_or_default();
+                let store = store.lock().unwrap();
+                let status = store.session(id).map(|task| task.status).unwrap_or_default();
+                ok(json!({"tasks": [{"sessionId": id, "status": status, "lastId": 1}]}))
+            }
+            "task.messages" => {
+                let id = params["sessionId"].as_str().unwrap_or_default();
+                let page = host::messages_page_with(&store.lock().unwrap().db, id, host::MessagePaging::Tail { limit: mirror::TAIL_PAGE }).unwrap();
+                ok(page)
+            }
+            _ => refuse("Unknown method."),
+        })
+    };
+    let mut table = Table::new("machine_launch to first look (harness start and model latency excluded)");
+    let viewer_root = viewer_repo.clone();
+    table.add("viewer: repo_status (before)", &(0..10).map(|_| time(|| mirror::repo_status(&viewer_root).unwrap()).1).collect::<Vec<_>>(), "5 git processes, git status among them");
+    table.add("viewer: start_target (now)", &(0..10).map(|_| time(|| mirror::start_target(&viewer_root)).1).collect::<Vec<_>>(), "a config read and 1 git process");
+    for profile in PROFILES {
+        let session = pair(profile, handler.clone(), true).await;
+        let target = session.host.id.clone();
+        for (label, warm, before) in [("before", false, true), ("now", true, false)] {
+            let (mut catalog_times, mut starts, mut events, mut looks) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            for _ in 0..5 {
+                tokio::time::sleep(RATE_GAP * 4).await;
+                let started = Instant::now();
+                if before {
+                    mirror::repo_status(&viewer_root).unwrap();
+                } else {
+                    mirror::start_target(&viewer_root);
+                }
+                let at = Instant::now();
+                if !warm {
+                    session.viewer.call(&target, "providers.models", json!({"provider": provider})).await.unwrap();
+                }
+                catalog_times.push(at.elapsed());
+                let params = json!({"repo": "bench/repo", "branch": branch, "worktree": true, "prompt": "Run the tests", "provider": provider, "model": "default", "startId": uuid::Uuid::new_v4().to_string()});
+                let reply = session.viewer.call(&target, "task.start", params).await.unwrap();
+                starts.push(started.elapsed());
+                let (event_at, _) = session.viewer.next_event().await;
+                events.push(event_at - started);
+                let id = reply["sessionId"].as_str().unwrap();
+                let subscribe = json!({"sessionIds": [id]});
+                let page = json!({"sessionId": id, "tail": true, "limit": mirror::TAIL_PAGE, "budget": mirror::TAIL_BUDGET});
+                if before {
+                    // subscribe_soon's debounce, then the copy after the subscribe's reply.
+                    tokio::time::sleep(mirror::SUBSCRIBE_DEBOUNCE).await;
+                    session.viewer.call(&target, "subscribe", subscribe).await.unwrap();
+                    session.viewer.call(&target, "task.messages", page).await.unwrap();
+                } else {
+                    // subscribe_reconnected: at once, the first page beside the subscribe.
+                    let (subscribed, copied) = (session.viewer.request(&target, "subscribe", subscribe), session.viewer.request(&target, "task.messages", page));
+                    wait(subscribed).await.unwrap();
+                    wait(copied).await.unwrap();
+                }
+                looks.push(started.elapsed());
+            }
+            table.add(format!("{} {label}: catalog check", profile.name), &catalog_times, if warm { "warmed: no call" } else { "cold: providers.models round trip" });
+            table.add(format!("{} {label}: task.start replied", profile.name), &starts, "from machine_launch");
+            table.add(format!("{} {label}: first agent event", profile.name), &events, "from machine_launch");
+            table.add(format!("{} {label}: first look (transcript copied)", profile.name), &looks, "from machine_launch");
+        }
+    }
+    table.print();
+    let _ = std::fs::remove_dir_all(root);
+}
+
+/// One launch between two real computers, for what `remote::loopback` can't run: the relay,
+/// sealing, a host's own `run_cancellable` and harness. Never run by CI or the benches unless its
+/// variables are set. Quit PandaCode on the viewer first (its socket would be replaced), pair the
+/// viewer with `full` scope on the host, and read the host's task afterwards.
+///
+/// `PANDACODE_RELAY_URL` (https://…), `PANDACODE_LIVE_DIR` (the viewer's signed-in app data),
+/// `PANDACODE_LIVE_HOST` (the host's device id), `PANDACODE_LIVE_REPO` (owner/name),
+/// `PANDACODE_LIVE_PROVIDER` and `PANDACODE_LIVE_MODEL` (default `default`).
+/// `cargo test --lib remote::bench::live_two_computers -- --ignored --nocapture`
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore]
+async fn live_two_computers() {
+    let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let (Some(relay), Some(dir), Some(target), Some(repo), Some(provider)) = (env("PANDACODE_RELAY_URL"), env("PANDACODE_LIVE_DIR"), env("PANDACODE_LIVE_HOST"), env("PANDACODE_LIVE_REPO"), env("PANDACODE_LIVE_PROVIDER")) else {
+        return println!("skipped: set the PANDACODE_LIVE_* variables and PANDACODE_RELAY_URL");
+    };
+    let model = env("PANDACODE_LIVE_MODEL").unwrap_or_else(|| "default".into());
+    let dir = PathBuf::from(dir);
+    let secrets = super::secrets::read(&dir);
+    let (token, secret) = (secrets.token.expect("signed in"), crypto::decode_secret(&secrets.key.expect("a device key")).expect("a device key"));
+    let me = super::config::load(&dir).device_id;
+    let build = super::config::Build { relay: relay.clone(), client_id: String::new() };
+    let devices = super::auth::relay(&build, &token, reqwest::Method::GET, "/v1/devices").await.unwrap();
+    let list = devices["devices"].as_array().expect("devices");
+    let public = list.iter().find(|d| d["id"] == target.as_str()).expect("the host is on this account")["publicKey"].as_str().unwrap().to_owned();
+    let keys = HashMap::from([(target.clone(), crypto::pair_key(&secret, &me, &public, &target).unwrap())]);
+    let mut request = format!("wss://{}/v1/connect?host=0", relay.trim_start_matches("https://")).into_client_request().unwrap();
+    request.headers_mut().insert("Authorization", format!("Bearer {token}").parse().unwrap());
+    let (stream, _) = tokio_tungstenite::connect_async_tls_with_config(request, None, false, Some(super::socket::tls())).await.unwrap();
+    let viewer = Peer::over(stream, &me, keys, None).await;
+
+    let started = Instant::now();
+    let start_id = uuid::Uuid::new_v4().to_string();
+    let reply = viewer.call(&target, "task.start", json!({"repo": repo, "worktree": true, "prompt": "Reply with the word done and nothing else.", "provider": provider, "model": model, "mode": "ask", "startId": start_id})).await;
+    println!("task.start after {:?}: {reply:?}", started.elapsed());
+    // A timeout here (a long clone) is the lost reply: the status says how it went.
+    let session = loop {
+        let status = viewer.call(&target, "task.startStatus", json!({"startId": start_id})).await.unwrap();
+        match status["state"].as_str() {
+            Some("done") => break status["sessionId"].as_str().unwrap().to_owned(),
+            Some("running") => tokio::time::sleep(Duration::from_secs(3)).await,
+            other => panic!("the start ended {other:?}: {status}"),
+        }
+    };
+    viewer.call(&target, "subscribe", json!({"sessionIds": [session]})).await.unwrap();
+    let (at, event) = tokio::time::timeout(Duration::from_secs(120), viewer.next_event()).await.expect("an agent event");
+    println!("first event after {:?}: {event}", at - started);
+    viewer.call(&target, "task.stop", json!({"sessionId": session})).await.unwrap();
 }
 
 // ---------------------------------------------------------------------------------------

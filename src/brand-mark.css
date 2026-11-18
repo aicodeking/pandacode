@@ -1,0 +1,78 @@
+/* The mobile mark, with a compact panda for a narrow desktop title bar. */
+.desktop-brand,
+.desktop-brand-launch{
+  --brand-fur:var(--bg);
+  --brand-patch:var(--text);
+  --brand-pupil:var(--text);
+  --brand-shade:color-mix(in srgb,var(--bg),var(--text) 8%);
+  --brand-belly:color-mix(in srgb,var(--bg),var(--text) 5%);
+  --brand-rim:color-mix(in srgb,var(--bg),var(--text) 11%);
+  --brand-ear-rim:var(--brand-patch);
+  color:var(--text);
+}
+html[data-theme=dark] :is(.desktop-brand,.desktop-brand-launch){
+  --brand-fur:var(--ds-primary-bg);
+  --brand-patch:color-mix(in srgb,var(--bg),var(--text) 29%);
+  --brand-pupil:var(--bg);
+  --brand-shade:color-mix(in srgb,var(--brand-fur),var(--bg) 12%);
+  --brand-belly:var(--brand-fur);
+  --brand-rim:transparent;
+  --brand-ear-rim:color-mix(in srgb,var(--brand-patch),var(--brand-fur) 35%);
+}
+.sidebar>.brand>.brand-name.desktop-brand{
+  position:relative;flex:none;width:var(--brand-width,95px);height:calc(44px * var(--brand-scale,.7));
+  padding:0;border:0;border-radius:var(--ds-radius-control);background:transparent;
+  color:var(--text);cursor:pointer;overflow:visible;--press:1;
+}
+.desktop-brand:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+.desktop-brand-stage{position:absolute;left:0;top:0;display:block;width:max-content;height:44px;pointer-events:none;transform-origin:0 0}
+.desktop-brand>.desktop-brand-stage{transform:scale(var(--brand-scale,.7))}
+.desktop-brand:not([data-brand-ready])>.desktop-brand-stage,
+.desktop-brand[data-brand-launch]>.desktop-brand-stage{opacity:0}
+.desktop-brand-stage[data-compact]>.desktop-brand-word{visibility:hidden}
+.desktop-brand-word{
+  position:relative;display:inline-block;white-space:nowrap;vertical-align:top;
+  font-family:ui-rounded,"SF Pro Rounded","Arial Rounded MT Bold",system-ui,sans-serif;
+  font-size:20px;font-weight:800;font-optical-sizing:auto;font-kerning:none;line-height:24px;letter-spacing:-.4px;
+}
+.desktop-brand-letter{position:relative;display:inline-block;vertical-align:baseline;transform-origin:50% 100%;isolation:isolate}
+.desktop-brand-letter::after{
+  content:attr(data-letter);position:absolute;inset:0;color:var(--brand-tone);
+  clip-path:inset(var(--brand-wipe,100%) -2px -2px);pointer-events:none;
+}
+.desktop-brand-baseline{display:inline-block;width:0;height:0;vertical-align:baseline}
+.desktop-brand-panda{position:absolute;left:0;top:0;width:22px;height:22px;overflow:visible;transform-origin:50% 100%;pointer-events:none}
+.panda-ink{fill:var(--brand-patch)}
+.panda-fur{fill:var(--brand-fur)}
+.panda-pupil{fill:var(--brand-pupil)}
+.panda-belly{fill:var(--brand-belly)}
+.panda-shade{fill:var(--brand-shade)}
+.panda-rim{fill:var(--brand-rim)}
+.panda-ear-rim{fill:var(--brand-ear-rim)}
+.panda-shine{fill:var(--brand-fur);opacity:.75}
+.panda-blush{fill:var(--ds-tone-worktree);opacity:.65}
+.panda-mouth{fill:none;stroke:var(--brand-patch);stroke-width:.7;stroke-linecap:round}
+.desktop-brand-launch{position:fixed;left:0;top:0;z-index:1000;width:var(--brand-width,130px);height:44px;pointer-events:none;transform-origin:0 0;--launch-plate:1}
+.desktop-brand-launch::before{
+  content:"";position:absolute;left:-16px;top:-25px;width:calc(var(--brand-width,130px) + 32px);height:82px;
+  background:var(--glass-warm);border:1px solid var(--glass-border);border-radius:var(--glass-radius);
+  backdrop-filter:blur(54px);-webkit-backdrop-filter:blur(54px);
+  box-shadow:var(--ds-shadow-card);opacity:var(--launch-plate);pointer-events:none;
+}
+/* Keep the traffic-light gutter intact; spend less space between the three controls. */
+@container sidebar (max-width:279px){
+  html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand){gap:2px;padding-right:4px}
+  html[data-native-platform=macos] .sidebar>.brand>.brand-name.desktop-brand{display:block;margin-left:auto}
+  html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand)>.icon-button{width:24px;min-width:24px;padding:0}
+  html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand)>.view-menu .icon+.icon{display:none}
+}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+  .desktop-brand-launch::before{background:var(--bg);border-color:var(--border);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none}
+}
+@media(max-width:650px){html[data-native-platform] .sidebar>.brand>.brand-name.desktop-brand,.sidebar>.brand>.brand-name.desktop-brand{display:none}}
+@media(prefers-reduced-motion:reduce){.desktop-brand-launch{display:none}}
+@media(forced-colors:active){
+  :is(.desktop-brand,.desktop-brand-launch){--brand-fur:Canvas;--brand-patch:CanvasText;--brand-pupil:CanvasText;--brand-belly:Canvas;--brand-rim:CanvasText;--brand-shade:Canvas;--brand-ear-rim:CanvasText;color:CanvasText}
+  .desktop-brand-letter::after,.desktop-brand-launch{display:none}
+  .panda-blush,.panda-shine{display:none}
+}

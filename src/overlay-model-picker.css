@@ -7,3 +7,15 @@
 :root[data-theme=light] .model-menu{--bg:#f5f5f0;--accent-ink:color-mix(in srgb,var(--accent) 45%,var(--launcher-text));box-shadow:0 18px 45px -12px rgb(20 30 15 / .22)}
 @media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.model-menu{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none}}
 @media (prefers-contrast:more){.model-menu{border-color:var(--launcher-muted)}}
+/* The launcher has no design-system.css, so mirror every --ds token the shared picker reads, on the launcher's own colours. */
+.model-menu{--fill-hover:color-mix(in srgb,var(--launcher-text) 6%,transparent);--fill-active:color-mix(in srgb,var(--launcher-text) 10%,transparent);
+  --ds-card-inner:color-mix(in srgb,var(--launcher-text) 3%,transparent);--ds-row-ink:color-mix(in srgb,var(--launcher-text) 96%,var(--bg));--ds-row-tracking:.02em;--ds-row-hover:var(--fill-hover);--ds-row-press:color-mix(in srgb,var(--launcher-text) 9%,transparent);
+  --ds-fill:color-mix(in srgb,var(--launcher-text) 7%,transparent);--ds-fill-hover:color-mix(in srgb,var(--launcher-text) 10%,transparent);--ds-border:var(--launcher-line);--ds-chip-border:var(--launcher-line);--ds-shadow-card:0 1px 2px rgb(0 0 0 / .3),0 2px 6px rgb(0 0 0 / .25);--ds-danger:var(--danger);
+  --ds-track:rgb(0 0 0 / .14);--ds-seg-edge-top:rgb(0 0 0 / .62);--ds-seg-edge-bottom:color-mix(in srgb,var(--launcher-text) 18%,transparent);--ds-seg-shadow:inset 0 1px 1px rgb(0 0 0 / .12);
+  --ds-thumb:color-mix(in srgb,var(--launcher-text) 12%,var(--bg));--ds-thumb-shadow:inset 0 1px 0 color-mix(in srgb,var(--launcher-text) 20%,transparent),0 1px 2px rgb(0 0 0 / .4);
+  --ds-card-pad:6px;--ds-radius-card:16px;--ds-radius-inner:10px;--ds-radius-control:8px;--ds-radius-chip:6px;--ds-text-meta:var(--text-md);--ds-text-chip:.8929rem;
+  border:1px solid var(--launcher-line);border-radius:var(--ds-radius-card)}
+:root[data-theme=light] .model-menu{--ds-card-inner:color-mix(in srgb,var(--bg) 92%,transparent);--ds-shadow-card:0 1px 2px rgb(0 0 0 / .04),0 2px 8px rgb(0 0 0 / .04);--ds-track:color-mix(in srgb,var(--launcher-text) 4%,transparent);--ds-seg-edge-top:color-mix(in srgb,var(--launcher-text) 16%,transparent);--ds-seg-edge-bottom:color-mix(in srgb,var(--launcher-text) 6%,transparent);--ds-seg-shadow:inset 0 1px 1px rgb(0 0 0 / .04);
+  --ds-thumb:var(--bg);--ds-thumb-shadow:inset 0 0 0 1px color-mix(in srgb,var(--launcher-text) 14%,transparent),0 1px 2px rgb(0 0 0 / .08)}
+@media (prefers-reduced-transparency:reduce),(prefers-contrast:more){.model-menu,:root[data-theme=light] .model-menu{--ds-card-inner:color-mix(in srgb,var(--launcher-text) 5%,var(--bg));--ds-track:color-mix(in srgb,var(--launcher-text) 2%,var(--bg))}}
+@media (prefers-contrast:more){.model-menu{--ds-border:var(--launcher-muted);--ds-chip-border:var(--launcher-muted)}}

@@ -1,26 +1,23 @@
 import type { ContextUsage, Provider, ProviderId, ProviderModel } from './types';
 import { advertisedModelsOnly, fallbackModel, modelChoices, tokenCount } from './model-catalog';
-import { escape, icon } from './dom';
+import { escape, icon, isImeKey } from './dom';
 import { providerLogo } from './provider-logos';
 import { showPopover, hidePopover } from './popover-motion';
 import { trackSegment } from './motion';
 
 /** A named agent team from Settings, offered beside the models. `detail` is one line ("lead · N workers"); `roster` its harnesses. */
 export type PickerTeam = { id: string; name: string; detail: string; provider: ProviderId; roster?: ProviderId[]; selected: boolean };
-/** A named connection from Settings: its harness's models listed again under its name. */
-export type PickerConnection = { id: string; name: string; provider: ProviderId };
 type ModelPickerOptions = {
   teams?: PickerTeam[];
   onTeamSelect?: (id: string) => Promise<void>;
   anchor: HTMLElement;
   providers: Provider[];
-  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; contextUsage?: ContextUsage | null };
+  current: { provider: ProviderId; model: string; reasoningEffort?: string | null; serviceTier?: string | null; contextUsage?: ContextUsage | null };
   canSwitchProvider: boolean;
-  connections?: PickerConnection[];
-  /** The task's connection; null is the harness's own setup. */
-  currentConnection?: string | null;
-  onSelect: (provider: ProviderId, model: string, connection: string | null) => Promise<void>;
+  onSelect: (provider: ProviderId, model: string) => Promise<void>;
   onEffortSelect?: (effort: string | null) => Promise<void>;
+  /** A speed tier from the model's `speedTiers`; null is the standard speed. */
+  onSpeedSelect?: (tier: string | null) => Promise<void>;
   loadModels?: (provider: ProviderId) => Promise<ProviderModel[]>;
   /** Another computer's harnesses: the picker opens with a loading row, then lists them, or one disabled row with the error. */
   loadProviders?: () => Promise<Provider[]>;
@@ -31,7 +28,7 @@ type ModelPickerOptions = {
 };
 
 const RECENT_LIMIT = 5;
-const WIDTH = 460;
+const WIDTH = 520;
 const HEIGHT = 440;
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
@@ -45,21 +42,22 @@ function rememberRecent(provider: ProviderId, model: string): void {
   try { localStorage.setItem(recentKey(provider), JSON.stringify([model, ...storedRecent(provider).filter(id => id !== model)].slice(0, RECENT_LIMIT))); } catch { /* Ordering only. */ }
 }
 
-const optionKey = (button: HTMLElement) => `${button.dataset.connection ?? ''}|${button.dataset.provider}:${button.dataset.model}`;
+const optionKey = (button: HTMLElement) => `${button.dataset.provider}:${button.dataset.model}`;
 const includes = (values: string[], query: string) => values.some(value => value.toLowerCase().includes(query));
 let pickerCount = 0;
 
-/** A rail entry: Recent, Teams, or one harness (or named connection of a harness). */
-type Group = { key: string; provider: Provider; connection: PickerConnection | null; name: string; locked: boolean; unavailable: boolean; failure: string };
+/** A harness's catalog and availability. */
+type Group = { key: string; provider: Provider; name: string; locked: boolean; unavailable: boolean; failure: string };
 type Row = { group: Group; model: ProviderModel; custom?: boolean };
+/** The settings segments: reasoning effort and speed tier. */
+type Kind = 'effort' | 'speed';
+type Choice = { id: string; name: string; description: string };
 
 /** A transient picker with local state and listeners released on dismissal. */
 export function openModelPicker(options: ModelPickerOptions): () => void {
-  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, loadModels, onClose } = options;
+  const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, onSpeedSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
-  const connections = options.connections ?? [];
-  const currentConnection = options.currentConnection ?? null;
   const teamSelected = teams.some(team => team.selected);
   const catalogErrors = new Map<ProviderId, string>();
   const catalogLoading = new Set<ProviderId>();
@@ -86,9 +84,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   let listMarkup = '';
   let railMarkup = '';
   let settingsKey = '';
-  let pendingEffort: string | null | undefined;
-  let hoveredEffort: string | null | undefined;
-  let view = teamSelected ? 'teams' : currentConnection ? `c:${currentConnection}` : `h:${current.provider}`;
+  let pendingChoice: { kind: Kind; id: string | null } | undefined;
+  let hoveredChoice: { kind: Kind; id: string | null } | undefined;
+  let view = teamSelected ? 'teams' : `h:${current.provider}`;
 
   function restoreFocus(): void {
     let target: HTMLElement | null = anchor.isConnected ? anchor : null;
@@ -149,17 +147,17 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** Uninstalled harnesses stay out of the picker unless the task already uses one. */
   function groups(): Group[] {
-    return providers.filter(provider => provider.installed || provider.id === current.provider).flatMap(provider => {
+    return providers.filter(provider => provider.installed || provider.id === current.provider).map(provider => {
       // A harness whose catalog failed is disabled; hovering it shows why.
       const failure = catalogErrors.has(provider.id) ? catalogErrors.get(provider.id) || 'Could not load models.' : '';
-      return [null, ...connections.filter(c => c.provider === provider.id)].map(connection => ({
-        key: connection ? `c:${connection.id}` : `h:${provider.id}`, provider, connection, name: connection?.name ?? provider.name,
+      return {
+        key: `h:${provider.id}`, provider, name: provider.name,
         locked: !canSwitchProvider && provider.id !== current.provider, unavailable: !provider.installed || Boolean(failure), failure,
-      }));
+      };
     });
   }
   const models = (group: Group) => modelChoices(group.provider.id, group.provider.models, group.provider.id === current.provider ? current.model : '');
-  const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default') && (row.group.connection?.id ?? null) === currentConnection;
+  const isCurrent = (row: Row) => !teamSelected && !row.custom && row.group.provider.id === current.provider && row.model.id === (current.model || 'default');
 
   /** Default plus the most recent models, padded from the catalog, when the caller asks for a short list. */
   function shortList(provider: ProviderId, all: ProviderModel[]): ProviderModel[] {
@@ -173,9 +171,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
 
   /** The current pick, then each harness's latest stored picks, newest harness first. */
   function recentRows(all: Group[]): Row[] {
-    const plain = all.filter(group => !group.connection && !group.locked && !group.unavailable);
-    const stored = plain.map(group => ({ group, ids: storedRecent(group.provider.id) }));
-    const picks: [Group | undefined, string][] = [[all.find(group => group.key === (currentConnection ? `c:${currentConnection}` : `h:${current.provider}`)), current.model],
+    const available = all.filter(group => !group.locked && !group.unavailable);
+    const stored = available.map(group => ({ group, ids: storedRecent(group.provider.id) }));
+    const picks: [Group | undefined, string][] = [[all.find(group => group.key === `h:${current.provider}`), current.model],
       ...stored.flatMap(({ group, ids }) => ids.slice(0, 1).map(id => [group, id] as [Group, string])), ...stored.flatMap(({ group, ids }) => ids.slice(1).map(id => [group, id] as [Group, string]))];
     const seen = new Set<string>();
     const rows: Row[] = [];
@@ -195,8 +193,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     return `<span class="model-menu-stack">${roster.map(id => providerLogo(id)).join('')}</span>`;
   }
 
+  /** "lead · N workers": the lead may truncate, the count may not. */
+  function teamDetail(detail: string): string {
+    const split = detail.lastIndexOf(' · ');
+    if (split < 0) return `<span class="model-menu-meta-lead">${escape(detail)}</span>`;
+    return `<span class="model-menu-meta-lead">${escape(detail.slice(0, split))}</span><span class="model-menu-meta-count">${escape(detail.slice(split))}</span>`;
+  }
+
   function teamRow(team: PickerTeam): string {
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${escape(team.detail)}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option model-menu-team${team.selected ? ' model-menu-current' : ''}" data-team="${escape(team.id)}" data-provider="team" data-model="${escape(team.id)}" data-available="true" aria-label="${escape(`Agent team · ${team.name}`)}" title="${escape(`${team.name} · ${team.detail}`)}" ${team.selected ? 'aria-current="true"' : ''}>${teamLogos(team)}<span class="model-menu-name">${escape(team.name)}</span><span class="model-menu-meta">${teamDetail(team.detail)}</span>${team.selected ? icon('check', 'model-menu-check') : ''}</button>`;
   }
 
   /** One line: name left, context (or the harness in mixed lists) right, a check on the current model. */
@@ -209,11 +214,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const title = [model.contextWindow ? `${context} context` : '', model.description || (model.name !== model.id && model.id !== 'default' ? model.id : '')].filter(Boolean).join(' · ');
     const meta = mixed ? group.name : context;
     const name = custom ? `Use “${escape(query)}”` : escape(model.name);
-    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}"${group.connection ? ` data-connection="${escape(group.connection.id)}"` : ''} data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : group.failure || title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
+    return `<button type="button" role="option" tabindex="-1" class="model-menu-option${selected ? ' model-menu-current' : ''}${custom ? ' model-menu-custom' : ''}" data-provider="${group.provider.id}" data-model="${escape(model.id)}" data-available="${!disabled}" aria-label="${escape(accessible)}" title="${escape(custom ? accessible : group.failure || title)}" ${selected ? 'aria-current="true"' : ''} ${disabled ? 'aria-disabled="true" disabled' : ''}>${mixed ? providerLogo(group.provider.id) : ''}<span class="model-menu-name" title="${custom ? escape(query) : escape(model.name)}">${name}</span>${meta ? `<span class="model-menu-meta">${escape(meta)}</span>` : ''}${selected ? icon('check', 'model-menu-check') : custom ? icon('plus', 'model-menu-check') : ''}</button>`;
   }
 
   function heading(logo: string, name: string, status = ''): string {
-    return `<div class="model-menu-group-heading">${logo}<h3>${escape(name)}</h3>${status}</div>`;
+    return `<div class="model-menu-group-heading" role="presentation">${logo}<span class="model-menu-group-name">${escape(name)}</span>${status}</div>`;
   }
 
   function railItem(key: string, logo: string, name: string, count: string, classes: string, selected: boolean, label = name, tip = ''): string {
@@ -227,7 +232,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const all = groups();
     const recent = recentRows(all);
     const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
-    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:') || key.startsWith('c:')) ?? railKeys[0] ?? '';
+    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
     const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
     const hits = new Map<string, Row[]>();
@@ -235,17 +240,17 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const groupMatches = includes([group.provider.id, group.provider.name, group.name], normalized);
       hits.set(group.key, models(group).filter(model => groupMatches || includes([model.id, model.name], normalized)).map(model => ({ group, model })));
     }
-    search.placeholder = `Search ${new Set(all.flatMap(group => models(group).map(model => `${group.provider.id}:${model.id}`))).size} models, ${all.filter(group => !group.connection).length} harnesses…`;
+    search.placeholder = `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
 
     // Rail: a tab per view; while searching it is a hit map.
-    const inUse = (key: string) => !teamSelected && key === (currentConnection ? `c:${currentConnection}` : `h:${current.provider}`);
+    const inUse = (key: string) => !teamSelected && key === `h:${current.provider}`;
     let railHtml = '';
     if (recent.length) railHtml += railItem('recent', icon('undo'), 'Recent', '', query ? ' is-dim' : '', !query && view === 'recent');
-    if (teams.length) railHtml += railItem('teams', icon('worktree'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
+    if (teams.length) railHtml += railItem('teams', icon('team'), 'Teams', String(query ? matchedTeams.length || '' : teams.length), `${teamSelected ? ' has-current' : ''}${query && !matchedTeams.length ? ' is-dim' : ''}`, !query && view === 'teams', `Teams, ${teams.length}`);
     if (all.length) railHtml += '<div class="model-menu-rail-heading" role="presentation">Harnesses</div>';
     railHtml += all.map(group => {
       const count = query ? hits.get(group.key)!.length : 0;
-      const classes = `${group.connection ? ' is-connection' : ''}${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
+      const classes = `${inUse(group.key) ? ' has-current' : ''}${group.locked || group.unavailable || (query && !count) ? ' is-dim' : ''}`;
       return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
     }).join('');
     if (railHtml !== railMarkup) {
@@ -274,7 +279,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       markup = heading(icon('undo'), 'Recent') + recent.map(row => modelRow(row, true, '')).join('');
     } else if (view === 'teams') {
       total = teams.length;
-      markup = heading(icon('worktree'), 'Agent teams', '<span>Lead and workers</span>') + teams.map(teamRow).join('');
+      markup = heading(icon('team'), 'Agent teams', '<span>Lead and workers</span>') + teams.map(teamRow).join('');
     } else {
       const group = all.find(group => group.key === view);
       if (group) {
@@ -353,42 +358,58 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     return { provider, model: modelChoices(current.provider, provider?.models ?? [], current.model).find(model => model.id === current.model)! };
   }
 
+  /** A choice saved earlier that the catalog no longer lists still shows as chosen. */
+  function withSaved(choices: Choice[], chosen: string | null): Choice[] {
+    return chosen && !choices.some(choice => choice.id === chosen) ? [...choices, { id: chosen, name: chosen, description: '' }] : choices;
+  }
+  const saved = (kind: Kind) => (kind === 'effort' ? current.reasoningEffort : current.serviceTier) ?? null;
+  const chosenOf = (kind: Kind) => pendingChoice?.kind === kind ? pendingChoice.id : saved(kind);
+
+  function segmentRow(kind: Kind, label: string, choices: Choice[], modelDefault?: string | null): string {
+    return `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-${kind}">${label}</span><div class="model-menu-effort" data-kind="${kind}" role="radiogroup" aria-labelledby="${uid}-${kind}">${choices.map(choice => `<button type="button" role="radio" data-${kind}="${escape(choice.id)}" title="${escape(choice.description || choice.name)}"${choice.id && choice.id === modelDefault ? ' data-model-default=""' : ''}>${escape(choice.name)}</button>`).join('')}</div></div>`;
+  }
+
   function renderSettings(): void {
     const { provider, model } = currentModel();
-    const efforts = [...(model.reasoningEfforts ?? [])];
-    const chosen = pendingEffort !== undefined ? pendingEffort : current.reasoningEffort ?? null;
-    // A saved level the catalog no longer lists still shows as chosen.
-    if (chosen && !efforts.some(effort => effort.id === chosen)) efforts.push({ id: chosen, name: chosen, description: '' });
+    const efforts = withSaved(model.reasoningEfforts ?? [], chosenOf('effort'));
+    const tiers = model.speedTiers ?? [];
     const canSetEffort = Boolean(onEffortSelect && efforts.length);
-    settings.hidden = !canSetEffort && !teamSelected;
+    const canSetSpeed = Boolean(onSpeedSelect && tiers.length) && !teamSelected;
+    settings.hidden = !canSetEffort && !canSetSpeed && !teamSelected;
     const disabled = pending || !provider?.installed;
     const defaultEffort = efforts.find(effort => effort.id === model.defaultReasoningEffort);
-    const choices = [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts];
+    const choices: Record<Kind, Choice[]> = {
+      effort: [{ id: '', name: 'Default', description: `Use the harness's saved setting.${defaultEffort ? ` Reported model default: ${defaultEffort.name}.` : ''}` }, ...efforts],
+      speed: [{ id: '', name: 'Standard', description: "The model's standard speed." }, ...withSaved(tiers, chosenOf('speed'))],
+    };
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
-      : canSetEffort ? `<div class="model-menu-effort-row"><span class="model-menu-effort-label" id="${uid}-effort">Effort</span><div class="model-menu-effort" role="radiogroup" aria-labelledby="${uid}-effort">${choices.map(effort => `<button type="button" role="radio" data-effort="${escape(effort.id)}" title="${escape(effort.description || effort.name)}"${effort.id && effort.id === model.defaultReasoningEffort ? ' data-model-default=""' : ''}>${escape(effort.name)}</button>`).join('')}</div></div><p class="model-menu-effort-hint"></p>` : '';
+      : canSetEffort || canSetSpeed ? `${canSetEffort ? segmentRow('effort', 'Effort', choices.effort, model.defaultReasoningEffort) : ''}${canSetSpeed ? segmentRow('speed', 'Speed', choices.speed) : ''}<p class="model-menu-effort-hint"></p>` : '';
     if (markup !== settingsKey) {
       const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
       settingsKey = markup;
       if (focused) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
     }
-    const group = settings.querySelector<HTMLElement>('.model-menu-effort');
-    if (!group) return;
-    let selected: HTMLElement | null = null;
-    group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
-      const on = button.dataset.effort === (chosen ?? '');
-      if (on) selected = button;
-      button.setAttribute('aria-checked', String(on));
-      button.classList.toggle('selected', on);
-      button.tabIndex = on ? 0 : -1;
-      button.disabled = disabled;
+    settings.querySelectorAll<HTMLElement>('.model-menu-effort').forEach(group => {
+      const kind = group.dataset.kind as Kind;
+      let selected: HTMLElement | null = null;
+      group.querySelectorAll<HTMLButtonElement>('[role="radio"]').forEach(button => {
+        const on = button.dataset[kind] === (chosenOf(kind) ?? '');
+        if (on) selected = button;
+        button.setAttribute('aria-checked', String(on));
+        button.classList.toggle('selected', on);
+        button.tabIndex = on ? 0 : -1;
+        button.disabled = disabled;
+      });
+      group.setAttribute('aria-disabled', String(disabled));
+      trackSegment(group, selected);
     });
-    group.setAttribute('aria-disabled', String(disabled));
-    trackSegment(group, selected);
-    const shown = hoveredEffort !== undefined ? hoveredEffort : chosen;
-    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint')!;
-    const text = choices.find(effort => effort.id === (shown ?? ''))?.description ?? '';
+    const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint');
+    if (!hint) return;
+    const kind: Kind = hoveredChoice?.kind ?? (canSetEffort ? 'effort' : 'speed');
+    const shown = hoveredChoice ? hoveredChoice.id : chosenOf(kind);
+    const text = choices[kind].find(choice => choice.id === (shown ?? ''))?.description ?? '';
     if (hint.textContent !== text) hint.textContent = text;
   }
 
@@ -399,26 +420,28 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     renderSettings();
   }
 
-  async function saveEffort(effort: string | null): Promise<void> {
+  async function saveChoice(kind: Kind, id: string | null): Promise<void> {
     const provider = providers.find(provider => provider.id === current.provider);
-    if (pending || closed || !onEffortSelect || !provider?.installed) return;
-    const supported = provider.models.find(model => model.id === current.model)?.reasoningEfforts ?? [];
-    if (effort !== null && !supported.some(choice => choice.id === effort)) {
-      if (effort === current.reasoningEffort) return;
-      error.textContent = 'This reasoning effort is no longer available. Choose another level.';
+    const callback = kind === 'effort' ? onEffortSelect : onSpeedSelect;
+    if (pending || closed || !callback || !provider?.installed) return;
+    const model = provider.models.find(model => model.id === current.model);
+    const supported = (kind === 'effort' ? model?.reasoningEfforts : model?.speedTiers) ?? [];
+    if (id !== null && !supported.some(choice => choice.id === id)) {
+      if (id === saved(kind)) return;
+      error.textContent = kind === 'effort' ? 'This reasoning effort is no longer available. Choose another level.' : 'This speed is no longer available. Choose another speed.';
       error.hidden = false;
       renderSettings();
       return;
     }
-    if (effort === (current.reasoningEffort ?? null)) { renderSettings(); return; }
+    if (id === saved(kind)) { renderSettings(); return; }
     const focused = settings.contains(document.activeElement);
     pending = true;
-    pendingEffort = effort;
+    pendingChoice = { kind, id };
     error.hidden = true;
     updateControls();
     try {
-      await onEffortSelect(effort);
-      current.reasoningEffort = effort;
+      await callback(id);
+      if (kind === 'effort') current.reasoningEffort = id; else current.serviceTier = id;
     } catch (reason) {
       if (closed) return;
       error.textContent = reason instanceof Error ? reason.message : String(reason);
@@ -426,12 +449,18 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     } finally {
       if (!closed) {
         pending = false;
-        pendingEffort = undefined;
+        pendingChoice = undefined;
         updateControls();
         // A disabled control loses focus during the save; leave deliberate navigation alone.
-        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
+        if (focused && (document.activeElement === document.body || settings.contains(document.activeElement))) (settings.querySelector<HTMLElement>(`[data-kind="${kind}"] .selected`) ?? search).focus({ preventScroll: true });
       }
     }
+  }
+
+  /** The segment a radio belongs to and the choice it stands for. */
+  function radioChoice(radio: HTMLElement): { kind: Kind; id: string | null } {
+    const kind = radio.closest<HTMLElement>('[role="radiogroup"]')!.dataset.kind as Kind;
+    return { kind, id: radio.dataset[kind] || null };
   }
 
   // ----- Selection and events -----
@@ -444,7 +473,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     try {
       if (button.dataset.team) await options.onTeamSelect?.(button.dataset.team);
       else {
-        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!, button.dataset.connection ?? null);
+        await onSelect(button.dataset.provider as ProviderId, button.dataset.model!);
         rememberRecent(button.dataset.provider as ProviderId, button.dataset.model!);
       }
       close();
@@ -473,9 +502,9 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     close();
   }
 
-  /** Tab cycles search → rail → effort inside the picker and never leaves it. */
+  /** Tab cycles search → rail → effort → speed inside the picker and never leaves it. */
   function cycleFocus(back: boolean): void {
-    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), settings.hidden ? null : settings.querySelector<HTMLElement>('.selected:not(:disabled)')].filter((stop): stop is HTMLElement => Boolean(stop));
+    const stops = [search, rail.querySelector<HTMLElement>('[tabindex="0"]'), ...(settings.hidden ? [] : settings.querySelectorAll<HTMLElement>('.selected:not(:disabled)'))].filter((stop): stop is HTMLElement => Boolean(stop));
     const index = stops.findIndex(stop => stop.contains(document.activeElement));
     stops[(index + (back ? -1 : 1) + stops.length) % stops.length].focus({ preventScroll: true });
   }
@@ -488,14 +517,14 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   });
   settings.addEventListener('click', event => {
     const radio = (event.target as Element).closest<HTMLButtonElement>('[role="radio"]');
-    if (radio && !radio.disabled) void saveEffort(radio.dataset.effort || null);
+    if (radio && !radio.disabled) { const { kind, id } = radioChoice(radio); void saveChoice(kind, id); }
   });
   settings.addEventListener('pointerover', event => {
     const radio = (event.target as Element).closest<HTMLElement>('[role="radio"]');
-    hoveredEffort = radio ? radio.dataset.effort || null : undefined;
+    hoveredChoice = radio ? radioChoice(radio) : undefined;
     renderSettings();
   });
-  settings.addEventListener('pointerleave', () => { hoveredEffort = undefined; renderSettings(); });
+  settings.addEventListener('pointerleave', () => { hoveredChoice = undefined; renderSettings(); });
   list.addEventListener('click', event => {
     const button = (event.target as Element).closest<HTMLButtonElement>('.model-menu-option');
     if (button) void select(button);
@@ -513,14 +542,15 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     if (target !== search && key.length === 1 && key !== ' ' && !event.metaKey && !event.ctrlKey && !event.altKey) { search.focus({ preventScroll: true }); return; }
     const radio = target.closest<HTMLButtonElement>('[role="radio"]');
     if (radio) {
-      const radios = [...settings.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+      const radios = [...radio.closest('[role="radiogroup"]')!.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
       const index = radios.indexOf(radio);
       const next = key === 'ArrowRight' || key === 'ArrowDown' ? Math.min(radios.length - 1, index + 1) : key === 'ArrowLeft' || key === 'ArrowUp' ? Math.max(0, index - 1) : key === 'Home' ? 0 : key === 'End' ? radios.length - 1 : -1;
       if (next < 0) return;
       event.preventDefault();
       if (pending || radio.disabled) return;
       radios[next].focus({ preventScroll: true });
-      void saveEffort(radios[next].dataset.effort || null);
+      const { kind, id } = radioChoice(radios[next]);
+      void saveChoice(kind, id);
       return;
     }
     if (target.closest('[role="tab"]')) {
@@ -529,7 +559,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       else if (key === 'Enter' || key === 'ArrowRight') { event.preventDefault(); search.focus({ preventScroll: true }); }
       return;
     }
-    if (target !== search) return;
+    if (target !== search || isImeKey(event)) return;
     if (key === 'ArrowDown' || key === 'ArrowUp') { event.preventDefault(); moveActive(key === 'ArrowDown' ? 1 : -1); }
     else if (key === 'Home' || key === 'End') { event.preventDefault(); moveActive(key === 'Home' ? 'first' : 'last'); }
     else if ((key === 'ArrowLeft' || key === 'ArrowRight') && !search.value) { event.preventDefault(); stepView(key === 'ArrowRight' ? 1 : -1, false); }

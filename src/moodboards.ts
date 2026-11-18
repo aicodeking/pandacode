@@ -1,6 +1,6 @@
 import './moodboards.css';
-import { call, preview } from './bridge';
-import { escape, icon } from './dom';
+import { call, preview, subscribe } from './bridge';
+import { escape, icon, isImeKey } from './dom';
 
 export interface Moodboard { id: string; projectId: string; name: string; imageCount: number; updatedAt: number }
 export interface MoodboardImage { id: string; name: string; caption: string; width: number; height: number; createdAt: number }
@@ -33,7 +33,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   const nameInput = createForm.querySelector<HTMLInputElement>('input')!, status = find<HTMLElement>('.moodboard-status');
   const fileInput = find<HTMLInputElement>('.moodboard-file-input'), confirmDelete = find<HTMLElement>('.moodboard-delete-confirm');
   let disposed = false, boards: Moodboard[] = [], selected: MoodboardDetail | undefined;
-  let loading = 0, busy = false, nativeUnlisten: (() => void) | undefined;
+  let loading = 0, busy = false, nativeUnlisten: (() => void) | undefined, changesUnlisten: (() => void) | undefined;
   let thumbnailQueue: HTMLImageElement[] = [], activeThumbnails = 0;
   const observer = new IntersectionObserver(entries => {
     for (const entry of entries) if (entry.isIntersecting) {
@@ -228,7 +228,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   function key(event: KeyboardEvent): void {
     if (event.key === 'Escape' && host.querySelector('.moodboard-lightbox')) { event.preventDefault(); event.stopPropagation(); closePreview(); }
     else if (event.key === 'Escape' && !createForm.hidden) { event.preventDefault(); event.stopPropagation(); createForm.hidden = true; }
-    else if (event.key === 'Enter' && event.target === title) { event.preventDefault(); void saveTitle(); title.blur(); }
+    else if (event.key === 'Enter' && event.target === title && !isImeKey(event)) { event.preventDefault(); void saveTitle(); title.blur(); }
   }
   host.addEventListener('click', click); host.addEventListener('change', change); host.addEventListener('paste', paste); host.addEventListener('keydown', key);
   createForm.addEventListener('submit', createBoard); canvas.addEventListener('dragover', drag); canvas.addEventListener('dragleave', leave); canvas.addEventListener('drop', drop);
@@ -238,6 +238,11 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
     else if (event.payload.type === 'leave') canvas.classList.remove('is-dragging');
     else if (event.payload.type === 'drop') { canvas.classList.remove('is-dragging'); void addPaths(event.payload.paths); }
   })).then(unlisten => { if (disposed) unlisten(); else nativeUnlisten = unlisten; }).catch(() => {});
+  // A phone adds images through Connect: reload this project's boards, keeping the open one.
+  void subscribe('moodboards-changed', event => {
+    if (disposed || event?.projectId !== options.projectId) return;
+    void reload(selected?.id ?? event.boardId).catch(error => report(error, true));
+  }).then(unlisten => { if (disposed) unlisten(); else changesUnlisten = unlisten; }).catch(() => {});
   void reload(options.initialBoardId).catch(error => report(error, true));
   return () => {
     if (selected) {
@@ -247,7 +252,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       }
       if (title.value.trim() && title.value.trim() !== selected.name) void saveTitle();
     }
-    disposed = true; loading++; observer.disconnect(); thumbnailQueue = []; nativeUnlisten?.();
+    disposed = true; loading++; observer.disconnect(); thumbnailQueue = []; nativeUnlisten?.(); changesUnlisten?.();
     host.removeEventListener('click', click); host.removeEventListener('change', change); host.removeEventListener('paste', paste); host.removeEventListener('keydown', key);
     createForm.removeEventListener('submit', createBoard); canvas.removeEventListener('dragover', drag); canvas.removeEventListener('dragleave', leave); canvas.removeEventListener('drop', drop);
     host.querySelectorAll('img').forEach(image => image.removeAttribute('src'));

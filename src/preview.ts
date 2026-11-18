@@ -1,8 +1,13 @@
+import type { VoiceConfiguration, VoiceProfileInput, VoiceEvent, VoiceFailure, VoiceLocalCatalog, VoiceLocalModel, VoiceMicDevice, VoicePreferences } from './voice-types';
+import { VOICE_CANCELLED } from './voice-types';
+import realVoiceCatalog from '../src-tauri/src/voice/local/catalog.json';
 import { previewHub, previewRepos } from './preview-github-hub';
+import { createPreviewFileExplorer } from './preview-file-explorer';
 import type { AgentEvent, BrowserStatus, FileEntry, GitStatus, Message, MessagePage, Project, Provider, ProviderId, ProviderModel, Session, TaskStage, ToolActivity } from './types';
 import { fallbackModel } from './model-catalog';
 import { historicalProvider } from './provider-handoff';
 import { isPreviewableFile } from './file-links';
+import { DISMISS_BATCH } from './thread-errors';
 import type { CommandPanel, GoalState } from './command-center';
 import { createPreviewArchitect } from './preview-architect';
 import { namedTeamSetup } from './team-mode';
@@ -16,6 +21,7 @@ import { createPreviewDesign } from './preview-design';
 import { previewProgress } from './preview-progress';
 import { BRIEF_ID, GALLERY_ID, briefAnswer, briefMessages, briefTimings, briefTools, galleryMessages } from './preview-traces';
 import { createPreviewSkills } from './preview-skills';
+import { createPreviewSkillManager } from './preview-skill-manager';
 import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
 import { customToolsCommand } from './preview-custom-tools';
@@ -28,6 +34,7 @@ const previewWorkspaceFiles = ['index.html', '.gitignore', 'README.md', 'package
 const sampleTestOutput = 'PASS src/components/search.test.ts\n  ✓ filters results as the query changes\n  ✓ preserves keyboard selection\n\nTests: 12 passed, 12 total\nTime: 0.8s\nSample output — no command was executed.';
 function encodeTool(tool: ToolActivity): string { return JSON.stringify({ type: 'tool_activity', version: 1, ...tool }); }
 let projects: Project[] = [{ id: 'project-1', name: 'orbit', path: '/Users/you/Projects/orbit' }, { id: 'project-2', name: 'pandacode', path: '/Users/you/Projects/pandacode' }];
+const previewExplorer = createPreviewFileExplorer();
 let sessions: Session[] = [
   { id: 'session-1', projectId: 'project-1', title: 'Make search feel instant', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 420000, updatedAt: now, archived: false, worktreePath: null, resumeId: 'preview-session', lastResponseAt: now - 300000 },
   { id: 'session-2', projectId: 'project-1', title: 'Refine the navigation', provider: 'codex', model: '', mode: 'ask', status: 'idle', createdAt: now - 8200000, updatedAt: now - 8000000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
@@ -38,6 +45,12 @@ if (typeof location !== 'undefined' && new URLSearchParams(location.search).has(
 if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace')) sessions = [...sessions,
   { id: BRIEF_ID, projectId: 'project-1', title: 'Morning brief', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 50000, updatedAt: now + 2000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: null },
   { id: GALLERY_ID, projectId: 'project-1', title: 'Tool gallery', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 40000, updatedAt: now + 3000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 100000 }];
+// Turn cards (src/turn-card.ts): opt in with ?cards for a thread with a short reply and a long one with changes.
+const slowTurn = typeof location !== 'undefined' && new URLSearchParams(location.search).has('slowturn');
+/** ?shortreply: the command finishes, then a one-line reply too short to fill the space its folded trace gave up. */
+const shortReply = typeof location !== 'undefined' && new URLSearchParams(location.search).has('shortreply');
+const showCards = typeof location !== 'undefined' && new URLSearchParams(location.search).has('cards');
+if (showCards) sessions = [{ id: 'session-cards', projectId: 'project-1', title: 'Turn cards', provider: 'claude', model: 'sonnet', mode: 'ask', status: 'idle', createdAt: now - 30000, updatedAt: now + 4000, archived: false, worktreePath: null, resumeId: null, lastResponseAt: now - 1000 }, ...sessions];
 // The preview persists sidebar preferences only, never sample conversation data.
 const THREAD_ORDER_KEY = 'pandacode.preview.threadOrder';
 type ThreadOrder = { id: string; pinned: boolean; sidebarOrder: number | null };
@@ -139,6 +152,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
+let previewClaudeRefresh = true;
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -152,11 +166,12 @@ const previewEnvState = { global: [] as [string, string][], providers: {} as Rec
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
-    executablePaths: {}, claudeConnectionMode: previewClaudeMode,
+    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
-    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
+    providers: providers.map(provider => [provider.id, provider.name]),
+    glmKeySaved: false, glmKeyFromEnvironment: false, deepseekKeySaved: false, deepseekKeyFromEnvironment: false, commandcodeKeySaved: false, commandcodeKeyFromEnvironment: false, mimoKeySaved: false, mimoKeyFromEnvironment: false, alibabaKeySaved: false, alibabaKeyFromEnvironment: false, mimoEndpoint: previewMimoEndpoint, mimoEndpoints: previewMimoEndpoints, secureStorageAvailable: false,
   };
 }
 const traceRoot = '/Users/you/Projects/orbit';
@@ -183,8 +198,18 @@ const traceMessages: Message[] = [
   { id: 130, sessionId: 'session-5', role: 'assistant', content: 'Search now compares a normalized form of the query and each title, so case and accents no longer matter.\n\n- Added `normalize()` in `src/lib/normalize.ts`.\n- The tests pass; lint flags the new regex and needs the `u` flag follow-up.', createdAt: now - 604000000 },
 ];
 // Trace showcase thread: opt in with ?trace so default session counts stay unchanged.
+const cardTool = (id: string, name: string, input: string, output: string) => encodeTool({ id, name, status: 'completed', input, output });
+const cardMessages: Message[] = [
+  { id: 9001, sessionId: 'session-cards', role: 'user', content: 'Which file owns the search index?', createdAt: now - 30000, turnDurationMs: 4000 },
+  { id: 9002, sessionId: 'session-cards', role: 'assistant', content: 'The index lives in `src/search-index.ts`; `createSearchIndex()` builds it once per data set.', createdAt: now - 26000 },
+  { id: 9003, sessionId: 'session-cards', role: 'user', content: 'Make the results update instantly and keep keyboard navigation working.', createdAt: now - 20000, turnDurationMs: 5_410_000 },
+  { id: 9004, sessionId: 'session-cards', role: 'tool', content: cardTool('card-read', 'Read', 'src/components/search.ts', sampleSource), createdAt: now - 19000 },
+  { id: 9005, sessionId: 'session-cards', role: 'tool', content: cardTool('card-shot', 'Read', 'design/search-results.png', 'Image read'), createdAt: now - 18000 },
+  { id: 9006, sessionId: 'session-cards', role: 'tool', content: cardTool('card-test', 'Bash', 'npm test -- search', sampleTestOutput), createdAt: now - 15000 },
+  { id: 9007, sessionId: 'session-cards', role: 'assistant', content: 'Search now responds as you type.\n\n- **The index is built once.** `createSearchIndex()` moved out of the input handler, so a keystroke only queries it.\n- **Rendering is limited to the visible rows.** `renderResults()` draws the first 50 matches and the list virtualizes the rest.\n- **Keyboard navigation is unchanged.** ↑/↓ still move the selection and Enter opens the result; the existing tests cover both.\n\nI also added a test that types ten characters in a row and checks the index is built only once. Every search test passes.\n\nOne follow-up worth considering: the index is rebuilt when the data set changes, which happens on every sync. If syncs get frequent, an incremental update would avoid the rebuild entirely.', createdAt: now - 1000 },
+];
 const showTrace = typeof location !== 'undefined' && new URLSearchParams(location.search).has('trace');
-const messages: Record<string, Message[]> = { ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
+const messages: Record<string, Message[]> = { ...(showCards ? { 'session-cards': cardMessages } : {}), ...(showTrace ? { 'session-5': traceMessages, [BRIEF_ID]: briefMessages, [GALLERY_ID]: galleryMessages } : {}), 'session-1': [
   { id: 1, sessionId: 'session-1', role: 'user', content: 'Search feels a little slow. Can you make it respond instantly as I type, and keep the keyboard navigation working?', createdAt: now - 420000 },
   { id: 2, sessionId: 'session-1', role: 'assistant', content: 'I’ll trace how the search input updates the results, then check the keyboard interactions.', createdAt: now - 410000 },
   { id: 3, sessionId: 'session-1', role: 'tool', content: encodeTool({ id: 'sample-read', name: 'Read', status: 'completed', input: 'src/components/search.ts', output: sampleSource }), createdAt: now - 400000 },
@@ -202,6 +227,7 @@ const providers: Provider[] = [
   { id: 'antigravity', name: 'Antigravity', installed: false, path: null, version: '', models: [] },
   { id: 'grok', name: 'Grok Build', installed: true, path: '/sample/bin/grok', version: 'grok 1.0.40 (sample)', models: [] },
   { id: 'mimo', name: 'MiMo Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
+  { id: 'alibaba', name: 'Alibaba Token Plan', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: [] },
   { id: 'pi', name: 'Pi', installed: true, path: '/sample/bin/pi', version: 'Sample provider', models: [] },
   { id: 'deepseek', name: 'DeepSeek', installed: true, path: '/sample/bin/dsh', version: 'Sample provider', models: [] },
   { id: 'commandcode', name: 'Command Code', installed: true, path: '/sample/bin/command-code', version: '1.87.1 (sample)', models: [] },
@@ -213,6 +239,7 @@ const providers: Provider[] = [
   { id: 'devin', name: 'Devin CLI', installed: true, path: '/sample/bin/devin', version: 'devin 3000.11.216 (sample)', models: [] },
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
+  { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
@@ -222,7 +249,9 @@ const previewMimoEndpoints = [
   { id: 'api', url: 'https://api.xiaomimimo.com/anthropic', label: 'Pay-as-you-go API' },
 ];
 let previewMimoEndpoint: string | null = null;
-let previewAgentsDockPreferences = { enabled: true, keepOnScreen: true, pinned: false };
+const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
+let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
+try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 /** Settings → Agents → Local code explorer; the app keeps it in app data. */
 let previewExploreEnabled = true;
 /** Its per-harness opt-ins (`explore-on-<provider>` markers); Claude Code is on by default. */
@@ -241,7 +270,20 @@ const previewAgentsDockSnapshot = {
   ],
 };
 /** Named connections; secret values are dropped, only their names are kept, as on the native side. */
-let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {} };
+/** Pool accounts whose usage holds were cleared with Try now (`provider/id`). */
+let previewPoolCleared: string[] = [];
+/** When the preview's held account (the first connection) gets its weekly window back: the chip and its meter's reset agree. */
+const previewHoldUntil = Date.now() + 86_400_000;
+/** Connections made by Add account, signed out until their preview sign-in finishes. */
+let previewSignedOut: string[] = [];
+/** Sign-ins running in the preview, by connection id, with their pending step. */
+const previewSignIns = new Map<string, number>();
+function previewSignInDone(id: string): void {
+  window.clearTimeout(previewSignIns.get(id)); previewSignIns.delete(id);
+  previewSignedOut = previewSignedOut.filter(other => other !== id);
+  setTimeout(() => emit('account-sign-in', { id, state: 'done' }), 0);
+}
+let previewConnections: import('./connections').ConnectionSnapshot = { connections: [], tasks: {}, pools: [], poolExcluded: [] };
 function previewSaveConnection(input: { id?: string | null; provider: ProviderId; name: string; executable?: string | null; args?: string[]; env?: { name: string; value: string | null; secret: boolean }[]; configDir?: string | null }): import('./connections').ConnectionSnapshot {
   const name = String(input.name ?? '').trim();
   if (!name || name.length > 60) throw new Error('Give the connection a name of up to 60 characters.');
@@ -299,6 +341,13 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
   ],
+  // Shaped like `cursor-agent acp`'s parameterized catalog: each base model lists its own thinking levels.
+  cursor: ([
+    ['default', 'Default', [], '', 0], ['auto-smart', 'Auto', [], '', 0],
+    ['composer-2.5', 'Composer 2.5', [], '', 0],
+    ['claude-opus-5', 'Claude Opus 5', ['low', 'medium', 'high', 'xhigh', 'max'], 'high', 200000],
+    ['gpt-5.5', 'GPT-5.5', ['none', 'low', 'medium', 'high', 'extra-high'], 'medium', 272000],
+  ] as [string, string, string[], string, number][]).map(([id, name, efforts, effort, context]) => ({ id, name, description: id === 'default' ? 'Use the model last chosen in Cursor.' : '', reasoningEfforts: efforts.map(value => ({ id: value, name: value === 'xhigh' || value === 'extra-high' ? 'Extra High' : value[0].toUpperCase() + value.slice(1), description: '' })), ...(effort ? { defaultReasoningEffort: effort } : {}), ...(context ? { contextWindow: context } : {}) })),
   muse: ['muse-wonder-1.0', 'muse-spark-1.3'].map(id => ({ id, name: id, description: '', reasoningEfforts: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'].map(effort => ({ id: effort, name: effort === 'xhigh' ? 'Extra high' : effort[0].toUpperCase() + effort.slice(1), description: '' })), defaultReasoningEffort: 'high', contextWindow: 1007997 })),
   opencode: openCodePreviewModels,
   glm: [
@@ -313,14 +362,20 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
+  // Mirrors providers::alibaba::models (first entries).
+  alibaba: [
+    { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
+    { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+  ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
     { id: 'sonnet', name: 'Claude Sonnet 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 200000 },
-    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000 },
+    { id: 'opus', name: 'Claude Opus 5', description: 'Sample Claude Code model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'max'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), contextWindow: 1000000, speedTiers: [{ id: 'fast', name: 'Fast', description: 'Claude Code fast mode: faster output at a higher price.' }] },
     { id: 'haiku', name: 'Claude Haiku 4.5', description: 'Sample Claude Code model metadata.', contextWindow: 200000 },
   ],
   codex: [
-    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000 },
+    { id: 'gpt-6-astra', name: 'GPT-6-Astra', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high', 'xhigh'].map(id => ({ id, name: id === 'xhigh' ? 'Extra high' : id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })), defaultReasoningEffort: 'medium', contextWindow: 400000, speedTiers: [{ id: 'priority', name: 'Fast', description: '1.5x speed' }, { id: 'ultrafast', name: 'Ultra Fast', description: 'Sample experimental tier.' }] },
     { id: 'gpt-5.6-sol', name: 'GPT-5.6-Sol', description: 'Sample Codex model metadata.', reasoningEfforts: ['low', 'medium', 'high'].map(id => ({ id, name: id[0].toUpperCase() + id.slice(1), description: `Sample ${id} effort.` })) },
   ],
   kimi: [{ id: 'kimi-code/k3', name: 'K3', description: 'Sample configured Kimi model.', reasoningEfforts: [{ id: 'on', name: 'On', description: 'Enable thinking.' }, { id: 'off', name: 'Off', description: 'Disable thinking.' }], contextWindow: 256000 }],
@@ -471,6 +526,7 @@ const previewGithub = (() => {
 const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
+const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
 const previewCloud = createPreviewCloud();
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
@@ -586,12 +642,31 @@ function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn =>
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+// tests: `window.__previewInterrupted = ['session-2']` (set before load) starts those tasks Interrupted;
+// `__previewSetStatus(id, status)` changes one and announces it, as the native app does.
+for (const id of (window as any).__previewInterrupted ?? []) sessions = sessions.map(task => task.id === id ? { ...task, status: 'interrupted' } : task);
+(window as any).__previewSetStatus = (id: string, status: Session['status']) => { sessions = sessions.map(task => task.id === id ? { ...task, status } : task); emit('sessions-changed', null); };
+// Tests: how many listeners an event has now, e.g. to check a view stops listening when it should.
+(window as any).__previewListenerCount = (name: string) => listeners.get(name)?.size ?? 0;
 export function listen(name: string, callback: (event: any) => void): () => void { if (!listeners.has(name)) listeners.set(name, new Set()); listeners.get(name)!.add(callback); return () => listeners.get(name)?.delete(callback); }
 /** What the native picker "returns" in the browser preview, so attach flows can be exercised. */
 export function samplePick(kind: 'files' | 'folder'): string[] {
   return kind === 'folder' ? ['/Users/you/Projects/orbit-design'] : ['/Users/you/Pictures/dashboard-mockup.png', '/Users/you/Documents/Product brief.pdf'];
 }
 function agent(event: AgentEvent) { emit('agent-event', event); }
+/** `MESSAGE_LIMIT` in lib.rs. */
+const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** tests: a live `error` event for any task, saved first like lib.rs `save_agent_activity` does: the row goes into the
+ * thread (newest id) and the event carries it as `data.messageId`; `{ saved: false }` is an event the backend could
+ * not save (no row, no id). Returns the saved id. */
+(window as any).__previewError = (sessionId: string, text: string, options: { saved?: boolean } = {}): number | undefined => {
+  if (options.saved === false) { agent({ sessionId, kind: 'error', text }); return undefined; }
+  const list = (messages[sessionId] ??= []);
+  id = Math.max(id, ...list.map(message => message.id)) + 1;
+  list.push({ id, sessionId, role: 'error', content: text.length > 8192 ? text.slice(-8192) : text, createdAt: Date.now() });
+  agent({ sessionId, kind: 'error', text, data: { messageId: id } });
+  return id;
+};
 /** tests: a live `subagent` event for any task (`__previewSubagent('session-1', { id, name, status, … })`). */
 (window as any).__previewSubagent = (sessionId: string, data: Record<string, unknown>) => agent({ sessionId, kind: 'subagent', text: '', data: { parentId: null, prompt: '', response: '', tools: [], startedAt: now, updatedAt: Date.now(), ...data } } as unknown as AgentEvent);
 function session(value: unknown): Session { const result = sessions.find(s => s.id === value); if (!result) throw new Error('Task not found'); return result; }
@@ -600,7 +675,7 @@ function assertIdle(s: Session): void {
 }
 function taskDetails(title: unknown, description: unknown): { title: string; taskDescription: string } {
   if (typeof title !== 'string' || !title.trim() || title.length > 200) throw new Error('Title must be 1–200 characters.');
-  if (typeof description !== 'string' || new TextEncoder().encode(description).length > 128 * 1024) throw new Error('Task description must be under 128 KiB.');
+  if (typeof description !== 'string' || new TextEncoder().encode(description).length > MESSAGE_LIMIT) throw new Error('Task details must be under 16 MiB.');
   return { title: title.trim(), taskDescription: description.trim() };
 }
 function taskSummary(s: Session): Session {
@@ -893,9 +968,17 @@ const architect = createPreviewArchitect({
   agent,
 });
 
+// `?council` seeds a council partway through; `?council=passed|fixing|limit|finished|cycle|asking|accepted` shows that state.
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('council')) {
+  architect.seedCouncil('session-1', new URLSearchParams(location.search).get('council') ?? '');
+  // Tests score or add a seat, as a reviewer finishing would.
+  (window as unknown as { __councilSeat: unknown }).__councilSeat = (seat: Parameters<typeof architect.councilSeat>[1]) => architect.councilSeat('session-1', seat);
+  (window as unknown as { __councilAsk: unknown }).__councilAsk = () => architect.councilAsk('session-1');
+}
+
 /* Threads an agent launched on other machines (docs/machine-orchestration.md): ordinary mirror
  * sessions here, each recorded with its parent. Tests add them with `__machineChild`. */
-const machineParents = new Map<string, string>(), machineStopped = new Set<string>();
+const machineParents = new Map<string, string>(), machineStopped = new Set<string>(), machineOffline = new Set<string>();
 /** Like the native command: every live thread (running/waiting) plus the 24 newest settled ones, oldest first. */
 const SETTLED_SHOWN = 24;
 function machineRows(parentId: string) {
@@ -903,6 +986,7 @@ function machineRows(parentId: string) {
     sessionId: child.id, title: child.title, provider: child.provider, model: child.model,
     status: machineStopped.has(child.id) && child.status === 'idle' ? 'interrupted' : child.status,
     machine: child.remoteDevice ?? { id: 'dev-studio', name: 'Studio iMac' }, createdAt: child.createdAt,
+    ...(machineOffline.has(child.id) ? { hostOffline: true } : {}),
   }));
 }
 function machineChildren(parentId: string) {
@@ -928,6 +1012,8 @@ function installMachineChildren(): void {
     const at = Date.now();
     (messages[sessionId] ??= []).push({ id: ++id, sessionId, role: 'coordination', coordinationKind: 'machine_threads', content: 'Machine threads finished', createdAt: at }, { id: ++id, sessionId, role: 'assistant', content: 'Both threads finished; here is the combined report.', createdAt: at + 1 });
   };
+  // The computer running a thread dropping off or coming back.
+  w.__machineChildOffline ??= (id: string, offline: boolean) => { if (offline) machineOffline.add(id); else machineOffline.delete(id); emit('sessions-changed', {}); };
   w.__machineChildStatus ??= (id: string, status: string) => { session(id).status = status; agent({ sessionId: id, kind: 'status', text: status }); emit('sessions-changed', {}); };
 }
 /** Menu bar popover data; `window.__trayCalls` records what it asked for. */
@@ -948,8 +1034,10 @@ function trayCommand(command: string, args: Record<string, any>): unknown {
     usage: [
       { provider: 'claude', status: 'ready', plan: 'Max', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 42, resetsAt: hours(2.17) }, { label: 'Weekly', usedPercent: 83, resetsAt: hours(70) }] },
       { provider: 'codex', status: 'ready', plan: 'Pro', stale: false, checkedAt: now, windows: [{ label: '5 hours', usedPercent: 97, resetsAt: hours(0.6) }] },
+      ...((window as any).__trayExtraUsage ?? []),
     ],
     checking: false,
+    askingClaude: Boolean((window as any).__trayAskingClaude),
   };
 }
 /** The Running agents widget's commands (header and pinned window). */
@@ -966,6 +1054,7 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
       keepOnScreen: Boolean(args.keepOnScreen),
       pinned: args.enabled ? previewAgentsDockPreferences.pinned : false,
     };
+    localStorage.setItem(AGENTS_DOCK_KEY, JSON.stringify(previewAgentsDockPreferences));
     emit('agents-dock-preferences-changed', structuredClone(previewAgentsDockPreferences));
     return structuredClone(previewAgentsDockPreferences) as T;
   }
@@ -989,7 +1078,442 @@ function previewAgentsDock<T>(command: string, args: Record<string, any>): T {
   throw new Error(`Unknown running-agents command: ${command}`);
 }
 
+// Voice preview is entirely synthetic: no microphone, credentials or network traffic.
+const voiceScenario = new URLSearchParams(location.search).get('voice');
+const voiceLocalScenario = voiceScenario?.startsWith('local-') ? voiceScenario : null;
+const voiceConfig: VoiceConfiguration = { selectedProfileId: voiceScenario && !voiceLocalScenario ? 'voice-preview' : null,
+  profiles: voiceScenario && voiceScenario !== 'local-unsupported-new' ? [{ id: 'voice-preview', name: 'Local speech', provider: 'custom', endpoint: 'http://127.0.0.1:8080/inference', model: 'whisper-1', language: null, hasKey: false }] : [],
+  limits: { maxSeconds: 120, maxAudioBytes: 16 * 1024 * 1024 } };
+if (voiceScenario === 'missing-key') Object.assign(voiceConfig.profiles[0], {
+  name: 'OpenAI speech', provider: 'openai', endpoint: 'https://api.openai.com/v1/audio/transcriptions', model: 'gpt-transcribe',
+});
+if (voiceScenario === 'disclosure-profile') Object.assign(voiceConfig.profiles[0], {
+  name: 'Long destination fixture', model: `speech-${'m'.repeat(900)}`,
+});
+if (voiceScenario === 'long-profile') Object.assign(voiceConfig.profiles[0], {
+  name: `Speech ${'x'.repeat(90)}`, model: `speech-${'m'.repeat(137)}`,
+  endpoint: `http://127.0.0.1:8080/${'route-'.repeat(55)}`,
+});
+let voiceSequence = 0;
+const voiceCaptures = new Map<string, { requestId: string; started: number; timer: number; cancelled: boolean; profile: VoiceConfiguration['profiles'][number]; closedText?: string }>();
+const voiceCancelledRequests = new Set<string>();
+const voicePendingStarts = new Map<string, { cancelled: boolean; stage: string }>();
+const voiceStartGates = new Map<string, () => void>();
+// Stage barriers let tests hold permission, device startup, or an already-created Start reply.
+(window as any).__voiceStartRelease = (requestId: string) => voiceStartGates.get(requestId)?.();
+(window as any).__voiceState = () => ({
+  held: [...voiceStartGates.keys()],
+  pending: [...voicePendingStarts].map(([requestId, state]) => ({ requestId, ...state })),
+  active: [...voiceCaptures].map(([captureId, c]) => ({ captureId, requestId: c.requestId, recording: Boolean(c.timer), model: c.profile.model, endpoint: c.profile.endpoint, hasKey: c.profile.hasKey })),
+});
+// Tests: the window closes while recording. Like native, the recording stops ("transcribing", unless
+// `transcribing: false`), its transcript is emitted as `voice://transcript`, and a later voice_stop returns the same text.
+(window as any).__voiceSimulateWindowClose = ({ text = 'Closed window speech.', transcribing = true }: { text?: string; transcribing?: boolean } = {}) => {
+  const entry = [...voiceCaptures].find(([, capture]) => capture.timer && !capture.cancelled);
+  if (!entry) return null;
+  const [captureId, capture] = entry;
+  clearInterval(capture.timer); capture.timer = 0; capture.closedText = text;
+  if (transcribing) emit('voice-event', { captureId, requestId: capture.requestId, phase: 'transcribing', elapsedMs: Date.now() - capture.started, level: 0 });
+  window.setTimeout(() => emit('voice://transcript', { captureId, requestId: capture.requestId, text }), 60);
+  return { captureId, requestId: capture.requestId };
+};
+async function voiceStartBarrier(requestId: string, stage: string): Promise<void> {
+  const w = window as any;
+  const hold = w.__voiceStartHold ?? (voiceScenario === 'start-delayed' ? 'permission' : null);
+  if (hold !== stage) return;
+  // One-shot so an immediate second attempt can start while the first reply remains held.
+  w.__voiceStartHold = false;
+  const pending = voicePendingStarts.get(requestId);
+  if (pending) pending.stage = stage;
+  await new Promise<void>(resolve => voiceStartGates.set(requestId, resolve));
+  voiceStartGates.delete(requestId);
+}
+
+// Built-in local models: a fixture catalog, a timed fake download, and silent microphone tests. Nothing is fetched or recorded.
+// Every fixture model is a real entry of the vendored catalog (`tests/voice-local-settings.spec.ts` checks it); only state differs.
+const realVoiceModels = realVoiceCatalog.models as unknown as Omit<VoiceLocalModel, 'state' | 'active'>[];
+const voiceLocalModel = (id: string, flags: Partial<VoiceLocalModel> = {}): VoiceLocalModel => {
+  const real = realVoiceModels.find(model => model.id === `handy-computer/${id}`);
+  if (!real) throw new Error(`Preview speech model ${id} is not in the catalog.`);
+  return { ...structuredClone(real), state: 'downloadable', active: false, ...flags };
+};
+// `local-fresh`: nothing downloaded yet (no VAD either); `local-partial`: Canary has a resumable 40% part.
+// `local-unsupported`: the computer can't run local models and a speech service is saved; `local-unsupported-new`: none is.
+const voiceLocalFresh = voiceLocalScenario === 'local-fresh';
+const voiceLocalUnsupported = voiceLocalScenario?.startsWith('local-unsupported') ?? false;
+const voiceLocalCatalog: VoiceLocalCatalog = { vad: { state: voiceLocalFresh ? 'downloadable' : 'installed', size: realVoiceCatalog.vad.size },
+  platformSupported: !voiceLocalUnsupported, defaultModel: realVoiceCatalog.defaultModel, models: [
+  voiceLocalModel('parakeet-unified-en-0.6b-gguf', { state: 'installed', active: true }),
+  voiceLocalModel('parakeet-tdt-0.6b-v3-gguf'),
+  voiceLocalModel('whisper-tiny-gguf', { state: 'installed' }),
+  voiceLocalModel('canary-180m-flash-gguf'),
+  voiceLocalModel('nemotron-3.5-asr-streaming-0.6b-gguf'),
+  // Voxtral Small 24B: accuracy was benchmarked but speed was not (secondsPer30s null).
+  voiceLocalModel('Voxtral-Small-24B-2507-gguf'),
+] };
+if (voiceLocalUnsupported) voiceLocalCatalog.unsupportedReason = 'This computer’s processor lacks the instructions the speech engine needs.';
+if (voiceLocalFresh) voiceLocalCatalog.models.forEach(model => Object.assign(model, { state: 'downloadable', active: false }));
+// `local-unselected`: models downloaded but none selected (the selected one was deleted elsewhere).
+if (voiceLocalScenario === 'local-unselected') voiceLocalCatalog.models.forEach(model => { model.active = false; });
+if (voiceLocalScenario === 'local-partial') { const canary = voiceLocalModelById('canary-180m-flash-gguf'); canary.downloaded = canary.size * 0.4; }
+function voiceLocalModelById(id: string): VoiceLocalModel { return voiceLocalCatalog.models.find(model => model.id === `handy-computer/${id}`)!; }
+const voicePreferences: VoicePreferences = {
+  destination: voiceLocalUnsupported ? 'off' : voiceLocalScenario ? 'local' : voiceScenario ? { profileId: 'voice-preview' } : 'off',
+  deviceName: 'Wireless Headset', shortcutMode: 'auto', language: 'auto', unloadAfter: 'min_5', selectedModel: voiceLocalFresh || voiceLocalScenario === 'local-unselected' ? null : voiceLocalCatalog.models[0].id,
+};
+const VOICE_MIC_DEVICES: VoiceMicDevice[] = [{ id: 'builtin', name: 'MacBook Pro Microphone', isDefault: true }, { id: 'usb', name: 'Studio USB Mic', isDefault: false }];
+const voiceDownloads = new Map<string, number>();
+/** Like native, `voice_local_download` settles only when the model is installed, fails or is cancelled. */
+const voiceDownloadWaiters = new Map<string, { resolve: (value: null) => void; reject: (error: Error) => void }>();
+function voiceDownloadSettle(modelId: string, error?: string): void {
+  const waiter = voiceDownloadWaiters.get(modelId);
+  voiceDownloadWaiters.delete(modelId);
+  if (error) waiter?.reject(new Error(error)); else waiter?.resolve(null);
+}
+const voiceLocalTest = { modelId: null as string | null, mic: false };
+/** `__voiceLocalStopHold` keeps the next model test Stop transcribing until `__voiceLocalStopRelease()` or a cancel. */
+let voiceLocalStopWaiter: { resolve: () => void; reject: (error: Error) => void } | null = null;
+(window as any).__voiceLocalStopRelease = () => { const waiter = voiceLocalStopWaiter; voiceLocalStopWaiter = null; waiter?.resolve(); };
+/** `__voiceLocalStartHold` holds the next model or microphone test start (like a slow native start) until
+ * `__voiceLocalStartRelease()`, so specs can press Stop or leave Settings while it is pending. Like native, a Stop or
+ * Cancel of that kind while it is held aborts it: the start rejects with VOICE_CANCELLED and a Stop resolves
+ * `{ cancelled: true }`. `__voiceLocalStopCancelled` makes the next Stop answer that shape. */
+type VoiceLocalStartKind = 'model' | 'mic';
+const voiceLocalStartGates: { kind: VoiceLocalStartKind; resolve: () => void; reject: (error: Error) => void }[] = [];
+(window as any).__voiceLocalStartRelease = () => voiceLocalStartGates.splice(0).forEach(gate => gate.resolve());
+function voiceLocalStartGate(kind: VoiceLocalStartKind): Promise<void> | null {
+  const w = window as any;
+  if (!w.__voiceLocalStartHold) return null;
+  w.__voiceLocalStartHold = false;
+  return new Promise((resolve, reject) => voiceLocalStartGates.push({ kind, resolve, reject }));
+}
+/** Aborts a held start of `kind`; true when there was one. */
+function voiceLocalAbortStart(kind: VoiceLocalStartKind): boolean {
+  const held = voiceLocalStartGates.filter(gate => gate.kind === kind);
+  held.forEach(gate => { voiceLocalStartGates.splice(voiceLocalStartGates.indexOf(gate), 1); gate.reject(new Error(VOICE_CANCELLED)); });
+  return held.length > 0;
+}
+function voiceLocalStopCancelled(): boolean {
+  const w = window as any;
+  if (!w.__voiceLocalStopCancelled) return false;
+  w.__voiceLocalStopCancelled = false;
+  return true;
+}
+/** The local model each unfinished dictation was routed to (starting, recording, transcribing or awaiting Retry), by request. */
+const voiceLocalRoutes = new Map<string, string>();
+function voiceLocalRouted(modelId: string): boolean {
+  const live = new Set([...voicePendingStarts.keys(), ...[...voiceCaptures.values()].filter(c => !c.cancelled).map(c => c.requestId)]);
+  return [...voiceLocalRoutes].some(([requestId, model]) => model === modelId && live.has(requestId));
+}
+const voicePreferencePatches: Partial<VoicePreferences>[] = [];
+(window as any).__voiceLocalState = () => ({
+  models: voiceLocalCatalog.models.map(({ id, state, downloaded, active }) => ({ id, state, downloaded: downloaded ?? 0, active })),
+  vad: structuredClone(voiceLocalCatalog.vad), preferences: structuredClone(voicePreferences), downloads: [...voiceDownloads.keys()], testing: voiceLocalTest.modelId, micTesting: voiceLocalTest.mic, preferencePatches: structuredClone(voicePreferencePatches),
+});
+(window as any).__voiceLocalCatalog = () => structuredClone(voiceLocalCatalog);
+function voiceLocalFind(modelId: unknown): VoiceLocalModel {
+  const model = voiceLocalCatalog.models.find(item => item.id === modelId);
+  if (!model) throw new Error('Unknown speech model.');
+  return model;
+}
+function voiceLocalEmit(model: VoiceLocalModel, error?: string): void {
+  emit('voice://local-model', { modelId: model.id, state: model.state, downloaded: model.downloaded ?? 0, size: model.size, ...(error ? { error } : {}) });
+}
+function voiceLocalFail(model: VoiceLocalModel, error: string): void {
+  window.clearInterval(voiceDownloads.get(model.id)); voiceDownloads.delete(model.id);
+  Object.assign(model, { state: 'downloadable', downloaded: 0 }); voiceLocalEmit(model, error);
+  voiceDownloadSettle(model.id, error);
+}
+/** Ten steps of progress every 120 ms (paused while `__voiceLocalHold`), a 300 ms verify step, then installed or a scenario failure. */
+function voiceLocalTick(model: VoiceLocalModel): void {
+  if ((window as any).__voiceLocalHold || model.state !== 'downloading') return;
+  model.downloaded = Math.min(model.size, (model.downloaded ?? 0) + model.size / 10);
+  if (voiceLocalScenario === 'local-disk-full' && model.downloaded >= model.size * 0.5) { voiceLocalFail(model, 'Not enough disk space to download this model. Free some space and try again.'); return; }
+  if (model.downloaded < model.size) { voiceLocalEmit(model); return; }
+  window.clearInterval(voiceDownloads.get(model.id)); voiceDownloads.delete(model.id);
+  model.state = 'verifying'; voiceLocalEmit(model);
+  window.setTimeout(() => voiceLocalVerify(model), 300);
+}
+/** Finishes verification; `__voiceLocalHoldVerify` keeps a model in Verifying until cleared. */
+function voiceLocalVerify(model: VoiceLocalModel): void {
+  if (model.state !== 'verifying') return;
+  if ((window as any).__voiceLocalHoldVerify) { window.setTimeout(() => voiceLocalVerify(model), 100); return; }
+  if (voiceLocalScenario === 'local-verify-failed') { voiceLocalFail(model, 'The download did not match its checksum and was removed. Try again.'); return; }
+  model.state = 'installed';
+  // Like native: the first download (nothing usable selected) becomes the selected model before the call resolves.
+  const selected = voiceLocalCatalog.models.find(item => item.id === voicePreferences.selectedModel && item.state === 'installed');
+  if (!selected) { voiceLocalCatalog.models.forEach(item => { item.active = item.id === model.id; }); voicePreferences.selectedModel = model.id; }
+  voiceLocalEmit(model);
+  voiceLocalVadStep(() => voiceDownloadSettle(model.id));
+}
+/** The Silero VAD follows the model; it is reported through `catalog.vad`, never as the model's state. */
+function voiceLocalVadStep(done: () => void): void {
+  const vad = voiceLocalCatalog.vad;
+  if (vad.state === 'installed') { done(); return; }
+  Object.assign(vad, { state: 'downloading', downloaded: 0 });
+  window.setTimeout(() => { Object.assign(vad, { state: 'installed', downloaded: vad.size }); done(); }, 150);
+}
+function voiceSilentWav(ms = 1000, rate = 16000): string {
+  const samples = Math.round(rate * ms / 1000), view = new DataView(new ArrayBuffer(44 + samples * 2));
+  const text = (offset: number, value: string) => [...value].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
+  text(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); text(8, 'WAVEfmt '); view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true);
+  view.setUint16(32, 2, true); view.setUint16(34, 16, true); text(36, 'data'); view.setUint32(40, samples * 2, true);
+  return btoa(String.fromCharCode(...new Uint8Array(view.buffer)));
+}
+function voiceLocalModelCommand(command: string, args: Record<string, any>): unknown {
+  if (command === 'voice_local_test_model') return voiceLocalTestCommand(args.action, args.modelId);
+  const model = voiceLocalFind(args.modelId);
+  if (command === 'voice_local_download') {
+    if (!voiceLocalCatalog.platformSupported) throw new Error('Local speech models are not supported on this computer.');
+    if (voiceDownloads.size) throw new Error('Another model is downloading. Wait for it or cancel it first.');
+    if (model.state !== 'downloadable') return null;
+    Object.assign(model, { state: 'downloading', downloaded: model.downloaded ?? 0 }); voiceLocalEmit(model);
+    voiceDownloads.set(model.id, window.setInterval(() => voiceLocalTick(model), 120));
+    return new Promise((resolve, reject) => voiceDownloadWaiters.set(model.id, { resolve, reject }));
+  }
+  if (command === 'voice_local_cancel_download') {
+    window.clearInterval(voiceDownloads.get(model.id)); voiceDownloads.delete(model.id);
+    // `__voiceLocalCancelTooLate`: the download finishes (verifies and installs) before the cancel lands, which then
+    // has nothing to cancel, like native.
+    if ((window as any).__voiceLocalCancelTooLate && model.state === 'downloading') {
+      (window as any).__voiceLocalCancelTooLate = false;
+      Object.assign(model, { state: 'verifying', downloaded: model.size }); voiceLocalEmit(model); voiceLocalVerify(model);
+    }
+    if (model.state === 'installed') return null;
+    // Native keeps the partial file so a later download resumes.
+    model.state = 'downloadable'; voiceLocalEmit(model); voiceDownloadSettle(model.id, 'Download cancelled.');
+    return null;
+  }
+  if (command === 'voice_local_delete') {
+    // Native refuses while the model downloads or an unfinished dictation is routed to it.
+    if (voiceDownloads.has(model.id) || model.state === 'downloading' || model.state === 'verifying') throw new Error("Cancel this model's download before deleting it.");
+    if (voiceLocalRouted(model.id)) throw new Error('A dictation is using this model. Delete it after the dictation finishes or is discarded.');
+    if (voiceLocalTest.modelId === model.id) throw new Error('Stop the model test first.');
+    Object.assign(model, { state: 'downloadable', downloaded: 0, active: false });
+    if (voicePreferences.selectedModel === model.id) voicePreferences.selectedModel = null;
+    return null;
+  }
+  if (command === 'voice_local_select') {
+    if (model.state !== 'installed') throw new Error('Download this model before selecting it.');
+    voiceLocalCatalog.models.forEach(item => { item.active = item.id === model.id; });
+    voicePreferences.selectedModel = model.id;
+    return structuredClone(voicePreferences);
+  }
+  throw new Error(`Unknown voice command: ${command}`);
+}
+/** `voice_local_test_model({ action, modelId })` tests the card's installed model (start names it), as native does. */
+function voiceLocalTestCommand(action: unknown, modelId: unknown): unknown {
+  if (action === 'start') {
+    const model = voiceLocalCatalog.models.find(item => item.id === modelId);
+    if (!model) throw new Error('Unknown speech model.');
+    if (model.state !== 'installed') throw new Error('Download this model before testing it.');
+    const gate = voiceLocalStartGate('model');
+    if (gate) return gate.then(() => { voiceLocalTest.modelId = model.id; return null; });
+    voiceLocalTest.modelId = model.id; return null;
+  }
+  if (action === 'cancel') {
+    voiceLocalAbortStart('model'); voiceLocalTest.modelId = null;
+    // Like native, a cancel also ends an in-flight test transcription, whose Stop rejects as cancelled.
+    voiceLocalStopWaiter?.reject(new Error(VOICE_CANCELLED)); voiceLocalStopWaiter = null;
+    return { text: '' };
+  }
+  if (voiceLocalAbortStart('model') || voiceLocalStopCancelled()) { voiceLocalTest.modelId = null; return { text: '', cancelled: true }; }
+  if (!voiceLocalTest.modelId) throw new Error('No model test is recording.');
+  const result = () => ({ text: (window as any).__voiceLocalText ?? 'Testing local speech on this device.' });
+  if ((window as any).__voiceLocalStopHold) {
+    // Transcribing: the model stays under test (and undeletable) until released or cancelled.
+    (window as any).__voiceLocalStopHold = false;
+    return new Promise((resolve, reject) => {
+      voiceLocalStopWaiter = { resolve: () => { voiceLocalTest.modelId = null; resolve(result()); }, reject: error => { voiceLocalTest.modelId = null; reject(error); } };
+    });
+  }
+  voiceLocalTest.modelId = null;
+  return result();
+}
+// Like native's `voice://mic-test-level`: a synthetic 0..1 input level at ~15 Hz while the mic test records.
+// Tests set `__voiceMicLevelManual` to drive the levels themselves through `__previewEmit`.
+let micLevelTimer: number | undefined;
+function startMicLevels(): void {
+  stopMicLevels();
+  if ((window as any).__voiceMicLevelManual) return;
+  const started = performance.now();
+  micLevelTimer = window.setInterval(() => {
+    const t = (performance.now() - started) / 1000;
+    emit('voice://mic-test-level', { level: t < 0.4 ? 0 : Math.min(1, 0.35 + 0.3 * Math.abs(Math.sin(t * 3.1))) });
+  }, 66);
+}
+function stopMicLevels(): void { if (micLevelTimer !== undefined) window.clearInterval(micLevelTimer); micLevelTimer = undefined; }
+/** Like native when closing the window stops a Settings test: ends the mic or model test (a held start too) and
+ * emits `voice://test-ended` `{ kind, reason: 'closed' }`. */
+(window as any).__voiceSimulateTestEnded = (kind: VoiceLocalStartKind) => {
+  if (kind === 'mic') { voiceLocalAbortStart('mic'); voiceLocalTest.mic = false; stopMicLevels(); }
+  else { voiceLocalAbortStart('model'); voiceLocalTest.modelId = null; voiceLocalStopWaiter?.reject(new Error(VOICE_CANCELLED)); voiceLocalStopWaiter = null; }
+  emit('voice://test-ended', { kind, reason: 'closed' });
+};
+
+function previewVoiceLocal(command: string, args: Record<string, any>): unknown {
+  if (command === 'voice_local_catalog') return structuredClone(voiceLocalCatalog);
+  if (command === 'voice_preferences') {
+    // `__voicePreferencesHold` holds the next reply, carrying the preferences as they were when it was asked, until
+    // `__voicePreferencesRelease()` (a slow reload racing a later save).
+    const snapshot = structuredClone(voicePreferences), w = window as any;
+    if (!w.__voicePreferencesHold) return snapshot;
+    w.__voicePreferencesHold = false;
+    return new Promise(resolve => { w.__voicePreferencesRelease = () => { w.__voicePreferencesRelease = undefined; resolve(snapshot); }; });
+  }
+  // Like native: a partial camelCase patch merged into the stored preferences, which it returns. Every patch is
+  // recorded so tests can check that Settings sends only the fields that changed.
+  if (command === 'voice_update_preferences') {
+    const patch = structuredClone((args.patch ?? {}) as Partial<VoicePreferences>);
+    voicePreferencePatches.push(structuredClone(patch));
+    Object.assign(voicePreferences, patch);
+    const destination = voicePreferences.destination;
+    voiceConfig.selectedProfileId = typeof destination === 'object' ? destination.profileId : null;
+    return structuredClone(voicePreferences);
+  }
+  if (command === 'voice_mic_devices') return structuredClone(VOICE_MIC_DEVICES);
+  if (command === 'voice_mic_test_start') {
+    const gate = voiceLocalStartGate('mic');
+    if (gate) return gate.then(() => { voiceLocalTest.mic = true; startMicLevels(); return null; });
+    voiceLocalTest.mic = true; startMicLevels(); return null;
+  }
+  if (command === 'voice_mic_test_cancel') { voiceLocalAbortStart('mic'); voiceLocalTest.mic = false; stopMicLevels(); return null; }
+  if (command === 'voice_mic_test_stop') {
+    stopMicLevels();
+    if (voiceLocalAbortStart('mic') || voiceLocalStopCancelled()) { voiceLocalTest.mic = false; return { wavBase64: '', durationMs: 0, cancelled: true }; }
+    if (!voiceLocalTest.mic) throw new Error('No microphone test is recording.');
+    voiceLocalTest.mic = false; return { wavBase64: voiceSilentWav(), durationMs: 1000 };
+  }
+  return voiceLocalModelCommand(command, args);
+}
+
+async function previewVoice(command: string, args: Record<string, any>): Promise<unknown> {
+  const w = window as any;
+  // Deliberately exclude key values from the observable call log.
+  (w.__voiceCalls ??= []).push({ command, ...Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'input')) });
+  if (w.__voiceFailCommands?.[command] > 0) {
+    w.__voiceFailCommands[command]--;
+    throw new Error('Speech configuration is temporarily unavailable. Try again.');
+  }
+  if (/^voice_(local_|mic_|preferences$|update_preferences$)/.test(command)) return previewVoiceLocal(command, args);
+  if (command === 'voice_configuration') return structuredClone(voiceConfig);
+  if (command === 'voice_save_profile') {
+    const input = args.input as VoiceProfileInput;
+    const previous = voiceConfig.profiles.find(p => p.id === input.id);
+    const { key, ...publicInput } = input;
+    const profile = { ...publicInput, id: input.id ?? `voice-profile-${++voiceSequence}`, hasKey: key === undefined ? (previous?.endpoint === input.endpoint && previous?.hasKey) || false : key.length > 0 };
+    voiceConfig.profiles = [...voiceConfig.profiles.filter(p => p.id !== profile.id), profile];
+    return structuredClone(voiceConfig);
+  }
+  if (command === 'voice_select_profile') {
+    if (args.profileId !== null && !voiceConfig.profiles.some(p => p.id === args.profileId)) throw new Error('Speech profile no longer exists.');
+    voiceConfig.selectedProfileId = args.profileId;
+    if (args.profileId) voicePreferences.destination = { profileId: args.profileId };
+    else if (typeof voicePreferences.destination === 'object') voicePreferences.destination = 'off';
+    return structuredClone(voiceConfig);
+  }
+  if (command === 'voice_delete_profile') {
+    voiceConfig.profiles = voiceConfig.profiles.filter(p => p.id !== args.profileId);
+    if (voiceConfig.selectedProfileId === args.profileId) voiceConfig.selectedProfileId = null;
+    if (typeof voicePreferences.destination === 'object' && voicePreferences.destination.profileId === args.profileId) voicePreferences.destination = 'off';
+    return structuredClone(voiceConfig);
+  }
+  if (command === 'voice_cancel') {
+    if (!args.captureId && !args.requestId) throw new Error('A captureId or requestId is required.');
+    if (args.requestId) {
+      voiceCancelledRequests.add(args.requestId);
+      // Bound preview tombstones just as native bounds request bookkeeping.
+      if (voiceCancelledRequests.size > 64) voiceCancelledRequests.delete(voiceCancelledRequests.values().next().value!);
+      const pending = voicePendingStarts.get(args.requestId);
+      if (pending) pending.cancelled = true;
+      voicePendingStarts.delete(args.requestId);
+    }
+    for (const [captureId, capture] of voiceCaptures) {
+      if (captureId !== args.captureId && capture.requestId !== args.requestId) continue;
+      clearInterval(capture.timer); capture.timer = 0; capture.cancelled = true;
+      voiceCaptures.delete(captureId);
+      emit('voice-event', { captureId, requestId: capture.requestId, phase: 'cancelled', elapsedMs: 0, level: 0 });
+    }
+    return null; // Repeated cancel and a request cancelled before reservation are harmless.
+  }
+  if (command === 'voice_start') {
+    // Like native: without a profileId the saved destination decides (a profile, the local model, or "off").
+    const destination = args.profileId ? { profileId: args.profileId } : voicePreferences.destination;
+    if (destination === 'off') throw new Error('Voice input is off. Turn it on in Settings → Voice.');
+    const localModel = destination === 'local' ? voiceLocalCatalog.models.find(item => item.active && item.state === 'installed') : undefined;
+    if (destination === 'local' && !localModel) throw new Error(voiceLocalCatalog.models.some(item => item.state === 'installed')
+      ? 'Select a downloaded model in Settings → Voice to dictate on this device.' : 'Download a speech model in Settings → Voice to dictate on this device.');
+    const profileId = typeof destination === 'object' ? (args.profileId ?? voiceConfig.selectedProfileId) : null;
+    const profile = localModel
+      ? { id: 'local', name: localModel.name, provider: 'custom' as const, endpoint: 'local://this-device', model: localModel.id, language: null, hasKey: false }
+      : voiceConfig.profiles.find(p => p.id === profileId);
+    if (!profile) throw new Error('Choose a speech profile first.');
+    if (profile.provider !== 'custom' && !profile.hasKey) throw new Error('Add a speech API key in Settings before recording.');
+    if (voiceCancelledRequests.has(args.requestId)) throw new Error('Voice input was cancelled.');
+    if (voicePendingStarts.size || voiceCaptures.size) throw new Error('A recording is already active.');
+    const snapshot = structuredClone(profile);
+    if (localModel) voiceLocalRoutes.set(args.requestId, localModel.id);
+    const pending = { cancelled: false, stage: 'permission' };
+    voicePendingStarts.set(args.requestId, pending);
+    await voiceStartBarrier(args.requestId, 'permission');
+    if (pending.cancelled || voiceCancelledRequests.has(args.requestId)) throw new Error('Recording cancelled before permission completed.');
+    pending.stage = 'device';
+    await voiceStartBarrier(args.requestId, 'device');
+    if (pending.cancelled || voiceCancelledRequests.has(args.requestId)) throw new Error('Recording cancelled before device startup.');
+    const captureId = `voice-capture-${++voiceSequence}`;
+    const capture = { requestId: args.requestId, started: Date.now(), timer: 0, cancelled: false, profile: snapshot };
+    let tick = 0;
+    capture.timer = window.setInterval(() => {
+      if (voiceStartGates.has(capture.requestId) || w.__voiceManualLevels) return;
+      const seconds = tick++ / 20;
+      const level = Math.max(0, Math.sin(seconds * 2.4)) * (.08 + .56 * Math.abs(Math.sin(seconds * 13.7)));
+      const event: VoiceEvent = { captureId, requestId: capture.requestId, phase: 'recording', elapsedMs: Date.now() - capture.started, level };
+      emit('voice-event', event);
+    }, 50);
+    voiceCaptures.set(captureId, capture);
+    pending.stage = 'reply';
+    await voiceStartBarrier(args.requestId, 'reply');
+    voicePendingStarts.delete(args.requestId);
+    // Even a cancelled reply may already be in flight. The UI must cancel/ignore it again.
+    return { captureId };
+  }
+  const capture = voiceCaptures.get(args.captureId);
+  if (!capture) throw { message: 'Recording is no longer available.', retryable: false } satisfies VoiceFailure;
+  clearInterval(capture.timer); capture.timer = 0;
+  // The window close already transcribed it: Stop joins that result.
+  if (command === 'voice_stop' && capture.closedText !== undefined) {
+    if (w.__voiceHold) await new Promise<void>(resolve => { w.__voiceRelease = resolve; });
+    voiceCaptures.delete(args.captureId);
+    return { captureId: args.captureId, text: capture.closedText };
+  }
+  if (command === 'voice_stop' || command === 'voice_retry') {
+    emit('voice-event', { captureId: args.captureId, requestId: capture.requestId, phase: 'transcribing', elapsedMs: w.__voiceRecordedMs ?? Date.now() - capture.started, level: 0 });
+    if (w.__voiceHold || voiceScenario === 'delayed') await new Promise<void>(resolve => { w.__voiceRelease = resolve; });
+    else await new Promise(resolve => setTimeout(resolve, 180));
+    if (voiceScenario === 'no-audio' && command === 'voice_stop' && !w.__voiceText) {
+      const message = 'No audio captured. Record again.';
+      voiceCaptures.delete(args.captureId);
+      emit('voice-event', { captureId: args.captureId, requestId: capture.requestId, phase: 'error', elapsedMs: 0, level: 0, message });
+      // Let a generic event paint before the authoritative terminal rejection.
+      if (w.__voiceTerminalDelay) await new Promise(resolve => setTimeout(resolve, w.__voiceTerminalDelay));
+      throw { message, retryable: false } satisfies VoiceFailure;
+    }
+    if ((voiceScenario === 'failure' && command === 'voice_stop') || w.__voiceFailNext || (voiceScenario === 'invalid-key' && !capture.profile.hasKey)) {
+      w.__voiceFailNext = false;
+      const message = w.__voiceErrorText ?? (voiceScenario === 'invalid-key' ? 'Speech key rejected. Retry uses original settings. To use corrected settings, discard and record again.' : 'Speech service unavailable. Retry uses original settings, or record again.');
+      emit('voice-event', { captureId: args.captureId, requestId: capture.requestId, phase: 'error', elapsedMs: 0, level: 0, message });
+      throw { message, retryable: true } satisfies VoiceFailure;
+    }
+    // Return an already in-flight result after cancellation to exercise stale-result guards.
+    if (!capture.cancelled) voiceCaptures.delete(args.captureId);
+    return { captureId: args.captureId, text: w.__voiceText ?? (voiceScenario === 'empty' ? '' : 'A dictated draft.') };
+  }
+  throw new Error(`Unknown voice command: ${command}`);
+}
+
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
+  if (command.startsWith('voice_')) return await previewVoice(command, args) as T;
   if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
     sessions: () => sessions.map(s => ({ id: s.id, title: s.title, projectId: s.projectId })),
     projects: () => projects,
@@ -999,6 +1523,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
+  if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -1007,6 +1532,10 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   });
   if (command === 'remote_device_grants' || command === 'remote_set_device_grant' || command.startsWith('remote_pair_')) return (await import('./preview-grants')).previewGrants(command, args) as T;
   if (command === 'remote_diagnostics' || command === 'remote_diagnostics_export') return (await import('./preview-diagnostics')).previewDiagnostics(command, args) as T;
+  if (command === 'list_files' && (window as any).__filesFail) {
+    // Test seam: `__filesFail` fails folder reads like a moved project folder; relink_project clears it.
+    throw new Error('Project folder is unavailable: No such file or directory (os error 2)');
+  }
   if (command === 'remote_reconnect') {
     // Tests steer it: `__remoteReconnectHold` waits for `__remoteReconnectRelease()`, `__remoteReconnectFail` is an error text.
     const w = window as any; w.__remoteReconnects = (w.__remoteReconnects ?? 0) + 1;
@@ -1079,7 +1608,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     ((window as any).__orchestrationThreadsCalls ??= []).push(ids);
     return machineRows(args.sessionId).filter(row => ids.includes(row.sessionId)) as T;
   }
-  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; return machineChildren(args.sessionId) as T; }
+  if (command === 'orchestration_children') { (window as any).__orchestrationChildrenCalls = ((window as any).__orchestrationChildrenCalls ?? 0) + 1; const wait = (window as any).__orchestrationChildrenDelay; if (wait) await new Promise(done => setTimeout(done, wait)); return machineChildren(args.sessionId) as T; }
   if (command.startsWith('orchestration_')) return invokeRemote<T>(command, args, emit);
   if (command === 'stop_session' && machineParents.has(args.sessionId)) machineStopped.add(args.sessionId);
   if (command === 'cloud_agent_targets') return previewCloud.agentTargets() as T;
@@ -1117,9 +1646,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
-    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo'].includes(provider.id)).map(provider => {
+    case 'check_agent_updates': result = providers.filter(provider => provider.installed && !['glm', 'mimo', 'alibaba'].includes(provider.id)).map(provider => {
       const version = provider.version?.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
-      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
+      return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo', 'alibaba'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
     case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
@@ -1140,6 +1669,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (typeof args.off !== 'boolean') throw new Error('Choose on or off.');
       previewTelemetryOff = args.off; result = previewPrivacy(); break;
     }
+    case 'provider_set_claude_cli_refresh': previewClaudeRefresh = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});
@@ -1148,7 +1678,64 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'connection_save': result = previewSaveConnection(args.connection); break;
     case 'connection_delete': {
       const tasks = Object.fromEntries(Object.entries(previewConnections.tasks).filter(([, id]) => id !== args.id));
-      previewConnections = { connections: previewConnections.connections.filter(c => c.id !== args.id), tasks }; result = previewConnections; break;
+      previewConnections = { ...previewConnections, connections: previewConnections.connections.filter(c => c.id !== args.id), tasks }; result = previewConnections; break;
+    }
+    case 'connection_pool_set': {
+      if (!['claude', 'codex'].includes(args.provider)) throw new Error('Account pools are available for Claude Code and Codex.');
+      const pools = (previewConnections.pools ?? []).filter(p => p !== args.provider);
+      previewConnections = { ...previewConnections, pools: args.enabled ? [...pools, args.provider] : pools }; result = previewConnections; break;
+    }
+    case 'connection_new_account': {
+      if (!['claude', 'codex'].includes(args.provider)) throw new Error('Account pools are available for Claude Code and Codex.');
+      const [label, variable, login] = args.provider === 'codex' ? ['Codex', 'CODEX_HOME', 'codex login'] : ['Claude', 'CLAUDE_CONFIG_DIR', 'claude auth login'];
+      const taken = new Set(previewConnections.connections.map(c => c.configDir));
+      let n = 2; while (taken.has(`/Users/sample/.${args.provider}-pandacode-${n}`)) n++;
+      const configDir = `/Users/sample/.${args.provider}-pandacode-${n}`;
+      const snapshot = previewSaveConnection({ provider: args.provider, name: `${label} account ${n}`, configDir });
+      previewSignedOut = [...previewSignedOut, snapshot.connections.at(-1)!.id];
+      result = { snapshot, id: snapshot.connections.at(-1)!.id, configDir, command: `${variable}='${configDir}' ${login}` }; break;
+    }
+    case 'connection_pool_member_set': {
+      if (!['claude', 'codex'].includes(args.provider) || (args.id && !previewConnections.connections.some(c => c.id === args.id && c.provider === args.provider))) throw new Error('This account is not in the pool.');
+      const key = `${args.provider}/${args.id}`, excluded = (previewConnections.poolExcluded ?? []).filter(k => k !== key);
+      previewConnections = { ...previewConnections, poolExcluded: args.included ? excluded : [...excluded, key] }; result = previewConnections; break;
+    }
+    case 'account_sign_in_start': {
+      // Claude asks for an optional pasted code; Codex finishes on its own after a moment, as when the browser completes.
+      const connection = previewConnections.connections.find(c => c.id === args.id);
+      if (!connection || !['claude', 'codex'].includes(connection.provider)) throw new Error('One-click sign-in is available for Claude Code and Codex accounts.');
+      if (previewSignIns.has(args.id)) throw new Error('This account is already signing in.');
+      const id = String(args.id), codex = connection.provider === 'codex', url = codex ? 'https://auth.openai.com/oauth/authorize?preview=1' : 'https://claude.com/cai/oauth/authorize?preview=1';
+      previewSignIns.set(id, window.setTimeout(() => {
+        emit('account-sign-in', { id, state: 'waiting', url });
+        if (codex) previewSignIns.set(id, window.setTimeout(() => previewSignInDone(id), 1500));
+        else emit('account-sign-in', { id, state: 'needs-code', url });
+      }, 50));
+      result = undefined; break;
+    }
+    case 'account_sign_in_code': {
+      if (!previewSignIns.has(args.id)) throw new Error("This account isn't signing in.");
+      const code = String(args.code ?? '').trim();
+      if (!code || code.length > 4096 || /[\u0000-\u001f\u007f]/.test(code)) throw new Error('Paste the code the sign-in page shows: one line, up to 4096 characters.');
+      previewSignInDone(args.id); result = undefined; break;
+    }
+    case 'account_sign_in_cancel': {
+      const timer = previewSignIns.get(args.id); if (timer === undefined) throw new Error("This account isn't signing in.");
+      window.clearTimeout(timer); previewSignIns.delete(args.id);
+      setTimeout(() => emit('account-sign-in', { id: args.id, state: 'failed', message: 'Sign-in cancelled.' }), 0); result = undefined; break;
+    }
+    case 'account_pool_clear': previewPoolCleared = [...previewPoolCleared, `${args.provider}/${args.id}`]; result = undefined; break;
+    case 'account_pool_status': {
+      // The default setup is near its limit and running one task, the first connection is out until tomorrow and a
+      // connection sharing the default setup's folder is the same login, so every state shows.
+      const ids = ['', ...previewConnections.connections.filter(c => c.provider === args.provider).map(c => c.id)];
+      const cleared = (id: string) => previewPoolCleared.includes(`${args.provider}/${id}`);
+      const sameAs = (id: string) => id && !previewConnections.connections.find(c => c.id === id)?.configDir ? '' : null;
+      // Identity is read from each account's local login files natively; the preview names sample addresses.
+      const plans = args.provider === 'codex' ? ['Pro', 'Plus'] : ['Max', 'Pro'];
+      // A same-login connection reads the default setup's login files, so it shows that identity.
+      const who = (id: string, i: number) => previewSignedOut.includes(id) ? { email: null, plan: null } : i > 1 && sameAs(id) === '' ? { email: 'you@example.com', plan: plans[0] } : { email: i === 0 ? 'you@example.com' : `${(previewConnections.connections.find(c => c.id === id)?.name ?? id).toLowerCase().replace(/[^a-z0-9]+/g, '.')}@example.com`, plan: plans[i % 2] };
+      result = ids.map((id, i) => ({ id, ...who(id, i), signedIn: !previewSignedOut.includes(id), excluded: (previewConnections.poolExcluded ?? []).includes(`${args.provider}/${id}`), sameAs: i > 1 ? sameAs(id) : null, active: i === 0 ? 1 : 0, nearUntil: i === 0 && !cleared(id) ? Date.now() + 1_800_000 : null, limitedUntil: i === 1 && !cleared(id) ? previewHoldUntil : null, limitedWindow: i === 1 && !cleared(id) ? 'seven_day' : null })); break;
     }
     case 'connection_assign': {
       if (args.connectionId && !previewConnections.connections.some(c => c.id === args.connectionId)) throw new Error('This connection no longer exists.');
@@ -1156,6 +1743,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       previewConnections = { ...previewConnections, tasks: args.connectionId ? { ...tasks, [args.sessionId]: args.connectionId } : tasks }; result = previewConnections; break;
     }
     case 'provider_claude_status': result = {mode: previewClaudeMode, source: 'Saved Claude login', environmentVariables: [], endpoint: null, savedLogin: 'signedIn', conflict: false}; break;
+    case 'agent_usage_asking_claude': result = Object.fromEntries(((args.connections ?? []) as string[]).map(id => [id, { asking: false, saved: null }])); break;
     case 'usage_ledger': result = sampleUsageLedger(); break;
     case 'prompt_activity': result = sampleUsageLedger().rows.filter((_, i) => i % 3 === 0).map(row => [row[0], i2p(row[1]), 1 + (row[0] % 7)]); break;
     case 'agent_usage': {
@@ -1166,12 +1754,24 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
           message: 'Balance CNY 110.00 (granted 10.00, topped up 100.00).' };
         break;
       }
+      // A named connection gets its own sample: the first has used its whole week (held until previewHoldUntil), the
+      // second is near its 5-hour limit, a third is light and a new one fresh.
+      const ownIndex = args.connection ? previewConnections.connections.filter(item => item.provider === provider).findIndex(item => item.id === args.connection) : -1;
+      // A connection without its own folder is the default setup's login, so it reports the same numbers.
+      const ownLogin = Boolean(previewConnections.connections.find(item => item.id === args.connection)?.configDir);
+      const connectionUsage = args.connection && ownLogin ? ([[81, 100], [93, 58], [12, 9]][ownIndex] ?? [3, 5]) : null;
+      if (args.connection && previewSignedOut.includes(String(args.connection))) {
+        result = { provider, status: 'signedOut', checkedAt: Date.now(), stale: false, email: null, plan: null, windows: [], source: null, message: 'Sign in to see limits.' };
+        break;
+      }
       const supported = ['claude', 'codex', 'kimi', 'glm', 'opencode'].includes(provider);
       result = { provider, status: supported ? 'ready' : 'unsupported', checkedAt: Date.now(), stale: false,
+        // Only Codex account/read supplies a usage identity; these are sample addresses, never real credentials.
+        email: provider === 'codex' ? (args.connection && ownLogin ? `${(previewConnections.connections.find(item => item.id === args.connection)?.name ?? args.connection).toLowerCase().replace(/[^a-z0-9]+/g, '.')}@example.com` : 'you@example.com') : null,
         plan: provider === 'codex' ? 'Pro' : provider === 'opencode' ? 'Go' : null,
         windows: supported ? [
-          { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: args.connection ? 91 : provider === 'codex' ? 38 : 22, resetsAt: new Date(Date.now() + 7200000).toISOString() },
-          { label: provider === 'opencode' ? 'Go weekly' : 'Weekly', usedPercent: 64, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() },
+          { label: provider === 'opencode' ? 'Go rolling window' : '5-hour window', usedPercent: connectionUsage?.[0] ?? (provider === 'codex' ? 38 : 22), resetsAt: new Date(Date.now() + 7200000).toISOString() },
+          { label: provider === 'opencode' ? 'Go weekly' : 'Weekly', usedPercent: connectionUsage?.[1] ?? 64, resetsAt: new Date(ownIndex === 0 ? previewHoldUntil : Date.now() + 3 * 86400000).toISOString() },
         ] : [], source: 'Sample limits for the browser preview. No provider request was made.',
         message: supported ? null : 'This harness does not expose account limits. Check its account dashboard.' };
       break;
@@ -1201,7 +1801,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewMimoEndpoints.some(entry => entry.id === args.endpoint)) throw new Error('Choose one of the MiMo endpoints listed in Settings.');
       previewMimoEndpoint = args.endpoint;
       result = previewProviderConfiguration(); break;
-    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
+    case 'provider_save_glm_key': case 'provider_remove_glm_key': case 'provider_save_deepseek_key': case 'provider_remove_deepseek_key': case 'provider_save_commandcode_key': case 'provider_remove_commandcode_key': case 'provider_save_mimo_key': case 'provider_remove_mimo_key': case 'provider_save_alibaba_key': case 'provider_remove_alibaba_key': case 'provider_set_executable': throw new Error('Provider connections can only be changed in the desktop app.');
     case 'turn_change_summary': {
       session(args.sessionId);
       const summary = (messages[String(args.sessionId)] ?? []).find(m => m.turnChanges?.id === args.changeId)?.turnChanges;
@@ -1222,6 +1822,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'model_routing_route': result = previewRoute(String(args.text), args.pool as any[]); break;
     case 'architect_get': result = architect.get(args.sessionId); break;
     case 'architect_configure': result = architect.configure(args.sessionId, args.config, args.architect, args.profileId); break;
+    case 'architect_set_council': result = architect.setCouncil(args.sessionId, args.council); break;
+    case 'architect_council_accept': result = architect.councilAccept(args.sessionId); break;
     case 'architect_profiles': result = architect.profiles(); break;
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
@@ -1259,7 +1861,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'codex_command': result = commandPanel(codexTask(args.sessionId), args.request ?? {}); break;
     case 'codex_jobs': codexTask(args.sessionId); if (args.stopId) throw new Error('This sample task has no background jobs.'); result = { kind: 'jobs', jobs: [], notes: ['Browser preview · no commands are running.'] }; break;
     case 'set_task_preference': {
-      const task = codexTask(args.sessionId), request = args.request ?? {};
+      const request = args.request ?? {};
+      if (request.action === 'speed') {
+        // Mirrors native: the tier must be one the task's model lists.
+        const task = session(args.sessionId), tiers = catalogs[task.provider]?.find(model => model.id === task.model)?.speedTiers ?? [];
+        if (request.tier !== null && !tiers.some(tier => tier.id === request.tier)) throw new Error('This speed is not available for this model.');
+        task.codexSettings = { ...task.codexSettings, serviceTier: request.tier };
+        task.updatedAt = Date.now(); result = task; break;
+      }
+      const task = codexTask(args.sessionId);
       if (!['plan', 'fast'].includes(request.action) || typeof request.enabled !== 'boolean') throw new Error('Choose a valid task preference.');
       task.codexSettings ??= {};
       if (request.action === 'plan') task.codexSettings.collaborationMode = { mode: request.enabled ? 'plan' : 'default' };
@@ -1308,7 +1918,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
     case 'export_task': { const task = session(args.sessionId); result = `# ${task.title}\n\n` + (messages[task.id] ?? []).map(message => `## ${message.role}\n\n${message.content}\n\n`).join(''); break; }
-    case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])] as T;
+    // Rows as `list_subagents` sends them: no tools and a short preview; the full one is `get_subagent`.
+    case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])].map(saved => { const { tools, ...row } = saved as { prompt?: string; response?: string; tools?: unknown[] }; return { ...row, prompt: String(row.prompt ?? '').slice(0, 1025), response: String(row.response ?? '').slice(0, 1025), toolCount: tools?.length ?? 0 }; }) as T;
+    case 'get_subagent': return structuredClone(mirrorSubagents.get(String(args.sessionId))?.get(String(args.agentId)) ?? null) as T;
     case 'remote_team': return structuredClone(mirrorTeams.get(String(args.sessionId)) ?? null) as T;
     case 'remote_worker_messages': {
       // Pages of 40 back from the tail, as `worker_pages` in remote/mirror.rs joins the host's.
@@ -1352,7 +1964,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
       savePreviewQueue(queue); result = entry; break;
     }
-    case 'queue_remove': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
+    case 'queue_remove': case 'queue_take_steered': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
     case 'queue_reorder': {
       const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
       if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
@@ -1378,7 +1990,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (w.__remoteSteerHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSteerRelease = () => { w.__remoteSteerHold = false; resolve(); }; });
       // Claude-family, Codex, Pi, Muse and Devin take it live; others hold it for the next turn of the same run.
       const text = String(args.text).trim(), steerId = `steer-${++id}`;
-      const mode = ['claude', 'glm', 'mimo', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
+      const mode = ['claude', 'glm', 'mimo', 'alibaba', 'codex', 'pi', 'muse', 'devin'].includes(s.provider) ? 'live' : 'next-turn';
       const report = (status: string) => agent({ sessionId: s.id, kind: 'steer' as AgentEvent['kind'], text, data: { id: steerId, status, mode } });
       window.setTimeout(() => report('pending'));
       window.setTimeout(() => {
@@ -1508,6 +2120,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'add_project': { const p = { id: crypto.randomUUID(), name: args.path.split('/').pop() || 'Project', path: args.path }; projects.push(p); result = p; break; }
     case 'remove_project': architect.remove(sessions.filter(s => s.projectId === args.projectId).map(s => s.id)); projects = projects.filter(p => p.id !== args.projectId); break;
+    case 'relink_project': {
+      const project = projects.find(p => p.id === args.projectId);
+      if (!project) throw new Error('Project not found.');
+      project.path = String(args.path ?? '');
+      // The located folder reads again, like the real relink.
+      (window as any).__filesFail = false;
+      result = { ...project, addedOrder: projects.indexOf(project) + 1 }; break;
+    }
     case 'delete_session': {
       const task = session(args.sessionId); assertIdle(task);
       if (architect.isActive(task.id)) throw new Error('Stop the team before deleting this task.');
@@ -1522,10 +2142,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const s: Session = { id: crypto.randomUUID(), ...args, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; architect.inherit(s.id); result = s; break; }
+    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
-      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode }); break;
+      result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
+      emit('sessions-changed', undefined); break; // As chat_create does natively, before it returns.
     }
     case 'chat_cleanup': {
       const chat = projects.some(p => p.id === args.projectId && p.path.includes('/PandaCode Chats/')) && !sessions.some(s => s.projectId === args.projectId);
@@ -1592,6 +2213,13 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       }
       s.projectId = projectId; s.provider = args.provider; s.model = args.model; s.updatedAt = Date.now(); result = s; break;
     }
+    case 'dismiss_error_messages': {
+      const ids: unknown = args.ids;
+      if (!Array.isArray(ids) || ids.length > DISMISS_BATCH || ids.some(id => !Number.isInteger(id))) throw new Error(`Dismiss at most ${DISMISS_BATCH} errors at a time.`);
+      const wanted = new Set<number>(ids), list = messages[session(args.sessionId).id] ?? [];
+      const kept = list.filter(message => !(message.role === 'error' && wanted.has(message.id)));
+      messages[args.sessionId] = kept; result = list.length - kept.length; break;
+    }
     case 'get_messages': {
       const synced = mirrorSynced.get(args.sessionId);
       const history = (messages[args.sessionId] ?? []).filter(message => synced == null || message.id <= synced);
@@ -1604,6 +2232,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'send_message': {
       if (resolveSlash(session(args.sessionId).provider, String(args.text)).action) throw new Error('This command opens a PandaCode control.');
       const s = session(args.sessionId), w = window as any; assertIdle(s);
+      // Tests: `__previewSendFails` sends are rejected before anything is saved.
+      if (w.__previewSendFails > 0) { w.__previewSendFails -= 1; throw new Error('The agent could not start.'); }
       if (w.__remoteRefuse && s.remoteDevice) throw new Error(w.__remoteRefuse);
       if (w.__remoteSendHold && s.remoteDevice) await new Promise<void>(resolve => { w.__remoteSendRelease = () => { w.__remoteSendHold = false; resolve(); }; });
       let moodboardContext = '';
@@ -1616,7 +2246,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (s.taskStage === 'completed') throw new Error('Reopen this task before starting it.');
       const text = typeof args.text === 'string' ? args.text.trim() + moodboardContext : '';
       if (!text) throw new Error('Write a message first.');
-      if (new TextEncoder().encode(text).length > 128 * 1024) throw new Error('Message and attached context must be under 128 KiB.');
+      if (new TextEncoder().encode(text).length > MESSAGE_LIMIT) throw new Error('Message and attached context must be under 16 MiB.');
       s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null; s.updatedAt = Date.now(); s.lastPromptAt = s.updatedAt; s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; if (s.title === 'New conversation') s.title = text.slice(0, 48); messages[s.id] ??= []; messages[s.id].push({ id: ++id, sessionId: s.id, role: 'user', content: text, createdAt: Date.now() });
       if (s.id === BRIEF_ID) { replayBrief(s); break; }
       agent({ sessionId: s.id, kind: 'status', text: 'Previewing response' });
@@ -1625,19 +2255,20 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       messages[s.id].push(toolMessage);
       activeTools.set(s.id, { activity: tool, message: toolMessage });
       agent({ sessionId: s.id, kind: 'tool', text: 'Bash', tool: { ...tool } });
-      const output = 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
+      const output = shortReply ? 'All tests pass in the preview.' : 'This is the browser preview. Your task and conversation are saved in this preview session, but no agent or shell is running here.\n\nOpen the native PandaCode app to work with your files using Claude Code, Codex, or Kimi Code. The desktop app connects to the CLI tools installed on your machine.';
       let cursor = 0;
       const tick = () => {
         const next = output.slice(cursor, cursor + 13); cursor += 13;
         if (next.trim()) s.lastResponseAt = Date.now();
         agent({ sessionId: s.id, kind: 'text', text: next });
-        if (tool.status === 'running' && cursor >= 130) {
+        if (tool.status === 'running' && cursor >= (shortReply ? 13 : slowTurn ? 26 : 130)) {
           tool.status = 'completed'; tool.output = sampleTestOutput;
           toolMessage.content = encodeTool(tool);
           agent({ sessionId: s.id, kind: 'tool', text: 'Bash completed', tool: { ...tool } });
           activeTools.delete(s.id);
         }
-        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, 24)); else finish(s.id, output);
+        // ?slowturn streams at a real agent's pace: the command runs ~2 s, then the reply arrives a few words at a time.
+        if (cursor < output.length) timers.set(s.id, window.setTimeout(tick, shortReply ? 600 : slowTurn ? (cursor === 13 ? 2000 : 70) : 24)); else finish(s.id, output);
       };
       timers.set(s.id, window.setTimeout(tick, 200)); break;
     }
@@ -1751,7 +2382,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!String(args.title ?? '').trim()) throw new Error('Give the pull request a title of up to 256 characters.');
       pushedBranches.add(checkout.branch);
       const number = previewGithub.nextNumber(s.projectId);
-      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: 'open', checkedAt: Date.now() };
+      s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: String(args.title).trim(), state: args.draft ? 'draft' : 'open', checkedAt: Date.now() };
       previewGithub.pulls.push({ projectId: s.projectId, number, title: s.pullRequest.title, body: String(args.body ?? ''), base: args.base, head: checkout.branch });
       result = s; break;
     }
@@ -1834,9 +2465,17 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'design_comments': result = previewDesign.comments(); break;
     case 'design_save_comments': result = previewDesign.saveComments(args.comments); break;
     case 'skills_list': case 'skills_import_folder': case 'skills_import_github': case 'skills_activate':
-    case 'skills_deactivate': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
-    case 'skills_catalogs': case 'skills_catalog_add': case 'skills_catalog_refresh': case 'skills_catalog_state': case 'skills_catalog_import': case 'skills_discover':
+    case 'skills_deactivate': case 'skills_deactivate_all': case 'skills_matrix': case 'skills_scan': case 'skills_remove':
       result = previewSkills.call(command, args); break;
+    case 'skill_manager_list': result = previewSkillManager.list(args); break;
+    case 'skill_manager_set': result = previewSkillManager.set(args as { name: string; enabled: boolean; projectId?: string }); break;
+    case 'skill_manager_preview': result = await previewSkillManager.preview(args as { source: string }); break;
+    case 'skill_manager_add': result = await previewSkillManager.add(args as { source: string; skills: string[]; harnesses: string[]; projectId?: string }); break;
+    case 'skill_manager_add_library': result = await previewSkillManager.addLibrary(args as { source: string; skills: string[] }); break;
+    case 'skill_manager_reset': result = previewSkillManager.reset(args as { projectId?: string }); break;
+    case 'skill_manager_restore': result = previewSkillManager.restore(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_uninstall': result = previewSkillManager.uninstall(args as { name: string; projectId?: string }); break;
+    case 'skill_manager_undo_uninstall': result = previewSkillManager.undoUninstall(args as { id: string; projectId?: string }); break;
     case 'simulator_status': result = previewSimulator.status(); break;
     case 'simulator_pose': result = await previewSimulator.pose(args.udid, args.pose); break;
     case 'simulator_create_duo': result = previewSimulator.createDuo(); break;
@@ -1846,7 +2485,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'simulator_input': result = previewSimulator.input(args.udid, args.input); break;
     case 'simulator_appearance': result = previewSimulator.appearance(args.mode); break;
     case 'simulator_capture': result = await previewSimulator.capture(args.udid); break;
-    case 'list_files': result = (args.path ? args.path === 'public' ? [{ name: 'favicon.svg', isDir: false }] : args.path === 'src' ? [{ name: 'components', isDir: true }, { name: 'lib', isDir: true }, { name: 'main.ts', isDir: false }, { name: 'style.css', isDir: false }] : [{ name: 'search.ts', isDir: false }, { name: 'search.test.ts', isDir: false }] : [{ name: 'src', isDir: true }, { name: 'public', isDir: true }, { name: 'index.html', isDir: false }, { name: 'package.json', isDir: false }, { name: 'README.md', isDir: false }, { name: 'tsconfig.json', isDir: false }, { name: 'report.pdf', isDir: false }, { name: 'proposal.docx', isDir: false }, { name: 'budget.xlsx', isDir: false }, { name: 'screenshot.png', isDir: false }]).map(f => ({ ...f, path: [args.path, f.name].filter(Boolean).join('/') })) satisfies FileEntry[]; break;
+    case 'list_files': result = previewExplorer.list(args); break;
     case 'search_files': {
       const query = String(args.query ?? '').trim().toLocaleLowerCase().replace(/\/$/, '');
       const files = previewWorkspaceFiles.map(path => ({ path, isDir: false }));
@@ -1888,7 +2527,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Any registry ID shows the yellow swatch; native reads browser-captures/<id>.png.
     case 'prompt_image': result = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(String(args.id)) ? 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==' : null; break;
+    // The preview browser exposes pasted images as files, so the native fallback only
+    // matters to tests, which provide the base64 through the invoke hook.
+    case 'read_clipboard_image': result = null; break;
     case 'reveal_path': if (!String(args.path ?? '').startsWith('/')) throw new Error('This attachment is no longer on this computer.'); break;
+    case 'dragged_file_paths': result = []; break;
     case 'read_document': {
       const path = String(args.path ?? ''), name = path.split('/').pop() || 'Document';
       if (!path.startsWith('/')) throw new Error('Choose the document with the picker or drop it onto the message.');
@@ -1919,6 +2562,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!previewWorkspaceFiles.includes(path) || !isPreviewableFile(path)) throw new Error('This file cannot be previewed in the browser.');
       result = { path, name: path.split('/').pop(), url: 'http://127.0.0.1:4179/preview/' + encodeURIComponent(args.sessionId ?? args.projectId) + '/' + path.split('/').map(encodeURIComponent).join('/') }; break;
     }
+    case 'tool_image': {
+      // A drawn stand-in for an image an agent viewed (tool-row thumbnails).
+      // Absolute or checkout-relative, like the real command; never `..` or network paths.
+      if (!/^(file:\/\/)?[^\\]*\.(png|jpe?g|gif|webp)$/i.test(String(args.path)) || /(^|\/)\.\.(\/|$)|^(file:)?\/\//.test(String(args.path).replace(/^file:\/\/(?=\/[^/])/, ''))) throw new Error('Only PNG, JPEG, GIF and WebP images can be shown');
+      const name = String(args.path).split('/').pop()?.replace(/[<>&"']/g, '') ?? '';
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="200"><rect width="320" height="200" rx="10" fill="#1f3a5f"/><rect x="16" y="16" width="288" height="24" rx="6" fill="#3d6aa8"/><rect x="16" y="52" width="180" height="132" rx="8" fill="#e8eef7"/><text x="250" y="124" fill="#fffcef" font-family="sans-serif" font-size="14" text-anchor="middle">${name}</text></svg>`;
+      result = `data:image/svg+xml;base64,${btoa(svg)}`; break;
+    }
     case 'workspace_image': {
       // A drawn stand-in for any workspace image a question shows.
       if (!/\.(png|jpe?g|gif|webp|svg)$/i.test(String(args.path)) || String(args.path).includes('..')) throw new Error('Only workspace images can be shown');
@@ -1935,7 +2586,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     // Like `Store::workspace_root`: a task on another computer has no checkout here.
     case 'read_file': { const mirror = args.sessionId ? sessions.find(s => s.id === args.sessionId)?.remoteDevice : null; if (mirror) throw new Error(`This task runs on ${mirror.name}.`); }
-      result = /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource; break;
+      result = previewExplorer.read(args, /\.(md|markdown)$/i.test(args.path) ? sampleReadme : args.path.endsWith('.json') ? '{\n  "name": "orbit",\n  "private": true,\n  "type": "module"\n}' : args.path.endsWith('.html') ? '<!doctype html>\n<html><head><title>Orbit</title></head><body><h1>Orbit</h1></body></html>' : args.path.endsWith('.svg') ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/></svg>' : sampleSource); break;
+    case 'workspace_file_stamp': result = previewExplorer.stamp(args); break;
+    case 'manage_workspace_entry': result = previewExplorer.manage(args, projects.find(project => project.id === args.projectId)?.path ?? ''); break;
+    case 'write_workspace_file': {
+      const original = await invoke<string>('read_file', args);
+      previewExplorer.save(args, original); result = null; break;
+    }
+    case 'open_workspace_file': result = null; break;
     case 'get_metrics': result = { coreRssBytes: 0, activeAgents: timers.size, activeTerminals: 0, databaseBytes: 0 }; break;
     case 'get_terminal_activity': result = { running: false, processNames: [], uncertain: false }; break;
     case 'get_run_script': result = null; break;

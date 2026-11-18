@@ -52,7 +52,7 @@
   line-height: 1.2;
   cursor: pointer;
   touch-action: manipulation;
-  transition: background-color 130ms ease, color 130ms ease;
+  transition: background-color var(--ds-ease-out) ease-out, color var(--ds-ease-out) ease-out;
 }
 .diff-viewer-button:hover:not(:disabled) { background: var(--raised); color: var(--text); }
 .diff-viewer-button[aria-pressed="true"] {
@@ -115,7 +115,11 @@ diffs-container {
   --diffs-bg-deletion-number-override: var(--diff-del-bg);
   --diffs-bg-addition-emphasis-override: color-mix(in srgb, var(--success) 24%, transparent);
   --diffs-bg-deletion-emphasis-override: color-mix(in srgb, var(--danger) 24%, transparent);
+  /* Gutter ink clears 4.5:1 on those tones: the library's greens and reds step toward the text, hunk separators and context numbers are the muted text. */
+  --diffs-addition-color-override: color-mix(in srgb, var(--ds-success) 80%, var(--text));
+  --diffs-deletion-color-override: color-mix(in srgb, var(--ds-danger) 80%, var(--text));
+  --diffs-fg-number-override: var(--muted);
 }
 
 /* Micro-interactions: only without reduced motion. */
-@media(prefers-reduced-motion:no-preference){.diff-viewer-button[aria-pressed]{transition:background-color 130ms ease-out,color 130ms ease-out}}
+@media(prefers-reduced-motion:no-preference){.diff-viewer-button[aria-pressed]{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}}

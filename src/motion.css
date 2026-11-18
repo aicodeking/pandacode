@@ -1,5 +1,5 @@
-/* Shared material and motion. Every floating surface is one flat glass: a solid
-   translucent fill over a blur, with no edge, ring or highlight. Springs come from
+/* Shared material and motion. Every floating surface is one glass: a solid
+   translucent fill over a blur with a hairline edge (--glass-border), no ring or highlight. Springs come from
    motion.ts as linear() curves; these are the fallbacks where linear() is missing. */
 :root{
   --spring:cubic-bezier(.22,1,.36,1);--spring-duration:340ms;
@@ -13,15 +13,18 @@
   --glass-fill:rgb(255 255 255 / .58);
   --glass-fill-hover:rgb(255 255 255 / .82);
   --glass-line:rgb(20 18 8 / .08);
+  /* The hairline every floating glass carries (menus, tooltips, toast, dialog plate). */
+  --glass-border:rgb(0 0 0 / .08);
   --scrim:rgb(24 21 12 / .14);
-  --sheet-radius:var(--radius-lg);
+  --sheet-radius:16px;
   /* One radius for every small floating glass (toast, dock popover, pinned dock). */
-  --glass-radius:var(--radius-lg);
+  --glass-radius:12px;
   --press:.97;
 }
 html[data-theme="dark"]{
-  --glass-warm:rgb(46 45 41 / .64);
-  --glass-tint:rgb(26 26 24 / .58);
+  --glass-warm:rgb(34 34 34 / .72);
+  --glass-border:rgb(255 255 255 / .08);
+  --glass-tint:rgb(24 24 24 / .58);
   --glass-shadow-deep:rgb(0 0 0 / .6);
   --glass-shadow-near:rgb(0 0 0 / .32);
   --glass-fill:rgb(255 255 255 / .045);
@@ -33,7 +36,7 @@ html[data-theme="dark"]{
 /* Modal glass. The scrim dims and blurs the workspace; the plate is the sheet. */
 .dialog-scrim{position:fixed;inset:0;z-index:90;pointer-events:none;background:var(--scrim);backdrop-filter:blur(5px) saturate(1.05);-webkit-backdrop-filter:blur(5px) saturate(1.05)}
 /* The sheet: heavy blur and saturation do the work, so the tint can stay light. */
-.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border-radius:var(--sheet-radius);
+.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border:1px solid var(--glass-border);border-radius:var(--sheet-radius);
   background:var(--glass-warm);
   backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
   box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near)}
@@ -48,14 +51,15 @@ dialog .settings-group{background:var(--glass-fill)}
 dialog .settings-tabs{background:var(--glass-fill)}
 dialog:is(#dialog,.dialog-ghost){border-radius:var(--sheet-radius)}
 .dialog-heading{margin-bottom:14px}
-.dialog-heading h2{font-size:var(--text-lg);font-weight:var(--weight-strong);letter-spacing:-.022em}
-.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:50%;background:var(--glass-fill);color:var(--muted);transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
+.dialog-heading h2{font-weight:var(--weight-strong)}
+.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:50%;background:var(--glass-fill);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .dialog-heading [data-action="close-dialog"]:hover{background:var(--glass-fill-hover);color:var(--text)}
 .dialog-heading [data-action="close-dialog"] .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 /* Low specificity on purpose: fields a component frames itself (search boxes) keep their own look. */
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background:var(--glass-fill);transition:border-color 140ms,background-color 140ms,box-shadow 160ms}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background:var(--glass-fill);transition:border-color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
 html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:hover){background:var(--glass-fill-hover)}
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background:var(--glass-fill-hover);box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .2)}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background:var(--glass-fill-hover);box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
+html[data-theme][data-keyboard-focus] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus-visible){box-shadow:0 0 0 2px var(--focus)}
 dialog .secondary-button{background:var(--glass-fill);box-shadow:none}
 dialog .secondary-button:not(:disabled):hover{background:var(--glass-fill-hover)}
 dialog .primary-button{border-radius:var(--radius-sm)}
@@ -70,9 +74,10 @@ dialog .command-results>button.command-selected{background:color-mix(in srgb,var
 /* Segmented controls: the selected option hands its highlight to one gliding pill. */
 [data-segmented]{position:relative;isolation:isolate}
 [data-segmented]>*{position:relative;z-index:1}
-[data-segmented]>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);transform:translate(var(--seg-x,0px),var(--seg-y,0px));transform-origin:0 0;pointer-events:none;will-change:transform}
-/* Size snaps; motion.ts carries it with a `scale` FLIP while the translate glides. */
-[data-segmented][data-segment-ready]>.segment-thumb{transition:transform var(--spring-duration) var(--spring)}
+[data-segmented]>.segment-thumb{position:absolute;z-index:0;left:0;top:0;width:var(--seg-w,0px);height:var(--seg-h,0px);translate:var(--seg-x,0px) var(--seg-y,0px);transform-origin:0 0;pointer-events:none;will-change:translate}
+/* Size snaps; motion.ts carries it with a `scale` FLIP while the `translate` property glides
+   (never `transform`, which `scale` would compose with and stretch the slide). */
+[data-segmented][data-segment-ready]>.segment-thumb{transition:translate var(--spring-fast-duration) var(--spring-fast)}
 [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){background:transparent!important;box-shadow:none!important}
 .view-switch>.segment-thumb{border-radius:var(--radius-xs);background:var(--raised);box-shadow:0 1px 3px rgb(0 0 0 / .07)}
 .inspector-tabs>.segment-thumb{border-radius:var(--radius-xs);background:var(--bg);box-shadow:0 1px 3px rgb(0 0 0 / .08)}
@@ -80,34 +85,35 @@ dialog .command-results>button.command-selected{background:color-mix(in srgb,var
 html[data-theme="dark"] .inspector-tabs>.segment-thumb{background:#3a3a35;box-shadow:0 1px 3px rgb(0 0 0 / .25)}
 html[data-theme="dark"] :is(.view-switch,.settings-tabs)>.segment-thumb{box-shadow:0 1px 3px rgb(0 0 0 / .25)}
 html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs>.segment-thumb{background:color-mix(in srgb,var(--text) 12%,transparent)}
-.view-switch button,.inspector-tabs button,.settings-tabs button{transition:color 160ms,scale var(--spring-fast-duration) var(--spring-fast)}
+.view-switch button,.inspector-tabs button,.settings-tabs button{transition:color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 
 /* Respond on press: instant down, spring back on release. */
 /* `scale`, not `transform`: a pressed button keeps any transform that positions it. */
 button:not(:disabled):active{scale:var(--press)}
 .icon-button,.sidebar-bottom>button,.view-switch button,.inspector-tabs button,.settings-tabs button,.board-column>header .icon-button{--press:.9}
 .task-item,.board-card-open,.command-results>button,.command-list button,.model-menu-option,.project-menu-option,.choice-menu-option,.project-menu-open,.prompt-suggestions button,.file-row>button:first-child,.change-file{--press:.985}
-.welcome-project,.breadcrumb>button,.history-notice,.change-group-title button,.activity-heading,.activity-toggle,.composer-footnote button,.message-actions button,.subagents-trigger,.team-progress-worker,.team-progress-more{--press:1}
+.welcome-project,.breadcrumb>button,.history-notice,.change-group-title button,.activity-heading,.activity-toggle,.message-actions button,.subagents-trigger,.team-progress-worker,.team-progress-more{--press:1}
 /* Menu anchors keep their geometry: a popover is positioned from the trigger's box on press. */
 button[aria-haspopup],.model-picker,.mode-picker,.composer-project,.project-filter,.board-project-filter,.settings-select{--press:1}
 .browser-address button:not(:disabled):active{transform:rotate(90deg) scale(.9)}
-.task-item{transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
+.task-item{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 
 /* Yellow actions glow when they are about to be used. */
 .new-task-button,.primary-button,.send-button,.commit-button{box-shadow:none}
 :is(.new-task-button,.primary-button,.commit-button):not(:disabled):hover{box-shadow:0 10px 24px -12px rgb(var(--accent-rgb) / .7),0 2px 6px -3px rgb(120 90 0 / .25)}
 .send-button:not(:disabled):not(.stop-button):hover{box-shadow:0 8px 20px -10px rgb(var(--accent-rgb) / .75)}
 .send-button.stop-button{box-shadow:none}
-.composer{transition:border-color 160ms,box-shadow 220ms var(--spring-fast)}
+.composer{transition:border-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
 .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .14),0 12px 32px -14px rgb(var(--accent-rgb) / .35),0 8px 24px rgb(0 0 0 / .035)}
 html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--accent-rgb) / .12),0 12px 32px -14px rgb(var(--accent-rgb) / .25),0 8px 24px rgb(0 0 0 / .15)}
 
 /* Small state changes ease instead of snapping. */
-.task-indicator{transition:background-color 200ms,box-shadow 200ms}
-.inspector-tabs button>span,.attachments>span{transition:background-color 160ms,color 160ms}
-.stage-button,.file-attach,.change-group-title button{transition:opacity 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
-.activity-toggle .icon,.turn-activity-summary>.icon,.tool-activity summary>.icon:last-child{transition:transform var(--spring-duration) var(--spring)}
-.icon-button,.sidebar-bottom>button{transition:background-color 140ms,color 140ms,scale var(--spring-fast-duration) var(--spring-fast)}
+.task-indicator{transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+.inspector-tabs button>span,.attachments>span{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.stage-button,.file-attach,.change-group-title button{transition:opacity var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+/* Disclosure chevrons turn with the `rotate` property (never `transform`) on the fast spring. */
+.activity-toggle .icon,.turn-activity-summary>.icon,.tool-activity summary>.icon:last-child,.tool-group-summary>.icon:last-child{transition:rotate var(--spring-fast-duration) var(--spring-fast)}
+.icon-button,.sidebar-bottom>button{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 /* The action dock springs its items itself (action-dock.ts), so CSS transitions stay off there. */
 .action-dock button{transition:none}
 

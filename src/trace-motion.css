@@ -6,6 +6,7 @@
  * The mask lives with its animation: under reduced motion neither applies, so no band freezes. */
 @media(prefers-reduced-motion:no-preference){
   .live-activity:not([data-folded]) .turn-activity-label[data-mode="step"] .trace-sentence,
+  .live-activity:not([data-folded]) .turn-activity-label[data-mode="status"] .trace-sentence,
   .live-activity:not([data-folded]) .live-tools>.tool-group:last-of-type .tool-trace:last-child>summary{
     -webkit-mask-image:linear-gradient(90deg,#000 0 39%,rgb(0 0 0 / .4) 50%,#000 61% 100%);mask-image:linear-gradient(90deg,#000 0 39%,rgb(0 0 0 / .4) 50%,#000 61% 100%);
     -webkit-mask-size:520px 100%;mask-size:520px 100%;-webkit-mask-repeat:repeat-x;mask-repeat:repeat-x;
@@ -26,4 +27,4 @@
 @keyframes trace-step-dot{from{opacity:1}}
 
 /* A folding card turns its chevron right away (the reference flips it on the first frame). */
-.tool-activity[data-closing]>summary>.icon:last-child,.turn-activity[data-closing]>.turn-activity-summary>.icon{transform:none}
+.tool-activity[data-closing]>summary>.icon:last-child,.turn-activity[data-closing]>.turn-activity-summary>.icon{transform:none;rotate:none}

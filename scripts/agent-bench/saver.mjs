@@ -22,7 +22,7 @@ export const LEVELS = ['lite', 'full', 'ultra'];
 const RUNNER_FILES = ['saver.mjs', 'lib.mjs', 'metrics.mjs', 'ledger.mjs'];
 // Billed means per run: loc and edit from batch E's AFTER arm, report and selector from the S1 smoke tests.
 const ESTIMATE = { loc: 0.17, edit: 0.17, report: 0.20, selector: 0.015 };
-// The worker brief's default result summary limit (`summaryLimit` in src/architect.ts).
+// Historical worker briefs used this default result summary limit.
 export const SUMMARY_LIMIT = 3072;
 
 // ---------- Pure parts (saver.test.mjs) ----------
@@ -64,10 +64,10 @@ export function findLeadGuidance(files) {
     : { source: `${found.path}: dispatch_tool description`, text: found.sentence };
 }
 
-/** The report sentence of a worker's brief (the worker rules in architect.rs), with the default limit. */
+/** The worker brief's report sentence, substituting the historical byte limit when present. */
 export function findWorkerReport(files, limit = SUMMARY_LIMIT) {
   for (const { path, text } of files) {
-    const m = text.match(/Provide a concise final report \(under \{\} UTF-8 bytes\)(?:[^"\\]|\\.)*/);
+    const m = text.match(/Provide a concise final report(?: \(under \{\} UTF-8 bytes\))? with changes,(?:[^"\\]|\\.)*/);
     if (m) return { source: `${path}: worker rules`, text: unescapeRust(m[0]).replace('{}', String(limit)) };
   }
   return null;

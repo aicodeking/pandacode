@@ -2,9 +2,11 @@
 mod acp;
 pub(crate) mod claude;
 mod codex;
+mod deepseek;
 mod kimi;
 mod muse;
 mod pi;
+mod skill_switches;
 
 use serde::Serialize;
 use serde_json::Value;
@@ -195,7 +197,7 @@ impl CommandCache {
                 // Process output stays behind the generic message.
                 let warning = if key.0 == "kimi" && error == kimi::AUTH_REQUIRED {
                     kimi::AUTH_REQUIRED
-                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes")
+                } else if matches!(key.0.as_str(), "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor")
                     && error.starts_with(crate::providers::acp::ACP_STARTUP_TIMEOUT)
                 {
                     crate::providers::acp::ACP_STARTUP_TIMEOUT
@@ -234,7 +236,7 @@ impl CommandCache {
             .get(&key)
             .map(|entry| entry.terminal_names.clone())
             .unwrap_or_default();
-        if matches!(key.0.as_str(), "claude" | "glm" | "mimo") {
+        if matches!(key.0.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
             if let Some(names) = explicit_terminals {
                 terminal_names = names
                     .iter()
@@ -289,6 +291,12 @@ fn apply_terminal_names(catalog: &mut Catalog, terminal_names: &HashSet<String>)
 
 /// No polling or filesystem watchers: refresh only when a picker opens or the harness pushes metadata.
 pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
+    let catalog = unfiltered(provider, cwd, force).await?;
+    skill_switches::for_path(provider, catalog, cwd).await
+}
+
+/// The harness's catalog before switched-off skills are hidden (`skill_switches`).
+async fn unfiltered(provider: &str, cwd: &Path, force: bool) -> Result<Catalog, String> {
     validate_provider(provider)?;
     let key = catalog_key(provider, cwd);
     let started = Instant::now();
@@ -316,17 +324,31 @@ pub async fn catalog(provider: &str, cwd: &Path, force: bool) -> Result<Catalog,
 
 /// Local actions and the latest known catalog are available without starting a
 /// harness. A stale snapshot is for completion; command dispatch still validates.
-pub fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
+pub async fn snapshot(provider: &str, cwd: &Path) -> Result<Catalog, String> {
+    let catalog = known_unfiltered(provider, cwd)?;
+    skill_switches::for_path(provider, catalog, cwd).await
+}
+
+/// The latest cached catalog before switched-off skills are hidden; never discovers.
+fn known_unfiltered(provider: &str, cwd: &Path) -> Result<Catalog, String> {
     validate_provider(provider)?;
-    CACHE.lock()
-        .map_err(|_| "Command discovery is unavailable.".into())
-        .map(|mut cache| cache.snapshot(&catalog_key(provider, cwd)))
+    Ok(CACHE
+        .lock()
+        .map_err(|_| "Command discovery is unavailable.".to_string())?
+        .snapshot(&catalog_key(provider, cwd)))
 }
 
 pub(crate) fn invalidate_provider(provider: &str) {
     if let Ok(mut cache) = CACHE.lock() {
-        let keys: Vec<_> = cache.entries.keys().filter(|key| key.0 == provider).cloned().collect();
-        for key in keys { cache.invalidate(key); }
+        let keys: Vec<_> = cache
+            .entries
+            .keys()
+            .filter(|key| key.0 == provider)
+            .cloned()
+            .collect();
+        for key in keys {
+            cache.invalidate(key);
+        }
     }
 }
 
@@ -340,7 +362,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "opencode"
             | "antigravity"
             | "grok"
-            | "mimo"
+            | "mimo" | "alibaba"
             | "pi"
             | "deepseek"
             | "commandcode" | "cline" | "kilo"
@@ -349,6 +371,7 @@ fn validate_provider(provider: &str) -> Result<(), String> {
             | "muse"
             | "devin"
             | "hermes"
+            | "cursor"
     ) {
         return Err("Unknown harness.".into());
     }
@@ -370,11 +393,11 @@ async fn discover_catalog(provider: &str, cwd: &Path, key: Key, started: Instant
         };
         let discovered = match provider {
             "claude" => claude::discover(cwd).await,
-            "glm" | "mimo" => claude::discover_for(provider, cwd).await,
-            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => {
+            "glm" | "mimo" | "alibaba" => claude::discover_for(provider, cwd).await,
+            "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
                 acp::discover(provider, cwd).await
             }
-            "deepseek" => Ok(Catalog::default()),
+            "deepseek" => deepseek::discover(cwd),
             "codex" => codex::discover(cwd).await,
             "kimi" => kimi::discover(cwd).await,
             "pi" | "omp" => pi::discover(provider, cwd).await,
@@ -406,8 +429,8 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
         return true;
     }
     let value = match provider {
-        "claude" | "glm" | "mimo" => claude::parse_runtime(data),
-        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" => acp::parse_runtime(provider, data),
+        "claude" | "glm" | "mimo" | "alibaba" => claude::parse_runtime(data),
+        "opencode" | "antigravity" | "grok" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => acp::parse_runtime(provider, data),
         "kimi" => kimi::parse_runtime(data),
         _ => None,
     };
@@ -421,8 +444,18 @@ pub fn observe_runtime(provider: &str, cwd: &Path, data: &Value) -> bool {
     }
 }
 
+/// Stable FNV-1a over a skill's name and path, so ids never expose paths.
+fn hashed_id(prefix: &str, name: &str, path: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in name.bytes().chain(std::iter::once(0)).chain(path.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{prefix}:{hash:016x}")
+}
+
 fn normalize(catalog: &mut Catalog, provider: &str) {
-    if matches!(provider, "glm" | "mimo") {
+    if matches!(provider, "glm" | "mimo" | "alibaba") {
         for command in &mut catalog.commands {
             if let Some(id) = command.id.strip_prefix("claude:") {
                 command.id = format!("{provider}:{id}");
@@ -644,8 +677,32 @@ pub async fn resolve(provider: &str, cwd: &Path, text: &str) -> Result<Resolutio
     if is_local_control(name) {
         return resolve_from_catalog(provider, text, &Catalog::default());
     }
-    let catalog = catalog(provider, cwd, false).await?;
-    resolve_from_catalog(provider, text, &catalog)
+    // A switched-off skill is hidden from the catalog; typing it says so instead of "Unknown".
+    let catalog = unfiltered(provider, cwd, false).await?;
+    skill_switches::resolve_at(provider, text, catalog, cwd).await
+}
+
+/// [`resolve`] against the latest known catalog only: never starts the harness, for callers
+/// (a phone below the task's mode) that may not launch discovery in the project.
+pub async fn resolve_known(provider: &str, cwd: &Path, text: &str) -> Result<Resolution, String> {
+    resolve_known_by(provider, cwd, text, |catalog| skill_switches::resolve_at(provider, text, catalog, cwd)).await
+}
+
+/// [`resolve_known`] with the switch check (`resolve_at`, which reads the user's settings)
+/// passed in, so a test can supply the switches.
+async fn resolve_known_by<F>(provider: &str, cwd: &Path, text: &str, switches: impl FnOnce(Catalog) -> F) -> Result<Resolution, String>
+where
+    F: std::future::Future<Output = Result<Resolution, String>>,
+{
+    let Some((name, _)) = split_command(text) else {
+        return Ok(plain_resolution(text));
+    };
+    if is_local_control(name) {
+        return resolve_from_catalog(provider, text, &Catalog::default());
+    }
+    // Unfiltered, so a switched-off skill gets the switched-off error, as in `resolve`.
+    let catalog = known_unfiltered(provider, cwd)?;
+    switches(catalog).await
 }
 
 /// A command may be removed after the picker cached it. Claude's fresh
@@ -876,6 +933,32 @@ mod tests {
     }
 
     #[test]
+    fn deepseek_skills_resolve_as_native_prompts() {
+        let mut catalog = Catalog {
+            commands: vec![SlashCommand {
+                id: "deepseek:skill:1".into(),
+                name: "/ds-tdd".into(),
+                description: "Test-first loop".into(),
+                argument_hint: Some("[instructions]".into()),
+                kind: "prompt".into(),
+                source: "DeepSeek skill · project".into(),
+                reason: None,
+                invocation: Invocation::Native,
+            }],
+            warnings: vec![],
+        };
+        normalize(&mut catalog, "deepseek");
+        assert!(matches!(
+            command(&catalog, "/ds-tdd").invocation,
+            Invocation::Native
+        ));
+        let result = resolve_from_catalog("deepseek", "/ds-tdd fix the bug", &catalog).unwrap();
+        assert_eq!(result.prompt, "/ds-tdd fix the bug");
+        assert!(result.skill.is_none() && result.action.is_none());
+        assert!(result.accepts_attachments && !result.maintenance);
+    }
+
+    #[test]
     fn kimi_shell_fallbacks_preserve_acp_commands_and_help_aliases() {
         let mut catalog = native_catalog(&["/help", "/clear", "/fork"]);
         normalize(&mut catalog, "kimi");
@@ -1065,12 +1148,68 @@ mod tests {
         assert_eq!(cache.entries.len(), 1);
     }
 
-    #[test]
-    fn snapshots_expose_local_controls_without_launching_a_harness() {
-        let catalog = snapshot("antigravity", Path::new("/snapshot-only-project")).unwrap();
+    /// A phone below the task's mode resolves against the cache: a switched-off skill there
+    /// gets the switched-off error (not "Unknown command"), and a stale entry is never
+    /// refreshed, so no harness is launched.
+    #[tokio::test]
+    async fn resolve_known_reports_switched_off_skills_without_launching_a_harness() {
+        let cwd = PathBuf::from(format!("/resolve-known-{}", uuid::Uuid::new_v4()));
+        let key = catalog_key("claude", &cwd);
+        let skill = SlashCommand {
+            id: "test:/release".into(),
+            name: "/release".into(),
+            description: "Release".into(),
+            argument_hint: None,
+            kind: "prompt".into(),
+            source: "skill".into(),
+            reason: None,
+            invocation: Invocation::Skill { name: "release".into(), path: cwd.join(".claude/skills/release/SKILL.md") },
+        };
+        let stale = Instant::now() - CACHE_AGE;
+        let revision = {
+            let mut cache = CACHE.lock().unwrap();
+            let revision = cache.insert(key.clone(), Some(Catalog { commands: vec![skill], warnings: vec![] }), HashSet::new());
+            cache.entries.get_mut(&key).unwrap().updated = stale;
+            revision
+        };
+        let disabled: std::collections::BTreeSet<String> = ["release".to_string()].into();
+        let error = resolve_known_by("claude", &cwd, "/release now", |catalog| async {
+            skill_switches::resolve_with("claude", "/release now", catalog, &disabled, Default::default)
+        })
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(error, crate::skill_manager::off_error(&disabled, "release"));
+        let cache = CACHE.lock().unwrap();
+        let entry = &cache.entries[&key];
+        assert_eq!((entry.revision, entry.updated), (revision, stale), "no discovery ran");
+    }
+
+    #[tokio::test]
+    async fn snapshots_expose_local_controls_without_launching_a_harness() {
+        let catalog = snapshot("antigravity", Path::new("/snapshot-only-project"))
+            .await
+            .unwrap();
         assert_eq!(command(&catalog, "/model").source, "PandaCode");
         assert_eq!(command(&catalog, "/settings").kind, "action");
-        assert!(snapshot("unknown", Path::new("/snapshot-only-project")).is_err());
+        assert!(snapshot("unknown", Path::new("/snapshot-only-project"))
+            .await
+            .is_err());
+    }
+
+    /// The switch reads (settings, SQLite, SKILL.md) run on a blocking thread, never on the
+    /// async runtime's own thread.
+    #[tokio::test(flavor = "current_thread")]
+    async fn slash_skill_switch_reads_run_on_a_blocking_thread_not_the_async_runtime() {
+        let runtime = std::thread::current().id();
+        let cwd = Path::new("/snapshot-only-project");
+        let shown = snapshot("claude", cwd).await.unwrap();
+        assert!(skill_switches::resolve_at("claude", "/model", shown, cwd)
+            .await
+            .is_ok());
+        let readers = skill_switches::READERS.lock().unwrap().clone();
+        assert!(!readers.is_empty());
+        assert!(!readers.contains(&runtime));
     }
 
     #[test]

@@ -385,3 +385,37 @@ test.describe('on Windows', () => {
     await expect(panel.locator('.sim-axe')).toBeHidden();
   });
 });
+
+test.describe('on Linux', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Linux x86_64' }));
+  });
+
+  test('the Simulators tab lists Android emulators only, with no Xcode or AXe notes', async ({ page }) => {
+    await open(page);
+    await showSimulator(page);
+    const panel = page.locator('#simulator-panel');
+    await expect(panel.locator('.sim-device-name')).toHaveText('Pixel 9 API 35');
+    await expect(panel.locator('.sim-axe')).toBeHidden();
+    await panel.getByRole('button', { name: 'Choose simulator' }).click();
+    await expect(page.getByRole('menuitemradio')).toHaveText([/Pixel 9/]);
+    await expect(page.getByRole('menuitemradio', { name: /iPhone Duo|Set up Android/ })).toHaveCount(0);
+  });
+
+  test('without the Android SDK the panel says to install it', async ({ page }) => {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+        if (command === 'simulator_status') return { available: false, axe: false, axeInstall: 'brew install cameroncooke/axe/axe', android: false, devices: [], selected: null, screen: null, error: 'xcrun was not found.' };
+        switch (command) {
+      `) });
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/');
+    await showSimulator(page);
+    const panel = page.locator('#simulator-panel');
+    await expect(panel.locator('.sim-status')).toHaveText('Install Android Studio (or the Android command-line tools) into ~/Android/Sdk, or set ANDROID_HOME, create an emulator in Device Manager, then reopen this tab.');
+    await expect(panel.locator('.sim-axe')).toBeHidden();
+  });
+});

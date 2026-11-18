@@ -6,6 +6,7 @@ export function escape(value: unknown): string {
 const paths: Record<string, string> = {
   images: '<rect x="6" y="3" width="15" height="15" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12M6 14l4-4 5 5 3-3 3 3"/><circle cx="16" cy="7" r="1"/>',
   play: '<path d="m8 4 12 8-12 8Z"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8"/>',
   board: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
   chat: '<path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2Z"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
@@ -20,6 +21,7 @@ const paths: Record<string, string> = {
   branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="6" r="2"/><path d="M6 7v10m0-4c8 0 12-1 12-5"/>',
   worktree: '<rect x="2" y="3" width="6" height="6" rx="1.5"/><rect x="16" y="15" width="6" height="6" rx="1.5"/><path d="M5 9v8a2 2 0 0 0 2 2h9M8 6h9a2 2 0 0 1 2 2v7"/>',
   terminal: '<path d="m4 6 6 6-6 6m9 0h7"/>',
+  team: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
   settings: '<path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z"/><path d="m10 3-.7 2.2-2 .9-2.1-.4-2 3.6 1.4 1.7v2l-1.4 1.7 2 3.6 2.2-.4 1.9 1 .7 2.1h4l.7-2.2 2-.9 2.1.4 2-3.6-1.4-1.7v-2l1.4-1.7-2-3.6-2.2.4-1.9-1L14 3Z"/>',
   archive: '<path d="M4 8v13h16V8M3 3h18v5H3Zm6 9h6"/>',
   more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
@@ -27,6 +29,7 @@ const paths: Record<string, string> = {
   unlock: '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V6a4 4 0 0 1 7.5-2M12 14v3"/>',
   plan: '<rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 2h6v4H9Zm0 9h6m-6 4h6"/>',
   activity: '<path d="M4 20h16M7 16V9m5 7V4m5 12v-5"/>',
+  grip: '<circle cx="9" cy="6" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="18" r="1"/>',
   spark: '<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/>',
   bot: '<rect x="4" y="8" width="16" height="12" rx="4"/><path d="M12 4v4M9 13v1m6-1v1M2 13v3m20-3v3"/>',
   panel: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
@@ -58,6 +61,7 @@ const paths: Record<string, string> = {
   issue: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/>',
   monitor: '<rect x="3" y="4" width="18" height="12.5" rx="2.2"/><path d="M8.5 20.5h7M12 16.5v4"/>',
   phone: '<rect x="6.5" y="2.5" width="11" height="19" rx="2.8"/><path d="M10.5 5.3h3"/>',
+  shield: '<path d="M12 3.5 5.5 6v5.2c0 4.1 2.7 7.6 6.5 9.3 3.8-1.7 6.5-5.2 6.5-9.3V6z"/>',
   lock: '<rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/>',
   merge: '<circle cx="18" cy="18" r="2.5"/><circle cx="6" cy="6" r="2.5"/><path d="M6 21V8.5M6 8.5a9.5 9.5 0 0 0 9.5 9.5"/>',
   pull: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="19" r="2"/><path d="M6 7v10M18 17v-6a3 3 0 0 0-3-3h-4m3-3-3 3 3 3"/>',
@@ -97,7 +101,10 @@ export function fileIcon(name: string, isDir: boolean): string {
   if (!fileIcons) loadFileIcons();
   return fileIcons?.fileIcon(name, isDir, document.documentElement.dataset.theme === 'light') ?? icon(isDir ? 'folder' : 'file');
 }
-export function button(action: string, label: string, symbol: string, cls = '', extra = ''): string { return `<button class="icon-button ${cls}" data-action="${action}" title="${escape(label)}" aria-label="${escape(label)}" ${extra}>${icon(symbol)}</button>`; }
+/** `tip` (default: the label) is the visible tooltip; a shortcut belongs there and in `aria-keyshortcuts`, never in the name. */
+export function button(action: string, label: string, symbol: string, cls = '', extra = '', tip = label): string { return `<button class="icon-button ${cls}" data-action="${action}" title="${escape(tip)}" aria-label="${escape(label)}" ${extra}>${icon(symbol)}</button>`; }
+/** A keydown the IME owns: WKWebView sends the Enter committing a conversion after compositionend, with isComposing false and keyCode 229. */
+export function isImeKey(event: KeyboardEvent): boolean { return event.isComposing || event.keyCode === 229; }
 export function $(selector: string): HTMLElement { const el = document.querySelector<HTMLElement>(selector); if (!el) throw new Error(`Missing element ${selector}`); return el; }
 // Local file URLs become inert workspace candidates before the sanitizer strips their
 // scheme. The later resolver is the only route to opening them.
@@ -167,7 +174,14 @@ async function unsafeHtml(enriched: Modules['enriched'], value: string): Promise
     fallback ??= import('marked').then(m => {
       const links = new m.Renderer(); const renderLink = links.link;
       links.link = function (token) { return renderLink.call(this, { ...token, href: workspaceHref(token.href) }); };
-      return (text: string) => m.marked.parse(text, { renderer: links });
+      return async (text: string) => {
+        // Match the primary renderer; this inert template is sanitized by the caller.
+        const template = document.createElement('template');
+        template.innerHTML = await m.marked.parse(text, { renderer: links });
+        for (const node of template.content.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,th,td,summary')) node.setAttribute('dir', 'auto');
+        for (const node of template.content.querySelectorAll('pre,code')) node.setAttribute('dir', 'ltr');
+        return template.innerHTML;
+      };
     });
     return (await fallback)(value);
   }
@@ -230,6 +244,15 @@ export async function markdown(target: HTMLElement, value: string, scroll?: HTML
   }
 }
 
+/** Whether `element`'s children (or with `outer`, `element` itself) already show `html`.
+ *  `innerHTML` reads back normalized (quotes, entities, SVG attributes), so a raw string compare
+ *  never matches; this compares parsed markup. */
+export function showsHtml(element: Element, html: string, outer = false): boolean {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  return template.innerHTML === (outer ? element.outerHTML : element.innerHTML);
+}
+
 /** Update `target`'s children to match `html`, touching only what changed. Unchanged rows
  *  keep their nodes (images stay decoded, hover and focus stay put); `depth` bounds how far
  *  it descends before replacing a subtree whose shape changed. */
@@ -240,18 +263,23 @@ export function morph(target: Element, html: string, depth = 4): void {
 }
 function morphChildren(from: Element, to: ParentNode, depth: number): void {
   const before = [...from.childNodes], after = [...to.childNodes];
-  if (depth <= 0 || before.length !== after.length || before.some((node, i) => node.nodeName !== after[i].nodeName)) {
+  // A list that only grew or shrank at its end keeps the shared start (a section's heading while its rows open or close).
+  const shared = Math.min(before.length, after.length);
+  if (depth <= 0 || !shared || before.slice(0, shared).some((node, i) => node.nodeName !== after[i].nodeName)) {
     from.replaceChildren(...after);
     return;
   }
-  before.forEach((node, i) => {
+  before.slice(shared).forEach(node => node.remove());
+  from.append(...after.slice(shared));
+  before.slice(0, shared).forEach((node, i) => {
     const next = after[i];
     if (node instanceof Element && next instanceof Element) {
       if (node.outerHTML === next.outerHTML) return;
       // An element never changes what it stands for: a row whose task moved is replaced, so a
       // click landing during a background update still reaches the row under the pointer.
       if (node.id !== next.id || node.getAttribute('data-id') !== next.getAttribute('data-id')) { node.replaceWith(next); return; }
-      for (const { name } of [...node.attributes]) if (!next.hasAttribute(name)) node.removeAttribute(name);
+      // data-armed is the switch's own memory that the user touched it (palette.ts), not rendered state.
+      for (const { name } of [...node.attributes]) if (!next.hasAttribute(name) && name !== 'data-armed') node.removeAttribute(name);
       for (const { name, value } of [...next.attributes]) if (node.getAttribute(name) !== value) node.setAttribute(name, value);
       morphChildren(node, next, depth - 1);
     } else if (node.nodeValue !== next.nodeValue) node.nodeValue = next.nodeValue;

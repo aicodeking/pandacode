@@ -1,5 +1,5 @@
 import { call } from './bridge';
-import { icon } from './dom';
+import { icon, isImeKey } from './dom';
 import { openChoiceMenu } from './choice-menu';
 import type { TeamLibrary, TeamProfile, TeamSetup } from './architect-types';
 import { sameTeamSetup } from './team-mode';
@@ -37,7 +37,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     picker.disabled = pending || (!library.profiles.length && !library.lastSetup);
     picker.title = 'Choose a saved team';
     manage.disabled = pending || !profile;
-    create.disabled = pending || library.profiles.length >= 20;
+    create.disabled = pending;
     update.hidden = !modified;
     update.disabled = pending;
     status.textContent = modified ? 'Modified' : options.pendingSetup && sameTeamSetup(options.pendingSetup, setup) ? 'Pending' : profile ? 'Saved' : '';
@@ -90,7 +90,7 @@ export function mountTeamProfiles(host: HTMLElement, options: {
   }
   confirm.addEventListener('click', saveNamed);
   name.addEventListener('keydown', event => {
-    if (event.key === 'Enter' && !event.isComposing) { event.preventDefault(); event.stopPropagation(); saveNamed(); }
+    if (event.key === 'Enter' && !isImeKey(event)) { event.preventDefault(); event.stopPropagation(); saveNamed(); }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor(); create.focus(); }
   });
   update.addEventListener('click', () => {

@@ -3,7 +3,7 @@ import { expect, test, type Page } from '@playwright/test';
 async function switchHarness(page: Page) {
   await page.goto('/');
   await expect(page.locator('.task-item.selected .task-title')).toHaveText('Make search feel instant');
-  await page.getByRole('button', { name: 'Choose harness and model', exact: true }).click();
+  await page.getByRole('button', { name: /^Model: / }).click();
   const picker = page.getByRole('dialog', { name: 'Harness and model', exact: true });
   await picker.getByRole('tab', { name: 'Codex', exact: true }).click();
   await picker.getByRole('option', { name: 'Codex · Default', exact: true }).click();
@@ -18,8 +18,8 @@ for (const width of [1440, 760]) {
     await page.setViewportSize({ width, height: 900 });
     await switchHarness(page);
     const handoff = await box(page, '.transcript .provider-handoff');
-    const reply = await box(page, '.transcript .agent-message');
-    // The handoff shares the agent reply's column.
+    const reply = await box(page, '.transcript .turn-card');
+    // The handoff shares the agent replies' column, whose edge is now the turn card's (the reply sits inside it).
     expect(Math.abs(handoff.x - reply.x)).toBeLessThanOrEqual(2);
     expect(Math.abs(handoff.width - reply.width)).toBeLessThanOrEqual(2);
     // Its summary line is centered within that column.

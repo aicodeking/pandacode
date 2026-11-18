@@ -1,6 +1,15 @@
 import { expect, test, type Page } from '@playwright/test';
 
 test.use({ timezoneId: 'America/New_York' });
+
+/** Wallpapers are off by default (the thread shows the sky); these specs start with them on unless a test saves its own choice. */
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    if (localStorage.getItem('pandacode.wallpaperPreferences') === null && localStorage.getItem('pandacode.wallpapers') === null) {
+      localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 3, enabled: true, visibility: 20, blur: 0, set: 'automatic', pinned: null }));
+    }
+  });
+});
 const storageKey = 'pandacode.wallpaperPreferences';
 const workspace = (page: Page) => page.locator('.workspace');
 const sceneImages = (page: Page) => page.locator('.workspace-wallpaper img');
@@ -182,7 +191,7 @@ test('wallpapers settings support solid and full wallpaper endpoints and persist
   await expect(slider(page)).toHaveValue('0');
   await expect(workspace(page)).not.toHaveAttribute('data-wallpaper');
   await expect(sceneImages(page)).toHaveCount(0);
-  await expect(page.locator('.main-pane')).toHaveCSS('background-color', 'rgb(28, 28, 27)');
+  await expect(page.locator('.main-pane')).toHaveCSS('background-color', 'rgb(21, 21, 21)');
   await expect.poll(async () => (await preferences(page)).visibility).toBe(0);
   await page.reload();
   await expect(prompt(page)).toBeEnabled();
@@ -277,20 +286,57 @@ test('wallpapers settings pin a default scene until rotation is explicitly resum
   await expect.poll(async () => (await preferences(page)).pinned).toBeNull();
 });
 
-test('wallpapers settings migrate the disabled preference and retain a favorite through disabling', async ({ page }) => {
-  await page.addInitScript(() => { localStorage.setItem('pandacode.wallpapers', 'false'); });
+test('a wallpaper saved before the live scenes starts off, keeps its choices, and stays on once turned on again', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('old-save')) return;
+    sessionStorage.setItem('old-save', '1');
+    localStorage.setItem('pandacode.wallpaperPreferences', JSON.stringify({ version: 2, enabled: true, visibility: 45, blur: 6, set: 'tue', pinned: 'tue-afternoon' }));
+  });
   await open(page);
+  await expect(sceneImages(page)).toHaveCount(0);
+  await expect(workspace(page)).not.toHaveAttribute('data-wallpaper');
+  await expect(page.locator('.thread-sky')).toBeVisible();
+  await page.reload();
+  await expect(prompt(page)).toBeEnabled();
   await expect(sceneImages(page)).toHaveCount(0);
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await appearance(page);
-  const enabled = page.getByRole('checkbox', { name: 'Daily wallpapers', exact: true });
+  const enabled = page.getByRole('checkbox', { name: 'Wallpapers', exact: true });
   await expect(enabled).not.toBeChecked();
-  await expect(slider(page)).toHaveValue('0');
+  await enabled.check();
+  await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
+  await expect(slider(page)).toHaveValue('45');
+  await page.reload();
+  await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
+});
+
+test('wallpapers settings migrate the disabled preference and retain a favorite through disabling', async ({ page }) => {
+  // Only on the first load (the beforeEach seed runs first): the old on/off flag alone, no preferences.
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem('legacy-seeded')) return;
+    sessionStorage.setItem('legacy-seeded', '1');
+    localStorage.removeItem('pandacode.wallpaperPreferences'); localStorage.setItem('pandacode.wallpapers', 'false');
+  });
+  await open(page);
+  await expect(sceneImages(page)).toHaveCount(0);
+  await expect(page.locator('.thread-sky')).toBeVisible();
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await appearance(page);
+  const enabled = page.getByRole('checkbox', { name: 'Wallpapers', exact: true });
+  await expect(enabled).not.toBeChecked();
+  // The scene controls appear only while the switch is on.
+  await expect(slider(page)).toBeHidden();
+  await enabled.check();
+  await expect(slider(page)).toHaveValue('20');
   await setButton(page, 'Tuesday').click();
   await defaultButton(page, 'Tuesday', 'afternoon').click();
   await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
   await enabled.uncheck();
+  await expect(slider(page)).toBeHidden();
   await expect(sceneImages(page)).toHaveCount(0);
+  // Settings covers the thread, so the sky is back but paused.
+  await expect(page.locator('.thread-sky')).not.toHaveAttribute('hidden');
+  await expect(page.locator('.thread-sky')).toHaveAttribute('data-sky-state', 'paused');
   expect(await page.evaluate(() => localStorage.getItem('pandacode.wallpapers'))).toBe('false');
   await page.reload();
   await expect(prompt(page)).toBeEnabled();
@@ -298,9 +344,8 @@ test('wallpapers settings migrate the disabled preference and retain a favorite 
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
   await appearance(page);
   await expect(enabled).not.toBeChecked();
-  await expect(slider(page)).toHaveValue('0');
-  await expect(defaultButton(page, 'Tuesday', 'afternoon')).toHaveAttribute('aria-pressed', 'true');
   await enabled.check();
+  await expect(defaultButton(page, 'Tuesday', 'afternoon')).toHaveAttribute('aria-pressed', 'true');
   await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'tue-afternoon');
   expect(await page.evaluate(() => localStorage.getItem('pandacode.wallpapers'))).toBe('true');
   await page.reload();
@@ -314,8 +359,13 @@ test('wallpapers settings ignore malformed storage and never request arbitrary w
     localStorage.setItem(key, JSON.stringify({ enabled: 'false', visibility: '90', blur: '24', set: '../elsewhere', pinned: 'https://example.com/image' }));
   }, storageKey);
   await open(page);
+  // Malformed fields fall back to the old untouched defaults, which migrate to off: the thread shows the sky.
+  await expect(workspace(page)).not.toHaveAttribute('data-wallpaper');
+  await expect(workspace(page)).toHaveAttribute('data-scene', 'sky');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await appearance(page);
+  await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).check();
   await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
-  await customize(page);
   await expect(slider(page)).toHaveValue('20');
   await expect(blurSlider(page)).toHaveValue('0');
   await expect(automatic(page)).toHaveAttribute('aria-pressed', 'true');
@@ -330,8 +380,11 @@ test('wallpapers settings recover from malformed JSON and respect contrast witho
     }
   }, storageKey);
   await open(page);
+  await expect(workspace(page)).not.toHaveAttribute('data-wallpaper');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await appearance(page);
+  await page.getByRole('checkbox', { name: 'Wallpapers', exact: true }).check();
   await expect(workspace(page)).toHaveAttribute('data-wallpaper', 'mon-morning');
-  await customize(page);
   await setButton(page, 'Wednesday').click();
   await defaultButton(page, 'Wednesday', 'afternoon').click();
   await slider(page).focus();

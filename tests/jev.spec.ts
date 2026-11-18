@@ -65,7 +65,7 @@ async function settings(page: Page) {
   // Closing the Jev dialog returns to the Settings page, which stays open behind it.
   const settingsPage = page.getByRole('region', { name: 'Settings', exact: true });
   if (!await settingsPage.isVisible()) await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await settingsPage.getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await settingsPage.getByRole('tab', { name: 'Tools', exact: true }).click();
   await page.getByRole('button', { name: 'Set up Jev', exact: true }).click();
   await expect(dialog(page).getByRole('heading', { name: 'Jev add-on', exact: true })).toBeVisible();
   await expect(page.locator('[data-jev-save]')).toBeEnabled();

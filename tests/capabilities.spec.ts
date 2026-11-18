@@ -9,7 +9,8 @@ test('capability and cache alignment tables show safe local metadata', async ({ 
   await page.keyboard.press('Meta+,');
   const panel = settings(page);
   await expect(panel.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await panel.getByRole('tab', { name: 'Tools & add-ons', exact: true }).click();
+  await panel.getByRole('tab', { name: 'Tools', exact: true }).click();
+  await panel.getByText('Capabilities and cache', { exact: true }).click();
 
   const capabilities = panel.getByRole('table', { name: 'Capability alignment', exact: true });
   const cache = panel.getByRole('table', { name: 'Cache alignment', exact: true });

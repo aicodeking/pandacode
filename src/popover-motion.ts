@@ -1,7 +1,18 @@
 /* Menus and popovers settle in from their trigger in a few pixels and leave at once, so
  * closing state stays synchronous. Kept as one module so every menu shares the same
  * open/close bookkeeping. */
-import { materializeIn } from './motion';
+import { reducedMotion, springKeyframes } from './motion';
+
+/** Opacity and `scale` only: animating the glass's backdrop-filter re-rasterizes the blur every frame. */
+function settleOpen(panel: HTMLElement, above: boolean): void {
+  if (document.hidden || typeof panel.animate !== 'function') return;
+  panel.style.transformOrigin = above ? '50% 100%' : '50% 0%';
+  const lead = (progress: number): number => Math.min(1, progress * 1.6);
+  const { keyframes, duration } = reducedMotion()
+    ? { keyframes: [{ opacity: 0 }, { opacity: 1 }], duration: 120 }
+    : springKeyframes({ response: 0.2 }, progress => ({ opacity: lead(progress), scale: String(0.985 + 0.015 * progress) }));
+  try { panel.animate(keyframes, { duration, easing: reducedMotion() ? 'ease-out' : 'linear' }); } catch { /* Shown without motion. */ }
+}
 
 /** Call after insertion and positioning. The menu is immediately interactive. */
 export function showPopover(panel: HTMLElement, anchor: HTMLElement): void {
@@ -20,7 +31,7 @@ export function showPopover(panel: HTMLElement, anchor: HTMLElement): void {
   panel.dataset.placement = above ? 'above' : 'below';
   panel.dataset.popoverState = 'open';
   // Interactive from the first frame; the motion is only presentation.
-  materializeIn(panel, { scale: 0.985, y: above ? 4 : -4, spring: { response: 0.2 }, origin: above ? '50% 100%' : '50% 0%' });
+  settleOpen(panel, above);
 }
 
 /** Removes the menu at once. */

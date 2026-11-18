@@ -333,6 +333,11 @@ pub(crate) fn remember_images(session: &str, image_ids: &[String]) {
     }
 }
 
+#[cfg(test)]
+pub(crate) fn remembered_images(session: &str) -> Option<Vec<String>> {
+    state().lock().ok().and_then(|failover| failover.images.get(session).cloned())
+}
+
 pub(crate) fn clear_images(session: &str) {
     if let Ok(mut failover) = state().lock() {
         failover.images.remove(session);

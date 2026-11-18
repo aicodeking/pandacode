@@ -229,7 +229,7 @@ fn empty_host() -> ToolHost {
 /// The families a run's tool host is built from, in `build_host`'s order. The app builds them
 /// with its handle (`run_host` in `lib.rs`); tests build them without one.
 pub(crate) trait HostLayers {
-    /// The team's tools (or Codex's agent tools), JEV and bot tools, and whether a team's own
+    /// The team's tools (a lead's also the app's agent tools; a plain task gets just those), JEV and bot tools, and whether a team's own
     /// tools failed to start.
     fn base(&mut self, plan: &super::HostPlan) -> (Option<ToolHost>, bool);
     fn schedules(&mut self, host: Option<ToolHost>) -> Option<ToolHost>;
@@ -315,6 +315,8 @@ pub(crate) mod fake {
         pub custom_specs: Option<Vec<Value>>,
         /// What `custom_definitions` returns.
         pub definitions: Vec<Value>,
+        /// The run is a team's lead, which also gets the app host (`launch_host::AppLayers::base`).
+        pub lead: bool,
     }
 
     fn with(host: Option<ToolHost>, specs: Vec<Value>, gated: &[&str]) -> ToolHost {
@@ -334,7 +336,14 @@ pub(crate) mod fake {
 
     impl HostLayers for FakeLayers {
         fn base(&mut self, plan: &super::super::HostPlan) -> (Option<ToolHost>, bool) {
-            let host = if plan.team { Some(with(None, named(&TEAM), &[])) } else { plan.codex.then(|| with(None, crate::agent_tools::catalog(), &[])) };
+            // As `launch_host::AppLayers::base`: every harness gets the app host without a team, and
+            // only a team's lead gets it beside the team tools.
+            let app = || crate::agent_tools::catalog();
+            let host = match (plan.team, self.lead) {
+                (true, true) => Some(with(Some(with(None, named(&TEAM), &[])), app(), &[])),
+                (true, false) => Some(with(None, named(&TEAM), &[])),
+                (false, _) => Some(with(None, app(), &[])),
+            };
             (host, false)
         }
         fn schedules(&mut self, host: Option<ToolHost>) -> Option<ToolHost> {
@@ -589,6 +598,21 @@ mod tests {
         let definitions = crate::custom_tools::test_definitions(&dir.0, "project");
         let built = build_host(&plan, &History::fresh(false), &mut fake::FakeLayers { definitions, ..Default::default() });
         assert!(custom_listing(&built.host).is_empty());
+    }
+
+    #[test]
+    fn the_app_host_is_listed_for_every_harness_and_a_teams_lead_only() {
+        let app_tool = crate::agent_tools::catalog().iter().find_map(|spec| spec["name"].as_str().map(str::to_owned)).expect("the app host lists a tool");
+        let listed = |team: bool, codex: bool, lead: bool| {
+            let plan = crate::app_instructions::HostPlan { team, codex, cloud: false, trim: crate::app_instructions::Role::of(team, false).wants(), explore: None };
+            let built = build_host(&plan, &History::fresh(codex), &mut fake::FakeLayers { lead, ..Default::default() });
+            listing(&built.host).contains(&app_tool)
+        };
+        for codex in [false, true] {
+            assert!(listed(false, codex, false), "a plain task lists the app host (codex: {codex})");
+            assert!(listed(true, codex, true), "a team's lead lists it (codex: {codex})");
+            assert!(!listed(true, codex, false), "a team's worker does not (codex: {codex})");
+        }
     }
 
     #[test]

@@ -1,7 +1,7 @@
 /* Add model…: choose which of a long harness catalog's models teams may use, beside its recent ones. */
 import './team-model-add.css';
 import { escape, icon } from './dom';
-import { ADDED_MAX, addedTeamModels, setAddedTeamModels, teamModels } from './team-catalog';
+import { ADDED_MAX, addedTeamModels, dupModelNames, excludedTeamModels, recentTeamModelIds, setTeamModelOn, teamModels } from './team-catalog';
 import type { ProviderId, ProviderModel } from './types';
 
 export interface AddTeamModelsOptions {
@@ -20,7 +20,7 @@ export async function openAddTeamModels({ provider, name, loadModels, trigger }:
   dialog.setAttribute('aria-label', `Models for teams: ${name}`);
   dialog.removeAttribute('aria-describedby');
   dialog.innerHTML = `<div class="dialog-heading"><div class="dialog-title"><h2>${escape(name)} models for teams</h2></div><button type="button" class="icon-button" data-team-close title="Close dialog" aria-label="Close dialog">${icon('close')}</button></div>
-    <p class="dialog-description">Teams use your recently used models. Turn on others to add them.</p>
+    <p class="dialog-description">Teams use your recently used models. Turn one off to drop it, or turn on others to add them.</p>
     <label class="team-model-search">${icon('search')}<input type="search" aria-label="Search ${escape(name)} models" placeholder="Search models" autocomplete="off" spellcheck="false" maxlength="200"></label>
     <div class="team-model-list" role="group" aria-label="${escape(name)} models"><p class="team-model-empty">Loading…</p></div>
     <div class="dialog-footer"><span class="team-model-count" role="status"></span><button type="button" class="primary-button" data-team-close>Done</button></div>`;
@@ -28,12 +28,16 @@ export async function openAddTeamModels({ provider, name, loadModels, trigger }:
   const count = dialog.querySelector<HTMLElement>('.team-model-count')!;
   let models: ProviderModel[] = [];
   const render = () => {
-    const added = new Set(addedTeamModels(provider)), recent = teamModels(provider, models).recent, query = search.value.trim().toLowerCase();
-    const full = added.size >= ADDED_MAX;
+    const added = new Set(addedTeamModels(provider)), excluded = new Set(excludedTeamModels(provider));
+    // A switch shows what teams really get; the badge ignores exclusions, so a dropped model keeps it.
+    const team = new Set(teamModels(provider, models).models.map(m => m.id)), recent = new Set(recentTeamModelIds(provider));
+    const query = search.value.trim().toLowerCase();
+    const full = added.size >= ADDED_MAX, dupes = dupModelNames(models);
     const rows = models.filter(m => m.id !== 'default' && `${m.name} ${m.id}`.toLowerCase().includes(query)).map(m => {
-      const isRecent = recent.has(m.id), on = isRecent || added.has(m.id);
-      return `<label class="team-model-row" title="${escape(m.id)}"><input type="checkbox" data-model="${escape(m.id)}"${on ? ' checked' : ''}${isRecent || (full && !on) ? ' disabled' : ''}>`
-        + `<span>${escape(m.name)}</span>${isRecent ? '<small>Recently used, always included</small>' : ''}</label>`;
+      const on = team.has(m.id);
+      // Two models can share a display name (endpoints of different providers): a duplicate's row shows its id.
+      return `<label class="team-model-row" title="${escape(m.id)}"><input type="checkbox" data-model="${escape(m.id)}"${on ? ' checked' : ''}${full && !on && !excluded.has(m.id) ? ' disabled' : ''}>`
+        + `<span>${escape(m.name)}${dupes.has(m.name) ? ` <small class="team-model-id">${escape(m.id)}</small>` : ''}</span>${recent.has(m.id) ? ' <small>Recently used</small>' : ''}</label>`;
     });
     list.innerHTML = rows.join('') || `<p class="team-model-empty">${models.length ? 'No matching models.' : 'No models listed.'}</p>`;
     count.textContent = `${added.size} added${full ? ' · limit reached' : ''}`;
@@ -43,8 +47,7 @@ export async function openAddTeamModels({ provider, name, loadModels, trigger }:
   search.addEventListener('input', render);
   list.addEventListener('change', event => {
     const box = event.target as HTMLInputElement, model = box.dataset.model!;
-    const rest = addedTeamModels(provider).filter(id => id !== model);
-    setAddedTeamModels(provider, box.checked ? [...rest, model] : rest);
+    setTeamModelOn(provider, models, model, box.checked);
     render();
     list.querySelector<HTMLElement>(`input[data-model="${CSS.escape(model)}"]`)?.focus();
   });
