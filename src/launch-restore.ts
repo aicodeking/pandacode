@@ -43,6 +43,8 @@ export const OPEN_THREAD_KEY = 'pandacode.openThread';
 export const OPEN_NEW_TASK_KEY = 'pandacode.openNewTask';
 /** Drafts key prefix (after DRAFT_PREFIX) of a project's New task text. */
 export const NEW_TASK_DRAFT = 'new:';
+/** Unsent side-thread text belongs to its main thread until a real side thread exists. */
+export const BTW_DRAFT = 'btw-draft:';
 /** Drafts key prefix (after DRAFT_PREFIX) of a shared bot channel's composer text. */
 export const CHANNEL_DRAFT = 'channel:';
 /** The drafts key of a shared channel's composer text. */
@@ -327,10 +329,13 @@ export class PersistedDrafts extends Map<string, string> {
 /** Most ids `sessions_missing` takes in one call, and the longest id it accepts. */
 export const MISSING_BATCH = 2000, MAX_SESSION_ID = 128;
 
+const draftParentId = (id: string): string => id.startsWith(BTW_DRAFT) ? id.slice(BTW_DRAFT.length) : id;
+
 /** The thread ids with a draft (not a project's New task text or a channel's), in batches for `sessions_missing`;
- * an id the command would refuse is left out rather than failing its whole batch. */
+ * synthetic side-draft keys check their parent instead. An id the command would refuse is left out rather than failing its whole batch. */
 export function draftThreadBatches(ids: Iterable<string>): string[][] {
-  const threads = [...ids].filter(id => id && id.length <= MAX_SESSION_ID && !id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT));
+  const threads = [...new Set([...ids].filter(id => !id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT)).map(draftParentId))]
+    .filter(id => id && id.length <= MAX_SESSION_ID);
   return Array.from({ length: Math.ceil(threads.length / MISSING_BATCH) }, (_, index) => threads.slice(index * MISSING_BATCH, (index + 1) * MISSING_BATCH));
 }
 
@@ -346,7 +351,10 @@ export async function dropDeletedDrafts(drafts: DraftCollection, missing: (ids: 
     try { gone = await missing(batch); } catch (error) { console.warn('Could not check for drafts of deleted threads:', error); return; }
     if (!Array.isArray(gone)) { console.warn('Could not check for drafts of deleted threads: unexpected answer', gone); return; }
     const asked = new Set(batch);
-    for (const id of gone) if (typeof id === 'string' && asked.has(id)) drafts.delete(id);
+    for (const id of gone) if (typeof id === 'string' && asked.has(id)) {
+      drafts.delete(id);
+      drafts.delete(BTW_DRAFT + id);
+    }
   }
 }
 

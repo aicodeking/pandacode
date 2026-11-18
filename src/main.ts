@@ -121,7 +121,7 @@ import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { heldBackOpened, showCrashRecovery, takeCrashRecovery, tasksChanged } from './crash-recovery';
 import { addToastClose, labelToastShortcut, wireToastKeys } from './toast-keys';
 import { keepToastClear } from './toast-clearance';
-import { NEW_TASK_DRAFT, PersistedDrafts, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
+import { BTW_DRAFT, NEW_TASK_DRAFT, PersistedDrafts, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
 import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
@@ -5630,7 +5630,6 @@ async function btwPanelQueue(side: Session, text: string): Promise<void> {
 }
 /* Model, effort and permissions picked in the panel before a side thread exists: kept per main thread
  * on a stand-in task and applied to the side thread createBtw makes, before its first message. */
-const BTW_DRAFT = 'btw-draft:';
 const btwDrafts = new Map<string, Session>();
 const isBtwDraft = (task: Session): boolean => task.id.startsWith(BTW_DRAFT);
 function btwDraftTask(): Session | undefined {

@@ -537,3 +537,21 @@ test('account switch in a live side thread stays compact and keeps its open focu
   await expect(saved.locator('p')).toBeVisible(); await expect(saved.locator('p')).toHaveText(prose);
   await expect(page.locator('#transcript .message-error, #transcript .tool-trace')).toHaveCount(0);
 });
+
+test('an unsent first side prompt survives boot cleanup and reopening after reload', async ({ page }) => {
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await prompt(page).fill('/btw ');
+  await prompt(page).press('Enter');
+  await side(page).fill('Keep this unsent side thought');
+  await page.evaluate(() => {
+    localStorage.setItem('pandacode.draft:btw-draft:deleted-parent', JSON.stringify({ t: Date.now(), text: 'removed parent' }));
+  });
+  await page.reload();
+  await expect(prompt(page)).toBeEnabled();
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.draft:btw-draft:deleted-parent'))).toBeNull();
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await prompt(page).fill('/btw ');
+  await prompt(page).press('Enter');
+  await expect(side(page)).toHaveValue('Keep this unsent side thought');
+  expect(await calls(page, 'create_session')).toHaveLength(0);
+});

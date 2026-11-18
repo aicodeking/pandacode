@@ -888,3 +888,23 @@ test('debounced typing keeps the in-memory Map exact on every keystroke and coal
   dropRemovedProjectDrafts(drafts, ['p']);
   assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'new:p')).text, 'project draft flushed on drop check');
 });
+
+
+test('unsent side drafts survive boot cleanup through their parent, while real side IDs keep their own lifetime', async () => {
+  const store = memory();
+  const before = new PersistedDrafts(store, () => NOW);
+  for (const id of ['parent', 'btw-draft:parent', 'btw-draft:deleted', 'real-side', 'deleted-side']) before.set(id, `text for ${id}`);
+  const drafts = new PersistedDrafts(store, () => NOW);
+  const live = new Set(['parent', 'real-side']);
+  const asked = [];
+  await dropDeletedDrafts(drafts, async ids => { asked.push(...ids); return ids.filter(id => !live.has(id)); });
+  assert.equal(drafts.get('btw-draft:parent'), 'text for btw-draft:parent');
+  assert.deepEqual(new Set(asked), new Set(['parent', 'deleted', 'real-side', 'deleted-side']));
+  assert.equal(asked.filter(id => id === 'parent').length, 1);
+  assert.deepEqual([...new PersistedDrafts(store, () => NOW).keys()].sort(), ['btw-draft:parent', 'parent', 'real-side']);
+});
+
+test('side draft cleanup validates the parent ID length rather than the synthetic key length', () => {
+  const parent = 'p'.repeat(MAX_SESSION_ID);
+  assert.deepEqual(draftThreadBatches(['btw-draft:' + parent, 'btw-draft:', 'btw-draft:' + parent + 'x']), [[parent]]);
+});
