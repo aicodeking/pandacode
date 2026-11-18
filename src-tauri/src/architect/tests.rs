@@ -2565,6 +2565,42 @@ fn catalog_is_validated_like_workers_but_larger() {
     assert!(serde_json::to_value(super::tests::config()).unwrap().get("catalog").is_none());
 }
 #[test]
+fn new_model_cards_staff_automatic_workers_on_their_launch_ids() {
+    let cases = [
+        ("claude", "fable", "claude-fable-5.2"),
+        ("claude", "claude-fable-5-2", "claude-fable-5.2"),
+        ("claude", "claude-fable-5-1", "claude-fable-5.1"),
+        ("codex", "gpt-6.2-sol", "codex-gpt-6.2-sol"),
+        ("codex", "gpt-6.2-astra", "codex-gpt-6.2-astra"),
+        ("antigravity", "gemini-4-carbon", "gemini-4-carbon"),
+        ("antigravity", "gemini-4-carbon-high", "gemini-4-carbon"),
+        ("antigravity", "gemini-4-hydrogen", "gemini-4-hydrogen"),
+        ("antigravity", "gemini-4-hydrogen-xhigh", "gemini-4-hydrogen"),
+    ];
+    for (provider, model, card) in cases {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.workers.clear();
+            team.config.catalog = vec![profile("candidate", provider, model, model)];
+            assert_eq!(crate::model_routing::rated_count(&routing::pool(&team.config)), 1, "{provider}/{model}");
+            save(&store, &mut team).unwrap();
+        }
+        let args = json!({"assignments":[auto_assignment("new-model", json!({"profileId":"auto"}))]});
+        let result = routed_call(&state, &sid, args, true).unwrap();
+        let note = result["routing"][0].as_str().unwrap();
+        assert!(note.contains(": routed: ") && note.ends_with(", heuristic)"), "{provider}/{model}: {note}");
+        let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+        assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), (provider, model, "auto"));
+        assert_eq!(crate::panda_router::resolve_card(&worker.provider, &worker.model, &worker.name), Some(card));
+        let session = state.store.lock().unwrap().session(&worker.session_id).unwrap();
+        assert_eq!((session.provider.as_str(), session.model.as_str()), (provider, model));
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        assert_eq!((run.config.provider.as_str(), run.config.model.as_str()), (provider, model));
+    }
+}
+#[test]
 fn auto_profile_staffs_the_routed_pick_and_says_so() {
     let (state, sid) = auto_state();
     with_catalog(&state, &sid);
