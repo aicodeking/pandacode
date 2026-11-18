@@ -5737,8 +5737,15 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
 }
 /** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
 const btwSending = new Map<string, Promise<void>>();
+const BTW_PARENT_MISSING = 'Not sent — the main thread is no longer available. Your message is back in the box.';
+/** Recheck the captured parent after waits without depending on which task is now open. */
+function btwSendParent(mainId: string): Session {
+  const main = state.sessions.find(task => task.id === mainId);
+  if (!main) throw new Error(BTW_PARENT_MISSING);
+  return main;
+}
 function sendBtw(text: string, mainId = state.sessionId): Promise<void> {
-  const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.resolve();
+  const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.reject(new Error(BTW_PARENT_MISSING));
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
   // Capture this submission's pending choice before it queues: an earlier send may settle its refusal first.
@@ -5767,16 +5774,24 @@ function checkBtwChoice(refusals: readonly modelSwitch.Unchanged[]): void {
 }
 /** Sends to the side thread with the main thread's news since its last message. */
 async function deliverBtw(main: Session, text: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
-  if (held) checkBtwChoice(await held);
+  main = btwSendParent(main.id);
+  if (held) {
+    const refusals = await held;
+    main = btwSendParent(main.id);
+    checkBtwChoice(refusals);
+  }
   // A first side thread inherits confirmed main-task choices, never their optimistic, still-saving copy.
   if (!btwLink(main.id)) {
     if (modelSwitch.saving(main.id)) checkBtwChoice(await holdBtwSend(main.id, main.id));
-    main = state.sessions.find(task => task.id === main.id) ?? main;
+    main = btwSendParent(main.id);
   }
   const link = btwLink(main.id) ?? await createBtw(main, text);
+  main = btwSendParent(main.id);
   // Also wait for a choice made after submission, while this send was queued.
   if (modelSwitch.saving(link.sideId)) checkBtwChoice(await holdBtwSend(main.id, link.sideId));
-  const side = state.sessions.find(task => task.id === link.sideId)!;
+  main = btwSendParent(main.id);
+  const side = state.sessions.find(task => task.id === link.sideId);
+  if (!side) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
   // Running from here on: no second send can pass the check above, and a failure below tears down only this run.
   stream(side.id).status = 'Starting agent'; side.status = 'running';
@@ -5785,6 +5800,8 @@ async function deliverBtw(main: Session, text: string, held?: Promise<readonly m
   let sentLink: BtwLink | undefined;
   try {
     const context = await btwContext(main, link);
+    btwSendParent(main.id);
+    if (!state.sessions.some(task => task.id === side.id)) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
     const content = text + context.text;
     sentLink = context.link;
     writeLink(localStorage, main.id, sentLink);
