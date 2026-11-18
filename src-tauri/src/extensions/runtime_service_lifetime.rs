@@ -597,7 +597,7 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let Wiring { owner, dispatch, calls, env, subscriptions, wake, code } = wiring;
     let ServiceCode { directory, entry, parent, app_data, storage } = code;
     let mut command = tokio::process::Command::new(&runtime.binary);
-    command.args(["--input-type=commonjs", "--eval", supervisor::BOOTSTRAP]).current_dir(&directory)
+    command.args(["--input-type=commonjs", "--eval", supervisor::LOADER]).current_dir(&directory)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     // The user's environment without NODE_OPTIONS and the host's PANDACODE_* variables (R0105, ADR-0006).
     runtime_code_folders::apply_service_environment(&mut command, parent);
@@ -622,7 +622,7 @@ async fn run(runtime: &supervisor::Runtime, source: &str, init: Value, mut stop:
     let pid = child.id();
     let mut sample = tokio::time::interval(supervision::MEMORY_SAMPLE);
     let mut failure: Option<&'static str> = None;
-    if supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "entry": entry.to_string_lossy(), "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
+    if supervisor::write_bootstrap(&mut stdin).await.is_err() || supervisor::write_frame(&mut stdin, &json!({"token": token, "source": source, "entry": entry.to_string_lossy(), "context": init}), 300_000).await.is_err() { failure = Some("HostUnavailable"); }
     // Every later frame goes through one writer task, so a service that stops reading never blocks this loop.
     let (out, mut outgoing) = mpsc::channel::<Vec<u8>>(512);
     let writer = tauri::async_runtime::spawn(async move {
@@ -1778,10 +1778,10 @@ mod tests {
             // A click delivers its arguments to the owning command exactly once.
             let click = manager.call_command(DYNAMIC_ID, DYNAMIC_OPEN, json!({"table": "tracks"}), None).await.unwrap();
             assert_eq!(click, json!({"delivered": 1}));
-            let delivered = wait_for(&manager, "the click was delivered", |service| service["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).is_some_and(|status| status["opened"] == json!([{"table": "tracks"}]))).await;
+            let delivered = wait_id(&manager, DYNAMIC_ID, "the click was delivered", |service| service["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).is_some_and(|status| status["opened"] == json!([{"table": "tracks"}]))).await;
             assert_eq!(delivered["state"], "running");
             tokio::time::sleep(Duration::from_millis(200)).await;
-            let once = service(&manager)["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).unwrap();
+            let once = entry_of(&manager, DYNAMIC_ID)["status"]["text"].as_str().and_then(|text| serde_json::from_str::<Value>(text).ok()).unwrap();
             assert_eq!(once["opened"], json!([{"table": "tracks"}]), "delivered exactly once");
             // Remove: the status item and the table row go.
             b1.order(json!({"op": "remove"})).await; b1.order(json!({"op": "untable"})).await;
@@ -1837,6 +1837,7 @@ mod tests {
             while !manager.serves(NOTICES_ID, NOTICES_CONTROL) { assert!(Instant::now() < deadline, "the service never became ready"); tokio::time::sleep(Duration::from_millis(25)).await; }
 
             // What the interface reads, waited for (the product is told by an event, never polls).
+            #[allow(clippy::type_complexity)] // a test closure taking a boxed predicate over the notice rows
             let list = |what: &'static str, check: Box<dyn Fn(&[Value]) -> bool>| { let notices = notices.clone(); async move {
                 let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
@@ -1862,10 +1863,11 @@ mod tests {
             b1.order(json!({"op": "withdraw"})).await;
             list("the withdrawal", Box::new(|rows| rows.is_empty())).await;
             assert_eq!(ops(&notices), ["show", "replace", "withdraw"]);
-            // A burst of nine: six notices and one merged notice that counts the other three.
+            // A burst of nine: alert and replace already used two of the six sends this minute, so four notices show
+            // and one merged notice counts the other five.
             b1.order(json!({"op": "burst", "count": 9})).await;
-            let rows = list("the merge", Box::new(|rows| rows.iter().any(|row| row["merged"] == true && row["count"] == 3))).await;
-            assert_eq!(rows.len(), 7, "six notices and the merged one: {rows:?}");
+            let rows = list("the merge", Box::new(|rows| rows.iter().any(|row| row["merged"] == true && row["count"] == 5))).await;
+            assert_eq!(rows.len(), 5, "four notices and the merged one: {rows:?}");
             // Revoke `ui.notify`: the sweep removes every notice of the package and the service can raise no more.
             grants.revoke(NOTICES_ID, "ui.notify").unwrap();
             assert!(notices.sweep(&|owner| grants.check(owner, "1.0.0", "ui.notify", &Target::default()).is_ok(), "revoked-or-disabled"));
@@ -1919,6 +1921,7 @@ mod tests {
             manager.set_dispatch(dispatch);
             { let slots = slots.clone(); manager.set_ended_hook(Arc::new(move |owner: &str| { slots.cancel_owner(owner); })); }
             { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
+            grants.grant(NAVIGATION_ID, PERMISSION, Scope::default()).unwrap();
             grants.grant(NAVIGATION_ID, "ui.dynamic", Scope::default()).unwrap();
             { let packages = packages.0.lock().unwrap(); manager.reconcile(&packages, &grants); }
             let deadline = Instant::now() + Duration::from_secs(20);
@@ -1931,18 +1934,18 @@ mod tests {
             while slots.count(NAVIGATION_ID) == 0 { assert!(Instant::now() < deadline, "the dialog never opened"); tokio::time::sleep(Duration::from_millis(25)).await; }
             // A second dialog of the same owner is a Conflict; the first stays open.
             b1.order(json!({"op": "ask"})).await;
-            wait_for(&manager, "the second dialog was refused", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict"])).await;
+            wait_id(&manager, NAVIGATION_ID, "the second dialog was refused", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict"])).await;
             assert_eq!(slots.count(NAVIGATION_ID), 1);
             // The answer reaches the awaiting service exactly once.
             let id = slots.pending()[0]["id"].as_str().unwrap().to_owned();
             slots.answer(&id, &json!({"status": "confirmed", "values": {"name": "Ada", "sure": true}})).unwrap();
-            wait_for(&manager, "the answer arrived", |service| held(&service["status"]["text"])["answers"] == json!([{"status": "confirmed", "values": {"name": "Ada", "sure": true}}])).await;
+            wait_id(&manager, NAVIGATION_ID, "the answer arrived", |service| held(&service["status"]["text"])["answers"] == json!([{"status": "confirmed", "values": {"name": "Ada", "sure": true}}])).await;
             assert_eq!(slots.answer(&id, &json!({"status": "cancelled"})), Err("NotFound"));
 
             // Reveal: a task that exists is sent to the window; an unknown one is NotFound and nothing is sent.
             b1.order(json!({"op": "reveal", "target": {"taskId": "t1"}})).await;
             b1.order(json!({"op": "reveal", "target": {"taskId": "ghost"}})).await;
-            wait_for(&manager, "the refusal was recorded", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict", "NotFound"])).await;
+            wait_id(&manager, NAVIGATION_ID, "the refusal was recorded", |service| held(&service["status"]["text"])["refused"] == json!(["Conflict", "NotFound"])).await;
             assert_eq!(*revealed.lock().unwrap(), vec![json!({"taskId": "t1"})]);
 
             // The process ends while a dialog waits: it resolves as cancelled and the slot is free.

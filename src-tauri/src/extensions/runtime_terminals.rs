@@ -146,7 +146,7 @@ pub fn terminal_value(terminal: &Listed, project: &str) -> Value {
 pub fn list_value(terminals: &[(Listed, Option<String>)], project: Option<&str>, granted: &dyn Fn(&str) -> bool) -> Value {
     Value::Array(terminals.iter().filter_map(|(terminal, owner)| {
         let owner = owner.as_deref()?;
-        (project.map_or(true, |wanted| wanted == owner) && granted(owner)).then(|| terminal_value(terminal, owner))
+        (project.is_none_or(|wanted| wanted == owner) && granted(owner)).then(|| terminal_value(terminal, owner))
     }).collect())
 }
 

@@ -61,7 +61,7 @@ fn tokens_known(text: &str) -> bool {
 pub fn check_row(row: &Value) -> Option<&'static str> {
     let Some(object) = row.as_object() else { return Some("InvalidShape") };
     if object.keys().any(|key| !ROW_KEYS.contains(&key.as_str())) { return Some("InvalidShape"); }
-    if row["id"].as_str().map_or(true, |id| id.is_empty() || chars(id) > MAX_SELECTOR_VALUE) { return Some("InvalidShape"); }
+    if row["id"].as_str().is_none_or(|id| id.is_empty() || chars(id) > MAX_SELECTOR_VALUE) { return Some("InvalidShape"); }
     match row["title"].as_str() { Some(title) if !title.is_empty() => if chars(title) > MAX_TITLE { return Some("LimitExceeded") }, _ => return Some("InvalidShape") }
     // Selector: at least one of kind, name, family, server; closed keys; bounded text.
     let Some(selector) = row["selector"].as_object() else { return Some("InvalidShape") };
@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn safe_mode_disable_revoke_and_a_fault_restore_the_built_in_row() {
         let live = candidate("a.b", row("r", json!({"kind": "shell"})));
-        assert_eq!(select(&[live.clone()], &facts(), true, &[]), Pick::Builtin("SafeMode"));
+        assert_eq!(select(std::slice::from_ref(&live), &facts(), true, &[]), Pick::Builtin("SafeMode"));
         let mut off = live.clone(); off.enabled = false;
         assert_eq!(select(&[off], &facts(), false, &[]), Pick::Builtin("NoMatch"));
         let mut revoked = live.clone(); revoked.holds = false;
@@ -330,7 +330,7 @@ mod tests {
         let mut faulted = Vec::new();
         remember_fault(&mut faulted, "a.b", "r"); remember_fault(&mut faulted, "a.b", "r");
         assert_eq!(faulted.len(), 1);
-        assert_eq!(select(&[live.clone()], &facts(), false, &faulted), Pick::Builtin("Faulted"));
+        assert_eq!(select(std::slice::from_ref(&live), &facts(), false, &faulted), Pick::Builtin("Faulted"));
         assert_eq!(gate(true), Ok(())); assert_eq!(gate(false), Err("PermissionDenied"));
         // A destructive or failed row is replaceable like any other: no safety-only exclusion.
         let mut danger = facts(); danger.builtin_destructive = true; danger.failed = true;

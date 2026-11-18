@@ -35,7 +35,7 @@
       }
     }],
     "settings": [
-      { "id": "sample.signin/cloud", "title": "Sample cloud", "fields": [
+      { "id": "sample.signin/settings", "title": "Sample cloud", "fields": [
         { "id": "identity", "kind": "text", "label": "Identity server address", "value": "http://127.0.0.1:7431", "required": true },
         { "id": "api", "kind": "text", "label": "API address", "value": "http://127.0.0.1:7432", "required": true },
         { "id": "client", "kind": "text", "label": "Client id", "value": "sample-client", "required": true },

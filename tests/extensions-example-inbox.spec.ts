@@ -72,7 +72,7 @@ async function boot(over: { mode?: 'plan' | 'ask'; settings?: Obj; grantDecide?:
       reveal: async (target: Obj) => { if (target.taskId === 'gone') throw code('NotFound'); revealed.push(target); return null; },
     },
     storage: { directory: async () => ({ schemaVersion: 1, path: directory }) },
-    settings: { get: async () => ({ schemaVersion: 1, revision: 1, values: { retentionDays: '7', notifyDelaySec: '120', brief: true, ...over.settings } }) },
+    settings: { get: async () => ({ schemaVersion: 1, revision: 1, values: { 'retention-days': '7', 'notify-delay-sec': '120', brief: true, ...over.settings } }) },
     commands: { register: (id: string, handler: (context: Obj) => Promise<any>) => { commands.set(id, handler); return { dispose() {} }; } },
   };
   const service = createRequire(import.meta.url)(fileURLToPath(root('examples/extensions/inbox/package/main.cjs')));
@@ -205,7 +205,7 @@ test('inbox example: after a lost event and an event gap the list matches the ho
 });
 
 test('inbox example: model tools add messages and asks with the calling task, resolve them, and retention removes old messages', async () => {
-  const inbox = await boot({ settings: { retentionDays: '1' } });
+  const inbox = await boot({ settings: { 'retention-days': '1' } });
   const call = { callId: 'c1', taskId: 't1', projectId: 'p1' };
   expect(await inbox.tools.get('sample.inbox/notify')!({ message: 'Build is green', url: 'https://example.test/run/1' }, call)).toEqual({ content: { ok: true, id: expect.any(String) } });
   expect(inbox.last().messages[0]).toMatchObject({ taskId: 't1', text: 'Build is green', read: false, url: 'https://example.test/run/1' });
@@ -264,12 +264,12 @@ test('inbox example: a failed turn adds a row that leaves on the next turn; Go t
 });
 
 test('inbox example: one notice for a row that waits past the delay while the app is not focused, never before or twice', async () => {
-  const inbox = await boot({ settings: { notifyDelaySec: '0' } });
+  const inbox = await boot({ settings: { 'notify-delay-sec': '0' } });
   await raise(inbox, inbox.approval('t1', 'r1:7'));
   await inbox.control({ op: 'tick' });
   expect(inbox.notices).toEqual([]);            // delay 0 turns the notice off
   inbox.stop();
-  const slow = await boot({ settings: { notifyDelaySec: '1' } });
+  const slow = await boot({ settings: { 'notify-delay-sec': '1' } });
   const old = slow.approval('t1', 'r1:7'); old.at = new Date(Date.now() - 5000).toISOString();
   await raise(slow, old);
   await slow.control({ op: 'tick' });

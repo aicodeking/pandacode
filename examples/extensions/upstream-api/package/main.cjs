@@ -2,7 +2,8 @@
 // The service owns `panda.connections`: it names a declared connection and an operation and never an address, a
 // header or the credential. The host builds the request, attaches the package secret `api-key` as `x-api-key`, runs it
 // and returns the parsed JSON answer. The provider handler turns that answer into streamed provider events.
-const CONNECTION = 'sample.upstream-api/chat';
+const PROVIDER = 'sample.upstream-api/chat';
+const CONNECTION = 'sample.upstream-api/chat-api'; // not the provider's id: ids are unique across contributions
 const FAKE_KEY = 'tok-fake-upstream-api-key'; // a canary: this package never reads a real credential
 const WAIT_MS = 5000;
 
@@ -46,7 +47,7 @@ async function ready() {
 }
 
 exports.providers = {
-  [CONNECTION]: async (run, core) => {
+  [PROVIDER]: async (run, core) => {
     if (run.model !== 'fixture-small' || run.mode !== 'ask') throw new Error('UnsupportedCapability: fixture-small in Standard mode only');
     const api = await ready();
     await core.emit({ kind: 'session', id: run.resumeId || 'fake-api-conversation' });

@@ -559,7 +559,7 @@ mod tests {
         let projects: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new([PROJECT.to_owned()].into()));
         let items: Arc<Mutex<BTreeSet<String>>> = Arc::new(Mutex::new(scenarios()["held"].as_object().unwrap().keys().cloned().collect()));
         let gate = { let (enabled, projects) = (enabled.clone(), projects.clone()); move |owner: &str, _: &str, permission: &str, project: Option<&str>| {
-            *enabled.lock().unwrap() && owner == OWNER && permission == model::PERMISSION && project.map_or(!projects.lock().unwrap().is_empty(), |project| projects.lock().unwrap().contains(project))
+            *enabled.lock().unwrap() && owner == OWNER && permission == model::PERMISSION && project.map_or_else(|| !projects.lock().unwrap().is_empty(), |project| projects.lock().unwrap().contains(project))
         } };
         let model = Arc::new(ModelTools::default());
         let declarations = model::check(&manifest()).unwrap();
@@ -713,7 +713,7 @@ mod tests {
         for shape in ["claude", "codex", "acp"] {
             let attached = attach(&world.ports(&holds), "run-1", PROJECT, shape);
             let local = attached.entries().iter().find(|(name, _)| name == "pkg_sample_parity__local").unwrap().1.clone();
-            assert!(local.get("env").map_or(true, |env| env == &json!({}) || env == &json!([])), "{shape}");
+            assert!(local.get("env").is_none_or(|env| env == &json!({}) || env == &json!([])), "{shape}");
             assert!(local.get("headers").is_none() && local.get("http_headers").is_none(), "{shape}");
             for value in scenarios()["held"].as_object().unwrap().values() { assert!(!stdio_carries(attached.entries(), value.as_str().unwrap()), "{shape}"); }
         }

@@ -12,6 +12,7 @@
 //! - `limit`: `continue` is the banner's Continue (the window sends the follow-up, on another connection when `connection`
 //!   names one), `resume` the "Resume at reset" switch (`set_resume_at_reset`), `dismiss` the banner's dismissal
 //!   (`clear_usage_limit`).
+//!
 //! [`plan`] is that mapping as plain data, so a recording of the interface's own calls compares equal to what an action runs.
 //!
 //! The permission is `tasks.control`, project scoped (the task's project), checked on every request and again just before
@@ -269,7 +270,7 @@ fn holds_any(app: &tauri::AppHandle, owner: &str, version: &str) -> bool {
     let projection = grants.projection();
     projection["packages"].as_array().into_iter().flatten().any(|package| {
         package["id"] == owner && package["version"] == version && package["authorized"] == true
-            && package["grants"].as_array().into_iter().flatten().any(|grant| grant["permission"] == PERMISSION && grant["scope"]["projects"].as_array().map_or(true, |projects| !projects.is_empty()))
+            && package["grants"].as_array().into_iter().flatten().any(|grant| grant["permission"] == PERMISSION && grant["scope"]["projects"].as_array().is_none_or(|projects| !projects.is_empty()))
     })
 }
 

@@ -6,7 +6,7 @@
 // and tells the host what is true about the provider with `panda.providers.update`. The declared ACP harness never receives a
 // token: the service reads the account, the models and the limits itself (ADR-0006), and no text it shows holds a token.
 export const PROVIDER = 'sample.signin/cloud';
-export const PAGE = 'sample.signin/cloud';
+export const PAGE = 'sample.signin/settings';
 export const SIGN_IN = 'sample.signin/sign-in';
 export const ADD_ACCOUNT = 'sample.signin/add-account';
 export const SIGN_OUT = 'sample.signin/sign-out';

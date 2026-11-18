@@ -14,5 +14,6 @@ src/settings.ts eol=crlf
 src/sky-window.ts eol=crlf
 src/thread-find.ts eol=crlf
 tests/sky.spec.ts eol=crlf
+tests/fixtures/extensions/surfaces.json eol=crlf
 tests/fixtures/*.pdf binary
 src-tauri/src/voice/local/catalog.json text eol=lf

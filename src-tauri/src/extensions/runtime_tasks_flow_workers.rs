@@ -10,6 +10,7 @@
 //! - `retry` (a failed worker) and `resume` (a stopped one): the worker is queued again, as the team's Resume queues it
 //!   (a failure uses one attempt, a stop does not). The team itself must be running; a paused, failed or interrupted team is
 //!   resumed with `architect_control` first, which is what the caller's plan runs.
+//!
 //! A scored or running Council reviewer is never unseated, and a reviewer is never followed up, exactly as for the lead.
 use super::*;
 

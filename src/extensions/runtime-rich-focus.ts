@@ -16,7 +16,9 @@
  * - **Size.** `rich.minSize` is the panel's minimum; a smaller mount scrolls (the host slot in the preview, the shell
  *   inside the webview when installed) and nothing animates layout.
  */
-import { call, preview } from '../bridge';
+// The bridge reads `window` when it loads, so it is imported on first use (this module is also loaded by Node specs).
+const call = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => (await import('../bridge')).call<T>(command, args);
+const inPreview = () => typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window);
 import { isImeKey } from '../dom';
 
 export const RETAINED_LIMIT = 4;
@@ -120,7 +122,7 @@ export function installFocusHost(): void {
     const target = event.target;
     if (target instanceof HTMLElement && target !== document.body && !target.closest(PANEL) && !(target instanceof HTMLIFrameElement)) lastControl = new WeakRef(target);
   }, true);
-  if (preview) return;
+  if (inPreview()) return;
   void import('@tauri-apps/api/event').then(({ listen }) => listen<{ mountId: string } & Forward>(FOCUS_EVENT, event => {
     const { mountId, ...forward } = event.payload;
     if (typeof mountId !== 'string' || !/^extension-(panel|view)-[A-Za-z0-9-]{1,64}$/.test(mountId)) return;
@@ -169,7 +171,7 @@ export function dispatchChord(chord: Chord): boolean {
  */
 export function bindPanelFocus(slot: HTMLElement, enter: () => void, signal: AbortSignal): void {
   installFocusHost();
-  if (preview) return;
+  if (inPreview()) return;
   slot.tabIndex = 0;
   slot.addEventListener('focus', () => { if (returning !== slot) enter(); }, { signal });
 }

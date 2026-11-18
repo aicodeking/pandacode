@@ -480,7 +480,9 @@ pub fn unavailable(device: &str, name: &str, error: &str) -> Value {
     })
 }
 fn classify(error: &str) -> String {
-    if error.contains("Unknown method") || error.starts_with("UnsupportedCapability") { UNSUPPORTED_HOST.into() } else { error.to_owned() }
+    // Only an older host's "Unknown method." means it does not place services; a host that does, answering
+    // `UnsupportedCapability` (a permission name outside the vocabulary), keeps its own code.
+    if error.contains("Unknown method") { UNSUPPORTED_HOST.into() } else { error.to_owned() }
 }
 
 /// Reads a host's `extensions.services` answer strictly. The host must be the computer asked and every row must be
@@ -788,6 +790,12 @@ mod tests {
         let services = Arc::new(ServiceLifetime::new(vec![fixture.dir.join("no-runtime")]));
         let reconcile = || with_executor(Executor::Headless, || services.reconcile(&fixture.packages.0.lock().unwrap(), &fixture.grants));
         reconcile();
+        // The start fails on its own (no runtime here); a retry only restarts a service that has settled, so wait for it.
+        let waited = Instant::now();
+        while !entry(&services, ID).is_some_and(|row| row["state"] == "failed") {
+            assert!(waited.elapsed() < Duration::from_secs(20), "the first start never settled");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let transport = FakeTransport::new(fixture.clone(), services.clone());
         let starts = || entry(&services, ID).map(|row| row["starts"].clone()).unwrap_or(Value::Null);
         let before = starts();

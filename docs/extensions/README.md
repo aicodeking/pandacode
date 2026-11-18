@@ -116,7 +116,7 @@ Contribution kinds:
 
 <!-- contributions:start -->
 `commands`, `icons`, `menus`, `views`, `layouts`, `settings`, `keybindings`, `dialogExtras`,
-`themes`, `components`, `tools`, `connections`, `services`, `providers`, `slashCommands`
+`themes`, `components`, `tools`, `connections`, `services`, `providers`, `slashCommands`, `companions`
 <!-- contributions:end -->
 
 Field-by-field rules are in [contracts](contracts.md); the shared control vocabulary (actions,

@@ -25,7 +25,7 @@ const scenario = JSON.parse(read('tests/fixtures/extensions/example-usage/scenar
 };
 const OWNER = 'sample.usage';
 const BAND = `${OWNER}/band`, PAGE = `${OWNER}/options`, REPORT = `${OWNER}/report`;
-const FRESH = `${OWNER}/startFresh`, INSERT = `${OWNER}/insertCheckpoint`, CLEAN = `${OWNER}/cleanUp`;
+const FRESH = `${OWNER}/start-fresh`, INSERT = `${OWNER}/insert-checkpoint`, CLEAN = `${OWNER}/clean-up`;
 const bandId = (task: string) => `${BAND}-${task}`;
 const T0 = Date.parse('2026-11-17T10:00:00Z');
 const FAKE = 'sample.launch-agent/fake';
@@ -135,7 +135,7 @@ async function boot(over: { grants?: Grants; interval?: string; afterReply?: str
   let controls: { faults(): { what: string; code: string }[]; state(): unknown } | null = null;
   const loaders: Loaders = { 'main.cjs': async () => ({ service: async (panda: unknown, lifetime: unknown) => { controls = await logic.run(extend(panda as PreviewPanda) as never, lifetime as never, env); } }) as unknown as ServiceModule };
   const page = manifest.contributes.settings[0];
-  const settings: SettingsPackage[] = [{ id: OWNER, enabled: true, pages: [{ id: PAGE, fields: page.fields }], stored: { [PAGE]: { minIntervalSeconds: over.interval ?? '1', afterReply: over.afterReply ?? 'low' } } } as unknown as SettingsPackage];
+  const settings: SettingsPackage[] = [{ id: OWNER, enabled: true, pages: [{ id: PAGE, fields: page.fields }], stored: { [PAGE]: { 'min-interval-seconds': over.interval ?? '1', 'after-reply': over.afterReply ?? 'low' } } } as unknown as SettingsPackage];
   const store: Store = { tasks: scenario.tasks.map(task => ({ id: task.id, projectId: task.projectId })) as never, messages: [], changes: [], revision: 1 };
   const tasksStart: StartWorld = {
     projects: ['p1'], worktrees: [], targets: [],

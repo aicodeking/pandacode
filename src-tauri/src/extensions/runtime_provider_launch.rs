@@ -362,6 +362,7 @@ pub(crate) async fn start_initialized(owner: &str, resolved: &Resolved, cwd: &Pa
 /// Starts the declared command and speaks ACP until the prompt completes, fails or is stopped.
 /// `event` and `input` are the core conversation's (see `dynamic_harness::Conversation`).
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // the call site is wired with the provider send path (W3 in the issues file); the tests drive it
 pub(crate) async fn drive(
     owner: &str,
     resolved: Resolved,
@@ -434,7 +435,7 @@ pub(crate) async fn drive_adopted(
                 Ok(0) | Err(_) => { if !cancel.load(Ordering::Acquire) { let note = diagnostics.lock().map(|text| text.trim().chars().take(300).collect::<String>()).unwrap_or_default(); outcome = Err(format!("The declared harness exited before it finished.{}", if note.is_empty() { String::new() } else { format!(" {note}") })); } break 'frames; }
                 Ok(_) => {
                     if line.len() > MAX_LINE { outcome = Err("LimitExceeded: a harness frame was too large.".into()); break 'frames; }
-                    match serde_json::from_slice::<Value>(&line) { Ok(frame) => Some(frame), Err(_) => None }
+                    serde_json::from_slice::<Value>(&line).ok()
                 }
             },
             received = inputs.recv() => {
@@ -545,7 +546,7 @@ pub(crate) async fn drive_adopted(
 
 /// Package-store helpers for tests that live outside `extensions` (the warm-spare tests of R0807), where the store's
 /// install, trust and enable steps are not visible.
-#[cfg(test)]
+#[cfg(all(test, feature = "extension-runtime-native-tests"))]
 pub(crate) mod support {
     use super::super::packages::ExtensionPackages;
     pub(crate) fn install(packages: &ExtensionPackages, archive: &[u8]) { packages.0.lock().unwrap().install(archive).unwrap(); }
@@ -690,8 +691,11 @@ mod tests {
             (result, seen)
         }
 
+        // The host lock is held for the whole test; the test has its own current-thread runtime (see `dynamic_adapter::TEST_HOST`).
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn a_declared_acp_harness_launches_the_fake_agent_and_runs_share_one_state() {
+            let _host = providers::dynamic_adapter::TEST_HOST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let dir = Dir::new();
             let packages = ExtensionPackages::new(&dir.0, false);
             providers::dynamic_adapter::configure(&packages.0, Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")));

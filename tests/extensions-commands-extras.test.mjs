@@ -82,7 +82,7 @@ test('Commands manifests: slash declarations validate name, description, argumen
   assert.deepEqual(Object.keys(schema.$defs.slashCommand.properties), ['id', 'name', 'description', 'command', 'provider', 'arguments']);
   assert.deepEqual(Object.keys(schema.$defs.slashArguments.properties), ['hint', 'required', 'maxLength']);
   const native = read('../src-tauri/src/extensions/contracts.rs');
-  assert.match(native, /"providers", "slashCommands"\];/);
+  assert.match(native, /"providers", "slashCommands"(, "companions")?\];/);
   assert.match(native, /for slash in items\(contributions, "slashCommands"\)/);
   assert.match(read('../src-tauri/src/extensions/packages.rs'), /fn commands_extras_archive_install_restart_disable_and_safe_mode/);
   // SLASH_UNSUPPORTED is no longer a blanket refusal: it names the one unsupported case, the same in TS and Rust.

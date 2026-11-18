@@ -21,9 +21,10 @@ export const OWNER = 'sample.usage';
 export const IDS = Object.freeze({
   band: `${OWNER}/band`,
   report: `${OWNER}/report`,
-  startFresh: `${OWNER}/startFresh`,
-  insertCheckpoint: `${OWNER}/insertCheckpoint`,
-  cleanUp: `${OWNER}/cleanUp`,
+  openReport: `${OWNER}/open-report`,
+  startFresh: `${OWNER}/start-fresh`,
+  insertCheckpoint: `${OWNER}/insert-checkpoint`,
+  cleanUp: `${OWNER}/clean-up`,
   page: `${OWNER}/options`,
   api: `${OWNER}/api`,
   operation: 'usage',
@@ -96,10 +97,10 @@ export async function run(panda, lifetime, env = {}) {
   async function loadSettings() {
     const page = await safe('settings.get', () => panda.settings.get({ page: IDS.page }));
     const values = page?.values ?? {};
-    const seconds = Number.parseInt(String(values.minIntervalSeconds ?? ''), 10);
+    const seconds = Number.parseInt(String(values['min-interval-seconds'] ?? ''), 10);
     settings = {
       intervalMs: clamp(Number.isFinite(seconds) ? seconds : LIMITS.defaultIntervalSeconds, 1, LIMITS.maxIntervalSeconds) * 1000,
-      afterReply: ['off', 'low', 'always'].includes(values.afterReply) ? values.afterReply : 'low',
+      afterReply: ['off', 'low', 'always'].includes(values['after-reply']) ? values['after-reply'] : 'low',
     };
   }
 
@@ -191,7 +192,7 @@ export async function run(panda, lifetime, env = {}) {
     if (task.handle === null) {
       if (task.denied) return;
       const handle = await safe('ui.register', () => panda.ui.register({
-        kind: 'menu', id: `${IDS.band}-${slug(task.id)}`, location: IDS.location, command: IDS.report, presentation: 'status', scope: { taskId: task.id }, ...patch,
+        kind: 'menu', id: `${IDS.band}-${slug(task.id)}`, location: IDS.location, command: IDS.openReport, presentation: 'status', scope: { taskId: task.id }, ...patch,
       }));
       if (handle) { task.handle = handle; task.painted = text; } else task.denied = faults.at(-1)?.code === 'PermissionDenied';
       return;

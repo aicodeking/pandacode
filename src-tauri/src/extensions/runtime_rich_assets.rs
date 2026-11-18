@@ -538,7 +538,8 @@ mod tests {
         assert!(!policy.contains("unsafe-eval") && !policy.contains("blob:"));
         let html = String::from_utf8(shell.body).unwrap();
         assert!(html.contains("\"src\":\"/index.html\"") && html.contains("\"expectsClient\":true") && html.contains(&mount.session));
-        assert!(!html.contains("sandbox"), "the entry keeps its origin so its storage is first-party");
+        // The host script frames a served entry (`config.src`) without `sandbox`; only the legacy inline form is sandboxed.
+        assert!(html.contains("if (!served) frame.setAttribute('sandbox', 'allow-scripts')") && !html.contains("allow-same-origin"), "the entry keeps its origin so its storage is first-party");
         // A shell is served only to the webview it was composed for.
         assert_eq!(registry.respond("extension-panel-a", "GET", &shell_url(&mount.key, "extension-panel-b")).status, 404);
     }

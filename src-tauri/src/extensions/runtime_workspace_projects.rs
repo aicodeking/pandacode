@@ -496,6 +496,7 @@ async fn execute(app: &tauri::AppHandle, admitted: &Admitted) -> Result<Value, S
                 let state = app.state::<crate::AppState>();
                 let store = state.store.lock().map_err(|error| error.to_string())?;
                 let renamed = rename_project(&store, &id, &name).map(project_json);
+                drop(store); // the result is built before the guard goes (a tail expression would keep it borrowed)
                 renamed
             }).await
         }
@@ -544,6 +545,7 @@ async fn execute(app: &tauri::AppHandle, admitted: &Admitted) -> Result<Value, S
                 let state = app_handle.state::<crate::AppState>();
                 let store = state.store.lock().map_err(|error| error.to_string())?;
                 let unlinked = store.set_task_link(&task, "pull", None).map(|_| Value::Null);
+                drop(store); // the result is built before the guard goes (a tail expression would keep it borrowed)
                 unlinked
             }).await
         }
@@ -706,11 +708,11 @@ mod tests {
         assert!(slots.begin("sample.other").is_ok(), "another package has its own four");
         let (first, mut receiver) = opened.remove(0);
         slots.answer(&first, false).unwrap();
-        assert_eq!(receiver.try_recv().unwrap(), false);
+        assert!(!receiver.try_recv().unwrap());
         assert_eq!(slots.answer(&first, true).unwrap_err(), "NotFound", "an answer is taken once");
         let ids = slots.cancel_owner(OWNER);
         assert_eq!(ids.len(), 3);
-        for (_, mut receiver) in opened { assert_eq!(receiver.try_recv().unwrap(), false, "a service that ends changes nothing"); }
+        for (_, mut receiver) in opened { assert!(!receiver.try_recv().unwrap(), "a service that ends changes nothing"); }
         assert_eq!(slots.count(OWNER), 0);
         let (id, _receiver) = slots.begin(OWNER).unwrap();
         assert!(slots.forget(&id) && !slots.forget(&id));

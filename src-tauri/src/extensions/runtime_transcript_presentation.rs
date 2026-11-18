@@ -163,7 +163,7 @@ mod tests {
     #[test]
     fn the_list_is_bounded_and_its_ids_are_unique() {
         let one = indicator(json!(["a", "b"]), json!(100));
-        assert_eq!(check_all(&[one.clone()], &[], &[]), None);
+        assert_eq!(check_all(std::slice::from_ref(&one), &[], &[]), None);
         assert_eq!(check_all(&[one.clone(), one.clone()], &[], &[]), Some("InvalidShape"));
         let many: Vec<Value> = (0..17).map(|n| { let mut item = one.clone(); item["id"] = json!(format!("a.b/p{n}")); item }).collect();
         assert_eq!(check_all(&many, &[], &[]), Some("LimitExceeded"));

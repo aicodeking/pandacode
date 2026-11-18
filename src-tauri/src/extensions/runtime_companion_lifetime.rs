@@ -86,7 +86,7 @@ impl DirectoryResources {
                 || !names.insert(*name) { return Err("Invalid or duplicate companion artifact name.".into()); }
         }
         let directory = root.join(format!("companion-{}", uuid::Uuid::new_v4()));
-        let mut builder = std::fs::DirBuilder::new();
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)] { use std::os::unix::fs::DirBuilderExt; builder.mode(0o700); }
         builder.create(&directory).map_err(|_| "Could not create companion directory.")?;
         let descriptor = directory.join("run.json");

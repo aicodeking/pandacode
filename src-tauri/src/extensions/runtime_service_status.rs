@@ -313,6 +313,9 @@ mod tests {
             let digest = serde_json::to_value(packages.snapshot()).unwrap()["packages"][0]["executable"]["digest"].as_str().unwrap().to_owned();
             packages.trust(ID, &digest, true).unwrap(); packages.enable(ID, true).unwrap();
         }
+        // A grant needs the package registered in the grants file (the app syncs it on install); `reconcile` is not
+        // called first, so that it stays the app start.
+        grants.sync(&serde_json::to_value(packages.0.lock().unwrap().snapshot()).unwrap()).unwrap();
         grants.grant(ID, lifetime::PERMISSION, Scope::default()).unwrap();
         manager.reconcile(&packages.0.lock().unwrap(), &grants);
         let failed = tests_support::wait(&manager, |row| row["state"] == "failed").await;
@@ -404,6 +407,8 @@ mod tests {
                 let digest = serde_json::to_value(packages.snapshot()).unwrap()["packages"][0]["executable"]["digest"].as_str().unwrap().to_owned();
                 packages.trust(ID, &digest, true).unwrap(); packages.enable(ID, true).unwrap();
             }
+            // A grant needs the package registered in the grants file (the app syncs it on install).
+            grants.sync(&serde_json::to_value(packages.0.lock().unwrap().snapshot()).unwrap()).unwrap();
             for permission in [lifetime::PERMISSION, "storage.private"] { grants.grant(ID, permission, Scope::default()).unwrap(); }
             let reconcile = || manager.reconcile(&packages.0.lock().unwrap(), &grants);
             reconcile();

@@ -140,6 +140,7 @@ fn shape(value: &Value, schema: &Value, path: &str, diagnostics: &mut Vec<Value>
                 if !object.contains_key(&key) { return Err(invalid(&format!("{path}/{key}"))); }
             }
             if object.len() as u64 > schema["maxProperties"].as_u64().unwrap_or(u64::MAX) { return Err(fail("LimitExceeded", path, vec![])); }
+            if (object.len() as u64) < schema["minProperties"].as_u64().unwrap_or(0) { return Err(invalid(path)); }
             let mut result = Map::new();
             // Sort explicitly: serde_json may be compiled with preserve_order by another dependency.
             let sorted: BTreeMap<_, _> = object.iter().collect();
@@ -1518,17 +1519,24 @@ mod tests {
         let owned: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/extensions/owned-dialogs/extension.json")).unwrap();
         assert_eq!(super::validate_contract("packages", &serde_json::json!([owned]))["ok"], true);
         let eligible = SCHEMA["$defs"]["mainDialogId"]["enum"].as_array().unwrap().clone();
-        // 23 shared main modals, then 11 module-owned and directly mounted dialogs (docs/extensions/owned-dialogs.md).
-        assert_eq!(eligible.len(), 34);
-        for (index, id) in eligible.iter().enumerate() {
+        // 23 shared main modals, then 12 module-owned and directly mounted dialogs (docs/extensions/owned-dialogs.md), then
+        // the eight formerly protected dialogs that accept extras only with `ui.presentation` (R1003,
+        // docs/extensions/runtime-protected-presentation.md).
+        assert_eq!(eligible.len(), 43);
+        for (index, id) in eligible.iter().enumerate().take(35) {
             let location = format!("panda.dialog.{}.actions", id.as_str().unwrap());
             let fixture = if index < 23 { &manifest } else { &owned };
             assert!(fixture["contributes"]["menus"].as_array().unwrap().iter().any(|menu| menu["location"] == location.as_str()), "{location}");
         }
+        for id in eligible.iter().skip(35) {
+            let mut gated = manifest.clone(); gated["contributes"]["dialogExtras"][0]["dialog"] = id.clone();
+            assert_eq!(super::validate_contract("packages", &serde_json::json!([gated]))["error"]["code"], "PermissionDenied", "{id}");
+        }
         let accessory = serde_json::json!({"contractVersion":1,"window":"main","dialog":"command-center","mount":"command-center/2","revision":5,"project":"project-1","task":"session-2","target":"task"});
         assert_eq!(super::validate_contract("dialogAccessory", &accessory)["ok"], true);
-        // Destructive, credential, permission and recovery dialogs have no ID anywhere in the shared contract.
-        for name in ["remove-project", "delete-task", "provider-connections", "delete-cloud", "github-behind", "delete-bot", "machine-link", "worktree-cleanup", "skill-add", "extension-form", "integrations-direct", "unknown"] {
+        // Recovery, owner-only and unknown dialogs have no ID anywhere in the shared contract (the eight formerly protected
+        // dialogs are eligible with `ui.presentation` since R1003).
+        for name in ["github-behind", "extension-form", "integrations-direct", "unknown"] {
             let mut invalid = manifest.clone(); invalid["contributes"]["dialogExtras"][0]["dialog"] = serde_json::json!(name);
             assert_eq!(super::validate_contract("packages", &serde_json::json!([invalid]))["ok"], false, "{name}");
             let mut invalid = manifest.clone(); invalid["contributes"]["menus"][0]["location"] = serde_json::json!(format!("panda.dialog.{name}.actions"));
@@ -1539,7 +1547,7 @@ mod tests {
         assert_eq!(super::validate_contract("packages", &serde_json::json!([oversized]))["ok"], false);
         let accessory = serde_json::json!({"contractVersion":1,"window":"main","dialog":"rename-task","mount":"main/4","revision":7,"project":"project-1","task":"session-1","target":"task"});
         assert_eq!(super::validate_contract("dialogAccessory", &accessory)["ok"], true);
-        for (field, value) in [("dialog", serde_json::json!("delete-task")), ("window", serde_json::json!("tray")), ("contractVersion", serde_json::json!(2)), ("selector", serde_json::json!("#dialog")), ("target", serde_json::json!("bot")), ("mount", serde_json::json!(""))] {
+        for (field, value) in [("dialog", serde_json::json!("github-behind")), ("window", serde_json::json!("tray")), ("contractVersion", serde_json::json!(2)), ("selector", serde_json::json!("#dialog")), ("target", serde_json::json!("bot")), ("mount", serde_json::json!(""))] {
             let mut forged = accessory.clone(); forged[field] = value;
             assert_eq!(super::validate_contract("dialogAccessory", &forged)["ok"], false, "{field}");
         }

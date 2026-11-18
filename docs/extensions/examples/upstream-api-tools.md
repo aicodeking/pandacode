@@ -15,7 +15,7 @@ test phase).
 ## The API provider
 
 - Manifest: permissions `ui.contribute`, `runtime.service`, `connections.request`, `secrets.private`; one command
-  (**Store the fake API key**), one connection `sample.upstream-api/chat` (header authentication `x-api-key`, credential
+  (**Store the fake API key**), one connection `sample.upstream-api/chat-api` (header authentication `x-api-key`, credential
   `{ "source": "secret", "key": "api-key" }`, adapter `json`, operations `complete` POST and `models` GET) and one provider
   with `fixture-small` in Standard mode.
 - Credential: the package stores the fake canary `tok-fake-upstream-api-key` in its own secrets. The host attaches it to the

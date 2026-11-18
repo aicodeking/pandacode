@@ -24,7 +24,9 @@ fn plain_launch(store: &Store, session: &Session) -> Option<RunConfig> {
 /// The launch a task's next send would use, without its prompt: local, not a team lead or
 /// worker, not mirrored from another machine. `None` for any other task.
 fn local_launch(store: &Store, session: &Session) -> Option<RunConfig> {
-    if session.remote_device.is_some() || session.cloud.is_some() || cloud_agents::transport::is_cloud(&session.id) {
+    // Callers hold the store: `cloud_agents::transport::is_cloud` would lock it again (issue #382).
+    // `session.cloud` is the same column, read under that lock.
+    if session.remote_device.is_some() || session.cloud.is_some() {
         return None;
     }
     let team = store.db.query_row(
@@ -49,7 +51,6 @@ fn eligible(session: &Session) -> bool {
     providers::start_ahead()
         && session.remote_device.is_none()
         && session.cloud.is_none()
-        && !cloud_agents::transport::is_cloud(&session.id)
         && (session.provider == "claude" || providers::handshake_warm_provider(&session.provider) || providers::speed_adapter::participates(&session.provider))
 }
 
@@ -361,6 +362,35 @@ mod tests {
         assert!(plan_rewarm(&session).is_none(), "the Claude agent is retargeted, not restarted");
         assert!(!providers::warm_reserved(&task.id, pending), "the Codex start will not run");
         providers::discard_warm_agent(&task.id);
+    }
+
+    /// Issue #382: `rewarm` plans and reads the launch under the store lock, so neither may lock
+    /// the store again (std mutexes are not re-entrant; the app froze at the first keystroke).
+    #[test]
+    fn planning_and_launching_under_the_store_lock_never_lock_it_again() {
+        let (store, project) = store();
+        let task = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
+        let store = Arc::new(std::sync::Mutex::new(store));
+        let (shared, id) = (store.clone(), task.id.clone());
+        let (done, finished) = std::sync::mpsc::channel();
+        // A thread of its own: before the fix it never returns, and the test times out instead.
+        std::thread::spawn(move || {
+            crate::cloud_agents::transport::TEST_STORE.with(|slot| *slot.borrow_mut() = Some(shared.clone()));
+            provider_settings::START_AHEAD_FORCE.with(|force| force.set(Some(true)));
+            // As `rewarm` does: plan under the lock, then read the launch under it.
+            let guard = shared.lock().unwrap();
+            let plan = plan_current(&guard, &id);
+            let launch = local_launch(&guard, &guard.session(&id).unwrap());
+            drop(guard);
+            providers::cancel_warm_ticket(&id);
+            provider_settings::START_AHEAD_FORCE.with(|force| force.set(None));
+            let _ = done.send((plan.is_some(), launch.is_some()));
+        });
+        let (planned, launched) = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("warm planning locked the store it already held (issue #382)");
+        assert!(planned, "a fresh Claude task is planned");
+        assert!(launched, "and its launch is built");
     }
 
     #[test]

@@ -194,7 +194,7 @@ pub fn check_choice(catalog: &[ProviderView], current: &str, change: &Change) ->
     }
     if let Some(Some(effort)) = &change.effort {
         let model = change.model.clone();
-        let offered = provider.models.iter().find(|(id, _)| model.as_deref().map_or(true, |model| model == id)).map(|(_, efforts)| efforts);
+        let offered = provider.models.iter().find(|(id, _)| model.as_deref().is_none_or(|model| model == id)).map(|(_, efforts)| efforts);
         if let (Some(offered), Some(_)) = (offered, &model) { if !offered.is_empty() && !offered.contains(effort) { return Err(Refusal::at("InvalidShape", "effort")); } }
     }
     Ok(())
@@ -349,7 +349,7 @@ fn holds_any(app: &tauri::AppHandle, owner: &str, version: &str) -> bool {
     let projection = grants.projection();
     projection["packages"].as_array().into_iter().flatten().any(|package| {
         package["id"] == owner && package["version"] == version && package["authorized"] == true
-            && package["grants"].as_array().into_iter().flatten().any(|grant| grant["permission"] == PERMISSION && grant["scope"]["projects"].as_array().map_or(true, |projects| !projects.is_empty()))
+            && package["grants"].as_array().into_iter().flatten().any(|grant| grant["permission"] == PERMISSION && grant["scope"]["projects"].as_array().is_none_or(|projects| !projects.is_empty()))
     })
 }
 
@@ -618,7 +618,7 @@ mod tests {
         assert_eq!(names(Action::Stop, &TaskFacts { team: true, remote: true, ..facts.clone() }), ["stop_session"]);
         assert_eq!(plan(&spec(Action::SetMode("plan".into())), &facts)[0].args, json!({"sessionId": "t1", "mode": "plan", "warm": true}));
         assert_eq!(plan(&spec(Action::Compact), &facts)[0].args, json!({"sessionId": "t1", "text": "/compact"}));
-        let change = Change { harness: Some("codex".into()), model: Some("gpt".into()), effort: Some(None), team: Some(Some("p1".into())), connection: Some(None), bot: Some(Some("b1".into())), target: Some("local".into()), stage: Some("active".into()), ..Change::default() };
+        let change = Change { harness: Some("codex".into()), model: Some("gpt".into()), effort: Some(None), team: Some(Some("p1".into())), connection: Some(None), bot: Some(Some("b1".into())), target: Some("local".into()), stage: Some("active".into()) };
         assert_eq!(names(Action::Configure(change.clone()), &facts), ["configure_session", "set_reasoning_effort", "architect_configure", "connection_assign", "bot_assign_task", "run_on", "set_task_stage"]);
         assert_eq!(plan(&spec(Action::Configure(change)), &facts)[0].args, json!({"sessionId": "t1", "provider": "codex", "model": "gpt", "projectId": null, "warm": true}));
         // A model alone keeps the task's own harness.

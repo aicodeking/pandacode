@@ -148,7 +148,7 @@ test('upstream team tools package: the tool is attributed to its package and del
   expect(bare.events.some(event => event.kind === 'tool')).toBe(false);
   expect(JSON.stringify(bare.events)).toContain('was not delivered');
   // The declared tool alone: literal arguments, a stable error for an unknown entry.
-  await expect(main.tools[`${TEAM_ID}/lookup`](['missing'], { progress: async () => null })).rejects.toThrow(/NotFound/);
+  await expect(main.tools[`${TEAM_ID}/lookup-run`](['missing'], { progress: async () => null })).rejects.toThrow(/NotFound/);
 });
 
 async function openPicker(page: Page, manifests: object[], enabled = true) {
@@ -177,7 +177,7 @@ const connection = (page: Page, method: string, params: unknown) => ipc(page, 'e
 const grant = (page: Page, permission: string, op: 'grant' | 'revoke') => ipc(page, 'extensions_runtime_grant', { request: { op, id: API_ID, permission } });
 async function finish(page: Page, started: { request: string }): Promise<any> {
   for (let attempt = 0; attempt < 200; attempt++) {
-    const polled = await connection(page, 'connections.poll', { connection: `${API_ID}/chat`, operation: 'complete', request: started.request }) as { state: string };
+    const polled = await connection(page, 'connections.poll', { connection: `${API_ID}/chat-api`, operation: 'complete', request: started.request }) as { state: string };
     if (polled.state !== 'running') return polled;
     await page.waitForTimeout(20);
   }
@@ -200,7 +200,7 @@ test('upstream api tools preview: the declared chat connection answers with the 
     await page.goto('/?private-secrets&connection-adapters'); await expect(page.locator('#prompt')).toBeEnabled();
     await page.waitForFunction(() => (window as any).__extensionConnectionAdapters);
     for (const permission of ['connections.request', 'secrets.private']) await grant(page, permission, 'grant');
-    const resource = { connection: `${API_ID}/chat`, operation: 'complete' };
+    const resource = { connection: `${API_ID}/chat-api`, operation: 'complete' };
     const body = { model: 'fixture-small', stream: false, messages: [{ role: 'user', content: 'hi' }] };
     // No key yet: NotFound, and the fake API was never reached.
     expect(await connection(page, 'connections.start', { ...resource, body })).toMatchObject({ state: 'failed', error: 'NotFound' });

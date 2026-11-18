@@ -289,6 +289,8 @@ fn board_project(app: &tauri::AppHandle, board: &str) -> Option<String> {
     store.db.query_row("SELECT project_id FROM moodboards WHERE id=?1", [board], |row| row.get::<_, String>(0)).ok()
 }
 /// The cloud task that owns a machine: its id and its project.
+// The `found` binding drops the iterator's temporaries before the store guard; returning the expression would not compile.
+#[allow(clippy::let_and_return)]
 fn owning_task(app: &tauri::AppHandle, machine: &str) -> Option<(String, String)> {
     use tauri::Manager;
     let state = app.try_state::<crate::AppState>()?;

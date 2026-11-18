@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(gate(false, &COMMANDS, "nothing.here").unwrap_err().path, "internal.unstable");
         assert!(gate(true, &COMMANDS, "internal.info").is_ok());
         assert_eq!(gate(true, &COMMANDS, "app.restart").unwrap_err().code, "NotFound");
-        assert_eq!(gate(true, &EVENTS, "internal.echoed").is_ok(), true);
+        assert!(gate(true, &EVENTS, "internal.echoed").is_ok());
         for name in ["secret_store.get", "held-credentials.read", "oauth.token", "auth.sign-in", "keychain.read", "password.reveal", "private_key"] {
             let refusal = gate(true, &COMMANDS, name).unwrap_err();
             assert_eq!((refusal.code.as_str(), refusal.path.as_str()), ("PermissionDenied", "credentials"), "{name}");

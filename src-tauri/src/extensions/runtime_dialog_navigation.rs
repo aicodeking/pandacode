@@ -117,8 +117,16 @@ pub fn check_reveal(owner: &str, world: &World, raw: &Value) -> Result<Value, &'
     let keys: Vec<&str> = object.keys().map(String::as_str).collect();
     let text = |key: &str| object.get(key).and_then(Value::as_str).filter(|value| ident(value)).ok_or("InvalidShape");
     match keys.as_slice() {
-        ["view"] => { let id = text("view")?; if !owns(owner, id) { return Err("PermissionDenied"); } if world.views.iter().any(|view| view == id) { Ok(json!({"view": id})) } else { Err("NotFound") } }
-        ["settingsPage"] => { let id = text("settingsPage")?; if !owns(owner, id) { return Err("PermissionDenied"); } if world.settings_pages.iter().any(|page| page == id) { Ok(json!({"settingsPage": id})) } else { Err("NotFound") } }
+        ["view"] => {
+            let id = text("view")?;
+            if !owns(owner, id) { return Err("PermissionDenied"); }
+            if world.views.iter().any(|view| view == id) { Ok(json!({"view": id})) } else { Err("NotFound") }
+        }
+        ["settingsPage"] => {
+            let id = text("settingsPage")?;
+            if !owns(owner, id) { return Err("PermissionDenied"); }
+            if world.settings_pages.iter().any(|page| page == id) { Ok(json!({"settingsPage": id})) } else { Err("NotFound") }
+        }
         ["taskId"] => { let id = text("taskId")?; if (world.task_exists)(id) { Ok(json!({"taskId": id})) } else { Err("NotFound") } }
         _ if object.contains_key("projectId") && object.contains_key("path") && keys.iter().all(|key| ["projectId", "path", "line", "editor"].contains(key)) => {
             let (project, path) = (text("projectId")?, text("path")?);

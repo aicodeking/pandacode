@@ -1,12 +1,14 @@
 // A package-declared tool and a team-capable provider that delivers it to its team role. Offline: no network,
 // credential or external command. Every row the provider emits names the package, so the trace can attribute it.
 const PACKAGE = 'sample.upstream-team-tools';
+const COMMAND = `${PACKAGE}/lookup-run`; // the tool's command (ids are unique, so it is not the tool id)
 const TOOL = `${PACKAGE}/lookup`;
 const CATALOG = { 'build-flags': 'release, locked', 'node-engine': '>=22' };
 
 // The manifest tool: runs in the captured project folder with literal arguments, never a shell.
 exports.tools = {
-  [TOOL]: async (args, job) => {
+  // Keyed by the tool's command (ids are unique across contributions, so the command is not the tool's id).
+  [`${PACKAGE}/lookup-run`]: async (args, job) => {
     await job.progress({ phase: 'lookup', completed: 0 });
     const key = String(args[0] ?? '');
     if (!Object.hasOwn(CATALOG, key)) throw new Error(`NotFound: no catalog entry ${key}`);
@@ -28,7 +30,7 @@ exports.providers = {
     const row = { id: `${TOOL}#1`, name: TOOL, status: 'running', input: 'build-flags', output: '' };
     await core.emit({ kind: 'tool', tool: row });
     try {
-      const result = await exports.tools[TOOL](['build-flags'], { progress: async () => null });
+      const result = await exports.tools[COMMAND](['build-flags'], { progress: async () => null });
       await core.emit({ kind: 'tool', tool: { ...row, status: 'completed', output: JSON.stringify(result) } });
       await core.emit({ kind: 'text', text: `${PACKAGE} lookup: ${result.value}` });
     } catch (error) {

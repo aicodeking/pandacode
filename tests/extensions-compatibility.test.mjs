@@ -13,6 +13,19 @@ const contracts = read('tests/fixtures/extensions/contracts-v1.json');
 const scale = read('tests/fixtures/extensions/performance-scale.json');
 const sample = read('tests/fixtures/extensions/sample-project-helper/extension.json');
 
+// Fixtures that are deliberately not installable packages: each is a test-only slice read by one runtime spec or native
+// test (a bare service entry, a band icon token, a manifest without code). They must keep failing validation, so the
+// list cannot rot; remove an entry when its fixture becomes a valid package.
+const PARTIAL = new Map([
+  ['tests/fixtures/extensions/runtime-composer-band/extension.json', 'band item icon is a display token, not a declared icon id'],
+  ['tests/fixtures/extensions/runtime-document-editors/extension.json', 'editor slice: code folders only, no main.cjs entrypoint'],
+  ['tests/fixtures/extensions/runtime-new-file-templates/extension.json', 'template slice: code folders only, no main.cjs entrypoint'],
+  ['tests/fixtures/extensions/runtime-held-credentials/extension.json', 'connections are bound to commands by the spec, not declared as runnable commands'],
+  ['tests/fixtures/extensions/runtime-model-call/extension.json', 'service slice without manifestVersion (driven by cases.json)'],
+  ['tests/fixtures/extensions/runtime-preview/extension.json', 'preview service slice with a service.mjs entrypoint'],
+  ['tests/fixtures/extensions/runtime-rich-channel/extension.json', 'channel service slice with a service.mjs entrypoint'],
+]);
+
 function manifests() {
   const found = [];
   for (const [base, nested] of [['tests/fixtures/extensions/', ''], ['examples/extensions/', 'package/']]) {
@@ -55,15 +68,16 @@ test('extensions compatibility: every shipped fixture and author example validat
   const byId = new Map(paths.map(path => [read(path).id, read(path)]));
   // A dependent package activates together with its declared providers, as the host requires.
   const batch = (manifest, seen = new Set()) => { if (seen.has(manifest.id)) return []; seen.add(manifest.id); return [...Object.keys(manifest.dependencies ?? {}).flatMap(id => byId.has(id) ? batch(byId.get(id), seen) : []), manifest]; };
-  const failures = paths.map(path => [path, validateContract('packages', batch(read(path)))]).filter(([, result]) => !result.ok).map(([path, result]) => `${path}: ${result.error.code} ${result.error.path}`);
+  const failures = paths.filter(path => !PARTIAL.has(path)).map(path => [path, validateContract('packages', batch(read(path)))]).filter(([, result]) => !result.ok).map(([path, result]) => `${path}: ${result.error.code} ${result.error.path}`);
   assert.deepEqual(failures, []);
-  for (const path of paths) assert.equal(read(path).manifestVersion, 1, path);
+  for (const [path] of PARTIAL) { assert.ok(paths.includes(path), `${path} no longer exists: drop it from PARTIAL`); assert.equal(validateContract('packages', batch(read(path))).ok, false, `${path} is a valid package now: drop it from PARTIAL`); }
+  for (const path of paths.filter(path => !PARTIAL.has(path))) assert.equal(read(path).manifestVersion, 1, path);
 });
 
 test('extensions compatibility: every fixture accepts each supported API 1 range spelling and refuses the rest with the same code', () => {
   // One range corpus (T58's examples-v1.json), applied here to the whole fixture corpus, not one sample.
   const { apiRanges } = read('tests/fixtures/extensions/examples-v1.json');
-  const fixtures = manifests().filter(path => path.startsWith('tests/')).map(read).filter(manifest => !manifest.dependencies);
+  const fixtures = manifests().filter(path => path.startsWith('tests/') && !PARTIAL.has(path)).map(read).filter(manifest => !manifest.dependencies);
   assert.ok(fixtures.length >= 40);
   const failures = [];
   for (const manifest of fixtures) {

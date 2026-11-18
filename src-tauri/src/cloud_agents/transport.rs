@@ -31,8 +31,20 @@ fn take_attach(session_id: &str) -> bool {
     attaching().lock().unwrap_or_else(|p| p.into_inner()).remove(session_id)
 }
 
-/// Whether a task runs on a cloud machine.
+#[cfg(test)]
+thread_local! {
+    /// Tests: the store `is_cloud` reads, standing in for the app's (unit tests have no AppHandle).
+    pub(crate) static TEST_STORE: std::cell::RefCell<Option<std::sync::Arc<Mutex<crate::storage::Store>>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether a task runs on a cloud machine. It locks the store: never call it while holding the
+/// store (issue #382); read `cloud_agents::load` on the held store instead.
 pub(crate) fn is_cloud(session_id: &str) -> bool {
+    #[cfg(test)]
+    if let Some(store) = TEST_STORE.with(|slot| slot.borrow().clone()) {
+        return store.lock().ok().and_then(|store| super::load(&store, session_id).ok().flatten()).is_some();
+    }
     super::app().is_some_and(|app| {
         app.state::<crate::AppState>().store.lock().ok().and_then(|store| super::load(&store, session_id).ok().flatten()).is_some()
     })

@@ -8,6 +8,10 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub const MAX_FRAME: usize = 64 * 1024;
 pub const DEADLINE: Duration = Duration::from_secs(5);
 pub const BOOTSTRAP: &str = include_str!("node-host.cjs");
+/// Windows caps a command line at 32,767 UTF-16 units (CreateProcessW error 206), and the bootstrap is larger, so
+/// only this fixed loader goes on the command line; it reads the bootstrap from stdin as frame zero (`write_bootstrap`)
+/// with synchronous reads, so nothing past that frame is consumed before the bootstrap installs its own reader.
+pub const LOADER: &str = "const fs=require('node:fs');const read=n=>{const b=Buffer.alloc(n);let o=0;while(o<n){let c;try{c=fs.readSync(0,b,o,n-o,null)}catch(e){if(e.code==='EAGAIN')continue;if(e.code==='EOF')process.exit(2);throw e}if(c===0)process.exit(2);o+=c}return b};const n=read(4).readUInt32LE(0);if(n>1048576)process.exit(2);require('node:vm').compileFunction(read(n).toString('utf8'),['require'],{filename:'node-host.cjs'})(require);";
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 #[derive(Deserialize)]
@@ -55,6 +59,12 @@ pub(crate) async fn write_frame(writer: &mut (impl AsyncWrite + Unpin), value: &
     writer.write_all(&bytes).await.map_err(|_| "HostUnavailable")?;
     writer.flush().await.map_err(|_| "HostUnavailable")
 }
+/// Frame zero: the raw bootstrap source for `LOADER`, written before the init frame.
+pub(crate) async fn write_bootstrap(writer: &mut (impl AsyncWrite + Unpin)) -> Result<()> {
+    writer.write_u32_le(BOOTSTRAP.len() as u32).await.map_err(|_| "HostUnavailable")?;
+    writer.write_all(BOOTSTRAP.as_bytes()).await.map_err(|_| "HostUnavailable")?;
+    writer.flush().await.map_err(|_| "HostUnavailable")
+}
 
 /// No package code is supplied before Windows assigns the app bootstrap to its owned job.
 pub async fn run(runtime: &Runtime, source: &str, context: Value, cancel: Arc<AtomicBool>, mut dispatch: impl FnMut(&str, Value) -> Value) -> Result<Vec<Value>> {
@@ -70,7 +80,7 @@ pub async fn run_owned_async<F, Fut>(runtime: &Runtime, source: &str, context: V
 where F: FnMut(String, Value) -> Fut, Fut: std::future::Future<Output = Value> {
     if cancel.load(Ordering::Acquire) { return Err("Cancelled"); }
     let mut command = tokio::process::Command::new(&runtime.binary);
-    command.args(["--max-old-space-size=64", "--input-type=commonjs", "--eval", BOOTSTRAP]).current_dir(cwd)
+    command.args(["--max-old-space-size=64", "--input-type=commonjs", "--eval", LOADER]).current_dir(cwd)
         .env_clear().stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
     // Keep only OS bootstrap variables, never app credentials, NODE_OPTIONS or arbitrary parent env.
     for name in ["SystemRoot", "WINDIR", "TEMP", "TMP"] { if let Some(value) = std::env::var_os(name) { command.env(name, value); } }
@@ -87,6 +97,7 @@ where F: FnMut(String, Value) -> Fut, Fut: std::future::Future<Output = Value> {
     let mut last_message = "bootstrap";
     let exchange = async {
         let provider = context.get("provider").is_some();
+        write_bootstrap(&mut stdin).await?;
         write_frame(&mut stdin, &json!({"token":token,"source":source,"context":context}), 300000).await?;
         let mut dialogs = Vec::new();
         for expected in 1..=128 {
@@ -171,6 +182,12 @@ pub(crate) mod job {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The bootstrap is far over the Windows command line limit (32,767), so only the loader may be an argument.
+    #[test]
+    fn loader_fits_the_windows_command_line() {
+        assert!(LOADER.len() < 4096);
+        assert!(BOOTSTRAP.len() <= 1_048_576, "frame zero is bounded by the loader at 1 MiB");
+    }
     #[tokio::test]
     async fn oversized_header_rejects_before_body_allocation_and_truncated_data_rejects() {
         let bytes = ((MAX_FRAME + 1) as u32).to_le_bytes();

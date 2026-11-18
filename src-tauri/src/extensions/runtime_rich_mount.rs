@@ -424,7 +424,8 @@ mod tests {
         // The browser preview mounts an iframe; the installed app cannot (frame-src 'none'), and its policy stays as is.
         let config: Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
         let csp = config["app"]["security"]["csp"].as_str().unwrap();
-        assert!(csp.contains("frame-src 'none'") && !csp.contains("unsafe-eval") && !csp.contains("blob:"));
+        // The app allows `'wasm-unsafe-eval'` (WebAssembly only), never `'unsafe-eval'`.
+        assert!(csp.contains("frame-src 'none'") && !csp.replace("'wasm-unsafe-eval'", "").contains("unsafe-eval") && !csp.contains("blob:"));
         assert!(PANEL_PREFIX != "main" && !PANEL_PREFIX.is_empty());
     }
     #[test]

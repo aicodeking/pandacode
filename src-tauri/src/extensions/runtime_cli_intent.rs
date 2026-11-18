@@ -94,7 +94,7 @@ pub fn valid_flag(text: &str) -> bool {
 }
 fn plain(text: &str, max: usize) -> bool { !text.trim().is_empty() && text.chars().count() <= max && !text.chars().any(char::is_control) }
 
-fn strings<'a>(value: Option<&'a Value>, max: usize, ok: fn(&str) -> bool) -> Option<Vec<&'a str>> {
+fn strings(value: Option<&Value>, max: usize, ok: fn(&str) -> bool) -> Option<Vec<&str>> {
     let Some(value) = value else { return Some(vec![]) };
     let items = value.as_array()?;
     if items.len() > max { return None; }
@@ -454,12 +454,12 @@ mod tests {
         let manifest: Value = serde_json::from_str(MANIFEST).unwrap();
         let listed = usable(&[("sample.tracker", manifest)]);
         let host = json!({"kind": "shell", "verb": "Ran", "label": "tracker", "destructive": true, "risks": ["Deleted src"]});
-        let merged = merge(&host, &classify(&listed, "tracker issue close 7"));
+        let merged = merge(&host, &classify(&listed, "tracker close 7"));
         assert_eq!(merged["destructive"], json!(true));
         assert_eq!(merged["risks"], host["risks"]);
         assert_eq!(merged["packageIntent"]["owner"], json!("sample.tracker"));
         let specific = json!({"kind": "git", "verb": "Pushed", "label": "origin", "destructive": false, "risks": []});
-        let kept = merge(&specific, &classify(&listed, "tracker issue close 7"));
+        let kept = merge(&specific, &classify(&listed, "tracker close 7"));
         assert_eq!(kept["verb"], json!("Pushed"));
         assert_eq!(kept["packageIntent"]["applied"], json!(false));
     }

@@ -18,7 +18,7 @@ It needs no panel and no hooks.
 | Rate limit | One account: the service waits the time the API named and says "Rate limited, retrying in N s." More accounts: it switches to the next one and names both. |
 | Accounts | Commands `Add a Sample cloud account` and `Sample cloud accounts` (a dialog that switches the active account or removes one). At most four accounts. |
 | Sign out | Deletes the stored secrets and publishes signed out. |
-| Settings | Page `sample.signin/cloud`: identity address, API address, client id and the seconds to wait for the browser. |
+| Settings | Page `sample.signin/settings`: identity address, API address, client id and the seconds to wait for the browser. |
 
 ## How the harness fits
 

@@ -15,6 +15,7 @@
 //! - an unknown project, harness or target: `NotFound`;
 //! - a harness that is signed out or not installed: `HostUnavailable`, `ids` carrying the readiness state;
 //! - a shape the call does not take: `InvalidShape`; a size or concurrency bound: `LimitExceeded`.
+//!
 //! A refused start creates no task, no worktree and no mirror row.
 //!
 //! Every task started this way is attributed: `TaskOrigins` keeps the package id and its display name next to the task

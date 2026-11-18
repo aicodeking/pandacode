@@ -66,22 +66,25 @@ test('Owned dialogs: each owner passes its own dialog ID and target; protected a
   assert.match(source('src/jev.ts'), /createView\(dialog, 'Test with Jev', 'jev-tests-dialog', \{ dialog: 'jev-tests'/);
   for (const id of aliasIds) for (const path of ['src/integrations.ts', 'src/jev-assist.ts', 'src/jev.ts', 'src/main.ts']) assert.ok(!source(path).includes(`dialog: '${id}'`), id);
   // Protected owners pass nothing: the permission, destructive, security and package-form dialogs stay host-only.
-  assert.ok(!source('src/machine-orchestration.ts').includes('DialogRequest') && !source('src/machine-orchestration.ts').includes("dialog: '"));
-  assert.ok(!source('src/skill-manager-add.ts').includes('owned-dialogs') && !source('src/skill-manager-add.ts').includes("dialog: '"));
-  assert.match(source('src/worktrees.ts'), /host\.modal\(verb, `[^`]*`, 'compact-dialog worktree-dialog'\);/);
+  // R1003: the two formerly protected owners now pass their own dialog id (extras need `ui.presentation`); nothing else.
+  assert.ok(!source('src/machine-orchestration.ts').includes('DialogRequest') && source('src/machine-orchestration.ts').includes("dialog: 'machine-link'"));
+  assert.ok(source('src/skill-manager-add.ts').includes("dialog: 'skill-add'"));
+  assert.match(source('src/worktrees.ts'), /host\.modal\(verb, `[^`]*`, 'compact-dialog worktree-dialog', \{ dialog: 'worktree-cleanup', task: session\.id \}\);/);
   assert.ok(!source('src/extensions/dialogs.ts').includes('mountMainDialogExtras') && !source('src/extensions/dialogs.ts').includes('attachDialogExtras'));
   // The main modal helper captures a module-owned dialog's task only from its module's request.
-  assert.match(source('src/main.ts'), /const owned = isOwnedDialog\(request\.dialog\);\n  const task = owned \? request\.task \?\? '' :/);
+  assert.match(source('src/main.ts'), /const owned = isOwnedDialog\(request\.dialog\);\r?\n  const task = owned \? request\.task \?\? '' :/);
 });
 
 test('Owned dialogs: the shared schema, SDK and catalog add exactly the registered IDs; protected and alias IDs stay out', () => {
-  assert.deepEqual(schema.$defs.mainDialogId.enum.slice(-ownedIds.length), ownedIds);
+  // The eight R1003 dialogs (PRESENTATION_DIALOG_EXTRAS) come last in the enum, after the registered owned ones.
+  assert.deepEqual(schema.$defs.mainDialogId.enum.slice(-(ownedIds.length + PRESENTATION_DIALOG_EXTRAS.length), -PRESENTATION_DIALOG_EXTRAS.length), ownedIds);
   assert.deepEqual(schema.$defs.actionLocation.enum.filter(location => location.startsWith('panda.dialog.')), DIALOG_ACTION_SURFACES);
   for (const id of ownedIds) { assert.ok(DIALOG_ACTION_SURFACES.includes(`panda.dialog.${id}.actions`)); assert.ok(DIALOG_DATA_SURFACES.includes(`panda.dialog.${id}.bodyExtras`)); }
   for (const id of [...protectedIds, ...aliasIds]) assert.ok(!JSON.stringify(schema).includes(`"${id}"`) && !JSON.stringify(schema).includes(`panda.dialog.${id}.`), id);
   const sdk = source('src/extensions/sdk/index.d.ts');
   for (const id of ownedIds) assert.ok(sdk.includes(`'${id}'`), id);
-  for (const id of protectedIds) assert.ok(!sdk.includes(`'${id}'`), id);
+  // `explorer-entry` is named by the SDK as the panda.explorer adapter's own dialog location, never as a band target.
+  for (const id of protectedIds.filter(id => id !== 'explorer-entry')) assert.ok(!sdk.includes(`'${id}'`), id);
   const catalog = createUiCatalog(() => ({ safeMode: false, diagnostics: [], packages: [{ manifest, icons: {}, enabled: true }] }));
   const all = query => { const items = []; let cursor; do { const page = catalog[query.kind]({ ...query.filter, limit: 100, ...(cursor ? { cursor } : {}) }); items.push(...page.items); cursor = page.nextCursor; } while (cursor); return items; };
   const surfaces = all({ kind: 'listSurfaces', filter: {} });

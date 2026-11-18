@@ -211,7 +211,7 @@ impl DecisionFold {
         let verdict = Verdict { owner: step.owner.clone(), name: step.name.clone(), reason: Some(format!("{} did not answer ({code}).", step.name)), failed: true };
         match step.on_failure.as_str() {
             "deny" => self.denied = Some(verdict),
-            "ask" => { if self.asked.is_none() { self.asked = Some(verdict); } }
+            "ask" if self.asked.is_none() => self.asked = Some(verdict),
             _ => {}
         }
     }

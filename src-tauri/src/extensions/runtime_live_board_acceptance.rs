@@ -18,6 +18,9 @@
 const BOARD_MANIFEST: &str = include_str!("../../../examples/extensions/live-board/package/extension.json");
 const BOARD_MAIN: &str = include_str!("../../../examples/extensions/live-board/package/main.cjs");
 const BOARD_LOGIC: &str = include_str!("../../../examples/extensions/live-board/package/lib/board.mjs");
+/// The board's rich view folder (`rich.folder: "panel"`): a served panel folder must be in the archive.
+const BOARD_PANEL_HTML: &str = include_str!("../../../examples/extensions/live-board/package/panel/index.html");
+const BOARD_PANEL_JS: &str = include_str!("../../../examples/extensions/live-board/package/panel/app.js");
 /// A wrapper that adds one crash command and then runs the shipped main.cjs from the folder `real`.
 const BOARD_CRASH_WRAPPER: &str = include_str!("../../../tests/fixtures/extensions/example-live-board/main.cjs");
 const BOARD_ID: &str = "sample.live-board";
@@ -35,12 +38,12 @@ fn board_archive(entries: &[(&str, &str)]) -> Vec<u8> {
     }
     writer.finish().unwrap().into_inner()
 }
-fn board_shipped_archive() -> Vec<u8> { board_archive(&[("extension.json", BOARD_MANIFEST), ("main.cjs", BOARD_MAIN), ("lib/board.mjs", BOARD_LOGIC)]) }
+fn board_shipped_archive() -> Vec<u8> { board_archive(&[("extension.json", BOARD_MANIFEST), ("main.cjs", BOARD_MAIN), ("lib/board.mjs", BOARD_LOGIC), ("panel/index.html", BOARD_PANEL_HTML), ("panel/app.js", BOARD_PANEL_JS)]) }
 fn board_crashable_archive() -> Vec<u8> {
     let mut manifest: Value = serde_json::from_str(BOARD_MANIFEST).unwrap();
     manifest["runtime"]["files"] = json!(["real"]);
     manifest["contributes"]["commands"].as_array_mut().unwrap().push(json!({"id": BOARD_CRASH, "title": "Crash for the test", "action": {"kind": "runCommand"}}));
-    board_archive(&[("extension.json", &manifest.to_string()), ("main.cjs", BOARD_CRASH_WRAPPER), ("real/main.cjs", BOARD_MAIN), ("real/lib/board.mjs", BOARD_LOGIC)])
+    board_archive(&[("extension.json", &manifest.to_string()), ("main.cjs", BOARD_CRASH_WRAPPER), ("real/main.cjs", BOARD_MAIN), ("real/lib/board.mjs", BOARD_LOGIC), ("panel/index.html", BOARD_PANEL_HTML), ("panel/app.js", BOARD_PANEL_JS)])
 }
 
 /// The host side of the board's requests: live items and dialogs. Settings and notices answer `UnsupportedCapability`, which
@@ -148,7 +151,7 @@ async fn live_board_installed_follows_b1_and_b2_retries_after_a_fault_keeps_a_st
     b1.http("POST", "/control/issues", &json!({"op": "update", "issue": {"id": "T-3", "status": "closed"}})).await;
     b1.order(json!({"op": "refresh"})).await;
     board_until("the closed issue leaving the ready list", two, || (board_status(&items) == "1 ready" && board_rows(&items) == Some(3)).then_some(())).await;
-    assert_eq!(board_held(&manager)["ready"], 1);
+    board_until("the service's own ready count", two, || (board_held(&manager)["ready"] == 1).then_some(())).await;
 
     // The daemon goes away for a while: the last rows stay, marked stale, and the Retry button appears once.
     let fault = Instant::now();
@@ -158,7 +161,7 @@ async fn live_board_installed_follows_b1_and_b2_retries_after_a_fault_keeps_a_st
     let view = board_layer(&items)["overrides"][BOARD_VIEW].clone();
     assert!(view["text"].as_str().unwrap().starts_with("Stale: the tracker is offline (stale since "), "{view}");
     assert!(view["controls"][0]["label"].as_str().unwrap().contains("stale since"), "{view}");
-    assert_eq!(board_held(&manager)["offline"], true);
+    board_until("the service marking itself offline", two, || (board_held(&manager)["offline"] == true).then_some(())).await;
     // A click while it is still away reaches the service, which stays offline and keeps the button.
     let click = manager.call_command(BOARD_ID, BOARD_RETRY, json!({}), None).await.unwrap();
     assert_eq!((click["offline"].as_bool(), click["retries"].as_u64()), (Some(true), Some(1)), "{click}");
@@ -169,7 +172,7 @@ async fn live_board_installed_follows_b1_and_b2_retries_after_a_fault_keeps_a_st
     assert_eq!(board_rows(&items), Some(3));
     let click = manager.call_command(BOARD_ID, BOARD_RETRY, json!({}), None).await.unwrap();
     assert_eq!((click["offline"].as_bool(), click["retries"].as_u64()), (Some(false), Some(2)), "{click}");
-    assert_eq!(board_held(&manager)["retries"], 2);
+    board_until("the second retry in the service status", two, || (board_held(&manager)["retries"] == 2).then_some(())).await;
 
     // The dialog answer reaches the service's state; a cancelled one changes nothing.
     b1.order(json!({"op": "ask"})).await;

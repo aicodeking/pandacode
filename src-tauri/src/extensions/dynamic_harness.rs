@@ -3,10 +3,16 @@ use super::{AgentEvent, ModelInfo, ProviderInfo, ReasoningEffortInfo, RunConfig,
 use crate::extensions::{packages::Packages, runtime_provider_launch as launch, supervisor};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, OnceLock, Weak, atomic::{AtomicBool, Ordering}}, time::Duration};
+use std::{collections::BTreeMap, path::PathBuf, sync::{Arc, Mutex, Weak, atomic::{AtomicBool, Ordering}}, time::Duration};
 
 struct Host { packages: Weak<Mutex<Packages>>, directory: Option<PathBuf> }
-static HOST: OnceLock<Host> = OnceLock::new();
+/// Replaced by each `configure` (the app calls it once; tests each bring their own package list).
+static HOST: Mutex<Option<Host>> = Mutex::new(None);
+/// Tests that call `configure` swap the one shared host; each takes this lock first so they never replace it under each other.
+#[cfg(all(test, feature = "extension-runtime-native-tests"))]
+pub(crate) static TEST_HOST: Mutex<()> = Mutex::new(());
+fn host_packages() -> Option<Arc<Mutex<Packages>>> { HOST.lock().ok().and_then(|host| host.as_ref().and_then(|host| host.packages.upgrade())) }
+fn host_directory() -> Option<PathBuf> { HOST.lock().ok().and_then(|host| host.as_ref().and_then(|host| host.directory.clone())) }
 type Runs = BTreeMap<String, (String, Arc<AtomicBool>)>;
 static RUNS: Mutex<Runs> = Mutex::new(BTreeMap::new());
 struct RunLease { key: String, cancel: Arc<AtomicBool>, pump: Option<tokio::task::AbortHandle> }
@@ -20,7 +26,7 @@ impl Drop for RunLease {
 pub(crate) fn configure(packages: &Arc<Mutex<Packages>>, directory: Option<PathBuf>) {
     // The user's warm-spare opt-ins (R0807) live in a file next to the grants; nothing starts from loading them.
     crate::providers::speed_adapter::configure(directory.as_deref());
-    let _ = HOST.set(Host { packages: Arc::downgrade(packages), directory });
+    if let Ok(mut host) = HOST.lock() { *host = Some(Host { packages: Arc::downgrade(packages), directory }); }
 }
 #[derive(Clone)]
 struct Registration { definition: Value, version: String, digest: String, source: String }
@@ -28,26 +34,26 @@ fn registrations() -> Vec<Registration> {
     registrations_for(crate::headless::active())
 }
 fn registrations_for(workspace_only: bool) -> Vec<Registration> {
-    HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().map(|packages| if workspace_only { packages.provider_registrations_for(true) } else { packages.provider_registrations() })).unwrap_or_default()
+    host_packages().and_then(|packages| packages.lock().ok().map(|packages| if workspace_only { packages.provider_registrations_for(true) } else { packages.provider_registrations() })).unwrap_or_default()
         .into_iter().map(|(definition, version, digest, source)| Registration { definition, version, digest, source }).collect()
 }
 fn resolve(id: &str) -> Result<Registration, String> {
     registrations().into_iter().find(|registration| registration.definition["id"] == id).ok_or_else(|| {
         // An installed `launch` provider whose executable content is not trusted gets its own explicit readiness error.
-        let untrusted = crate::extensions::providers::extension_owner(id).and_then(|owner| HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, id))));
+        let untrusted = crate::extensions::providers::extension_owner(id).and_then(|owner| host_packages().and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, id))));
         if untrusted.is_some_and(|facts| !facts.trusted) { launch::TRUST_REQUIRED.into() } else { crate::extensions::providers::PROVIDER_RECOVERY.into() }
     })
 }
 /// The packaged Node runtime of this target, if it is qualified.
 fn node_runtime() -> Option<supervisor::Runtime> {
-    let directory = HOST.get().and_then(|host| host.directory.clone());
+    let directory = host_directory();
     let mut runtime = directory.as_deref().and_then(|directory| supervisor::Runtime::packaged(directory).ok());
     if runtime.is_none() && cfg!(debug_assertions) { runtime = supervisor::Runtime::packaged(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")).ok(); }
     runtime
 }
 /// Where a declared harness's placeholders resolve for this package.
 fn launch_places(owner: &str, provider: &str) -> launch::Places {
-    let facts = HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, provider)));
+    let facts = host_packages().and_then(|packages| packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, provider)));
     launch::Places { node: node_runtime().map(|runtime| runtime.binary), package: facts.as_ref().and_then(|facts| facts.package.clone()), data: facts.and_then(|facts| facts.data) }
 }
 fn catalog(definition: &Value) -> Vec<ModelInfo> {
@@ -61,6 +67,7 @@ fn catalog(definition: &Value) -> Vec<ModelInfo> {
 }
 /// What a warm spare needs (R0807), read and checked in one place: the provider is registered (so its package is
 /// enabled and trusted, not in safe mode), declares `launch.warmSpare`, is ready, and its command resolves.
+#[allow(dead_code)] // the owner is carried for the warm-start attribution row
 pub(crate) struct WarmContext { pub owner: String, pub digest: String, pub resolved: launch::Resolved, pub key: String }
 /// Short and blocking (it reads the package list): call it off the async runtime, with no lock held.
 pub(crate) fn warm_context(provider: &str, cwd: &std::path::Path) -> Result<WarmContext, String> {
@@ -68,7 +75,7 @@ pub(crate) fn warm_context(provider: &str, cwd: &std::path::Path) -> Result<Warm
     let owner = crate::extensions::providers::extension_owner(provider).ok_or("InvalidIdentity")?;
     let spec = launch::declared(&registration.definition).ok_or("UnsupportedCapability: this provider declares no launch.")?;
     if spec["warmSpare"] != true { return Err("UnsupportedCapability: this harness does not declare warmSpare.".into()); }
-    let packages = HOST.get().and_then(|host| host.packages.upgrade()).ok_or("HostUnavailable")?;
+    let packages = host_packages().ok_or("HostUnavailable")?;
     let trusted = packages.lock().ok().and_then(|packages| launch::facts(&packages, owner, provider)).is_some_and(|facts| facts.trusted);
     if !trusted { return Err(launch::TRUST_REQUIRED.into()); }
     let metadata = metadata(&registration.definition);
@@ -143,7 +150,7 @@ mod metadata_tests {
 pub(crate) fn models(id: &str) -> Result<Vec<ModelInfo>, String> { Ok(catalog(&resolve(id)?.definition)) }
 /// The slash commands an active package provider's own package declares for it (`contributes.slashCommands`).
 pub(crate) fn slash_commands(id: &str) -> Vec<Value> {
-    HOST.get().and_then(|host| host.packages.upgrade()).and_then(|packages| packages.lock().ok().map(|packages| packages.provider_slash_commands(id))).unwrap_or_default()
+    host_packages().and_then(|packages| packages.lock().ok().map(|packages| packages.provider_slash_commands(id))).unwrap_or_default()
 }
 pub(crate) fn require_available(id: &str) -> Result<(), String> {
     if crate::extensions::providers::extension_owner(id).is_some() { resolve(id).and_then(|registration| {
@@ -330,7 +337,7 @@ impl Conversation {
 
 pub(crate) async fn run(config: RunConfig, sink: Sink, mut input: tokio::sync::mpsc::UnboundedReceiver<RunInput>, host: Option<super::ToolHost>, harness: Arc<AtomicBool>) -> Result<(), String> {
     let registration = resolve(&config.provider)?;
-    let packages = HOST.get().and_then(|host| host.packages.upgrade()).ok_or("HostUnavailable")?;
+    let packages = host_packages().ok_or("HostUnavailable")?;
     let owner = crate::extensions::providers::extension_owner(&config.provider).ok_or("InvalidIdentity")?;
     let pin = crate::extensions::packages::pin_provider(&packages, owner, &registration.digest)?;
     if host.as_ref().is_some_and(|host| host.tools.iter().any(|tool| tool["name"].as_str().is_some_and(crate::architect::team_tool))) { require_team_definition(&registration.definition)?; }

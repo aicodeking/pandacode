@@ -290,7 +290,7 @@ impl Fold for CompactionFold {
         })();
         let (cancel, instructions, summary) = match parsed { Ok(parsed) => parsed, Err(code) => { self.receipts.push(Receipt::invalid(&step.owner, code)); return } };
         let mut receipt = Receipt::new(&step.owner);
-        let mut gate = |key: &str, receipt: &mut Receipt| -> bool {
+        let gate = |key: &str, receipt: &mut Receipt| -> bool {
             if !self.offered(key) { receipt.refuse(key, "UnsupportedCapability"); false }
             else if !step.holds(DECIDE) { receipt.refuse(key, "PermissionDenied"); false }
             else { true }
@@ -683,6 +683,7 @@ mod tests {
     /// A service stand-in: answers each awaited frame with `respond(frame)`; `None` never answers (the sender is kept).
     fn service(respond: impl Fn(&Value) -> Option<Result<Value, String>> + Send + Sync + 'static) -> (Ask, Arc<Mutex<Vec<Value>>>) {
         let frames: Arc<Mutex<Vec<Value>>> = Arc::default();
+        #[allow(clippy::type_complexity)] // a test rig's shared list of pending replies
         let held: Arc<Mutex<Vec<oneshot::Sender<Result<Value, String>>>>> = Arc::default();
         let seen = frames.clone();
         let ask: Ask = Arc::new(move |_, frame| {

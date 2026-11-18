@@ -248,6 +248,7 @@ impl SaveFlow {
     }
 
     /// Asks the attached `save.before` hooks in order; each sees what the earlier ones left in `current`.
+    #[allow(clippy::too_many_arguments)] // the chain state is threaded explicitly, as in the callers
     async fn chain(&self, registry: &HookRegistry, env: &Env, project: &str, path: &str, trigger: &str, current: &mut String, members: &mut Vec<Member>) {
         let mut occurrence = Occurrence { event: EVENT, project: project.to_owned(), harness: String::new(), run: String::new(), tool_kind: None, paths: vec![path.to_owned()], payload: json!({"projectId": project, "path": path, "text": *current, "trigger": trigger}) };
         let started = Instant::now();

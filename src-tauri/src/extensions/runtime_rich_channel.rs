@@ -546,12 +546,16 @@ mod tests {
         assert_eq!((a["placement"].as_str(), b["placement"].as_str()), (Some("inspector"), Some("window")));
         assert_eq!((events(&opened_a), events(&opened_b)), (vec!["opened".to_owned()], vec!["opened".to_owned()]));
         assert_eq!(channel.instances(OWNER, Some(BOARD)).len(), 2);
-        assert_eq!(channel.instances(OWNER, None)[0]["windowId"], "main");
-        // A shared update reaches both, in order, each with its own session.
+        // The listing is keyed by instance id (random), so find the panel's own entry instead of assuming an order.
+        let listed = channel.instances(OWNER, None);
+        assert_eq!(listed.iter().find(|instance| instance["instanceId"] == a["instanceId"]).map(|instance| instance["windowId"].clone()), Some(json!("main")));
+        // A shared update reaches both, each with its own session (the delivery order follows the random instance ids).
         let (delivered, outs) = channel.to_panels(OWNER, BOARD, json!({"revision": 1}), None, now).unwrap();
         assert_eq!(delivered, 2);
         let pushed = panels(&outs);
-        assert_eq!(pushed.iter().map(|(label, message)| (label.as_str(), message["session"].as_str().unwrap())).collect::<Vec<_>>(), vec![("extension-panel-a", "s-a"), ("extension-view-b", "s-b")]);
+        let mut reached = pushed.iter().map(|(label, message)| (label.as_str(), message["session"].as_str().unwrap())).collect::<Vec<_>>();
+        reached.sort_unstable();
+        assert_eq!(reached, vec![("extension-panel-a", "s-a"), ("extension-view-b", "s-b")]);
         // A targeted response reaches only its instance.
         let target = b["instanceId"].as_str().unwrap();
         let (delivered, outs) = channel.to_panels(OWNER, BOARD, json!({"ack": 7}), Some(target), now).unwrap();

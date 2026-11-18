@@ -31,7 +31,6 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader, Read, Write},
-    path::PathBuf,
     sync::{atomic::{AtomicUsize, Ordering}, Arc, LazyLock, Mutex},
     time::Duration,
 };
@@ -203,6 +202,7 @@ impl State {
 
 type Key = (String, String, String);
 #[derive(Clone, Debug)]
+#[allow(dead_code)] // the version is kept for the slot's inventory row (R0703 attaches it)
 struct Slot { project: String, version: String, package_name: String, declaration: Declaration, cwd: String, state: State, tools: Vec<String>, error: Option<String>, attempts: u32, argv: Vec<String> }
 impl Slot {
     fn json(&self, run: &str) -> Value {
@@ -594,7 +594,7 @@ mod tests {
         let registry = fixture(grants(&["p1"]), spawned.clone());
         registry.attach_run("run-1", "p1", "");
         assert_eq!(registry.stop("run-1", "sample.docs/local").unwrap()["state"], "stopped");
-        assert!(registry.tools("run-1").get("sample.docs/local").is_none());
+        assert!(!registry.tools("run-1").contains_key("sample.docs/local"));
         assert_eq!(registry.start("run-1", "sample.docs/local").unwrap()["state"], "attached");
         let mut last = Ok(json!(null));
         for _ in 0..MAX_ATTEMPTS { last = registry.restart("run-1", "sample.docs/local"); }
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn the_real_probe_ends_its_process() {
         let Some(node) = std::env::var_os("PANDACODE_TEST_NODE").map(|path| path.to_string_lossy().into_owned()).filter(|path| std::path::Path::new(path).is_file()) else { return };
-        let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/extensions/runtime-tool-servers/server/index.mjs");
+        let script = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/extensions/runtime-tool-servers/server/index.mjs");
         let tools = probe_stdio(&[node, script.to_string_lossy().into_owned()], "").unwrap();
         assert_eq!(tools, ["docs_search", "docs_read"]);
         assert_eq!(live_probes(), 0);

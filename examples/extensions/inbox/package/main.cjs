@@ -58,8 +58,8 @@ exports.service = async (panda, lifetime) => {
   const readSettings = async () => {
     try {
       const { values } = await panda.settings.get({ page: PAGE });
-      const days = Number.parseInt(values.retentionDays, 10);
-      const delay = Number.parseInt(values.notifyDelaySec, 10);
+      const days = Number.parseInt(values['retention-days'], 10);
+      const delay = Number.parseInt(values['notify-delay-sec'], 10);
       settings.retentionDays = Number.isFinite(days) && days > 0 ? days : 7;
       settings.notifyDelaySec = Number.isFinite(delay) && delay >= 0 ? delay : 120;
       settings.brief = values.brief !== false;

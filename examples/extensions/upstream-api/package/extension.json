@@ -15,7 +15,7 @@
   "contributes": {
     "commands": [{ "id": "sample.upstream-api/setup", "title": "Store the fake API key", "action": { "kind": "runCommand" } }],
     "connections": [{
-      "id": "sample.upstream-api/chat",
+      "id": "sample.upstream-api/chat-api",
       "command": "sample.upstream-api/setup",
       "title": "Fake chat API",
       "authentication": "header",

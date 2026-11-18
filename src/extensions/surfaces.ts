@@ -137,6 +137,7 @@ export const OWNED_DIALOG_EXTRAS = [
 export const OWNED_DIALOG_ALIASES = [['integrations-direct', 'integrations'], ['jev-assist-direct', 'jev-assist'], ['jev-tests-direct', 'jev-tests']] as const;
 /** Module-owned or direct dialogs that never mount the band: [ledger id, title, reason]. Inspect-only in the catalog. */
 export const OWNED_DIALOG_PROTECTED = [
+  ['explorer-entry', 'Explorer entry', "The explorer's create, rename and delete choices stay the host confirmation (unsaved-edit guard, irreversible deletion); its seam is the panda.explorer adapter."],
   ['extension-form', 'Extension form', "A package's own form is itself the accessory surface; another package's content is never placed inside it."],
 ] as const;
 /** Dialogs that were protected and now accept the band from packages holding `ui.presentation` (R1003,

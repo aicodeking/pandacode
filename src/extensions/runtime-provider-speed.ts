@@ -11,7 +11,8 @@
  * `launch.warmSpare`, the user opted it in (bound to the installed executable digest) and it is enabled, trusted and
  * ready. No secret value is ever part of a record or a projection.
  */
-import { call } from '../bridge';
+// The bridge reads `window` when it loads, so it is imported on first use (this module is also loaded by Node specs).
+const call = async <T = unknown>(command: string, args: Record<string, unknown> = {}): Promise<T> => (await import('../bridge')).call<T>(command, args);
 import { escape } from '../dom';
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };

@@ -8,14 +8,14 @@
   "runtime": {
     "kind": "node",
     "entrypoint": "main.cjs",
-    "activationEvents": ["sample.upstream-team-tools/lookup", "sample.upstream-team-tools/team"]
+    "activationEvents": ["sample.upstream-team-tools/lookup-run", "sample.upstream-team-tools/team"]
   },
   "requiredContributions": ["providers"],
   "contributes": {
-    "commands": [{ "id": "sample.upstream-team-tools/lookup", "title": "Run the lookup tool", "action": { "kind": "runCommand" } }],
+    "commands": [{ "id": "sample.upstream-team-tools/lookup-run", "title": "Run the lookup tool", "action": { "kind": "runCommand" } }],
     "tools": [{
       "id": "sample.upstream-team-tools/lookup",
-      "command": "sample.upstream-team-tools/lookup",
+      "command": "sample.upstream-team-tools/lookup-run",
       "executable": "node",
       "arguments": { "maxItems": 4, "maxLength": 256 },
       "cwd": "project",

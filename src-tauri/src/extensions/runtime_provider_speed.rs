@@ -56,6 +56,7 @@ const MAX_OPT_INS: usize = 64;
 pub(crate) struct Adopted { pub started: launch::Started, pub reply: Value }
 
 struct Spare { owner: String, key: String, born: Instant, generation: u64, adopted: Adopted }
+#[allow(clippy::large_enum_variant)] // a handful of slots, each stored once; boxing the running variant would only add a hop
 enum Slot {
     /// A start is in flight for this key; only a start still holding this generation may store its process.
     Starting { generation: u64, owner: String, key: String },
@@ -547,8 +548,11 @@ mod tests {
         fn count(frames: &[Value], method: &str) -> usize { frames.iter().filter(|frame| frame["method"] == method).count() }
         fn launches(session: &str) -> Vec<Value> { with(|store| store.recorder.iter().filter(|event| event["what"] == "launch" && event["session"] == session).cloned().collect()) }
 
+        // The host lock is held for the whole test; the test has its own current-thread runtime (see `dynamic_adapter::TEST_HOST`).
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn tiers_reach_the_launch_and_an_opted_in_package_prewarms_with_counters_failure_restart_and_cleanup() {
+            let _host = providers::dynamic_adapter::TEST_HOST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let dir = Dir::new();
             let packages = ExtensionPackages::new(&dir.0, false);
             providers::dynamic_adapter::configure(&packages.0, Some(Path::new(env!("CARGO_MANIFEST_DIR")).join("../_work/00-tmp/extensibility-trusted-runtime")));

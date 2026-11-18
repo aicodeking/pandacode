@@ -435,7 +435,7 @@ mod tests {
                                 json("200 OK", format!(r#"{{"ok":true,"method":{},"target":{},"echo":{},"credential":{}}}"#, serde_json::to_string(&seen.method).unwrap(), serde_json::to_string(&seen.target).unwrap(), if seen.body.is_empty() { "null".into() } else { seen.body.clone() }, serde_json::to_string(&if path == "/mirror" { credential } else { "" }).unwrap()))
                             }
                             "/summary" => json("200 OK", r#"{"accepted":true,"count":3,"extra":"ignored"}"#.into()),
-                            "/text" => format!("HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nnot json :("),
+                            "/text" => "HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\nnot json :(".to_string(),
                             "/missing" => json("404 Not Found", r#"{"error":"no such thing"}"#.into()),
                             "/large" => { let big = format!(r#"{{"blob":"{}"}}"#, "x".repeat(4096)); json("200 OK", big) }
                             "/chunked" => { let big = "y".repeat(5000); format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n{big}\r\n0\r\n\r\n", big.len()) }

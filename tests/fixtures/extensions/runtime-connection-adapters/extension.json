@@ -17,18 +17,18 @@
     "kind": "node",
     "entrypoint": "main.cjs",
     "activationEvents": [
-      "sample.connection-adapters/usage",
-      "sample.connection-adapters/report",
-      "sample.connection-adapters/keyed",
-      "sample.connection-adapters/open",
-      "sample.connection-adapters/methods",
-      "sample.connection-adapters/summary",
-      "sample.connection-adapters/limits",
-      "sample.connection-adapters/slow",
-      "sample.connection-adapters/mirror",
-      "sample.connection-adapters/held",
-      "sample.connection-adapters/hosted",
-      "sample.connection-adapters/cloud"
+      "sample.connection-adapters/usage-run",
+      "sample.connection-adapters/report-run",
+      "sample.connection-adapters/keyed-run",
+      "sample.connection-adapters/open-run",
+      "sample.connection-adapters/methods-run",
+      "sample.connection-adapters/summary-run",
+      "sample.connection-adapters/limits-run",
+      "sample.connection-adapters/slow-run",
+      "sample.connection-adapters/mirror-run",
+      "sample.connection-adapters/held-run",
+      "sample.connection-adapters/hosted-run",
+      "sample.connection-adapters/cloud-run"
     ],
     "service": {
       "start": "onEnable"
@@ -37,84 +37,84 @@
   "contributes": {
     "commands": [
       {
-        "id": "sample.connection-adapters/usage",
+        "id": "sample.connection-adapters/usage-run",
         "title": "Usage API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/report",
+        "id": "sample.connection-adapters/report-run",
         "title": "Report API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/keyed",
+        "id": "sample.connection-adapters/keyed-run",
         "title": "Keyed API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/open",
+        "id": "sample.connection-adapters/open-run",
         "title": "Open API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/methods",
+        "id": "sample.connection-adapters/methods-run",
         "title": "Methods API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/summary",
+        "id": "sample.connection-adapters/summary-run",
         "title": "Summary API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/limits",
+        "id": "sample.connection-adapters/limits-run",
         "title": "Limits API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/slow",
+        "id": "sample.connection-adapters/slow-run",
         "title": "Slow API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/mirror",
+        "id": "sample.connection-adapters/mirror-run",
         "title": "Mirror API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/held",
+        "id": "sample.connection-adapters/held-run",
         "title": "Held API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/hosted",
+        "id": "sample.connection-adapters/hosted-run",
         "title": "Hosted API",
         "action": {
           "kind": "runCommand"
         }
       },
       {
-        "id": "sample.connection-adapters/cloud",
+        "id": "sample.connection-adapters/cloud-run",
         "title": "Cloud API",
         "action": {
           "kind": "runCommand"
@@ -124,7 +124,7 @@
     "connections": [
       {
         "id": "sample.connection-adapters/usage",
-        "command": "sample.connection-adapters/usage",
+        "command": "sample.connection-adapters/usage-run",
         "title": "Usage API",
         "authentication": "header",
         "adapter": "json",
@@ -148,7 +148,7 @@
       },
       {
         "id": "sample.connection-adapters/report",
-        "command": "sample.connection-adapters/report",
+        "command": "sample.connection-adapters/report-run",
         "title": "Report API",
         "authentication": "bearer",
         "adapter": "json",
@@ -168,7 +168,7 @@
       },
       {
         "id": "sample.connection-adapters/keyed",
-        "command": "sample.connection-adapters/keyed",
+        "command": "sample.connection-adapters/keyed-run",
         "title": "Keyed API",
         "authentication": "query",
         "adapter": "json",
@@ -188,7 +188,7 @@
       },
       {
         "id": "sample.connection-adapters/open",
-        "command": "sample.connection-adapters/open",
+        "command": "sample.connection-adapters/open-run",
         "title": "Open API",
         "authentication": "none",
         "adapter": "json",
@@ -203,7 +203,7 @@
       },
       {
         "id": "sample.connection-adapters/methods",
-        "command": "sample.connection-adapters/methods",
+        "command": "sample.connection-adapters/methods-run",
         "title": "Methods API",
         "authentication": "bearer",
         "adapter": "json",
@@ -235,7 +235,7 @@
       },
       {
         "id": "sample.connection-adapters/summary",
-        "command": "sample.connection-adapters/summary",
+        "command": "sample.connection-adapters/summary-run",
         "title": "Summary API",
         "authentication": "bearer",
         "adapter": "json-summary",
@@ -264,7 +264,7 @@
       },
       {
         "id": "sample.connection-adapters/limits",
-        "command": "sample.connection-adapters/limits",
+        "command": "sample.connection-adapters/limits-run",
         "title": "Limits API",
         "authentication": "bearer",
         "adapter": "json",
@@ -304,7 +304,7 @@
       },
       {
         "id": "sample.connection-adapters/slow",
-        "command": "sample.connection-adapters/slow",
+        "command": "sample.connection-adapters/slow-run",
         "title": "Slow API",
         "authentication": "none",
         "adapter": "json",
@@ -319,7 +319,7 @@
       },
       {
         "id": "sample.connection-adapters/mirror",
-        "command": "sample.connection-adapters/mirror",
+        "command": "sample.connection-adapters/mirror-run",
         "title": "Mirror API",
         "authentication": "bearer",
         "adapter": "json",
@@ -338,7 +338,7 @@
       },
       {
         "id": "sample.connection-adapters/held",
-        "command": "sample.connection-adapters/held",
+        "command": "sample.connection-adapters/held-run",
         "title": "Held API",
         "authentication": "bearer",
         "adapter": "json",
@@ -357,7 +357,7 @@
       },
       {
         "id": "sample.connection-adapters/hosted",
-        "command": "sample.connection-adapters/hosted",
+        "command": "sample.connection-adapters/hosted-run",
         "title": "Hosted API",
         "authentication": "bearer",
         "adapter": "json",
@@ -372,7 +372,7 @@
       },
       {
         "id": "sample.connection-adapters/cloud",
-        "command": "sample.connection-adapters/cloud",
+        "command": "sample.connection-adapters/cloud-run",
         "title": "Cloud API",
         "authentication": "header",
         "adapter": "json",

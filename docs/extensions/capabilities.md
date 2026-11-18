@@ -118,6 +118,7 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.composer.council.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.model.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.model.entries` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.composer.model.speed` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.composer.panels.protected` | data | inspect | button | main | — |
 | `panda.composer.permissions.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.composer.protected` | data | inspect | button | main | — |
@@ -161,6 +162,12 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.dialog.command-palette.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.conversation-import.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.conversation-import.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.delete-bot.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.delete-bot.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.delete-cloud.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.delete-cloud.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.delete-task.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.delete-task.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.github-import.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.github-import.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.github-link.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
@@ -177,6 +184,8 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.dialog.jev-settings.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.jev-tests.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.jev-tests.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.machine-link.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.machine-link.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.moodboards.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.moodboards.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.open-project.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
@@ -186,12 +195,18 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.dialog.progress-lightbox.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.progress-lightbox.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.protected` | data | inspect | button | main | — |
+| `panda.dialog.provider-connections.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.provider-connections.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.recipes.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.recipes.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.remove-project.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.remove-project.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.rename-task.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.rename-task.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.sketch.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.sketch.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.skill-add.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.skill-add.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.subagents.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.subagents.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.task-details.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
@@ -208,6 +223,8 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.dialog.wallpapers.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.working-directory.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.working-directory.bodyExtras` | data | inspect, contribute | text | main | — |
+| `panda.dialog.worktree-cleanup.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
+| `panda.dialog.worktree-cleanup.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.dialog.worktree-create.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger, status, badge | main | — |
 | `panda.dialog.worktree-create.bodyExtras` | data | inspect, contribute | text | main | — |
 | `panda.documents` | data | inspect, replace, move, hide, show | viewer-first | main | — |
@@ -305,6 +322,8 @@ by this publication; regenerate and compare them in the final test phase.
 | `panda.thread.attachments.controls` | data | inspect, hide, show, reorder | button | main | — |
 | `panda.thread.changes.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.thread.changes.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.thread.errors.controls` | data | inspect, hide, show, reorder | button | main | — |
+| `panda.thread.errors.protected` | data | inspect | button | main | — |
 | `panda.thread.extras.protected` | data | inspect | button | main | — |
 | `panda.thread.find.actions` | action | inspect, contribute, hide, show, reorder | button, menu-trigger | main | — |
 | `panda.thread.find.controls` | data | inspect, hide, show, reorder | button | main | — |

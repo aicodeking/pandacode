@@ -473,6 +473,7 @@ impl Packages {
     }
     /// The files of a rich view's panel folder (`rich.folder`, R0302), relative to the folder, read from the
     /// revalidated stored archive of an enabled, trusted package, with the archive checksum they belong to.
+    #[allow(clippy::type_complexity)] // (checksum, files as (path, bytes)): a named alias would add nothing
     pub(crate) fn panel_files(&self, id: &str, folder: &str) -> Result<(String, Vec<(String, Vec<u8>)>)> {
         if self.safe || !safe_name(id) || id.contains('/') || !runtime_code_folders::valid_folder(folder) { return Err("PermissionDenied".into()); }
         let (record, package) = self.record(&self.root.join(format!("{id}.json")))?;
@@ -699,7 +700,10 @@ mod tests {
             }
             packages.install(&example_archive(&files, None)).unwrap_or_else(|error| panic!("{dir}: {error}"));
             assert!(!packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().enabled, "installed disabled");
-            if example["executable"] == true {
+            // Package code, or a declared `launch` harness (a command the user must trust), needs the executable trust.
+            let launches = manifest["contributes"]["providers"].as_array().into_iter().flatten().any(|provider| provider.get("launch").is_some())
+                || manifest["contributes"]["views"].as_array().into_iter().flatten().any(|view| view.get("rich").is_some());
+            if example["executable"] == true || launches {
                 assert!(packages.enable(id, true).unwrap_err().starts_with("ExecutableTrustRequired"), "{dir}");
                 let digest = packages.snapshot().packages.iter().find(|p| p.manifest["id"] == id).unwrap().executable.as_ref().unwrap().digest.clone();
                 packages.trust(id, &digest, true).unwrap();
@@ -808,10 +812,13 @@ mod tests {
         }
     }
     #[cfg(all(feature = "extension-runtime-native-tests", target_os = "windows", target_arch = "x86_64"))]
+    // The host lock is held for the whole test; the test has its own current-thread runtime (see `dynamic_adapter::TEST_HOST`).
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn dynamic_harness_real_package_runs_start_resume_steer_approve_reject_and_stop() {
         use crate::providers::{self, RunInput};
         use std::sync::Arc;
+        let _host = providers::dynamic_adapter::TEST_HOST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let storage = Storage::new();
         let packages = ExtensionPackages::new(&storage.0, false);
         install_harness(&packages.0.lock().unwrap(), HARNESS_MANIFEST, HARNESS_SOURCE);

@@ -216,8 +216,10 @@ pub(crate) fn effective_models(id: &str, definition: &Value) -> Vec<Value> {
     with(|store| store.entries.get(id).and_then(|entry| entry.models.clone())).unwrap_or_else(|| definition["models"].as_array().cloned().unwrap_or_default())
 }
 /// The published limits of provider `id` (the `limits` resource), when there are any.
+#[allow(dead_code)] // read by runtime_usage_resources once the usage view draws published windows (issues file)
 pub(crate) fn limits_of(id: &str) -> Option<Value> { with(|store| store.entries.get(id).and_then(|entry| entry.limits.clone().flatten())) }
 /// The published account label of provider `id` (the `accounts` resource).
+#[allow(dead_code)] // as limits_of
 pub(crate) fn account_of(id: &str) -> Option<String> { with(|store| store.entries.get(id).and_then(|entry| entry.account.clone().flatten())) }
 
 /// Whether a service published anything for provider `id` (the `harness` selector of the usage resources accepts it).
@@ -479,8 +481,12 @@ mod tests {
         }
         fn discovered() -> providers::ProviderInfo { providers::dynamic_adapter::discover().into_iter().find(|provider| provider.id == PROVIDER).expect("the provider is registered") }
 
+        // The test lock serializes the global provider state; the test runs on its own current-thread runtime, so no other
+        // task on this thread can wait for the guard while it is held across an await.
+        #[allow(clippy::await_holding_lock)]
         #[tokio::test]
         async fn the_roster_picker_and_send_path_follow_fake_sign_in_and_sign_out_without_starting_the_package() {
+            let _host = providers::dynamic_adapter::TEST_HOST.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             let _guard = guard();
             let dir = Dir::new();
             let packages = ExtensionPackages::new(&dir.0, false);

@@ -15,8 +15,8 @@
       { "id": "sample.sql-notebook/note", "title": "New SQL note", "extension": ".sql", "template": "templates/empty.sql", "editor": "sample.sql-notebook/editor" }
     ],
     "views": [
-      { "id": "sample.sql-notebook/databases", "title": "Databases", "controls": [{ "kind": "tree", "label": "Tables", "items": [] }] },
-      { "id": "sample.sql-notebook/recent", "title": "Recent notes", "controls": [{ "kind": "list", "label": "Notes", "items": [] }] }
+      { "id": "sample.sql-notebook/databases", "title": "Databases", "text": "The tables of the connected database.", "controls": [{ "kind": "tree", "label": "Tables", "items": [] }] },
+      { "id": "sample.sql-notebook/recent", "title": "Recent notes", "text": "The notes written most recently.", "controls": [{ "kind": "list", "label": "Notes", "items": [] }] }
     ],
     "hooks": [
       { "id": "sample.sql-notebook/save", "event": "save.before", "budgetMs": 200, "match": { "extensions": [".sql"] } }

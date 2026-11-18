@@ -52,8 +52,8 @@
     ],
     "settings": [
       { "id": "sample.inbox/settings", "title": "Attention inbox", "fields": [
-        { "id": "retentionDays", "kind": "text", "label": "Keep messages for (days)", "value": "7" },
-        { "id": "notifyDelaySec", "kind": "text", "label": "Notify after a row waits (seconds, 0 turns it off)", "value": "120" },
+        { "id": "retention-days", "kind": "text", "label": "Keep messages for (days)", "value": "7" },
+        { "id": "notify-delay-sec", "kind": "text", "label": "Notify after a row waits (seconds, 0 turns it off)", "value": "120" },
         { "id": "brief", "kind": "switch", "label": "Brief agents about the inbox tools", "value": true }
       ] }
     ]

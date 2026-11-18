@@ -61,7 +61,7 @@ test('Composer controls schema, selection kinds, package, catalog operations, pr
   // Empty ids are omitted, never sent: the public context rejects empty text.
   assert.equal(validateContract('context', { schemaVersion: 1, windowId: 'main', surfaceId: COMPOSER_PERMISSIONS_LOCATION, projectId: '', revision: 1, selection: { kind: 'approval-mode', ids: ['ask'] } }).ok, false);
   // The steer bar's slot is mounted by composer-host.ts with the draft context, not by the generic thread slots.
-  assert.deepEqual(ACTIONS, ['panda.composer.model.actions', COMPOSER_PERMISSIONS_LOCATION, 'panda.composer.steering.actions']); assert.ok(!THREAD_ACTION_SURFACES.includes('panda.composer.steering.actions'));
+  assert.deepEqual(ACTIONS, ['panda.composer.model.actions', COMPOSER_PERMISSIONS_LOCATION, 'panda.composer.steering.actions', 'panda.composer.band']); assert.ok(!THREAD_ACTION_SURFACES.includes('panda.composer.steering.actions'));
   for (const location of ACTIONS) { assert.ok(schema.$defs.actionLocation.enum.includes(location), location); assert.ok(actionLocations.includes(location), location); }
   for (const location of [COMPOSER_TRAY_LOCATION, COMPOSER_MODEL_LOCATION, COMPOSER_STEER_LOCATION]) { assert.ok(actionLocations.includes(location)); assert.ok(schema.$defs.layoutLocation.anyOf[1].enum.includes(location)); }
   for (const location of [COMPOSER_PROTECTED_LOCATION, 'panda.composer.mode', 'panda.composer.draft']) {

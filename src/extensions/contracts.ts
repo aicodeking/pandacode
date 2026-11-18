@@ -151,6 +151,7 @@ function shape(value: Json, schema: Schema, path: string, diagnostics: Diagnosti
       if (!object(value)) error('InvalidShape', path);
       for (const key of (schema.required ?? []) as string[]) if (!Object.hasOwn(value, key)) error('InvalidShape', `${path}/${key}`);
       if (Object.keys(value).length > Number(schema.maxProperties ?? Infinity)) error('LimitExceeded', path);
+      if (Object.keys(value).length < Number(schema.minProperties ?? 0)) error('InvalidShape', path);
       const properties = (schema.properties ?? {}) as Record<string, Schema>;
       const result: ObjectValue = {};
       for (const key of Object.keys(value).sort(compareText)) {

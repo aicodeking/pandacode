@@ -72,6 +72,9 @@ mod tests {
         packages.install(&archive(&[("extension.json", CONVERSATION)])).unwrap();
         packages.enable("sample.bot-conversation", true).unwrap();
         packages.install(&archive(&[("extension.json", RICH), ("assets/view.html", HTML), ("assets/view.css", CSS), ("assets/view.js", SCRIPT)])).unwrap();
+        // A rich view is package code (ADR-0001), so it needs the executable trust before it can be enabled.
+        let digest = packages.snapshot().packages.iter().find(|package| package.manifest["id"] == "sample.rich-view").unwrap().executable_digest().unwrap().to_owned();
+        packages.trust("sample.rich-view", &digest, true).unwrap();
         packages.enable("sample.rich-view", true).unwrap();
         assert_eq!(packages.snapshot().packages.iter().filter(|package| package.enabled).count(), 2);
         let (_, projected) = bots::web_projection(&store, &bot, &channel, "web", bot_web(&packages));

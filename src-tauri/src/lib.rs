@@ -221,6 +221,7 @@ impl RunningAgent {
         )
     }
 
+    #[allow(clippy::result_large_err)] // the channel's own error type hands the input back
     fn send(
         &self,
         input: RunInput,
@@ -974,7 +975,8 @@ fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunCo
         || session.remote_device.is_some()
         || remote::mirror::of(store, &session.id)?.is_some()
         || architect::leads_team(store, &session.id)?
-        || cloud_agents::transport::is_cloud(&session.id)
+        // Not `cloud_agents::transport::is_cloud`: the caller holds the store and it would lock it
+        // again (issue #382). This is the same check, on the held store.
         || cloud_agents::load(store, &session.id)?.is_some()
         || bots::owner_of(store, &session.id)?.is_some()
         || worker_launch(store, None, &session.id)?
@@ -1373,6 +1375,34 @@ async fn update_session(
 #[cfg(test)]
 mod draft_prewarm_tests {
     use super::*;
+
+    /// Issue #382: `spawn_draft_prewarm` holds the store while it plans, so planning must never
+    /// lock it again through `cloud_agents::transport::is_cloud` (a std mutex is not re-entrant).
+    #[test]
+    fn draft_prewarm_config_under_the_store_lock_never_locks_it_again() {
+        let (state, project_id) = concurrent_task_tests::test_state();
+        let draft = {
+            let db = state.store.lock().unwrap();
+            let task = db.create_session(&project_id, "claude", "claude-sonnet-4-6", "ask").unwrap();
+            db.mark_draft(&task.id).unwrap()
+        };
+        let store = state.store.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        // A thread of its own: before the fix it never returns, and the test times out instead.
+        std::thread::spawn(move || {
+            cloud_agents::transport::TEST_STORE.with(|slot| *slot.borrow_mut() = Some(store.clone()));
+            // As `spawn_draft_prewarm` does: plan under the store lock.
+            let db = store.lock().unwrap();
+            let session = db.session(&draft.id).unwrap();
+            let config = draft_prewarm_config(&db, &session);
+            drop(db);
+            let _ = done.send(config.map(|config| config.is_some()).map_err(|error| error.to_string()));
+        });
+        let qualified = finished
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("draft prewarm locked the store it already held (issue #382)");
+        assert_eq!(qualified, Ok(true));
+    }
 
     #[test]
     fn draft_prewarm_warm_key_matches_first_plain_turn_launch_exactly() {
