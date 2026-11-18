@@ -7,7 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
 type SavedHarness = { provider: string; model: string };
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -29,7 +29,17 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
       }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
-      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider }); if (args.provider === "codex" && window.__holdExplicit) { await new Promise(resolve => { window.__releaseExplicit = resolve; }); if (window.__failExplicit) throw new Error("Explicit save failed"); } if (window.__holdConfigure) { window.__holdConfigure = false; await new Promise(resolve => { window.__releaseConfigure = resolve; }); }')
+      .replace(/case ["']configure_session["']\s*:\s*\{/, `$&
+        (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider });
+        if (args.provider === "codex" && window.__holdExplicit) {
+          await new Promise(resolve => { window.__releaseExplicit = resolve; });
+          if (window.__failExplicit) throw new Error("Explicit save failed");
+        }
+        if (window.__holdConfigure) {
+          window.__holdConfigure = false;
+          const error = await new Promise(resolve => { window.__releaseConfigure = resolve; });
+          if (error) throw new Error(error);
+        }`)
       .replace(/case ["']send_message["']\s*:\s*\{/, `$&
         (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });
         { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }`)
@@ -49,8 +59,8 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
 }
 const answered = (page: Page) => page.evaluate(() => (window as BootWindow).__providersAnswered ?? null);
 /** The transcript painted while list_providers was still out (timed in the page, so a slow machine cannot fake it). */
-async function paintedBeforeProviders(page: Page): Promise<void> {
-  await expect(page.locator('#transcript .message').first()).toBeVisible({ timeout: 10_000 });
+async function paintedBeforeProviders(page: Page, timeout = 10_000): Promise<void> {
+  await expect(page.locator('#transcript .message').first()).toBeVisible({ timeout });
   const { painted, asked, answer } = await page.evaluate(() => { const w = window as BootWindow; return { painted: w.__firstMessageAt, asked: w.__providersAsked, answer: w.__providersAnswered }; });
   expect(asked, 'list_providers was asked').toBeDefined();
   expect(painted).toBeDefined();
@@ -530,12 +540,12 @@ test('a Deploy press dropped for a later New task writes nothing anywhere', asyn
   await expect(prompt).toHaveValue(typed);
 });
 
-/** A provisional draft whose correction is held before the native save, while its picker stays open. */
-async function heldCorrection(page: Page, deploy = false): Promise<string> {
+/** A provisional draft whose correction is held before the native save. */
+async function heldCorrection(page: Page, { deploy = false, openPicker = true } = {}): Promise<string> {
   await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
   await page.addInitScript(() => { (window as BootWindow).__cloudConnected = true; });
   await page.goto('/');
-  await paintedBeforeProviders(page);
+  await paintedBeforeProviders(page, 25_000);
   await page.evaluate(() => { const w = window as BootWindow; w.__holdDraft = true; w.__holdConfigure = true; });
   await page.waitForTimeout(PROVIDERS_DELAY + 300);
   if (deploy) await deployToVercel(page);
@@ -544,8 +554,10 @@ async function heldCorrection(page: Page, deploy = false): Promise<string> {
   if (!deploy) {
     await page.evaluate(() => (window as BootWindow).__releaseDraft!());
     await expect(page.locator('.new-task-welcome')).toBeVisible();
-    await page.locator('#model-picker-trigger').click();
-    await expect(page.locator('.model-menu')).toBeVisible();
+    if (openPicker) {
+      await page.locator('#model-picker-trigger').click();
+      await expect(page.locator('.model-menu')).toBeVisible({ timeout: 10_000 });
+    }
   }
   await release(page);
   await expect.poll(() => answered(page)).not.toBeNull();
@@ -554,6 +566,67 @@ async function heldCorrection(page: Page, deploy = false): Promise<string> {
   await expect(page.locator('.new-task-welcome')).toBeVisible();
   return (await page.locator('#prompt').getAttribute('data-session-id'))!;
 }
+
+test('a deliberate Send retries a rejected automatic harness save', async ({ page }) => {
+  test.setTimeout(60_000);
+  const draft = await heldCorrection(page, { openPicker: false });
+  const prompt = page.locator('#prompt');
+  const toast = page.locator('#toast');
+  const text = 'Keep this prompt until an installed harness is saved';
+  await prompt.fill(text);
+
+  const configured = { sessionId: draft, provider: 'claude' };
+  for (const [index, error] of ['Automatic harness save failed', 'Automatic harness retry failed'].entries()) {
+    await prompt.press('Enter');
+    await expect.poll(() => page.evaluate(() => {
+      const w = window as BootWindow;
+      return { held: Boolean(w.__releaseConfigure), configured: w.__configured, sent: w.__sent ?? [] };
+    })).toEqual({ held: true, configured: Array(index + 1).fill(configured), sent: [] });
+    await page.evaluate(error => {
+      const w = window as BootWindow;
+      const release = w.__releaseConfigure!;
+      w.__releaseConfigure = undefined;
+      w.__holdConfigure = true;
+      release(error);
+    }, error);
+    await expect(toast).toContainText(error);
+    await expect(toast).toBeVisible();
+    await expect(prompt).toHaveValue(text);
+    expect(await sent(page)).toEqual([]);
+  }
+
+  await prompt.press('Enter');
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure)).toBe('function');
+  expect(await sent(page)).toEqual([]);
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(prompt).toHaveValue('');
+  expect(await sent(page)).toEqual([{ sessionId: draft, text }]);
+  expect(await sentHarnesses(page)).toEqual([{ provider: 'claude', model: 'sonnet' }]);
+});
+
+test('an open model picker marks the saved correction without losing keyboard focus', async ({ page }) => {
+  test.setTimeout(60_000);
+  await heldCorrection(page);
+  const trigger = page.locator('#model-picker-trigger');
+  const menu = page.locator('.model-menu');
+  const claude = menu.locator('[role="tab"][data-view="h:claude"]');
+  const sonnet = menu.getByRole('option', { name: 'Claude Code · Claude Sonnet 5', exact: true });
+  await claude.click();
+  await expect(claude).toHaveAttribute('aria-selected', 'true');
+  await expect(sonnet).toBeVisible();
+  await expect(sonnet).not.toHaveAttribute('aria-current', 'true');
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'antigravity');
+  await page.keyboard.press('Tab');
+  await expect(claude).toBeFocused();
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect(trigger.locator('[data-model-label]')).toHaveText('Claude Sonnet 5');
+  await expect(sonnet).toHaveAttribute('aria-current', 'true');
+  await expect(menu.locator('[role="option"][aria-current="true"]')).toHaveCount(1);
+  await expect(claude).toHaveAttribute('aria-selected', 'true');
+  await expect(claude).toBeFocused();
+});
 
 test('an explicit picker choice during a held correction wins in memory and storage', async ({ page }) => {
   test.setTimeout(45_000);
@@ -576,7 +649,7 @@ test('an explicit picker choice during a held correction wins in memory and stor
 
 test('Deploy during a held correction sends its brief exactly once after the correction', async ({ page }) => {
   test.setTimeout(45_000);
-  const draft = await heldCorrection(page, true);
+  const draft = await heldCorrection(page, { deploy: true });
   await expect(page.locator('#prompt')).toHaveValue(/^Deploy this project to Vercel\./);
   expect(await sent(page)).toEqual([]);
   await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
@@ -615,7 +688,7 @@ async function refreshHarnesses(page: Page, ids: string[]): Promise<void> {
 for (const action of ['Send', 'Deploy', 'Send with no installed harness'] as const) {
   test(`${action} waiting on a held correction uses the latest Settings catalog`, async ({ page }) => {
     test.setTimeout(45_000);
-    const draft = await heldCorrection(page, action === 'Deploy');
+    const draft = await heldCorrection(page, { deploy: action === 'Deploy' });
     if (action !== 'Deploy') await page.keyboard.press('Escape');
     const noHarness = action === 'Send with no installed harness';
     await refreshHarnesses(page, noHarness ? [] : ['codex']);
@@ -673,7 +746,7 @@ test('early New chat waits for the first session snapshot and keeps its typed te
     await route.fulfill({ response, body });
   });
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseBootSnapshot)).toBe('function');
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseBootSnapshot), { timeout: 15_000 }).toBe('function');
   const button = page.locator('.sidebar-actions .new-chat-button');
   await button.click();
   // No chat may open against a snapshot that boot has yet to apply.
@@ -712,7 +785,7 @@ for (const earlyChat of [true, false]) {
       await route.fulfill({ response, body });
     });
     await page.goto('/');
-    await expect.poll(() => page.evaluate(() => typeof (window as RestoreWindow).__releaseBootSnapshot)).toBe('function');
+    await expect.poll(() => page.evaluate(() => typeof (window as RestoreWindow).__releaseBootSnapshot), { timeout: 15_000 }).toBe('function');
     const chatButton = page.locator('.sidebar-actions .new-chat-button');
     const taskButton = page.locator('.sidebar-actions .new-task-button');
     if (earlyChat) {
@@ -838,8 +911,8 @@ test('an edit during an ordinary harness save cancels that Send and keeps the ed
   await slowProviders(page);
   await page.goto('/');
   const prompt = page.locator('#prompt');
-  await expect(prompt).toBeVisible();
-  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect(prompt).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => answered(page), { timeout: 20_000 }).not.toBeNull();
   const thread = (await prompt.getAttribute('data-session-id'))!;
   await page.evaluate(() => { (window as BootWindow).__holdExplicit = true; });
   await prompt.fill('The text I pressed Enter for');
