@@ -6,11 +6,12 @@ import { expect, test, type Page } from '@playwright/test';
 
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[] };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
- *  create_session waits for window.__releaseDraft(); configure_session calls are recorded in `__configured`. */
+ *  create_session waits for window.__releaseDraft(); configure_session calls are recorded in `__configured`, sends in
+ *  `__sent`. With `__cloudConnected` set, every cloud platform reports connected (so Deploy offers them all). */
 async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
@@ -23,7 +24,9 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         await new Promise(resolve => ${held} ? (window.__releaseProviders = resolve) : setTimeout(resolve, ${PROVIDERS_DELAY}));
         window.__providersAnswered = performance.now();
       }`).replace(/case ["']create_session["']\s*:\s*\{/, '$& window.__drafts = (window.__drafts ?? 0) + 1; if (window.__holdDraft) await new Promise(resolve => { window.__releaseDraft = resolve; });')
-      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider });');
+      .replace(/case ["']configure_session["']\s*:\s*\{/, '$& (window.__configured ??= []).push({ sessionId: args.sessionId, provider: args.provider });')
+      .replace(/case ["']send_message["']\s*:\s*\{/, '$& (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });')
+      .replace(/case ["']cloud_connections["']\s*:\s*result\s*=\s*previewCloud\.connections\(\)\s*;/, '$& if (window.__cloudConnected) result = result.map(item => ({ ...item, connected: true }));');
     await route.fulfill({ response, body: previewBody(body) });
   });
   await page.addInitScript(saved => {
@@ -386,4 +389,71 @@ test('a New task drafted from the last launch\'s list is corrected when the real
   const draft = await page.locator('#prompt').getAttribute('data-session-id');
   await expect.poll(() => page.evaluate(() => (window as BootWindow).__configured ?? []), { timeout: 10_000, message: 'the draft moved to an installed harness' })
     .toEqual([{ sessionId: draft, provider: 'claude' }]);
+});
+
+/* Deploy (and a GitHub task) acts on the draft its New task press opens. While a press waits for the harness list, the
+ * same press again settles with it, and a press dropped for a later one settles without a draft: neither writes its
+ * brief into, or sends from, the thread that happens to be open. A last-launch list with nothing installed keeps every
+ * press waiting for the real list, however long it takes. */
+const NOTHING_INSTALLED = [{ id: 'claude', name: 'Claude Code', installed: false, models: [] }];
+const sent = (page: Page) => page.evaluate(() => (window as BootWindow).__sent ?? []);
+async function deployToVercel(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+  await page.getByRole('menu', { name: 'Deploy' }).getByRole('menuitem', { name: 'Deploy to Vercel' }).click();
+}
+async function heldWithCloud(page: Page): Promise<void> {
+  await slowProviders(page, NOTHING_INSTALLED, true);
+  await page.addInitScript(() => { (window as BootWindow).__cloudConnected = true; });
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+}
+
+test('Deploy pressed while a New task waits for the list writes its brief only into the new draft', async ({ page }) => {
+  test.setTimeout(30_000);
+  await heldWithCloud(page);
+  const prompt = page.locator('#prompt');
+  const before = await prompt.getAttribute('data-session-id'), typed = await prompt.inputValue();
+  const button = page.locator('.sidebar-actions .new-task-button');
+  await button.click();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  await deployToVercel(page);
+  // Both presses wait for the list: the open thread keeps its text and nothing is sent from it.
+  await page.waitForTimeout(400);
+  await expect(prompt).toHaveAttribute('data-session-id', before!);
+  await expect(prompt).toHaveValue(typed);
+  expect(await sent(page)).toEqual([]);
+  await release(page);
+  await expect.poll(async () => (await sent(page)).length, { timeout: 10_000 }).toBe(1);
+  const [deploy] = await sent(page);
+  expect(deploy.sessionId).not.toBe(before);
+  expect(deploy.text).toMatch(/^Deploy this project to Vercel\./);
+  expect(await page.evaluate(() => (window as BootWindow).__drafts ?? 0), 'one draft for both presses').toBe(1);
+  await page.waitForTimeout(300);
+  expect(await sent(page)).toHaveLength(1);
+});
+
+test('a Deploy press dropped for a later New task writes nothing anywhere', async ({ page }) => {
+  test.setTimeout(30_000);
+  await heldWithCloud(page);
+  const prompt = page.locator('#prompt');
+  const before = await prompt.getAttribute('data-session-id');
+  // New chat waits for the list; Deploy (a New task in this project) queues behind it.
+  await page.locator('.sidebar-actions .new-chat-button').click();
+  await deployToVercel(page);
+  // From a thread in another project, its New task replaces the queued Deploy press.
+  await page.locator('#navigation').getByRole('button', { name: /^pandacode .*Explore the project/ }).click();
+  await expect(prompt).not.toHaveAttribute('data-session-id', before!);
+  const elsewhere = await prompt.getAttribute('data-session-id'), typed = await prompt.inputValue();
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await release(page);
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__drafts ?? 0), { timeout: 10_000, message: "project-2's draft" }).toBe(1);
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  await expect(prompt).not.toHaveAttribute('data-session-id', elsewhere!);
+  await page.waitForTimeout(500);
+  await expect(prompt).toHaveValue('');
+  expect(await sent(page)).toEqual([]);
+  // The thread that was open keeps its text.
+  await page.locator('#navigation').getByRole('button', { name: /^pandacode .*Explore the project/ }).click();
+  await expect(prompt).toHaveAttribute('data-session-id', elsewhere!);
+  await expect(prompt).toHaveValue(typed);
 });

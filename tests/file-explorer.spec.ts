@@ -176,7 +176,16 @@ async function countPolls(page: Page): Promise<() => Promise<number>> {
   await expect(item(page, 'README.md')).toBeVisible();
   return () => page.evaluate(() => (window as any).__filePolls as number ?? 0);
 }
-/** No poll IPC across two and a bit poll intervals. */
+/** ms between two consecutive poll reads, timed from one of the poll's own reads (never from a test step). */
+async function readGap(polls: () => Promise<number>, within: number, why: string): Promise<number> {
+  let from = await polls();
+  await expect.poll(polls, { timeout: within, intervals: [50], message: `${why} (first read)` }).toBeGreaterThan(from);
+  const readAt = Date.now();
+  from = await polls();
+  await expect.poll(polls, { timeout: within, intervals: [50], message: `${why} (next read)` }).toBeGreaterThan(from);
+  return Date.now() - readAt;
+}
+/** No poll IPC across two and a bit quick poll intervals. */
 async function expectQuiet(page: Page, polls: () => Promise<number>, why: string): Promise<void> {
   await page.waitForTimeout(150);
   const from = await polls();
@@ -186,18 +195,17 @@ async function expectQuiet(page: Page, polls: () => Promise<number>, why: string
 
 test('file explorer: the poll slows while the window is unfocused, pauses while hidden, and refreshes at once on return', async ({ page }) => {
   test.setTimeout(60_000);
+  const periods = await trackPollTimer(page);
   const polls = await countPolls(page);
   let from = await polls();
   await expect.poll(polls, { timeout: 5000, message: 'focused with the tree on screen, it polls' }).toBeGreaterThan(from);
-  // Shown beside another app (unfocused): the tree and the open file still follow the disk, every 8 s instead of 2.
-  const blurredAt = Date.now();
+  // Shown beside another app (unfocused): the tree and the open file still follow the disk (an editor's saves show
+  // within 3 s), every 3 s instead of 2.
   await page.evaluate(() => { document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
-  await expectQuiet(page, polls, 'no 2 s poll while the window is unfocused');
-  from = await polls();
-  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'an unfocused, visible window still polls' }).toBeGreaterThan(from);
-  const slowTick = Date.now() - blurredAt;
-  expect(slowTick, `the first unfocused poll came ${slowTick} ms after the blur`).toBeGreaterThan(7000);
-  expect(slowTick).toBeLessThan(10_000);
+  await expect.poll(periods, { timeout: 1000, message: 'an unfocused window polls every 3 s' }).toEqual([3000]);
+  const gap = await readGap(polls, 4500, 'an unfocused, visible window still polls');
+  expect(gap, `two unfocused reads came ${gap} ms apart`).toBeGreaterThan(2500);
+  expect(gap).toBeLessThan(4000);
   from = await polls();
   await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
   await expect.poll(polls, { timeout: 500, message: 'focus refreshes at once' }).toBeGreaterThan(from);
@@ -229,20 +237,18 @@ test('file explorer: the poll runs only while the Files tree or an open file is 
   await expectQuiet(page, polls, 'no poll while neither the tree nor a file is on screen');
 });
 
-test('file explorer: a window that starts unfocused polls at the 8 s rate', async ({ page }) => {
+test('file explorer: a window that starts unfocused polls at the 3 s rate', async ({ page }) => {
   test.setTimeout(60_000);
   // Launched in the background: the document never had focus, and no blur ever fires to say so.
   await page.addInitScript(() => { document.hasFocus = () => false; });
+  const periods = await trackPollTimer(page);
   const polls = await countPolls(page);
-  // The 8 s interval starts with the explorer, early in boot, not when the tree first shows: a slow boot (WebKit) puts its
-  // first tick inside a quiet stretch timed from the tree. Time the stretch from one of the poll's own reads instead.
-  let from = await polls();
-  await expect.poll(polls, { timeout: 10_000, intervals: [100], message: 'an unfocused window reads within one slow beat' }).toBeGreaterThan(from);
-  const readAt = Date.now();
-  await expectQuiet(page, polls, 'no 2 s poll in a window that started unfocused');
-  from = await polls();
-  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'an unfocused, visible window still polls' }).toBeGreaterThan(from);
-  expect(Date.now() - readAt, 'the gap between two reads of a window that started unfocused').toBeGreaterThan(7000);
+  expect(await periods()).toEqual([3000]);
+  // The interval starts with the explorer, early in boot, not when the tree first shows: a slow boot (WebKit) puts its
+  // first tick at any point after the tree. Time the gap from one of the poll's own reads instead.
+  const gap = await readGap(polls, 4500, 'an unfocused, visible window polls');
+  expect(gap, 'the gap between two reads of a window that started unfocused').toBeGreaterThan(2500);
+  expect(gap).toBeLessThan(4000);
   // Focus arriving brings the 2 s poll back, refreshing at once.
   const focusedFrom = await polls();
   await page.evaluate(() => { document.hasFocus = () => true; dispatchEvent(new Event('focus')); });
@@ -262,13 +268,14 @@ test('file explorer: focus in the in-app browser keeps the focused rate; the win
   expect(await periods(), 'page unfocused, window focused').toEqual([2000]);
   // Another app takes focus: the window reports it.
   await page.evaluate(() => (window as any).__windowFocus.set(false));
-  expect(await periods(), 'window unfocused').toEqual([8000]);
+  expect(await periods(), 'window unfocused').toEqual([3000]);
   await page.evaluate(() => (window as any).__windowFocus.set(true));
   expect(await periods(), 'window focused again').toEqual([2000]);
 });
 
 /** Tracks the Files poll's live interval (named `filePollTick` in file-explorer.ts) by its period, so a test can read the
- * rate directly: [] while nothing is mounted, [2000] while in use, [8000] once settled. */
+ * rate directly: [] while nothing is mounted, [2000] while in use, [3000] once settled or unfocused, [8000] after a long
+ * idle without focus. */
 async function trackPollTimer(page: Page): Promise<() => Promise<number[]>> {
   await page.addInitScript(() => {
     const live = new Map<number, number>(), set = window.setInterval.bind(window), clear = window.clearInterval.bind(window);
@@ -282,22 +289,53 @@ async function trackPollTimer(page: Page): Promise<() => Promise<number[]>> {
   });
   return () => page.evaluate(() => (window as any).__filePollPeriods() as number[]);
 }
-/** Waits, without input, until the focused poll settles to 8 s after its unchanged reads. */
+/** Waits, without input, until the focused poll settles to 3 s after its unchanged reads. */
 async function settle(page: Page, periods: () => Promise<number[]>): Promise<void> {
-  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'three unchanged reads slow the focused poll to 8 s' }).toEqual([8000]);
+  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'three unchanged reads slow the focused poll to 3 s' }).toEqual([3000]);
 }
 
-test('file explorer: a focused poll backs off to 8 s after unchanged reads', async ({ page }) => {
+test('file explorer: a focused poll backs off to 3 s after unchanged reads', async ({ page }) => {
   test.setTimeout(60_000);
   const periods = await trackPollTimer(page);
   const polls = await countPolls(page);
   expect(await periods()).toEqual([2000]);
   await settle(page, periods);
-  // Settled: no 2 s tick, and the next read comes on the 8 s beat.
-  await expectQuiet(page, polls, 'no 2 s poll once the tree has read the same three times');
-  const from = await polls();
-  await expect.poll(polls, { timeout: 6000, intervals: [100], message: 'a settled poll still reads every 8 s' }).toBeGreaterThan(from);
-  expect(await periods()).toEqual([8000]);
+  // Settled: the reads come on the 3 s beat, not the 2 s one.
+  const gap = await readGap(polls, 4500, 'a settled poll still reads');
+  expect(gap, `two settled reads came ${gap} ms apart`).toBeGreaterThan(2500);
+  expect(gap).toBeLessThan(4000);
+  expect(await periods()).toEqual([3000]);
+});
+
+test('file explorer: only a long idle without focus backs the poll off to 8 s, and input or focus undoes it', async ({ page }) => {
+  test.setTimeout(60_000);
+  // Lets the test move the page's clock forward without touching its timers.
+  await page.addInitScript(() => {
+    const now = Date.now.bind(Date);
+    (window as any).__clockSkew = 0;
+    Date.now = () => now() + (window as any).__clockSkew;
+  });
+  const periods = await trackPollTimer(page);
+  await countPolls(page);
+  const skip = (ms: number) => page.evaluate(by => { (window as any).__clockSkew += by; }, ms);
+  // Focused, five minutes without input only settles it: the 8 s back-off needs the window to be unfocused too.
+  await skip(6 * 60_000);
+  await expect.poll(periods, { timeout: 4000, intervals: [250], message: 'a focused, long idle window settles to 3 s' }).toEqual([3000]);
+  // Another app takes focus, reported by the window (the preview's stand-in), as the in-app browser test does.
+  await page.evaluate(() => (window as any).__windowFocus.set(false));
+  await expect.poll(periods, { timeout: 4000, intervals: [250], message: 'unfocused after a long idle, it backs off to 8 s' }).toEqual([8000]);
+  // Input (a wheel over the unfocused window) restores the unfocused 3 s rate. Dispatched rather than driven through the
+  // mouse: WebKit's driver focuses the page for real input.
+  await page.evaluate(() => dispatchEvent(new WheelEvent('wheel', { deltaY: 10 })));
+  await expect.poll(periods, { timeout: 1000, message: 'input undoes the long-idle back-off' }).toEqual([3000]);
+  // Unfocused but recently used: a short idle keeps the 3 s rate.
+  await skip(60_000);
+  await page.waitForTimeout(3500);
+  expect(await periods(), 'a minute without input, unfocused').toEqual([3000]);
+  await skip(5 * 60_000);
+  await expect.poll(periods, { timeout: 4000, intervals: [250] }).toEqual([8000]);
+  await page.evaluate(() => (window as any).__windowFocus.set(true));
+  await expect.poll(periods, { timeout: 1000, message: 'focus brings the 2 s rate back' }).toEqual([2000]);
 });
 
 test('file explorer: input brings a settled poll back to 2 s', async ({ page }) => {
@@ -340,7 +378,7 @@ test('file explorer: a change on disk shows within one settled tick and restores
   await countPolls(page);
   await settle(page, periods);
   await disk(page, 'manage_workspace_entry', { action: 'new-file', path: 'appeared.txt' });
-  await expect(item(page, 'appeared.txt')).toBeVisible({ timeout: 9000 });
+  await expect(item(page, 'appeared.txt')).toBeVisible({ timeout: 4500 });
   expect(await periods(), 'a change brings the quick rate back').toEqual([2000]);
 });
 
@@ -348,9 +386,9 @@ test('file explorer: while the open thread\'s agent works the poll keeps the 2 s
   test.setTimeout(60_000);
   const periods = await trackPollTimer(page);
   const polls = await countPolls(page);
-  // Shown beside another app (unfocused) and settled: the slow rate.
+  // Shown beside another app (unfocused): the slower rate.
   await page.evaluate(() => { document.hasFocus = () => false; dispatchEvent(new Event('blur')); });
-  await expect.poll(periods, { timeout: 5000, message: 'an unfocused window polls every 8 s' }).toEqual([8000]);
+  await expect.poll(periods, { timeout: 5000, message: 'an unfocused window polls every 3 s' }).toEqual([3000]);
   const sessionId = await page.locator('#prompt').getAttribute('data-session-id');
   const agent = (kind: string, extra: Record<string, unknown> = {}) => page.evaluate(event => (window as any).__previewEmit('agent-event', event), { sessionId, kind, text: '', ...extra });
   // The agent starts: its edits land with no input, so the quick rate holds, unfocused or settled.
@@ -369,5 +407,5 @@ test('file explorer: while the open thread\'s agent works the poll keeps the 2 s
   await expect.poll(polls, { timeout: 1000, intervals: [50], message: 'a tool event reads within the activity delay' }).toBeGreaterThan(before);
   // The run ends: back to the slow rate once it settles.
   await agent('done');
-  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'with the agent done, the unfocused poll slows again' }).toEqual([8000]);
+  await expect.poll(periods, { timeout: 12_000, intervals: [250], message: 'with the agent done, the unfocused poll slows again' }).toEqual([3000]);
 });

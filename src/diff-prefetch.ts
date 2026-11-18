@@ -19,37 +19,62 @@ export function preloadDiffsAfterPaint(): void {
   requestAnimationFrame(() => setTimeout(() => { afterPaint = false; void preloadDiffs(); }, 0));
 }
 
-/** With no diff asked for, the engine starts this long after boot, at the next idle moment, if the current project's git
- *  status has changes (noteChangedPaths); with none it waits for intent or for a change to appear. */
+/** With no diff asked for, the engine starts this long after boot, at the next idle moment, if the inspector is open
+ *  (diffSurfaceOpen) and the current project's git status has changes (noteChangedPaths). Otherwise it waits for intent,
+ *  for the inspector to open or for a change to appear: a closed inspector never loads the workers and Shiki on its own. */
 export const DIFF_IDLE_AFTER = 15_000;
 /** Pointing at or focusing one of these is a diff about to be opened: change rows, Open diff, the Changes tab. */
 export const DIFF_INTENT = '.turn-changes, [data-action="open-turn-diff"], [data-action="tab-changes"], .cv-file, .change-review-files';
 let disarm: () => void = () => {};
-/** Set once the idle moment passed with nothing changed: the first changes noted later start the idle preload. */
-let idleWithoutChanges: (() => void) | undefined;
+/** Set once the idle moment passed without a reason to load (no changes, or the inspector closed): noted changes or the
+ *  inspector opening run it again. */
+let idleWaiting: (() => void) | undefined;
+
+/** The inspector, where Changes, the file tree and open files live, is shown and not on its way out. */
+export function diffSurfaceOpen(doc: Pick<Document, 'getElementById'> = document): boolean {
+  const inspector = doc.getElementById('inspector');
+  return Boolean(inspector && !inspector.hidden && !inspector.hasAttribute('data-leaving') && !inspector.closest('.inspector-closed'));
+}
+
+/** Calls `opened` when #inspector's hidden or data-leaving attribute changes; returns the stop function. */
+function watchInspector(doc: Pick<Document, 'getElementById'>, opened: () => void): () => void {
+  const inspector = doc.getElementById('inspector');
+  if (!inspector || typeof MutationObserver !== 'function') return () => {};
+  const observer = new MutationObserver(opened);
+  observer.observe(inspector, { attributes: true, attributeFilter: ['hidden', 'data-leaving'] });
+  return () => observer.disconnect();
+}
 
 /**
  * Starts the engine only when a diff is likely: something matching DIFF_INTENT is hovered or
  * focused (keyboard focus counts), `preloadDiffsAfterPaint()` is called (the Changes tab or a file
- * or diff view opened), or DIFF_IDLE_AFTER has passed, the page is idle and the current project's
- * git status has changes. A diff opened before any of these still renders: mounting starts the
- * engine itself.
+ * or diff view opened), or DIFF_IDLE_AFTER has passed, the page is idle, the inspector is open and the
+ * current project's git status has changes. A diff opened before any of these still renders: mounting
+ * starts the engine itself.
  */
-export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 'removeEventListener'> = document, win: Pick<Window, 'setTimeout' | 'clearTimeout'> & { requestIdleCallback?: (run: () => void, options?: { timeout: number }) => number } = window): void {
+export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 'removeEventListener' | 'getElementById'> = document, win: Pick<Window, 'setTimeout' | 'clearTimeout'> & { requestIdleCallback?: (run: () => void, options?: { timeout: number }) => number } = window): void {
   if (preloaded || afterPaint) return;
   disarm();
   const near = (event: Event) => { if ((event.target as Element | null)?.closest?.(DIFF_INTENT)) preloadDiffsAfterPaint(); };
-  let armed = true;
-  // The changes may be gone by the idle moment (committed, reverted): then it waits for the next ones again.
-  const idle = () => { if (!armed) return; if (changedNames.length) whenIdle(); else idleWithoutChanges = whenIdle; };
-  const whenIdle = () => { if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (armed && changedNames.length) preloadDiffsAfterPaint(); else idle(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
+  let armed = true, unwatch = () => {};
+  const wanted = () => armed && changedNames.length > 0 && diffSurfaceOpen(doc);
+  // The changes may be gone or the inspector closed by the idle moment: then it waits for the next chance again.
+  const idle = () => {
+    if (!armed) return;
+    unwatch(); unwatch = () => {};
+    if (wanted()) { whenIdle(); return; }
+    idleWaiting = idle;
+    unwatch = watchInspector(doc, () => { if (wanted()) idle(); });
+  };
+  const whenIdle = () => { idleWaiting = undefined; if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (wanted()) preloadDiffsAfterPaint(); else idle(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
   const timer = win.setTimeout(idle, DIFF_IDLE_AFTER);
   doc.addEventListener('pointerover', near, { passive: true });
   doc.addEventListener('focusin', near);
   disarm = () => {
     disarm = () => {};
     armed = false;
-    idleWithoutChanges = undefined;
+    idleWaiting = undefined;
+    unwatch();
     win.clearTimeout(timer);
     doc.removeEventListener('pointerover', near);
     doc.removeEventListener('focusin', near);
@@ -60,8 +85,8 @@ let changedNames: string[] = [];
 /** File names in the current git status, so the pool warms their grammars first. */
 export function noteChangedPaths(paths: string[]): void {
   changedNames = paths.slice(0, 50).map(path => path.slice(path.lastIndexOf('/') + 1));
-  const waiting = idleWithoutChanges;
-  if (waiting && changedNames.length) { idleWithoutChanges = undefined; waiting(); }
+  const waiting = idleWaiting;
+  if (waiting && changedNames.length) waiting();
 }
 export function likelyFileNames(): string[] { return changedNames; }
 

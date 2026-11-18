@@ -13,9 +13,11 @@ html[data-theme] .sidebar .new-task-button>.icon{color:var(--accent-ink)}
 html[data-theme=dark] .sidebar .new-task-button>.icon{color:var(--focus)}
 .sidebar .sidebar-actions kbd,html[data-theme] .sidebar .new-task-button kbd{margin-left:auto;color:var(--faint);font-size:var(--text-2xs);background:none;border:0;padding:0}
 /* A New task or New chat press (button or ⌘N) waiting for boot or the harness list: the button's icon pulses until the draft
-   opens (main.ts showCreationBusy sets aria-busy). Reduced motion holds it dimmed instead. */
+   opens (main.ts showCreationBusy sets aria-busy). Reduced motion holds it dimmed instead, 180 ms after the press so an
+   instant press never flickers: a zero-length opacity step with a delay (!important past the global reduced-motion reset
+   in styles.css). Only the busy state carries it, so the icon comes back at once when the draft opens. */
 @media(prefers-reduced-motion:no-preference){:is(.new-task-button,.new-chat-button,.welcome .primary-button)[data-action][aria-busy="true"]>.icon{animation:state-pulse 1.6s ease-in-out infinite}}
-@media(prefers-reduced-motion:reduce){:is(.new-task-button,.new-chat-button,.welcome .primary-button)[data-action][aria-busy="true"]>.icon{opacity:.45}}
+@media(prefers-reduced-motion:reduce){:is(.new-task-button,.new-chat-button,.welcome .primary-button)[data-action][aria-busy="true"]>.icon{opacity:.45;transition:opacity 0s linear 180ms!important}}
 
 /* "All projects" doubles as the section label and the project filter. */
 .sidebar .sidebar-projects{height:28px;padding:0 8px 0 17px;gap:1px}

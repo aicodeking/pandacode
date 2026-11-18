@@ -3944,9 +3944,8 @@ async function openHubTask(id: string): Promise<void> {
  * attach the item's content as GitHub context once the project's GitHub status is known. */
 async function startHubTask({ projectId, prompt, title, link, send: start }: { projectId: string; prompt: string; title?: string; link?: TaskLink; send: boolean }): Promise<void> {
   await github.status(projectId);
-  await createTask(projectId);
-  const task = session();
-  if (!task || task.projectId !== projectId) return;
+  const task = await createTask(projectId) ? openedDraft(projectId) : undefined;
+  if (!task) return;
   const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
   if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
   if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
@@ -6611,9 +6610,10 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items: deployItems(connections), onSelect: async id => {
     closeChoiceMenu();
     const projectId = state.projectId;
-    await createTask(projectId);
+    // Only into the draft this press opened: a press dropped for a later one leaves whatever thread is open untouched.
+    const draft = await createTask(projectId) ? openedDraft(projectId) : undefined;
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (!prompt || state.projectId !== projectId) return;
+    if (!draft || !prompt || prompt.dataset.sessionId !== draft.id) return;
     prompt.value = deployBrief(id as import('./deploy').DeployTarget);
     await send();
   } });
@@ -6622,47 +6622,64 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
 let taskCreation: Promise<unknown> | undefined;
 /* New task and New chat presses. One under way marks its buttons busy (aria-busy, progress cursor) until its draft is
  * open, so a press made while the harness list or boot is awaited visibly registered. The same press again is the one
- * under way (no second draft); a different one made meanwhile (New chat while a draft opens, another project's New
- * task) is kept, only the latest, and runs once the first ends. */
-type CreationPress = { key: string; action: 'new-task' | 'new-chat'; work: () => Promise<void> };
-let pressInFlight: CreationPress | undefined;
-let pressQueued: { press: CreationPress; done: () => void; failed: (error: unknown) => void } | undefined;
-function pressCreation(press: CreationPress): Promise<void> {
+ * under way (no second draft) and settles with it; a different one made meanwhile (New chat while a draft opens,
+ * another project's New task) is kept, only the latest, and runs once the first ends. Each press settles true when its
+ * work opened what it was for, false when it was dropped for a later press or opened nothing, so a caller that acts on
+ * the new thread afterwards (Deploy, a GitHub task) never acts on whatever thread happens to be open. */
+type CreationPress = { key: string; action: 'new-task' | 'new-chat'; work: () => Promise<boolean> };
+let pressInFlight: { press: CreationPress; settled: Promise<boolean> } | undefined;
+let pressQueued: { press: CreationPress; settled: Promise<boolean>; done: (opened: boolean) => void; failed: (error: unknown) => void } | undefined;
+function pressCreation(press: CreationPress): Promise<boolean> {
   if (pressInFlight) {
-    if (press.key === pressInFlight.key) return Promise.resolve();
-    pressQueued?.done();
-    return new Promise<void>((done, failed) => { pressQueued = { press, done, failed }; showCreationBusy(); });
+    if (press.key === pressInFlight.press.key) return pressInFlight.settled;
+    if (press.key === pressQueued?.press.key) return pressQueued.settled;
+    pressQueued?.done(false);
+    let done: (opened: boolean) => void = () => {}, failed: (error: unknown) => void = () => {};
+    const settled = new Promise<boolean>((resolve, reject) => { done = resolve; failed = reject; });
+    pressQueued = { press, settled, done, failed }; showCreationBusy();
+    return settled;
   }
-  pressInFlight = press; showCreationBusy();
-  return press.work().finally(() => {
+  // Marked under way before its work starts, so the work's synchronous part already sees its buttons busy.
+  let markDone: (opened: boolean) => void = () => {}, markFailed: (error: unknown) => void = () => {};
+  const settled = new Promise<boolean>((resolve, reject) => { markDone = resolve; markFailed = reject; });
+  pressInFlight = { press, settled }; showCreationBusy();
+  press.work().then(markDone, markFailed).finally(() => {
     pressInFlight = undefined;
     const queued = pressQueued; pressQueued = undefined;
     if (queued) pressCreation(queued.press).then(queued.done, queued.failed); else showCreationBusy();
   });
+  return settled;
+}
+/** The draft a New task for `projectId` has just opened, if that is what is open now: unsent, idle, in that project. */
+function openedDraft(projectId: string): Session | undefined {
+  const task = session();
+  return task?.draft && task.projectId === projectId && task.lastPromptAt == null && !isRunning(task.id) && !finishingStreams.has(task.id) ? task : undefined;
 }
 function showCreationBusy(): void {
   for (const action of ['new-task', 'new-chat'] as const) {
-    const busy = pressInFlight?.action === action || pressQueued?.press.action === action;
+    const busy = pressInFlight?.press.action === action || pressQueued?.press.action === action;
     document.querySelectorAll<HTMLElement>(`button[data-action="${action}"]`).forEach(button => {
       if (busy) { button.setAttribute('aria-busy', 'true'); button.style.cursor = 'progress'; }
       else if (button.hasAttribute('aria-busy')) { button.removeAttribute('aria-busy'); button.style.removeProperty('cursor'); }
     });
   }
 }
-function newChat(): Promise<void> { return pressCreation({ key: 'chat', action: 'new-chat', work: () => createChat() }); }
-function createTask(projectId = state.projectId): Promise<void> {
+// Nothing acts on the chat a New chat opens, so its press only reports that it ran.
+function newChat(): Promise<boolean> { return pressCreation({ key: 'chat', action: 'new-chat', work: () => createChat().then(() => true) }); }
+/** Settles true once a draft for `projectId` is open from this press (see pressCreation), false when it opened none. */
+function createTask(projectId = state.projectId): Promise<boolean> {
   const run = pressCreation({ key: `task:${projectId}`, action: 'new-task', work: () => startTask(projectId) });
   const tracked: Promise<unknown> = Promise.allSettled([taskCreation, run]).finally(() => { if (taskCreation === tracked) taskCreation = undefined; });
   taskCreation = tracked;
   return run;
 }
-async function startTask(projectId: string): Promise<void> {
+async function startTask(projectId: string): Promise<boolean> {
   if (bootPending) await bootPending.catch(() => undefined);
-  if (creatingTask) return;
+  if (creatingTask) return false;
   const projects = state.projects.filter(p => !isChatProject(p));
   const active = projects.find(p => p.id === projectId)
     ?? projects.find(p => p.id === localStorage.getItem('pandacode.project')) ?? userProjects()[0];
-  if (!active) { notify('Open a project to start a task.'); return; }
+  if (!active) { notify('Open a project to start a task.'); return false; }
   closeModelPicker();
   closeProjectPicker();
   const generation = state.generation;
@@ -6671,23 +6688,24 @@ async function startTask(projectId: string): Promise<void> {
   let created: Session;
   try {
     const harness = pickHarness(await providersForChoice());
-    if (generation !== state.generation) return;
-    if (!harness) { notify('Open Settings to check your installed agents.'); return; }
+    if (generation !== state.generation) return false;
+    if (!harness) { notify('Open Settings to check your installed agents.'); return false; }
     // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
     // (typed text or a worktree) is reopened; from inside one, New task starts another.
     const current = state.sessionId;
     leaveDraft('');
     // A settled draft (its worktree removed) is never reopened.
     const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
-    if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
+    if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return true; }
     const provisional = !providersKnown;
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
     noteProvisional(created, provisional);
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
   checkProvisionalTasks();
-  if (generation !== state.generation) { renderNavigation(); return; }
+  if (generation !== state.generation) { renderNavigation(); return false; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
+  return true;
 }
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
  *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
@@ -8858,22 +8876,32 @@ function providersLanded(found: Provider[], discovery: number): void {
 /** Tasks created from the last launch's list while the real one was late: one whose harness turns out to be missing,
  *  and that has not been sent yet, moves to the harness a New task would pick now (or says to check Settings). */
 async function correctProvisionalTasks(): Promise<void> {
-  const ids = [...provisionalTasks]; provisionalTasks.clear();
-  for (const id of ids) {
+  // Each id stays provisional until its own correction has finished, and is marked configuring meanwhile: a Send
+  // (sendDraft's guard), the queue and a second pass all hold off it instead of racing configure_session.
+  for (const id of [...provisionalTasks]) {
+    // Read afresh after every earlier correction's await: a Send may have taken it or started it since.
+    if (!provisionalTasks.has(id) || configuringSessions.has(id)) continue;
     const task = state.sessions.find(s => s.id === id);
     // Created but not listed yet (its creator is still finishing): it is checked once listed (checkProvisionalTasks).
-    if (!task) { if (!deletedSessions.has(id)) provisionalTasks.add(id); continue; }
-    if (task.lastPromptAt != null || isRunning(id)) continue;
-    if (await correctProvisionalTask(task) === 'missing') notify('Open Settings to check your installed agents.');
+    if (!task) { if (deletedSessions.has(id)) provisionalTasks.delete(id); continue; }
+    if (task.lastPromptAt != null || isRunning(id)) { provisionalTasks.delete(id); continue; }
+    configuringSessions.add(id);
+    let outcome: 'ok' | 'missing' | 'stale';
+    try { outcome = await correctProvisionalTask(task); } finally { configuringSessions.delete(id); provisionalTasks.delete(id); }
+    if (outcome === 'missing') notify('Open Settings to check your installed agents.');
   }
 }
 /** Checks one provisional task against the real list: 'ok' when its harness is installed (or it moved to the harness a
- *  New task would pick now), 'missing' when no installed harness is left to move it to. */
-async function correctProvisionalTask(task: Session): Promise<'ok' | 'missing'> {
+ *  New task would pick now), 'missing' when no installed harness is left to move it to, 'stale' when it was deleted or
+ *  started while configure_session was out (its newer row is kept). */
+async function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stale'> {
   if (provider(task.provider)?.installed) return 'ok';
   const harness = pickHarness(state.providers);
   if (!harness?.installed) return 'missing';
   const updated = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+  // A task that started meanwhile (or was deleted) keeps the row its run has written: this answer would roll it back.
+  const now = state.sessions.find(s => s.id === task.id);
+  if (!now || deletedSessions.has(task.id) || now.lastPromptAt != null || isRunning(task.id)) return 'stale';
   state.sessions = state.sessions.map(s => s.id === task.id ? updated : s);
   if (task.id === state.sessionId) { renderComposer(); renderHeader(); }
   return 'ok';
@@ -8882,7 +8910,8 @@ async function correctProvisionalTask(task: Session): Promise<'ok' | 'missing'> 
  *  or the send stops with the install note. Until the real list lands the last launch's choice is the best known one. */
 async function provisionalReadyToSend(s: Session): Promise<boolean> {
   if (!providersKnown || !provisionalTasks.delete(s.id)) return true;
-  if (await correctProvisionalTask(s) === 'ok') return true;
+  const outcome = await correctProvisionalTask(s);
+  if (outcome !== 'missing') return outcome === 'ok';
   showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
   return false;
 }

@@ -193,6 +193,12 @@ const TEAM_STATUS_TRIGGERS: [&str; 3] = ["architect_team_status_insert", "archit
 /// restart just interrupted, or every team the first time (or after the triggers went missing).
 pub(crate) const TEAM_STATUS_BACKFILL: &str = concat!("INSERT INTO architect_team_status(session_id,status) SELECT session_id,", team_status_sql!(),
     " FROM architect_teams t WHERE NOT EXISTS(SELECT 1 FROM architect_team_status s WHERE s.session_id=t.session_id)");
+/// Interrupts the teams a quit left running or waiting. The side table picks them (entries are
+/// complete once `TEAM_STATUS_BACKFILL` has run in the same transaction), and the parsed status
+/// confirms each, so the rows changed are exactly those the snapshots alone would select.
+const TEAM_RECOVERY: &str = concat!("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
+    '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
+    WHERE session_id IN (SELECT session_id FROM architect_team_status WHERE status IN ('running','waiting')) AND ", team_status_sql!(), " IN ('running','waiting')");
 const TEAM_STATUS_SAVED: &str = "SELECT status FROM architect_team_status WHERE session_id=?1";
 const TEAM_STATUS_BY_ROW: &str = concat!("SELECT ", team_status_sql!(), " FROM architect_teams WHERE session_id=?1");
 const TEAM_SAVE: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
@@ -767,11 +773,15 @@ impl Store {
                 [],
             )
             .map_err(|e| e.to_string())?;
-        recovery.execute_batch("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
-            '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
-            WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END IN ('running','waiting');").map_err(|e|e.to_string())?;
+        // Every snapshot written since the last open (or all of them after `prepare_team_status`
+        // cleared the entries) gets its entry first, so the side table names every running or
+        // waiting team and the recovery parses only those snapshots. Its writes drop the entries
+        // of the teams it interrupted (the update trigger), so a second backfill in the same
+        // transaction records them as interrupted.
+        recovery.execute_batch(TEAM_STATUS_BACKFILL).map_err(|e| e.to_string())?;
+        recovery.execute_batch(TEAM_RECOVERY).map_err(|e| e.to_string())?;
+        recovery.execute_batch(TEAM_STATUS_BACKFILL).map_err(|e| e.to_string())?;
         recovery.commit().map_err(|e| e.to_string())?;
-        db.execute_batch(TEAM_STATUS_BACKFILL).map_err(|e| e.to_string())?;
         let ranked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE sidebar_order IS NOT NULL)", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if ranked { rank_published_drafts(&db)?; }
         let store = Self {
@@ -3025,6 +3035,73 @@ mod tests {
     }
 
     #[test]
+    fn launch_recovery_picks_teams_from_the_side_table() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = store.db.prepare(&format!("EXPLAIN QUERY PLAN {TEAM_RECOVERY}")).unwrap()
+            .query_map([], |row| row.get::<_, String>(3)).unwrap().map(|row| row.unwrap()).collect();
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH architect_teams USING INDEX sqlite_autoindex_architect_teams_1")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.starts_with("SCAN architect_teams")), "{plan:?}");
+        drop(store);
+
+        const RUNNING: &str = r#"{"status":"running","legacyPromptThroughId":0,"generation":1,"workers":[{"status":"waiting"},{"status":"done"}]}"#;
+        const WAITING: &str = r#"{"status":"waiting","legacyPromptThroughId":0,"workers":[]}"#;
+        const IDLE: &str = r#"{"status":"idle","legacyPromptThroughId":0,"workers":[{"status":"running"}]}"#;
+        const PAUSED: &str = r#"{"status":"paused","legacyPromptThroughId":0}"#;
+        let team = |db: &Connection, sid: &str| -> String {
+            db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [sid], |row| row.get(0)).unwrap()
+        };
+        let assert_recovered = |store: &Store| {
+            for (sid, workers) in [("run", r#"["stopped","done"]"#), ("wait", "[]")] {
+                let (status, error, workers_now): (String, String, String) = store.db.query_row(
+                    "SELECT json_extract(content,'$.status'),json_extract(content,'$.error'),
+                        (SELECT json_group_array(json_extract(value,'$.status')) FROM json_each(content,'$.workers'))
+                     FROM architect_teams WHERE session_id=?1", [sid], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+                assert_eq!((status.as_str(), workers_now.as_str()), ("interrupted", workers), "{sid}");
+                assert!(error.contains("PandaCode restarted"));
+                assert_eq!(saved_status(store, sid), Some(Some("interrupted".into())));
+            }
+            assert_eq!(team(&store.db, "idle"), IDLE, "an idle team is left byte for byte");
+            assert_eq!(saved_status(store, "idle"), Some(Some("idle".into())));
+            assert_eq!(team(&store.db, "stale"), PAUSED);
+        };
+        // Each case starts from a database whose snapshots say run, wait and idle, then reopens.
+        let cases: [(&str, &str); 4] = [
+            ("entries", ""),
+            ("table missing", "DROP TABLE architect_team_status;"),
+            ("written without entries", "DELETE FROM architect_team_status;"),
+            // Triggers missing: entries may be stale both ways, so they are rebuilt first.
+            ("stale", "DROP TRIGGER architect_team_status_update;
+                UPDATE architect_team_status SET status='idle' WHERE session_id='run';
+                UPDATE architect_team_status SET status='running' WHERE session_id IN ('idle','stale');"),
+        ];
+        for (case, damage) in cases {
+            let directory = std::env::temp_dir().join(format!("pandacode-team-recovery-{}", id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("store.sqlite");
+            {
+                let store = Store::open(&path).unwrap();
+                store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+                for (sid, content, status) in [("run", RUNNING, "running"), ("wait", WAITING, "waiting"), ("idle", IDLE, "idle"), ("stale", PAUSED, "paused")] {
+                    store.save_team(sid, content, status).unwrap();
+                }
+                store.db.execute_batch(damage).unwrap();
+            }
+            let store = Store::open(&path).unwrap();
+            assert_recovered(&store);
+            let triggers: i64 = store.db.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'architect_team_status_%'", [], |row| row.get(0)).unwrap();
+            assert_eq!(triggers, 3, "{case}");
+            drop(store);
+            // A second open finds nothing left to recover and changes nothing.
+            let before: Vec<String> = ["run", "wait", "idle"].iter().map(|sid| team(&Connection::open(&path).unwrap(), sid)).collect();
+            let store = Store::open(&path).unwrap();
+            let after: Vec<String> = ["run", "wait", "idle"].iter().map(|sid| team(&store.db, sid)).collect();
+            assert_eq!(before, after, "{case}");
+            drop(store);
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
+    #[test]
     fn a_corrupt_team_row_never_stops_the_store_opening() {
         let directory = std::env::temp_dir().join(format!("pandacode-corrupt-team-{}", id()));
         std::fs::create_dir_all(&directory).unwrap();
@@ -3041,6 +3118,9 @@ mod tests {
         assert_eq!(broken, "{broken");
         let worker: String = db.query_row("SELECT json_extract(content,'$.workers[0].status') FROM architect_teams WHERE session_id='bad-worker'", [], |row| row.get(0)).unwrap();
         assert_eq!(worker, "stopped");
+        let entries: Vec<(String, Option<String>)> = db.prepare("SELECT session_id,status FROM architect_team_status WHERE session_id IN ('not-json','bad-worker') ORDER BY session_id").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(|row| row.unwrap()).collect();
+        assert_eq!(entries, [("bad-worker".into(), Some("interrupted".into())), ("not-json".into(), None)]);
         let _ = std::fs::remove_dir_all(directory);
     }
 
