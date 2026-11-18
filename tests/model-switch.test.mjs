@@ -801,3 +801,21 @@ test('a model reply keeps an effort picked and saved while its reply was in flig
   assert.equal(await model, true);
   assert.equal(tasks.get(id).reasoningEffort, 'low');
 });
+
+for (const saved of [true, false]) test(`a model refusal keeps a newer ${saved ? 'saved' : 'pending'} effort`, async () => {
+  const id = `model-refused-after-effort-${saved}`;
+  tasks.set(id, stored(id));
+  const model = switcher.pickModel(id, { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await ticks();
+  const effort = switcher.pickEffort(id, 'high', { warm: false, paint() {} });
+  const save = async () => {
+    await reply('set_reasoning_effort', args => stored(id, { reasoningEffort: args.reasoningEffort }));
+    await effort;
+  };
+  if (saved) await save();
+  await reply('configure_session', new Error('Model refused.'));
+  assert.equal(await model, false);
+  assert.equal(tasks.get(id).model, 'sonnet');
+  assert.equal(tasks.get(id).reasoningEffort, 'high');
+  if (!saved) await save();
+});

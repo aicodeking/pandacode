@@ -426,8 +426,9 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
       if (superseded()) { if (left && live()) leftTeams.set(id, left); return false; }
       left ??= leftTeams.get(id) ?? null;
       const now = hooks.task(id) ?? base;
+      const confirmed = modelBase.get(id) ?? base;
       // The pick only cleared codexSettings for a new harness; on the same one a speed change saved meanwhile stays.
-      const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage, resumeId: base.resumeId, goalState: base.goalState };
+      const restored = { ...now, provider: base.provider, model: base.model, reasoningEffort: efforts.has(id) ? now.reasoningEffort : confirmed !== base ? confirmed.reasoningEffort : previousEffort, codexSettings: choice.provider !== base.provider ? base.codexSettings : now.codexSettings, contextUsage: base.contextUsage, resumeId: base.resumeId, goalState: base.goalState };
       put(restored, MODEL_FIELDS);
       const still = `still on ${hooks.label(restored)}${left ? `; the task left ${left}` : ''}`;
       const refusal: Unchanged = { what: 'model', reason: message(error), still };

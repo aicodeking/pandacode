@@ -1363,6 +1363,32 @@ test('permissions show at once, save behind, and a refusal puts them back and sa
   await expect(picker(page)).toBeVisible();
 });
 
+test('a permission save on another task keeps the shown task busy until its own save ends', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.evaluate(() => {
+    const w = window as any;
+    w.__modeReleases = {};
+    w.__override = { update_session: (args: any) => args.mode ? new Promise(resolve => { w.__modeReleases[args.sessionId] = resolve; }) : undefined };
+  });
+  const mode = page.locator('#mode-picker-trigger');
+  for (const id of ['session-1', 'session-2']) {
+    await page.locator(`.task-item[data-id="${id}"]`).click();
+    await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', id);
+    await mode.click();
+    await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
+    await expect(mode).toHaveAttribute('aria-busy', 'true');
+    await expect.poll(() => page.evaluate(task => Boolean((window as any).__modeReleases[task]), id)).toBe(true);
+  }
+  await page.evaluate(async () => {
+    (window as any).__modeReleases['session-1'](null);
+    const changes = await import(/* @vite-ignore */ '/src/model-switch.ts');
+    await changes.settled('session-1');
+  });
+  await expect(mode).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => (window as any).__modeReleases['session-2'](null));
+  await expect(mode).not.toHaveAttribute('aria-busy', 'true');
+});
+
 test('a refreshed list that lands under the pointer waits for it to leave the rows', async ({ page }) => {
   await loadHeld(page, '/?teams', { clock: true });
   await openSettled(page);

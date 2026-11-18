@@ -7062,7 +7062,7 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     // Shows at once with the button busy (kept by modeTriggerHtml through a repaint) and saves behind (model-switch.ts).
     void modelSwitch.pickMode(s.id, id as Mode, {
       warm: !inPanel && localTarget(s), paint: () => paintTaskChoice(s.id, inPanel), name: mode => modeName(approvalMode(s.provider, mode)),
-      trigger: () => document.querySelector<HTMLElement>(inPanel ? '.btw-panel .mode-picker' : '#mode-picker-trigger'),
+      trigger: () => current() ? document.querySelector<HTMLElement>(inPanel ? '.btw-panel .mode-picker' : '#mode-picker-trigger') : null,
     });
   } });
 }
