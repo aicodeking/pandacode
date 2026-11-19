@@ -8841,5 +8841,106 @@
       "Antigravity agy models and ACP session/new read-only discovery 2026-11-18: local account does not advertise Hydrogen; new-family native IDs cannot be live-verified here"
     ],
     "notes": "Skills are conservative routing estimates held at the openrouter-gemini-4-argon peer levels, rather than translating Google's higher reported intelligence-index score into router theta. Carbon remains the stronger prior for deep planning and debugging. These are not measured or fitted scores: every axis has se 1.3. Latency estimates reflect the advertised faster-execution role, not observed timings. Prices are standard API proxies for Antigravity quota, not subscription charges. Limits are API specifications: input, thinking and output share one window; max output records the synchronous limit, with longer decode possible through API background execution. Bare and effort-suffixed mappings identify one model family; local account entitlement prevented live confirmation of Hydrogen IDs."
+  },
+  {
+    "id": "gemini-4-neon",
+    "provider": "antigravity",
+    "model": "gemini-4-neon",
+    "description": "Gemini 4 Neon is Google's mid-tier frontier model for complex coding, debugging, review, analytical reasoning, and fast multi-step agentic workflows.",
+    "skills": {
+      "coding": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 8.8,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 8.6,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 8.8,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 8.8,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536
+    },
+    "cost": {
+      "input_per_mtok": 3,
+      "output_per_mtok": 15,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.15
+    },
+    "latency": {
+      "ttft_ms_p50": 2500,
+      "tokens_per_sec": 75
+    },
+    "local": false,
+    "tags": [
+      "harness:antigravity",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon/ (positioning, pricing, provider-reported strengths, and Antigravity availability, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/models/gemini-4-neon (model ID, limits, modalities, thinking levels, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/whats-new-gemini-4-neon (pricing, thinking levels, positioning between Hydrogen and Carbon, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/pricing#gemini-4-neon (standard input $3, output $15, implicit cached input $0.15 per MTok, consulted 2026-11-18)",
+      "https://antigravity.google/docs/models (Antigravity availability, 512K Antigravity context window, xhigh thinking level, consulted 2026-11-18)",
+      "https://openrouter.ai/api/v1/models (google/gemini-4-neon slug, pricing, modalities, fetched 2026-11-18)",
+      "Antigravity agy models read-only discovery 2026-11-18: gemini-4-neon-low, gemini-4-neon-medium, gemini-4-neon-high, gemini-4-neon-xhigh",
+      "OpenCode opencode models read-only discovery 2026-11-18: openrouter/google/gemini-4-neon"
+    ],
+    "notes": "Skills are conservative routing estimates placed between gemini-4-hydrogen and gemini-4-carbon, reflecting Google's positioning for strong coding, debugging, review, planning, steerability, and multi-step agentic work while keeping Carbon slightly higher for deepest long-horizon planning, reasoning, and research and Hydrogen faster/cheaper. These are not measured or fitted router scores: every axis has se 1.3. Latency is estimated between Hydrogen and Carbon for Neon's moderate speed tier and default high thinking level, not observed timings. Costs use verified standard Gemini API / OpenRouter rates ($3/$15, implicit cached $0.15 per MTok) as proxies for Antigravity quota, not subscription charges. Limits are Gemini API specifications: input, thinking, and output share one 1,048,576-token window (Antigravity caps context at 512K); max output records the 65,536-token synchronous limit, with longer decode up to 1M tokens possible via long decode / background execution. Bare and effort-suffixed Antigravity mappings identify one model family."
   }
 ]

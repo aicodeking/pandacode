@@ -899,5 +899,11 @@
   {"provider": "antigravity", "model": "gemini-4-hydrogen-low", "card": "gemini-4-hydrogen"},
   {"provider": "antigravity", "model": "gemini-4-hydrogen-medium", "card": "gemini-4-hydrogen"},
   {"provider": "antigravity", "model": "gemini-4-hydrogen-high", "card": "gemini-4-hydrogen"},
-  {"provider": "antigravity", "model": "gemini-4-hydrogen-xhigh", "card": "gemini-4-hydrogen"}
+  {"provider": "antigravity", "model": "gemini-4-hydrogen-xhigh", "card": "gemini-4-hydrogen"},
+  {"provider": "antigravity", "model": "gemini-4-neon", "card": "gemini-4-neon"},
+  {"provider": "antigravity", "model": "gemini-4-neon-low", "card": "gemini-4-neon"},
+  {"provider": "antigravity", "model": "gemini-4-neon-medium", "card": "gemini-4-neon"},
+  {"provider": "antigravity", "model": "gemini-4-neon-high", "card": "gemini-4-neon"},
+  {"provider": "antigravity", "model": "gemini-4-neon-xhigh", "card": "gemini-4-neon"},
+  {"provider": "opencode", "model": "openrouter/google/gemini-4-neon", "card": "gemini-4-neon"}
 ]

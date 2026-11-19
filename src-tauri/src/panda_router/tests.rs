@@ -207,7 +207,7 @@ fn check_routes(router: &Router, fx: &Fixture, pick: impl Fn(&FixtureRoutes) -> 
 #[test]
 fn catalog_loads_every_card() {
     let catalog = cards::catalog().unwrap();
-    assert_eq!(catalog.cards.len(), 161);
+    assert_eq!(catalog.cards.len(), 162);
     assert!(catalog.by_id(matcher::DEFAULT_CARD).is_some());
 }
 
@@ -247,7 +247,13 @@ fn resolves_pandacode_models() {
         (("antigravity", "gemini-4-carbon-high", "Gemini 4 Carbon High"), Some("gemini-4-carbon")),
         (("antigravity", "gemini-4-hydrogen", "Gemini 4 Hydrogen"), Some("gemini-4-hydrogen")),
         (("antigravity", "gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen Extra"), Some("gemini-4-hydrogen")),
+        (("antigravity", "gemini-4-neon", "Gemini 4 Neon"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-low", "Gemini 4 Neon Low"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-medium", "Gemini 4 Neon Medium"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-high", "Gemini 4 Neon High"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-xhigh", "Gemini 4 Neon Extra"), Some("gemini-4-neon")),
         (("kimi", "moonshot-ai/kimi-k3.1-pro-highspeed", "K3.1 Pro HS"), Some("kimi-k3.1-pro-highspeed")),
+        (("opencode", "openrouter/google/gemini-4-neon", "Gemini 4 Neon"), Some("gemini-4-neon")),
         (("opencode", "openrouter/deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"), Some("openrouter-deepseek-v4-flash")),
         (("opencode", "openrouter/qwen/qwen3.8-27b", "Qwen 3.8 27B"), Some("openrouter-qwen3.8-27b")),
         (("opencode", "ollama/qwen3.8:27b", "qwen3.8:27b"), Some("ollama-qwen3.8-27b")),
@@ -446,7 +452,7 @@ fn route_mid(pool: &[PoolModel], mode: Mode, failed: &[PoolModel], tiers: &Tiers
 
 #[test]
 fn new_model_cards_are_rated_and_pickable_for_tool_tasks() {
-    for id in ["claude-fable-5.2", "codex-gpt-6.2-sol", "codex-gpt-6.2-astra", "gemini-4-carbon", "gemini-4-hydrogen"] {
+    for id in ["claude-fable-5.2", "codex-gpt-6.2-sol", "codex-gpt-6.2-astra", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon"] {
         for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
             let route = route_mid(&[card_model(id)], mode, &[], &Tiers::new());
             assert!(route.unrated.is_empty(), "{id} {mode:?}");
