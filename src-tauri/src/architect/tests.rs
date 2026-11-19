@@ -2557,6 +2557,9 @@ fn new_model_cards_staff_automatic_workers_on_their_launch_ids() {
         ("antigravity", "gemini-4-carbon-high", "gemini-4-carbon"),
         ("antigravity", "gemini-4-hydrogen", "gemini-4-hydrogen"),
         ("antigravity", "gemini-4-hydrogen-xhigh", "gemini-4-hydrogen"),
+        ("antigravity", "gemini-4-neon", "gemini-4-neon"),
+        ("antigravity", "gemini-4-neon-xhigh", "gemini-4-neon"),
+        ("opencode", "openrouter/google/gemini-4-neon", "gemini-4-neon"),
     ];
     for (provider, model, card) in cases {
         let (state, sid) = auto_state();
