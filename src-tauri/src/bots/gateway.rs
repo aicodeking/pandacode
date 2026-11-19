@@ -529,19 +529,54 @@ pub(crate) async fn approval_requested(app: &tauri::AppHandle, session_id: &str,
         }
         _ => {}
     }
-    if let Ok(mut map) = pending().lock() {
-        map.entry(session_id.to_owned()).or_default().push((request_id.to_owned(), text.to_owned()));
+    // Where the message goes: the thread's channel, or a schedule's notification channel.
+    let target = match thread.channel_id.as_str() {
+        super::DESKTOP => None,
+        "schedule" => bot.notify_channel_id.clone(),
+        channel => Some(channel.to_owned()),
+    };
+    let kind = target.and_then(|id| state.store.lock().ok().and_then(|store| channels::kind_of(&store, &id))).unwrap_or_default();
+    let (message, answerable) = channel_approval(text, &kind);
+    // Only what a channel may answer waits for its yes or no.
+    if answerable {
+        if let Ok(mut map) = pending().lock() {
+            map.entry(session_id.to_owned()).or_default().push((request_id.to_owned(), text.to_owned()));
+        }
     }
     if let Ok(store) = state.store.lock() {
         let _ = super::log(&store, &bot.id, "approval", &format!("Asked: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
     }
-    let message = format!("Approval needed: {}\nReply yes, no, or always (allow this kind of action from now on).", text.chars().take(600).collect::<String>());
     match thread.channel_id.as_str() {
         super::DESKTOP => {}
         "schedule" => notify(app, &bot, &message).await,
         channel => reply(app, &bot, channel, &thread.external_id, &message).await,
     }
     let _ = app.emit("bots-changed", ());
+}
+
+/// Approval text a channel is sent, at most, in characters.
+const CHANNEL_APPROVAL_CHARS: usize = 600;
+
+/// What a channel of `kind` is sent for an approval, and whether its yes or no answers it. A
+/// tool run whose script the channel cannot show in full is approved only in PandaCode: the
+/// channel gets its header and script length, never a script someone could approve unseen.
+/// Slack and Discord never show one in full: their code blocks end at the first ``` (no
+/// longer fences), and `<url|label>`, `[label](url)` and `||spoiler||` can hide text.
+fn channel_approval(text: &str, kind: &str) -> (String, bool) {
+    use crate::custom_tools::approval;
+    let hidden = matches!(kind, "slack" | "discord");
+    if approval::is_run(text) && (hidden || text.chars().count() > CHANNEL_APPROVAL_CHARS) {
+        let header = text.lines().next().unwrap_or_default();
+        let script = approval::script_in(text).map_or(0, str::len);
+        let why = if hidden { "" } else { ", too long to show here" };
+        return (format!("Approval needed: {header}\nIts script is {script} bytes{why}. Approve this in PandaCode."), false);
+    }
+    (format!("Approval needed: {}\n{}", text.chars().take(CHANNEL_APPROVAL_CHARS).collect::<String>(), approval_reply_hint(text)), true)
+}
+
+/// What a channel may reply: tool runs ask every time, so they offer no "always".
+fn approval_reply_hint(text: &str) -> &'static str {
+    if guard::always_rule(text).is_some() { "Reply yes, no, or always (allow this kind of action from now on)." } else { "Reply yes or no. Tool runs ask every time." }
 }
 
 /// Allow rules answer without asking, deny rules refuse; a request whose approval would grant a
@@ -568,14 +603,15 @@ async fn answer_approval(app: &tauri::AppHandle, bot: &Bot, session_id: &str, ap
         if answer(app, session_id, &request_id, approved).await.is_err() {
             continue;
         }
-        if always && approved {
+        let rule = if always && approved { guard::always_rule(&text) } else { None };
+        if let Some(pattern) = &rule {
             let state = app.state::<AppState>();
-            let added = state.store.lock().map_err(|e| e.to_string()).and_then(|store| guard::add_rule(&store, &bot.id, &guard::pattern_for(&text), "allow"));
+            let added = state.store.lock().map_err(|e| e.to_string()).and_then(|store| guard::add_rule(&store, &bot.id, pattern, "allow"));
             if let Err(error) = added {
                 super::note(app, &bot.id, "error", &format!("Could not save the rule: {error}"), json!({}));
             }
         }
-        let outcome = if !approved { "Denied" } else if always { "Always allowed" } else { "Approved" };
+        let outcome = if !approved { "Denied" } else if rule.is_some() { "Always allowed" } else { "Approved" };
         super::note(app, &bot.id, "approval", &format!("{outcome}: {}", text.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
         return Ok(());
     }
@@ -660,6 +696,44 @@ mod tests {
             color: String::new(), reasoning_effort: String::new(), backup_models: Vec::new(), fallback_mode: "ask".into(), notify: true,
             while_working: while_working.into(), show_plan: false, soul: String::new(), skills: Vec::new(), mcp: Vec::new(),
         }
+    }
+
+    #[test]
+    fn tool_run_approvals_offer_no_always() {
+        assert_eq!(approval_reply_hint("Run project tool test-all v2?\nScript (v2):\nnpm test"), "Reply yes or no. Tool runs ask every time.");
+        assert!(approval_reply_hint("Allow Bash?\nls").contains("always"));
+    }
+
+    #[test]
+    fn a_long_tool_run_cannot_be_approved_from_a_channel() {
+        let script = format!("echo start\n{}", "echo step\n".repeat(100));
+        // As `describe` writes it: the script in a fence, whose bytes the length leaves out.
+        let text = format!("Run project tool test-all v2?\nIt runs in this task's checkout.\nScript (v2):\n{}", crate::custom_tools::approval::fenced(&script));
+        let (message, answerable) = channel_approval(&text, "telegram");
+        assert!(!answerable, "a channel's yes must not approve a script it was not shown");
+        assert_eq!(message, format!("Approval needed: Run project tool test-all v2?\nIts script is {} bytes, too long to show here. Approve this in PandaCode.", script.len()));
+        let (short, answerable) = channel_approval("Run project tool test-all v2?\nScript (v2):\nnpm test", "telegram");
+        assert!(answerable && short.contains("npm test") && short.contains("Reply yes or no"));
+        let other = format!("Allow Bash?\n{}", "x".repeat(1000));
+        let (cut, answerable) = channel_approval(&other, "slack");
+        assert!(answerable && cut.len() < other.len(), "other approvals keep the cut text and the reply");
+    }
+
+    #[test]
+    fn slack_and_discord_never_answer_a_tool_run() {
+        // A short script whose ``` closes Slack's or Discord's block, with a hidden link.
+        let script = "echo ok\n```\n<https://evil.example|docs> [docs](https://evil.example) ||rm -rf ~||";
+        let text = format!("Run project tool sneaky v1?\nIt runs in this task's checkout.\nScript (v1):\n{}", crate::custom_tools::approval::fenced(script));
+        for kind in ["slack", "discord"] {
+            let (message, answerable) = channel_approval(&text, kind);
+            assert!(!answerable, "{kind}: a yes must not approve it");
+            assert_eq!(message, format!("Approval needed: Run project tool sneaky v1?\nIts script is {} bytes. Approve this in PandaCode.", script.len()));
+            assert!(!message.contains("evil"), "{kind}: none of the script is sent");
+        }
+        let (shown, answerable) = channel_approval(&text, "web");
+        assert!(answerable && shown.contains("evil.example"), "other channels keep today's rule");
+        let (other, answerable) = channel_approval("Allow Bash?\nls", "discord");
+        assert!(answerable && other.contains("ls"), "other approvals still answer from Slack and Discord");
     }
 
     #[test]

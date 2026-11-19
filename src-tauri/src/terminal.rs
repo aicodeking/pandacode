@@ -424,6 +424,7 @@ pub struct HarnessContext<'a> {
     pub mode: &'a str,
 }
 
+/// The caller must receive Ok from `providers::await_exit` before resuming a session here.
 pub fn start_harness(
     app: AppHandle,
     terms: Terminals,

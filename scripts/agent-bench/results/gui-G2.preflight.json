@@ -1,0 +1,1693 @@
+{
+ "batch": "G2",
+ "status": "smoke-guard-stopped-identity-verification",
+ "asOf": "2026-11-09T02:53:39.046211Z",
+ "plannedMainRuns": 480,
+ "completedMainRuns": 0,
+ "completedSmokeRuns": 0,
+ "modelCallsThisResume": 4,
+ "billedUsdThisResume": 0,
+ "priorG1LedgerUsd": 5.1926128,
+ "remainingOperationalBudgetUsd": 144.8073872,
+ "operationalGuards": {
+  "totalAccountedBudgetUsd": 150,
+  "runCapUsd": 3,
+  "concurrency": 4,
+  "minFreeGiB": 6,
+  "rustAdmissionGiB": 7.5
+ },
+ "capacity": {
+  "lastFreeGiB": 60.323795318603516,
+  "initialAdmissionAt": "2026-11-08T11:31:14.035Z",
+  "initialAdmissionFreeGiB": 8.058094024658203,
+  "initialAdmissionObserved": true,
+  "waitStartedAt": "2026-11-08T11:36:30.411Z",
+  "waitDeadline": "2026-11-08T11:41:30.411Z",
+  "waitStatus": "expired",
+  "waitEndedAt": "2026-11-08T11:41:30.934Z",
+  "waitElapsedSeconds": 300.523,
+  "waitLastFreeGiB": 3.526,
+  "waitMinFreeGiB": 2.974,
+  "waitMaxFreeGiB": 7.382,
+  "samples": 21,
+  "admissionObserved": false,
+  "noPrivateClonesStartedDuringWait": true,
+  "monitorExitCode": 75
+ },
+ "preparation": {
+  "complete": true,
+  "harness": "2.1.317 (Claude Code)",
+  "model": "claude-sonnet-5-5",
+  "snapshot": "bin-g2",
+  "optimizedServerSha256": "97823a5eb6d1ea54568a0aa3b67fe73cce5aa75c4f710b7972899fbaf97ed544",
+  "launchHashes": {
+   "panda": "cbf1c0dc790eab4d10f1140af6d27136e22c565c167431e9b7c9c6f61842cab3",
+   "worker": "d2aebfd05b6e544be1a1b7b0e9c646288bb9924956c08a5aa6bc10d9db9f6025",
+   "report": "dd87a377710ca984afaf4640225b39a6d1f6402c09090e6c2454f4b541dc43f9",
+   "lists": "702a2dcd61157f67bc6100f52d02300595daf7853455f18d5b19d5e5f2ae6a8b",
+   "t3Append": "27417fba8b0113718e974e1840eaf030d1be902922099dbfa5b55f3bc9f49562",
+   "t3Tools": "11eaf7167569f1256b99e20a8b60e33c76e35bdd32e711d389a18015c1fc2276"
+  },
+  "catalogs": {
+   "T3": {
+    "tools": 71,
+    "bytes": 48157
+   },
+   "PANDA": {
+    "tools": 17,
+    "bytes": 13861
+   },
+   "PANDA_mobile": {
+    "tools": 22,
+    "bytes": 16388
+   },
+   "pandaNames": [
+    "pandacode_schedule_wakeup",
+    "pandacode_schedule_message",
+    "pandacode_list_schedules",
+    "pandacode_cancel_schedule",
+    "pandacode_simulator_devices",
+    "pandacode_simulator_screenshot",
+    "pandacode_simulator_describe",
+    "pandacode_simulator_control",
+    "pandacode_simulator_manage",
+    "pandacode_vm_list",
+    "pandacode_vm_manage",
+    "pandacode_design_list",
+    "pandacode_design_write",
+    "pandacode_design_comments",
+    "pandacode_design_resolve",
+    "pandacode_progress_snapshot",
+    "pandacode_explore",
+    "pandacode_tool_save",
+    "pandacode_run_project",
+    "pandacode_preview_file",
+    "pandacode_track_files",
+    "pandacode_title"
+   ]
+  },
+  "privateCache": {
+   "sha256": "63d2a07fb24d993801a8e00c71792752f05633937c32d5f0c3d87b2e2fc296c3",
+   "files": 2582
+  },
+  "manifestSha256": {
+   "CargoToml": "69d61b92f24fe9ac7115ca4f0e8f747b56636d8b0da6ac97a2f1c201551500d3",
+   "CargoLock": "ac6810c1e6f9f134f1b5ba8cb91ba81663fbd865af9c3608ce2d980e7e1dc710"
+  },
+  "sourceCodeSha256": {
+   "gui.mjs": "7a0b25058885053845a674a51b08d4bc6fe15ead730a115c7c996b541a810a01",
+   "lib.mjs": "a293c1a6e57d4b69e57a6ddae771cf564f20f6ceda42d4358eb6f2da4b326d04",
+   "run.mjs": "49f29ac5f1a42464949d695cae3c0d7ad3c0e8d2ce47167051ed9b47fa6ff877",
+   "saver.mjs": "48259795b6d901037c7b06738b9f2acb2df834cd29a30e573bb6e0ff6f9b4ceb"
+  },
+  "originalG1Preserved": true,
+  "privateCacheVerifiedAfterWait": true
+ },
+ "checks": {
+  "nodeBenchTestsPassed": 94,
+  "optimizedRustCatalogTestsPassed": 3,
+  "httpCatalogSelfCheckPassed": true,
+  "freshEditSanityPassed": 20,
+  "freshEditSanityPending": [],
+  "privateCacheRoutingRegressionPassed": true,
+  "implementationAndMetadataReviewPassed": true,
+  "runtimeSmokeApproved": true,
+  "freshRustSanityPassed": 7,
+  "actualRustCargoCommands": 22,
+  "registeredRustSuitesExecuted": 6,
+  "registeredRustSuitesPassed": 5,
+  "registeredRustSuitesAssertionFailed": 1,
+  "independentRuntimeReviewPending": false,
+  "smokeCoverageAuditPassed": true,
+  "allEightSmokeCellsAttempted": false,
+  "nonemptyBilledSmokeOutputsPassed": false,
+  "attemptedSmokeModelHarnessMcpPassed": true,
+  "smokePostflightPreservationPassed": true,
+  "mainRunApproved": false
+ },
+ "analysis": {
+  "performed": false,
+  "reason": "Smoke stopped on external identity-verification denial. Four invalid infrastructure attempts remain in raw records; no valid billed smoke output or main run is available for performance analysis."
+ },
+ "blocker": {
+  "kind": "external-service-identity-verification",
+  "reason": "All four initially concurrent e2-ho-etag-commas smoke attempts returned API Error: 400 Identity verification is required to continue., zero billing and zero output tokens. The registered missing-or-zero-billing guard stopped the runner with exit 3; four localization cells remain unstarted. No retry or main run was attempted.",
+  "remainingChecks": [
+   "external identity-verification blocker resolution and explicit reviewed disposition for retained invalid attempts before any further smoke call",
+   "complete nonempty billed eight-cell smoke evidence and independent main-run GO",
+   "480 registered G2 main runs",
+   "complete registered analysis"
+  ]
+ },
+ "previousCapacityWait": {
+  "lastFreeGiB": 2.632,
+  "waitStartedAt": "2026-11-08T10:25:09.507Z",
+  "waitDeadline": "2026-11-08T10:45:09.507Z",
+  "waitStatus": "expired",
+  "noPrivateClonesStarted": true,
+  "waitEndedAt": "2026-11-08T10:45:09.576Z",
+  "waitElapsedSeconds": 1200,
+  "waitLastFreeGiB": 4.591,
+  "admissionObserved": false,
+  "monitorExitCode": 75
+ },
+ "runtimeResume": {
+  "startedAt": "2026-11-08T11:31:14.035Z",
+  "initialSanityTask": "edit-recipe-harnesses",
+  "initialAttemptExitCode": 143,
+  "initialAttemptCompletedVerdicts": 0,
+  "initialAttemptStopReason": "Stopped own uncompleted unpaid sanity attempt to retain actual Cargo command stdout/stderr and exit evidence; existing sanity.json omits suite kind/pass.",
+  "interruptedScratchRemoved": true,
+  "interruptedChildrenStopped": true,
+  "commandObserver": {
+   "localEvidence": "v2-g2/sanity-runtime-20261108T1134Z",
+   "selfcheckCommand": "cargo --version",
+   "selfcheckExitCode": 0,
+   "version": "cargo 1.93.0",
+   "reviewed": true,
+   "sourceOrTreatmentChanged": false
+  },
+  "guardedRestartExitCode": 75,
+  "freshRustSanityCompleted": 0,
+  "freshSourceAndBinaryPinsVerified": true,
+  "freshPrivateCacheVerified": true,
+  "freshOriginalG1CountsAndLedgerVerified": true,
+  "processesLeftRunning": false
+ },
+ "cleanupFollowup": {
+  "checkedAt": "2026-11-08T11:59:01.245Z",
+  "freeGiB": 1.2476234436035156,
+  "admitted": false,
+  "assertBuildAndPrivateCachePassed": true,
+  "currentSourceBinaryAndLaunchPinsPassed": true,
+  "privateCacheFiles": 2582,
+  "privateCacheSha256": "63d2a07fb24d993801a8e00c71792752f05633937c32d5f0c3d87b2e2fc296c3",
+  "ownScratchAbsent": true,
+  "cleanerReportedSkippedActiveSshCache": true,
+  "activeCargoObserved": {
+   "pid": 99698,
+   "checkout": "pandacode-ssh-host"
+  },
+  "newRustTasksStarted": 0,
+  "newModelCalls": 0,
+  "newSpendUsd": 0,
+  "additionalWaitStarted": false,
+  "observerReinstalled": false,
+  "preparationRepeated": false
+ },
+ "sanityResume20261109": {
+  "phase": "unpaid Rust sanity only",
+  "status": "blocked-build-output",
+  "startedAt": "2026-11-09T02:06:21.537897+00:00",
+  "endedAt": "2026-11-09T02:06:30.480851+00:00",
+  "admissionFreeGiB": 65.75227737426758,
+  "postflightFreeGiB": 65.38018417358398,
+  "evidence": "v2-g2/sanity-runtime-20261108T1134Z",
+  "manifest": "resume-20261109T0205Z.edit-recipe-harnesses.result.json",
+  "attemptedRustTasks": [
+   "edit-recipe-harnesses"
+  ],
+  "completedRustTasks": [],
+  "pendingRustTasks": [
+   "edit-recipe-harnesses",
+   "edit-connect-secrets",
+   "e2-draft-rank-undo",
+   "e2-boat-trial-ttl",
+   "e2-pnpm-global-bin",
+   "e2-opencode-cache-pin",
+   "e2-do-ssh-key"
+  ],
+  "unstartedRustTasks": [
+   "edit-connect-secrets",
+   "e2-draft-rank-undo",
+   "e2-boat-trial-ttl",
+   "e2-pnpm-global-bin",
+   "e2-opencode-cache-pin",
+   "e2-do-ssh-key"
+  ],
+  "sanityRunnerExitCode": 0,
+  "evidenceControllerExitCode": 1,
+  "recordedVerdict": {
+   "verdict": "EXCLUDE",
+   "parent": "build",
+   "parentFailed": [],
+   "stub": "build",
+   "stubFailed": [],
+   "fix": "build",
+   "suiteBaselineFailed": [],
+   "suiteMs": 399
+  },
+  "cargoCommands": [
+   {
+    "phase": "baseline",
+    "observerId": "1794189983315-70369",
+    "argv": [
+     "cargo",
+     "test",
+     "--lib",
+     "recipes::"
+    ],
+    "cwd": "<owned-scratch>/run-e7dc5582/sanity/current/src-tauri",
+    "target": "<owned-scratch>/run-e7dc5582/sanity/target",
+    "exitCode": 101,
+    "signal": null,
+    "kind": "build",
+    "testsRan": false
+   },
+   {
+    "phase": "stub",
+    "observerId": "1794189987890-70828",
+    "argv": [
+     "cargo",
+     "test",
+     "--lib",
+     "recipes::"
+    ],
+    "cwd": "<owned-scratch>/run-e7dc5582/sanity/current/src-tauri",
+    "target": "<owned-scratch>/run-e7dc5582/sanity/target",
+    "exitCode": 101,
+    "signal": null,
+    "kind": "build",
+    "testsRan": false
+   },
+   {
+    "phase": "fixed",
+    "observerId": "1794189989182-71301",
+    "argv": [
+     "cargo",
+     "test",
+     "--lib",
+     "recipes::"
+    ],
+    "cwd": "<owned-scratch>/run-e7dc5582/sanity/current/src-tauri",
+    "target": "<owned-scratch>/run-e7dc5582/sanity/target",
+    "exitCode": 101,
+    "signal": null,
+    "kind": "build",
+    "testsRan": false
+   },
+   {
+    "phase": "suite",
+    "observerId": "1794189989512-71342",
+    "argv": [
+     "cargo",
+     "test",
+     "--lib",
+     "providers::"
+    ],
+    "cwd": "<owned-scratch>/run-e7dc5582/sanity/current/src-tauri",
+    "target": "<owned-scratch>/run-e7dc5582/sanity/target",
+    "exitCode": 101,
+    "signal": null,
+    "kind": "build",
+    "testsRan": false
+   }
+  ],
+  "originalGeneratedBindgenPresent": false,
+  "assertBuildPassedBeforeAndAfter": true,
+  "privateCacheUnchanged": true,
+  "sourceBinaryManifestLaunchPinsUnchanged": true,
+  "protectedFilesUnchanged": 91,
+  "G1RawAndLedgerUnchanged": true,
+  "registrationsUnchanged": true,
+  "processesLeftRunning": false,
+  "disposableTargetRemovedBySanityRunner": true,
+  "modelCalls": 0,
+  "billedUsd": 0,
+  "paidSmokeOrMainAuthorizedThisPhase": false
+ },
+ "previousBuildOutputBlocker": {
+  "kind": "rust-grading-build-output",
+  "reason": "Prepared private build.target lacks build/libsqlite3-sys-c6bc0fb34594472f/out/bindgen.rs. All four actual commands for edit-recipe-harnesses exited 101 before tests, producing EXCLUDE. The dependency-name fingerprint still passes; it does not establish generated build-output completeness. Stopped without cache/source/treatment changes or rerun. Remedy exceeds results/docs scope.",
+  "remainingChecks": [
+   "seven Rust grading sanity tasks",
+   "eight all-arm G2 smoke runs",
+   "480 registered G2 main runs",
+   "complete registered analysis"
+  ]
+ },
+ "disposableRegeneration": {
+  "registration": "G2-2",
+  "supersedes": "G2-1",
+  "status": "sanity-verified-pending-independent-runtime-review",
+  "evidence": "src-tauri/target/pandacode-g2-regeneration-evidence",
+  "command": [
+   "cargo",
+   "test",
+   "--locked",
+   "--lib",
+   "--no-run"
+  ],
+  "exitCode": 0,
+  "seconds": 170.54,
+  "executionFilesRemoved": 130,
+  "generatedBindgenSha256": "cf53846904130e42d81072cd63302c6d9261f45a9842c3a4093235c072398528",
+  "matchesRegistryBindings": true,
+  "protectedOriginalHashesUnchanged": 5905,
+  "nativeOutputsRelocated": true,
+  "unusedOldWorkspaceRootOutputDocumented": true,
+  "dependencyFingerprintMeaning": "dependency names only; not generated-output or content proof",
+  "originalCacheModified": false,
+  "sanityVerdictEstablished": true,
+  "independentCodeReviewPending": false,
+  "paidSmokeOrMainApproved": false,
+  "modelCalls": 0,
+  "billedUsd": 0,
+  "independentCodeReview": "GO bcd0ba77-cf06-4736-85f2-b3267f54a241 (accepted source-repair review; not repeated in this phase)",
+  "independentRuntimeReviewPending": true
+ },
+ "repairedRustSanity20261109": {
+  "registration": "G2-2",
+  "phase": "unpaid Rust sanity only",
+  "status": "complete-pending-independent-review",
+  "startedAt": "2026-11-09T02:25:57.234Z",
+  "endedAt": "2026-11-09T02:42:20.035Z",
+  "postflightAt": "2026-11-09T02:42:34.899Z",
+  "evidence": "v2-g2/sanity-runtime-20261108T1134Z",
+  "manifestPrefix": "repaired-20261109T0224Z",
+  "initialManifest": "repaired-20261109T0224Z.initial.json",
+  "postflightManifest": "repaired-20261109T0224Z.postflight.json",
+  "commandTemplate": [
+   "node",
+   "scripts/agent-bench/run.mjs",
+   "--sanity",
+   "--edit-v2",
+   "--snapshot",
+   "bin-g2",
+   "--out",
+   "<benchmark-cache>/v2-g2",
+   "--tasks",
+   "<task-id>"
+  ],
+  "commandObserverUnchanged": true,
+  "commandContext": {
+   "cwd": "<owned-scratch>/run-e7dc5582/sanity/current/src-tauri",
+   "disposableTarget": "<owned-scratch>/run-e7dc5582/sanity/target"
+  },
+  "completedRustTasks": [
+   "edit-recipe-harnesses",
+   "edit-connect-secrets",
+   "e2-draft-rank-undo",
+   "e2-boat-trial-ttl",
+   "e2-pnpm-global-bin",
+   "e2-opencode-cache-pin",
+   "e2-do-ssh-key"
+  ],
+  "pendingRustTasks": [],
+  "validTaskDiscriminations": 7,
+  "actualCargoCommands": 22,
+  "registeredSuiteCommands": 6,
+  "suitePassed": 5,
+  "suiteAssertionFailed": 1,
+  "unregisteredPhases": "Only recipe and connect have registered stubs; draft-rank-undo has no registered suite. No phases were added.",
+  "admissionFreeGiBByTask": {
+   "edit-recipe-harnesses": 60.92375564575195,
+   "edit-connect-secrets": 60.92552947998047,
+   "e2-draft-rank-undo": 60.87667465209961,
+   "e2-boat-trial-ttl": 60.87701416015625,
+   "e2-pnpm-global-bin": 60.468265533447266,
+   "e2-opencode-cache-pin": 60.57575988769531,
+   "e2-do-ssh-key": 60.12651062011719
+  },
+  "minAdmissionFreeGiB": 60.12651062011719,
+  "postflightFreeGiB": 60.323795318603516,
+  "admissionGiB": 7.5,
+  "minFreeGiB": 6,
+  "sanityRunnerExitCodes": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "evidenceControllerExitCodes": [
+   0,
+   0,
+   0,
+   0,
+   0,
+   0,
+   0
+  ],
+  "assertBuildPassedBeforeEveryTaskAndAfter": true,
+  "privateCacheUnchanged": true,
+  "originalContentHashesUnchanged": 5905,
+  "protectedFileHashesUnchanged": 97,
+  "sourceTaskAnalysisBinaryManifestLaunchPinsUnchanged": true,
+  "registrationsUnchanged": true,
+  "G1RawAndLedgerUnchanged": true,
+  "previousInfrastructureLogsRetained": true,
+  "priorNonRustSanityVerdictsPreserved": 13,
+  "disposableTargetsRemoved": true,
+  "processesLeftRunning": false,
+  "modelCalls": 0,
+  "billedUsd": 0,
+  "paidSmokeOrMainApproved": false,
+  "results": [
+   {
+    "task": "edit-recipe-harnesses",
+    "manifest": "repaired-20261109T0224Z.edit-recipe-harnesses.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "build",
+     "parentFailed": [],
+     "stub": "assertion",
+     "stubFailed": [
+      "recipes::tests::a_steer_step_is_supported_only_where_the_turn_takes_a_message",
+      "recipes::tests::every_harness_the_app_supports_can_run_a_recipe"
+     ],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 1673
+    },
+    "registeredStub": true,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191158892-72149",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "recipes::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "build",
+      "testsRan": false,
+      "failed": [],
+      "summary": [],
+      "stdout": "1794191158892-72149.stdout.log",
+      "stderr": "1794191158892-72149.stderr.log"
+     },
+     {
+      "phase": "stub",
+      "observerId": "1794191193385-77559",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "recipes::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "recipes::tests::a_steer_step_is_supported_only_where_the_turn_takes_a_message",
+       "recipes::tests::every_harness_the_app_supports_can_run_a_recipe"
+      ],
+      "summary": [
+       "test result: FAILED. 5 passed; 2 failed; 0 ignored; 0 measured; 1281 filtered out; finished in 0.01s"
+      ],
+      "stdout": "1794191193385-77559.stdout.log",
+      "stderr": "1794191193385-77559.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191243499-81605",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "recipes::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1281 filtered out; finished in 0.01s"
+      ],
+      "stdout": "1794191243499-81605.stdout.log",
+      "stderr": "1794191243499-81605.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794191270223-82378",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "providers::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 335 passed; 0 failed; 17 ignored; 0 measured; 936 filtered out; finished in 0.90s"
+      ],
+      "stdout": "1794191270223-82378.stdout.log",
+      "stderr": "1794191270223-82378.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "edit-connect-secrets",
+    "manifest": "repaired-20261109T0224Z.edit-connect-secrets.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "build",
+     "parentFailed": [],
+     "stub": "assertion",
+     "stubFailed": [
+      "remote::secrets::tests::corrupt_reads_as_none_but_is_never_overwritten",
+      "remote::secrets::tests::unreadable_is_never_overwritten",
+      "remote::secrets::tests::writes_are_atomic_and_private"
+     ],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 997
+    },
+    "registeredStub": true,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191282241-83252",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "remote::secrets::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "build",
+      "testsRan": false,
+      "failed": [],
+      "summary": [],
+      "stdout": "1794191282241-83252.stdout.log",
+      "stderr": "1794191282241-83252.stderr.log"
+     },
+     {
+      "phase": "stub",
+      "observerId": "1794191309870-86717",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "remote::secrets::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "remote::secrets::tests::corrupt_reads_as_none_but_is_never_overwritten",
+       "remote::secrets::tests::unreadable_is_never_overwritten",
+       "remote::secrets::tests::writes_are_atomic_and_private"
+      ],
+      "summary": [
+       "test result: FAILED. 1 passed; 3 failed; 0 ignored; 0 measured; 1206 filtered out; finished in 0.04s"
+      ],
+      "stdout": "1794191309870-86717.stdout.log",
+      "stderr": "1794191309870-86717.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191354106-90955",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "remote::secrets::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1206 filtered out; finished in 0.03s"
+      ],
+      "stdout": "1794191354106-90955.stdout.log",
+      "stderr": "1794191354106-90955.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794191378052-91710",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "remote::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 49 passed; 0 failed; 0 ignored; 0 measured; 1161 filtered out; finished in 0.68s"
+      ],
+      "stdout": "1794191378052-91710.stdout.log",
+      "stderr": "1794191378052-91710.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "e2-draft-rank-undo",
+    "manifest": "repaired-20261109T0224Z.e2-draft-rank-undo.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "assertion",
+     "parentFailed": [
+      "storage::tests::a_new_task_published_after_a_manual_reorder_is_listed_first_and_stays_there",
+      "storage::tests::successful_runs_go_to_review_but_errors_and_stops_stay_in_progress"
+     ],
+     "stub": "not needed",
+     "stubFailed": [],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 0
+    },
+    "registeredStub": false,
+    "registeredSuite": false,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191392330-93222",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "storage::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "storage::tests::a_new_task_published_after_a_manual_reorder_is_listed_first_and_stays_there",
+       "storage::tests::successful_runs_go_to_review_but_errors_and_stops_stay_in_progress"
+      ],
+      "summary": [
+       "test result: FAILED. 58 passed; 2 failed; 1 ignored; 0 measured; 1423 filtered out; finished in 1.20s"
+      ],
+      "stdout": "1794191392330-93222.stdout.log",
+      "stderr": "1794191392330-93222.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191441343-96945",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "storage::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 60 passed; 0 failed; 1 ignored; 0 measured; 1423 filtered out; finished in 1.21s"
+      ],
+      "stdout": "1794191441343-96945.stdout.log",
+      "stderr": "1794191441343-96945.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "e2-boat-trial-ttl",
+    "manifest": "repaired-20261109T0224Z.e2-boat-trial-ttl.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "assertion",
+     "parentFailed": [
+      "cloud::boat::tests::keep_alive_falls_back_to_the_free_trial_cap"
+     ],
+     "stub": "not needed",
+     "stubFailed": [],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 2874
+    },
+    "registeredStub": false,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191505749-1374",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::boat::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "cloud::boat::tests::keep_alive_falls_back_to_the_free_trial_cap"
+      ],
+      "summary": [
+       "test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1850 filtered out; finished in 0.01s"
+      ],
+      "stdout": "1794191505749-1374.stdout.log",
+      "stderr": "1794191505749-1374.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191569224-5718",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::boat::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1850 filtered out; finished in 0.01s"
+      ],
+      "stdout": "1794191569224-5718.stdout.log",
+      "stderr": "1794191569224-5718.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794191670283-10241",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 135 passed; 0 failed; 15 ignored; 0 measured; 1704 filtered out; finished in 2.02s"
+      ],
+      "stdout": "1794191670283-10241.stdout.log",
+      "stderr": "1794191670283-10241.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "e2-pnpm-global-bin",
+    "manifest": "repaired-20261109T0224Z.e2-pnpm-global-bin.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "assertion",
+     "parentFailed": [
+      "providers::launch::tests::platform_search_uses_real_windows_profile_and_appdata_locations",
+      "providers::launch::tests::pnpm_global_shims_are_searched"
+     ],
+     "stub": "not needed",
+     "stubFailed": [],
+     "fix": "pass",
+     "suiteBaselineFailed": [
+      "agent_usage_providers::tests::antigravity_old_cli_never_gets_a_prompt_and_new_cli_uses_exact_report_command",
+      "agent_usage_providers::tests::antigravity_report_timeout_output_limit_and_stderr_are_bounded"
+     ],
+     "suiteMs": 3829
+    },
+    "registeredStub": false,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191687155-11382",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "providers::launch::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "providers::launch::tests::platform_search_uses_real_windows_profile_and_appdata_locations",
+       "providers::launch::tests::pnpm_global_shims_are_searched"
+      ],
+      "summary": [
+       "test result: FAILED. 19 passed; 2 failed; 0 ignored; 0 measured; 1833 filtered out; finished in 0.47s"
+      ],
+      "stdout": "1794191687155-11382.stdout.log",
+      "stderr": "1794191687155-11382.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191750809-15675",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "providers::launch::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 1833 filtered out; finished in 0.41s"
+      ],
+      "stdout": "1794191750809-15675.stdout.log",
+      "stderr": "1794191750809-15675.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794191814327-20046",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "providers::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "agent_usage_providers::tests::antigravity_old_cli_never_gets_a_prompt_and_new_cli_uses_exact_report_command",
+       "agent_usage_providers::tests::antigravity_report_timeout_output_limit_and_stderr_are_bounded"
+      ],
+      "summary": [
+       "test result: FAILED. 404 passed; 2 failed; 23 ignored; 0 measured; 1425 filtered out; finished in 3.02s"
+      ],
+      "stdout": "1794191814327-20046.stdout.log",
+      "stderr": "1794191814327-20046.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "e2-opencode-cache-pin",
+    "manifest": "repaired-20261109T0224Z.e2-opencode-cache-pin.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "assertion",
+     "parentFailed": [
+      "cloud_agents::setup::tests::opencode_cache_gate_matches_the_parsed_pin_not_the_raw_host_line"
+     ],
+     "stub": "not needed",
+     "stubFailed": [],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 6109
+    },
+    "registeredStub": false,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191833881-21167",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud_agents::setup::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "cloud_agents::setup::tests::opencode_cache_gate_matches_the_parsed_pin_not_the_raw_host_line"
+      ],
+      "summary": [
+       "test result: FAILED. 7 passed; 1 failed; 0 ignored; 0 measured; 1862 filtered out; finished in 0.51s"
+      ],
+      "stdout": "1794191833881-21167.stdout.log",
+      "stderr": "1794191833881-21167.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794191900370-28606",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud_agents::setup::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 1862 filtered out; finished in 0.78s"
+      ],
+      "stdout": "1794191900370-28606.stdout.log",
+      "stderr": "1794191900370-28606.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794191965724-32185",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud_agents::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 1842 filtered out; finished in 5.08s"
+      ],
+      "stdout": "1794191965724-32185.stdout.log",
+      "stderr": "1794191965724-32185.stderr.log"
+     }
+    ]
+   },
+   {
+    "task": "e2-do-ssh-key",
+    "manifest": "repaired-20261109T0224Z.e2-do-ssh-key.result.json",
+    "verdict": {
+     "verdict": "ok",
+     "parent": "assertion",
+     "parentFailed": [
+      "cloud::digitalocean::tests::a_refused_or_unreadable_create_relists_the_registered_key",
+      "cloud::digitalocean::tests::reuses_the_pandacode_key_and_creates_with_it"
+     ],
+     "stub": "not needed",
+     "stubFailed": [],
+     "fix": "pass",
+     "suiteBaselineFailed": [],
+     "suiteMs": 2699
+    },
+    "registeredStub": false,
+    "registeredSuite": true,
+    "commands": [
+     {
+      "phase": "baseline",
+      "observerId": "1794191985938-39879",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::digitalocean::"
+      ],
+      "exitCode": 101,
+      "signal": null,
+      "kind": "assertion",
+      "testsRan": true,
+      "failed": [
+       "cloud::digitalocean::tests::a_refused_or_unreadable_create_relists_the_registered_key",
+       "cloud::digitalocean::tests::reuses_the_pandacode_key_and_creates_with_it"
+      ],
+      "summary": [
+       "test result: FAILED. 7 passed; 2 failed; 1 ignored; 0 measured; 1847 filtered out; finished in 0.01s"
+      ],
+      "stdout": "1794191985938-39879.stdout.log",
+      "stderr": "1794191985938-39879.stderr.log"
+     },
+     {
+      "phase": "fixed",
+      "observerId": "1794192061493-44031",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::digitalocean::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 9 passed; 0 failed; 1 ignored; 0 measured; 1847 filtered out; finished in 0.02s"
+      ],
+      "stdout": "1794192061493-44031.stdout.log",
+      "stderr": "1794192061493-44031.stderr.log"
+     },
+     {
+      "phase": "suite",
+      "observerId": "1794192136674-47397",
+      "argv": [
+       "cargo",
+       "test",
+       "--lib",
+       "cloud::"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "kind": "pass",
+      "testsRan": true,
+      "failed": [],
+      "summary": [
+       "test result: ok. 138 passed; 0 failed; 15 ignored; 0 measured; 1704 filtered out; finished in 2.02s"
+      ],
+      "stdout": "1794192136674-47397.stdout.log",
+      "stderr": "1794192136674-47397.stderr.log"
+     }
+    ]
+   }
+  ]
+ },
+ "smokeRuntimeReview": {
+  "status": "SMOKE-ONLY GO",
+  "reviewerId": "78ad274c-c267-4a0d-b0ed-2d5fc45770f2",
+  "reviewFollowup": "g22-final-seven-runtime-review",
+  "reviewerMessageId": 5901,
+  "architectDeliveryMessageId": 5905,
+  "deliveredDecision": "SMOKE-ONLY GO for registered eight all-arm G2 smoke runs; MAIN NO GO pending smoke review.",
+  "deliveryBasis": "Architect read the latest reviewer final response and addressed message 5901; message 5905 delivers their explicit decision.",
+  "recordedAt": "2026-11-09T02:50:10.530731Z",
+  "mainApproved": false
+ },
+ "plannedSmokeRuns": 8,
+ "completedSmokeRunsMeaning": "Valid smoke runs with nonempty billed model output; raw invalid attempts are counted separately.",
+ "attemptedSmokeRuns": 4,
+ "recordedSmokeRuns": 4,
+ "unstartedSmokeRuns": 4,
+ "modelCallsThisResumeMeaning": "Four harness API attempts, all refused before model inference; zero billed model output tokens.",
+ "smokeRuntime20261109": {
+  "status": "guard-stopped-identity-verification",
+  "startedAt": "2026-11-09T02:51:30.692503+00:00",
+  "endedAt": "2026-11-09T02:51:35.111544+00:00",
+  "postflightAt": "2026-11-09T02:51:52.962Z",
+  "reviewerMessageId": 5901,
+  "architectDeliveryMessageId": 5905,
+  "command": "node scripts/agent-bench/gui.mjs --smoke --batch G2 --from <benchmark-cache>/v2-g2 --out <benchmark-cache>/gui-g2 --snapshot bin-g2 --arm PLAIN,T3,PANDA,PANDA_W --tasks loc-agent-env,e2-ho-etag-commas --total-budget-usd 144.8073872",
+  "evidence": "gui-g2/smoke-runtime-20261109T0250Z/",
+  "evidenceFiles": [
+   "invocation.json",
+   "stdout.log",
+   "stderr.log",
+   "exit.json",
+   "preflight.json",
+   "postflight.json",
+   "audit.json"
+  ],
+  "rawRunDirectory": "gui-g2/runs/smoke-G2/",
+  "ledger": "gui-g2/ledger.jsonl",
+  "operationalGuards": {
+   "runCapUsd": 3,
+   "concurrency": 4,
+   "timeoutMinutes": 25,
+   "minFreeGiB": 6,
+   "freshAdmissionGiB": 7.5,
+   "budgetUsd": 144.8073872
+  },
+  "asOf": "2026-11-09T02:52:47.706Z",
+  "expectedCells": 8,
+  "attemptedCells": 4,
+  "recordedAttempts": 4,
+  "validBilledSmokeRuns": 0,
+  "unstartedCells": 4,
+  "mainRuns": 0,
+  "retries": 0,
+  "coverageInvariant": "8 expected = 4 once-only invalid attempts + 4 unstarted cells; 0 valid billed runs",
+  "runnerExitCode": 3,
+  "stoppedBy": "edit2__e2-ho-etag-commas__s99__PLAIN: missing or zero billing",
+  "billedUsd": 0,
+  "ledgerUsd": 0,
+  "ledgerStarts": 4,
+  "ledgerEnds": 4,
+  "openAttempts": 0,
+  "remainingOperationalBudgetUsd": 144.8073872,
+  "mainApproved": false,
+  "processesLeftRunning": false,
+  "ownedScratchRemoved": true,
+  "originalContentHashesUnchanged": 5905,
+  "protectedFileHashesUnchanged": 97,
+  "historicalEvidenceFilesPreserved": 166,
+  "sourceTaskAnalysisLaunchManifestBinaryRegistrationPinsUnchanged": true,
+  "privateCache": {
+   "sha256": "63d2a07fb24d993801a8e00c71792752f05633937c32d5f0c3d87b2e2fc296c3",
+   "files": 2582
+  },
+  "G1": {
+   "main": 21,
+   "smoke": 8,
+   "ledgerUsd": 5.1926128
+  },
+  "preflightFreeGiB": 60.32484436035156,
+  "postflightFreeGiB": 59.999908447265625,
+  "inventory": [
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PLAIN",
+    "task": "e2-ho-etag-commas",
+    "arm": "PLAIN",
+    "seed": 99,
+    "status": "invalid-service-denial",
+    "attempts": 1,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [],
+    "tools": 23,
+    "steps": 1,
+    "outputTokens": 0,
+    "billedUsd": 0,
+    "exitCode": 1,
+    "apiStatus": 400,
+    "apiError": "API Error: 400 Identity verification is required to continue.",
+    "syntheticOnly": true,
+    "gradePresent": false,
+    "rawRunSha256": "cf847051da7bf9dd6e18ec3705588d44f3876da2d7df55806d975fa505adef9f",
+    "rawStreamSha256": "aa85771fbdca2c0c4b7852686a9520c6483c619bd3b72be2aecffc0398728ff5"
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PANDA",
+    "task": "e2-ho-etag-commas",
+    "arm": "PANDA",
+    "seed": 99,
+    "status": "invalid-service-denial",
+    "attempts": 1,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "tools": 37,
+    "steps": 1,
+    "outputTokens": 0,
+    "billedUsd": 0,
+    "exitCode": 1,
+    "apiStatus": 400,
+    "apiError": "API Error: 400 Identity verification is required to continue.",
+    "syntheticOnly": true,
+    "gradePresent": false,
+    "rawRunSha256": "615bcc8b239a1cd630c9176677e96c28fd4df34d1f99ba95a6c9a7d28e14d893",
+    "rawStreamSha256": "47d31fe48855124c12f728f3551df189aaadc43ee66c3ad6f81de60339948aa8"
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__T3",
+    "task": "e2-ho-etag-commas",
+    "arm": "T3",
+    "seed": 99,
+    "status": "invalid-service-denial",
+    "attempts": 1,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "t3-code",
+      "status": "connected"
+     }
+    ],
+    "tools": 94,
+    "steps": 1,
+    "outputTokens": 0,
+    "billedUsd": 0,
+    "exitCode": 1,
+    "apiStatus": 400,
+    "apiError": "API Error: 400 Identity verification is required to continue.",
+    "syntheticOnly": true,
+    "gradePresent": false,
+    "rawRunSha256": "eaf6cfd1bde5dee1504e8544c8b41c922534f93ed36ab3582cf916ad49422b10",
+    "rawStreamSha256": "056d7203b0f429abd9f0c6befa94d0037db38a23a6e112116f9db27cf64987ca"
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PANDA_W",
+    "task": "e2-ho-etag-commas",
+    "arm": "PANDA_W",
+    "seed": 99,
+    "status": "invalid-service-denial",
+    "attempts": 1,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "tools": 11,
+    "steps": 1,
+    "outputTokens": 0,
+    "billedUsd": 0,
+    "exitCode": 1,
+    "apiStatus": 400,
+    "apiError": "API Error: 400 Identity verification is required to continue.",
+    "syntheticOnly": true,
+    "gradePresent": false,
+    "rawRunSha256": "6e82f1bc04440c2ece31b0bb54ff7f2bf6d87bae0935a6860a8ce53e17a343fb",
+    "rawStreamSha256": "799ba995834efb4909246746cefb8d10ea2e181c48ec5a08c2624a566d0a718d"
+   },
+   {
+    "id": "loc__loc-agent-env__s99__T3",
+    "status": "unstarted",
+    "attempts": 0
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PANDA_W",
+    "status": "unstarted",
+    "attempts": 0
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PANDA",
+    "status": "unstarted",
+    "attempts": 0
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PLAIN",
+    "status": "unstarted",
+    "attempts": 0
+   }
+  ],
+  "expectedTasks": [
+   "loc-agent-env",
+   "e2-ho-etag-commas"
+  ],
+  "expectedArms": [
+   "PLAIN",
+   "T3",
+   "PANDA",
+   "PANDA_W"
+  ],
+  "seed": 99,
+  "model": "claude-sonnet-5-5",
+  "harness": "2.1.317",
+  "allAttemptedModelHarnessMcpCorrect": true,
+  "nonemptyBilledOutputs": 0,
+  "allEightCellsAttempted": false,
+  "performanceGradesProduced": 0,
+  "failureRecordsRetainedWithoutOutcomeExclusion": true,
+  "sourcePreparationOrSanityRepeated": false,
+  "testSuitesRepeated": false,
+  "originalPrivateCacheModified": false,
+  "G1RawAndLedgerUnchanged": true,
+  "noFurtherSmokeAuthorizedThisPhase": true
+ },
+ "prospectiveRecoveryG2_3": {
+  "status": "registered-prospective-execution-no-go",
+  "accountStatus": "awaiting-confirmation",
+  "executionApproved": false,
+  "mainApproved": false,
+  "protocolReviewerMessageId": 5937,
+  "registeredAt": "2026-11-09T05:37:55.387Z",
+  "registrationBatch": "G2-3",
+  "supersedes": "G2-2",
+  "sectionSha256": "9e5b83cb25afb3cb4fec4ba747c77895b078a1d3d309abcee67ae22d44a5ac76",
+  "command": "node scripts/agent-bench/gui.mjs --smoke --batch G2-recovery-1 --from <benchmark-cache>/v2-g2 --out <benchmark-cache>/gui-g2 --snapshot bin-g2 --arm PLAIN,T3,PANDA,PANDA_W --tasks loc-agent-env,e2-ho-etag-commas --concurrency 4 --run-cap-usd 3 --run-timeout-min 25 --min-free-gib 6 --total-budget-usd 144.8073872",
+  "commandExecuted": false,
+  "label": "G2-recovery-1",
+  "rawRunDirectory": "gui-g2/runs/smoke-G2-recovery-1/",
+  "directoryMustBeWhollyAbsent": true,
+  "expectedCells": 8,
+  "completedCells": 0,
+  "seed": 99,
+  "mainBatch": "G2",
+  "mainOrderSeed": 877740526,
+  "mainRuns": 480,
+  "sourceTaskPins": {
+   "tasks-gui.json": "01cf9085cd2d5175a9e47e618d78202dc1758407be55c933cef740a8b52fd129",
+   "tasks.json": "7a020e1aa2477b52c198b5bc4af68a4b72a39ab86fa2146d2956abab181f985e",
+   "tasks-edit-v2.json": "5bb8ec27bacff4060c2e40b8619401decc9c12bced9c5191cf40d95a3d2724fe",
+   "gui.mjs": "7a0b25058885053845a674a51b08d4bc6fe15ead730a115c7c996b541a810a01",
+   "lib.mjs": "a293c1a6e57d4b69e57a6ddae771cf564f20f6ceda42d4358eb6f2da4b326d04",
+   "run.mjs": "49f29ac5f1a42464949d695cae3c0d7ad3c0e8d2ce47167051ed9b47fa6ff877",
+   "saver.mjs": "48259795b6d901037c7b06738b9f2acb2df834cd29a30e573bb6e0ff6f9b4ceb",
+   "runner.test.mjs": "806ed3ef0a4e05436ae8a6ba4a1162807b4f18a968bb76fc626bbf9ec00de173"
+  },
+  "analysisPins": {
+   "analyze.mjs": "556b26f3378148054191ef6c23cd0af78931965b6b4df897a39e8b79c72f2b68",
+   "metrics.mjs": "f24bafbebca21aeb10c96cfa526db163bc03142fcd537358380b836b98110cc6",
+   "stats.mjs": "a3b9fe4de3311271a7716b241c0ee2453e34629839a972c590202705a67a6462"
+  },
+  "sharedCumulativeBudgetUsd": 144.8073872,
+  "oldLedgerPrefix": {
+   "bytes": 935,
+   "sha256": "321046c497f7cf4ce53c596fd5f4f62bb871758f7c02522eea369ef136e7d3cf"
+  },
+  "oldReportSha256": "f52c721a58b047c3bdba1216949b0ceebf1bf687491cc6a2aefd12b24aa4f95a",
+  "prerequisites": [
+   "Factual account-owner confirmation for pinned harness account",
+   "New explicit smoke-only approval after registration",
+   "Fresh frozen pin and preservation checks",
+   "Fresh admission >=7.5 GiB; 6 GiB floor",
+   "No live OUT lease, runner, owned children or open ledger attempts",
+   "Recovery directory wholly absent immediately before launch"
+  ],
+  "independentSmokeReviewAndSeparateMainGoRequired": true,
+  "automaticRetryAuthorized": false
+ },
+ "recoveryPreflight20261109": {
+  "status": "aborted-admission-failed",
+  "asOf": "2026-11-10T03:56:05Z",
+  "accountOwnerConfirmed": true,
+  "smokeOnlyGoGranted": true,
+  "freeGiB": 4.145,
+  "freshAdmissionGiB": 7.5,
+  "minFreeGiB": 6,
+  "commandExecuted": false,
+  "serviceCalls": 0,
+  "billedUsd": 0,
+  "ledgerBytes": 935,
+  "ledgerSha256": "321046c497f7cf4ce53c596fd5f4f62bb871758f7c02522eea369ef136e7d3cf",
+  "liveRunner": false,
+  "recoveryDirectoryAbsent": true,
+  "pinHashChecksRun": false,
+  "cleanupOrDeletion": false,
+  "remainingOperationalBudgetUsd": 144.8073872,
+  "mainApproved": false,
+  "nextStep": "free >=7.5 GiB on the cache volume, then fresh full preflight and the once-only recorded command"
+ },
+ "recoveryPreflight20261110": {
+  "status": "aborted-preflight-failed-protected-evidence-missing",
+  "asOf": "2026-11-10T09:50:00Z",
+  "accountOwnerConfirmed": true,
+  "smokeOnlyGoGranted": true,
+  "freeGiB": 65,
+  "freshAdmissionGiB": 7.5,
+  "minFreeGiB": 6,
+  "admissionPassed": true,
+  "commandExecuted": false,
+  "serviceCalls": 0,
+  "billedUsd": 0,
+  "failedCheck": "src-tauri/target/pandacode-g2-regeneration-evidence/protected-before.json missing (whole src-tauri/target directory absent); 5905 original content hashes cannot be verified and 9 of 166 historical evidence files are gone",
+  "missingHistoricalEvidenceFiles": 9,
+  "historicalEvidenceFilesExpected": 166,
+  "originalContentHashesVerified": 0,
+  "protectedFileHashesPresent": 97,
+  "protectedFileHashesMatching": 96,
+  "protectedMismatchExplained": "preregistrations.jsonl grew by the registered G2-3 line; its prefix still hashes to the recorded b8647cdc… value",
+  "privateCache": {
+   "sha256": "63d2a07fb24d993801a8e00c71792752f05633937c32d5f0c3d87b2e2fc296c3",
+   "files": 2582,
+   "verified": true
+  },
+  "ledgerBytes": 935,
+  "ledgerSha256": "321046c497f7cf4ce53c596fd5f4f62bb871758f7c02522eea369ef136e7d3cf",
+  "oldSmokeReportSha256Verified": true,
+  "liveRunner": false,
+  "pidsEmpty": true,
+  "recoveryDirectoryAbsent": true,
+  "evidence": "gui-g2/recovery-runtime-20261110T0946Z/",
+  "cleanupOrDeletion": false,
+  "remainingOperationalBudgetUsd": 144.8073872,
+  "mainApproved": false,
+  "nextStep": "architect decision: restore or re-baseline the deleted regeneration evidence (protected-before.json etc.) under a registered disposition, then a fresh full preflight and the once-only recorded command"
+ },
+ "restoredEvidenceG2_4": {
+  "status": "registered-evidence-restored-execution-not-run",
+  "registeredAt": "2026-11-10T10:02:12.352Z",
+  "registrationBatch": "G2-4",
+  "supersedes": "G2-3",
+  "sectionSha256": "6e8d0cd0a1c5c95c800c9f7f32d2ab6d1089de9f789d10a29de0a8e061f5fdd1",
+  "disposition": "restore deleted regeneration evidence from byte-identical copies",
+  "restoredDirectory": "gui-g2/restored-regeneration-evidence-20261110/",
+  "restoredFiles": 9,
+  "restoredFilesMatchingHistoricalHashes": 9,
+  "historicalEvidenceFilesExpected": 166,
+  "originalContentHashesVerified": 5905,
+  "originalContentHashesExpected": 5905,
+  "tmpOriginalsMovedOrDeleted": false,
+  "frozenCacheBackup": {
+   "directory": "gui-g2/frozen-cache-backup-20261110/",
+   "readOnlyBackup": true,
+   "benchmarkPathsRepointed": false,
+   "originalAltered": false,
+   "fileHashesIdentical": true
+  },
+  "registrationCheck": {
+   "recordedPrefixLines": 28,
+   "recordedPrefixSha256": "b8647cdce5ae07fef71c34b71e15d2f4aa890797af749d76e7750ec79382201a",
+   "registeredRowsAfterPrefix": [
+    "G2-3",
+    "G2-4"
+   ]
+  },
+  "recoveryPreflight20261110PassClaimsVerified": false,
+  "recoveryPreflight20261110Note": "check.mjs aborted at line 18 on the missing protected-before.json and kept no stdout; its listed passes came from manual checks",
+  "sourceTaskPins": {
+   "tasks-gui.json": "01cf9085cd2d5175a9e47e618d78202dc1758407be55c933cef740a8b52fd129",
+   "tasks.json": "7a020e1aa2477b52c198b5bc4af68a4b72a39ab86fa2146d2956abab181f985e",
+   "tasks-edit-v2.json": "5bb8ec27bacff4060c2e40b8619401decc9c12bced9c5191cf40d95a3d2724fe",
+   "gui.mjs": "7a0b25058885053845a674a51b08d4bc6fe15ead730a115c7c996b541a810a01",
+   "lib.mjs": "a293c1a6e57d4b69e57a6ddae771cf564f20f6ceda42d4358eb6f2da4b326d04",
+   "run.mjs": "49f29ac5f1a42464949d695cae3c0d7ad3c0e8d2ce47167051ed9b47fa6ff877",
+   "saver.mjs": "48259795b6d901037c7b06738b9f2acb2df834cd29a30e573bb6e0ff6f9b4ceb",
+   "runner.test.mjs": "806ed3ef0a4e05436ae8a6ba4a1162807b4f18a968bb76fc626bbf9ec00de173"
+  },
+  "analysisPins": {
+   "analyze.mjs": "556b26f3378148054191ef6c23cd0af78931965b6b4df897a39e8b79c72f2b68",
+   "metrics.mjs": "f24bafbebca21aeb10c96cfa526db163bc03142fcd537358380b836b98110cc6",
+   "stats.mjs": "a3b9fe4de3311271a7716b241c0ee2453e34629839a972c590202705a67a6462"
+  },
+  "command": "node scripts/agent-bench/gui.mjs --smoke --batch G2-recovery-1 --from <benchmark-cache>/v2-g2 --out <benchmark-cache>/gui-g2 --snapshot bin-g2 --arm PLAIN,T3,PANDA,PANDA_W --tasks loc-agent-env,e2-ho-etag-commas --concurrency 4 --run-cap-usd 3 --run-timeout-min 25 --min-free-gib 6 --total-budget-usd 144.8073872",
+  "commandExecuted": false,
+  "label": "G2-recovery-1",
+  "seed": 99,
+  "sharedCumulativeBudgetUsd": 144.8073872,
+  "mainBatch": "G2",
+  "mainRuns": 480,
+  "mainOrderSeed": 877740526,
+  "serviceCalls": 0,
+  "billedUsd": 0,
+  "mainApproved": false,
+  "nextStep": "fixed standalone preflight (check-g2-4.mjs), then the G2-3 prerequisites and the once-only recorded command"
+ },
+ "recoverySmokeG2Recovery1": {
+  "status": "smoke-complete-pending-review",
+  "batch": "G2-recovery-1",
+  "batchDir": "gui-g2/runs/smoke-G2-recovery-1/",
+  "registration": "G2-4 (supersedes G2-3)",
+  "preflight": {
+   "at": "2026-11-10T10:06Z",
+   "script": "check-g2-4.mjs (fresh copy, identical SHA-256 115f362d…)",
+   "passed": "27/27",
+   "freeGiB": 67.458
+  },
+  "command": "node scripts/agent-bench/gui.mjs --smoke --batch G2-recovery-1 --from <benchmark-cache>/v2-g2 --out <benchmark-cache>/gui-g2 --snapshot bin-g2 --arm PLAIN,T3,PANDA,PANDA_W --tasks loc-agent-env,e2-ho-etag-commas --concurrency 4 --run-cap-usd 3 --run-timeout-min 25 --min-free-gib 6 --total-budget-usd 144.8073872",
+  "commandExecuted": true,
+  "executions": 1,
+  "startedAt": "2026-11-10T10:06:57Z",
+  "endedAt": "2026-11-10T10:12:00Z",
+  "runnerExitCode": 0,
+  "stoppedBy": null,
+  "expectedCells": 8,
+  "billedCells": 8,
+  "unstartedCells": 0,
+  "retries": 0,
+  "serviceDenials": 0,
+  "recoveryBilledUsd": 1.8843887,
+  "cumulativeG2LedgerUsd": 1.8843887,
+  "remainingG2AllowanceUsd": 142.9229985,
+  "ledger": {
+   "oldPrefixBytes": 935,
+   "oldPrefixSha256": "321046c497f7cf4ce53c596fd5f4f62bb871758f7c02522eea369ef136e7d3cf",
+   "recoveryStarts": 8,
+   "recoveryEnds": 8,
+   "openAttempts": 0
+  },
+  "cells": [
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PLAIN",
+    "task": "e2-ho-etag-commas",
+    "arm": "PLAIN",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [],
+    "steps": 3,
+    "outputTokens": 1152,
+    "billedUsd": 0.0466848,
+    "runnerOk": true
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PANDA",
+    "task": "e2-ho-etag-commas",
+    "arm": "PANDA",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "steps": 4,
+    "outputTokens": 1213,
+    "billedUsd": 0.1032189,
+    "runnerOk": true
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__T3",
+    "task": "e2-ho-etag-commas",
+    "arm": "T3",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "t3-code",
+      "status": "connected"
+     }
+    ],
+    "steps": 4,
+    "outputTokens": 1709,
+    "billedUsd": 0.11737649999999998,
+    "runnerOk": true
+   },
+   {
+    "id": "edit2__e2-ho-etag-commas__s99__PANDA_W",
+    "task": "e2-ho-etag-commas",
+    "arm": "PANDA_W",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "steps": 3,
+    "outputTokens": 693,
+    "billedUsd": 0.0503483,
+    "runnerOk": true
+   },
+   {
+    "id": "loc__loc-agent-env__s99__T3",
+    "task": "loc-agent-env",
+    "arm": "T3",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "t3-code",
+      "status": "connected"
+     }
+    ],
+    "steps": 11,
+    "outputTokens": 5359,
+    "billedUsd": 0.5294962999999999,
+    "runnerOk": true
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PANDA_W",
+    "task": "loc-agent-env",
+    "arm": "PANDA_W",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "steps": 7,
+    "outputTokens": 3593,
+    "billedUsd": 0.3576285,
+    "runnerOk": true
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PANDA",
+    "task": "loc-agent-env",
+    "arm": "PANDA",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [
+     {
+      "name": "pandacode_architect",
+      "status": "connected"
+     }
+    ],
+    "steps": 4,
+    "outputTokens": 2493,
+    "billedUsd": 0.2968423,
+    "runnerOk": true
+   },
+   {
+    "id": "loc__loc-agent-env__s99__PLAIN",
+    "task": "loc-agent-env",
+    "arm": "PLAIN",
+    "seed": 99,
+    "model": "claude-sonnet-5-5",
+    "harness": "2.1.317",
+    "mcp": [],
+    "steps": 7,
+    "outputTokens": 3450,
+    "billedUsd": 0.3827931,
+    "runnerOk": true
+   }
+  ],
+  "postflight": {
+   "at": "2026-11-10T10:12:14Z",
+   "passed": "24/24",
+   "originalContentHashesUnchanged": 5905,
+   "protectedFileHashesUnchanged": 97,
+   "protectedNote": "preregistrations.jsonl checked by recorded 28-line prefix plus registered G2-3/G2-4 rows",
+   "historicalEvidenceFilesPreserved": 166,
+   "oldSmokeG2EvidenceUnchanged": true,
+   "privateCache": {
+    "sha256": "63d2a07fb24d993801a8e00c71792752f05633937c32d5f0c3d87b2e2fc296c3",
+    "files": 2582
+   },
+   "G1": {
+    "main": 21,
+    "smoke": 8,
+    "ledgerUsd": 5.1926128
+   },
+   "freeGiB": 67.106
+  },
+  "processesLeftRunning": false,
+  "ownedScratchRemoved": true,
+  "graded": false,
+  "mainRuns": 0,
+  "mainApproved": false,
+  "evidence": "gui-g2/recovery-run3-20261110T1006Z/ (check-g2-4.mjs, invocation.json, stdout.log, stderr.log, exit.json, preflight-g2-4.json, postflight-g2-4.json, audit.mjs, audit.json)",
+  "nextGate": "independent review of the eight recovery smoke runs, then a separate main GO; main stays --batch G2, 480 runs, order seed 877740526"
+ },
+ "smokeReviewG2Recovery1": {
+  "status": "smoke-valid-main-no-go-quota",
+  "reviewer": "92508b7c (independent), re-verified from raw stream.jsonl",
+  "batch": "smoke-G2-recovery-1",
+  "noServiceCallsForReview": true,
+  "smokeVerdict": "valid",
+  "argvMatchesRegisteredG2_3_G2_4": true,
+  "billedCells": 8,
+  "billedUsd": 1.8843887,
+  "billedUsdEqualsLedger": true,
+  "model": "claude-sonnet-5-5",
+  "harness": "2.1.317",
+  "armIsolationAsRegistered": true,
+  "ledgerPrefix": {
+   "bytes": 935,
+   "sha256": "321046c497f7cf4ce53c596fd5f4f62bb871758f7c02522eea369ef136e7d3cf",
+   "intact": true
+  },
+  "contamination": "none: smoke seed 99 in its own namespace; main seeds 1,2,3, order seed 877740526",
+  "mainVerdict": "no-go",
+  "mainBlocker": {
+   "rateLimitType": "seven_day",
+   "utilization": 0.98,
+   "status": "allowed_warning",
+   "overageStatus": "rejected",
+   "overageDisabledReason": "out_of_credits",
+   "resetsAt": "2026-11-16T01:00:00Z",
+   "resetsAtEpoch": 1794790800,
+   "observedIn": "last rate_limit_event of all 8 streams",
+   "projectedMainUsd": "about 75-115, worst case about 130-140",
+   "risk": "quota exhaustion would leave an incomplete main batch"
+  },
+  "mainGoConditions": [
+   "after the 2026-11-16T01:00Z reset, or the account owner turns on extra usage",
+   "utilization confirmed low without a paid call",
+   "fresh preflight immediately before the unchanged registered main command (--batch G2, 480 runs, order seed 877740526)",
+   "separate architect main GO"
+  ],
+  "completedMainRuns": 0
+ }
+}

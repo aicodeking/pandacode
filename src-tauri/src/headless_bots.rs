@@ -249,21 +249,21 @@ pub(crate) fn run_import(app: &tauri::AppHandle, path: &Path) {
         Ok(text) => text,
         Err(error) => {
             eprintln!("Could not read the bot import file {}: {error}", path.display());
-            std::process::exit(1)
+            crate::headless::exit(1)
         }
     };
     let doc: Value = match serde_json::from_str(&text) {
         Ok(doc) => doc,
         Err(error) => {
             eprintln!("The bot import file is not valid JSON: {error}");
-            std::process::exit(1)
+            crate::headless::exit(1)
         }
     };
     let state = app.state::<crate::AppState>();
     let report = {
         let Ok(store) = state.store.lock() else {
             eprintln!("Could not open the task store for the bot import.");
-            std::process::exit(1)
+            crate::headless::exit(1)
         };
         apply(&store, &bots::workspace_root(), &doc, crate::storage::now())
     };
@@ -272,7 +272,7 @@ pub(crate) fn run_import(app: &tauri::AppHandle, path: &Path) {
     }
     if report.failed > 0 {
         eprintln!("The bot import had errors; fix the file and restart — what imported stays.");
-        std::process::exit(1)
+        crate::headless::exit(1)
     }
     let mut links = Vec::new();
     for added in &report.added_channels {

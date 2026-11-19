@@ -24,6 +24,7 @@ import { createPreviewSkills } from './preview-skills';
 import { createPreviewSkillManager } from './preview-skill-manager';
 import { previewCapabilities } from './preview-capabilities';
 import { recipesCommand } from './preview-recipes';
+import { customToolsCommand } from './preview-custom-tools';
 import { openCodePreviewKey, openCodePreviewModels, previewOpenCodeChoices, previewOpenCodeSelection } from './preview-opencode';
 const turnChanges = createPreviewTurnChanges();
 const now = Date.now();
@@ -251,6 +252,16 @@ let previewMimoEndpoint: string | null = null;
 const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
+/** Settings → Agents → Local code explorer; the app keeps it in app data. */
+let previewExploreEnabled = true;
+/** Its per-harness opt-ins (`explore-on-<provider>` markers); Claude Code is on by default. */
+const previewExploreHarnesses = new Set<string>();
+/** Settings → Agents → Workers can use skills; on by default (off is a marker in app data). */
+let previewWorkerSkills = true;
+/** Settings → Tools & add-ons → Agent-made tools; opt-in, off by default (on is a marker in app data). */
+let previewCustomToolsEnabled = false;
+/** Settings → Agents → Trim worker tools; opt-in, off by default. */
+let previewWorkerTrim = false;
 const previewAgentsDockSnapshot = {
   agents: [
     { id: 'preview-active', title: 'Polish the new onboarding', projectName: 'PandaCode', provider: 'codex', model: 'gpt-5.6-sol', status: 'running', elapsedSeconds: 94 },
@@ -719,7 +730,9 @@ const mirrorWorkerMessages = new Map<string, Message[]>();
   sessions.unshift({ ...sessions[0], id: sessionId, title: 'Remote team task', resumeId: null, status: 'running', remoteDevice: { id: 'dev-studio', name: 'Studio iMac' }, lastResponseAt: now });
   messages[sessionId] = [{ id: ++id, sessionId, role: 'user', content: 'Split the docs work', createdAt: now }];
   const worker = (n: number, status: TeamWorker['status'], summary: string): TeamWorker => ({ id: `w${n}`, sessionId: `host-worker-${n}`, profileId: 'auto', name: `Worker ${n}`, provider: 'codex', model: 'gpt-5.5', status, assignment: `Part ${n}`, summary, error: null, dependsOn: [], files: [], readOnly: false, attempt: 1, abandoned: false, checkpoint: null, createdAt: now, updatedAt: now });
-  mirrorTeams.set(sessionId, { sessionId, config: { auto: true, workers: [], maxParallel: 0, maxRounds: 6, maxAssignments: 0, workspace: 'shared', summaryLimit: 0 }, status: 'running', round: 1, revision: 1, workers: [worker(1, 'completed', 'Wrote the intro'), worker(2, 'running', '')], error: null, summary: null, updatedAt: now });
+  // Both workers were given their own token saver by the lead.
+  const workers = [{ ...worker(1, 'completed', 'Wrote the intro'), tokenSaver: { packs: ['caveman', 'quiet-tools'], level: 'lite' } }, { ...worker(2, 'running', ''), tokenSaver: { packs: ['lean-code', 'quiet-tools'] } }];
+  mirrorTeams.set(sessionId, { sessionId, config: { auto: true, workers: [], maxParallel: 0, maxRounds: 6, maxAssignments: 0, workspace: 'shared', summaryLimit: 0 }, status: 'running', round: 1, revision: 1, workers, error: null, summary: null, updatedAt: now });
   // `__previewMirrorLongWorker(n)`: worker 1's transcript becomes n messages, several pages long.
   (window as any).__previewMirrorLongWorker = (count: number) => mirrorWorkerMessages.set('w1', Array.from({ length: count }, (_, index) => ({ id: index + 1, sessionId: 'host-worker-1', role: index % 2 ? 'assistant' : 'user', content: `Worker line ${index + 1}`, createdAt: now }) as Message));
   mirrorWorkerMessages.set('w1', [{ id: 1, sessionId: 'host-worker-1', role: 'user', content: 'Part 1', createdAt: now }, { id: 2, sessionId: 'host-worker-1', role: 'assistant', content: 'Intro written on the host.', createdAt: now }]);
@@ -1629,6 +1642,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     return null as T;
   }
   if (command === 'capabilities_inventory' || command === 'cache_alignment') return previewCapabilities(command) as T;
+  if (command.startsWith('custom_tool')) { const r = customToolsCommand(command, args, emit); if (r.handled) return r.result as T; }
   if (command.startsWith('recipes_')) { const r = recipesCommand(command, args); if (r.handled) return r.result as T; }
   let result: unknown;
   switch (command) {
@@ -2050,6 +2064,41 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
     case 'list_agent_integrations': result = { servers: [{ name: 'Preview documentation', description: 'Sample MCP integration', status: 'ready', authStatus: 'not required', tools: [{ name: 'search_docs', description: 'Search sample documentation.' }] }], skills: [{ name: 'Project guidelines', description: 'Sample skill', status: 'enabled' }], apps: [], warnings: [] }; break;
     case 'list_app_tools': result = [{ name: 'pandacode_list_tasks', description: 'List project tasks.' }, { name: 'pandacode_code_search', description: 'Search the checkout with the local codedb index.' }, { name: 'pandacode_open_browser', description: 'Open a URL in the app browser.' }]; break;
+    case 'explore_enabled':
+      // `?explore-fail`: the saved switch cannot be read.
+      if (new URLSearchParams(location.search).has('explore-fail')) throw new Error('Could not read the explorer setting.');
+      result = previewExploreEnabled; break;
+    case 'set_explore_enabled': previewExploreEnabled = Boolean(args.enabled); break;
+    case 'explore_harness_enabled':
+      // `?explore-harness-fail`: Codex's marker cannot be read and Kimi's cannot be saved.
+      if (new URLSearchParams(location.search).has('explore-harness-fail') && args.provider === 'codex') throw new Error('Could not read the setting.');
+      result = args.provider === 'claude' || previewExploreHarnesses.has(String(args.provider)); break;
+    case 'set_explore_harness_enabled':
+      if (args.provider === 'claude') throw new Error('Claude Code always has the explorer while the switch is on.');
+      if (new URLSearchParams(location.search).has('explore-harness-fail') && args.provider === 'kimi') throw new Error('Could not save the setting: read-only file system');
+      if (args.enabled) previewExploreHarnesses.add(String(args.provider)); else previewExploreHarnesses.delete(String(args.provider));
+      break;
+    case 'custom_tools_enabled':
+      // `?custom-tools-fail`: the saved switch cannot be read.
+      if (new URLSearchParams(location.search).has('custom-tools-fail')) throw new Error('Could not read the setting.');
+      result = previewCustomToolsEnabled; break;
+    case 'set_custom_tools_enabled': previewCustomToolsEnabled = Boolean(args.enabled); break;
+    case 'worker_skills_enabled':
+      // `?worker-skills-read-fail`: the saved switch cannot be read.
+      if (new URLSearchParams(location.search).has('worker-skills-read-fail')) throw new Error('Could not read the setting.');
+      result = previewWorkerSkills; break;
+    case 'set_worker_skills_enabled':
+      // `?worker-skills-fail`: the save is refused, so the switch goes back.
+      if (new URLSearchParams(location.search).has('worker-skills-fail')) throw new Error('Could not save the setting.');
+      previewWorkerSkills = Boolean(args.enabled); break;
+    case 'worker_trim_enabled':
+      // `?worker-trim-read-fail`: the saved switch cannot be read.
+      if (new URLSearchParams(location.search).has('worker-trim-read-fail')) throw new Error('Could not read the setting.');
+      result = previewWorkerTrim; break;
+    case 'set_worker_trim_enabled':
+      // `?worker-trim-fail`: the save is refused, so the switch goes back.
+      if (new URLSearchParams(location.search).has('worker-trim-fail')) throw new Error('Could not save the setting.');
+      previewWorkerTrim = Boolean(args.enabled); break;
     case 'run_turn_checks': result = { checked: false, reason: 'Browser preview has no project checks.' }; break;
     case 'agent_ui_request_active': result = true; break;
     case 'resolve_agent_ui_action': break;

@@ -5467,7 +5467,9 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     // whose bridge absorbs it (handOffCard), so a pinned thread does not move at the swap.
     handoffRect = document.querySelector('#stream-region .turn-card.is-live')?.getBoundingClientRect();
     renderComposer(); renderTranscript();
-    await refreshInspector();
+    // A queued follow-up does not need git/file status: dispatchQueue runs as soon as this returns.
+    // refreshInspector shows its own load errors; run() reports anything else (a render throw).
+    run(refreshInspector());
   } catch (error) {
     if (!current()) return;
     finishing.error = errorText(error); finishing.stream.revision++;

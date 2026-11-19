@@ -18,8 +18,9 @@ use prefs::{
 };
 mod enforcement;
 pub(crate) use enforcement::{
-    codex_arguments, codex_connection_arguments, opencode_agents_at, opencode_configuration_at,
-    opencode_enforcement_with, opencode_launch_with, opencode_permission, OpenCodeAgents,
+    codex_arguments, codex_connection_arguments, opencode_agents_at, opencode_all_agents_at,
+    opencode_configuration_at, opencode_enforcement_with, opencode_launch_with,
+    opencode_permission, opencode_tool_grants_with, opencode_user_agents, OpenCodeAgents,
 };
 mod matrix;
 #[cfg(test)]

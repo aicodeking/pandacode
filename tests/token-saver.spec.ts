@@ -92,7 +92,7 @@ test('turning on a missing tool installs it, and a thread can become the default
   await send(page, 'Run the tests');
   const block = (await sent(page)).at(-1)!;
   expect(block).toContain('Prefix shell commands with rtk');
-  expect(block).toContain('rg -n pattern path');
+  expect(block).toContain('not broad listings');
 });
 
 test('a nearly full context offers one-click tightening in the panel', async ({ page }) => {
@@ -111,7 +111,7 @@ test('a nearly full context offers one-click tightening in the panel', async ({ 
   await send(page, 'Run the checks');
   const block = (await sent(page)).at(-1)!;
   expect(block).toContain('Telegraphic.');
-  expect(block).toContain('rg -n pattern path');
+  expect(block).toContain('not broad listings');
 });
 
 test('the panel shows measured usage since the packs changed', async ({ page }) => {

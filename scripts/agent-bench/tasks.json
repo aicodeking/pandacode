@@ -1,0 +1,517 @@
+{
+  "harness": {
+    "version": "2.1.317",
+    "models": {
+      "sonnet": "claude-sonnet-5-5",
+      "opus": "claude-opus-5-5"
+    }
+  },
+  "instructionOnly": "For code search, symbol lookup, outlines and ranged reads, put all your questions in one step, as parallel tool calls or one command, instead of a chain of search then read steps. Do not re-read what a tool already showed.",
+  "repos": {
+    "outline": {
+      "url": "https://github.com/outline/outline.git",
+      "depth": 600,
+      "prune": [
+        ".claude",
+        ".mcp.json",
+        "CLAUDE.md"
+      ]
+    },
+    "vscode": {
+      "url": "https://github.com/microsoft/vscode.git",
+      "depth": 60,
+      "prune": [
+        ".claude",
+        ".mcp.json",
+        "CLAUDE.md"
+      ]
+    }
+  },
+  "smokeTask": "loc-connect-keychain",
+  "long": {
+    "fillerChars": 560000,
+    "tasks": [
+      "loc-skill-brief",
+      "loc-cloud-credentials",
+      "loc-model-picker-errors",
+      "loc-connect-keychain"
+    ]
+  },
+  "localizationSuffix": "This is a question about the code: do not edit anything. Finish your reply with one fenced json block of the form {\"files\":[\"repo/relative/path\"],\"functions\":[\"name\"]} listing the files that would have to change for this work (including tests), most important first, and the key function names.",
+  "localization": [
+    {
+      "id": "loc-model-picker-errors",
+      "commit": "1d07f0ac07f05db55a75d4d2313f7da6db0b9791",
+      "gold": [
+        "src/model-picker.css",
+        "src/model-picker.ts",
+        "tests/settings.spec.ts",
+        "tests/ui.spec.ts"
+      ],
+      "tags": [],
+      "prompt": "When a harness's model list can't be fetched, the model picker should disable that harness and show the reason on hover. Which code would change for this, including its styles and the tests that cover it?"
+    },
+    {
+      "id": "loc-opencode-efforts",
+      "commit": "19adbdd533aba8f7d759e8e05d980372526230f8",
+      "gold": [
+        "src-tauri/src/providers.rs",
+        "src-tauri/src/providers/acp.rs"
+      ],
+      "tags": [],
+      "prompt": "Three harness bugs: OpenCode v2's reasoning efforts come out wrong in the picker, the Antigravity process lingers at shutdown, and ACP agents run into limits at startup. Where would I fix these?"
+    },
+    {
+      "id": "loc-cloud-credentials",
+      "commit": "88c7e6a02fe81336077bfb74ca8300b093fc0e2f",
+      "gold": [
+        "src-tauri/src/cloud_agents/credentials.rs",
+        "src-tauri/src/cloud_agents/setup.rs",
+        "src-tauri/src/cloud_agents/tasks.rs"
+      ],
+      "tags": [
+        "secret-named"
+      ],
+      "prompt": "Cloud agents: installing OpenCode on a remote machine needs hardening, and when `auth import` fails its error text echoes the user's credentials. Which code handles this?"
+    },
+    {
+      "id": "loc-skill-brief",
+      "commit": "ca34af7205bee2d7dd453e4283cf2211d0428073",
+      "gold": [
+        "src-tauri/src/bots/gateway.rs",
+        "src-tauri/src/skills.rs",
+        "src-tauri/src/skills/scoped.rs",
+        "src-tauri/src/skills/tests.rs"
+      ],
+      "tags": [
+        "glob-narrow"
+      ],
+      "prompt": "Two things go wrong for bots and skills. Old Codex project skills should move to the newer .agents/skills location, and a failed turn should not throw away a bot's newer brief. Where would I change this, and where are the tests?"
+    },
+    {
+      "id": "loc-streaming-paint",
+      "commit": "52b2d48c4c117e0e72d0796a4c48b859152da31d",
+      "gold": [
+        "src/dom.ts",
+        "src/file-links.ts",
+        "src/main.ts",
+        "src/progress-pip.css",
+        "src/progress-pip.ts",
+        "src/streaming-markdown.ts",
+        "src/transcript-scroll.ts",
+        "tests/streaming-markdown.test.mjs"
+      ],
+      "tags": [
+        "truncated-read"
+      ],
+      "prompt": "Streaming agent replies do too much style and layout work. I want one paint per animation frame, incremental block scanning, and pinning to the bottom after layout instead of on each update. Which files take part in that path, including anything else that scrolls or animates with it?"
+    },
+    {
+      "id": "loc-connect-keychain",
+      "commit": "2e457de8e9b4261b2e2b289a5ef12e8a8e989f9f",
+      "gold": [
+        "src-tauri/src/remote.rs",
+        "src-tauri/src/remote/config.rs",
+        "src-tauri/src/remote/socket.rs"
+      ],
+      "tags": [],
+      "prompt": "PandaCode Connect asks for the login password at every launch, because its relay token and device key are kept in the macOS keychain. Where would I change this so they are kept elsewhere?"
+    },
+    {
+      "id": "loc-all-keychain",
+      "commit": "61d6c9d42e51c5191db81394223f28bcfb62fdf0",
+      "gold": [
+        "src-tauri/src/cloud_agents/bridge.rs",
+        "src-tauri/src/cloud_agents/transport.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/provider_settings.rs",
+        "src-tauri/src/remote/secrets.rs",
+        "src-tauri/src/secret_store.rs"
+      ],
+      "tags": [
+        "secret-named",
+        "glob-narrow"
+      ],
+      "prompt": "After each update, bot, cloud, provider and connection secrets all ask for the macOS login password again. Secrets should stop going through the Keychain on macOS. Which code has to change?"
+    },
+    {
+      "id": "loc-usage-keychain",
+      "commit": "c8b213075e5b6c99993deb4a7a4d6daa615ce780",
+      "gold": [
+        "src-tauri/src/agent_usage_providers.rs",
+        "src-tauri/src/usage_keychain.rs"
+      ],
+      "tags": [
+        "secret-named"
+      ],
+      "prompt": "The agent usage panel doesn't find Claude logins stored in the macOS Keychain, or OpenCode 2.x credentials. Where is this read?"
+    },
+    {
+      "id": "loc-antigravity-fallback",
+      "commit": "b7af92b088baa69801bd02f96f5c03fdcf405c7f",
+      "gold": [
+        "src-tauri/src/providers.rs",
+        "src-tauri/src/providers/acp.rs",
+        "src-tauri/src/slash_commands/acp.rs",
+        "src/provider-settings.ts"
+      ],
+      "tags": [
+        "glob-narrow"
+      ],
+      "prompt": "Some Antigravity installs don't have agy_acp_server. We should fall back to `agy acp`, wherever we launch it, discover its commands or tell the user about it in settings. What would change?"
+    },
+    {
+      "id": "loc-cline-mcp",
+      "commit": "2e9f46e2217ae2fd3723a5a6a788d8cc14e661a5",
+      "gold": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/providers.rs",
+        "src-tauri/src/providers/acp.rs",
+        "src-tauri/src/providers/cline.rs"
+      ],
+      "tags": [
+        "truncated-read"
+      ],
+      "prompt": "Cline's ACP server ignores the session's mcpServers, so tasks that need PandaCode's tools fail at startup. It does read a settings file named by an environment variable. Where would per-run support for that go?"
+    },
+    {
+      "id": "loc-branch-switch",
+      "commit": "a5d95437c199d6ba8ddfd9de7d0d088748e7e353",
+      "gold": [
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/workspace.rs",
+        "src/main.ts",
+        "src/preview.ts",
+        "src/types.ts",
+        "src/worktrees.ts",
+        "tests/worktrees.spec.ts"
+      ],
+      "tags": [
+        "truncated-read",
+        "glob-narrow"
+      ],
+      "prompt": "I want to switch the checkout to main or another local branch from the branch menu. Which code would this touch, from the UI to the native side, including preview mocks and tests?"
+    },
+    {
+      "id": "loc-agent-env",
+      "commit": "5676e875da5e89efa037bf164a23ce21767cffdb",
+      "gold": [
+        "src-tauri/src/provider_settings.rs",
+        "src-tauri/src/providers/hermes.rs",
+        "src-tauri/src/providers/warm.rs",
+        "src-tauri/src/providers/zcode.rs",
+        "src/preview.ts",
+        "src/provider-settings.ts",
+        "tests/provider-settings.spec.ts"
+      ],
+      "tags": [],
+      "prompt": "Every agent should get environment variables and an executable location in Settings, including harnesses with no hand-written card. Which code has to change so those settings reach every way an agent gets started?"
+    },
+    {
+      "id": "loc-team-stop",
+      "commit": "99806120510ae19a71af63e1b08e65c0ca0d16cd",
+      "gold": [
+        "src-tauri/src/architect.rs",
+        "src-tauri/src/chats.rs",
+        "src-tauri/src/cloud_agents/setup.rs",
+        "src-tauri/src/concurrent_task_tests.rs",
+        "src-tauri/src/lib.rs",
+        "src-tauri/src/providers.rs",
+        "src-tauri/src/task_deletion.rs"
+      ],
+      "tags": [
+        "glob-narrow"
+      ],
+      "prompt": "Three lifecycle bugs: pressing Stop during team maintenance damages the team, deleting a task removes folders while agents still run in them, and OpenCode discovery doesn't use a private folder. Where would these be fixed, and which test covers concurrent tasks?"
+    },
+    {
+      "id": "out-csrf",
+      "repo": "outline",
+      "commit": "3fafd2a7ea3f5879130309b67bae5feaa47c8d89",
+      "gold": [
+        "server/middlewares/csrf.ts",
+        "server/routes/api/auth/auth.ts",
+        "server/routes/auth/index.ts",
+        "server/utils/authentication.ts",
+        "server/utils/crypto.ts",
+        "server/utils/csrf.ts"
+      ],
+      "tags": [
+        "auth"
+      ],
+      "prompt": "Concurrent requests fail because the CSRF token gets replaced while other requests are in flight. Where is it issued and checked, across the middleware and the auth routes?"
+    },
+    {
+      "id": "out-auth-transports",
+      "repo": "outline",
+      "commit": "41ba5c9fcbeaa6d5dd8a1d3dda06cd4d8d676751",
+      "gold": [
+        "server/middlewares/authentication.ts",
+        "server/routes/auth/index.test.ts",
+        "server/routes/auth/index.ts"
+      ],
+      "tags": [
+        "auth"
+      ],
+      "prompt": "Auth routes accept credentials through more transports than they should. Where would I restrict this, and what tests cover it?"
+    },
+    {
+      "id": "out-cimd",
+      "repo": "outline",
+      "commit": "e5b1ade40d8afd5fdfbc20b4684f576d43be747f",
+      "gold": [
+        "server/env.ts",
+        "server/routes/discovery/mcp.ts",
+        "server/routes/oauth/oauth.test.ts",
+        "server/utils/oauth/ClientMetadataHelper.test.ts",
+        "server/utils/oauth/ClientMetadataHelper.ts"
+      ],
+      "tags": [
+        "auth",
+        "dot-config"
+      ],
+      "prompt": "Add an environment option that turns off OAuth client ID metadata documents. Which code reads this, advertises it and tests it?"
+    },
+    {
+      "id": "out-husky",
+      "repo": "outline",
+      "commit": "30db1d7c9c8aa0c4f0ab8d31bfe90a346acbaf45",
+      "gold": [
+        ".husky/pre-commit",
+        "package.json"
+      ],
+      "tags": [
+        "dot-config"
+      ],
+      "prompt": "We want to upgrade husky to version 9. Which files have to change?"
+    },
+    {
+      "id": "out-lint-sanitize",
+      "repo": "outline",
+      "commit": "33296fb9749a1e6d29338458432d538f30fea3a3",
+      "gold": [
+        ".oxlintrc.json",
+        "shared/editor/nodes/Mention.tsx"
+      ],
+      "tags": [
+        "dot-config"
+      ],
+      "prompt": "Add a lint rule that requires sanitizeUrl for href and src in editor nodes' toDOM. Which config registers custom rules here, and which existing code would the rule flag?"
+    },
+    {
+      "id": "out-ci-disks",
+      "repo": "outline",
+      "commit": "8ca53c0c3ad63e4d7434f4cd173e027991fcd6cf",
+      "gold": [
+        ".github/actions/install/action.yml",
+        ".github/workflows/ci.yml"
+      ],
+      "tags": [
+        "dot-config"
+      ],
+      "prompt": "Our CI's Blacksmith sticky disks cost more than they save. Where would I remove them?"
+    },
+    {
+      "id": "vsc-search-leak",
+      "repo": "vscode",
+      "commit": "0ffea054b37a9c206dd995c3e638c33c0d186434",
+      "gold": [
+        "src/vs/workbench/contrib/search/browser/searchTreeModel/searchModel.ts",
+        "src/vs/workbench/contrib/search/test/browser/searchModel.test.ts"
+      ],
+      "tags": [
+        "big-repo"
+      ],
+      "prompt": "There is a memory leak in the search progress emitter of the search view. Where is it, and where is the test for that model?"
+    }
+  ],
+  "edit": [
+    {
+      "id": "edit-appimage-x11",
+      "commit": "02f8dfe",
+      "prompt": "Tauri 2.12's AppImage plugin now comments out its `export GDK_BACKEND=x11` line, and our release step that rewrites that line no longer catches it, so a Tauri update could move Linux users to Wayland by itself. X11 should stay the default whichever form the plugin writes, and a GDK_BACKEND the user set must still win. Please fix it.",
+      "overlay": [
+        {
+          "path": "scripts/release/appimage.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "scripts/release/appimage.test.mjs"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "sh",
+          "-c",
+          "node --test scripts/release/*.test.mjs packages/npx/*.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "edit-sidebar-sections",
+      "commit": "a592914",
+      "prompt": "The sidebar should only have Active, Finished and Settled for unpinned tasks, but new, interrupted, board-staged and chat tasks fall out into other lists. Every task that is not running and not settled should list under Finished, and Finished should keep the order of the sidebar sort it was given instead of reordering by latest response. Only pinned tasks belong in the remaining list: an unpinned open thread never holds there, and pinning the open thread moves it to Pinned at once. Please fix the section logic.",
+      "overlay": [
+        {
+          "path": "tests/sidebar-sections.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "tests/sidebar-sections.test.mjs"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "sh",
+          "-c",
+          "node --test tests/sidebar-*.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "edit-projects-added-order",
+      "commit": "f84bb7a",
+      "prompt": "Sorting projects by Added shows them in name order, because the native project list arrives sorted by name. Each project now carries an `addedOrder` number. The Added sort should follow it, with name as the tie-break. Please fix it.",
+      "overlay": [
+        {
+          "path": "tests/sidebar-sort.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "tests/sidebar-sort.test.mjs"
+        ]
+      },
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "sh",
+          "-c",
+          "node --test tests/sidebar-*.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "edit-recipe-harnesses",
+      "commit": "b26b182",
+      "prompt": "Workflow recipes can't be opened on a GitHub Copilot CLI task: the dry run answers \"Unknown harness.\" A steer step on Oh My Pi (omp) or OpenCode is also marked as a fallback, as if they could not take a message mid-turn, but both can. Please fix this so every harness the app supports can run a recipe. A test will iterate the app's provider table, so make that table visible to other modules as crate::providers::PROVIDERS. Keep the recipe module's `HARNESSES` list as a constant, since the test also reads it.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/recipes.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "recipes::"
+        ]
+      },
+      "stub": [
+        {
+          "path": "src-tauri/src/providers.rs",
+          "find": "const PROVIDERS: [(&str, &str); 15] = [",
+          "replace": "pub(crate) const PROVIDERS: [(&str, &str); 15] = ["
+        }
+      ],
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "providers::"
+        ]
+      }
+    },
+    {
+      "id": "edit-connect-secrets",
+      "commit": "28f989d",
+      "prompt": "If PandaCode Connect's secrets file is corrupt or can't be read, the next write silently replaces it and the relay token and device key are lost. Reads may still treat it as empty, but writes must refuse and leave the file untouched: the error should contain \"corrupt\" for a parse failure and \"Could not read\" for a read failure. A missing file is still fine to create. Please fix it. Take an exclusive advisory lock around read-modify-write so two app processes cannot interleave, using a lock file named by a `const LOCK: &str = \"connect-secrets.lock\"` beside `FILE`; the secrets directory should then hold only those two files after a write.",
+      "overlay": [
+        {
+          "path": "src-tauri/src/remote/secrets.rs",
+          "mode": "rust-tests"
+        }
+      ],
+      "test": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "remote::secrets::"
+        ]
+      },
+      "stub": [
+        {
+          "path": "src-tauri/src/remote/secrets.rs",
+          "find": "const FILE: &str = \"connect-secrets.json\";",
+          "replace": "const FILE: &str = \"connect-secrets.json\";\n#[allow(dead_code)]\nconst LOCK: &str = \"connect-secrets.lock\";"
+        }
+      ],
+      "suite": {
+        "cwd": "src-tauri",
+        "command": [
+          "cargo",
+          "test",
+          "--lib",
+          "remote::"
+        ]
+      }
+    },
+    {
+      "id": "edit-npx-platforms",
+      "commit": "91bff36",
+      "prompt": "The npx installer's no-build error and its --help text only name three platforms, although a release ships six builds, so Windows arm64, Linux arm64 and macOS Intel users are told they have no build. Derive the list from the installer's asset map so it can't go stale: export that map as `ASSETS` and add an exported `supportedPlatforms()` returning a person-readable name per build, using the terms 'Apple silicon', 'Intel', 'Windows x64', 'Windows arm64', 'Linux x64' and 'Linux arm64'. Both messages must use it.",
+      "overlay": [
+        {
+          "path": "packages/npx/installer.test.mjs",
+          "mode": "file"
+        }
+      ],
+      "test": {
+        "cwd": ".",
+        "command": [
+          "node",
+          "--test",
+          "packages/npx/installer.test.mjs"
+        ]
+      },
+      "stub": [
+        {
+          "path": "packages/npx/installer.mjs",
+          "find": "const ASSETS = {",
+          "replace": "export function supportedPlatforms() { return []; }\nexport const ASSETS = {"
+        }
+      ],
+      "suite": {
+        "cwd": ".",
+        "command": [
+          "sh",
+          "-c",
+          "node --test scripts/release/*.test.mjs packages/npx/*.test.mjs"
+        ]
+      }
+    }
+  ]
+}

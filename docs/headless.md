@@ -25,6 +25,22 @@ would normally do are done natively in `src-tauri/src/headless.rs`:
 | App-action tools (`pandacode_run_project`, `pandacode_preview_file`, `open_*`) | open in the window | refused with "headless host" so agents fail fast |
 | Updates | checked every 6 h, may relaunch | never (no updater; update by reinstalling) |
 
+The local code explorer (`pandacode_explore`, [agent tools](agent-tools.md)) follows the
+same markers as the desktop: on by default only for Claude Code; any other harness needs an
+empty `explore-on-<provider>` file (for example `explore-on-codex`) in the app data
+directory. To turn it off for every harness on a server, create an empty `explore-off`
+file in the app data directory (on Linux `~/.local/share/ai.pandacode.desktop/` of the
+service user, e.g. `touch ~/.local/share/ai.pandacode.desktop/explore-off`); delete it
+to turn the tool back on. Each run start reads it, so no restart is needed.
+
+Agent-made tools follow the same `custom-tools-on` switch as the desktop. With no window,
+a `pandacode_tool_run` approval (any task not in Full access) goes to whatever can answer
+it: subscribed PandaCode Connect devices, and the channel of a bot conversation. Nothing
+answers it on its own: unanswered, the MCP host's 5-minute approval wait ends with "App
+approval expired or was cancelled" (sooner if the harness ends the tool call first), the
+run continues and the tool does not run. Run unattended tasks in Full access, or answer
+from a device, if they rely on agent-made tools.
+
 Turn checks are desktop-only (they are opt-in and off by default). Browser-dependent work
 (Jev, the built-in browser) is unavailable on a headless host.
 

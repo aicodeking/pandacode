@@ -81,13 +81,21 @@ pub(crate) fn decide(store: &Store, bot_id: &str, text: &str) -> Result<Decision
     if rules.iter().any(|rule| rule.decision == "deny" && matches(&rule.pattern, text)) {
         return Ok(Decision::Deny);
     }
-    if dangerous(text) {
+    // An agent-made tool run always asks: its script is agent text, so words in it could
+    // match any allow rule.
+    if dangerous(text) || crate::custom_tools::approval::is_run(text) {
         return Ok(Decision::Ask);
     }
     if rules.iter().any(|rule| rule.decision == "allow" && matches(&rule.pattern, text)) {
         return Ok(Decision::Allow);
     }
     Ok(Decision::Ask)
+}
+
+/// The rule "always" saves for an approval, or `None` for an agent-made tool run, which asks
+/// every time (a pattern from its header would cover every later run of any script).
+pub(crate) fn always_rule(text: &str) -> Option<String> {
+    (!crate::custom_tools::approval::is_run(text)).then(|| pattern_for(text))
 }
 
 /// A rule pattern for "always allow this kind of action": the action's first words.
@@ -131,4 +139,34 @@ pub async fn bot_rule_delete(app: tauri::AppHandle, state: State<'_, AppState>, 
     delete_rule(&*state.store.lock().map_err(|e| e.to_string())?, &bot_id, &rule_id)?;
     let _ = app.emit("bots-changed", ());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const RUN: &str = "Run project tool test-all v2?\nIt runs in this task's checkout.\nScript (v2):\nnpm test";
+
+    #[test]
+    fn allow_rules_never_approve_an_agent_made_tool_run() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let root = std::env::temp_dir().join(format!("pandacode-guard-{}", crate::storage::id()));
+        let input = super::super::BotInput { name: "Scout".into(), provider: "claude".into(), model: "default".into(), mode: "ask".into(), ..Default::default() };
+        let bot = super::super::create(&store, &input, &root).unwrap();
+        add_rule(&store, &bot.id, "npm test", "allow").unwrap();
+        // A broad rule saved before add_rule refused it.
+        store.db.execute("INSERT INTO bot_rules(id,bot_id,pattern,decision,created_at) VALUES('wide',?1,'*','allow',0)", [&bot.id]).unwrap();
+        assert_eq!(decide(&store, &bot.id, "npm test").unwrap(), Decision::Allow);
+        assert_eq!(decide(&store, &bot.id, RUN).unwrap(), Decision::Ask);
+        add_rule(&store, &bot.id, "test-all", "deny").unwrap();
+        assert_eq!(decide(&store, &bot.id, RUN).unwrap(), Decision::Deny, "deny rules still refuse");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn always_saves_no_rule_for_an_agent_made_tool_run() {
+        assert_eq!(always_rule(RUN), None);
+        assert_eq!(always_rule("Allow pandacode_tool_run?\n{}").as_deref(), Some("Allow pandacode_tool_run?"));
+        assert_eq!(always_rule("npm run build --prod").as_deref(), Some("npm run build*"));
+    }
 }

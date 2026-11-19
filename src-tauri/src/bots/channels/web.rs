@@ -308,6 +308,8 @@ textarea{flex:1;resize:none;border:0;background:transparent;color:var(--ink);pad
     return renderFallback(text);
   }
   function renderFallback(text) {
+    // A tool run's script can hold ``` or longer fences this fallback cannot pair: all text.
+    if (/^(Approval needed: )?Run (project|global) tool /.test(text)) return "<pre>" + escape(text) + "</pre>";
     const out = [], code = [];
     text = escape(text).replace(/```[a-z0-9_-]*\n?([\s\S]*?)```/gi, (_, body) => { code.push(body); return "\u0000" + (code.length - 1) + "\u0000"; });
     for (const block of text.split(/\n{2,}/)) {

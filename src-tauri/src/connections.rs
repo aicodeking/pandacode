@@ -732,6 +732,8 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            disallowed_tools: None,
+            worker: None,
         };
         let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
         let sink: crate::providers::Sink = std::sync::Arc::new(move |_| {

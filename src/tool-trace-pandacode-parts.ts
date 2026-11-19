@@ -428,3 +428,44 @@ export function out(output: string): Out {
   const json = parseJson(output);
   return { json, obj: isObj(json) ? json : {}, text: output };
 }
+
+/** An explore argument's requests: the tool takes one string as a list of one. */
+export function asked(f: Fields, key: string): string[] {
+  const value = f[key];
+  return typeof value === 'string' ? [value] : Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+/** `3 searches, 2 files`: what one explore call asked. */
+export function exploreAsked(f: Fields): string {
+  const parts: [number, string, string][] = [[asked(f, 'search').length, 'search', 'searches'], [asked(f, 'symbols').length, 'symbol', 'symbols'], [asked(f, 'outline').length + asked(f, 'read').length, 'file', 'files'], [asked(f, 'tests_for').length, 'test lookup', 'test lookups']];
+  return parts.filter(([n]) => n).map(([n, one, many]) => count(n, one, many)).join(', ');
+}
+export function exploreMeta(r: Fields): string {
+  if (field(r, 'error')) return field(r, 'error');
+  const outside = isObj(r.outside_glob) && typeof r.outside_glob.matches === 'number' ? `${count(r.outside_glob.matches, 'match', 'matches')} outside the glob` : '';
+  if (typeof r.matches === 'number') return [count(r.matches, 'match', 'matches'), typeof r.files === 'number' && r.matches ? count(r.files, 'file') : '', outside].filter(Boolean).join(' · ');
+  if (typeof r.definitions === 'number') return count(r.definitions, 'definition');
+  if (typeof r.found === 'number') return count(r.found, 'test file');
+  if (typeof r.from === 'number' && typeof r.to === 'number') return `lines ${r.from}–${r.to}`;
+  return typeof r.total_lines === 'number' ? count(r.total_lines, 'line') : '';
+}
+/** One row per request, from the call's own input: a long reply reaches the trace clipped and does not parse. */
+export function exploreCard(f: Fields, o: Out): string {
+  const items = ['search', 'symbols', 'tests_for', 'outline', 'read'].flatMap(key => {
+    const replies = objects(o.obj[key]);
+    return asked(f, key).map((request, at) => ({ title: request, meta: replies[at] ? exploreMeta(replies[at]) : '' }));
+  });
+  return list(items, items.length) + (o.obj.truncated === true ? note('Results were truncated.') : '');
+}
+/** Agent-made tools (docs/custom-tools.md): the script's exit code and its stdout/stderr. */
+export function toolExit(o: Out): number | undefined { return typeof o.obj.exit === 'number' ? o.obj.exit : undefined; }
+export function toolRunRow(f: Fields, o: Out): Row {
+  const exit = toolExit(o);
+  return { object: [field(f, 'name') || field(o.obj, 'tool'), exit !== undefined && exit !== 0 ? `· failed (exit ${exit})` : ''].filter(Boolean).join(' '), mono: true };
+}
+export function toolRunCard(f: Fields, o: Out): string {
+  const exit = toolExit(o);
+  if (exit === undefined) return resultCard(o.text);
+  const args = isObj(f.args) ? kvTable(f.args, 'Arguments') : '';
+  const head = `<div class="tool-trace-card-head">${badge(exit === 0 ? 'passed' : 'failed')}<span class="tool-trace-card-meta">${escape(`exit ${exit}${typeof o.obj.ms === 'number' ? ` · ${o.obj.ms} ms` : ''}`)}</span></div>`;
+  return head + args + label('Output', excerptCard(field(o.obj, 'stdout'))) + label('Errors', excerptCard(field(o.obj, 'stderr'))) + (o.obj.truncated === true ? note('Output was truncated.') : '');
+}

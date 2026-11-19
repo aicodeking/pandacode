@@ -326,6 +326,15 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   in the team panel and worker tools. These are advisory task
   boundaries, not an operating-system filesystem sandbox. Workers run with full
   access (see above). Other apps and terminals can still edit files.
+- Release note: workers on Claude-family harnesses have `Skill` on by default (Settings → Agents → Workers can use skills; the `worker-skills-off` marker turns it off). Only while it is off, and only on the Claude-family harnesses that really deny `Skill`, do worker rules say workers have no Skill tool, and user rules telling workers to use a skill stop working. Its saving was never isolated (batch S3 measured a bundle of changes) and worker quality with or without it is unmeasured.
+- Worker quality under the launch trim is not measured end to end. Batches S2 and
+  S3 ran only localization and report tasks (S3's writer units included), the GUI
+  batch G2 has 0 of 480 main runs because of account quota, and steps rose 6.9% in
+  S2 (descriptive). The trim is therefore opt-in and off by default (Settings → Agents →
+  Trim worker tools; the `worker-trim-on` marker in app data turns it on): S2 showed no
+  billed-cost saving (−1.8%, CI spans 0), steps +6.9% (CI +0.7% to +14.0%) and 92 vs 51
+  Bash calls, so when on it buys cache stability and a faster start, not a measured
+  token saving. See [worker tokens](worker-tokens.md#decision).
 - Dependencies refer to already-created assignments. The scheduler launches work
   only when its dependencies have completed. Assignment keys prevent a retried
   tool call from creating the same worker twice within one objective; a new
@@ -359,9 +368,27 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - Every 30 seconds the app also settles a worker whose run is gone without reporting
   back, releases a lead turn that never started, and runs the scheduler. One team's
   error never stops scheduling for the others.
-- An architect turn ends with no pre-started spare process while its workers are
-  unsettled; the wake after they settle starts cold, so no idle process holds
-  memory meanwhile.
+- On plain Claude (`warm::supported`; GLM and MiMo leads start cold, because an idle
+  relay spare is not free of network traffic, see [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)),
+  an architect turn that ends while its workers are unsettled starts the next turn's process in the background (`lead_spare.rs`,
+  `providers/warm.rs`), so the review wake skips the CLI's startup. Lead spares
+  sit in their own pool of 2 that ordinary tasks never evict. An expired spare
+  (10 idle minutes) is restarted at most 2 times. Whether to restart is asked
+  once per expiry: only while every live worker still runs and none waits on
+  your approval or answer, and never once the wake has launched; a "no" ends the
+  renewals for good. Every adoption is logged (`Team lead's warm Claude agent
+  adopted.` or `Team lead's warm Claude agent not used (<reason>); starting
+  cold.`, from `providers/warm.rs`), so the wake speed-up can be measured. Each
+  spare is an idle CLI process (about 178–208 MB RSS on a minimal config, one
+  machine). It runs your `SessionStart` hooks when it starts, so a renewal chain
+  can run them in up to three processes per wake, and hook context can be up to
+  10 minutes old when adopted. The spare saves startup (about 1.4 s (est.), one local
+  measurement on plain Claude); with an API
+  key the 5-minute message cache has likely expired before many review wakes, so
+  it does not save the history's cache cost, and PandaCode does not set
+  `ENABLE_PROMPT_CACHING_1H`. Stopping the task, or the team's Pause or Stop, drops the spare; a
+  team that ended by itself (completed, ready or failed) leaves its lead an
+  ordinary spare for your follow-up, with no renewals.
 - Explicit completion moves the parent task to Review. Marking the task complete
   and its seven-day archive policy work as before.
 
@@ -419,17 +446,30 @@ Select a worker to see its latest progress checkpoint alongside its transcript.
 
 Each team conversation gets the full team rules and coordination guide once. While
 the harness resumes the same conversation, later turns get a one-line reminder (which
-names the user's team guidance when one is set) and only the messages they have not
-seen. The full rules go out again when they change, when the harness starts a new conversation, and on every
-eighth turn so a compacted conversation never loses them for long. The architect's
+names the user's team guidance when one is set) and only the messages and notes they
+have not seen. The full brief goes out again when the harness starts a new
+conversation, at once after a compaction the harness reported, and when the rules
+change (for example new limits). A change to the roster alone is a one-line
+**Team roster update** instead. The roster is the team's usable model profiles
+and the routing note that counts them, so a model that model health pauses or
+allows again changes it; dispatching a worker does not. Every eighth turn the
+rules are resent with a compact identity block (457 bytes in the test fixture: the agent's team
+ID, the never-poll rule, its saved checkpoint and the note keys) but not the
+messages and notes already seen, so a conversation the harness compacted without
+saying so never loses them for long. The architect's
 review, update, failure and continue turns quote the objective in full only on those
 turns or when it is under 2,000 bytes; otherwise they carry its first 1,400 and last 600 bytes, marked "objective unchanged". An objective over 8 KiB is also saved whole as the reserved `objective` note, and turns say so. Update and failure turns list only changed or unsettled workers.
 
-Tool descriptions are terse and leave out what the rules already say; harness names
-and unknown fields are checked by the handlers rather than repeated in every turn's
-schemas.
-`team_turn_overhead_stays_within_budget` keeps the architect's team tools under
-4,200 bytes and a worker's under 3,000.
+Tool descriptions are terse and leave out what the rules already say; string
+limits, harness names and unknown fields are checked by the handlers, whose errors
+name the limit, rather than repeated in every turn's schemas.
+`team_turn_overhead_stays_within_budget` keeps the architect's team tools at most
+4,365 bytes and a worker's at most 3,175 (measured 4,359 and 3,170). The `tokenSaver`
+parameter's schema is one line; its explanation (`saver::LEAD_SAVER_GUIDANCE` in
+`src-tauri/src/architect/saver.rs`) is added to the lead's rules only while token
+saver packs are on in its thread or its team guidance mentions them. That literal
+opens with `Start assignments` because the pinned `findLeadGuidance` in
+`scripts/agent-bench/saver.mjs` finds it that way.
 
 Only an urgent message or a new blocker wakes an idle architect while workers
 continue; other messages wait for its next review or turn. These wakes run at most

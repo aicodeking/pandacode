@@ -199,7 +199,9 @@ fn a_note_too_large_for_a_brief_does_not_stop_smaller_older_ones() {
     let snapshot = load(&store, &parent).unwrap().unwrap();
     let (brief, _) = context(&store, &snapshot, &b, 0, true).unwrap();
     assert!(brief.contains("- small (a): port 1420"), "{brief}");
-    assert!(brief.contains(" 1 more note: use") && !brief.contains("- huge"), "{brief}");
+    // The huge one does not fit whole: it is cut to a preview (full text through `get`), not dropped.
+    assert!(brief.contains("1 cut to previews") && brief.contains("- huge (a): ") && !brief.contains(&"v".repeat(200)), "{brief}");
+    assert!(!brief.contains("more note"), "{brief}");
 }
 
 #[test]
@@ -303,9 +305,10 @@ fn a_hundred_large_notes_stay_retrievable_and_each_is_discoverable_in_a_brief() 
     let store = state.store.lock().unwrap();
     let snapshot = load(&store, &parent).unwrap().unwrap();
     let (brief, _) = context(&store, &snapshot, &b, 0, true).unwrap();
-    // The brief stops at its budget and counts the rest; the list tool pages them.
+    // The brief stops at its budgets: the newest, small note whole, a few previews, and a count of the
+    // rest; the list tool pages them.
     assert!(brief.contains(&format!("- {long} (a): x")), "the newest, small note fits inline");
-    assert!(brief.contains("100 more notes: use pandacode_team_notes list."), "{brief}");
+    assert!(brief.contains("101 in all; 5 cut to previews") && brief.contains("95 more notes: use pandacode_team_notes list."), "{brief}");
     assert!(!brief.contains("- note.0 (a)"), "nothing past the budget is listed: {brief}");
     assert!(brief.len() < 4 * 1024, "{} bytes", brief.len());
 }

@@ -13,19 +13,26 @@ use std::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    process::{Child, ChildStdin, Command},
+    process::{Child, ChildStdin, ChildStdout, Command},
     sync::mpsc::UnboundedReceiver,
 };
 
 mod attachments;
+mod exit;
 mod goals;
+mod launch_input;
 mod host_inputs;
 mod host_tools;
 mod mcp_host;
+mod redact;
+mod relay;
+#[cfg(test)]
+mod test_launch;
+#[cfg(test)]
+use test_launch::run_process_with_tools;
+#[cfg(all(test, unix))]
+use test_launch::run_process;
 mod warm;
-pub use warm::{discard as discard_warm_agent, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms};
-use host_tools::apply_step;
-pub use host_tools::ToolHost;
 pub(crate) mod acp;
 pub(crate) mod acp_catalog;
 #[cfg(test)]
@@ -39,6 +46,8 @@ mod pool_run_tests;
 mod codex_stream_tests;
 #[cfg(all(test, unix))]
 pub(crate) mod concurrent_process_tests;
+#[cfg(all(test, unix))]
+mod exit_tests;
 mod cline;
 mod commandcode;
 mod extra_models;
@@ -64,7 +73,10 @@ pub(crate) use launch::{command, pty_command, std_command, external_path, execut
 mod kimi_stream_tests;
 #[cfg(test)]
 mod slash_command_tests;
+#[cfg(test)]
+mod claude_deny_tests;
 mod limits;
+mod explore_permissions;
 mod plan_reads;
 mod steering;
 mod subagents;
@@ -72,6 +84,19 @@ mod text_stream;
 #[cfg(windows)]
 pub(crate) mod windows_job;
 pub use subagents::{SubagentActivity, HEARTBEAT};
+use exit::{reap, Reaped};
+#[cfg(all(test, unix))]
+use exit::{await_exit_with_cap, exit_registry};
+use launch_input::{next_input, stop_requested};
+pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently, await_exits_in, await_exits_in_patiently, pending_exits};
+#[cfg(test)]
+pub(crate) use exit::{hold_for_test as hold_exit_for_test, hold_in_cwd_for_test as hold_exit_in_cwd_for_test};
+use host_tools::apply_step;
+pub use host_tools::ToolHost;
+use redact::redact_run_error;
+#[cfg(test)]
+pub(crate) use warm::launched as warm_launched;
+pub use warm::{begin_quit as warm_begin_quit, discard as discard_warm_agent, quiesce, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms, Renew as WarmRenew};
 
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// Capacity the frame buffer keeps after a large message has been consumed.
@@ -94,6 +119,10 @@ const TOOL_INPUT_LIMIT: usize = 4096;
 const TOOL_OUTPUT_LIMIT: usize = 8192;
 const TOOL_CACHE_LIMIT: usize = 64;
 const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
+/// The tool row name and output saved when Claude or Codex compacts its context; the team
+/// brief (`architect::coordination`) looks for both to resend the full brief.
+pub(crate) const COMPACT_CONTEXT_TOOL: &str = "Compact context";
+pub(crate) const COMPACTED_OUTPUT: &str = "Conversation context compacted.";
 
 /// A frame buffer grown past 1 MiB by one large message gives the memory back once drained.
 fn should_shrink(len: usize, capacity: usize) -> bool {
@@ -125,6 +154,87 @@ pub(crate) const PROVIDERS: [(&str, &str); 21] = [
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
+/// Claude Code tools a team worker's brief already forbids: native subagents and workflows,
+/// other sessions, worktrees and cloud routines. Their definitions and listings ride every
+/// request of every step (docs/worker-tokens.md). `TaskStop` stays: it also stops background Bash.
+pub(crate) const CLAUDE_WORKER_DENIED_TOOLS: &str = "Agent,Task,Workflow,ListAgents,SendMessage,RemoteTrigger,CronDelete,CronList,EnterWorktree,ExitWorktree";
+/// The edit tools a read-only worker is told not to use.
+pub(crate) const CLAUDE_READ_ONLY_DENIED_TOOLS: &str = "Edit,Write,NotebookEdit";
+/// The denied tools Claude Code defers: history can hold a ToolSearch reference to one, removing
+/// its definition invalidates later requests, and adding one changes the deferred-tool list. So
+/// a conversation keeps the set it started with (`History::lists_native`); one the role denies
+/// but the conversation keeps is refused (`claude_refuses_native`).
+const CLAUDE_DEFERRED_TOOLS: [&str; 7] = ["SendMessage", "RemoteTrigger", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree", CLAUDE_NOTEBOOK_TOOL];
+const CLAUDE_NOTEBOOK_TOOL: &str = "NotebookEdit";
+/// The `PreToolUse` callback that refuses kept deferred tools (`claude_refusal_hooks`).
+const CLAUDE_REFUSAL_HOOK: &str = "pandacode-refuse-native";
+/// Denied to team workers only while Settings → Agents → Workers can use skills is off (it is on
+/// by default, so user rules naming a skill keep working); off saves its listing, about 8k
+/// cache-write tokens per worker with a real skills library.
+pub(crate) const CLAUDE_SKILL_TOOL: &str = "Skill";
+
+/// How a team worker's Claude Code launch is trimmed (`RunConfig::worker`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerTrim {
+    pub read_only: bool,
+    /// Settings → Agents → Workers can use skills.
+    pub skills: bool,
+    /// Settings → Agents → Trim worker tools (`architect::worker_trim_on`, off by default): the
+    /// token trim (`CLAUDE_WORKER_DENIED_TOOLS`, `Role::wants`). Read-only enforcement and the
+    /// Skill switch apply either way.
+    pub trim: bool,
+}
+
+/// Every tool `worker`'s role denies, in `--disallowedTools` order.
+fn claude_role_denied(worker: Option<WorkerTrim>) -> Vec<&'static str> {
+    let mut lists = vec![CLAUDE_SESSION_BOUND_TOOLS];
+    if let Some(trim) = worker {
+        if trim.trim {
+            lists.push(CLAUDE_WORKER_DENIED_TOOLS);
+        }
+        if trim.read_only {
+            lists.push(CLAUDE_READ_ONLY_DENIED_TOOLS);
+        }
+        if !trim.skills {
+            lists.push(CLAUDE_SKILL_TOOL);
+        }
+    }
+    lists.into_iter().flat_map(|list| list.split(',')).collect()
+}
+
+/// `--disallowedTools` for a Claude Code launch: `worker` is set for a team worker; `history` is
+/// what the conversation may hold, which decides the deferred tools.
+pub(crate) fn claude_disallowed_tools(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> String {
+    let role = claude_role_denied(worker);
+    let kept = |tool: &str| history.lists_native(tool, role.contains(&tool));
+    let denied = role.iter().copied().filter(|tool| !CLAUDE_DEFERRED_TOOLS.contains(tool) || !kept(tool));
+    // A deferred tool the role now allows stays denied if the conversation started without it.
+    let sticky = CLAUDE_DEFERRED_TOOLS.iter().copied().filter(|tool| !role.contains(tool) && !kept(tool));
+    format!("--disallowedTools={}", denied.chain(sticky).collect::<Vec<_>>().join(","))
+}
+
+/// The deferred tools a launch leaves defined, for `app_instructions::remember_catalog`.
+pub(crate) fn claude_kept_natives(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> Vec<String> {
+    let role = claude_role_denied(worker);
+    CLAUDE_DEFERRED_TOOLS.iter().filter(|tool| history.lists_native(tool, role.contains(*tool))).map(|tool| (*tool).to_owned()).collect()
+}
+
+/// Whether `name` is a deferred tool kept only so a resumed conversation holds its definition.
+fn claude_refuses_native(worker: Option<WorkerTrim>, name: &str) -> bool {
+    CLAUDE_DEFERRED_TOOLS.contains(&name) && claude_role_denied(worker).contains(&name)
+}
+
+/// The `initialize` hooks of a Claude Code launch. `can_use_tool` is not consulted in
+/// bypassPermissions, nor for edits in acceptEdits, so a `PreToolUse` callback refuses the
+/// deferred tools a resumed worker keeps. A new conversation denies them outright and needs none.
+fn claude_refusal_hooks(worker: Option<WorkerTrim>, resumed: bool) -> Value {
+    let refused: Vec<&str> = claude_role_denied(worker).into_iter().filter(|tool| CLAUDE_DEFERRED_TOOLS.contains(tool)).collect();
+    if !resumed || refused.is_empty() {
+        return Value::Null;
+    }
+    json!({"PreToolUse":[{"matcher":refused.join("|"),"hookCallbackIds":[CLAUDE_REFUSAL_HOOK]}]})
+}
 
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
@@ -132,6 +242,11 @@ fn review_supported(provider: &str, mode: &str) -> Result<(), String> {
         return Err("Approve for me needs Claude Code's auto mode; this harness has no agent-reviewed approvals. Choose another access mode.".into());
     }
     Ok(())
+}
+
+/// Claude Code and its key-based relays: the launches that take `--disallowedTools`.
+pub(crate) fn claude_family(provider: &str) -> bool {
+    matches!(provider, "claude" | "glm" | "mimo" | "alibaba")
 }
 
 /// Harnesses that take app instructions as a system prompt (`--append-system-prompt`).
@@ -161,6 +276,12 @@ pub struct RunConfig {
     pub codex_settings: Option<Value>,
     /// Only native-validated, managed screenshot paths; never arbitrary web content.
     pub images: Vec<PathBuf>,
+    /// `None` for a lead or a plain task; a team worker's tool trim (`architect::worker_trim`).
+    pub worker: Option<WorkerTrim>,
+    /// A Claude-family launch's `--disallowedTools` argument, computed once per turn from the
+    /// conversation's history (`claude_disallowed_tools`) so the launch, the catalog record and
+    /// the warm key agree; `None` derives it at spawn.
+    pub disallowed_tools: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -869,7 +990,7 @@ pub(crate) fn sweep_cline_mcp_settings(data: &Path) {
 }
 
 pub(crate) fn opencode_configuration(mode: &str) -> String {
-    acp::configuration(mode)
+    acp::configuration(mode, &[])
 }
 
 /// The saved Command Code key for discovery paths that build their own process.
@@ -1639,6 +1760,10 @@ struct Protocol {
     mcp_required: bool,
     codex_mcp_servers: Option<Value>,
     mcp_tool_names: HashSet<String>,
+    /// Listed PandaCode tools whose handler refuses every call this turn (`RunTools::refused`):
+    /// Claude's permission check lets them through so the user is never asked to approve a
+    /// call that fails.
+    refused_tools: HashSet<String>,
     text_streams: text_stream::TextStreams,
     text_sequence: u64,
     claude_message_id: String,
@@ -1790,6 +1915,7 @@ impl Protocol {
             codex_mcp_servers: None,
             mcp_required: true,
             mcp_tool_names: HashSet::new(),
+            refused_tools: HashSet::new(),
             text_streams: text_stream::TextStreams::default(),
             text_sequence: 0,
             claude_message_id: String::new(),
@@ -2050,10 +2176,10 @@ impl Protocol {
             "contextCompaction" => {
                 self.tool_update(
                     id,
-                    Some("Compact context"),
+                    Some(COMPACT_CONTEXT_TOOL),
                     Some(status),
                     None,
-                    completed.then(|| "Conversation context compacted.".into()),
+                    completed.then(|| COMPACTED_OUTPUT.into()),
                     step,
                 );
             }
@@ -2264,7 +2390,8 @@ impl Protocol {
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":capabilities,"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
             _ => {
-                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":null}})
+                let hooks = claude_refusal_hooks(self.config.worker, self.config.resume_id.is_some());
+                json!({"type":"control_request","request_id":"pandacode-init","request":{"subtype":"initialize","hooks":hooks}})
             }
         }
     }
@@ -2503,6 +2630,9 @@ impl Protocol {
         match method.as_str() {
             "skills/changed" => self.commands_changed(&value, &mut step),
             "item/tool/call" => self.host_tool_request(value, &mut step),
+            "mcpServer/elicitation/request" if self.codex_auto_approval(params) => {
+                step.write.push(json!({"id":value["id"],"result":{"action":"accept","content":{},"_meta":null}}));
+            }
             "item/tool/requestUserInput" | "mcpServer/elicitation/request" => self.input_request(value, &mut step),
             "serverRequest/resolved" => self.resolved_request(&params["requestId"], &mut step),
             "thread/tokenUsage/updated" => {
@@ -2780,6 +2910,7 @@ impl Protocol {
                 }
             },
             "session/request_permission"=>{
+                if self.allow_pandacode_tools(&value,&mut step) {return Ok(step);}
                 let options=params["options"].as_array();
                 let is_question=options.is_some_and(|options|options.iter().filter(|o|o["kind"]=="allow_once").count()>1 || options.iter().any(|o| {
                     let id=string(o,"optionId");
@@ -2916,10 +3047,10 @@ impl Protocol {
                     );
                     self.tool_update(
                         &id,
-                        Some("Compact context"),
+                        Some(COMPACT_CONTEXT_TOOL),
                         Some("completed"),
                         None,
-                        Some("Conversation context compacted.".into()),
+                        Some(COMPACTED_OUTPUT.into()),
                         &mut step,
                     );
                 }
@@ -3085,15 +3216,25 @@ impl Protocol {
                     // Questions need structured answers; a boolean allow must not silently submit one.
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
-                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(self_scoped_host_tool)
+                    } else if claude_refuses_native(self.config.worker, &name) {
+                        // Listed only so a resumed conversation keeps its definition.
+                        step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":format!("{name} is not available to this worker.")}}}));
+                    } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| self_scoped_host_tool(tool) || tool == EXPLORE_TOOL || crate::custom_tools::auto_allowed(tool) || self.refused_tools.contains(tool))
                         && self.mcp_tool_names.contains(&name)
                     {
                         // Registered metadata callbacks only stage this run's
                         // title or snapshot named paths. They cannot edit the checkout.
+                        // Explore only reads the checkout. Tool list/save only read and
+                        // write tool files in app data; running one asks unless the task
+                        // has Full access (`mcp_host` authorizes it).
                         // Bot tools are registered only in a bot's own tasks and only
                         // touch that bot's memory, schedules and messages to its owner.
                         // Schedule tools here only wake or list this thread's own schedules.
                         // Team tools only exist in team turns and only change team state.
+                        // A refused tool (`refused_tools`, the host's own set) is listed only
+                        // so a resumed conversation keeps its definition; its handler refuses
+                        // the call, so the user is never asked to approve it. Codex and ACP
+                        // permission layers do not read this set and may still prompt for one.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"allow","updatedInput":value["request"]["input"]}}}));
                     } else if self.config.mode == "plan" && plan_reads::plan_read_only(&name, &value["request"]["input"], &self.config.cwd) {
                         // Plan mode investigates: reads and web lookups anywhere run;
@@ -3106,6 +3247,14 @@ impl Protocol {
                             &mut step,
                         );
                     }
+                } else if value["request"]["subtype"] == "hook_callback" && value["request"]["callback_id"] == CLAUDE_REFUSAL_HOOK {
+                    let name = string(&value["request"]["input"], "tool_name");
+                    let output = if claude_refuses_native(self.config.worker, &name) {
+                        json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":format!("{name} is not available to this worker.")}})
+                    } else {
+                        json!({})
+                    };
+                    step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":output}}));
                 } else {
                     step.write.push(json!({"type":"control_response","response":{"subtype":"error","request_id":value["request_id"],"error":"Control request unsupported"}}));
                 }
@@ -3282,28 +3431,50 @@ impl Drop for ProcessGroup {
     }
 }
 
+/// How long a CLI may take to exit after its stdin closes, then after SIGTERM, before SIGKILL.
+pub(crate) const EXIT_WAIT: Duration = FINISH_GRACE;
+/// The same wait for the background reap of a clean run, which no longer delays Done: Claude
+/// Code's natural exit after `result` measured 550-1,917 ms (CLI 2.1.325), so 1 s would
+/// SIGTERM about a third of ordinary turns mid-flush.
+pub(crate) const BACKGROUND_EXIT_WAIT: Duration = Duration::from_millis(3000);
+pub(crate) const TERM_WAIT: Duration = Duration::from_millis(500);
+/// Fail a relaunch rather than overlap processes if shutdown is unexpectedly delayed.
+pub(crate) const EXIT_HARD_CAP: Duration = Duration::from_secs(10);
+
 async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup, grace: Duration) {
     drop(stdin);
-    if tokio::time::timeout(grace, child.wait())
-        .await
-        .is_err()
-    {
-        #[cfg(unix)]
-        if let Some(pid) = group.0 {
-            unsafe {
-                libc::kill(-(pid as i32), libc::SIGTERM);
+    wait_child(child, group, grace).await;
+}
+
+/// `finish_child` after stdin is closed: wait for the exit with the same escalation and return
+/// the status when the process was reaped.
+/// The flag is true when PandaCode itself escalated (SIGTERM or SIGKILL), so the status says
+/// nothing about the CLI's own health.
+async fn wait_child(child: &mut Child, group: &mut ProcessGroup, wait: Duration) -> (Option<std::process::ExitStatus>, bool) {
+    let mut status = None;
+    let mut escalated = false;
+    match tokio::time::timeout(wait, child.wait()).await {
+        Ok(result) => status = result.ok(),
+        Err(_) => {
+            escalated = true;
+            #[cfg(unix)]
+            if let Some(pid) = group.0 {
+                unsafe {
+                    libc::kill(-(pid as i32), libc::SIGTERM);
+                }
             }
-        }
-        if tokio::time::timeout(Duration::from_millis(500), child.wait())
-            .await
-            .is_err()
-        {
-            let _ = child.kill().await;
+            match tokio::time::timeout(TERM_WAIT, child.wait()).await {
+                Ok(result) => status = result.ok(),
+                Err(_) => {
+                    let _ = child.kill().await;
+                }
+            }
         }
     }
     // Also clean up provider-created background processes, including orphaned children.
     let cleanup = ProcessGroup(group.0.take());
     drop(cleanup);
+    (status, escalated)
 }
 
 /// Antigravity's Windows build unpacks 150-250 MB into `%TEMP%\\_MEI*` and removes it only on a
@@ -3437,14 +3608,36 @@ pub async fn run(
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
 ) -> Result<(), String> {
-    run_with_tools(config, sink, input, None, Default::default()).await
+    run_with_tools(config, sink, input, RunTools::default(), Default::default()).await
 }
 
 tokio::task_local! {
     static HARNESS: Arc<std::sync::atomic::AtomicBool>;
+    /// This run's `RunTools::refused`, read where Claude's protocol is set up (the launch paths
+    /// in between are shared with tests and tool hosts that have no refused set).
+    static REFUSED: Arc<HashSet<String>>;
     /// Set when the run's own loop takes a `RunInput::Stop` (`stop_taken`): its owner then knows
     /// the stop, not the harness, ended the turn.
     static STOP_TAKEN: Arc<std::sync::atomic::AtomicBool>;
+}
+
+/// A run's PandaCode tool host and exactly the listed names its handler refuses
+/// (`app_instructions::RunHost`): the single set Claude's permission check auto-allows.
+#[derive(Default)]
+pub struct RunTools {
+    pub host: Option<ToolHost>,
+    pub refused: HashSet<String>,
+}
+
+impl From<Option<ToolHost>> for RunTools {
+    fn from(host: Option<ToolHost>) -> Self {
+        Self { host, refused: HashSet::new() }
+    }
+}
+
+/// The refused names of the run this task belongs to, or none outside a run.
+fn run_refused() -> HashSet<String> {
+    REFUSED.try_with(|refused| (**refused).clone()).unwrap_or_default()
 }
 
 /// The run's loop took a stop. Every loop that takes `RunInput::Stop` calls this (and still
@@ -3493,10 +3686,10 @@ pub async fn run_with_tools(
     config: RunConfig,
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
-    host: Option<ToolHost>,
+    tools: impl Into<RunTools>,
     harness: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
-    run_with_tools_reporting(config, sink, input, host, harness, Default::default()).await
+    run_with_tools_reporting(config, sink, input, tools.into(), harness, Default::default()).await
 }
 
 /// `run_with_tools`, also setting `taken` once the run's loop takes a stop (`stop_taken`).
@@ -3504,7 +3697,7 @@ pub async fn run_with_tools_reporting(
     config: RunConfig,
     sink: Sink,
     input: UnboundedReceiver<RunInput>,
-    host: Option<ToolHost>,
+    tools: RunTools,
     harness: Arc<std::sync::atomic::AtomicBool>,
     taken: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), String> {
@@ -3520,13 +3713,15 @@ pub async fn run_with_tools_reporting(
     }
     let identity = Protocol::new(config.clone());
     sink(identity.event("status", "Starting agent", None));
+    let RunTools { host, refused } = tools;
     // A goal operation is acknowledged by its own turn, so it is never continued elsewhere.
     let pooled = config.goal.is_none() && crate::account_pool::enabled(&config.provider) && !crate::cloud_agents::transport::is_cloud(&config.session_id);
-    let result = if pooled {
-        STOP_TAKEN.scope(taken, HARNESS.scope(harness, pool::run(config, sink.clone(), input, host))).await
+    let run = if pooled {
+        futures_util::future::Either::Left(pool::run(config, sink.clone(), input, host))
     } else {
-        STOP_TAKEN.scope(taken, HARNESS.scope(harness, run_inner(config, sink.clone(), input, host))).await
+        futures_util::future::Either::Right(run_inner(config, sink.clone(), input, host))
     };
+    let result = REFUSED.scope(Arc::new(refused), STOP_TAKEN.scope(taken, HARNESS.scope(harness, run))).await;
     if let Err(error) = &result {
         sink(identity.event("error", error.clone(), None));
     }
@@ -3635,10 +3830,13 @@ fn configure_command_with_agents(
                 command.arg("--allow-dangerously-skip-permissions");
             }
             // These wait on a live session; PandaCode's process ends with the turn.
-            command.arg(format!(
-                "--disallowedTools={}",
-                crate::skill_manager::claude_disallowed(CLAUDE_SESSION_BOUND_TOOLS, disabled)
-            ));
+            let denied = config.disallowed_tools.clone().unwrap_or_else(|| {
+                let history = crate::app_instructions::History::of(&config.session_id, &config.provider, config.resume_id.as_deref());
+                claude_disallowed_tools(config.worker, &history)
+            });
+            // Disabled skills (Skills manager) are denied beside the role's own deny set.
+            let list = denied.strip_prefix("--disallowedTools=").unwrap_or(&denied);
+            command.arg(format!("--disallowedTools={}", crate::skill_manager::claude_disallowed(list, disabled)));
             if use_model {
                 command.args(["--model", &config.model]);
             } else if config.provider == "glm" {
@@ -3687,16 +3885,8 @@ fn enforce_opencode_after_connection(
     disabled: &std::collections::BTreeSet<String>,
     agents: &crate::skill_manager::OpenCodeAgents,
 ) {
-    let variable = |name: &str| {
-        command
-            .as_std()
-            .get_envs()
-            .find(|(key, _)| *key == name)
-            .map(|(_, value)| value.and_then(|value| value.to_str()).map(str::to_owned))
-            .unwrap_or_else(|| std::env::var(name).ok())
-    };
-    let inline = variable("OPENCODE_CONFIG_CONTENT").unwrap_or_else(|| "{}".into());
-    let permission = variable("OPENCODE_PERMISSION");
+    let inline = command_environment(command, "OPENCODE_CONFIG_CONTENT").unwrap_or_else(|| "{}".into());
+    let permission = command_environment(command, "OPENCODE_PERMISSION");
     let launch = crate::skill_manager::opencode_launch_with(
         &inline,
         permission.as_deref(),
@@ -3710,6 +3900,15 @@ fn enforce_opencode_after_connection(
     if !launch.enforced {
         crate::skill_manager::remind_unenforced(config, disabled);
     }
+}
+
+fn command_environment(command: &Command, name: &str) -> Option<String> {
+    command
+        .as_std()
+        .get_envs()
+        .find(|(key, _)| *key == name)
+        .map(|(_, value)| value.and_then(|value| value.to_str()).map(str::to_owned))
+        .unwrap_or_else(|| std::env::var(name).ok())
 }
 
 async fn run_inner(
@@ -3783,7 +3982,10 @@ async fn run_inner(
     })
     .await?
     {
-        return run_process_with_tools(config, sink, input, command, Vec::new(), None).await;
+        // The cloud machine's after-run sync (`cloud_agents::tasks::after_run`) depends on the
+        // bridge having closed its stdin and exited, and nothing there proves it tolerates a
+        // background reap, so cloud runs keep the synchronous finish.
+        return run_process_launch(config, sink, input, command, Vec::new(), None, cloud_launch()).await;
     }
     let mut connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
@@ -3828,11 +4030,11 @@ async fn run_inner(
             connection.secrets.push(inline);
         }
     }
-    let key = if config.provider == "glm" {
-        Some(glm::configure(&mut command)?)
-    } else if config.provider == "mimo" {
-        Some(mimo::configure(&mut command)?)
-    } else if config.provider == "alibaba" {
+    // GLM and MiMo resolve one relay snapshot per launch; its key is redacted
+    // below with the others, from every error of the run, early returns included.
+    let relay = relay::configure_relay(&config.provider, &mut command, || relay::saved_relay(&config.provider))?;
+    let relay_key = relay.key().map(str::to_owned);
+    let key = if config.provider == "alibaba" {
         Some(alibaba::configure(&mut command)?)
     } else if config.provider == "deepseek" {
         deepseek::configure(&mut command)?
@@ -3841,32 +4043,35 @@ async fn run_inner(
     } else {
         None
     };
-    run_process_with_tools(
+    let reap_in_background = reaps_in_background(config.worker);
+    // Every secret of this launch, for the log line of a background exit (`exit::exit_note`).
+    let secrets: Vec<String> = key
+        .iter()
+        .chain(relay_key.iter())
+        .chain(connection.iter().flat_map(|connection| connection.secrets.iter()))
+        .filter(|secret| !secret.is_empty())
+        .cloned()
+        .collect();
+    run_process_launch(
         config,
         sink,
         input,
         command,
         image_blocks,
         host,
+        Launch { secrets, reap_in_background },
     )
     .await
-    .map_err(|error| {
-        let error = key
-            .as_ref()
-            .map_or(error.clone(), |key| error.replace(key, "[redacted]"));
-        connection.as_ref().map_or(error.clone(), |connection| connection.redact(&error))
-    })
+    .map_err(|error| redact_launch_error(&error, &[key.as_deref(), relay_key.as_deref()], connection.as_ref()))
 }
 
-#[cfg(all(test, unix))]
-async fn run_process(
-    config: RunConfig,
-    sink: Sink,
-    input: UnboundedReceiver<RunInput>,
-    command: Command,
-    image_blocks: Vec<Value>,
-) -> Result<(), String> {
-    run_process_with_tools(config, sink, input, command, image_blocks, None).await
+/// Every error `run_inner` returns after launch, with the launch's keys and connection secrets hidden.
+fn redact_launch_error(error: &str, keys: &[Option<&str>], connection: Option<&crate::connections::Launch>) -> String {
+    let error = redact_run_error(error, keys);
+    match connection {
+        Some(connection) => connection.redact(&error),
+        None => error,
+    }
 }
 
 /// Host tools that need no permission prompt once registered for the run.
@@ -3876,6 +4081,31 @@ fn self_scoped_host_tool(name: &str) -> bool {
 fn optional_metadata_tool(name: &str) -> bool {
     name == crate::session_titles::TOOL || name == crate::turn_changes::TRACK_TOOL
 }
+/// A registered tool that only reads the checkout, so it never asks in any mode.
+pub(crate) const EXPLORE_TOOL: &str = "pandacode_explore";
+pub(crate) use explore_permissions::explore_name;
+use explore_permissions::opencode_allowed;
+
+fn allow_opencode_tools(
+    command: &mut Command,
+    config: &RunConfig,
+    bound: bool,
+    names: &HashSet<String>,
+    agents: Option<&crate::skill_manager::OpenCodeAgents>,
+) {
+    let served = opencode_allowed(&config.provider, bound, names);
+    if served.is_empty() {
+        return;
+    }
+    match agents {
+        Some(agents) => acp::allow_tools_with_agents(command, &served, agents),
+        None if !config.cwd.as_os_str().is_empty() => {
+            let agents = crate::skill_manager::opencode_all_agents_at(&config.cwd);
+            acp::allow_tools_with_agents(command, &served, &agents);
+        }
+        None => acp::allow_tools(command, &served),
+    }
+}
 // Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
 // transport capabilities, but retain their normal approval requirements and transcript
 // activity. They are not metadata tools.
@@ -3883,18 +4113,25 @@ fn optional_transport_tool(name: &str) -> bool {
     optional_metadata_tool(name)
         || matches!(
             name,
-            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli"
+            "pandacode_run_project" | "pandacode_preview_file" | "pandacode_cloud_cli" | EXPLORE_TOOL
         )
         || name.starts_with("pandacode_simulator_")
         || name.starts_with("pandacode_vm_")
         || name.starts_with("pandacode_design_")
         || name.starts_with("pandacode_jev_")
         || name.starts_with("pandacode_bot_")
+        || custom_tool(name)
+}
+/// Agent-made tools (`custom_tools`): their catalog changes between turns, so a resumed Codex
+/// thread must see them through the per-run MCP server, not its first turn's dynamic tools.
+fn custom_tool(name: &str) -> bool {
+    matches!(name, crate::custom_tools::TOOL_LIST | crate::custom_tools::TOOL_SAVE | crate::custom_tools::TOOL_RUN)
 }
 fn per_run_mcp_tool(name: &str) -> bool {
     name.starts_with("pandacode_jev_")
         || optional_metadata_tool(name)
-        || matches!(name, "pandacode_run_project" | "pandacode_preview_file")
+        || matches!(name, "pandacode_run_project" | "pandacode_preview_file" | EXPLORE_TOOL)
+        || custom_tool(name)
 }
 
 fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>) {
@@ -3926,13 +4163,34 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
     ((!host.tools.is_empty()).then_some(host), Some(jev))
 }
 
-async fn run_process_with_tools(
+/// Whether a clean run's process may exit in the background. A managed team worker finishes
+/// synchronously, like a cloud run: its process group (a background build, say) must be gone
+/// before `architect::completed` hands the checkout to the lead's review.
+fn reaps_in_background(worker: Option<WorkerTrim>) -> bool {
+    worker.is_none()
+}
+
+/// What a launch knows beyond its command: the secrets to keep out of logs (relay key, named
+/// connection) and whether a clean run's process may exit in the background (`exit::reap`).
+struct Launch {
+    secrets: Vec<String>,
+    reap_in_background: bool,
+}
+
+/// A cloud run's launch: no secrets of its own, and its process is finished before the run returns.
+fn cloud_launch() -> Launch {
+    Launch { secrets: Vec::new(), reap_in_background: false }
+}
+
+/// Errors carry no relay key redaction here: `run_inner` redacts every error of the run once.
+async fn run_process_launch(
     config: RunConfig,
     sink: Sink,
     mut input: UnboundedReceiver<RunInput>,
     mut command: Command,
     image_blocks: Vec<Value>,
     host: Option<ToolHost>,
+    Launch { secrets, reap_in_background }: Launch,
 ) -> Result<(), String> {
     let mcp_tool_names: HashSet<String> = {
         host.as_ref()
@@ -3952,13 +4210,13 @@ async fn run_process_with_tools(
             warm::take(&config.session_id, &key)
         }
         _ => {
-            warm::launched(&config.session_id);
+            warm::launched_without_spare(&config.session_id);
             None
         }
     };
     let (host, mcp) = match (config.provider.as_str(), host) {
         ("claude", Some(host)) if spare.is_some() => {
-            let server = spare.as_mut().and_then(|spare| spare.server.take());
+            let server = spare.as_mut().and_then(warm::Adopting::server);
             if let Some(server) = &server {
                 server.rebind(host, config.session_id.clone(), sink.clone(), &config.mode)?;
             }
@@ -3999,9 +4257,28 @@ async fn run_process_with_tools(
         (_, None) => (None, None),
         _ => return Err("Host tools are unavailable for this provider".into()),
     };
+    // Known only now: a cloud run does not list explore, and a bind can fail. Either way the
+    // allow rule must not cover a same-named tool on a user's own server.
+    // Scan OpenCode agents off the runtime before `command.current_dir(&config.cwd)` is set.
+    let opencode_agents = if !opencode_allowed(&config.provider, mcp.is_some(), &mcp_tool_names).is_empty()
+        && !config.cwd.as_os_str().is_empty()
+    {
+        let cwd = config.cwd.clone();
+        Some(crate::blocking(move || Ok(crate::skill_manager::opencode_all_agents_at(&cwd))).await?)
+    } else {
+        None
+    };
+    allow_opencode_tools(
+        &mut command,
+        &config,
+        mcp.is_some(),
+        &mcp_tool_names,
+        opencode_agents.as_ref(),
+    );
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
+    let mut early = VecDeque::new();
     let cline_settings = match &mcp {
         Some(server) if config.provider == "cline" && !crate::cloud_agents::transport::is_cloud(&config.session_id) => {
             match cline::mcp_settings(&mut command, &server.kimi_config()) {
@@ -4016,13 +4293,14 @@ async fn run_process_with_tools(
     let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let mut agent_temp = None;
     let (mut child, mut group) = if let Some(spare) = spare {
-        (spare.child, spare.group)
+        reached_harness();
+        spare.into_parts()
     } else {
         if lingers {
             end_lingering(&config.session_id).await;
             agent_temp = AgentTemp::redirect(&mut command);
         }
-        if matches!(config.provider.as_str(), "claude" | "glm" | "mimo" | "alibaba") {
+        if claude_family(&config.provider) {
             if let Some(server) = &mcp {
                 command.args(["--mcp-config", &server.claude_config().to_string()]);
             }
@@ -4035,15 +4313,45 @@ async fn run_process_with_tools(
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        // Stop is serviced while the previous process of the session is still exiting.
+        // `biased`: a finished exit wins over input that is also ready, and a closed input
+        // never ends the launch (only an explicit Stop does).
+        let exited = tokio::select! {
+            biased;
+            exited = await_exit(&config.session_id) => exited,
+            () = stop_requested(&mut input, &mut early) => {
+                stop_taken();
+                if let Some(server) = &mcp { server.stop(); }
+                // The protocol does not exist yet, so the same status event is built directly.
+                sink(AgentEvent {
+                    session_id: config.session_id.clone(),
+                    kind: "status".into(),
+                    text: "Stopping agent".into(),
+                    request_id: None,
+                    data: None,
+                    tool: None,
+                });
+                return Ok(());
+            }
+        };
+        // A failed exit wait is PandaCode's own shutdown cap, not the harness's failure.
+        exited?;
+        reached_harness();
         let child = command
             .spawn()
             .map_err(|e| format!("Could not start {}: {e}", config.provider))?;
         let group = ProcessGroup::register(child.id());
         (child, group)
     };
-    let mut stdin = child.stdin.take().ok_or("Provider stdin unavailable")?;
-    let mut stdout = child.stdout.take().ok_or("Provider stdout unavailable")?;
-    let stderr = child.stderr.take().ok_or("Provider stderr unavailable")?;
+    // The process exists but cannot be driven: register its exit so the next same-session
+    // launch waits for it instead of resuming beside it.
+    let (mut stdin, mut stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
+        (Some(stdin), Some(stdout), Some(stderr)) => (stdin, stdout, stderr),
+        _ => {
+            exit::retire_parts_in_cwd(&config.session_id, child, group, mcp, Some(external_path(&config.cwd)));
+            return Err("Provider stdio unavailable".into());
+        }
+    };
     let mut stderr_task = StderrReader(tokio::spawn(read_stderr(stderr)));
     let mut protocol = Protocol::new(config);
     if crate::cloud_agents::transport::is_cloud(&protocol.config.session_id) {
@@ -4069,6 +4377,7 @@ async fn run_process_with_tools(
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
+    protocol.refused_tools = run_refused();
     let mut jobs = tokio::task::JoinSet::new();
     let mut queued = VecDeque::new();
     let mut bytes = Vec::new();
@@ -4086,7 +4395,7 @@ async fn run_process_with_tools(
         }
         loop {
             tokio::select! {
-                action=input.recv(),if input_open && !stopped=>{
+                action=next_input(&mut early,&mut input),if input_open && !stopped=>{
                     match action {
                         Some(RunInput::Goal{request,reply})=>{let step=protocol.goal_control(request,reply);if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}},
                         Some(RunInput::CodexRequest{method,params,reply})=>{let step=protocol.codex_control(method,params,reply);apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;},
@@ -4205,6 +4514,21 @@ async fn run_process_with_tools(
     for event in protocol.cancel_requests().events {
         sink(event);
     }
+    if reap_in_background && result.is_ok() && !stopped && claude_family(&protocol.config.provider) {
+        let mut secrets = secrets;
+        secrets.extend(mcp.as_ref().map(|server| server.token().to_owned()));
+        reap(Reaped {
+            session_id: protocol.config.session_id.clone(),
+            cwd: Some(external_path(&protocol.config.cwd)),
+            child,
+            stdin,
+            stdout,
+            group,
+            stderr: stderr_task,
+            secrets,
+        });
+        return Ok(());
+    }
     if lingers && result.is_ok() && !stopped {
         linger_agent(protocol.config.session_id.clone(), &protocol.config.cwd, child, stdin, stdout, stderr_task, group, agent_temp);
         return Ok(());
@@ -4278,7 +4602,17 @@ mod coalesce_tests {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    #[test]
+    fn only_plain_tasks_reap_a_clean_run_in_the_background() {
+        assert!(!super::cloud_launch().reap_in_background, "cloud runs finish their bridge synchronously");
+        assert!(super::reaps_in_background(None));
+        for read_only in [false, true] {
+            let worker = super::WorkerTrim { read_only, skills: true, trim: false };
+            assert!(!super::reaps_in_background(Some(worker)), "managed worker, read_only={read_only}");
+        }
+    }
+
     #[test]
     fn frame_buffer_shrinks_only_when_large_and_drained() {
         assert!(super::should_shrink(10, 2 * 1024 * 1024));
@@ -4444,7 +4778,7 @@ mod tests {
         assert!(validate_reasoning_effort("cursor", Some("bad\nflag")).is_err());
     }
 
-    pub(super) fn config(provider: &str) -> RunConfig {
+    pub(crate) fn config(provider: &str) -> RunConfig {
         RunConfig {
             session_id: "local".into(),
             provider: provider.into(),
@@ -4459,6 +4793,8 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            worker: None,
+            disallowed_tools: None,
         }
     }
 
@@ -4470,7 +4806,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let mut local = config("claude");
         local.mode = "bogus".into();
-        assert!(run_with_tools(local, sink.clone(), rx, None, reached.clone()).await.is_err());
+        assert!(run_with_tools(local, sink.clone(), rx, RunTools::default(), reached.clone()).await.is_err());
         assert!(!reached.load(std::sync::atomic::Ordering::SeqCst));
         // A harness that cannot start is the harness's failure.
         let reached: Arc<std::sync::atomic::AtomicBool> = Default::default();
@@ -5083,6 +5419,165 @@ mod tests {
         assert!(value["mcp"]["x"].is_object());
         assert_eq!(value["permission"]["skill"]["review"], "deny");
         assert!(!format!("{}{}", cfg.prompt, cfg.instructions).contains("review"));
+    }
+
+    #[test]
+    fn opencode_served_tools_preserve_connection_config_and_skill_denies() {
+        let mut cfg = config("opencode");
+        cfg.mode = "plan".into();
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        let mut command = Command::new("opencode");
+        configure_command_with_skills(&mut command, &cfg, &disabled);
+        crate::connections::Launch {
+            executable: None,
+            args: Vec::new(),
+            env: vec![("OPENCODE_CONFIG_CONTENT".into(), r#"{"provider":{"work":{"name":"Named provider"}},"mcp":{"work":{"url":"https://example.invalid/mcp"}},"permission":{"bash":{"deploy *":"deny","*":"ask"},"skill":{"*":"allow"}},"agent":{"plan":{"model":"work/model","permission":{"bash":"deny","skill":{"*":"allow"}}},"reviewer":{"prompt":"Keep this agent","permission":{"edit":"deny"}}}}"#.into())],
+            secrets: Vec::new(),
+        }.apply(&mut command);
+        command.env("OPENCODE_PERMISSION", r#"{"bash":{"deploy *":"deny","*":"ask"}}"#);
+        enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
+        let before = env_of(&command, "OPENCODE_CONFIG_CONTENT");
+        let names = HashSet::from([EXPLORE_TOOL.into(), crate::custom_tools::TOOL_RUN.into()]);
+        allow_opencode_tools(&mut command, &cfg, true, &names, None);
+        let after = env_of(&command, "OPENCODE_CONFIG_CONTENT");
+        let value: Value = serde_json::from_str(&after).unwrap();
+        assert_eq!(value["provider"]["work"]["name"], "Named provider");
+        assert_eq!(value["mcp"]["work"]["url"], "https://example.invalid/mcp");
+        assert_eq!(value["agent"]["plan"]["model"], "work/model");
+        assert_eq!(value["agent"]["reviewer"]["prompt"], "Keep this agent");
+        assert_eq!(value["permission"]["skill"]["review"], "deny");
+        assert_eq!(value["agent"]["plan"]["permission"]["skill"]["review"], "deny");
+        assert_eq!(value["agent"]["plan"]["permission"]["bash"], "deny");
+        assert!(after.contains(r#""bash":{"deploy *":"deny","*":"ask"}"#), "permission order: {after}");
+        assert_eq!(value["permission"]["pandacode_architect_pandacode_explore"], "allow");
+        assert_eq!(value["agent"]["plan"]["permission"]["pandacode_architect_pandacode_explore"], "allow");
+        assert!(value["permission"].get("pandacode_architect_pandacode_tool_run").is_none());
+        let permission = env_of(&command, "OPENCODE_PERMISSION");
+        assert!(permission.contains(r#""bash":{"deploy *":"deny","*":"ask"}"#));
+        assert!(permission.contains(r#""review":"deny""#));
+        let permission: Value = serde_json::from_str(&permission).unwrap();
+        assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
+        assert!(permission.get("pandacode_architect_pandacode_tool_run").is_none());
+        assert_eq!(value["agent"]["reviewer"]["permission"]["edit"], "deny");
+        assert_eq!(value["agent"]["reviewer"]["permission"]["skill"]["review"], "deny");
+        assert!(before.contains(r#""review":"deny""#));
+    }
+
+    #[test]
+    fn opencode_served_tools_keep_unreadable_and_unserved_launches_unchanged() {
+        let raw = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        let jsonc = "// named connection\n{\"permission\":{\"bash\":\"deny\"},}";
+        let names = HashSet::from([EXPLORE_TOOL.into()]);
+
+        // Opaque inline config stays verbatim while bound-tool grants ride through OPENCODE_PERMISSION.
+        let mut command = Command::new("unused");
+        command.env("OPENCODE_CONFIG_CONTENT", raw);
+        command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+        allow_opencode_tools(&mut command, &config("opencode"), true, &names, None);
+        assert_eq!(env_of(&command, "OPENCODE_CONFIG_CONTENT"), raw);
+        let permission: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_PERMISSION")).unwrap();
+        assert_eq!(permission["skill"]["review"], "deny");
+        assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
+        assert_eq!(permission["pandacode_architect_pandacode_explore *"], "allow");
+
+        // Unserved launches leave both OPENCODE_CONFIG_CONTENT and OPENCODE_PERMISSION untouched.
+        for (provider, bound, names, inline) in [
+            ("opencode", false, &names, raw),
+            ("opencode", false, &names, jsonc),
+            ("opencode", true, &HashSet::new(), jsonc),
+            ("kimi", true, &names, jsonc),
+        ] {
+            let mut command = Command::new("unused");
+            command.env("OPENCODE_CONFIG_CONTENT", inline);
+            command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+            allow_opencode_tools(&mut command, &config(provider), bound, names, None);
+            assert_eq!(env_of(&command, "OPENCODE_CONFIG_CONTENT"), inline);
+            assert_eq!(env_of(&command, "OPENCODE_PERMISSION"), r#"{"skill":{"review":"deny"}}"#);
+        }
+    }
+
+    #[test]
+    fn opencode_served_tools_discover_project_agents_from_config_cwd() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-project-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.json"),
+            r#"{
+                "agent": {"custom-reviewer": {"permission": {"*": "deny"}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let names = HashSet::from([EXPLORE_TOOL.into()]);
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // Pre-scanned agents path (mirrors `run_process_launch`, before `command.current_dir`).
+        let mut command = Command::new("opencode");
+        configure_command(&mut command, &cfg);
+        assert!(command.as_std().get_current_dir().is_none());
+        let agents = crate::skill_manager::opencode_all_agents_at(&cfg.cwd);
+        allow_opencode_tools(&mut command, &cfg, true, &names, Some(&agents));
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
+            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
+            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+        }
+
+        // Direct path with `agents: None` also discovers project agents from `config.cwd`.
+        let mut command = Command::new("opencode");
+        configure_command(&mut command, &cfg);
+        assert!(command.as_std().get_current_dir().is_none());
+        allow_opencode_tools(&mut command, &cfg, true, &names, None);
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
+            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
+            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opencode_served_tools_append_exact_grants_after_existing_permission_rules() {
+        let mut command = Command::new("unused");
+        command.env("OPENCODE_CONFIG_CONTENT", "// named connection\n{\"permission\":{\"pandacode_architect_pandacode_explore\":\"deny\",\"pandacode_architect_*\":\"deny\",\"bash\":{\"deploy *\":\"deny\",\"*\":\"ask\"}},\"agent\":{\"plan\":{\"permission\":\"deny\"}},}");
+        command.env("OPENCODE_PERMISSION", r#""ask""#);
+        let names = HashSet::from([
+            EXPLORE_TOOL.into(),
+            crate::custom_tools::TOOL_LIST.into(),
+            crate::custom_tools::TOOL_SAVE.into(),
+            crate::custom_tools::TOOL_RUN.into(),
+            "pandacode_explore2".into(),
+        ]);
+        allow_opencode_tools(&mut command, &config("opencode"), true, &names, None);
+        let inline = env_of(&command, "OPENCODE_CONFIG_CONTENT");
+        assert!(inline.contains(r#""bash":{"deploy *":"deny","*":"ask"}"#));
+        assert!(inline.find(r#""pandacode_architect_*":"deny""#).unwrap()
+            < inline.find(r#""pandacode_architect_pandacode_explore":"allow""#).unwrap());
+        let value: Value = serde_json::from_str(&inline).unwrap();
+        assert_eq!(value["agent"]["plan"]["permission"]["*"], "deny");
+        for name in [EXPLORE_TOOL, crate::custom_tools::TOOL_LIST, crate::custom_tools::TOOL_SAVE] {
+            let name = format!("pandacode_architect_{name}");
+            assert_eq!(value["permission"][&name], "allow");
+            assert_eq!(value["agent"]["plan"]["permission"][&name], "allow");
+        }
+        for name in ["pandacode_architect_pandacode_tool_run", "pandacode_architect_pandacode_explore2"] {
+            assert!(value["permission"].get(name).is_none());
+        }
+        let permission = env_of(&command, "OPENCODE_PERMISSION");
+        assert!(permission.starts_with(r#"{"*":"ask","#));
+        let permission: Value = serde_json::from_str(&permission).unwrap();
+        assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
     }
 
     fn env_of(command: &Command, name: &str) -> String {
@@ -6402,6 +6897,8 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
                 goal: None,
                 codex_settings: None,
                 images: Vec::new(),
+                worker: None,
+                disallowed_tools: None,
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));
             let outcome = match tokio::time::timeout(Duration::from_secs(90), &mut task).await {

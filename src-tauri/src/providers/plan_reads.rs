@@ -2,29 +2,17 @@
 //! project. Paths are resolved (`~`, relative, `..`, symlinks when they exist) and
 //! compared by component, case-insensitively; anything that could reach
 //! credentials, keys, browser profiles or app data goes to the user. When unsure, ask.
+use crate::workspace::{sensitive_name as sensitive, HOME_PRIVATE, SYSTEM_ROOTS};
 use serde_json::Value;
 use std::path::Path;
 
 const READ_ONLY: &[&str] = &["Read", "Grep", "Glob", "LS", "NotebookRead", "WebFetch", "WebSearch"];
-/// Hidden names that are ordinary project files; every other dot-name may hold secrets
-/// (`.ssh`, `.aws`, `.codex`, `.claude`, `.config`, `.local`, `.docker`, `.kube`, `.netrc`, `.env`…).
-const PLAIN_DOT_NAMES: &[&str] = &[".github", ".gitignore", ".gitattributes", ".editorconfig"];
-/// Top-level system folders with process environments, devices, service tokens or keychains.
-const SYSTEM_ROOTS: &[&str] = &["proc", "sys", "dev", "root", "etc", "var", "library", "private"];
-/// Folders directly in the home directory that hold keychains, browser profiles and app data.
-const HOME_PRIVATE: &[&str] = &["library", "appdata"];
-const NAMES: &[&str] = &["auth.json", "hosts.yml", "hosts.yaml", "kubeconfig", "login data", "cookies", "cookies.sqlite", "key4.db", "logins.json"];
-const PREFIXES: &[&str] = &["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "ai.pandacode"];
-const CONTAINS: &[&str] = &["credential", "secret", "keychain", "password"];
-const EXTENSIONS: &[&str] = &[".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".kdbx", ".gpg", ".asc", ".env", ".ovpn"];
 
 pub(super) fn plan_read_only(tool: &str, input: &Value, cwd: &Path) -> bool {
     if !READ_ONLY.contains(&tool) {
         return false;
     }
-    let home = ["HOME", "USERPROFILE"]
-        .iter()
-        .find_map(|key| std::env::var(key).ok().filter(|home| !home.is_empty()));
+    let home = crate::workspace::home_folder().and_then(|home| home.to_str().map(str::to_owned));
     allowed(tool, input, &cwd.to_string_lossy(), home.as_deref())
 }
 
@@ -128,14 +116,6 @@ fn safe_parts(parts: &[String], home: &[String]) -> bool {
     !parts.iter().any(|part| sensitive(part))
 }
 
-fn sensitive(name: &str) -> bool {
-    (name.starts_with('.') && !PLAIN_DOT_NAMES.contains(&name))
-        || NAMES.contains(&name)
-        || PREFIXES.iter().any(|prefix| name.starts_with(prefix))
-        || CONTAINS.iter().any(|needle| name.contains(needle))
-        || EXTENSIONS.iter().any(|extension| name.ends_with(extension))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,9 +172,15 @@ mod tests {
             "C:\\Users\\Me\\.aws\\config",
             "/Users/Me/project/.env",
             "/Users/Me/project/prod.env",
+            // Backups and browser copies of a key are the key.
+            "/Users/Me/project/server.key.bak",
+            "/Users/Me/project/id_rsa (1)",
             "/proc/self/environ",
             "/var/run/secrets/kubernetes.io/serviceaccount/token",
             "~other/.ssh/id_rsa",
+            // Placeholders, but Plan mode asks before any env file (the explorer serves them).
+            "/Users/Me/project/.env.example",
+            "/Users/Me/project/app.env.sample",
             "$HOME/.ssh/id_rsa",
         ] {
             assert!(!runs("Read", json!({"file_path": path})), "{path}");

@@ -251,10 +251,7 @@ pub(super) async fn set_task_preference(
         return Err("Close this task's harness console before changing its settings here.".into());
     }
     if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
-        // Claude reads fast mode at launch, so the choice applies from the next turn.
-        let delta = json!({"serviceTier": claude_tier(request)?});
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        return save_preference(&store, &session_id, &delta);
+        return save_claude_preference(&state.store, &session_id, request);
     }
     let running = state
         .agents
@@ -315,6 +312,22 @@ fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
         )
         .map_err(|e| e.to_string())?;
     store.session(sid)
+}
+
+pub(crate) fn save_claude_preference(
+    store: &Mutex<Store>,
+    session_id: &str,
+    request: TaskPreference,
+) -> Result<Session> {
+    // Claude reads fast mode at launch, so the choice applies from the next turn.
+    let delta = json!({"serviceTier": claude_tier(request)?});
+    let session = {
+        let store = store.lock().map_err(|e| e.to_string())?;
+        save_preference(&store, session_id, &delta)?
+    };
+    // Drop any warm spare (or renewing lead spare) that started at the old speed.
+    providers::discard_warm_agent(session_id);
+    Ok(session)
 }
 
 /// Claude Code has one switch, fast mode, stored as the `fast` tier.
@@ -679,6 +692,12 @@ pub(super) async fn start_harness_terminal(
             ensure_console_goal_inactive(goal.as_ref())?;
         }
     }
+    if task.resume_id.is_some() {
+        // A clean run's CLI may still be flushing, and its warm spare holds the same session
+        // open: kill the spare (it registers its exit) and wait for both, never overlapping
+        // the console's own `--resume`. Never wait with the agents map locked.
+        providers::quiesce(&session_id).await?;
+    }
     blocking(move || {
         let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
@@ -878,6 +897,32 @@ mod command_tests {
         assert_eq!(claude_tier(TaskPreference::Speed { tier: None }).unwrap(), None);
         assert!(claude_tier(TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
         assert!(claude_tier(TaskPreference::Plan { enabled: true }).is_err());
+    }
+    #[tokio::test]
+    async fn claude_fast_mode_preference_discards_warm_agent_only_on_valid_change() {
+        let state = state();
+        let sid = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            store.create_session(&project.id, "claude", "claude-opus-5-5", "ask").unwrap().id
+        };
+        providers::warm_launched(&sid);
+        let before = providers::warm_epoch(&sid);
+        assert_ne!(before, 0);
+        // Invalid preferences fail without discarding the existing warm spare.
+        assert!(save_claude_preference(&state.store, &sid, TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
+        assert!(save_claude_preference(&state.store, &sid, TaskPreference::Plan { enabled: true }).is_err());
+        assert_eq!(providers::warm_epoch(&sid), before);
+        // Enabling fast mode persists the tier and discards any warm spare / renewal epoch.
+        let enabled = save_claude_preference(&state.store, &sid, TaskPreference::Fast { enabled: true }).unwrap();
+        assert_eq!(enabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&json!("fast")));
+        assert_eq!(providers::warm_epoch(&sid), 0);
+        // Disabling fast mode persists null and discards any warm spare started in fast mode.
+        providers::warm_launched(&sid);
+        assert_ne!(providers::warm_epoch(&sid), 0);
+        let disabled = save_claude_preference(&state.store, &sid, TaskPreference::Fast { enabled: false }).unwrap();
+        assert_eq!(disabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&Value::Null));
+        assert_eq!(providers::warm_epoch(&sid), 0);
     }
     #[test]
     fn imported_task_lookup_includes_history_outside_the_sidebar_limit() {

@@ -536,7 +536,7 @@ fn prompts_carry_config_only_and_reviewers_never_see_the_target() {
     call(&state, &sid, "pandacode_dispatch_workers", json!({"assignments":[reviewer_assignment("r", "security")]})).unwrap();
     let store = state.store.lock().unwrap();
     let mut team = load(&store, &sid).unwrap().unwrap();
-    let (lead, _) = rules(&store, &team, &sid).unwrap();
+    let lead = rules(&store, &team, &sid, false).unwrap().text;
     assert!(lead.contains("councilLens") && lead.contains("9.5") && lead.contains("exactly 2") && lead.contains("3 rounds"), "{lead}");
     assert!(council::lead_rules(&team, false).contains("a different roster model for each reviewer"));
     assert!(!council::lead_rules(&team, true).contains("different roster model"));
@@ -544,17 +544,17 @@ fn prompts_carry_config_only_and_reviewers_never_see_the_target() {
     // Live status would resend the rules on every change.
     let before = lead.clone();
     team.workers[1].council.as_mut().unwrap().score = Some(4.0);
-    assert_eq!(rules(&store, &team, &sid).unwrap().0, before);
-    let (reviewer, _) = rules(&store, &team, &team.workers[1].session_id.clone()).unwrap();
+    assert_eq!(rules(&store, &team, &sid, false).unwrap().text, before);
+    let reviewer = rules(&store, &team, &team.workers[1].session_id.clone(), false).unwrap().text;
     assert!(reviewer.contains("`Council score: N/10`") && reviewer.contains("security") && reviewer.contains("Score strictly") && !reviewer.contains("9+"), "{reviewer}");
     assert!(!reviewer.contains("9.5"), "{reviewer}");
     assert!(reviewer.contains("frames, renders") && reviewer.contains("the work your assignment names"), "{reviewer}");
     assert!(reviewer.contains("Do not change the work under review") && reviewer.contains("temporary directory"), "{reviewer}");
     assert!(!reviewer.contains("the whole checkout") && !reviewer.contains("writing follow-up"), "{reviewer}");
-    let (plain, _) = rules(&store, &team, &team.workers[0].session_id.clone()).unwrap();
+    let plain = rules(&store, &team, &team.workers[0].session_id.clone(), false).unwrap().text;
     assert!(!plain.contains("Council"), "{plain}");
     team.config.council = None;
-    assert!(!rules(&store, &team, &sid).unwrap().0.contains("councilLens"));
+    assert!(!rules(&store, &team, &sid, false).unwrap().text.contains("councilLens"));
 }
 
 #[test]

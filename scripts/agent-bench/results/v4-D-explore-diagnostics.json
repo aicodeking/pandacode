@@ -1,0 +1,85 @@
+{
+ "snapshot": {
+  "binary": "256be939",
+  "sources": "1f267ae6",
+  "profile": "fast-release",
+  "optLevel": "s"
+ },
+ "adoption": {
+  "loc": "38/40",
+  "edit": "11/12",
+  "toolSearch": 0
+ },
+ "multiKindCalls": {
+  "loc": [
+   49,
+   130
+  ],
+  "edit": [
+   7,
+   23
+  ]
+ },
+ "emptySearches": {
+  "empty": 22,
+  "searches": 132,
+  "withGlob": 17
+ },
+ "outsideGlob": {
+  "listings": 140,
+  "followedUp": 43
+ },
+ "schemaErrors": 0,
+ "truncatedOrOmittedReplies": {
+  "loc": [
+   91,
+   130
+  ]
+ },
+ "replyChars": {
+  "median": 3067,
+  "max": 16371
+ },
+ "vscode": {
+  "stepsBefore": 5,
+  "stepsAfter": 3.5,
+  "durationS": "17 → 17",
+  "nonApiSAfter": [
+   1.5,
+   1.2
+  ],
+  "recall": "1.00 → 1.00",
+  "costUsd": "0.05 → 0.07"
+ },
+ "answers": {
+  "filesListed": {
+   "before": 6.1,
+   "after": 6.85
+  },
+  "goldHits": {
+   "before": 3.15,
+   "after": 3.23
+  }
+ },
+ "againstV2After": {
+  "steps": "3.96 → 4.33",
+  "durationS": "23.2 → 20.7",
+  "costUsd": "0.178 → 0.167",
+  "laterCacheWritePerStep": "3643 → 2428",
+  "recall": "0.817 → 0.824",
+  "precision": "0.552 → 0.524"
+ },
+ "notRun": {
+  "long": [
+   "loc-cloud-credentials before",
+   "loc-model-picker-errors before",
+   "loc-model-picker-errors after"
+  ],
+  "batchBEdits": 12
+ },
+ "spend": {
+  "ledgerUsd": 78.16,
+  "billedUsd": 70.16,
+  "chargedUsd": 8
+ }
+}

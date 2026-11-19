@@ -76,15 +76,24 @@ pub async fn chat_create(app: tauri::AppHandle, state: State<'_, AppState>, prov
     Ok(task)
 }
 
+/// Forgets an unused chat project after ending any lingering agents and awaiting any pending
+/// exits in its folder (on Windows an exiting CLI still holds the folder as its `cwd`), then
+/// removes the folder when only PandaCode's own files remain.
+async fn cleanup_in(state: &AppState, root: &Path, project_id: &str) -> Result<bool> {
+    let folder = unused_folder(&*state.store.lock().map_err(|e| e.to_string())?, root, project_id)?;
+    // A task moved out of the chat can leave its agent lingering or still exiting here, which on
+    // Windows blocks removal.
+    if let Some(folder) = folder {
+        crate::providers::end_lingering_in(&folder).await;
+        crate::providers::await_exits_in(&folder).await?;
+    }
+    cleanup(&*state.store.lock().map_err(|e| e.to_string())?, root, project_id)
+}
+
 /// Called after a chat's task is deleted or moved to a real project.
 #[tauri::command]
 pub async fn chat_cleanup(state: State<'_, AppState>, project_id: String) -> Result<bool> {
-    let folder = unused_folder(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &project_id)?;
-    // A task moved out of the chat can leave its agent lingering here, which on Windows blocks removal.
-    if let Some(folder) = folder {
-        crate::providers::end_lingering_in(&folder).await;
-    }
-    cleanup(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &project_id)
+    cleanup_in(&state, &root(), &project_id).await
 }
 
 #[cfg(test)]
@@ -144,6 +153,52 @@ mod tests {
         let project = store.add_project(&other).unwrap();
         assert!(!cleanup(&store, &root, &project.id).unwrap());
         assert!(store.project(&project.id).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn chat_cleanup_waits_for_pending_exits_in_its_folder_before_removing_it() {
+        let (dir, root, store) = setup();
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let task = create(&store, &root, "claude", "default", None, true).unwrap();
+        let project_id = task.project_id.clone();
+        let folder = PathBuf::from(store.project(&project_id).unwrap().path);
+        store.db.execute("DELETE FROM sessions WHERE id=?1", [&task.id]).unwrap();
+        let state = std::sync::Arc::new(AppState {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            agents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        });
+
+        let other_id = format!("chat-cleanup-other-{}", uuid::Uuid::new_v4().simple());
+        let same_id = format!("chat-cleanup-same-{}", uuid::Uuid::new_v4().simple());
+        let hold_other = crate::providers::hold_exit_in_cwd_for_test(&other_id, elsewhere.clone());
+        let hold_same = crate::providers::hold_exit_in_cwd_for_test(&same_id, folder.join("."));
+
+        let cleanup_task = tokio::spawn({
+            let state = state.clone();
+            let root = root.clone();
+            let project_id = project_id.clone();
+            async move { cleanup_in(&state, &root, &project_id).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!cleanup_task.is_finished(), "cleanup must wait while a pending exit holds the chat folder");
+        assert!(folder.exists(), "folder must remain until pending exits finish");
+
+        drop(hold_same);
+        let removed = tokio::time::timeout(std::time::Duration::from_secs(2), cleanup_task)
+            .await
+            .expect("cleanup should finish once the folder's pending exit ends")
+            .unwrap()
+            .unwrap();
+        assert!(removed);
+        assert!(!folder.exists(), "folder should be removed after pending exits clear");
+        assert!(state.store.lock().unwrap().project(&project_id).is_err());
+
+        drop(hold_other);
+        crate::providers::await_exit(&other_id).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 }

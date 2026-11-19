@@ -19,6 +19,7 @@ import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
 import { call, subscribe } from './bridge';
 import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
+import { mountCustomTools } from './custom-tools-settings';
 import { mountRemoteSettings } from './remote-settings';
 import { mountSchedulesSettings } from './schedules-settings';
 import { appUpdates } from './app-updates';
@@ -78,12 +79,83 @@ const PLANS = new Set<ProviderId>(['glm', 'mimo', 'alibaba']);
 
 /** A row: title, its control, then the info mark named after it (after the control in Tab order); the help's
  * text stays in the DOM for screen readers. */
-const settingRow = (title: string, control: string, detail = '') =>
-  `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
-const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
-  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}>`, detail);
+const settingRow = (title: string, control: string, detail = '', status = false) =>
+  `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}${status ? '<small class="setting-status" hidden></small>' : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
+/** \`native\` switches start disabled (until their value is read) and keep a status line for errors. */
+const switchRow = (id: string, title: string, detail: string, checked: boolean, native = false) =>
+  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''} ${native ? 'disabled' : ''}>`, detail, native);
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
+
+const UNREADABLE = 'Couldn’t read this setting.';
+/** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
+ * `set_<name>_enabled`; the row's id and default hint. */
+const NATIVE_SWITCHES = [
+  { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
+  { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
+  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code; turn on other harnesses below. Deny rules don’t bind it.' },
+] as const;
+/** The explorer's harnesses (`providers::explore_name`): Claude Code is on by default, each other
+ * one opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */
+const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
+  { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'alibaba', name: 'Alibaba Token Plan' }, { id: 'codex', name: 'Codex' },
+  { id: 'kimi', name: 'Kimi Code' }, { id: 'opencode', name: 'OpenCode' }, { id: 'pi', name: 'Pi' }, { id: 'omp', name: 'Oh My Pi' }, { id: 'grok', name: 'Grok Build' },
+];
+const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
+  const hint = id === 'claude' ? 'On by default while the switch above is on.' : 'Off by default: not measured. Takes effect while the switch above is on.';
+  return settingRow(`Explorer · ${name}`, `<input type="checkbox" class="settings-switch" id="explore-${id}" aria-label="Local code explorer for ${name}" disabled>`, hint, true);
+};
+/** Settings → Tools & add-ons → Agent-made tools: opt-in, off by default. */
+const CUSTOM_TOOLS_SWITCH = { id: 'custom-tools-enabled', name: 'custom_tools', title: 'Agent-made tools', hint: 'Agents save and run project scripts. Off by default: no measured gain.' } as const;
+
+// IDs distinguish harnesses and keep a reopened Settings view behind any unfinished save.
+const nativeSwitchSaves = new Map<string, Promise<void>>();
+
+/** One native switch: disabled until read, so an unreadable value is never shown; read at each
+ * run, so it needs nothing from the window; a refused save puts the switch back and says why. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean }): () => void {
+  const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
+  let disposed = false;
+  // The hint sits behind the title's mark; the row's status line only ever shows an error.
+  const status = input.closest('.setting-row')!.querySelector<HTMLElement>('.setting-status')!;
+  const say = (message: string, alert = false) => {
+    status.textContent = message;
+    status.hidden = !message;
+    if (alert) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
+  };
+  input.setAttribute('aria-busy', 'true');
+  void (async () => {
+    try {
+      await nativeSwitchSaves.get(id);
+      const on = await call<boolean>(`${name}_enabled`, args);
+      if (!disposed) { input.checked = on === true; input.disabled = locked; }
+    } catch {
+      if (!disposed) say(UNREADABLE);
+    } finally {
+      if (!disposed) input.removeAttribute('aria-busy');
+    }
+  })();
+  const change = (event: Event) => {
+    if (event.target !== input || input.disabled || nativeSwitchSaves.has(id)) return;
+    const on = input.checked;
+    const focused = document.activeElement === input;
+    input.disabled = true;
+    input.setAttribute('aria-busy', 'true');
+    say('');
+    const save = call<void>(`set_${name}_enabled`, { ...args, enabled: on }).catch(error => {
+      if (!disposed) { input.checked = !on; say(error instanceof Error ? error.message : String(error), true); }
+    }).finally(() => {
+      nativeSwitchSaves.delete(id);
+      if (disposed) return;
+      input.disabled = locked;
+      input.removeAttribute('aria-busy');
+      if (focused && (document.activeElement === document.body || document.activeElement === input)) input.focus({ preventScroll: true });
+    });
+    nativeSwitchSaves.set(id, save);
+  };
+  panel.addEventListener('change', change);
+  return () => { disposed = true; panel.removeEventListener('change', change); };
+}
 
 function mountAgentsDockSettings(host: HTMLElement): () => void {
   let disposed = false;
@@ -160,6 +232,8 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        ${NATIVE_SWITCHES.map(row => switchRow(row.id, row.title, row.hint, false, true)).join('')}
+        ${EXPLORE_HARNESSES.map(exploreHarnessRow).join('')}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -172,7 +246,9 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         ${settingRow('Jev', '<button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button>', 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
+        ${switchRow(CUSTOM_TOOLS_SWITCH.id, CUSTOM_TOOLS_SWITCH.title, CUSTOM_TOOLS_SWITCH.hint, false, true)}
       </div>
+      <div id="custom-tools-settings"></div>
       ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
     case 'skills': return '<div id="skill-manager"></div>';
@@ -324,6 +400,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'routing' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
+    if (id === 'tools') cleanups.push(mountNativeSwitch(panel, CUSTOM_TOOLS_SWITCH));
+    if (id === 'tools') cleanups.push(mountCustomTools(panel.querySelector<HTMLElement>('#custom-tools-settings')!, call, subscribe as (name: string, callback: () => void) => Promise<() => void>));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });
@@ -336,6 +414,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
+    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row)));
+    if (id === 'agents') cleanups.push(...EXPLORE_HARNESSES.map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider }, locked: provider === 'claude' })));
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {

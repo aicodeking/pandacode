@@ -3637,6 +3637,7 @@ dependencies = [
  "ort",
  "portable-pty",
  "regex",
+ "regex-syntax",
  "reqwest",
  "rfd",
  "rubato",

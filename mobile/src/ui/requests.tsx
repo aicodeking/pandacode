@@ -12,6 +12,7 @@ import { Glass } from './Glass.tsx';
 import { Icon } from './Icon.tsx';
 import { Markdown } from './Markdown.tsx';
 import { type Colors, mono, useColors } from './theme.ts';
+import { isToolRun } from './tool-run-approval.ts';
 
 interface Question { id: string; header?: string; question: string; options?: { label: string; description?: string }[]; isOther?: boolean; isSecret?: boolean; multiSelect?: boolean }
 type Input = { kind: 'questions'; questions: Question[] } | { kind: 'form'; message: string; schema: unknown } | { kind: 'url'; message: string; url: string };
@@ -86,6 +87,17 @@ function ToolInput({ tool }: { tool: NonNullable<PendingRequest['tool']> }) {
   );
 }
 
+/** A `pandacode_tool_run` approval (`tool-run-approval.ts`): its script reads as plain text, never Markdown,
+ * which would hide lines such as `[x]: $(curl …|sh)` (a link definition) that still run. */
+function PlainScript({ text }: { text: string }) {
+  const colors = useColors();
+  return (
+    <InnerCard style={[styles.tool, { backgroundColor: colors.fill, borderColor: colors.border }]}>
+      <Text style={[styles.toolText, { color: colors.text }]} selectable>{text}</Text>
+    </InnerCard>
+  );
+}
+
 /** Whether the agent's prose only restates the command shown in the block below it. */
 function repeatsTool(text: string, tool: PendingRequest['tool']): boolean {
   if (!tool?.input) return false;
@@ -103,7 +115,9 @@ export function ApprovalCard({ deviceId, sessionId, request }: { deviceId: strin
       <Heading icon={{ ios: 'hand.raised.fill', android: 'front_hand' }} title="Approval needed" />
       {/* Two surfaces: the card, and the code box as its inner one. */}
       <View style={styles.approval}>
-        {(!request.tool || !repeatsTool(request.text, request.tool)) && <Markdown text={request.text || 'The agent asks to continue.'} />}
+        {isToolRun(request.text)
+          ? <PlainScript text={request.text} />
+          : (!request.tool || !repeatsTool(request.text, request.tool)) && <Markdown text={request.text || 'The agent asks to continue.'} />}
         {!!request.tool && <ToolInput tool={request.tool} />}
       </View>
       <Actions>

@@ -83,6 +83,8 @@
 .architect-worker-meta > div { display: flex; flex-direction: column; gap: 5px; }
 .architect-worker-meta strong { font-size: var(--text-sm); overflow-wrap: anywhere; }
 .architect-worker-meta small { font-size: var(--text-2xs); color: var(--muted); }
+.architect-saver { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.architect-saver-chip { padding: 1px 6px; border-radius: var(--radius-xs); background: var(--fill-hover); color: var(--muted); font-size: var(--text-2xs); line-height: 1.5; }
 /* An empty live line (no queue reason, no error) stays for screen readers but takes no space or gap. */
 .architect-worker-meta small[role="status"]:empty { position: absolute; }
 .architect-assignment { font-size: var(--text-xs); color: var(--muted); margin-bottom: 18px; }

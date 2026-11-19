@@ -11,6 +11,7 @@ Rules an agent needs before writing any code. Detailed subsystem notes are in [d
 - `npx tsc --noEmit` — typecheck (also runs inside `npm run build`).
 - `npm test` — Node unit tests (`tests/*.test.mjs`).
 - `npm run test:release` — release script tests (`scripts/release/*.test.mjs`).
+- `npm run test:bench` — agent benchmark runner tests (`scripts/agent-bench/*.test.mjs`).
 - `npx playwright test` — browser suite against the Vite preview (`npm run dev` on 127.0.0.1:1420 is started/reused automatically; needs Google Chrome at `/Applications/Google Chrome.app`). A server already on the port is reused even if it serves another checkout, so in a second worktree set `PW_PORT=<free port>`. Full run ≈ 3.5 min at the default 4 workers (`PW_WORKERS=N` overrides); pass file paths or `-g "title"` for a subset.
 - `npx playwright test -c playwright.webkit.config.ts` — the same suite in WebKit (the real target is WKWebView).
 
@@ -49,6 +50,8 @@ Area → key files → detail (read it before touching the area).
 - Sidebar, thread switching, find: `src/sidebar-sections.ts`, `src/sidebar-sort.ts`, `src/thread-find.ts` → [ref](docs/agent-reference.md#sidebar-and-thread-switching).
 - Composer tray, model picker, teams, attachments, queue, token saver: `src/model-picker.ts`, `src/attachments.ts`, `src/message-queue.ts`, `src/token-saver.ts` → [ref](docs/agent-reference.md#composer-model-picker-and-teams).
 - Menus, dialogs, Markdown, files, search, /btw: `src/choice-menu.ts`, `src/dom.ts`, `src/file-tabs.ts`, `src/btw-panel.ts` → [ref](docs/agent-reference.md#menus-dialogs-and-rich-content).
+- Turn speed and tokens: a clean Claude-family turn ends at `result` and its CLI is reaped in the background (`providers::await_exit`, `providers::quiesce`); warm spares in `providers/warm.rs` and `lead_spare.rs`; opt-in worker trim and the cached app instructions. Read the section and [docs/worker-tokens.md](docs/worker-tokens.md) before touching `providers.rs`, `warm.rs` or `app_instructions*` → [ref](docs/agent-reference.md#providers-and-harnesses).
+- `pandacode_explore` (Settings → Agents, per-harness `explore-on-<provider>` markers) and agent-made tools (opt-in `custom-tools-on`): `src-tauri/src/explore*`, `custom_tools*.rs`, `src/custom-tools-settings.ts`; [docs/agent-tools.md](docs/agent-tools.md), [docs/custom-tools.md](docs/custom-tools.md) → [ref](docs/agent-reference.md#smaller-features).
 - Providers, harnesses, routing, Devin, ZCode: `src-tauri/src/providers*`, `acp.rs`, `panda_router*`; [docs/providers.md](docs/providers.md), [docs/model-routing.md](docs/model-routing.md) → [ref](docs/agent-reference.md#providers-and-harnesses).
 - Local VMs, cloud sandboxes and agents: `src-tauri/src/vm*`, `cloud*`, `cloud_agents/`; [docs/cloud-agents.md](docs/cloud-agents.md) → [ref](docs/agent-reference.md#local-vms-and-cloud).
 - Crash guard, restart after a crash: `src-tauri/src/crash_guard*`, `src/crash-recovery*.ts`; [docs/crash-recovery.md](docs/crash-recovery.md) → [ref](docs/agent-reference.md#crash-recovery).

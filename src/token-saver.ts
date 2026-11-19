@@ -5,7 +5,9 @@
  *
  * Caveman Full is caveman-micro (MIT, kuba-guzik/caveman-micro), the 85-token distillation
  * of Caveman (Apache-2.0, JuliusBrussee/caveman); Lite and Ultra and the exceptions follow
- * Caveman's own rules. Savings figures are the projects' published benchmarks or estimates. */
+ * Caveman's own rules. Savings figures are the projects' published benchmarks or estimates.
+ * The pack text lives in token-saver-packs.json, which `token_saver.rs` also reads for team workers. */
+import TEXT from './token-saver-packs.json' with { type: 'json' };
 
 export type PackId = 'caveman' | 'lean-code' | 'quiet-tools' | 'rtk';
 export type Level = 'lite' | 'full' | 'ultra';
@@ -25,29 +27,9 @@ export const LEVELS: { id: Level; label: string; hint: string }[] = [
   { id: 'ultra', label: 'Ultra', hint: 'Telegraphic' },
 ];
 
-const CAVEMAN: Record<Level, string> = {
-  lite: 'Answer first. No greeting, preamble, recap, or offers of further help. Short sentences in normal grammar. Keep every technical detail, path, number and error exact.',
-  full: [
-    'Respond like smart caveman. Cut all filler, keep technical substance.',
-    '- Drop articles (a, an, the), filler (just, really, basically, actually).',
-    '- Drop pleasantries (sure, certainly, happy to).',
-    '- No hedging. Fragments fine. Short synonyms.',
-    '- Technical terms stay exact. Code blocks unchanged.',
-    '- Pattern: [thing] [action] [reason]. [next step].',
-  ].join('\n'),
-  ultra: [
-    'Telegraphic. Answer first, then reason, then next step. Drop articles, connectives and pleasantries.',
-    '- One point per line; lists over prose. Code, diffs and commands over explanation.',
-    '- No text between routine tool calls; one line per phase, one result line at the end.',
-    '- Never drop not/never/no/only. Code, paths, numbers and errors stay verbatim.',
-  ].join('\n'),
-};
-const EXCEPTIONS = 'Use plain full sentences for security warnings, irreversible actions, ordered steps, questions to the user, and anything written to files, commits, PRs or docs.';
-const GUIDANCE: Record<Exclude<PackId, 'caveman'>, string> = {
-  'lean-code': 'Write the least code that fully solves the task. Reuse existing helpers, the standard library and platform features before adding code or dependencies. No speculative abstractions, options or unrequested features. No new comments or docs unless asked. In chat, show changed lines with minimal context, not whole files.',
-  'quiet-tools': 'Keep tool output small. Search with targeted patterns (rg -n pattern path, rg -l) instead of listing or dumping trees. Read only the line ranges you need; do not re-read a file you already read unless it changed. Use quiet flags (git --no-pager, -q, --silent) and cap long output with head or tail. Run the tests closest to the change before the full suite.',
-  rtk: 'rtk is installed and compresses command output. Prefix shell commands with rtk: rtk git status, rtk git diff, rtk git log, rtk ls, rtk read <file>, rtk grep <pattern>, rtk find, and test runners such as rtk npm test or rtk cargo test. If rtk rejects a command, run it plainly.',
-};
+const CAVEMAN: Record<Level, string> = TEXT.caveman;
+const EXCEPTIONS = TEXT.exceptions;
+const GUIDANCE: Record<Exclude<PackId, 'caveman'>, string> = TEXT.guidance;
 
 const KEY = 'pandacode.tokenSaver';
 /** Guidance is restated this many messages after it was last sent, so long threads keep it. */
@@ -87,6 +69,8 @@ export function guidance(packs: PackId[], level: Level, available: { rtk: boolea
   if (!active.length) return `${HEADER}): off. Answer in your normal style again.`;
   const lines = active.map(id => id === 'caveman' ? CAVEMAN[level] : GUIDANCE[id]);
   if (active.includes('caveman')) lines.push(EXCEPTIONS);
+  // Only an active style asks the agent to pass it on to its own subagents.
+  lines.push(TEXT.subagents);
   return `${HEADER}, applies to this whole thread until changed; reader pays per token):\n${lines.join('\n\n')}`;
 }
 

@@ -6,7 +6,7 @@ import {
   directoryCard, directoryRow, dispatchCard, files, followupRow, host, isLocal, isObj, itemsCard, label, listCard, machine, machineCard, machines, manage,
   manageCard, messages, note, noteCard, noteRow, objects, pageCard, promptCard, prose, readCard, reportCard, rest, routeCard, routeRow, rowOnly,
   scheduleRow, sendRow, serverCard, shortId, shotCard, size, snapshotCard, subWorkersCard, subWorkersRow, summaryLead, task, taskCard, trackCard,
-  worker, workerCount,
+  worker, workerCount, exploreAsked, exploreCard, toolRunRow, toolRunCard,
   reportRow, type Out, type Row, type Spec,
 } from './tool-trace-pandacode-parts.ts';
 
@@ -286,6 +286,14 @@ export const CATALOG: Record<string, Spec> = {
     row: f => ({ chip: chip(field(f, 'tool'), 'terminal'), object: clip(field(f, 'args'), ROW_TEXT), mono: true }),
     card: cloudCard,
   },
+  tool_save: {
+    family: 'code', icon: 'spark', verbs: ['Saving tool', 'Saved tool'],
+    row: (f, o) => ({ object: [field(f, 'name') || field(o.obj, 'saved'), typeof o.obj.version === 'number' ? `(v${o.obj.version})` : ''].filter(Boolean).join(' '), mono: true }),
+    card: (f, o) => label('When', prose(field(f, 'when'), 300)) + label('Script', excerptCard(field(f, 'script'))),
+  },
+  tool_run: { family: 'code', icon: 'play', verbs: ['Running tool', 'Ran tool'], row: toolRunRow, card: toolRunCard },
+  tool_list: { family: 'code', icon: 'spark', verbs: ['Listing project tools', 'Listed project tools'], card: itemsCard('tools', ['name'], ['when']) },
+  explore: { family: 'code', icon: 'search', verbs: ['Exploring', 'Explored'], row: f => ({ object: exploreAsked(f) }), card: exploreCard },
   code_search: {
     family: 'code', icon: 'search', verbs: ['Searching code', 'Searched code'],
     row: codeSearchRow,

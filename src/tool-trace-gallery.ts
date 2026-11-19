@@ -11,6 +11,7 @@ import { escape } from './dom.ts';
 import { renderToolGroup } from './tool-activity.ts';
 import { attachToolImages } from './tool-image-viewer.ts';
 import type { ToolImageLoader } from './tool-images.ts';
+import exploreReply from '../tests/fixtures/explore-reply.json' with { type: 'json' };
 
 type Case = { verb: string; name: string; input?: unknown; output?: unknown; status?: ToolActivity['status'] };
 const j = (value: unknown): string => typeof value === 'string' ? value : value === undefined ? '' : JSON.stringify(value);
@@ -93,6 +94,11 @@ const FAMILIES: [string, Case[]][] = [
   ['Code, cloud & bots', [
     { verb: 'Ran', name: 'pandacode_cloud_cli', input: { tool: 'wrangler', args: 'deploy --env production' },
       output: { exitCode: 0, stdout: 'Uploaded panda-site (2.31 sec)\nDeployed panda-site triggers\n  https://panda-site.example.workers.dev', stderr: '', truncated: false } },
+    // A real reply from the engine; `explore::call_tests` checks it still is.
+    { verb: 'Explored', name: 'mcp__pandacode_architect__pandacode_explore', input: exploreReply.args, output: exploreReply.reply },
+    { verb: 'Saved tool', name: 'pandacode_tool_save', input: { name: 'run-e2e-subset', description: 'Runs one Playwright spec in Chrome', when: 'Before finishing any UI change', params: [{ name: 'file', description: 'Spec path', required: true }], script: 'npx playwright test "$PC_FILE" --reporter=line' }, output: { saved: 'run-e2e-subset', version: 2, scope: 'project', run: 'pandacode_tool_run' } },
+    { verb: 'Ran tool', name: 'pandacode_tool_run', input: { name: 'run-e2e-subset', args: { file: 'tests/custom-tools.spec.ts' } }, output: { tool: 'run-e2e-subset', version: 2, exit: 1, ms: 9120, stdout: 'Running 7 tests using 4 workers\n  6 passed, 1 failed', stderr: 'Error: expect(locator).toHaveText(\'Never used\')', truncated: false } },
+    { verb: 'Listed project tools', name: 'pandacode_tool_list', output: { tools: [{ name: 'run-e2e-subset', when: 'Before finishing any UI change' }, { name: 'regen-accents', when: 'After wallpaper scenes change' }] } },
     { verb: 'Searched code', name: 'pandacode_code_search', input: { query: 'renderToolActivity' },
       output: { query: 'renderToolActivity', symbols: false, truncated: false,
       results: 'src/tool-activity.ts:58:export function renderToolActivity(\nsrc/subagents.ts:261:        const key = …\nsrc/main.ts:4120:  '

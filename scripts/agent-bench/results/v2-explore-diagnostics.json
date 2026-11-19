@@ -1,0 +1,66 @@
+{
+ "snapshot": {
+  "binary": "35f5bfb1",
+  "sources": "1dd86347"
+ },
+ "adoption": {
+  "loc": "77/79",
+  "edit": "10/12",
+  "toolSearch": 0
+ },
+ "multiKindCalls": {
+  "loc": [
+   77,
+   258
+  ],
+  "edit": [
+   5,
+   20
+  ]
+ },
+ "zeroMatchSearches": {
+  "empty": 45,
+  "searches": 218,
+  "withGlob": 38
+ },
+ "schemaErrors": {
+  "count": 3,
+  "runs": 91,
+  "kinds": {
+   "search as string": 2,
+   "glob as string": 1
+  }
+ },
+ "truncatedOrOmittedResults": {
+  "loc": [
+   75,
+   258
+  ]
+ },
+ "secretNamedGoldShown": {
+  "after": "16/16",
+  "before": "6/16"
+ },
+ "skippedAsSecret": {
+  "vscode": [
+   "src/vs/platform/secrets/",
+   "src/vs/workbench/services/secrets/",
+   "extensions/vscode-colorize-tests/test/colorize-fixtures/test.env"
+  ],
+  "outline": [
+   ".env.sample",
+   ".env.test",
+   ".env.development"
+  ]
+ },
+ "bigRepo": {
+  "task": "vsc-search-leak",
+  "mode": "index",
+  "files": 20265,
+  "indexResults": 20,
+  "scanResults": 4,
+  "recall": "1.00 → 1.00",
+  "durationS": "18 → 26",
+  "costUsd": "0.04 → 0.06"
+ }
+}
