@@ -7,7 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
 type SavedHarness = { provider: string; model: string };
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdRefresh?: boolean; __releaseRefresh?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __effortCalls?: { sessionId: string; reasoningEffort: string | null }[]; __speedCalls?: { sessionId: string; tier: string | null }[]; __connectionAssigns?: { sessionId: string; connectionId: string | null }[]; __getMessagesCalls?: string[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdRefresh?: boolean; __releaseRefresh?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __discarded?: string[]; __teamConfigured?: { sessionId: string; lead: string; auto: boolean }[]; __modeUpdates?: { sessionId: string; mode: string }[]; __boardStarted?: { sessionId: string; provider: string; model: string }[]; __effortCalls?: { sessionId: string; reasoningEffort: string | null }[]; __speedCalls?: { sessionId: string; tier: string | null }[]; __connectionAssigns?: { sessionId: string; connectionId: string | null }[]; __getMessagesCalls?: string[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -55,6 +55,14 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
       .replace(/case ["']send_message["']\s*:\s*\{/, `$&
         (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });
         { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }`)
+      .replace(/case ["']discard_draft["']\s*:\s*\{/, `$&
+        (window.__discarded ??= []).push(args.sessionId);`)
+      .replace(/case ["']architect_configure["']\s*:/, `$&
+        (window.__teamConfigured ??= []).push({ sessionId: args.sessionId, lead: args.architect?.provider ?? session(args.sessionId).provider, auto: Boolean(args.config?.auto) });`)
+      .replace(/case ["']update_session["']\s*:\s*\{/, `$&
+        if (args.mode) (window.__modeUpdates ??= []).push({ sessionId: args.sessionId, mode: args.mode });`)
+      .replace(/case ["']start_task["']\s*:\s*\{/, `$&
+        { const { provider, model } = session(args.sessionId); (window.__boardStarted ??= []).push({ sessionId: args.sessionId, provider, model }); }`)
       .replace(/case ["']cloud_connections["']\s*:\s*result\s*=\s*previewCloud\.connections\(\)\s*;/, '$& if (window.__cloudConnected) result = result.map(item => ({ ...item, connected: true }));');
     await route.fulfill({ response, body: previewBody(body) });
   });
@@ -370,8 +378,9 @@ for (const refresh of ['fails', 'wins'] as const) {
     await expect(harnesses).toHaveCount(1);
     await expect(harnesses.first()).toHaveAttribute('data-view', `h:${expected.id}`);
 
-    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]'));
-    expect(kept).toEqual([{ id: expected.id, name: expected.name, installed: true, models: [] }]);
+    const kept = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]') as { id: string; name: string; installed: boolean; models: { id: string }[] }[]);
+    expect(kept).toEqual([{ id: expected.id, name: expected.name, installed: true, models: expect.any(Array) }]);
+    expect(kept[0].models.length).toBeGreaterThan(0);
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
     await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
@@ -1292,4 +1301,290 @@ test('dismissing voice-compact mode invalidates promptMetricsCache and restores 
   await page.keyboard.type('o');
   const restoredHeight = await prompt.evaluate(el => parseFloat((el as HTMLTextAreaElement).style.height));
   expect(restoredHeight).toBe(normalHeight);
+});
+
+test('leaving an untouched provisional draft during in-flight correction discards it cleanly and honors updated defaults', async ({ page }) => {
+  test.setTimeout(60_000);
+  const draft = await heldCorrection(page, { openPicker: false });
+  const prompt = page.locator('#prompt');
+  await expect(prompt).toHaveAttribute('data-session-id', draft);
+  await expect(prompt).toHaveValue('');
+
+  // Leave the untouched provisional draft while configure_session is still in flight.
+  await page.locator('#navigation .task-item[data-id="session-1"]').click();
+  await expect(prompt).toHaveAttribute('data-session-id', 'session-1');
+  // discard_draft waits for the in-flight configure_session so it never races the backend.
+  expect(await page.evaluate(() => (window as BootWindow).__discarded ?? [])).toEqual([]);
+
+  // Change Default agent to Codex and press New task while the abandoned correction is still held.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.locator('#default-provider').click();
+  await page.getByRole('menuitemradio', { name: /^Codex/ }).click();
+  await expect(settings.locator('#default-provider')).toContainText('Codex');
+  await settings.getByRole('button', { name: 'Back to the workspace' }).click();
+
+  await page.evaluate(() => { (window as BootWindow).__holdDraft = false; });
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const freshDraft = (await prompt.getAttribute('data-session-id'))!;
+  expect(freshDraft).not.toBe(draft);
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'codex');
+
+  // Releasing the abandoned draft's correction finishes cleanly and discards it from storage.
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__discarded ?? []), { timeout: 10_000 }).toEqual([draft]);
+  const stored = await page.evaluate(async ([oldId, newId]) => {
+    const preview = await import('/src/preview.ts');
+    const oldTask = await preview.invoke('get_task', { sessionId: oldId }).catch(() => null);
+    const freshTask = await preview.invoke('get_task', { sessionId: newId }) as { id: string; provider: string; draft: boolean };
+    return { oldTask, freshTask };
+  }, [draft, freshDraft] as const);
+  expect(stored.oldTask).toBeNull();
+  expect(stored.freshTask).toMatchObject({ id: freshDraft, provider: 'codex', draft: true });
+});
+
+for (const timing of ['before-providers', 'during-correction'] as const) {
+  test(`automatic Team (${timing}) waits for provisional correction and never locks in an uninstalled lead`, async ({ page }) => {
+    test.setTimeout(60_000);
+    let draft: string;
+    if (timing === 'before-providers') {
+      await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+      await page.goto('/');
+      await paintedBeforeProviders(page, 25_000);
+      await page.waitForTimeout(PROVIDERS_DELAY + 300);
+      await page.locator('.sidebar-actions .new-task-button').click();
+      await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+      draft = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+      await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'antigravity');
+
+      await page.locator('#team-trigger').click();
+      await page.getByRole('dialog', { name: 'Team', exact: true }).getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([]);
+
+      await page.evaluate(() => { (window as BootWindow).__holdConfigure = true; });
+      await release(page);
+      await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+      await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([]);
+    } else {
+      draft = await heldCorrection(page, { openPicker: false });
+      await page.locator('#team-trigger').click();
+      await page.getByRole('dialog', { name: 'Team', exact: true }).getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
+      await page.waitForTimeout(200);
+      expect(await page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([]);
+    }
+
+    await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+    await expect.poll(() => page.evaluate(() => (window as BootWindow).__teamConfigured ?? []), { timeout: 10_000 })
+      .toEqual([{ sessionId: draft, lead: 'claude', auto: true }]);
+    await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
+    await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+    const savedLead = await page.evaluate(async id => {
+      const preview = await import('/src/preview.ts');
+      const task = await preview.invoke('get_task', { sessionId: id }) as { provider: string };
+      const team = await preview.invoke('architect_get', { sessionId: id }) as { config?: { auto?: boolean } } | null;
+      const profiles = await preview.invoke('architect_profiles', {}) as { lastSetup?: { architect: { provider: string } } | null };
+      return { teamAuto: Boolean(team?.config?.auto), taskProvider: task.provider, lastSetupLead: profiles.lastSetup?.architect.provider ?? null };
+    }, draft);
+    expect(savedLead.teamAuto).toBe(true);
+    expect(savedLead.taskProvider).toBe('claude');
+    expect(savedLead.lastSetupLead).not.toBe('antigravity');
+  });
+}
+
+test('Classic Architect Setup waits for provisional correction, stays open when it settles, and saves cleanly', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => { localStorage.setItem('pandacode.teamClassic', 'true'); });
+  const draft = await heldCorrection(page, { openPicker: false });
+  const trigger = page.locator('#architect-setup-trigger');
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+
+  const popover = page.getByRole('dialog', { name: 'Architect & workers', exact: true });
+  await expect(popover).toBeVisible({ timeout: 10_000 });
+  await expect(popover.getByRole('status')).toHaveText(/Loading team setup/);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(popover).toBeVisible();
+  const leadButton = popover.getByRole('button', { name: 'Choose architect model', exact: true });
+  await expect(leadButton).toBeVisible({ timeout: 10_000 });
+  await expect(leadButton).toContainText(/Claude/);
+  await expect(leadButton).not.toContainText(/Antigravity/);
+
+  await popover.getByRole('button', { name: 'Save setup', exact: true }).click();
+  await expect(popover).toBeHidden({ timeout: 10_000 });
+  await expect(trigger).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([
+    { sessionId: draft, lead: 'claude', auto: false },
+  ]);
+});
+
+test('composer triggers open during an in-flight provisional correction, menus stay anchored, and mode selection succeeds', async ({ page }) => {
+  test.setTimeout(60_000);
+  const draft = await heldCorrection(page, { openPicker: false });
+
+  // #model-picker-trigger opens while correction is in flight.
+  await page.locator('#model-picker-trigger').click();
+  await expect(page.locator('.model-menu')).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.model-menu')).toBeHidden();
+
+  // #welcome-project opens while correction is in flight.
+  await page.locator('#welcome-project').click();
+  await expect(page.getByRole('option', { name: /No project/ })).toBeVisible({ timeout: 10_000 });
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('option', { name: /No project/ })).toBeHidden();
+
+  // #mode-picker-trigger opens while correction is in flight and stays anchored as correction settles.
+  await page.locator('#mode-picker-trigger').click();
+  const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  await expect(permissions).toBeVisible({ timeout: 10_000 });
+  await permissions.getByRole('menuitemradio', { name: /^Plan mode/ }).click();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => (window as BootWindow).__modeUpdates ?? [])).toEqual([]);
+  await expect(permissions).not.toContainText('Select the task again');
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__modeUpdates ?? []), { timeout: 10_000 })
+    .toEqual([{ sessionId: draft, mode: 'plan' }]);
+  await expect(permissions).toBeHidden();
+  await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('data-mode', 'plan');
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+
+  const saved = await page.evaluate(async id => {
+    const task = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string; mode: string };
+    return { provider: task.provider, mode: task.mode };
+  }, draft);
+  expect(saved).toEqual({ provider: 'claude', mode: 'plan' });
+});
+
+test('open Permissions menu stays open when provisional correction completes', async ({ page }) => {
+  test.setTimeout(60_000);
+  await heldCorrection(page, { openPicker: false });
+  await page.locator('#mode-picker-trigger').click();
+  const permissions = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  await expect(permissions).toBeVisible({ timeout: 10_000 });
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect(permissions).toBeVisible();
+});
+
+test('starting a provisional board task during an in-flight correction waits for correction before starting', async ({ page }) => {
+  test.setTimeout(60_000);
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page, 25_000);
+
+  await page.getByRole('button', { name: /^Workspace view: / }).click();
+  await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+
+  await page.getByRole('button', { name: 'Add task', exact: true }).click();
+  const form = page.locator('#board-task-form');
+  await expect(form).toBeVisible({ timeout: 10_000 });
+  await form.locator('#board-task-title').fill('Provisional board task');
+  await form.getByRole('button', { name: 'Add to pending', exact: true }).click();
+  await expect(form).toBeHidden({ timeout: 10_000 });
+
+  const taskId = await page.evaluate(async () => {
+    const preview = await import('/src/preview.ts');
+    const tasks = await preview.invoke('list_sessions', {}) as { id: string; title: string }[];
+    return tasks.find(item => item.title === 'Provisional board task')?.id ?? null;
+  });
+  expect(taskId).toBeTruthy();
+
+  await page.evaluate(() => { (window as BootWindow).__holdConfigure = true; });
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+
+  // Click Start while provisional correction is in flight.
+  await page.locator(`button[data-action="board-start"][data-id="${taskId}"]`).first().click();
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => (window as BootWindow).__boardStarted ?? [])).toEqual([]);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__boardStarted ?? []), { timeout: 10_000 })
+    .toEqual([{ sessionId: taskId, provider: 'claude', model: 'sonnet' }]);
+});
+
+test('providerCatalog retains discovered models after loadModels and across subsequent providersLanded', async ({ page }) => {
+  test.setTimeout(45_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+
+  await expect.poll(() => page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]') as { id: string; models: { id: string }[] }[];
+    return saved.find(entry => entry.id === 'claude')?.models.map(m => m.id) ?? [];
+  }), { timeout: 10_000 }).toContain('sonnet');
+
+  // Opening Settings → Agents triggers list_providers({ force: true }) -> providersLanded(..., true).
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await expect(settings.locator('.provider-diagnostic[data-provider="claude"] code')).toHaveText('/sample/bin/claude', { timeout: 10_000 });
+
+  const afterRefresh = await page.evaluate(() => {
+    const saved = JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]') as { id: string; models: { id: string }[] }[];
+    return saved.find(entry => entry.id === 'claude')?.models.map(m => m.id) ?? [];
+  });
+  expect(afterRefresh).toContain('sonnet');
+});
+
+test('Agent updates dialog opened before list_providers resolves updates live when list_providers lands', async ({ page }) => {
+  test.setTimeout(45_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('button', { name: 'Check updates', exact: true }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Agent updates', exact: true });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog).toContainText('No installed agents found.');
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect(dialog.locator('.agent-update-row[data-provider="claude"]')).toBeVisible({ timeout: 10_000 });
+  await expect(dialog).not.toContainText('No installed agents found.');
+});
+
+test('showProviderConnections awaits knownProviders before mounting', async ({ page }) => {
+  test.setTimeout(45_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  // Trigger the real [data-action="provider-connections"] click handler before list_providers resolves.
+  await page.evaluate(() => {
+    const trigger = document.createElement('button');
+    trigger.type = 'button';
+    trigger.dataset.action = 'provider-connections';
+    document.body.append(trigger);
+    trigger.click();
+    trigger.remove();
+  });
+
+  const dialog = page.getByRole('dialog', { name: 'Provider connections', exact: true });
+  await expect(dialog).toBeVisible({ timeout: 10_000 });
+  await expect(dialog.locator('.dialog-loading')).toHaveText('Loading connections…');
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect(dialog.locator('.dialog-loading')).toHaveCount(0, { timeout: 10_000 });
+  await expect(dialog.locator('.connection-card, #named-connections')).not.toHaveCount(0);
 });

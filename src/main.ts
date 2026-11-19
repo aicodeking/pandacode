@@ -234,6 +234,8 @@ const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
+/** True while either a non-provisional session mutation or an automatic provisional harness correction is in flight. */
+const configuringSession = (id: string): boolean => configuringSessions.has(id) || provisionalCorrections.has(id);
 const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
@@ -350,21 +352,42 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   if (request !== architectSetupRequest || !live || task.id !== state.sessionId) return;
   architectSetupCleanup = openArchitectSetup(live, async () => {
     const [team, library, providers] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles'), knownProviders()]);
+    while (provisionalCorrections.has(task.id) || (providersKnown && provisionalTasks.has(task.id) && !configuringSessions.has(task.id))) {
+      const pending = provisionalCorrections.get(task.id);
+      if (pending) {
+        const outcome = await pending.catch(() => 'stale' as const);
+        if (outcome !== 'ok') break;
+        continue;
+      }
+      const liveTask = state.sessions.find(s => s.id === task.id);
+      if (!liveTask || deletedSessions.has(task.id) || liveTask.lastPromptAt != null || isRunning(task.id)) {
+        provisionalTasks.delete(task.id);
+        break;
+      }
+      const outcome = await correctProvisionalTask(liveTask).catch(() => 'stale' as const);
+      if (outcome !== 'ok') break;
+    }
     const currentTask = state.sessions.find(s => s.id === task.id) ?? task;
     return { task: currentTask, team, library, providers, loadModels,
-      save: async (config, architect, profileId) => {
+      save: (config, architect, profileId) => saveExplicitHarness(task.id, async () => {
         if (task.id !== state.sessionId) throw new Error('Select this task again to change its team.');
-        const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
-        // Completion may already have applied the pending setup before this IPC
-        // reply arrives. Honor the newer event instead of restoring stale state.
-        onArchitect(saved ?? { sessionId: task.id, removed: true });
-        if (task.id === state.sessionId) architectSetupCleanup?.();
-        await reloadSessions();
-        if (task.id === state.sessionId) {
-          renderComposer();
-          notify(teams.get(task.id)?.pendingSetup ? 'Team switch queued for the next architect turn. Existing workers keep their models.' : config ? 'Team setup saved for this and new tasks.' : 'New tasks will use a single agent. Saved profiles are kept.');
-        }
-      },
+        while (provisionalCorrections.has(task.id)) await provisionalCorrections.get(task.id)?.catch(() => undefined);
+        if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id)) throw new Error('Select this task again to change its team.');
+        configuringSessions.add(task.id);
+        try {
+          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
+          if (config) provisionalTasks.delete(task.id);
+          // Completion may already have applied the pending setup before this IPC
+          // reply arrives. Honor the newer event instead of restoring stale state.
+          onArchitect(saved ?? { sessionId: task.id, removed: true });
+          if (task.id === state.sessionId) architectSetupCleanup?.();
+          await reloadSessions();
+          if (task.id === state.sessionId) {
+            renderComposer();
+            notify(teams.get(task.id)?.pendingSetup ? 'Team switch queued for the next architect turn. Existing workers keep their models.' : config ? 'Team setup saved for this and new tasks.' : 'New tasks will use a single agent. Saved profiles are kept.');
+          }
+        } finally { configuringSessions.delete(task.id); }
+      }),
     };
   }, () => { architectSetupCleanup = undefined; });
 }
@@ -402,7 +425,7 @@ function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
+    ? `<button type="button" id="architect-setup-trigger" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
     : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
@@ -523,11 +546,39 @@ const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${t
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
-  if (configuringSessions.has(task.id)) return false;
-  teamToggles.add(task.id); configuringSessions.add(task.id);
+  if (teamToggles.has(task.id) || configuringSessions.has(task.id)) return false;
+  teamToggles.add(task.id);
+  let locked = false;
   try {
     // In place: the Team menu stays anchored to the button while it applies.
     if (task.id === state.sessionId) syncTeamButton();
+    if (on || provisionalCorrections.has(task.id)) {
+      if (on || provisionalTasks.has(task.id)) await knownProviders();
+      while (provisionalCorrections.has(task.id) || (on && providersKnown && provisionalTasks.has(task.id))) {
+        const pending = provisionalCorrections.get(task.id);
+        let outcome: 'ok' | 'missing' | 'stale';
+        if (pending) {
+          outcome = on ? await pending : await pending.catch(() => 'stale' as const);
+        } else {
+          const live = state.sessions.find(s => s.id === task.id);
+          if (!live || deletedSessions.has(task.id) || live.lastPromptAt != null || isRunning(task.id)) {
+            provisionalTasks.delete(task.id);
+            break;
+          }
+          outcome = await correctProvisionalTask(live);
+        }
+        if (outcome === 'missing' && on) {
+          const live = state.sessions.find(s => s.id === task.id) ?? task;
+          if (live.id === state.sessionId) showMissingHarness(live);
+          notify('Open Settings to check your installed agents.');
+          return false;
+        }
+        if (outcome !== 'ok') break;
+      }
+      while (explicitHarnessSaves.has(task.id)) await explicitHarnessSaves.get(task.id)?.catch(() => undefined);
+    }
+    if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id)) return false;
+    configuringSessions.add(task.id); locked = true;
     let config: TeamConfig | null = null;
     if (on) {
       prepareModelRouting();
@@ -537,7 +588,7 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
     const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect: null, profileId: null });
     onArchitect(saved ?? { sessionId: task.id, removed: true });
     await reloadSessions();
-    teamToggles.delete(task.id); configuringSessions.delete(task.id);
+    teamToggles.delete(task.id); configuringSessions.delete(task.id); locked = false;
     // "Turn on for new threads": a team starting on a thread with no messages yet starts Council with it.
     if (on && saved && task.id === state.sessionId && !state.messages.length) void council.enableForNewThread(task.id);
     if (task.id === state.sessionId) { if (render) renderComposer(); else syncTeamButton(); }
@@ -545,7 +596,7 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
   } finally {
     // A failed save keeps the menu open with its error, so only the button is redrawn.
     if (teamToggles.delete(task.id) && task.id === state.sessionId) syncTeamButton();
-    configuringSessions.delete(task.id);
+    if (locked) configuringSessions.delete(task.id);
     run(dispatchQueue(task.id));
   }
 }
@@ -1313,18 +1364,28 @@ function setProjectFilter(id: string): void { state.projectFilter = id; localSto
 function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.collapsedFolders', JSON.stringify([...state.collapsedFolders])); } catch { /* per-launch preference only */ } }
 /** Tasks shown in lists: a New task draft appears only after its first prompt. */
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
+function draftKept(id: string): boolean {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const typed = prompt?.dataset.sessionId === id ? prompt.value : state.drafts.get(id) ?? '';
+  return voiceDictation.ownsThread(id) || Boolean(typed.trim()) || Boolean(attachments.list(id).length) || Boolean(state.browserAttachments.get(id)?.length) || Boolean(state.moodboardAttachments.get(id)?.length);
+}
+function discardDraft(id: string): void {
+  state.sessions = state.sessions.filter(task => task.id !== id);
+  state.drafts.delete(id);
+  provisionalTasks.delete(id);
+  deletedSessions.add(id);
+  const pending = provisionalCorrections.get(id);
+  const drop = () => void call<boolean>('discard_draft', { sessionId: id }).catch(() => undefined);
+  if (pending) void pending.catch(() => undefined).finally(drop);
+  else drop();
+}
 /** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
-  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
-  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  const typed = prompt?.dataset.sessionId === draft.id ? prompt.value : state.drafts.get(draft.id) ?? '';
-  if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
-  state.sessions = state.sessions.filter(task => task.id !== draft.id);
-  state.drafts.delete(draft.id);
-  provisionalTasks.delete(draft.id);
-  void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
+  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || explicitHarnessSaves.has(draft.id) || teamToggles.has(draft.id) || draft.worktreePath) return;
+  if (draftKept(draft.id)) return;
+  discardDraft(draft.id);
 }
 function lastActivity(s: Session): number | null { return s.lastPromptAt == null ? s.lastResponseAt : Math.max(s.lastPromptAt, s.lastResponseAt ?? 0); }
 function activeTask(s: Session, now = Date.now()): boolean { const time = lastActivity(s); return time != null && time > now - ACTIVITY_WINDOW; }
@@ -1746,7 +1807,11 @@ function loadModels(id: ProviderId): Promise<ProviderModel[]> {
     : call<ProviderModel[]>('list_provider_models', { provider: id });
   const pending = request.then(models => {
     if (modelCatalogs.get(id)?.pending === pending) {
-      const entry = provider(id); if (entry) entry.models = models;
+      const entry = provider(id);
+      if (entry) {
+        entry.models = models;
+        if (providersKnown) keepProviderCatalog(state.providers);
+      }
       if (session()?.provider === id) refreshModelLabels();
       else refreshTeamProgress();
     }
@@ -1895,7 +1960,7 @@ function renderNavigation(): void {
     const projectLabel = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
     // Row actions sit beside the row's button (buttons cannot nest), over its right edge. They
     // are not Tab stops: ⌘↩ completes and the menu key or ⇧F10 opens the menu.
-    const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSessions.has(s.id);
+    const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSession(s.id);
     const tick = busy ? '' : `<button class="task-action task-check${done ? ' checked' : ''}" data-action="${done ? 'sidebar-reopen' : 'sidebar-complete'}" data-task="${id}" tabindex="-1" aria-label="${done ? 'Reopen' : 'Settle'}: ${title}" title="${done ? 'Reopen task' : 'Settle task'}">${icon('check')}</button>`;
     // Delete and the rest sit in the row's menu.
     const extra = `<button class="task-action task-more" data-action="sidebar-more" data-task="${id}" tabindex="-1" aria-haspopup="menu" aria-label="Task actions: ${title}" title="Task actions">${icon('more')}</button>`;
@@ -4102,7 +4167,7 @@ async function changeBoardStage(stage: 'review' | 'completed'): Promise<void> {
 /** Settle or reopen any task. Settling a worktree task first offers to remove its clean checkout
  * (unless `offer` is false: the caller already dealt with it). */
 async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Promise<void> {
-  if (isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (isRunning(s.id) || configuringSession(s.id)) return;
   if (stage === 'completed' && offer && s.worktreePath) {
     const selected = s.id === state.sessionId;
     const decision = await worktrees.cleanupOffer(s, 'complete');
@@ -4126,13 +4191,45 @@ const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
   if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || configuringSessions.has(id)) return;
-  startingBoardTasks.add(id); configuringSessions.add(id);
+  startingBoardTasks.add(id);
+  let locked = false, started = false;
   try {
+    if (!s.remoteDevice && (provisionalTasks.has(id) || provisionalCorrections.has(id))) {
+      await knownProviders();
+      while (explicitHarnessSaves.has(id) || provisionalCorrections.has(id) || (providersKnown && provisionalTasks.has(id))) {
+        const save = explicitHarnessSaves.get(id);
+        if (save) { await save.catch(() => undefined); continue; }
+        const pending = provisionalCorrections.get(id);
+        let outcome: 'ok' | 'missing' | 'stale';
+        if (pending) {
+          outcome = await pending;
+        } else {
+          const live = state.sessions.find(task => task.id === id);
+          if (!live || deletedSessions.has(id) || live.lastPromptAt != null || isRunning(id)) {
+            provisionalTasks.delete(id);
+            return;
+          }
+          outcome = await correctProvisionalTask(live);
+        }
+        if (outcome === 'missing') {
+          const live = state.sessions.find(task => task.id === id);
+          if (live && live.id === state.sessionId) showMissingHarness(live);
+          notify('Open Settings to check your installed agents.');
+          return;
+        }
+        if (outcome === 'stale' && !explicitHarnessSaves.has(id)) return;
+      }
+    }
+    const eligible = state.sessions.find(task => task.id === id);
+    if (!eligible || deletedSessions.has(id) || eligible.archived || taskStage(eligible) === 'completed' || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id)) return;
+    configuringSessions.add(id); locked = true;
     if (state.sessionId !== id || !state.boardPanel) await selectSession(id);
-    const selected = state.sessions.find(task => task.id === id) ?? s;
+    const selected = state.sessions.find(task => task.id === id) ?? eligible;
+    if (deletedSessions.has(id) || selected.archived || taskStage(selected) === 'completed' || isRunning(id)) return;
     const text = selected.taskDescription?.trim() || selected.title;
     selected.lastPromptAt = Date.now(); stream(id).lastPromptAt = selected.lastPromptAt;
     stream(id).status = 'Starting agent'; selected.status = 'running'; selected.taskStage = 'in_progress'; selected.completedAt = null;
+    started = true;
     if (state.sessionId === id) {
       state.messages = [...state.messages, { id: transientId--, sessionId: id, role: 'user', content: text, createdAt: Date.now() }];
       render();
@@ -4141,15 +4238,20 @@ async function startBoardTask(id: string): Promise<void> {
     const team = await loadTeam(id) && !selected.remoteDevice;
     await call(team ? 'architect_start' : 'start_task', { sessionId: id, ...(team ? { text } : {}) });
   } catch (error) {
-    state.streams.delete(id);
-    await reloadSessions();
-    const generation = state.generation;
-    if (id === state.sessionId) {
-      const page = await latestMessagePage(id);
-      if (id === state.sessionId && generation === state.generation) { setMessagePage(page); render(); }
+    if (started) {
+      state.streams.delete(id);
+      await reloadSessions();
+      const generation = state.generation;
+      if (id === state.sessionId) {
+        const page = await latestMessagePage(id);
+        if (id === state.sessionId && generation === state.generation) { setMessagePage(page); render(); }
+      }
     }
     throw error;
-  } finally { startingBoardTasks.delete(id); configuringSessions.delete(id); }
+  } finally {
+    startingBoardTasks.delete(id);
+    if (locked) configuringSessions.delete(id);
+  }
 }
 
 function render(): void { renderNavigation(); renderHeader(); renderTranscript(); renderComposer(); }
@@ -4996,7 +5098,7 @@ async function dispatchQueue(id: string): Promise<void> {
   // The open thread's team may not be known yet: like sendDraft, wait for its load (openThread dispatches again then),
   // so a team thread's message never goes out as a plain one.
   if (id === state.sessionId && threadLoading()) return;
-  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
+  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSession(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
@@ -5262,6 +5364,8 @@ async function sendDraft(): Promise<void> {
     try { const failed = await council.enableForNewThread(s.id); if (failed) notifyError(`Council did not turn on: ${failed}`); }
     finally { councilFirstSends.delete(s.id); }
     if (state.sessionId !== s.id || (intent && !intentHolds(intent))) return;
+    if (provisionalCorrections.has(s.id) || explicitHarnessSaves.has(s.id) || (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id))) { await sendDraft(); return; }
+    if (configuringSessions.has(s.id)) return;
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
@@ -5406,7 +5510,7 @@ const btwPanel = new BtwPanel({
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
     // A pick made while /btw creates the side thread could miss it, so the pickers wait.
-    const running = isRunning(side.id), busy = configuringSessions.has(side.id) || btwSending.has(state.sessionId);
+    const running = isRunning(side.id), busy = configuringSession(side.id) || btwSending.has(state.sessionId);
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
       : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
@@ -6484,7 +6588,7 @@ function showOpenProject(forTask = false): void {
 }
 async function changeTaskProject(projectId: string): Promise<void> {
   let selected = session();
-  if (!selected || !newTaskView() || (configuringSessions.has(selected.id) && !provisionalCorrections.has(selected.id))) throw new Error('A project can only be changed before starting the task.');
+  if (!selected || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('A project can only be changed before starting the task.');
   const generation = state.generation;
   while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
   selected = state.sessions.find(s => s.id === selected!.id);
@@ -6576,9 +6680,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
-      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
@@ -6595,10 +6699,10 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
-      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -6612,9 +6716,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
-      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its speed.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its speed.');
       if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
       try {
@@ -6630,10 +6734,10 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
-      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
       const previousProvider = savedSelection().provider;
       configuringSessions.add(selected.id);
       try {
@@ -6878,8 +6982,15 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
   const modes = approvalModes(s.provider, s.mode);
   await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
     if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
-    const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
-    if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
+    if (isBtwDraft(s)) {
+      const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
+      saveBtwDraft(s, { mode: id as Mode }); return;
+    }
+    while (provisionalCorrections.has(s.id)) await provisionalCorrections.get(s.id)?.catch(() => undefined);
+    const live = state.sessions.find(item => item.id === s.id);
+    if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
+    const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
+    if (!chosen) throw new Error('Choose an available approval behavior.');
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
@@ -6906,12 +7017,12 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'rename', label: 'Rename task', icon: 'edit' },
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
-    taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSessions.has(s.id) },
+    taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSession(s.id) },
     ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
-    { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
+    { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSession(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: id => {
     if (s.id !== state.sessionId || generation !== state.generation) return;
     closeChoiceMenu(); run(action(id, anchor));
@@ -6972,7 +7083,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
   const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
   // Active and Settled keep their own order: no Move up/down there.
   const movable = !['active', 'completed'].includes(group);
-  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
+  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSession(id), done = taskStage(task) === 'completed';
   const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
   const branch = task.worktreeBranch ?? '';
   await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
@@ -7166,7 +7277,7 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   });
 }
 function showDeleteTask(task = session()): void {
-  if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
+  if (!task || isRunning(task.id) || configuringSession(task.id)) return;
   const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog');
   const form = dialog.querySelector<HTMLFormElement>('#delete-task-form')!;
   const confirm = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
@@ -7322,9 +7433,9 @@ async function showWallpaperSettings(): Promise<void> {
 async function showProviderConnections(): Promise<void> {
   const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog');
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
-  const { mountProviderSettings } = await import('./provider-settings');
+  const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
   modelCatalogs.delete(id);
@@ -7550,7 +7661,7 @@ async function showBotTaskMenu(anchor: HTMLElement): Promise<void> {
 }
 async function assignTaskBot(task: Session, botId: string | null): Promise<void> {
   if (!newTaskView() || state.sessionId !== task.id) throw new Error('Choose a bot before the task\'s first message.');
-  if (configuringSessions.has(task.id)) return;
+  if (configuringSession(task.id)) return;
   configuringSessions.add(task.id);
   try {
     const bot = await call<import('./bots').Bot | null>('bot_assign_task', { sessionId: task.id, botId });
@@ -8954,7 +9065,7 @@ function providersLanded(found: Provider[], generation: number, force = false): 
   if (generation < appliedProviderListGeneration) return;
   state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.has(entry.id));
   appliedProviderListGeneration = generation;
-  keepProviderCatalog(found);
+  keepProviderCatalog(state.providers);
   const firstKnown = !providersKnown;
   providersKnown = true;
   settleProviders(state.providers);
@@ -8964,6 +9075,7 @@ function providersLanded(found: Provider[], generation: number, force = false): 
   // menu open over it stays open.
   refreshModelLabels(); refreshAuthorNames(); refreshDefaultAgent(); renderHeader(); refreshTeamProgress();
   settingsView?.providersChanged(state.providers);
+  agentUpdates.providersChanged();
   if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
   // Restored queues name the agent they wait for.
   if (s && state.queues.get(s.id)?.length) renderComposer();
@@ -8979,7 +9091,7 @@ async function correctProvisionalTasks(): Promise<void> {
   // Sends and explicit picker choices wait on the same per-task correction, including its native save.
   for (const id of [...provisionalTasks]) {
     // Read afresh after every earlier correction's await: a Send may have taken it or started it since.
-    if (!provisionalTasks.has(id) || configuringSessions.has(id)) continue;
+    if (!provisionalTasks.has(id) || configuringSession(id)) continue;
     const task = state.sessions.find(s => s.id === id);
     // Created but not listed yet (its creator is still finishing): it is checked once listed (checkProvisionalTasks).
     if (!task) { if (deletedSessions.has(id)) provisionalTasks.delete(id); continue; }
@@ -8994,7 +9106,6 @@ async function correctProvisionalTasks(): Promise<void> {
 function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stale'> {
   const pending = provisionalCorrections.get(task.id);
   if (pending) return pending;
-  configuringSessions.add(task.id);
   const correction = (async (): Promise<'ok' | 'missing' | 'stale'> => {
     let saved = task;
     while (provisionalTasks.has(task.id) && !explicitHarnessSaves.has(task.id)) {
@@ -9004,23 +9115,41 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
       }
       const harness = pickHarness(state.providers);
       if (!harness?.installed) return 'missing';
-      saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+      try {
+        saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+      } catch (error) {
+        if (deletedSessions.has(task.id)) { provisionalTasks.delete(task.id); return 'stale'; }
+        throw error;
+      }
       const index = state.sessions.findIndex(s => s.id === task.id);
-      if (index < 0 || deletedSessions.has(task.id) || state.sessions[index].lastPromptAt != null || isRunning(task.id)) {
+      const live = index >= 0 ? state.sessions[index] : undefined;
+      if (!live || deletedSessions.has(task.id) || live.lastPromptAt != null || isRunning(task.id)) {
         provisionalTasks.delete(task.id);
+        return 'stale';
+      }
+      if (live.draft && live.id !== state.sessionId && !configuringSessions.has(live.id) && !explicitHarnessSaves.has(live.id) && !teamToggles.has(live.id) && !live.worktreePath && !teams.get(live.id) && !draftKept(live.id)) {
+        state.sessions = state.sessions.filter(item => item.id !== live.id);
+        state.drafts.delete(live.id);
+        provisionalTasks.delete(live.id);
+        deletedSessions.add(live.id);
+        void call<boolean>('discard_draft', { sessionId: live.id }).catch(() => undefined);
         return 'stale';
       }
       // A queued picker save can still fail. Publish the successful write before yielding to it.
       state.sessions[index] = saved;
       if (modelPickerCleanup?.taskId === task.id) modelPickerCleanup.refresh();
       if (task.id === state.sessionId) {
-        if (modelPickerCleanup) refreshModelLabels(); else renderComposer();
+        if (modelPickerCleanup || architectSetupCleanup || projectPickerCleanup || choiceMenuCleanup || pendingMenuOpen) {
+          refreshModelLabels();
+          syncTeamButton();
+        } else {
+          renderComposer();
+        }
         renderHeader();
       }
     }
     return 'stale';
   })().finally(() => {
-    configuringSessions.delete(task.id);
     provisionalCorrections.delete(task.id);
   });
   provisionalCorrections.set(task.id, correction);
