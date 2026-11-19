@@ -372,12 +372,15 @@ impl Run for Stage {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let task = workspace_task(&ctx.state(), &self.session_id).await?;
+            let root = task_root(&ctx.state(), &self.session_id).await?;
+            // Any agent working or exiting in this checkout (another task sharing a main checkout too).
+            refuse_running_here(&ctx, &root).await?;
             // Ordered lane: never queue behind a background commit or push.
             let _checkout = try_lock_task_checkout(&ctx, &self.session_id, &task.project_id).await?;
+            refuse_running_here(&ctx, &root).await?;
             // Before any status too: listing the files to stage can run the checkout's filters.
             refuse_config_programs(&ctx, &self.session_id, "stage files").await?;
             let Some(paths) = self.paths else {
-                let root = task_root(&ctx.state(), &self.session_id).await?;
                 let (unstage, trust) = (self.unstage, trust_of(&ctx));
                 let (count, skipped) = crate::blocking(move || stage_all_in(&root, unstage, trust)).await?;
                 return Ok(json!({"count": count, "skipped": skipped}));
@@ -544,9 +547,13 @@ impl Run for Push {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let task = workspace_task(&ctx.state(), &self.session_id).await?;
-            let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, false).await?;
-            let trust = trust_of(&ctx);
             let root = task_root(&ctx.state(), &self.session_id).await?;
+            // Any agent working or exiting in this checkout (another task sharing a main checkout too).
+            refuse_running_here(&ctx, &root).await?;
+            let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, false).await?;
+            // Again under the lock: an agent may have started while this call waited for it.
+            refuse_running_here(&ctx, &root).await?;
+            let trust = trust_of(&ctx);
             let output = crate::blocking(move || crate::workspace::git_push(&root, trust)).await?;
             super::invalidate_pull_cache(&self.session_id);
             changed(&ctx);
@@ -655,14 +662,10 @@ impl Run for WorktreeMerge {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let task = workspace_task(&ctx.state(), &self.session_id).await?;
-            if is_running(&ctx, &self.session_id)? {
-                return Err("Wait for the agent to finish before merging its worktree.".into());
-            }
+            crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?;
             let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, true).await?;
-            // Again under the lock: an agent may have started while this call waited for it.
-            if is_running(&ctx, &self.session_id)? {
-                return Err("Wait for the agent to finish before merging its worktree.".into());
-            }
+            // Again under the lock: an agent or background exit may have started while this call waited for it.
+            crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?;
             // The desktop's merge_worktree, with hooks only while the switch is on.
             let merged = crate::merge_task_worktree(&ctx.state(), self.session_id, trust_of(&ctx)).await?;
             changed(&ctx);
@@ -685,7 +688,9 @@ impl Run for WorktreeRemove {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
             let task = workspace_task(&ctx.state(), &self.session_id).await?;
+            crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?;
             let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, true).await?;
+            crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?;
             // `worktree remove` runs a status in the checkout and `branch -d` reads commits.
             let removed = crate::remove_task_worktree(&ctx.state(), self.session_id, self.delete_branch, trust_of(&ctx)).await?;
             changed(&ctx);
@@ -1293,14 +1298,21 @@ mod tests {
 
     /// Round 7: git.commit and worktree.merge check for a running agent again once they hold
     /// the checkout lock, since an agent may start while they wait for it. Round 21: commit
-    /// checks for any agent in the checkout.
+    /// checks for any agent in the checkout; worktree.merge/remove check active own agent plus
+    /// any other session running or exiting in the affected checkout(s) while letting their own
+    /// pending exit reach the desktop helper's await/quiesce.
     #[test]
     fn commit_and_merge_recheck_the_agent_after_the_checkout_lock() {
         let source = include_str!("git.rs");
-        for (method, check) in [("async fn commit(", "refuse_running_here(&ctx, &root).await?"), ("impl Run for WorktreeMerge", "is_running(&ctx, &self.session_id)?")] {
+        for (method, check) in [
+            ("async fn commit(", "refuse_running_here(&ctx, &root).await?"),
+            ("impl Run for WorktreeMerge", "crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?"),
+            ("impl Run for WorktreeRemove", "crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?"),
+        ] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
             let lock = body.find("lock_task_checkout(&ctx").expect(method);
+            assert!(body[..lock].contains(check), "{method} checks before the lock");
             assert!(body[lock..].contains(check), "{method} re-checks after the lock");
         }
     }
@@ -1488,15 +1500,18 @@ mod tests {
         assert!(refuse[..refuse.find("\n}\n").unwrap()].contains("running_in(ctx, root)"), "one check for both");
     }
 
-    /// Round 21: `git.switchBranch`, `git.commit` and `pull.create` change or push the checkout,
-    /// so like `git.discard` they refuse while any agent works in it (another task on the same
-    /// main checkout too), before and again after the checkout lock.
+    /// Round 21: `git.stage`, `git.switchBranch`, `git.commit`, `git.push` and `pull.create`
+    /// change or push the checkout, so like `git.discard` they refuse while any agent works or is
+    /// exiting in it (another task on the same main checkout too), before and again after the
+    /// checkout lock.
     #[test]
     fn checkout_changes_refuse_while_any_agent_works_in_the_checkout() {
         let source = include_str!("git.rs");
         for (method, lock) in [
+            ("impl Run for Stage", "try_lock_task_checkout(&ctx"),
             ("impl Run for SwitchBranch", "try_lock_task_checkout(&ctx"),
             ("async fn commit(", "lock_task_checkout(&ctx"),
+            ("impl Run for Push", "lock_task_checkout(&ctx"),
             ("async fn open_pull(", "lock_task_checkout(&ctx"),
         ] {
             let body = &source[source.find(method).unwrap()..];
@@ -1741,6 +1756,94 @@ mod tests {
         drop(hold_cwd);
         crate::providers::await_exit(&ephemeral).await.unwrap();
         assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn worktree_merge_and_remove_guards_allow_own_pending_exit_and_refuse_others() {
+        let dir = std::env::temp_dir().join(format!("pandacode-wt-guards-{}", uuid::Uuid::new_v4().simple()));
+        let main = dir.join("main");
+        let wt = dir.join("wt");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let other_project = store.add_project(&elsewhere).unwrap();
+        let wt_task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let wt_fork = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let main_sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let unrelated = store.create_session(&other_project.id, "claude", "default", "full").unwrap();
+        for sid in [&wt_task.id, &wt_fork.id] {
+            store
+                .db
+                .execute(
+                    "UPDATE sessions SET worktree_path=?2, worktree_branch='pandacode/test' WHERE id=?1",
+                    rusqlite::params![sid, wt.to_string_lossy()],
+                )
+                .unwrap();
+        }
+        let state = crate::AppState {
+            store: Arc::new(StdMutex::new(store)),
+            agents: Arc::new(StdMutex::new(HashMap::new())),
+            terminals: Arc::new(StdMutex::new(HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        };
+
+        // Own pending exit is allowed through to await/quiesce, even though is_running reports true.
+        let hold_self = crate::providers::hold_exit_in_cwd_for_test(&wt_task.id, wt.clone());
+        assert!(is_running_in_state(&state, &wt_task.id).unwrap());
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_ok(), "merge must let own pending exit reach await_exit");
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_ok(), "remove must let own pending exit reach quiesce");
+        drop(hold_self);
+        crate::providers::await_exit(&wt_task.id).await.unwrap();
+
+        // Active own agent refuses both merge and remove.
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            wt_task.id.clone(),
+            crate::RunningAgent::new(tx, Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_err());
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_err());
+        state.agents.lock().unwrap().remove(&wt_task.id);
+
+        // Sibling active or pending in `&main` refuses merge (not remove of `&wt`).
+        let hold_main = crate::providers::hold_exit_for_test(&main_sibling.id);
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_err(), "sibling pending in main must refuse merge");
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_ok(), "sibling in main does not hold worktree path");
+        drop(hold_main);
+        crate::providers::await_exit(&main_sibling.id).await.unwrap();
+
+        // Forked task active or pending in `&wt` refuses both merge and remove.
+        let hold_fork = crate::providers::hold_exit_for_test(&wt_fork.id);
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_err(), "forked task pending in wt must refuse merge");
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_err(), "forked task pending in wt must refuse remove");
+        drop(hold_fork);
+        crate::providers::await_exit(&wt_fork.id).await.unwrap();
+
+        // Unpersisted worker/spare cwd in `&main` refuses merge; in `&wt` refuses both.
+        let eph_main = format!("wt-eph-main-{}", uuid::Uuid::new_v4().simple());
+        let hold_eph_main = crate::providers::hold_exit_in_cwd_for_test(&eph_main, main.clone());
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_err());
+        drop(hold_eph_main);
+        crate::providers::await_exit(&eph_main).await.unwrap();
+
+        let eph_wt = format!("wt-eph-wt-{}", uuid::Uuid::new_v4().simple());
+        let hold_eph_wt = crate::providers::hold_exit_in_cwd_for_test(&eph_wt, wt.clone());
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_err());
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_err());
+        drop(hold_eph_wt);
+        crate::providers::await_exit(&eph_wt).await.unwrap();
+
+        // Unrelated checkout never interferes.
+        let hold_unrelated = crate::providers::hold_exit_for_test(&unrelated.id);
+        assert!(crate::refuse_worktree_merge_busy(&state, &wt_task.id).await.is_ok());
+        assert!(crate::refuse_worktree_remove_busy(&state, &wt_task.id).await.is_ok());
+        drop(hold_unrelated);
+        crate::providers::await_exit(&unrelated.id).await.unwrap();
+
         let _ = std::fs::remove_dir_all(dir);
     }
 }

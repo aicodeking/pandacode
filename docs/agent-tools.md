@@ -206,7 +206,7 @@ this one:
 | Harness | How it runs without a prompt | Checked |
 |---|---|---|
 | Claude Code | exact tool name in the permission callback | live (2.1.317) |
-| GLM, MiMo | the same callback as Claude Code | code only |
+| GLM, MiMo, Alibaba Token Plan | the same callback as Claude Code | code only |
 | Codex | `readOnlyHint` in the MCP listing; an approval that still arrives is answered only for this exact server, tool and message | real 0.162.1 app-server against a stub model, all modes; no real model |
 | Kimi | its permission request is titled with the tool's registered name, which the harness sets (`buildPermissionToolCallUpdate` in its bundled source); built-in tools (`Bash`…) still ask | live for the MCP frame; built-in frame from source |
 | Grok | `use_tool` with the qualified name in `rawInput` | live, Standard and Plan |
@@ -217,7 +217,7 @@ OpenCode's permissions are keyed by tool ID, which joins server and tool names, 
 the rule cannot name the server alone: a user's server named
 `pandacode_architect_pandacode` with a tool `explore` would share the ID.
 
-Hermes, Devin, Cline, Kilo, GitHub Copilot, DeepSeek, Command Code, Muse and
+Hermes, Devin, ZCode, Cursor CLI, Cline, Kilo, GitHub Copilot, DeepSeek, Command Code, Muse and
 Antigravity do not get it until a frame recorded from them can be matched. Grok
 resolves only `pandacode_architect__pandacode_explore`, so its instructions use that
 name; a bare `pandacode_explore` still asks, then fails in the harness.
@@ -236,7 +236,7 @@ once a reply names the files and symbols needed, searching again only for a name
 `look()` then appends one edit sentence by harness (`RunExplore::claude_code`). This section
 is the one home of the edit rule; other docs link here.
 
-- **Claude-family writers** (Claude Code and its relays GLM and MiMo, any model) get `EDIT_CLAUDE` (154 B): "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows."
+- **Claude-family writers** (Claude Code and its relays GLM, MiMo and Alibaba Token Plan, any model) get `EDIT_CLAUDE` (154 B): "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows."
 - **Every other harness** gets `EDIT_OTHER` (66 B): make each file's changes in as few edit calls as the tools allow.
 - **A read-only worker** gets neither, only `LOOK` (`look_read_only`), and a run without the tool gets no edit sentence at all.
 
@@ -258,7 +258,7 @@ permission frames answered for them, are in `src-tauri/src/providers/explore_per
 **Which harnesses get it by default.** Explore is on by default only for Claude Code:
 that is the only harness the benchmark measured
 ([agent-loop-benchmark.md](agent-loop-benchmark.md): Sonnet in Claude Code, nothing
-else). Every other harness in `explore_name` (the GLM and MiMo relays, which run other
+else). Every other harness in `explore_name` (the GLM, MiMo and Alibaba Token Plan relays, which run other
 models, and Codex, Kimi, OpenCode, Pi, Oh My Pi, Grok) is supported but stays off until you opt it in
 with its own switch, listed under the main switch in Settings → Agents (Claude Code shows there as on by
 default). The opt-in is stored as an empty marker file `explore-on-<provider>` in PandaCode's app data,

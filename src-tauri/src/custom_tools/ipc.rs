@@ -38,7 +38,7 @@ fn app_base(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 fn views(dir: &Path, scope: Scope) -> Result<Vec<ToolView>, String> {
-    let mut stats = store::read_stats(dir);
+    let mut stats = store::try_read_stats(dir)?;
     Ok(store::try_load_all(dir)?.into_iter().map(|tool| ToolView { stats: stats.remove(&tool.name).unwrap_or_default(), tool, scope }).collect())
 }
 

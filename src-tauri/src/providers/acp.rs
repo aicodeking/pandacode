@@ -154,9 +154,34 @@ pub(super) fn configuration(mode: &str, served: &[&str]) -> String {
 
 /// Add only the bound server's grants to the effective launch, after connection and skill rules.
 pub(super) fn allow_tools(command: &mut Command, served: &[&str]) {
-    let inline = super::command_environment(command, "OPENCODE_CONFIG_CONTENT").unwrap_or_else(|| "{}".into());
+    if served.is_empty() {
+        return;
+    }
+    let agents = match command.as_std().get_current_dir() {
+        Some(cwd) => crate::skill_manager::opencode_all_agents_at(cwd),
+        None => crate::skill_manager::opencode_user_agents(),
+    };
+    allow_tools_with_agents(command, served, &agents);
+}
+
+/// Apply bound-server tool grants using a pre-scanned OpenCode agent roster.
+pub(super) fn allow_tools_with_agents(
+    command: &mut Command,
+    served: &[&str],
+    agents: &crate::skill_manager::OpenCodeAgents,
+) {
+    if served.is_empty() {
+        return;
+    }
+    let inline = super::command_environment(command, "OPENCODE_CONFIG_CONTENT")
+        .unwrap_or_else(|| "{}".into());
     let permission = super::command_environment(command, "OPENCODE_PERMISSION");
-    if let Some((inline, permission)) = crate::skill_manager::opencode_tool_grants(&inline, permission.as_deref(), served) {
+    if let Some((inline, permission)) = crate::skill_manager::opencode_tool_grants_with(
+        &inline,
+        permission.as_deref(),
+        served,
+        agents,
+    ) {
         command.env("OPENCODE_CONFIG_CONTENT", inline);
         if let Some(permission) = permission {
             command.env("OPENCODE_PERMISSION", permission);
@@ -2710,5 +2735,77 @@ mod tests {
         let step = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
         assert!(!step.done);
         assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "retry me");
+    }
+
+    #[test]
+    fn opencode_allow_tools_discovers_builtin_and_project_v1_v2_agents() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-acp-opencode-agents-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.json"),
+            r#"{
+                "agent": {"custom-v1": {"permission": {"*": "deny"}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let mut command = Command::new("opencode");
+        command.current_dir(&root);
+        command.env("OPENCODE_CONFIG_CONTENT", "{}");
+        allow_tools(&mut command, &["pandacode_explore"]);
+
+        let inline = command
+            .as_std()
+            .get_envs()
+            .find(|(k, _)| *k == "OPENCODE_CONFIG_CONTENT")
+            .and_then(|(_, v)| v.and_then(|v| v.to_str()))
+            .unwrap();
+        let value: Value = serde_json::from_str(inline).unwrap();
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+        for agent in ["build", "plan", "general", "explore", "custom-v1", "custom-v2"] {
+            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
+            assert_eq!(
+                value["agent"][agent]["permission"][trailing], "allow",
+                "{agent}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opencode_allow_tools_keeps_opaque_inline_and_populates_permission_env() {
+        let opaque = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // Without existing OPENCODE_PERMISSION: creates OPENCODE_PERMISSION with exact grants.
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_CONTENT", opaque);
+        command.env_remove("OPENCODE_PERMISSION");
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let inline = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        let perm = super::super::command_environment(&command, "OPENCODE_PERMISSION").unwrap();
+        assert_eq!(inline, opaque);
+        let perm_val: Value = serde_json::from_str(&perm).unwrap();
+        assert_eq!(perm_val[tool], "allow");
+        assert_eq!(perm_val[trailing], "allow");
+
+        // With existing OPENCODE_PERMISSION: preserves existing rules and appends exact grants.
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_CONTENT", opaque);
+        command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let inline = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        let perm = super::super::command_environment(&command, "OPENCODE_PERMISSION").unwrap();
+        assert_eq!(inline, opaque);
+        let perm_val: Value = serde_json::from_str(&perm).unwrap();
+        assert_eq!(perm_val["skill"]["review"], "deny");
+        assert_eq!(perm_val[tool], "allow");
+        assert_eq!(perm_val[trailing], "allow");
     }
 }

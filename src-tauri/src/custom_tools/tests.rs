@@ -510,3 +510,139 @@ fn settings_listing_reports_unsearchable_scope_and_unreadable_tool_files() {
     assert_eq!(listed.projects[0].tools.len(), 1);
     assert_eq!(listed.projects[0].tools[0].tool.name, "proj-tool");
 }
+
+#[cfg(unix)]
+#[test]
+fn unreadable_stats_refuse_move_without_wiping_either_scope() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let base = temp();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    save(&project, draft("deploy-it", "echo p", Vec::new()), author("s"), 1).unwrap();
+    save(&project, draft("other-proj", "echo o", Vec::new()), author("s"), 1).unwrap();
+    save(&global, draft("existing-global", "echo g", Vec::new()), author("s"), 1).unwrap();
+    store::record(&project, "deploy-it", "s1", Some(0), 10).unwrap();
+    store::record(&project, "other-proj", "s1", Some(1), 11).unwrap();
+    store::record(&global, "existing-global", "s2", Some(0), 20).unwrap();
+    let expected_project_stats = store::try_read_stats(&project).unwrap();
+    let expected_global_stats = store::try_read_stats(&global).unwrap();
+
+    // Unreadable source .stats.json: move must fail and leave both scopes untouched.
+    let lock_from = RestoreMode::set(project.join(".stats.json"), 0o000, 0o644);
+    assert!(store::move_tool(&project, &global, "deploy-it").is_err());
+    assert!(store::load(&project, "deploy-it").is_some());
+    assert!(!global.join("deploy-it.json").exists());
+    assert_eq!(store::try_read_stats(&global).unwrap(), expected_global_stats);
+    drop(lock_from);
+    assert_eq!(store::try_read_stats(&project).unwrap(), expected_project_stats);
+
+    // Unreadable destination .stats.json: move must fail and never wipe existing destination stats.
+    let lock_to = RestoreMode::set(global.join(".stats.json"), 0o000, 0o644);
+    assert!(store::move_tool(&project, &global, "deploy-it").is_err());
+    assert!(store::load(&project, "deploy-it").is_some());
+    assert!(!global.join("deploy-it.json").exists());
+    assert_eq!(store::try_read_stats(&project).unwrap(), expected_project_stats);
+    drop(lock_to);
+    assert_eq!(store::try_read_stats(&global).unwrap(), expected_global_stats);
+
+    // Restoring permissions lets retry succeed while preserving every tool's stats.
+    store::move_tool(&project, &global, "deploy-it").unwrap();
+    assert!(store::load(&project, "deploy-it").is_none());
+    assert!(store::load(&global, "deploy-it").is_some());
+    let project_after = store::try_read_stats(&project).unwrap();
+    let global_after = store::try_read_stats(&global).unwrap();
+    assert!(!project_after.contains_key("deploy-it"));
+    assert_eq!(project_after["other-proj"], expected_project_stats["other-proj"]);
+    assert_eq!(global_after["deploy-it"], expected_project_stats["deploy-it"]);
+    assert_eq!(global_after["existing-global"], expected_global_stats["existing-global"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn unreadable_stats_refuse_record_and_delete_without_wiping_stats() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let dir = temp();
+    save(&dir.0, draft("tool-a", "echo a", Vec::new()), author("s"), 1).unwrap();
+    save(&dir.0, draft("tool-b", "echo b", Vec::new()), author("s"), 1).unwrap();
+    store::record(&dir.0, "tool-a", "s1", Some(0), 10).unwrap();
+    store::record(&dir.0, "tool-b", "s2", Some(1), 12).unwrap();
+    let expected = store::try_read_stats(&dir.0).unwrap();
+
+    let lock_stats = RestoreMode::set(dir.0.join(".stats.json"), 0o000, 0o644);
+    assert!(store::record(&dir.0, "tool-a", "s3", Some(0), 20).is_err());
+    assert!(store::record(&dir.0, "new-tool", "s3", Some(0), 21).is_err());
+    assert!(store::delete(&dir.0, "tool-a").is_err());
+    assert!(store::load(&dir.0, "tool-a").is_some(), "failed delete must not remove the tool file");
+    drop(lock_stats);
+
+    assert_eq!(store::try_read_stats(&dir.0).unwrap(), expected, "unreadable .stats.json must not be wiped");
+
+    store::record(&dir.0, "tool-a", "s3", Some(0), 20).unwrap();
+    assert_eq!(store::try_read_stats(&dir.0).unwrap()["tool-a"].uses, 2);
+    store::delete(&dir.0, "tool-a").unwrap();
+    assert!(store::load(&dir.0, "tool-a").is_none());
+    let after = store::try_read_stats(&dir.0).unwrap();
+    assert!(!after.contains_key("tool-a"));
+    assert_eq!(after["tool-b"], expected["tool-b"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn set_disabled_reports_unreadable_tool_file_instead_of_missing() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let dir = temp();
+    save(&dir.0, draft("toggle-me", "echo hi", Vec::new()), author("s"), 1).unwrap();
+    assert_eq!(store::set_disabled(&dir.0, "missing-tool", true).unwrap_err(), "No such tool.");
+
+    let lock_file = RestoreMode::set(dir.0.join("toggle-me.json"), 0o000, 0o644);
+    let err = store::set_disabled(&dir.0, "toggle-me", true).unwrap_err();
+    assert_ne!(err, "No such tool.");
+    assert!(err.contains("Could not read the tool folder"), "{err}");
+    drop(lock_file);
+
+    assert!(!store::load(&dir.0, "toggle-me").unwrap().disabled);
+    store::set_disabled(&dir.0, "toggle-me", true).unwrap();
+    assert!(store::load(&dir.0, "toggle-me").unwrap().disabled);
+}
+
+#[cfg(unix)]
+#[test]
+fn settings_listing_reports_unreadable_stats_files() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let base = temp();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    save(&global, draft("global-tool", "echo g", Vec::new()), author("s"), 1).unwrap();
+    save(&project, draft("proj-tool", "echo p", Vec::new()), author("s"), 1).unwrap();
+    store::record(&global, "global-tool", "s1", Some(0), 10).unwrap();
+    store::record(&project, "proj-tool", "s2", Some(0), 20).unwrap();
+
+    let lock_global = RestoreMode::set(global.join(".stats.json"), 0o000, 0o644);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0000 global .stats.json must report an error in Settings");
+    assert!(store::try_read_stats(&global).is_err());
+    assert_eq!(visible(&base.0, "p1").len(), 2, "agent catalog stays fail-soft");
+    drop(lock_global);
+
+    let lock_project = RestoreMode::set(project.join(".stats.json"), 0o000, 0o644);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0000 project .stats.json must report an error in Settings");
+    assert!(store::try_read_stats(&project).is_err());
+    assert_eq!(visible(&base.0, "p1").len(), 2, "agent catalog stays fail-soft");
+    drop(lock_project);
+
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert_eq!(listed.global[0].stats.uses, 1);
+    assert_eq!(listed.projects[0].tools[0].stats.uses, 1);
+
+    // Invalid JSON in .stats.json stays non-fatal in Settings (consistent with broken tool files).
+    std::fs::write(project.join(".stats.json"), "{not json").unwrap();
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert_eq!(listed.projects[0].tools[0].stats.uses, 0);
+}

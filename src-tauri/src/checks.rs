@@ -83,11 +83,22 @@ pub(crate) fn turn_report(root: &Path) -> Value {
     }
 }
 
-/// `turn_report` once the session's agent process, and with it any dev server or watcher left
-/// in its group, is gone (`providers::await_exit`), so the check never runs beside them. A
-/// session whose exit cannot be confirmed skips the check like any check that cannot run.
+/// `turn_report` once the session's agent process (and any sibling pending exit in `root`), and
+/// with it any dev server or watcher left in its group, is gone, so the check never runs beside
+/// them. A session whose exit cannot be confirmed skips the check like any check that cannot run.
 pub(crate) async fn turn_report_after_exit(session_id: &str, root: std::path::PathBuf) -> Value {
-    report_when_exited(crate::providers::await_exit_patiently(session_id), root, turn_report).await
+    let wait_root = root.clone();
+    let session = session_id.to_owned();
+    let exit = async move {
+        let wait = async {
+            crate::providers::await_exit_patiently(&session).await?;
+            crate::providers::await_exits_in_patiently(&wait_root).await
+        };
+        tokio::time::timeout(crate::providers::EXIT_HARD_CAP, wait)
+            .await
+            .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())?
+    };
+    report_when_exited(exit, root, turn_report).await
 }
 
 /// Runs `check` (on a blocking thread) only after `exit` resolves `Ok`.
@@ -302,5 +313,46 @@ mod tests {
         let cut = tail(&text);
         assert_eq!(cut.chars().count(), TAIL_BYTES / 2);
         assert_eq!(tail("done"), "done");
+    }
+}
+
+#[cfg(test)]
+mod exit_wait_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn turn_report_after_exit_waits_for_sibling_pending_exit_in_same_root() {
+        let base = std::env::temp_dir().join(format!("pandacode-checks-sibling-{}", uuid::Uuid::new_v4().simple()));
+        let root = base.join("repo");
+        let elsewhere = base.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        let self_id = format!("checks-self-{}", uuid::Uuid::new_v4().simple());
+        let sibling_id = format!("checks-sibling-{}", uuid::Uuid::new_v4().simple());
+        let other_id = format!("checks-other-{}", uuid::Uuid::new_v4().simple());
+
+        let hold_other = crate::providers::hold_exit_in_cwd_for_test(&other_id, elsewhere.clone());
+        let hold_sibling = crate::providers::hold_exit_in_cwd_for_test(&sibling_id, root.join("."));
+
+        let waiting = tokio::spawn({
+            let self_id = self_id.clone();
+            let root = root.clone();
+            async move { turn_report_after_exit(&self_id, root).await }
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished(), "checks must wait while a sibling exit is pending in the same checkout");
+
+        drop(hold_sibling);
+        let report = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .expect("checks should run once the sibling exit clears")
+            .unwrap();
+        assert_eq!(report["checked"], false);
+        assert!(report["reason"].as_str().unwrap().contains("no fast check"));
+
+        drop(hold_other);
+        crate::providers::await_exit(&other_id).await.unwrap();
+        let _ = std::fs::remove_dir_all(base);
     }
 }

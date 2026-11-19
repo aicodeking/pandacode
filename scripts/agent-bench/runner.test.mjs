@@ -95,6 +95,38 @@ test('cloned Cargo cache regenerates missing build outputs without changing the 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('cloneTarget removes run-build-script fingerprints in both flat and nested layouts without touching build-script-build or source', async () => {
+  const dir = scratch();
+  try {
+    const source = join(dir, 'source', 'debug');
+    const flat = join('.fingerprint', 'flat-pkg-1234');
+    const nested = join('.fingerprint', 'nested-pkg', '5678abcd');
+    for (const rel of ['deps', flat, nested]) mkdirSync(join(source, rel), { recursive: true });
+    writeFileSync(join(source, 'deps', 'libfixture-123.rlib'), 'dep');
+    for (const rel of [
+      join(flat, 'run-build-script-build-script-build'),
+      join(flat, 'run-build-script-build-script-build.json'),
+      join(flat, 'build-script-build'),
+      join(flat, 'build-script-build.json'),
+      join(nested, 'run-build-script-build-script-build'),
+      join(nested, 'run-build-script-build-script-build.json'),
+      join(nested, 'build-script-build'),
+      join(nested, 'build-script-build.json'),
+    ]) writeFileSync(join(source, rel), 'cached');
+    const to = join(dir, 'cloned');
+    await cloneTarget(to, source);
+    const cloned = join(to, 'debug');
+    assert.deepEqual(readdirSync(join(cloned, flat)).sort(), ['build-script-build', 'build-script-build.json']);
+    assert.deepEqual(readdirSync(join(cloned, nested)).sort(), ['build-script-build', 'build-script-build.json']);
+    assert.deepEqual(readdirSync(join(source, flat)).sort(), [
+      'build-script-build', 'build-script-build.json', 'run-build-script-build-script-build', 'run-build-script-build-script-build.json',
+    ]);
+    assert.deepEqual(readdirSync(join(source, nested)).sort(), [
+      'build-script-build', 'build-script-build.json', 'run-build-script-build-script-build', 'run-build-script-build-script-build.json',
+    ]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('G2-1: snapshot, verification and cloning share an explicit dependency cache; old metadata keeps its default', async () => {
   const dir = scratch();
   try {

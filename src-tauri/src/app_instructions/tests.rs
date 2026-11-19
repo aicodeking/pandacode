@@ -276,7 +276,7 @@ fn the_cached_instructions_are_identical_in_every_mode() {
         }
         assert!(!system.contains("tracked automatically"), "{role:?}");
     }
-    for provider in ["claude", "glm", "codex"] {
+    for provider in ["claude", "glm", "mimo", "alibaba", "codex"] {
         for mode in ["ask", "auto", "review", "plan", "full"] {
             let note = turn_note(waits(provider, mode));
             assert_eq!(note.is_some(), provider != "codex" && mode == "ask", "{provider} {mode}");
@@ -465,7 +465,7 @@ fn periodic_reminders_send_rich_guidance_once_per_conversation() {
 fn edit_text_follows_the_harness_and_role() {
     eprintln!("edit text: EDIT_CLAUDE {} B, EDIT_OTHER {} B", EDIT_CLAUDE.len(), EDIT_OTHER.len());
     let gap = " for a named gap. ";
-    for provider in ["claude", "glm", "mimo"] {
+    for provider in ["claude", "glm", "mimo", "alibaba"] {
         let config = crate::providers::tests::config(provider);
         let text = launch_instructions(&config, Role::Worker, explore::run_name(false, true, provider), false);
         assert!(text.contains(&[gap, EDIT_CLAUDE].concat()), "{provider}");

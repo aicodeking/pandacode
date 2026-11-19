@@ -348,3 +348,113 @@ fn skill_manager_opencode_1x_both_alias_collision_inline_vs_cross_layer() {
         }
     }
 }
+
+#[test]
+fn skill_manager_opencode_tool_grants_cover_builtins_and_project_agents_after_wildcards() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let f = crate::skill_manager::tests::Fixture::new();
+    let home = f.0.join("home");
+    let repo = f.0.join("repo");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        repo.join("opencode.json"),
+        r#"{
+            "agent": {"reviewer-v1": {"permission": {"*": "deny"}}},
+            "agents": {"auditor-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+        }"#,
+    )
+    .unwrap();
+    let discovered = super::opencode_agents::agents(&repo, &home, &Homes::default());
+    let agents = OpenCodeAgents {
+        names: discovered.names,
+        complete: discovered.complete,
+    };
+    assert!(agents.names.contains("reviewer-v1"));
+    assert!(agents.names.contains("auditor-v2"));
+
+    for (pattern, wildcard) in [
+        ("*", "ask"),
+        ("*", "deny"),
+        ("pandacode_architect_*", "ask"),
+        ("pandacode_architect_*", "deny"),
+    ] {
+        let rules = format!(r#"{{"{tool}":"deny","{pattern}":"{wildcard}"}}"#);
+        let project = r#"{
+            "permission": RULES,
+            "agent": {
+                "build": {"permission": RULES},
+                "plan": {"permission": RULES},
+                "general": {"permission": RULES},
+                "explore": {"permission": RULES},
+                "reviewer-v1": {"permission": RULES},
+                "auditor-v2": {"permission": RULES}
+            }
+        }"#
+        .replace("RULES", &rules);
+
+        let (inline, perm) = opencode_tool_grants_with(
+            "{}",
+            Some(&rules),
+            &["pandacode_explore"],
+            &agents,
+        )
+        .unwrap();
+        let mut config = object(&project);
+        merge(&mut config, object(&inline));
+        merge(
+            &mut config,
+            object(&format!(r#"{{"permission":{}}}"#, perm.unwrap())),
+        );
+        let merged = serde_json::to_string(&config).unwrap();
+
+        for agent in [
+            "build",
+            "plan",
+            "general",
+            "explore",
+            "reviewer-v1",
+            "auditor-v2",
+        ] {
+            assert_eq!(
+                permission_action(&config, agent, tool, "*"),
+                "allow",
+                "{agent}: {merged}"
+            );
+            for other in [
+                format!("{tool}2"),
+                format!("{tool}_other"),
+                "pandacode_architect_pandacode_tool_run".into(),
+            ] {
+                assert_eq!(
+                    permission_action(&config, agent, &other, "*"),
+                    wildcard,
+                    "{agent}/{other}: {merged}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn skill_manager_opencode_opaque_inline_grants_win_through_permission_env() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let opaque = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+    let project_rules = format!(
+        r#"{{"{tool}":"deny","*":"deny","pandacode_architect_*":"ask","skill":{{"review":"deny"}}}}"#
+    );
+    for existing in [None, Some(project_rules.as_str())] {
+        let (inline, permission) =
+            opencode_tool_grants(opaque, existing, &["pandacode_explore"]).unwrap();
+        assert_eq!(inline, opaque);
+        let permission_layer = format!(r#"{{"permission":{}}}"#, permission.unwrap());
+        let mut config = object(&format!(r#"{{"permission":{project_rules}}}"#));
+        merge(&mut config, object(&permission_layer));
+        assert_eq!(permission_action(&config, "unconfigured", tool, "*"), "allow");
+        assert_eq!(
+            permission_action(&config, "unconfigured", &format!("{tool}2"), "*"),
+            "ask"
+        );
+        assert_eq!(action(&config, "unconfigured", "review"), "deny");
+    }
+}

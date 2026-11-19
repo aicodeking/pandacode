@@ -215,16 +215,15 @@ export async function cloneTarget(to, source = join(REPO, 'src-tauri', 'target',
   await rm(join(to, 'debug', 'incremental'), { recursive: true, force: true, maxRetries: 3 });
   // Dependency identity (depsFingerprint) does not guarantee build-output completeness.
   // Rerun build scripts at the relocated OUT_DIR; retain their compilation cache and the source.
-  const fingerprints = join(to, 'debug', '.fingerprint');
-  if (existsSync(fingerprints)) {
-    for (const entry of readdirSync(fingerprints, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const dir = join(fingerprints, entry.name);
-      for (const name of readdirSync(dir)) {
-        if (name.startsWith('run-build-script-')) await rm(join(dir, name), { force: true });
-      }
+  const stripBuildScriptRuns = async dir => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) await stripBuildScriptRuns(path);
+      else if (entry.name.startsWith('run-build-script-')) await rm(path, { force: true });
     }
-  }
+  };
+  const fingerprints = join(to, 'debug', '.fingerprint');
+  if (existsSync(fingerprints)) await stripBuildScriptRuns(fingerprints);
 }
 /**
  * The old commit builds with today's dependencies, the ones already built in that target. Its own

@@ -5,8 +5,8 @@
 //! run wins, including over an agent whose Markdown allows skills itself.
 use super::*;
 
-/// Primary and subagent built-ins (OpenCode 1.x: build, plan, general, explore).
-const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
+/// Primary and subagent built-ins (OpenCode 1.x/2.x: build, plan, general, explore).
+pub(super) const BUILTIN: [&str; 4] = ["build", "plan", "general", "explore"];
 const MAX_AGENTS: usize = 256;
 const MAX_LEVELS: usize = 32;
 const CONFIG_FILES: [&str; 3] = ["opencode.json", "opencode.jsonc", "config.json"];
@@ -27,6 +27,10 @@ pub(super) struct Agents {
 }
 
 pub(super) fn agents(cwd: &Path, home: &Path, homes: &Homes) -> Agents {
+    agents_opt(Some(cwd), home, homes)
+}
+
+pub(super) fn agents_opt(cwd: Option<&Path>, home: &Path, homes: &Homes) -> Agents {
     let mut names: BTreeSet<String> = BUILTIN.iter().map(|n| (*n).to_owned()).collect();
     let mut complete = true;
     let mut add = |name: Option<&str>| match name {
@@ -63,13 +67,15 @@ pub(super) fn agents(cwd: &Path, home: &Path, homes: &Homes) -> Agents {
         config_agents(&file, &mut add);
     }
     // Project configs from the task folder up to its repository root.
-    for dir in cwd.ancestors().take(MAX_LEVELS) {
-        for file in CONFIG_FILES.iter().take(2) {
-            config_agents(&dir.join(file), &mut add);
-        }
-        read_dir_agents(&dir.join(".opencode"), &mut add);
-        if dir.join(".git").exists() || dir == home {
-            break;
+    if let Some(cwd) = cwd {
+        for dir in cwd.ancestors().take(MAX_LEVELS) {
+            for file in CONFIG_FILES.iter().take(2) {
+                config_agents(&dir.join(file), &mut add);
+            }
+            read_dir_agents(&dir.join(".opencode"), &mut add);
+            if dir.join(".git").exists() || dir == home {
+                break;
+            }
         }
     }
     Agents { names, complete }
@@ -137,7 +143,7 @@ fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>)) {
     else {
         return;
     };
-    for key in ["agent", "mode"] {
+    for key in ["agent", "agents", "mode"] {
         for name in value[key].as_object().into_iter().flat_map(|m| m.keys()) {
             add(Some(name));
         }
@@ -223,5 +229,59 @@ mod tests {
         let found = agents(&cwd, &home, &Homes::default());
         assert!(!found.complete);
         assert!(found.names.len() <= MAX_AGENTS);
+    }
+
+    #[test]
+    fn skill_manager_opencode_agents_discover_v2_agents_keys() {
+        let f = Fixture::new();
+        let home = f.0.join("home");
+        let repo = f.0.join("repo");
+        let cwd = repo.join("packages/web");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(&cwd).unwrap();
+        fs::create_dir_all(home.join(".config/opencode")).unwrap();
+        fs::write(
+            home.join(".config/opencode/opencode.json"),
+            r#"{"agents":{"global-v2":{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            repo.join("opencode.json"),
+            r#"{"agents":{"project-v2":{"permissions":[{"action":"*","resource":"*","effect":"ask"}]}},"agent":{"project-v1":{}},"mode":{"project-mode":{}}}"#,
+        )
+        .unwrap();
+        fs::write(
+            cwd.join("opencode.jsonc"),
+            "{ // 2.x package agent\n \"agents\": {\"nested-v2\": {}} }",
+        )
+        .unwrap();
+
+        let found = agents(&cwd, &home, &Homes::default());
+        assert!(found.complete);
+        for name in [
+            "build",
+            "plan",
+            "general",
+            "explore",
+            "global-v2",
+            "project-v2",
+            "project-v1",
+            "project-mode",
+            "nested-v2",
+        ] {
+            assert!(found.names.contains(name), "{name}: {:?}", found.names);
+        }
+
+        // User-only scan (no cwd) still discovers built-ins and global 2.x `agents`, skipping project files.
+        let user_only = agents_opt(None, &home, &Homes::default());
+        assert!(user_only.complete);
+        for name in ["build", "plan", "general", "explore", "global-v2"] {
+            assert!(
+                user_only.names.contains(name),
+                "{name}: {:?}",
+                user_only.names
+            );
+        }
+        assert!(!user_only.names.contains("project-v2"), "{:?}", user_only.names);
     }
 }

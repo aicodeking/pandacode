@@ -91,11 +91,6 @@ fn try_read_small(path: &Path, limit: u64) -> Result<Option<String>, String> {
     Ok(String::from_utf8(bytes).ok())
 }
 
-/// A regular file of at most `limit` bytes; links and oversize files read as missing.
-fn read_small(path: &Path, limit: u64) -> Option<String> {
-    try_read_small(path, limit).ok().flatten()
-}
-
 pub(super) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     let dir = path.parent().ok_or("Invalid tool folder.")?;
     fs::create_dir_all(dir).map_err(|e| format!("Could not create the tool folder: {e}"))?;
@@ -157,8 +152,14 @@ pub(super) fn remove(dir: &Path, name: &str) -> Result<(), String> {
     fs::remove_file(&path).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { "No such tool.".to_owned() } else { format!("Could not delete: {e}") })
 }
 
+/// Usage stats for one scope; missing or invalid stats files read as empty, while access
+/// errors (`EACCES`, etc.) propagate so writes never wipe an unreadable file and Settings sees them.
+pub(super) fn try_read_stats(dir: &Path) -> Result<BTreeMap<String, Stats>, String> {
+    Ok(try_read_small(&dir.join(STATS_FILE), MAX_STATS_FILE)?.and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default())
+}
+
 pub(super) fn read_stats(dir: &Path) -> BTreeMap<String, Stats> {
-    read_small(&dir.join(STATS_FILE), MAX_STATS_FILE).and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    try_read_stats(dir).unwrap_or_default()
 }
 
 pub(super) fn write_stats(dir: &Path, stats: &BTreeMap<String, Stats>) -> Result<(), String> {
@@ -168,7 +169,7 @@ pub(super) fn write_stats(dir: &Path, stats: &BTreeMap<String, Stats>) -> Result
 /// Counts one run of `name` by `session`; `exit` is `None` when it never finished.
 pub(super) fn record(dir: &Path, name: &str, session: &str, exit: Option<i32>, now: i64) -> Result<(), String> {
     let _guard = lock();
-    let mut all = read_stats(dir);
+    let mut all = try_read_stats(dir)?;
     let stats = all.entry(name.to_owned()).or_default();
     stats.uses += 1;
     if exit != Some(0) {
@@ -203,6 +204,9 @@ pub(super) fn move_tool(from: &Path, to: &Path, name: &str) -> Result<(), String
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("Could not check the destination tool folder: {e}")),
     }
+    let mut source = try_read_stats(from)?;
+    let prev_to = try_read_stats(to)?;
+    let moved_stats = source.remove(name);
     let created_to_dir = matches!(fs::symlink_metadata(to), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
     let cleanup_dir = || {
         if created_to_dir {
@@ -231,11 +235,9 @@ pub(super) fn move_tool(from: &Path, to: &Path, name: &str) -> Result<(), String
         }
     }
 
-    let mut source = read_stats(from);
-    if let Some(stats) = source.remove(name) {
+    if let Some(stats) = moved_stats {
         let to_stats_path = to.join(STATS_FILE);
         let had_to_stats = fs::symlink_metadata(&to_stats_path).is_ok();
-        let prev_to = read_stats(to);
         let mut target = prev_to.clone();
         target.insert(name.to_owned(), stats);
         if let Err(err) = write_stats(to, &target) {
@@ -260,8 +262,9 @@ pub(super) fn move_tool(from: &Path, to: &Path, name: &str) -> Result<(), String
 /// Deletes a tool and its stats.
 pub(super) fn delete(dir: &Path, name: &str) -> Result<(), String> {
     let _guard = lock();
+    let _ = tool_path(dir, name)?;
+    let mut stats = try_read_stats(dir)?;
     remove(dir, name)?;
-    let mut stats = read_stats(dir);
     if stats.remove(name).is_some() {
         write_stats(dir, &stats)?;
     }
@@ -270,6 +273,6 @@ pub(super) fn delete(dir: &Path, name: &str) -> Result<(), String> {
 
 pub(super) fn set_disabled(dir: &Path, name: &str, disabled: bool) -> Result<(), String> {
     let _guard = lock();
-    let tool = load(dir, name).ok_or("No such tool.")?;
+    let tool = try_load(dir, name)?.ok_or("No such tool.")?;
     store(dir, &Tool { disabled, ..tool })
 }

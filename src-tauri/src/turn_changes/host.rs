@@ -16,7 +16,7 @@ pub(crate) const TOOL: &str = "pandacode_track_files";
 pub(crate) fn edits_wait_for_approval(provider: &str, mode: &str) -> bool {
     // Only Standard ("ask", launched as Claude's `default`) waits; every other mode, and any
     // mode this list does not know, is treated as never waiting (the handshake covers it).
-    matches!(provider, "claude" | "glm" | "mimo") && mode == "ask"
+    crate::providers::claude_family(provider) && mode == "ask"
 }
 
 /// `edits_wait_for_approval` for a run, unless the user's Claude Code settings may let its edits
@@ -26,8 +26,8 @@ pub(crate) fn edits_wait_for_run(config: &crate::providers::RunConfig) -> bool {
     edits_wait_for_approval(&config.provider, &config.mode) && !claude_allows_edits(config)
 }
 
-/// Whether Claude Code may apply this run's edits without asking. GLM and MiMo launch with
-/// `--setting-sources ""`, so no settings file applies to them. A task on a named connection
+/// Whether Claude Code may apply this run's edits without asking. GLM, MiMo and Alibaba launch
+/// with `--setting-sources ""`, so no settings file applies to them. A task on a named connection
 /// may use another Claude config folder, which is not followed: treated as allowing.
 fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
     if config.provider != "claude" {
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn only_claude_standard_runs_wait_for_an_edit_approval() {
         // Standard is saved as "ask" (`storage::valid_mode`); Claude launches it as `default`.
-        for provider in ["claude", "glm", "mimo"] {
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert!(edits_wait_for_approval(provider, "ask"), "{provider}");
             for mode in ["auto", "review", "plan", "full"] {
                 assert!(!edits_wait_for_approval(provider, mode), "{provider} {mode}");
@@ -464,10 +464,10 @@ mod tests {
         assert!(text.contains("captureId") && text.contains("begin") && text.contains("complete"));
         assert!(!text.contains("tracked automatically"));
         // Standard approvals: the turn's message says native edits are tracked automatically.
-        for provider in ["claude", "glm", "mimo", "codex", "kimi", "opencode"] {
+        for provider in ["claude", "glm", "mimo", "alibaba", "codex", "kimi", "opencode"] {
             for mode in ["ask", "auto", "review", "plan", "full"] {
                 let note = turn_note(edits_wait_for_approval(provider, mode));
-                let waits = matches!(provider, "claude" | "glm" | "mimo") && mode == "ask";
+                let waits = matches!(provider, "claude" | "glm" | "mimo" | "alibaba") && mode == "ask";
                 assert_eq!(note.is_some(), waits, "{provider} {mode}");
             }
         }
@@ -563,13 +563,15 @@ mod tests {
 
     #[test]
     fn relays_without_setting_files_and_other_harnesses_skip_the_settings_check() {
-        // GLM and MiMo load no settings files; other harnesses never wait in the first place.
-        for provider in ["glm", "mimo", "codex"] {
+        // GLM, MiMo and Alibaba load no settings files; other harnesses never wait in the first place.
+        for provider in ["glm", "mimo", "alibaba", "codex"] {
             let config = crate::providers::RunConfig { provider: provider.into(), ..crate::providers::tests::config("claude") };
             assert!(!claude_allows_edits(&config), "{provider}");
         }
-        let config = crate::providers::RunConfig { mode: "ask".into(), ..crate::providers::tests::config("glm") };
-        assert!(edits_wait_for_run(&config));
+        for provider in ["glm", "mimo", "alibaba"] {
+            let config = crate::providers::RunConfig { mode: "ask".into(), ..crate::providers::tests::config(provider) };
+            assert!(edits_wait_for_run(&config), "{provider}");
+        }
     }
 
     #[test]

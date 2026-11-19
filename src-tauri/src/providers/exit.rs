@@ -4,7 +4,7 @@
 use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -110,6 +110,82 @@ async fn wait_exit(session_id: &str, cap: Duration, hurry: bool) -> Result<(), S
 /// the cap just returns. No mutex is held while waiting and no store lock is taken.
 pub(crate) async fn await_all_exits(cap: Duration) {
     wait_all(exit_registry(), cap).await;
+}
+
+/// Whether `candidate` lies inside (or equals) `folder`, literally or once both are canonical.
+fn path_within(candidate: &Path, folder: &Path, folder_canonical: Option<&Path>) -> bool {
+    if candidate == folder || candidate.starts_with(folder) {
+        return true;
+    }
+    let Some(folder_canonical) = folder_canonical else { return false };
+    if candidate == folder_canonical || candidate.starts_with(folder_canonical) {
+        return true;
+    }
+    candidate
+        .canonicalize()
+        .ok()
+        .is_some_and(|resolved| resolved == folder_canonical || resolved.starts_with(folder_canonical))
+}
+
+/// Wait until every pending exit whose recorded working directory lies in `folder` has exited
+/// (hurrying them as `await_exit` does), bounded by `EXIT_HARD_CAP`.
+pub(crate) async fn await_exits_in(folder: &Path) -> Result<(), String> {
+    wait_exits_in(folder, EXIT_HARD_CAP, true).await
+}
+
+/// Patient version of [`await_exits_in`]: never hurries the reap (for Turn checks), bounded by
+/// `EXIT_HARD_CAP`.
+pub(crate) async fn await_exits_in_patiently(folder: &Path) -> Result<(), String> {
+    wait_exits_in(folder, EXIT_HARD_CAP, false).await
+}
+
+async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), String> {
+    let folder = folder.to_path_buf();
+    let wait = async {
+        let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
+        loop {
+            let snapshot: Vec<(String, PathBuf, tokio::sync::watch::Receiver<()>)> = exit_registry()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .filter_map(|(id, entry)| {
+                    if waited.iter().any(|done| done.same_channel(&entry.exiting)) {
+                        return None;
+                    }
+                    entry.cwd.as_ref().map(|cwd| (id.clone(), cwd.clone(), entry.exiting.clone()))
+                })
+                .collect();
+            if snapshot.is_empty() {
+                return;
+            }
+            let target = folder.clone();
+            let matching = tokio::task::spawn_blocking(move || {
+                let canonical = target.canonicalize().ok();
+                snapshot
+                    .into_iter()
+                    .filter(|(_, cwd, _)| path_within(cwd, &target, canonical.as_deref()))
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if matching.is_empty() {
+                return;
+            }
+            if hurry {
+                for (session_id, _, _) in &matching {
+                    hurry_session(session_id);
+                }
+            }
+            for (_, _, mut exiting) in matching {
+                // Sender closure is the reaper's completion signal.
+                let _ = exiting.changed().await;
+                waited.push(exiting);
+            }
+        }
+    };
+    tokio::time::timeout(cap, wait)
+        .await
+        .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())
 }
 
 /// `await_all_exits` over a given registry. Exits registered while waiting (a pending spare
@@ -345,5 +421,63 @@ async fn wait_natural_exit(child: &mut Child, mut hurry: tokio::sync::watch::Rec
     tokio::select! {
         _ = child.wait() => {}
         () = deadline => {}
+    }
+}
+
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn await_exits_in_waits_for_canonical_and_nested_cwds_only() {
+        let base = std::env::temp_dir().join(format!("pandacode-exit-in-{}", uuid::Uuid::new_v4().simple()));
+        let folder = base.join("chat");
+        let nested = folder.join("sub");
+        let elsewhere = base.join("other");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+
+        let other_id = format!("exit-in-other-{}", uuid::Uuid::new_v4().simple());
+        let same_id = format!("exit-in-same-{}", uuid::Uuid::new_v4().simple());
+        let nested_id = format!("exit-in-nested-{}", uuid::Uuid::new_v4().simple());
+
+        // An unrelated folder's pending exit does not block awaiting `folder`.
+        let hold_other = hold_in_cwd_for_test(&other_id, elsewhere.clone());
+        tokio::time::timeout(Duration::from_secs(2), await_exits_in(&folder))
+            .await
+            .expect("unrelated exit must not block")
+            .unwrap();
+
+        // A pending exit matching `folder` via canonical spelling (`.`) or a nested cwd blocks until released.
+        let hold_same = hold_in_cwd_for_test(&same_id, folder.join("."));
+        let hold_nested = hold_in_cwd_for_test(&nested_id, nested.clone());
+        let waiter = tokio::spawn({
+            let folder = folder.clone();
+            async move { await_exits_in(&folder).await }
+        });
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!waiter.is_finished(), "must wait while matching exits are pending");
+
+        drop(hold_same);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        assert!(!waiter.is_finished(), "must still wait for nested exit in the same folder");
+
+        drop(hold_nested);
+        tokio::time::timeout(Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter should complete once matching exits end")
+            .unwrap()
+            .unwrap();
+
+        // Timeout bounds a stuck exit.
+        let stuck_id = format!("exit-in-stuck-{}", uuid::Uuid::new_v4().simple());
+        let hold_stuck = hold_in_cwd_for_test(&stuck_id, folder.clone());
+        assert!(wait_exits_in(&folder, Duration::from_millis(60), false).await.is_err());
+        drop(hold_stuck);
+        await_exit(&stuck_id).await.unwrap();
+
+        drop(hold_other);
+        await_exit(&other_id).await.unwrap();
+        let _ = std::fs::remove_dir_all(base);
     }
 }

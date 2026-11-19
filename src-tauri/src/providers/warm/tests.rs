@@ -500,7 +500,7 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
         Value::Object(fields) => fields.keys().cloned().collect(),
         _ => unreachable!(),
     };
-    let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "worker", "disallowedTools"].map(String::from).to_vec();
+    let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "fastMode", "worker", "disallowedTools"].map(String::from).to_vec();
     config_fields.extend(["namedConnection", "connection", "environment", "telemetryOff"].map(String::from));
     // Read from the session and the provider, which a lead's spare and its wake share.
     config_fields.extend(["disabledSkills", "executable"].map(String::from));
@@ -856,4 +856,91 @@ async fn pending_exits_exposes_and_clears_cwd() {
     drop(guard);
     await_exit(&session).await.unwrap();
     assert!(!super::super::exit::pending_exits().iter().any(|(id, _)| id == &session));
+}
+
+#[test]
+fn toggling_claude_fast_mode_changes_the_warm_key_identically_to_the_cli_flag() {
+    let cli_has_fast_flag = |cfg: &RunConfig| {
+        let mut command = Command::new("claude");
+        configure_command(&mut command, cfg);
+        let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        args.windows(2).any(|pair| pair == ["--settings", r#"{"fastMode":true}"#])
+    };
+    let with = |provider: &str, settings: Option<Value>| RunConfig {
+        codex_settings: settings,
+        ..crate::providers::tests::config(provider)
+    };
+    let standard = with("claude", None);
+    let toggled_off = with("claude", Some(json!({"serviceTier": null})));
+    let other_tier = with("claude", Some(json!({"serviceTier": "standard"})));
+    let fast = with("claude", Some(json!({"serviceTier": "fast"})));
+    let relay_fast = with("glm", Some(json!({"serviceTier": "fast"})));
+    // `claude_fast_mode` matches `configure_command` identically across every shape.
+    for cfg in [&standard, &toggled_off, &other_tier, &fast, &relay_fast] {
+        assert_eq!(claude_fast_mode(cfg), cli_has_fast_flag(cfg), "{:?}", cfg.codex_settings);
+    }
+    assert!(claude_fast_mode(&fast));
+    assert!(!claude_fast_mode(&standard));
+    assert!(!claude_fast_mode(&toggled_off));
+    assert!(!claude_fast_mode(&relay_fast));
+    // Standard speed variants share one key; fast mode produces a distinct key.
+    let standard_key = key(&standard, &[]);
+    let off_key = key(&toggled_off, &[]);
+    let fast_key = key(&fast, &[]);
+    assert_eq!(standard_key, off_key);
+    assert_eq!(standard_key, key(&other_tier, &[]));
+    assert_ne!(standard_key, fast_key);
+    assert_eq!(miss(true, &standard_key, &fast_key, Duration::from_secs(1), IDLE).as_deref(), Some("changed: fastMode"));
+    assert_eq!(miss(true, &fast_key, &off_key, Duration::from_secs(1), IDLE).as_deref(), Some("changed: fastMode"));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
+    let pool = own_pool();
+    let session = format!("warm-fast-mode-{}", uuid::Uuid::new_v4());
+    let base = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let standard_key = key(&base, &[]);
+    let off_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": null})), ..base.clone() }, &[]);
+    let fast_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": "fast"})), ..base.clone() }, &[]);
+    let insert = |lead: bool, spare_key: &str| {
+        let spare = Spare { key: spare_key.into(), ..idle_spare(lead, Duration::ZERO) };
+        let pid = pid_of(&spare);
+        spares(pool).spares.insert(session.clone(), spare);
+        pid
+    };
+    // Toggling Fast mode ON never adopts a standard-speed spare.
+    let pid = insert(false, &standard_key);
+    let (adopted, note) = take_in(pool, &session, &fast_key);
+    assert!(adopted.is_none());
+    assert_eq!(note.as_deref(), Some("Warm Claude agent not used (changed: fastMode); starting cold."));
+    assert!(!waiting_in(pool, &session));
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
+    // Toggling Fast mode OFF never adopts a fast-mode spare (which would overbill the next turn).
+    let pid = insert(false, &fast_key);
+    let (adopted, note) = take_in(pool, &session, &off_key);
+    assert!(adopted.is_none());
+    assert_eq!(note.as_deref(), Some("Warm Claude agent not used (changed: fastMode); starting cold."));
+    assert!(!waiting_in(pool, &session));
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
+    // A lead spare also refuses a fast-mode mismatch and reports the field name.
+    let pid = insert(true, &fast_key);
+    let (adopted, note) = take_in(pool, &session, &off_key);
+    assert!(adopted.is_none());
+    assert!(note.as_deref().is_some_and(|line| line.contains("Team lead's warm Claude agent not used (changed: fastMode)")), "{note:?}");
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
+    // Matching fast mode adopts cleanly, and standard None <-> serviceTier:null adopts cleanly.
+    insert(false, &fast_key);
+    let (adopted, note) = take_in(pool, &session, &fast_key);
+    assert!(note.is_none());
+    let (mut spare, _pending) = adopted.expect("matching fast-mode spare is adopted");
+    spare.child.kill().await.unwrap();
+    insert(false, &standard_key);
+    let (adopted, note) = take_in(pool, &session, &off_key);
+    assert!(note.is_none());
+    let (mut spare, _pending) = adopted.expect("standard None and serviceTier:null share one warm key");
+    spare.child.kill().await.unwrap();
 }

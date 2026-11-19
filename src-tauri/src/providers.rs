@@ -88,7 +88,7 @@ use exit::{reap, Reaped};
 #[cfg(all(test, unix))]
 use exit::{await_exit_with_cap, exit_registry};
 use launch_input::{next_input, stop_requested};
-pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently, pending_exits};
+pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently, await_exits_in, await_exits_in_patiently, pending_exits};
 #[cfg(test)]
 pub(crate) use exit::{hold_for_test as hold_exit_for_test, hold_in_cwd_for_test as hold_exit_in_cwd_for_test};
 use host_tools::apply_step;
@@ -3439,7 +3439,7 @@ pub(crate) const EXIT_WAIT: Duration = FINISH_GRACE;
 pub(crate) const BACKGROUND_EXIT_WAIT: Duration = Duration::from_millis(3000);
 pub(crate) const TERM_WAIT: Duration = Duration::from_millis(500);
 /// Fail a relaunch rather than overlap processes if shutdown is unexpectedly delayed.
-const EXIT_HARD_CAP: Duration = Duration::from_secs(10);
+pub(crate) const EXIT_HARD_CAP: Duration = Duration::from_secs(10);
 
 async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup, grace: Duration) {
     drop(stdin);
@@ -4086,9 +4086,25 @@ pub(crate) const EXPLORE_TOOL: &str = "pandacode_explore";
 pub(crate) use explore_permissions::explore_name;
 use explore_permissions::opencode_allowed;
 
-fn allow_opencode_tools(command: &mut Command, config: &RunConfig, bound: bool, names: &HashSet<String>) {
+fn allow_opencode_tools(
+    command: &mut Command,
+    config: &RunConfig,
+    bound: bool,
+    names: &HashSet<String>,
+    agents: Option<&crate::skill_manager::OpenCodeAgents>,
+) {
     let served = opencode_allowed(&config.provider, bound, names);
-    acp::allow_tools(command, &served);
+    if served.is_empty() {
+        return;
+    }
+    match agents {
+        Some(agents) => acp::allow_tools_with_agents(command, &served, agents),
+        None if !config.cwd.as_os_str().is_empty() => {
+            let agents = crate::skill_manager::opencode_all_agents_at(&config.cwd);
+            acp::allow_tools_with_agents(command, &served, &agents);
+        }
+        None => acp::allow_tools(command, &served),
+    }
 }
 // Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
 // transport capabilities, but retain their normal approval requirements and transcript
@@ -4243,7 +4259,22 @@ async fn run_process_launch(
     };
     // Known only now: a cloud run does not list explore, and a bind can fail. Either way the
     // allow rule must not cover a same-named tool on a user's own server.
-    allow_opencode_tools(&mut command, &config, mcp.is_some(), &mcp_tool_names);
+    // Scan OpenCode agents off the runtime before `command.current_dir(&config.cwd)` is set.
+    let opencode_agents = if !opencode_allowed(&config.provider, mcp.is_some(), &mcp_tool_names).is_empty()
+        && !config.cwd.as_os_str().is_empty()
+    {
+        let cwd = config.cwd.clone();
+        Some(crate::blocking(move || Ok(crate::skill_manager::opencode_all_agents_at(&cwd))).await?)
+    } else {
+        None
+    };
+    allow_opencode_tools(
+        &mut command,
+        &config,
+        mcp.is_some(),
+        &mcp_tool_names,
+        opencode_agents.as_ref(),
+    );
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
@@ -5407,7 +5438,7 @@ pub(crate) mod tests {
         enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
         let before = env_of(&command, "OPENCODE_CONFIG_CONTENT");
         let names = HashSet::from([EXPLORE_TOOL.into(), crate::custom_tools::TOOL_RUN.into()]);
-        allow_opencode_tools(&mut command, &cfg, true, &names);
+        allow_opencode_tools(&mut command, &cfg, true, &names, None);
         let after = env_of(&command, "OPENCODE_CONFIG_CONTENT");
         let value: Value = serde_json::from_str(&after).unwrap();
         assert_eq!(value["provider"]["work"]["name"], "Named provider");
@@ -5437,8 +5468,22 @@ pub(crate) mod tests {
         let raw = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
         let jsonc = "// named connection\n{\"permission\":{\"bash\":\"deny\"},}";
         let names = HashSet::from([EXPLORE_TOOL.into()]);
+
+        // Opaque inline config stays verbatim while bound-tool grants ride through OPENCODE_PERMISSION.
+        let mut command = Command::new("unused");
+        command.env("OPENCODE_CONFIG_CONTENT", raw);
+        command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+        allow_opencode_tools(&mut command, &config("opencode"), true, &names, None);
+        assert_eq!(env_of(&command, "OPENCODE_CONFIG_CONTENT"), raw);
+        let permission: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_PERMISSION")).unwrap();
+        assert_eq!(permission["skill"]["review"], "deny");
+        assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
+        assert_eq!(permission["pandacode_architect_pandacode_explore *"], "allow");
+
+        // Unserved launches leave both OPENCODE_CONFIG_CONTENT and OPENCODE_PERMISSION untouched.
         for (provider, bound, names, inline) in [
-            ("opencode", true, &names, raw),
+            ("opencode", false, &names, raw),
             ("opencode", false, &names, jsonc),
             ("opencode", true, &HashSet::new(), jsonc),
             ("kimi", true, &names, jsonc),
@@ -5446,10 +5491,60 @@ pub(crate) mod tests {
             let mut command = Command::new("unused");
             command.env("OPENCODE_CONFIG_CONTENT", inline);
             command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
-            allow_opencode_tools(&mut command, &config(provider), bound, names);
+            allow_opencode_tools(&mut command, &config(provider), bound, names, None);
             assert_eq!(env_of(&command, "OPENCODE_CONFIG_CONTENT"), inline);
             assert_eq!(env_of(&command, "OPENCODE_PERMISSION"), r#"{"skill":{"review":"deny"}}"#);
         }
+    }
+
+    #[test]
+    fn opencode_served_tools_discover_project_agents_from_config_cwd() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-project-agent-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.json"),
+            r#"{
+                "agent": {"custom-reviewer": {"permission": {"*": "deny"}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let names = HashSet::from([EXPLORE_TOOL.into()]);
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // Pre-scanned agents path (mirrors `run_process_launch`, before `command.current_dir`).
+        let mut command = Command::new("opencode");
+        configure_command(&mut command, &cfg);
+        assert!(command.as_std().get_current_dir().is_none());
+        let agents = crate::skill_manager::opencode_all_agents_at(&cfg.cwd);
+        allow_opencode_tools(&mut command, &cfg, true, &names, Some(&agents));
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
+            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
+            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+        }
+
+        // Direct path with `agents: None` also discovers project agents from `config.cwd`.
+        let mut command = Command::new("opencode");
+        configure_command(&mut command, &cfg);
+        assert!(command.as_std().get_current_dir().is_none());
+        allow_opencode_tools(&mut command, &cfg, true, &names, None);
+        let value: Value =
+            serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for agent in ["build", "plan", "general", "explore", "custom-reviewer", "custom-v2"] {
+            assert_eq!(value["agent"][agent]["permission"][tool], "allow", "{agent}");
+            assert_eq!(value["agent"][agent]["permission"][trailing], "allow", "{agent}");
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -5464,7 +5559,7 @@ pub(crate) mod tests {
             crate::custom_tools::TOOL_RUN.into(),
             "pandacode_explore2".into(),
         ]);
-        allow_opencode_tools(&mut command, &config("opencode"), true, &names);
+        allow_opencode_tools(&mut command, &config("opencode"), true, &names, None);
         let inline = env_of(&command, "OPENCODE_CONFIG_CONTENT");
         assert!(inline.contains(r#""bash":{"deploy *":"deny","*":"ask"}"#));
         assert!(inline.find(r#""pandacode_architect_*":"deny""#).unwrap()

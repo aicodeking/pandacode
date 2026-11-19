@@ -97,6 +97,7 @@ impl Run for ChecksRun {
             // The repo's check commands run with no approval step, like `runScript.start`.
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::RUN_CHECKS)?;
             let root = task_root(&ctx.state(), &self.session_id).await?;
+            crate::prepare_checkout_for_checks(&ctx.state(), &self.session_id, &root).await?;
             // Bounded by checks.rs (120 s, 64 KiB of output, a 4 KB tail in the reply).
             Ok(crate::checks::turn_report_after_exit(&self.session_id, root).await)
         })
@@ -733,5 +734,100 @@ mod tests {
         assert!(json!({"items": list}).to_string().len() <= PAGE_BUDGET);
         let mut small = vec![json!(1)];
         assert!(!fit(&mut small, "items"));
+    }
+
+    #[test]
+    fn checks_run_guards_sibling_agents_and_pending_exits_in_the_checkout() {
+        let source = include_str!("tools.rs");
+        let body = &source[source.find("impl Run for ChecksRun").unwrap()..source.find("// ---- recipes.list").unwrap()];
+        let root = body.find("task_root(&ctx.state(), &self.session_id).await?").unwrap();
+        let prepare = body
+            .find("crate::prepare_checkout_for_checks(&ctx.state(), &self.session_id, &root).await?")
+            .expect("checks.run guards sibling agents and pending exits");
+        let check = body.find("Ok(crate::checks::turn_report_after_exit(&self.session_id, root).await)").unwrap();
+        assert!(root < prepare && prepare < check);
+    }
+
+    #[tokio::test]
+    async fn prepare_checkout_for_checks_refuses_active_sibling_and_waits_for_pending_exits() {
+        let dir = std::env::temp_dir().join(format!("pandacode-tools-checks-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("elsewhere");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let other_project = store.add_project(&elsewhere).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let unrelated = store.create_session(&other_project.id, "claude", "default", "full").unwrap();
+        let state = std::sync::Arc::new(crate::AppState {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            agents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        });
+
+        // Active unrelated agent does not refuse.
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            unrelated.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        crate::prepare_checkout_for_checks(&state, &first.id, &root).await.unwrap();
+        state.agents.lock().unwrap().remove(&unrelated.id);
+
+        // Active sibling in the same checkout refuses immediately.
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            sibling.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        assert!(crate::prepare_checkout_for_checks(&state, &first.id, &root).await.is_err());
+        state.agents.lock().unwrap().remove(&sibling.id);
+
+        // Sibling pending exit (matched only via persisted task root, cwd: None) is awaited.
+        let hold_sibling = crate::providers::hold_exit_for_test(&sibling.id);
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            let sid = first.id.clone();
+            let root = root.clone();
+            async move { crate::prepare_checkout_for_checks(&state, &sid, &root).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished(), "must wait for sibling pending exit in the same checkout");
+        drop(hold_sibling);
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("should finish once sibling exit clears")
+            .unwrap()
+            .unwrap();
+
+        // Unpersisted worker/spare pending exit with matching cwd is also awaited, and a sibling
+        // starting during the wait causes refusal afterward.
+        let eph = format!("tools-checks-eph-{}", uuid::Uuid::new_v4().simple());
+        let hold_eph = crate::providers::hold_exit_in_cwd_for_test(&eph, root.join("."));
+        let waiting = tokio::spawn({
+            let state = state.clone();
+            let sid = first.id.clone();
+            let root = root.clone();
+            async move { crate::prepare_checkout_for_checks(&state, &sid, &root).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!waiting.is_finished(), "must wait for unpersisted cwd pending exit");
+        let (tx, _rx) = crate::unbounded_channel();
+        state.agents.lock().unwrap().insert(
+            sibling.id.clone(),
+            crate::RunningAgent::new(tx, std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        );
+        drop(hold_eph);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(2), waiting)
+            .await
+            .expect("should complete after exit clears")
+            .unwrap();
+        assert!(outcome.is_err(), "sibling started during wait must refuse checks");
+        state.agents.lock().unwrap().remove(&sibling.id);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

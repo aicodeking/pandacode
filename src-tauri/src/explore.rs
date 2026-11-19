@@ -392,8 +392,8 @@ const EXPLORE_OFF_FILE: &str = "explore-off";
 
 /// The harnesses explore is on for by default: only Claude Code was measured
 /// (docs/agent-loop-benchmark.md: Sonnet in Claude Code). Every other harness in
-/// `providers::explore_name`, the GLM and MiMo relays (other models) included, needs its own
-/// opt-in marker, `explore-on-<provider>` in app data (docs/agent-tools.md).
+/// `providers::explore_name`, the GLM, MiMo and Alibaba relays (other models) included, needs its
+/// own opt-in marker, `explore-on-<provider>` in app data (docs/agent-tools.md).
 fn on_by_default(provider: &str) -> bool {
     provider == "claude"
 }
@@ -459,7 +459,7 @@ pub(crate) fn run_name(cloud: bool, enabled: bool, provider: &str) -> Option<Run
     if cloud || !enabled {
         return None;
     }
-    let claude_code = matches!(provider, "claude" | "glm" | "mimo");
+    let claude_code = providers::claude_family(provider);
     providers::explore_name(provider).map(|name| RunExplore { name, claude_code })
 }
 
@@ -532,14 +532,18 @@ mod tests;
 
 #[cfg(test)]
 mod harness_marker_tests {
-    use super::harness_marker;
+    use super::{effective, harness_marker, run_name, RunExplore};
 
     #[test]
     fn harness_markers_cover_only_explore_harnesses() {
         assert_eq!(harness_marker("claude"), Ok(None));
         assert_eq!(harness_marker("codex"), Ok(Some("explore-on-codex".into())));
         assert_eq!(harness_marker("glm"), Ok(Some("explore-on-glm".into())));
-        for refused in ["gemini", "../secrets", ""] {
+        assert_eq!(harness_marker("alibaba"), Ok(Some("explore-on-alibaba".into())));
+        assert_eq!(run_name(false, true, "alibaba"), Some(RunExplore { name: "pandacode_explore", claude_code: true }));
+        assert!(!effective("alibaba", Ok(false), || Ok(false)), "alibaba is opt-in");
+        assert!(effective("alibaba", Ok(false), || Ok(true)), "alibaba opted in");
+        for refused in ["gemini", "cursor", "../secrets", ""] {
             assert!(harness_marker(refused).is_err(), "{refused}");
         }
     }

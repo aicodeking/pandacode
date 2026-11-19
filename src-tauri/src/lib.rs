@@ -115,7 +115,7 @@ use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, Mutex,
@@ -702,6 +702,183 @@ mod task_agent_tests {
         assert_eq!(checks.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn remove_project_quiesces_sessions_and_forgets_their_state() {
+        use crate::app_instructions::{remember_catalog, History};
+        let dir = std::env::temp_dir().join(format!("pandacode-rm-proj-{}", uuid::Uuid::new_v4().simple()));
+        let proj_dir = dir.join("removed");
+        let keep_dir = dir.join("kept");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::create_dir_all(&keep_dir).unwrap();
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&proj_dir).unwrap();
+        let kept_project = store.add_project(&keep_dir).unwrap();
+        let s1 = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let s2 = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let kept = store.create_session(&kept_project.id, "claude", "default", "full").unwrap();
+        let state = Arc::new(AppState {
+            store: Arc::new(Mutex::new(store)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        });
+
+        let natives = ["SendMessage".to_owned()];
+        for id in [&s1.id, &s2.id, &kept.id] {
+            remember_catalog(id, Some("conv-1"), None, &natives);
+            custom_tools::test_note(id);
+        }
+
+        // Refuses while an agent is active in this project.
+        let (tx, _rx) = unbounded_channel();
+        state.agents.lock().unwrap().insert(s1.id.clone(), RunningAgent::new(tx, Arc::new(AtomicBool::new(false))));
+        assert!(remove_project_in_state(&state, &project.id).await.unwrap_err().contains("agents"));
+        state.agents.lock().unwrap().remove(&s1.id);
+
+        // Refuses while an architect team is running/waiting in this project.
+        state
+            .store
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO architect_teams(session_id, content) VALUES(?1, ?2)",
+                rusqlite::params![s1.id, r#"{"status":"running"}"#],
+            )
+            .unwrap();
+        assert!(remove_project_in_state(&state, &project.id).await.unwrap_err().contains("architect teams"));
+        state
+            .store
+            .lock()
+            .unwrap()
+            .db
+            .execute("DELETE FROM architect_teams WHERE session_id=?1", [&s1.id])
+            .unwrap();
+
+        // Waits for pending exits of the project's sessions before removing the project row and forgetting state.
+        let hold = providers::hold_exit_for_test(&s1.id);
+        let removing = tokio::spawn({
+            let state = state.clone();
+            let pid = project.id.clone();
+            async move { remove_project_in_state(&state, &pid).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!removing.is_finished(), "remove_project must wait until project sessions finish exiting");
+        assert!(state.store.lock().unwrap().project(&project.id).is_ok());
+
+        drop(hold);
+        tokio::time::timeout(std::time::Duration::from_secs(2), removing)
+            .await
+            .expect("remove_project should finish once sessions quiesce")
+            .unwrap()
+            .unwrap();
+        assert!(state.store.lock().unwrap().project(&project.id).is_err());
+        for id in [&s1.id, &s2.id] {
+            assert_eq!(History::of(id, "claude", Some("conv-1")), History::unknown(false));
+            assert!(!custom_tools::test_noted(id));
+        }
+        assert_eq!(History::of(&kept.id, "claude", Some("conv-1")), History::holding(&["SendMessage"]));
+        assert!(custom_tools::test_noted(&kept.id));
+
+        app_instructions::forget(std::slice::from_ref(&kept.id));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn merge_and_remove_task_worktree_wait_for_own_exit_and_refuse_other_sessions() {
+        let base = std::env::temp_dir().join(format!("pandacode-wt-e2e-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.name", "Tests"]);
+        git(&main, &["config", "user.email", "tests@example.invalid"]);
+        std::fs::write(main.join("readme.txt"), "base\n").unwrap();
+        git(&main, &["add", "readme.txt"]);
+        git(&main, &["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-m", "init"]);
+
+        let wt = workspace::create_worktree_for(&main, "feature", None, false, workspace::Trust::Desktop).unwrap();
+        std::fs::write(wt.path.join("feature.txt"), "hi\n").unwrap();
+        git(&wt.path, &["add", "feature.txt"]);
+        git(&wt.path, &["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-m", "feat"]);
+
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let wt_task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let wt_fork = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let main_sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        for sid in [&wt_task.id, &wt_fork.id] {
+            store
+                .db
+                .execute(
+                    "UPDATE sessions SET worktree_path=?2, worktree_branch=?3 WHERE id=?1",
+                    rusqlite::params![sid, wt.path.to_string_lossy(), wt.branch],
+                )
+                .unwrap();
+        }
+        let state = Arc::new(AppState {
+            store: Arc::new(Mutex::new(store)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        });
+
+        // Merge waits for own pending exit, then refuses if a sibling started in `&main` meanwhile.
+        let hold_self = providers::hold_exit_in_cwd_for_test(&wt_task.id, wt.path.clone());
+        let merging = tokio::spawn({
+            let state = state.clone();
+            let sid = wt_task.id.clone();
+            async move { merge_task_worktree(&state, sid, workspace::Trust::Desktop).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!merging.is_finished(), "merge must wait on own pending exit");
+        let (tx, _rx) = unbounded_channel();
+        state.agents.lock().unwrap().insert(main_sibling.id.clone(), RunningAgent::new(tx, Arc::new(AtomicBool::new(false))));
+        drop(hold_self);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), merging).await.unwrap().unwrap();
+        assert!(outcome.is_err(), "sibling started in main during wait must refuse merge");
+        state.agents.lock().unwrap().remove(&main_sibling.id);
+
+        // Merge waits for own pending exit and succeeds cleanly once released.
+        let hold_self = providers::hold_exit_in_cwd_for_test(&wt_task.id, wt.path.clone());
+        let merging = tokio::spawn({
+            let state = state.clone();
+            let sid = wt_task.id.clone();
+            async move { merge_task_worktree(&state, sid, workspace::Trust::Desktop).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!merging.is_finished());
+        drop(hold_self);
+        let merged = tokio::time::timeout(std::time::Duration::from_secs(5), merging).await.unwrap().unwrap().unwrap();
+        assert_eq!(merged.commits, 1);
+
+        // Remove refuses while a forked task sharing `worktree_path` has a pending exit.
+        let hold_fork = providers::hold_exit_for_test(&wt_fork.id);
+        assert!(remove_task_worktree(&state, wt_task.id.clone(), true, workspace::Trust::Desktop).await.is_err());
+        assert!(wt.path.exists(), "worktree must stay when forked task is exiting");
+        drop(hold_fork);
+        providers::await_exit(&wt_fork.id).await.unwrap();
+
+        // Remove waits for own pending exit and removes the worktree once released.
+        let hold_self = providers::hold_exit_in_cwd_for_test(&wt_task.id, wt.path.clone());
+        let removing = tokio::spawn({
+            let state = state.clone();
+            let sid = wt_task.id.clone();
+            async move { remove_task_worktree(&state, sid, true, workspace::Trust::Desktop).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        assert!(!removing.is_finished(), "remove must wait on own pending exit");
+        drop(hold_self);
+        tokio::time::timeout(std::time::Duration::from_secs(5), removing).await.unwrap().unwrap().unwrap();
+        assert!(!wt.path.exists());
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     #[test]
     fn stale_running_status_recovers_after_completion_write_failure_without_hiding_live_runs() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
@@ -803,22 +980,80 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
     skill_manager::projects_changed();
     project
 }
-#[tauri::command]
-async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    let store = state.store.lock().map_err(|e| e.to_string())?;
+fn project_removal_sessions(
+    agents: &HashMap<String, RunningAgent>,
+    store: &Store,
+    project_id: &str,
+) -> Result<Vec<String>> {
     for session_id in agents.keys() {
-        if store.session(session_id)?.project_id == project_id {
+        if store.session(session_id).ok().is_some_and(|session| session.project_id == project_id) {
             return Err("Stop this project's agents first.".into());
         }
     }
-    let active_team:bool=store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[&project_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let active_team: bool = store
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",
+            [project_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
     if active_team {
         return Err("Stop this project's architect teams first.".into());
     }
-    let removed = store.remove_project(&project_id);
+    let mut query = store
+        .db
+        .prepare("SELECT id FROM sessions WHERE project_id=?1 ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = query
+        .query_map([project_id], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    let mut ids = Vec::new();
+    for row in rows {
+        ids.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(ids)
+}
+
+async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<()> {
+    let session_ids = {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        project_removal_sessions(&agents, &store, project_id)?
+    };
+    // Quiesce every project session before removing its rows so warm spares and pending exits
+    // do not leak or hold Windows `cwd` handles.
+    let results = futures_util::future::join_all(
+        session_ids.iter().map(|sid| providers::quiesce(sid)),
+    )
+    .await;
+    if let Some(error) = results.into_iter().find_map(Result::err) {
+        return Err(error);
+    }
+    let removed = {
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        let mut final_ids = project_removal_sessions(&agents, &store, project_id)?;
+        let removed = store.remove_project(project_id);
+        if removed.is_ok() {
+            for sid in session_ids {
+                if !final_ids.contains(&sid) {
+                    final_ids.push(sid);
+                }
+            }
+            app_instructions::forget(&final_ids);
+            architect::coordination::forget(&final_ids);
+            custom_tools::forget(&final_ids);
+        }
+        removed
+    };
     skill_manager::projects_changed();
     removed
+}
+
+#[tauri::command]
+async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
+    remove_project_in_state(&state, &project_id).await
 }
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
@@ -3296,9 +3531,211 @@ async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Resul
     merge_task_worktree(&state, session_id, workspace::Trust::Desktop).await
 }
 
+pub(crate) fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
+    let task = store.session(session_id).ok()?;
+    if task.remote_device.is_some() {
+        return None;
+    }
+    if let Some(worktree) = task.worktree_path {
+        return Some(PathBuf::from(worktree));
+    }
+    store.project(&task.project_id).ok().map(|project| PathBuf::from(project.path))
+}
+
+/// Whether any of `others` is `root`, literally or once both are canonical.
+pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
+    let canonical = std::cell::OnceCell::new();
+    others.iter().any(|other| {
+        other == root
+            || other
+                .canonicalize()
+                .ok()
+                .is_some_and(|a| canonical.get_or_init(|| root.canonicalize().ok()).as_ref() == Some(&a))
+    })
+}
+
+/// Whether any agent (other than `exclude_session`, when given) runs or has a pending exit in any
+/// checkout in `roots`, literally or canonically. Snapshots `state.agents` before
+/// `providers::pending_exits()` so a turn handing off to background reaping cannot slip between.
+pub(crate) async fn any_checkout_busy_excluding(
+    state: &AppState,
+    roots: &[PathBuf],
+    exclude_session: Option<&str>,
+) -> Result<bool> {
+    if roots.is_empty() {
+        return Ok(false);
+    }
+    let running: Vec<String> = lock_agents(&state.agents)
+        .map_err(|e| e.to_string())?
+        .keys()
+        .filter(|id| exclude_session != Some(id.as_str()))
+        .cloned()
+        .collect();
+    let exiting: Vec<(String, Option<PathBuf>)> = providers::pending_exits()
+        .into_iter()
+        .filter(|(id, _)| exclude_session != Some(id.as_str()))
+        .collect();
+    if running.is_empty() && exiting.is_empty() {
+        return Ok(false);
+    }
+    let store = state.store.clone();
+    let roots = roots.to_vec();
+    blocking(move || {
+        let mut others = Vec::with_capacity(running.len() + exiting.len());
+        {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            for session_id in running {
+                if let Some(other) = session_checkout_root(&store, &session_id) {
+                    others.push(other);
+                }
+            }
+            for (session_id, cwd) in exiting {
+                if let Some(dir) = cwd {
+                    others.push(dir);
+                }
+                if let Some(other) = session_checkout_root(&store, &session_id) {
+                    others.push(other);
+                }
+            }
+        }
+        Ok(roots.iter().any(|root| any_same_checkout(root, &others)))
+    })
+    .await
+}
+
+/// Whether any agent is actively running (in `state.agents`) in `root`, literally or canonically.
+pub(crate) async fn active_agent_in_state(state: &AppState, root: &Path) -> Result<bool> {
+    let running: Vec<String> = lock_agents(&state.agents)
+        .map_err(|e| e.to_string())?
+        .keys()
+        .cloned()
+        .collect();
+    if running.is_empty() {
+        return Ok(false);
+    }
+    let store = state.store.clone();
+    let root = root.to_path_buf();
+    blocking(move || {
+        let others: Vec<PathBuf> = {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            running
+                .into_iter()
+                .filter_map(|session_id| session_checkout_root(&store, &session_id))
+                .collect()
+        };
+        Ok(any_same_checkout(&root, &others))
+    })
+    .await
+}
+
+/// Session IDs in `providers::pending_exits()` whose recorded `cwd` or persisted workspace root
+/// matches `root`, literally or canonically.
+pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path) -> Result<Vec<String>> {
+    let exiting = providers::pending_exits();
+    if exiting.is_empty() {
+        return Ok(Vec::new());
+    }
+    let store = state.store.clone();
+    let root = root.to_path_buf();
+    blocking(move || {
+        let resolved: Vec<(String, Vec<PathBuf>)> = {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            exiting
+                .into_iter()
+                .map(|(session_id, cwd)| {
+                    let mut paths = Vec::with_capacity(2);
+                    if let Some(dir) = cwd {
+                        paths.push(dir);
+                    }
+                    if let Some(other) = session_checkout_root(&store, &session_id) {
+                        paths.push(other);
+                    }
+                    (session_id, paths)
+                })
+                .collect()
+        };
+        Ok(resolved
+            .into_iter()
+            .filter_map(|(session_id, paths)| any_same_checkout(&root, &paths).then_some(session_id))
+            .collect())
+    })
+    .await
+}
+
+/// Refuses checks while any agent is actively running in `root`, and patiently waits for
+/// `session_id` and any sibling pending exits sharing `root` (matched by recorded `cwd` or
+/// persisted workspace root) before re-checking for newly started agents.
+pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &str, root: &Path) -> Result<()> {
+    const BUSY: &str = "Wait for the agent to finish first.";
+    if active_agent_in_state(state, root).await? {
+        return Err(BUSY.into());
+    }
+    let wait = async {
+        providers::await_exit_patiently(session_id).await?;
+        providers::await_exits_in_patiently(root).await?;
+        loop {
+            let sibling_ids = pending_exit_sessions_in_state(state, root).await?;
+            if sibling_ids.is_empty() {
+                return Ok::<(), String>(());
+            }
+            for id in sibling_ids {
+                providers::await_exit_patiently(&id).await?;
+            }
+        }
+    };
+    tokio::time::timeout(providers::EXIT_HARD_CAP, wait)
+        .await
+        .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())??;
+    if active_agent_in_state(state, root).await? {
+        return Err(BUSY.into());
+    }
+    Ok(())
+}
+
+/// Refuses a worktree merge while `session_id` is actively running or any OTHER session (or
+/// unpersisted worker/spare with matching `cwd`) is actively running or exiting in either the
+/// main checkout or the worktree. Allows `session_id`'s own pending exit so `merge_task_worktree`
+/// awaits it cleanly.
+pub(crate) async fn refuse_worktree_merge_busy(state: &AppState, session_id: &str) -> Result<()> {
+    const BUSY: &str = "Wait for the agent to finish before merging its worktree.";
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(session_id) {
+        return Err(BUSY.into());
+    }
+    let store = state.store.clone();
+    let sid = session_id.to_owned();
+    let roots = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(main, path, _)| vec![main, path]))).await?;
+    if let Some(roots) = roots {
+        if any_checkout_busy_excluding(state, &roots, Some(session_id)).await? {
+            return Err(BUSY.into());
+        }
+    }
+    Ok(())
+}
+
+/// Refuses a worktree removal while `session_id` is actively running or any OTHER session (a
+/// forked task or team worker sharing `worktree_path`, or an unpersisted worker/spare with
+/// matching `cwd`) is actively running or exiting in the worktree. Allows `session_id`'s own
+/// pending exit so `remove_task_worktree` quiesces it cleanly.
+pub(crate) async fn refuse_worktree_remove_busy(state: &AppState, session_id: &str) -> Result<()> {
+    const BUSY: &str = "Stop the agent before removing its worktree.";
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(session_id) {
+        return Err(BUSY.into());
+    }
+    let store = state.store.clone();
+    let sid = session_id.to_owned();
+    let roots = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(_, path, _)| vec![path]))).await?;
+    if let Some(roots) = roots {
+        if any_checkout_busy_excluding(state, &roots, Some(session_id)).await? {
+            return Err(BUSY.into());
+        }
+    }
+    Ok(())
+}
+
 /// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
 /// phone's `worktree.merge` with its [`workspace::Trust`]), once its CLI has exited.
 pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
+    refuse_worktree_merge_busy(state, &session_id).await?;
     // A clean Claude-family run leaves the agents map at `result`, before its CLI has exited and
     // while it may still write to this checkout.
     guard_idle(
@@ -3307,6 +3744,9 @@ pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, tr
         "Wait for the agent to finish before merging its worktree.",
     )
     .await?;
+    // Re-check after awaiting `session_id`'s exit: another session may have started or entered
+    // background reaping in `&main` or `&path` meanwhile.
+    refuse_worktree_merge_busy(state, &session_id).await?;
     let store = state.store.clone();
     blocking(move || {
         let (main, path, _) = worktree_paths(&store, &session_id)?;
@@ -3343,6 +3783,7 @@ async fn remove_worktree(
 
 /// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
 pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
+    refuse_worktree_remove_busy(state, &session_id).await?;
     // A clean Claude-family run ends at `result`, before its CLI has exited (up to
     // `BACKGROUND_EXIT_WAIT + TERM_WAIT`, less once hurried); that process still has this
     // checkout as its working directory, and so may its warm spare.
@@ -3352,6 +3793,9 @@ pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, d
         "Stop the agent before removing its worktree.",
     )
     .await?;
+    // Re-check after quiescing `session_id`: a forked task or worker sharing `&path` may have
+    // started or entered background reaping meanwhile.
+    refuse_worktree_remove_busy(state, &session_id).await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // A lingering agent's working directory would block the removal on Windows.
     providers::end_lingering_in(&path).await;
@@ -3963,6 +4407,9 @@ async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Resu
         .session(&session_id)?
         .project_id;
     let root = state.root(&project_id, Some(&session_id))?;
+    if let Err(reason) = prepare_checkout_for_checks(&state, &session_id, &root).await {
+        return Ok(serde_json::json!({"checked": false, "reason": reason}));
+    }
     Ok(checks::turn_report_after_exit(&session_id, root).await)
 }
 #[tauri::command]

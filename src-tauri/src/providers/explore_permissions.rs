@@ -8,7 +8,7 @@ use std::collections::HashSet;
 /// call. Others stay without it until a frame recorded from them is matched in `allow_pandacode_tools`.
 pub(crate) fn explore_name(provider: &str) -> Option<&'static str> {
     match provider {
-        "claude" | "glm" | "mimo" | "codex" | "kimi" | "opencode" | "pi" | "omp" => Some(EXPLORE_TOOL),
+        "claude" | "glm" | "mimo" | "alibaba" | "codex" | "kimi" | "opencode" | "pi" | "omp" => Some(EXPLORE_TOOL),
         // Grok resolves only the server-qualified name, and asks before failing on the bare one.
         "grok" => Some("pandacode_architect__pandacode_explore"),
         _ => None,
@@ -94,18 +94,20 @@ mod tests {
         assert_eq!(mcp.tools[0]["name"], EXPLORE_TOOL);
         assert!(mcp.approval_tools.is_empty());
         let name = format!("mcp__pandacode_architect__{EXPLORE_TOOL}");
-        for mode in ["ask", "auto", "plan"] {
-            for (registered, tool) in [(true, name.as_str()), (false, name.as_str()), (true, "mcp__other__pandacode_explore"), (true, "mcp__pandacode_architect__pandacode_explore2")] {
-                let mut cfg = config("claude");
-                cfg.mode = mode.into();
-                let mut p = Protocol::new(cfg);
-                if registered { p.mcp_tool_names.insert(name.clone()); }
-                let step = p.receive(json!({"type":"control_request","request_id":"explore","request":{"subtype":"can_use_tool","tool_name":tool,"input":{"search":["x"]}}})).unwrap();
-                if registered && tool == name {
-                    assert!(step.events.is_empty());
-                    assert_eq!(step.write[0]["response"]["response"]["behavior"], "allow");
-                } else {
-                    assert_eq!(step.events[0].kind, "approval", "{mode} {registered} {tool}");
+        for provider in ["claude", "alibaba"] {
+            for mode in ["ask", "auto", "plan"] {
+                for (registered, tool) in [(true, name.as_str()), (false, name.as_str()), (true, "mcp__other__pandacode_explore"), (true, "mcp__pandacode_architect__pandacode_explore2")] {
+                    let mut cfg = config(provider);
+                    cfg.mode = mode.into();
+                    let mut p = Protocol::new(cfg);
+                    if registered { p.mcp_tool_names.insert(name.clone()); }
+                    let step = p.receive(json!({"type":"control_request","request_id":"explore","request":{"subtype":"can_use_tool","tool_name":tool,"input":{"search":["x"]}}})).unwrap();
+                    if registered && tool == name {
+                        assert!(step.events.is_empty(), "{provider} {mode}");
+                        assert_eq!(step.write[0]["response"]["response"]["behavior"], "allow", "{provider} {mode}");
+                    } else {
+                        assert_eq!(step.events[0].kind, "approval", "{provider} {mode} {registered} {tool}");
+                    }
                 }
             }
         }
@@ -166,10 +168,10 @@ mod tests {
 
     #[test]
     fn explore_goes_only_to_harnesses_with_a_recorded_way_not_to_prompt() {
-        for provider in ["claude", "glm", "mimo", "codex", "kimi", "grok", "opencode", "pi", "omp"] {
+        for provider in ["claude", "glm", "mimo", "alibaba", "codex", "kimi", "grok", "opencode", "pi", "omp"] {
             assert!(explore_name(provider).is_some(), "{provider}");
         }
-        for provider in ["hermes", "devin", "cline", "kilo", "github-copilot", "deepseek", "commandcode", "muse", "antigravity", "zcode"] {
+        for provider in ["hermes", "devin", "cline", "kilo", "github-copilot", "deepseek", "commandcode", "muse", "antigravity", "zcode", "cursor"] {
             assert_eq!(explore_name(provider), None, "{provider}");
         }
     }

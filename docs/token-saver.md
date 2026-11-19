@@ -44,7 +44,7 @@ follow-up, failover) appends the thread block without its `subagents` sentence
 (`Applied.switchOff`); a worker that never had packs never gets one. A parked worker that resumes with its
 sub-workers' results stays in the same conversation and does not get the block again.
 
-**Lead guidance** (in the dispatch tool description):
+**Lead guidance** (`LEAD_SAVER_GUIDANCE` in `architect/saver.rs`, added to the lead's rules only when token saver packs are active in its thread or named in team guidance — not in the dispatch tool description, where `token_saver_schema` stays one line):
 
 > tokenSaver: "none" or {packs: caveman|lean-code|quiet-tools|rtk, level: lite|full|ultra,
 > caveman only}; default "none". Measured: packs did not cut worker cost; leave it unless the

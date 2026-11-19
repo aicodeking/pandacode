@@ -171,6 +171,15 @@ fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
     key_with_disabled(config, tools, connection, &disabled)
 }
 
+/// Whether this launch passes `--settings {"fastMode":true}` (`configure_command_with_agents`).
+fn claude_fast_mode(config: &RunConfig) -> bool {
+    config.provider == "claude"
+        && config
+            .codex_settings
+            .as_ref()
+            .is_some_and(|settings| settings["serviceTier"] == "fast")
+}
+
 fn key_with_disabled(
     config: &RunConfig,
     tools: &[Value],
@@ -182,6 +191,8 @@ fn key_with_disabled(
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
         "instructions": config.instructions, "tools": tools,
+        // Claude's fast mode passes `--settings {"fastMode":true}` at spawn (`configure_command_with_agents`).
+        "fastMode": claude_fast_mode(config),
         // A team worker's tool trim (read-only, skills) is on its command line.
         "worker": config.worker,
         // The deny set read once per turn from the conversation's history (`lib.rs`), so a

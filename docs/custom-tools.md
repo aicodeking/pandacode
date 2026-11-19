@@ -242,8 +242,9 @@ Tools only help if agents use them. Two choices make that happen:
    multi-step command sequence you need, run it; after doing the same sequence twice, or
    once when it will clearly recur, save it with pandacode_tool_save."
 
-   Once a tool exists, the save tool's description holds the full guidance on when to make a tool and what a
-   good one looks like, with "a sequence that will clearly come up again" first.
+   The save tool's description (`SAVE_DESCRIPTION` in `custom_tools/host.rs`) is static even when no tool
+   exists yet — so saving the first tool never rewrites the prompt cache — and holds the full guidance on
+   when to make a tool and what a good one looks like, with "a sequence that will clearly come up again" first.
 2. **`when` is a trigger, not a summary.** Save asks for the situation in which to use the
    tool ("After editing wallpaper scenes"), because an agent matches its situation to that
    line. The description says what the tool does.

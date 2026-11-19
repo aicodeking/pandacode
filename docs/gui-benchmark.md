@@ -428,3 +428,13 @@ The Linux-mode regression rejects non-POSIX copy flags and exercises actual host
 
 G2-6 supersedes G2-5 to pin the changed `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins and all three analysis pins unchanged. The preceding 31 registration rows and every historical registered section remain byte-identical. No historical result, prepared launch text, metadata, snapshot, seed, treatment, budget or launch gate changes. G2-5's launch-text-drift restriction and the separate smoke/main approval gates still apply; this maintenance entry authorizes no model call or batch launch.
 <!-- /deviation:G2-6 -->
+
+### CI maintenance: recursive build-script fingerprint cleanup
+
+<!-- deviation:G2-7 -->
+**G2-7** (2026-11-18, maintenance only; no benchmark calls). Ubuntu CI uses Cargo's nested build-dir layout (`debug/.fingerprint/<pkg>/<hash>/run-build-script-*`, two levels under `.fingerprint/`), which `cloneTarget`'s one-level directory scan missed, causing `runner.test.mjs`'s cache-regeneration test to fail on `ubuntu-latest`. `cloneTarget` now walks `debug/.fingerprint/` recursively (without following symlinks) and removes any `run-build-script-*` file at any depth in the disposable copy only, handling both flat (`.fingerprint/<pkg>-<hash>/`) and nested (`.fingerprint/<pkg>/<hash>/`) layouts while retaining compiled `build-script-build` artifacts and leaving the source cache untouched.
+
+A new regression test in `runner.test.mjs` exercises both flat and nested `.fingerprint/` layouts and verifies that `run-build-script-*` files are removed only from the disposable copy while `build-script-build` files and the source cache remain intact.
+
+G2-7 supersedes G2-6 to pin the changed `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins (`tasks-gui.json`, `tasks.json`, `tasks-edit-v2.json`, `gui.mjs`, `run.mjs`, `saver.mjs`) and all three analysis pins unchanged. The preceding 32 registration rows and every historical registered section remain byte-identical. No historical result, prepared launch text, metadata, snapshot, seed, treatment, budget or launch gate changes. G2-5's launch-text-drift restriction and the separate smoke/main approval gates still apply; this maintenance entry authorizes no model call or batch launch.
+<!-- /deviation:G2-7 -->

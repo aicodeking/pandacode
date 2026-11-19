@@ -174,7 +174,7 @@ This is the dimension that most affects speed and tokens.
 
 ### Code search or indexing given to the agent
 
-- **PandaCode**: `pandacode_explore` is one read-only call for search, definitions, outlines, ranged reads and test lookup. It uses a local index, refuses secret files, and is on by default with a Settings switch ([`docs/agent-tools.md`](agent-tools.md)).
+- **PandaCode**: `pandacode_explore` is one read-only call for search, definitions, outlines, ranged reads and test lookup. It uses a local index, refuses secret files, and is on by default only for Claude Code and opt-in per harness elsewhere, with a Settings switch ([`docs/agent-tools.md`](agent-tools.md)).
 - **Cursor**:
   - Instant Grep, a local index that is "faster than ripgrep on large codebases" by Cursor's account.
   - An Explore subagent.

@@ -315,8 +315,8 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   read-only search, outline and read tool agents call with no approval prompt;
   it refuses secret files, but your harness's own deny rules (such as Claude
   Code's `Read(...)` patterns) do not bind it. It is on by default only for
-  Claude Code, the one harness it was measured on; other harnesses (GLM and MiMo
-  included) get it only after you turn on their own switch listed under
+  Claude Code, the one harness it was measured on; other harnesses (GLM, MiMo and
+  Alibaba Token Plan included) get it only after you turn on their own switch listed under
   Settings → Agents → **Local code explorer (pandacode_explore)** (stored as an
   empty `explore-on-<provider>` file in PandaCode's app data, which you can also
   create by hand). That main switch turns it off for every harness. See

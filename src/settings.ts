@@ -98,7 +98,7 @@ const NATIVE_SWITCHES = [
 /** The explorer's harnesses (`providers::explore_name`): Claude Code is on by default, each other
  * one opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */
 const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
-  { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'codex', name: 'Codex' },
+  { id: 'claude', name: 'Claude Code' }, { id: 'glm', name: 'GLM' }, { id: 'mimo', name: 'MiMo' }, { id: 'alibaba', name: 'Alibaba Token Plan' }, { id: 'codex', name: 'Codex' },
   { id: 'kimi', name: 'Kimi Code' }, { id: 'opencode', name: 'OpenCode' }, { id: 'pi', name: 'Pi' }, { id: 'omp', name: 'Oh My Pi' }, { id: 'grok', name: 'Grok Build' },
 ];
 const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {

@@ -43,7 +43,7 @@ test('the explorer switch lists its harnesses: Claude Code on by default, each o
   await openAgents(page);
   await expect(harness(page, 'Claude Code')).toBeChecked();
   await expect(harness(page, 'Claude Code')).toBeDisabled();
-  for (const name of ['GLM', 'MiMo', 'Codex', 'Kimi Code', 'OpenCode', 'Pi', 'Oh My Pi', 'Grok Build']) {
+  for (const name of ['GLM', 'MiMo', 'Alibaba Token Plan', 'Codex', 'Kimi Code', 'OpenCode', 'Pi', 'Oh My Pi', 'Grok Build']) {
     await expect(harness(page, name)).toBeEnabled();
     await expect(harness(page, name)).not.toBeChecked();
   }
@@ -54,13 +54,18 @@ test('the explorer switch lists its harnesses: Claude Code on by default, each o
 
   await harness(page, 'Codex').click();
   await expect(harness(page, 'Codex')).toBeChecked();
+  await harness(page, 'Alibaba Token Plan').click();
+  await expect(harness(page, 'Alibaba Token Plan')).toBeChecked();
   await page.keyboard.press('Escape');
   await expect(settings(page)).toBeHidden();
   await openAgents(page);
   await expect(harness(page, 'Codex')).toBeChecked();
+  await expect(harness(page, 'Alibaba Token Plan')).toBeChecked();
   await expect(harness(page, 'GLM')).not.toBeChecked();
   await harness(page, 'Codex').click();
   await expect(harness(page, 'Codex')).not.toBeChecked();
+  await harness(page, 'Alibaba Token Plan').click();
+  await expect(harness(page, 'Alibaba Token Plan')).not.toBeChecked();
 });
 
 test('an unreadable harness’s explorer switch stays disabled and a refused save snaps back with the reason', async ({ page }) => {
