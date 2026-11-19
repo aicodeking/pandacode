@@ -7,7 +7,7 @@ import { expect, test, type Page } from '@playwright/test';
 const PROVIDERS_DELAY = 3_000;
 const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
 type SavedHarness = { provider: string; model: string };
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdRefresh?: boolean; __releaseRefresh?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __effortCalls?: { sessionId: string; reasoningEffort: string | null }[]; __speedCalls?: { sessionId: string; tier: string | null }[]; __connectionAssigns?: { sessionId: string; connectionId: string | null }[]; __getMessagesCalls?: string[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -21,6 +21,10 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
     expect(source).toMatch(marker);
     const body = source.replace(marker, `$&
       if (args.force && window.__refreshedHarnesses) {
+        if (window.__holdRefresh) {
+          window.__holdRefresh = false;
+          await new Promise(resolve => { window.__releaseRefresh = resolve; });
+        }
         result = listPreviewProviders(true).filter(provider => window.__refreshedHarnesses.includes(provider.id));
         break;
       }
@@ -40,6 +44,14 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
           const error = await new Promise(resolve => { window.__releaseConfigure = resolve; });
           if (error) throw new Error(error);
         }`)
+      .replace(/case ["']set_reasoning_effort["']\s*:\s*\{/, `$&
+        (window.__effortCalls ??= []).push({ sessionId: args.sessionId, reasoningEffort: args.reasoningEffort ?? null });`)
+      .replace(/case ["']set_task_preference["']\s*:\s*\{/, `$&
+        if (args.request?.action === "speed") (window.__speedCalls ??= []).push({ sessionId: args.sessionId, tier: args.request.tier ?? null });`)
+      .replace(/case ["']connection_assign["']\s*:\s*\{/, `$&
+        (window.__connectionAssigns ??= []).push({ sessionId: args.sessionId, connectionId: args.connectionId ?? null });`)
+      .replace(/case ["']get_messages["']\s*:\s*\{/, `$&
+        (window.__getMessagesCalls ??= []).push(args.sessionId);`)
       .replace(/case ["']send_message["']\s*:\s*\{/, `$&
         (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });
         { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }`)
@@ -949,4 +961,199 @@ test('an edit during an ordinary harness save cancels that Send and keeps the ed
   await page.waitForTimeout(100);
   expect(await sent(page)).toEqual([]);
   await editWhileSaving(page, thread);
+});
+
+/** Opens the picker on a provisional draft where correction #1 (to claude/opus) has completed and enabled the
+ *  picker's effort/speed controls while correction #2 (to `secondProviders[0]`) is still held in flight. */
+async function heldSecondCorrection(page: Page, secondProviders: string[]): Promise<string> {
+  await page.addInitScript(ids => {
+    localStorage.setItem('pandacode.model.claude', 'opus');
+    localStorage.setItem('pandacode.model.codex', 'gpt-6-astra');
+    const w = window as BootWindow;
+    w.__holdRefresh = true;
+    w.__refreshedHarnesses = ids;
+  }, secondProviders);
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page, 25_000);
+
+  // Start a Settings refresh (higher catalog generation) and keep it held until boot's catalog fills the picker.
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseRefresh), { timeout: 10_000 }).toBe('function');
+  await settings.getByRole('button', { name: 'Back to the workspace' }).click();
+
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const draft = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+  await page.locator('#model-picker-trigger').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+
+  await page.evaluate(() => { (window as BootWindow).__holdConfigure = true; });
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+
+  // Release the newer Settings refresh so correction #1 loops into a held correction #2.
+  await page.evaluate(() => (window as BootWindow).__releaseRefresh!());
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.providerCatalog') ?? '[]')
+    .filter((provider: { installed: boolean }) => provider.installed).map((provider: { id: string }) => provider.id)), { timeout: 10_000 })
+    .toEqual(secondProviders);
+
+  await page.evaluate(() => {
+    const w = window as BootWindow;
+    const done = w.__releaseConfigure!;
+    w.__releaseConfigure = undefined;
+    w.__holdConfigure = true;
+    done();
+  });
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__configured ?? [])).toEqual([
+    { sessionId: draft, provider: 'claude' }, { sessionId: draft, provider: secondProviders[0] },
+  ]);
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect(menu.locator('.model-menu-effort[data-kind="effort"]')).toBeVisible();
+  await expect(menu.locator('.model-menu-effort[data-kind="speed"]')).toBeVisible();
+  return draft;
+}
+
+test('reasoning effort waits for an in-flight provisional correction instead of racing it', async ({ page }) => {
+  test.setTimeout(60_000);
+  const draft = await heldSecondCorrection(page, ['codex']);
+  const menu = page.locator('.model-menu');
+  const high = menu.locator('.model-menu-effort[data-kind="effort"]').getByRole('radio', { name: 'High', exact: true });
+  await expect(high).toBeEnabled();
+  await high.click();
+  await expect(menu).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => (window as BootWindow).__effortCalls ?? [])).toEqual([]);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(menu).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'codex');
+  await expect(high).toHaveAttribute('aria-checked', 'true');
+  expect(await page.evaluate(() => (window as BootWindow).__effortCalls ?? [])).toEqual([{ sessionId: draft, reasoningEffort: 'high' }]);
+  const saved = await page.evaluate(async id => {
+    const task = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string; model: string; reasoningEffort: string | null };
+    return { provider: task.provider, model: task.model, reasoningEffort: task.reasoningEffort };
+  }, draft);
+  expect(saved).toEqual({ provider: 'codex', model: 'gpt-6-astra', reasoningEffort: 'high' });
+});
+
+test('speed tier waits for an in-flight provisional correction and re-checks the saved provider', async ({ page }) => {
+  test.setTimeout(60_000);
+  const draft = await heldSecondCorrection(page, ['cursor']);
+  const menu = page.locator('.model-menu');
+  const fast = menu.locator('.model-menu-effort[data-kind="speed"]').getByRole('radio', { name: 'Fast', exact: true });
+  await expect(fast).toBeEnabled();
+  await fast.click();
+  await expect(menu).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => (window as BootWindow).__speedCalls ?? [])).toEqual([]);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(menu.getByRole('alert')).toHaveText('This agent does not support speed tiers.');
+  await expect(menu).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'cursor');
+  expect(await page.evaluate(() => (window as BootWindow).__speedCalls ?? [])).toEqual([]);
+  const saved = await page.evaluate(async id => {
+    const task = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as { provider: string; codexSettings?: { serviceTier?: string | null } };
+    return { provider: task.provider, serviceTier: task.codexSettings?.serviceTier ?? null };
+  }, draft);
+  expect(saved).toEqual({ provider: 'cursor', serviceTier: null });
+});
+
+test('selecting another model on the corrected harness keeps its connection and skips transcript reload', async ({ page }) => {
+  test.setTimeout(60_000);
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page, 25_000);
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const draft = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+
+  // Assign a named connection before the picker opens (and reads connections_list).
+  const connectionId = await page.evaluate(async id => {
+    const preview = await import('/src/preview.ts');
+    const saved = await preview.invoke('connection_save', { connection: { provider: 'claude', name: 'Work Claude' } }) as { connections: { id: string }[] };
+    const connection = saved.connections[0].id;
+    await preview.invoke('connection_assign', { sessionId: id, connectionId: connection });
+    return connection;
+  }, draft);
+
+  await page.locator('#model-picker-trigger').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+
+  await page.evaluate(() => { (window as BootWindow).__holdConfigure = true; });
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+
+  const trigger = page.locator('#model-picker-trigger');
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect(trigger.locator('[data-model-label]')).toHaveText('Claude Sonnet 5');
+
+  // Clear call logs right before choosing another Claude model from the same picker.
+  await page.evaluate(() => {
+    const w = window as BootWindow;
+    w.__connectionAssigns = [];
+    w.__getMessagesCalls = [];
+  });
+  await menu.locator('[role="tab"][data-view="h:claude"]').click();
+  await menu.getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await expect(menu).toBeHidden();
+  await expect(trigger.locator('[data-model-label]')).toHaveText('Claude Opus 5');
+
+  expect(await page.evaluate(() => (window as BootWindow).__connectionAssigns ?? [])).toEqual([]);
+  expect(await page.evaluate(() => (window as BootWindow).__getMessagesCalls ?? [])).toEqual([]);
+  const state = await page.evaluate(async id => {
+    const preview = await import('/src/preview.ts');
+    const task = await preview.invoke('get_task', { sessionId: id }) as SavedHarness;
+    const connections = await preview.invoke('connections_list', {}) as { tasks: Record<string, string> };
+    return { provider: task.provider, model: task.model, connection: connections.tasks[id] ?? null };
+  }, draft);
+  expect(state).toEqual({ provider: 'claude', model: 'opus', connection: connectionId });
+});
+
+test('moving a provisional draft to No project preserves provisional tracking and auto-corrects', async ({ page }) => {
+  test.setTimeout(60_000);
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page, 25_000);
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const prompt = page.locator('#prompt');
+  const draft = (await prompt.getAttribute('data-session-id'))!;
+  const trigger = page.locator('#model-picker-trigger');
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'antigravity');
+
+  const text = 'Move this provisional draft to a projectless chat';
+  await prompt.fill(text);
+  await page.locator('#welcome-project').click();
+  await page.getByRole('option', { name: /No project/ }).click();
+  await expect(page.getByRole('heading', { name: 'What’s on your mind?' })).toBeVisible({ timeout: 10_000 });
+  const chatId = (await prompt.getAttribute('data-session-id'))!;
+  expect(chatId).not.toBe(draft);
+  await expect(prompt).toHaveValue(text);
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'antigravity');
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect(trigger.locator('[data-logo]')).toHaveAttribute('data-logo', 'claude');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__configured ?? [])).toEqual([{ sessionId: chatId, provider: 'claude' }]);
+  const saved = await page.evaluate(async id => {
+    const task = await (await import('/src/preview.ts')).invoke('get_task', { sessionId: id }) as SavedHarness;
+    return { provider: task.provider, model: task.model };
+  }, chatId);
+  expect(saved).toEqual({ provider: 'claude', model: 'sonnet' });
+
+  await prompt.press('Enter');
+  await expect.poll(() => sent(page)).toEqual([{ sessionId: chatId, text }]);
+  expect(await sentHarnesses(page)).toEqual([{ provider: 'claude', model: 'sonnet' }]);
 });

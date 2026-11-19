@@ -6584,6 +6584,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     onEffortSelect: async reasoningEffort => {
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
+      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -6597,6 +6599,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
+      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+      await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
       if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
@@ -6617,6 +6621,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      const previousProvider = savedSelection().provider;
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.
@@ -6634,14 +6639,14 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         provisionalTasks.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
-        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
+        if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {
           if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
           localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
         } else localChoice = undefined;
         if (inPanel) { if (current()) btwPanel.harnessChanged(); }
         else if (selected.id === state.sessionId && generation === state.generation) {
-          if (providerId !== selected.provider) {
+          if (providerId !== previousProvider) {
             // The harness change is already durable; a transcript refresh error
             // must not report the selection itself as failed or restore stale controls.
             try {
@@ -6791,7 +6796,7 @@ async function createChat(from?: Session): Promise<void> {
     if (generation !== state.generation) return;
     if (!harness) { notify('Open Settings to check your installed agents.'); return; }
     if (!from) leaveDraft('');
-    const provisional = !from && !providersKnown;
+    const provisional = from ? provisionalTasks.has(from.id) : !providersKnown;
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
     noteProvisional(created, provisional);
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
