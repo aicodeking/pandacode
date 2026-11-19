@@ -314,13 +314,16 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .turn-card>.errors-dismissed-note{margin:0;padding:2px 10px 0}
 .message-error.error-row{display:block;padding:0;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);color:var(--text);font-size:var(--thread-font)}
 /* Clear of the floating action dock, as .account-switch-note is: the row's buttons sit at its right edge. A box on its
-   own keeps a margin; inside a turn card the box runs the card's full width, like the card's header and reply, and only
-   the controls (×, disclosure, Dismiss all) and the detail's text keep clear. */
+   own keeps a margin; inside a turn card the box and its controls (×, disclosure, Dismiss all) run the card's full width,
+   aligned with the card's own right-edge controls (Workers ⋯, Run). They move left only by how far the dock really
+   reaches over the card (--error-dock-overlap, src/error-dock-overlap.ts; narrow panes), never more than the clearance. */
 .work-area[data-tiles]>.conversation-pane{--error-dock-clear:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}
 @media(min-width:651px){.work-area>.conversation-pane{--error-dock-clear:calc(var(--dock-item) + 2 * var(--dock-pad) + 10px)}}
 .conversation-pane .thread-errors:not(.turn-card-errors){margin-inline-end:var(--error-dock-clear,0px)}
-.conversation-pane .turn-card-errors .error-row-head,.conversation-pane .turn-card-errors .error-dismiss-all-row{padding-inline-end:calc(var(--error-dock-clear,0px) + 3px)}
-.conversation-pane .turn-card-errors .error-row-detail{margin-inline-end:var(--error-dock-clear,10px)}
+/* Declared on the rows themselves: --error-dock-overlap is set on #transcript, below the pane. */
+.conversation-pane .turn-card-errors{--error-card-clear:min(var(--error-dock-clear,0px),var(--error-dock-overlap,var(--error-dock-clear,0px)))}
+.conversation-pane .turn-card-errors .error-row-head,.conversation-pane .turn-card-errors .error-dismiss-all-row{padding-inline-end:calc(var(--error-card-clear) + 3px)}
+.conversation-pane .turn-card-errors .error-row-detail{margin-inline-end:max(10px,var(--error-card-clear))}
 /* Inside a card (already a legible plate over a wallpaper) a row is the card's quiet inner fill, the alert icon carries the tone. */
 .workspace[data-scene] .conversation-pane .turn-card-errors .message-error.error-row{background:var(--ds-card-inner)}
 .error-row-head{display:flex;align-items:center;gap:8px;min-height:34px;padding:2px 3px 2px 10px}
