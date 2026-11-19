@@ -1,6 +1,6 @@
 import type { AgentEvent, BrowserElement, BrowserStatus, TerminalEvent } from './types';
 
-export const preview = !('__TAURI_INTERNALS__' in window);
+export const preview = typeof window === 'undefined' || !('__TAURI_INTERNALS__' in window);
 export async function call<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
   if (preview) return (await import('./preview')).invoke<T>(command, args);
   return (await import('@tauri-apps/api/core')).invoke<T>(command, args);

@@ -21,6 +21,7 @@ import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountRemoteSettings } from './remote-settings';
 import { mountSchedulesSettings } from './schedules-settings';
+import { mountMemorySettings } from './memory-settings';
 import { appUpdates } from './app-updates';
 import type { RemoteHost } from './remote-types';
 import type { AgentsDockPreferences } from './agents-dock';
@@ -175,6 +176,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
       </div>
       ${fold('Capabilities and cache', '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';
+    case 'memory': return '<div id="memory-settings"></div>';
     case 'skills': return '<div id="skill-manager"></div>';
     case 'rules': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
@@ -324,6 +326,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'routing' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
+    if (id === 'memory') cleanups.push(mountMemorySettings(panel.querySelector<HTMLElement>('#memory-settings')!, { projects: options.projects?.list() ?? [] }));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
       slot.closest('details')!.addEventListener('toggle', () => cleanups.push(mountCapabilities(slot, call)), { once: true });

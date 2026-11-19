@@ -1,0 +1,4 @@
+/* Composer Memory Fabric switch. On is the accent; the icon keeps its size in the
+ * composer row. No layout or colour outside the design tokens. */
+.composer-memory[data-on="true"] { color: var(--accent); }
+.composer-memory[data-on="true"]:hover { background: var(--accent-tint); }

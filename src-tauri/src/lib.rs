@@ -13,6 +13,7 @@ mod agent_usage_claude_store;
 mod agent_updates;
 mod agent_usage_providers;
 mod memory;
+mod memory_fabric;
 #[cfg(target_os = "macos")]
 mod app_menu;
 mod app_updates;
@@ -4925,6 +4926,14 @@ pub fn run() {
                 vsix_themes::theme_remove,
                 token_saver::token_saver_tools,
                 token_saver::token_saver_install,
+                memory_fabric::memory_remember,
+                memory_fabric::memory_recall,
+                memory_fabric::memory_context,
+                memory_fabric::memory_touch,
+                memory_fabric::memory_update,
+                memory_fabric::memory_forget,
+                memory_fabric::memory_scopes,
+                memory_fabric::memory_stats,
                 task_usage::task_token_usage,
                 skill_manager::skill_manager_list,
                 skill_manager::skill_manager_set,
