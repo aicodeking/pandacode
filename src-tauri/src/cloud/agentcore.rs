@@ -61,34 +61,44 @@ pub fn sign(method: &str, path: &str, headers: &[(String, String)], body: &[u8],
 /// already protects the bytes.
 pub type Event = (Vec<(String, String)>, Vec<u8>);
 pub fn events(mut bytes: &[u8]) -> Result<Vec<Event>, String> {
+    const MALFORMED: &str = "AgentCore sent a malformed event stream.";
+    const UNKNOWN: &str = "AgentCore sent an unknown event header.";
     let mut out = Vec::new();
     while bytes.len() >= 16 {
         let total = u32::from_be_bytes(bytes[0..4].try_into().unwrap()) as usize;
         let header_length = u32::from_be_bytes(bytes[4..8].try_into().unwrap()) as usize;
         if total < 16 + header_length || total > bytes.len() {
-            return Err("AgentCore sent a malformed event stream.".into());
+            return Err(MALFORMED.into());
         }
         let mut cursor = &bytes[12..12 + header_length];
         let mut headers = Vec::new();
         while !cursor.is_empty() {
             let name_length = cursor[0] as usize;
-            let name = String::from_utf8_lossy(&cursor[1..1 + name_length]).into_owned();
-            let kind = cursor[1 + name_length];
-            cursor = &cursor[2 + name_length..];
+            let name = String::from_utf8_lossy(cursor.get(1..1 + name_length).ok_or(MALFORMED)?).into_owned();
+            let kind = *cursor.get(1 + name_length).ok_or(MALFORMED)?;
+            let rest = cursor.get(2 + name_length..).ok_or(MALFORMED)?;
             // Only string headers (type 7) matter here; others are skipped by their size.
             let (value, used) = match kind {
-                7 => { let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize; (String::from_utf8_lossy(&cursor[2..2 + length]).into_owned(), 2 + length) }
+                7 => {
+                    let length = rest.get(..2).ok_or(MALFORMED)?;
+                    let length = u16::from_be_bytes([length[0], length[1]]) as usize;
+                    (String::from_utf8_lossy(rest.get(2..2 + length).ok_or(MALFORMED)?).into_owned(), 2 + length)
+                }
+                6 => {
+                    let length = rest.get(..2).ok_or(MALFORMED)?;
+                    let length = u16::from_be_bytes([length[0], length[1]]) as usize;
+                    (String::new(), 2 + length)
+                }
                 0 | 1 => (String::new(), 0),
                 2 => (String::new(), 1),
                 3 => (String::new(), 2),
                 4 => (String::new(), 4),
                 5 | 8 => (String::new(), 8),
-                6 => { let length = u16::from_be_bytes([cursor[0], cursor[1]]) as usize; (String::new(), 2 + length) }
                 9 => (String::new(), 16),
-                _ => return Err("AgentCore sent an unknown event header.".into()),
+                _ => return Err(UNKNOWN.into()),
             };
             headers.push((name, value));
-            cursor = &cursor[used..];
+            cursor = rest.get(used..).ok_or(MALFORMED)?;
         }
         out.push((headers, bytes[12 + header_length..total - 4].to_vec()));
         bytes = &bytes[total..];
@@ -214,6 +224,30 @@ mod tests {
         assert_eq!(parsed[0].0[0], (":event-type".to_string(), "result".to_string()));
         assert_eq!(parsed[1].1, br#"{"message":"no"}"#);
         assert!(events(&bytes[..20]).is_err());
+    }
+
+    /// A frame from raw header bytes, so a header can be made to run past its own block.
+    fn raw_frame(header_bytes: &[u8]) -> Vec<u8> {
+        let total = 16 + header_bytes.len();
+        let mut out = Vec::new();
+        out.extend_from_slice(&(total as u32).to_be_bytes());
+        out.extend_from_slice(&(header_bytes.len() as u32).to_be_bytes());
+        out.extend_from_slice(&[0; 4]);
+        out.extend_from_slice(header_bytes);
+        out.extend_from_slice(&[0; 4]);
+        out
+    }
+
+    #[test]
+    fn a_header_that_runs_past_its_block_is_rejected_instead_of_panicking() {
+        // A name longer than the block: `name_length` is 200 with four bytes to read.
+        assert_eq!(events(&raw_frame(&[200, 0, 0, 0])), Err("AgentCore sent a malformed event stream.".into()));
+        // A string header whose value runs past the block.
+        assert_eq!(events(&raw_frame(&[0, 7, 0, 50])), Err("AgentCore sent a malformed event stream.".into()));
+        // A fixed-size header with no room for its value.
+        assert_eq!(events(&raw_frame(&[0, 9, 0, 0])), Err("AgentCore sent a malformed event stream.".into()));
+        // The same frame, well formed: one string header with an empty name.
+        assert_eq!(events(&raw_frame(&[0, 7, 0, 1, b'a'])).unwrap(), vec![(vec![(String::new(), "a".into())], Vec::new())]);
     }
 
     #[tokio::test]
