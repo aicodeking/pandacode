@@ -352,7 +352,7 @@ impl VersionCache {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(super) fn running(&self) -> bool {
         self.lock().running
     }

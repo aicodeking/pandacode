@@ -1,9 +1,13 @@
-use super::{BinaryStamp, SavedVersion, SavedVersions, Timing, VersionCache, VersionReport, VersionTarget};
+#[cfg(unix)]
+use super::{BinaryStamp, SavedVersion, SavedVersions, VersionTarget};
+use super::{Timing, VersionCache, VersionReport};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
 const QUICK: Timing = Timing { boot_delay: Duration::ZERO, round_timeout: Duration::from_secs(2), blocking_wait: Duration::from_secs(8) };
+#[cfg(unix)]
 const HOUR: u64 = 60 * 60;
 
 #[cfg(unix)]
@@ -67,26 +71,32 @@ fn fake_shim(root: &Path, log: &Path, version_file: &Path) -> PathBuf {
     shim
 }
 
+#[cfg(unix)]
 fn target(id: &str, path: &Path) -> VersionTarget {
     (id.to_owned(), Some(path.to_owned()))
 }
 
+#[cfg(unix)]
 fn count_starts(log: &Path, name: &str) -> usize {
     std::fs::read_to_string(log).unwrap_or_default().lines().filter(|line| *line == format!("start {name}")).count()
 }
 
+#[cfg(unix)]
 fn report(pairs: &[(&str, &str)], done: bool) -> VersionReport {
     VersionReport { versions: pairs.iter().map(|(id, version)| ((*id).to_owned(), (*version).to_owned())).collect(), done }
 }
 
+#[cfg(unix)]
 fn next_report(receiver: &Receiver<VersionReport>) -> VersionReport {
     receiver.recv_timeout(Duration::from_secs(15)).expect("a report")
 }
 
+#[cfg(unix)]
 fn write_saved(file: &Path, format: u32, entries: Vec<SavedVersion>) {
     std::fs::write(file, serde_json::to_vec(&SavedVersions { format, versions: entries }).unwrap()).unwrap();
 }
 
+#[cfg(unix)]
 fn saved(path: &Path, version: Option<&str>, checked: u64, failed: Option<u64>) -> SavedVersion {
     SavedVersion { stamp: BinaryStamp::of(path).unwrap(), version: version.map(str::to_owned), checked, failed }
 }
