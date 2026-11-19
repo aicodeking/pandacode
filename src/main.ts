@@ -5590,7 +5590,8 @@ const btwPanel = new BtwPanel({
     // Before a side thread exists, a held first send waits on the main thread's pending choice (sendBtw's choiceId).
     // A model, effort or permission save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
     const choiceId = shown?.id ?? state.sessionId;
-    const saving = modelSwitch.saving(choiceId), held = modelSwitch.sendHeld(choiceId);
+    const saving = modelSwitch.saving(choiceId);
+    const held = shown ? modelSwitch.sendHeld(shown.id) : btwSending.has(state.sessionId) && modelSwitch.sendHeld(BTW_DRAFT + state.sessionId);
     const running = isRunning(side.id), busy = (configuringSessions.has(side.id) && !saving) || (btwSending.has(state.sessionId) && !held);
     const lockTriggers = running || busy || (!shown && btwSending.has(state.sessionId));
     const send = running
@@ -5778,10 +5779,11 @@ function sendBtw(text: string, mainId = state.sessionId, sideId = btwLink(mainId
 }
 /** Only the shown side thread's button (or its full-thread composer if opened full) carries this held send's cue. */
 function holdBtwSend(mainId: string, sideId: string): Promise<readonly modelSwitch.Unchanged[]> {
-  return modelSwitch.holdSend(sideId, () => state.sessionId === sideId
+  const bucket = sideId === mainId ? BTW_DRAFT + mainId : sideId;
+  return modelSwitch.holdSend(sideId, () => state.sessionId === sideId && sideId !== mainId
     ? document.querySelector('#composer .send-button[type="submit"]')
     : state.sessionId === mainId && (btwPanel.shownId() ?? mainId) === sideId
-    ? document.querySelector('.btw-panel .btw-send') : null);
+    ? document.querySelector('.btw-panel .btw-send') : null, bucket);
 }
 /** Every held send rejects and restores its text; only the first reports the shared refusal. */
 class BtwChoiceRefusal extends Error {}
@@ -6770,7 +6772,8 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
-  const { openProjectPicker } = await import('./project-picker').finally(release);
+  let openProjectPicker: typeof import('./project-picker').openProjectPicker;
+  try { ({ openProjectPicker } = await import('./project-picker')); } finally { release(); }
   if (epoch !== menuEpoch || projectPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
   projectPickerCleanup = openProjectPicker({
     anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
@@ -6818,13 +6821,16 @@ async function reloadAfterHarnessSwitch(sessionId: string, shown: () => boolean)
 function localTarget(task: Session): boolean {
   return !task.remoteDevice && !task.cloud && !(task.id === state.sessionId && newTaskView() && remoteChoice !== LOCAL);
 }
-/** A task's effort or permissions changed: its labels (side thread: the panel) and the launcher's context. */
+/** A task's effort or permissions changed: its labels (side thread: the panel, or full composer if opened full) and the launcher's context. */
 function paintTaskChoice(id: string, inPanel: boolean): void {
-  if (inPanel) { btwPanel.refresh(); return; }
-  const task = state.sessions.find(item => item.id === id);
-  if (id !== state.sessionId || !task) return;
-  refreshModelLabels();
-  syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
+  if (id === state.sessionId) {
+    const task = state.sessions.find(item => item.id === id);
+    if (!task) return;
+    refreshModelLabels();
+    syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
+    return;
+  }
+  if (inPanel || btwSideTask()?.id === id) btwPanel.refresh();
 }
 /** A picker row (a team, a speed) chosen while the task's model, effort or permission change saves: waits for it, and
  *  throws `<refused> — <what> wasn't changed` (shown in the picker) when that change was refused. */
@@ -6884,7 +6890,8 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // Open with the cached team library (team saves update it) and refresh it behind; wait only when none is cached.
   const library$ = modelCatalogs.pickerTeamLibrary();
   void refreshNamedConnections().catch(() => undefined);
-  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), library$]).finally(release);
+  let openModelPicker: typeof import('./model-picker').openModelPicker, library: Awaited<typeof library$>;
+  try { [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), library$]); } finally { release(); }
   if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
@@ -6904,7 +6911,8 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
         onArchitect(saved ?? { sessionId: selected.id, removed: true });
         await reloadSessions();
-        if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
+        if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
+        else if (inPanel || btwSideTask()?.id === selected.id) btwPanel.refresh();
       } finally { configuringSessions.delete(selected.id); }
     },
     anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
@@ -6938,8 +6946,8 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         const updated = await taskCall<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
         prewarmedDrafts.delete(selected.id);
         replaceSession(updated);
-        if (inPanel) btwPanel.refresh();
-        else if (selected.id === state.sessionId) refreshModelLabels();
+        if (selected.id === state.sessionId) refreshModelLabels();
+        else if (inPanel || btwSideTask()?.id === selected.id) btwPanel.refresh();
       } finally { if (!modelSwitch.saving(selected.id)) configuringSessions.delete(selected.id); }
     },
     onSelect: async (providerId, model) => {
@@ -7108,7 +7116,8 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   const context = anchor.id === 'mode-picker-trigger' ? { anchor, current: () =>
     targetContext.current() && Boolean(choiceMenuCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
   if (context) composerPickerLifecycle = context;
-  const { openChoiceMenu } = await import('./choice-menu').finally(release);
+  let openChoiceMenu: typeof import('./choice-menu').openChoiceMenu;
+  try { ({ openChoiceMenu } = await import('./choice-menu')); } finally { release(); }
   if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
@@ -7143,7 +7152,8 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     // Shows at once with the button busy (kept by modeTriggerHtml through a repaint) and saves behind (model-switch.ts).
     void modelSwitch.pickMode(s.id, id as Mode, {
       warm: !inPanel && localTarget(s), paint: () => paintTaskChoice(s.id, inPanel), name: mode => modeName(approvalMode(s.provider, mode)),
-      trigger: () => current() ? document.querySelector<HTMLElement>(inPanel ? '.btw-panel .mode-picker' : '#mode-picker-trigger') : null,
+      trigger: () => s.id === state.sessionId ? document.querySelector<HTMLElement>('#mode-picker-trigger')
+        : btwSideTask()?.id === s.id ? document.querySelector<HTMLElement>('.btw-panel .mode-picker') : null,
     });
   } });
 }
@@ -7387,7 +7397,8 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   if (modelPickerCleanup) { closeModelPicker(); return; }
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
-  const { openModelPicker } = await import('./model-picker').finally(release);
+  let openModelPicker: typeof import('./model-picker').openModelPicker;
+  try { ({ openModelPicker } = await import('./model-picker')); } finally { release(); }
   // A transcript paint held while this picker was opening or open (model-switch.ts deferTranscript) paints once it is gone.
   if (epoch !== menuEpoch || !anchor.isConnected) { modelSwitch.flushTranscript(); return; }
   modelPickerCleanup = openModelPicker({

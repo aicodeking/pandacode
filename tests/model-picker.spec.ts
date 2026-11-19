@@ -1771,14 +1771,15 @@ for (const control of ['Model', 'Permissions']) for (const refused of [false, tr
     await holdCall(page, 'configure_session');
     await pickAstra(page);
     const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-    const original = await button.elementHandle();
     await button.click();
     await page.keyboard.press('Escape');
     await button.click();
+    await expect(button).toHaveAttribute('aria-busy', 'true');
+    const original = await button.elementHandle();
     await button.evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true, cancelable: true })));
     await releaseCall(page, 'configure_session', refused ? 'Model refused.' : undefined);
     const menu = control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true });
-    await expect(menu).toBeVisible();
+    await expect(menu).toBeVisible({ timeout: FIRST_OPEN_MS });
     expect(await original!.evaluate(node => node === document.getElementById(node.id))).toBe(true);
     await expect(button).not.toHaveAttribute('aria-busy', 'true');
     if (control === 'Model') await expect(search(page)).toBeFocused();
@@ -1799,10 +1800,11 @@ for (const control of ['Model', 'Permissions']) test(`held ${control} opening su
   await holdCall(page, 'configure_session');
   await pickAstra(page);
   const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-  const original = await button.elementHandle();
   await button.click();
+  await expect(button).toHaveAttribute('aria-busy', 'true');
+  const original = await button.elementHandle();
   await releaseCall(page, 'configure_session');
-  await expect(control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true })).toBeVisible();
+  await expect(control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true })).toBeVisible({ timeout: FIRST_OPEN_MS });
   expect(await original!.evaluate(node => node === document.getElementById(node.id))).toBe(true);
   await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
 });
@@ -2357,20 +2359,23 @@ test('first side send while main model save is pending sets aria-busy and allows
   await loadHeld(page, '/');
   await holdCall(page, 'configure_session');
   await pickAstra(page);
-  const prompt = page.locator('#prompt'), panel = page.locator('.btw-panel'), box = page.locator('.btw-input'), send = panel.locator('.btw-send');
+  const prompt = page.locator('#prompt'), mainSend = page.locator('#composer .send-button[type="submit"]'), panel = page.locator('.btw-panel'), box = page.locator('.btw-input'), send = panel.locator('.btw-send');
   await prompt.fill('/btw ');
   await prompt.press('Enter');
   await box.fill('first pending side');
   await box.press('Enter');
   await expect(box).toHaveValue('');
   await expect(send).toHaveAttribute('aria-busy', 'true');
+  await expect(mainSend).not.toHaveAttribute('aria-busy', 'true');
   await expect(send).toBeEnabled();
   await box.fill('second pending side');
   await send.click();
   await expect(box).toHaveValue('');
   await expect(send).toHaveAttribute('aria-busy', 'true');
+  await expect(mainSend).not.toHaveAttribute('aria-busy', 'true');
   await releaseCall(page, 'configure_session', 'Main model save refused.');
   await expect(send).not.toHaveAttribute('aria-busy', 'true');
+  await expect(mainSend).not.toHaveAttribute('aria-busy', 'true');
   await expect(box).toHaveValue('first pending side\nsecond pending side');
   expect(await sent(page)).toBe(0);
   // While creation itself runs without a pending choice, the send button is disabled and Enter is blocked consistently.
@@ -2382,6 +2387,59 @@ test('first side send while main model save is pending sets aria-busy and allows
   await expect(box).toHaveValue('ignored while disabled');
   await releaseCall(page, 'create_session');
   await expect.poll(() => sent(page)).toBe(1);
+});
+
+test('held main send does not mark an idle empty side panel send button busy', async ({ page }) => {
+  await loadHeld(page, '/');
+  const prompt = page.locator('#prompt'), mainSend = page.locator('#composer .send-button[type="submit"]'), panel = page.locator('.btw-panel'), sideSend = panel.locator('.btw-send');
+  await prompt.fill('/btw ');
+  await prompt.press('Enter');
+  await expect(panel).toBeVisible();
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await prompt.fill('held main prompt');
+  await prompt.press('Enter');
+  await expect(mainSend).toHaveAttribute('aria-busy', 'true');
+  await expect(sideSend).not.toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Main model save refused.');
+  await expect(mainSend).not.toHaveAttribute('aria-busy', 'true');
+  await expect(sideSend).not.toHaveAttribute('aria-busy', 'true');
+  await expect(prompt).toHaveValue('held main prompt');
+  expect(await sent(page)).toBe(0);
+});
+
+test('side-thread permissions and effort picks opened as a full thread repaint the full composer cleanly', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.locator('#prompt').fill('/btw first side question');
+  await page.locator('#prompt').press('Enter');
+  const panel = page.locator('.btw-panel');
+  await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
+  // Start a held permissions pick from the side panel, then open the side thread as a full thread before it settles.
+  await holdCall(page, 'update_session');
+  await panel.locator('.mode-picker').click();
+  await page.getByRole('menuitemradio', { name: 'Full access', exact: true }).click();
+  await expect(panel.locator('.mode-picker')).toHaveAttribute('aria-busy', 'true');
+  await panel.getByRole('button', { name: 'Open side thread as a full thread', exact: true }).click();
+  const fullMode = page.locator('#mode-picker-trigger');
+  await expect(fullMode).toHaveAttribute('data-mode', 'full');
+  await expect(fullMode).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'update_session', 'Permissions refused after opening full.');
+  await expect(fullMode).toHaveAttribute('data-mode', 'ask');
+  await expect(fullMode).not.toHaveAttribute('aria-busy', 'true');
+  // Also verify an effort pick started from the side panel rolls back on the full thread when refused after opening full.
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(panel).toBeVisible();
+  await panel.locator('.model-picker').click();
+  await expect(picker(page)).toBeVisible();
+  await holdCall(page, 'set_reasoning_effort');
+  await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  await panel.getByRole('button', { name: 'Open side thread as a full thread', exact: true }).click();
+  const fullEffort = trigger(page).locator('.model-effort');
+  await expect(fullEffort).toHaveText('High');
+  await releaseCall(page, 'set_reasoning_effort', 'Effort refused after opening full.');
+  await expect(fullEffort).toBeHidden();
 });
 
 for (const origin of ['main', 'side'] as const) test(`refused /btw sends with trailing whitespace restore in submission order (${origin})`, async ({ page }) => {

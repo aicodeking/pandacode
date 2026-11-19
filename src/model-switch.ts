@@ -569,13 +569,14 @@ export async function holdChange(id: string): Promise<readonly Unchanged[]> {
     return group.refusals ??= [...refusals];
   } finally { if (count(waitsHeld, id, -1) === 0) heldGroups.delete(id); }
 }
-/** A send made while the choice saves: held (the button shows it) until it lands; then what was refused (`holdChange`). */
-export async function holdSend(id: string, button: () => Element | null): Promise<readonly Unchanged[]> {
-  count(sendsHeld, id, 1);
+/** A send made while the choice saves: held (the button shows it) until it lands; then what was refused (`holdChange`).
+ *  `bucket` separates independent send controls that wait on the same choice (e.g. a first `/btw` send vs the main composer). */
+export async function holdSend(id: string, button: () => Element | null, bucket = id): Promise<readonly Unchanged[]> {
+  count(sendsHeld, bucket, 1);
   button()?.setAttribute('aria-busy', 'true'); joinPulses(button());
   try { return await holdChange(id); } finally {
     // Another press of Enter may still be held: the cue stays until the last one ends.
-    if (count(sendsHeld, id, -1) === 0) button()?.removeAttribute('aria-busy');
+    if (count(sendsHeld, bucket, -1) === 0) button()?.removeAttribute('aria-busy');
   }
 }
 
