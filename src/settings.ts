@@ -316,6 +316,43 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     };
   };
   let recommended: ReturnType<typeof mountRecommended> | undefined;
+  let routingCleanup: (() => void) | undefined;
+  let routingKey = '';
+  let teamsCleanup: (() => void) | undefined;
+  let teamsKey = '';
+  const providerRosterKey = (all: Provider[]) => options.listPending?.()
+    ? 'pending'
+    : `ready:${all.map(p => `${p.id}:${p.installed ? 1 : 0}:${p.name}`).join('\n')}`;
+
+  function mountRouting(): void {
+    if (!options.teams || !mounted.has('routing')) return;
+    const slot = panels.get('routing')!.querySelector<HTMLElement>('#model-routing-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!routingCleanup) slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      return;
+    }
+    if (routingCleanup && routingKey === key) return;
+    routingCleanup?.();
+    routingCleanup = mountModelRouting(slot, { ...options.teams, providers: providersNow });
+    routingKey = key;
+  }
+
+  function mountTeams(): void {
+    if (!options.teams || !mounted.has('teams')) return;
+    const slot = panels.get('teams')!.querySelector<HTMLElement>('#agent-teams-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!teamsCleanup) slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      return;
+    }
+    if (teamsCleanup && teamsKey === key) return;
+    // Keep an open team edit form intact until the editor closes or the tab is revisited.
+    if (teamsCleanup && slot.querySelector('.agent-team-editor:not([hidden])')) return;
+    teamsCleanup?.();
+    teamsCleanup = mountAgentTeams(slot, { ...options.teams, providers: providersNow });
+    teamsKey = key;
+  }
 
   /** A group's live parts mount the first time it opens, and stay mounted while Settings is open. */
   function mountSection(id: SettingsPage): void {
@@ -335,8 +372,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
-    if (id === 'routing' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
-    if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'routing' && options.teams) mountRouting();
+    if (id === 'teams' && options.teams) mountTeams();
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
@@ -376,6 +413,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     subnavs.forEach(subnav => { subnav.hidden = subnav.dataset.sectionPages !== section.id; });
     panels.forEach((panel, key) => { panel.hidden = key !== page; });
     if (page === 'recommended' && mounted.has(page)) recommended?.refresh();
+    if (page === 'teams' && mounted.has(page)) mountTeams();
     mountSection(page);
     const selected = pageTabs.find(tab => tab.dataset.section === page);
     if (selected) trackSegment(selected.parentElement!, selected);
@@ -429,10 +467,18 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
-    providersChanged: providers => { if (!disposed) updateProviders(providers); },
+    providersChanged: providers => {
+      if (disposed) return;
+      updateProviders(providers);
+      recommended?.refresh();
+      mountRouting();
+      mountTeams();
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());
+      routingCleanup?.(); routingCleanup = undefined;
+      teamsCleanup?.(); teamsCleanup = undefined;
       cleanups.forEach(cleanup => cleanup());
       host.removeEventListener('click', click); host.removeEventListener('keydown', keydown);
       refreshButton.removeEventListener('click', refresh);

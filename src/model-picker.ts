@@ -234,7 +234,8 @@ export function openModelPicker(options: ModelPickerOptions) {
     const all = groups();
     const recent = recentRows(all);
     const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
-    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
+    // Keep the initial harness view while harnesses are loading or unavailable so saved teams cannot hijack it.
+    if (!providersStatus && !railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
     const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
     const hits = new Map<string, Row[]>();
@@ -294,7 +295,7 @@ export function openModelPicker(options: ModelPickerOptions) {
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
-    if (providersStatus) markup = `<button type="button" role="option" tabindex="-1" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-name">${escape(providersStatus)}</span></button>`;
+    if (providersStatus && (query ? !total : view !== 'teams')) markup = `<button type="button" role="option" tabindex="-1" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-name">${escape(providersStatus)}</span></button>`;
     else if (!total) markup = '<p class="model-menu-empty">No matching models.</p>';
     // Loading and saving are in-place updates: retain rows and scroll position.
     const changed = markup !== listMarkup;
@@ -352,7 +353,7 @@ export function openModelPicker(options: ModelPickerOptions) {
     const keys = [...rail.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => tab.dataset.view!);
     if (!keys.length) return;
     const index = keys.indexOf(view);
-    const next = step === 'first' ? 0 : step === 'last' ? keys.length - 1 : (index + step + keys.length) % keys.length;
+    const next = step === 'first' ? 0 : step === 'last' ? keys.length - 1 : index < 0 ? (step > 0 ? 0 : keys.length - 1) : (index + step + keys.length) % keys.length;
     showView(keys[next], focusTab);
   }
 
@@ -615,6 +616,7 @@ export function openModelPicker(options: ModelPickerOptions) {
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
       providersStatus = providers.length ? '' : 'No harnesses on this computer';
       loadCatalogs();
+      rail.querySelector('[tabindex="0"]')?.scrollIntoView({ block: 'nearest' });
     }).catch(failure => {
       if (closed) return;
       providersStatus = failure instanceof Error ? failure.message : String(failure);

@@ -349,8 +349,9 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
   const live = liveAnchor(anchor);
   if (request !== architectSetupRequest || !live || task.id !== state.sessionId) return;
   architectSetupCleanup = openArchitectSetup(live, async () => {
-    const [team, library] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles')]);
-    return { task, team, library, providers: state.providers, loadModels,
+    const [team, library, providers] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles'), knownProviders()]);
+    const currentTask = state.sessions.find(s => s.id === task.id) ?? task;
+    return { task: currentTask, team, library, providers, loadModels,
       save: async (config, architect, profileId) => {
         if (task.id !== state.sessionId) throw new Error('Select this task again to change its team.');
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
@@ -1322,6 +1323,7 @@ function leaveDraft(nextId: string): void {
   if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
   state.sessions = state.sessions.filter(task => task.id !== draft.id);
   state.drafts.delete(draft.id);
+  provisionalTasks.delete(draft.id);
   void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
 }
 function lastActivity(s: Session): number | null { return s.lastPromptAt == null ? s.lastResponseAt : Math.max(s.lastPromptAt, s.lastResponseAt ?? 0); }
@@ -3574,7 +3576,7 @@ const PROMPT_MAX_HEIGHT = 180;
 /** Everything the fitted height depends on that can change without the text changing: the box's row count and its
  *  computed metrics (height limits and font, `promptMetrics`), the width it was fitted at (-1 when unknown) and the
  *  text's natural height (scrollHeight with the box released). */
-type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string; width: number; natural: number };
+type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; compact: string; limits: string; width: number; natural: number };
 let promptFit: PromptFit | undefined;
 /** The fit of any one-line text in this box at this width, rows and metrics: every one-line text needs the same height. */
 type PromptOneLine = { prompt: HTMLTextAreaElement; rows: number; limits: string; width: number; natural: number };
@@ -3582,8 +3584,14 @@ let promptOneLine: PromptOneLine | undefined;
 let promptBoxWidth = -1;
 let promptObserved: HTMLTextAreaElement | null = null;
 /** The prompt's last computed metrics (`promptMetrics`): a keystroke reuses them instead of resolving styles. Forgotten on
- *  every composer render, a resize, an interface-scale, theme or palette change and when web fonts load. */
-let promptMetricsCache: { prompt: HTMLTextAreaElement; metrics: PromptMetrics } | undefined;
+ *  every composer render, a resize, an interface-scale, theme or palette change, voice-compact changes and when web fonts load. */
+let promptMetricsCache: { prompt: HTMLTextAreaElement; compact: string; metrics: PromptMetrics } | undefined;
+/** Voice-compact state on `#composer` (`data-voice-compact` + `--voice-prompt-height`), read without layout or style resolution. */
+function promptCompactState(prompt: HTMLTextAreaElement): string {
+  const composer = prompt.form;
+  if (!composer?.hasAttribute('data-voice-compact')) return '';
+  return `1|${composer.style.getPropertyValue('--voice-prompt-height')}`;
+}
 const promptResize = new ResizeObserver(entries => {
   const width = entries.at(-1)?.contentRect.width ?? 0;
   // No box to fit (a view without a composer, the prompt hidden or collapsed): forget the width, so the width it comes back
@@ -3594,7 +3602,7 @@ const promptResize = new ResizeObserver(entries => {
   // An empty prompt is one line at any width, so a width change must not lay it out. The first
   // character still measures, at the width just recorded.
   const current = promptObserved;
-  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && current.style.height) return;
+  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && promptFit.compact === promptCompactState(current) && current.style.height) return;
   resizePrompt(true);
 });
 // Created once, never per render, and watching the prompt itself: its own inline size is exactly the quantity the fit
@@ -3616,11 +3624,12 @@ function resizePrompt(remeasure = false): void {
   if (!prompt) { promptFit = undefined; promptOneLine = undefined; promptMetricsCache = undefined; return; }
   if (remeasure) promptMetricsCache = undefined;
   const fit = promptFit?.prompt === prompt ? promptFit : undefined;
+  const compact = promptCompactState(prompt);
   // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
   // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
   // read. `rows` stays in the key: the template copies its row count onto the reused textarea. Interface scale passes
   // `remeasure` and refits, because the line height changed even though the width did not.
-  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && prompt.style.height) return;
+  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && fit.compact === compact && prompt.style.height) return;
   // The same text, the same rows and the same metrics in a box that is already fitted, at a width promptResize has
   // accounted for, needs the height it has: this call writes nothing and lays nothing out. A keystroke changed the value,
   // so it goes to fitTyped(), which writes the height only when it changes and, for one line of plain text at a known
@@ -3637,7 +3646,7 @@ function resizePrompt(remeasure = false): void {
   applyPromptHeight(prompt, natural);
   // Laid out already: fresh metrics cost no extra style pass here, and keep the cache honest.
   const metrics = promptMetrics(prompt, true);
-  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
+  promptFit = { prompt, value: prompt.value, rows: prompt.rows, compact, limits: metrics.key, width: promptBoxWidth, natural };
   if (promptBoxWidth > 0 && oneLineText(prompt.value, metrics.font, promptBoxWidth)) promptOneLine = { prompt, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
 }
 /** Writes the height (and the overflow switch) for a natural height, each only when it changes. */
@@ -3676,16 +3685,17 @@ function fitTyped(prompt: HTMLTextAreaElement, fit: PromptFit, metrics: PromptMe
  *  the text the way the box lays it out, the font (empty otherwise). One getComputedStyle, no layout. */
 type PromptMetrics = { key: string; font: string };
 function promptMetrics(prompt: HTMLTextAreaElement, fresh = false): PromptMetrics {
-  if (!fresh && promptMetricsCache?.prompt === prompt) return promptMetricsCache.metrics;
-  const metrics = readPromptMetrics(prompt);
-  promptMetricsCache = { prompt, metrics };
+  const compact = promptCompactState(prompt);
+  if (!fresh && promptMetricsCache?.prompt === prompt && promptMetricsCache.compact === compact) return promptMetricsCache.metrics;
+  const metrics = readPromptMetrics(prompt, compact);
+  promptMetricsCache = { prompt, compact, metrics };
   return metrics;
 }
-function readPromptMetrics(prompt: HTMLTextAreaElement): PromptMetrics {
+function readPromptMetrics(prompt: HTMLTextAreaElement, compact: string): PromptMetrics {
   const style = getComputedStyle(prompt);
   const plain = style.letterSpacing === 'normal' && style.wordSpacing === '0px' && style.textTransform === 'none' && style.textIndent === '0px' && (style.fontStretch === '100%' || style.fontStretch === 'normal');
   const font = plain ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '';
-  return { key: `${style.minHeight}|${style.maxHeight}|${style.lineHeight}|${font}`, font };
+  return { key: `${compact}|${style.minHeight}|${style.maxHeight}|${style.lineHeight}|${font}`, font };
 }
 /** Latin text with no line breaks or tabs, whose glyphs come from the box's own font (no emoji or fallback fonts that
  *  could change a line's height). Longer text always takes the measured path. */
@@ -6473,11 +6483,14 @@ function showOpenProject(forTask = false): void {
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
 }
 async function changeTaskProject(projectId: string): Promise<void> {
-  const selected = session();
-  if (!selected || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('A project can only be changed before starting the task.');
+  let selected = session();
+  if (!selected || !newTaskView() || (configuringSessions.has(selected.id) && !provisionalCorrections.has(selected.id))) throw new Error('A project can only be changed before starting the task.');
+  const generation = state.generation;
+  while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+  selected = state.sessions.find(s => s.id === selected!.id);
+  if (!selected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its project.');
   if (selected.worktreePath && selected.projectId !== projectId) throw new Error('A worktree task stays with its original project. Start a new task to use another project.');
   if (selected.projectId === projectId) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
-  const generation = state.generation;
   configuringSessions.add(selected.id);
   try {
     const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
@@ -6795,6 +6808,11 @@ async function createChat(from?: Session): Promise<void> {
     const harness = pickHarness(await providersForChoice());
     if (generation !== state.generation) return;
     if (!harness) { notify('Open Settings to check your installed agents.'); return; }
+    if (from) {
+      while (provisionalCorrections.has(from.id)) await provisionalCorrections.get(from.id)?.catch(() => undefined);
+      if (generation !== state.generation || from.id !== state.sessionId || deletedSessions.has(from.id)) return;
+      from = state.sessions.find(s => s.id === from!.id) ?? from;
+    }
     if (!from) leaveDraft('');
     const provisional = from ? provisionalTasks.has(from.id) : !providersKnown;
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
@@ -6810,6 +6828,9 @@ async function createChat(from?: Session): Promise<void> {
   upsertSession(created);
   checkProvisionalTasks();
   if (from) {
+    // Wait out any correction that started while chat_create/list_projects ran so leaveDraft sees configuringSessions clear.
+    while (provisionalCorrections.has(from.id)) await provisionalCorrections.get(from.id)?.catch(() => undefined);
+    if (generation !== state.generation) { renderNavigation(); return; }
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
     const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
     if (typed) state.drafts.set(created.id, typed);
@@ -7097,7 +7118,19 @@ async function showProjectFilter(anchor: HTMLElement): Promise<void> {
   } });
 }
 async function showDefaultProvider(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Default agent', items: state.providers.map(p => ({ id: p.id, label: p.name, provider: p.id, selected: state.defaultProvider === p.id })), onSelect: id => {
+  let providers = state.providers;
+  if (!providersKnown) {
+    if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+    if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+    closeMenus();
+    const { epoch, release } = beginMenuOpen(anchor);
+    const generation = state.generation;
+    providers = await Promise.resolve(knownProviders()).finally(release);
+    const live = liveAnchor(anchor);
+    if (epoch !== menuEpoch || generation !== state.generation || !live || !settingsView) return;
+    anchor = live;
+  }
+  await showChoices(anchor, { title: 'Default agent', items: providers.map(p => ({ id: p.id, label: p.name, provider: p.id, selected: state.defaultProvider === p.id })), onSelect: id => {
     state.defaultProvider = id as ProviderId; localStorage.setItem('pandacode.provider', id);
     localStorage.setItem('pandacode.defaultProvider', id);
     refreshDefaultAgent();
@@ -7122,8 +7155,8 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   if (epoch !== menuEpoch || !live) return;
   anchor = live;
   modelPickerCleanup = openModelPicker({
-    anchor, providers: state.providers, current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
-    canSwitchProvider: true, loadModels, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
+    anchor, providers: providersKnown ? state.providers : [], current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
+    canSwitchProvider: true, loadModels, loadProviders: providersKnown ? undefined : () => providersReady, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
     onSelect: async (providerId, model) => {
       state.defaultProvider = providerId;
       localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
@@ -7210,7 +7243,10 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
           });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
+        providerConnections: async target => {
+          const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
+          return mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+        },
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
@@ -8919,13 +8955,14 @@ function providersLanded(found: Provider[], generation: number, force = false): 
   state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.has(entry.id));
   appliedProviderListGeneration = generation;
   keepProviderCatalog(found);
+  const firstKnown = !providersKnown;
   providersKnown = true;
   settleProviders(state.providers);
   const s = session();
-  if (s && !s.remoteDevice && provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  if ((!force || firstKnown) && s && !s.remoteDevice && provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   // Names painted from the last launch's list (or the built-in short names) change in place: no transcript redraw, so a
   // menu open over it stays open.
-  refreshModelLabels(); refreshAuthorNames(); renderHeader(); refreshTeamProgress();
+  refreshModelLabels(); refreshAuthorNames(); refreshDefaultAgent(); renderHeader(); refreshTeamProgress();
   settingsView?.providersChanged(state.providers);
   if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
   // Restored queues name the agent they wait for.

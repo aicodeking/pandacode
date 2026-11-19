@@ -1157,3 +1157,139 @@ test('moving a provisional draft to No project preserves provisional tracking an
   await expect.poll(() => sent(page)).toEqual([{ sessionId: chatId, text }]);
   expect(await sentHarnesses(page)).toEqual([{ provider: 'claude', model: 'sonnet' }]);
 });
+
+test('Settings Default model opened before list_providers answers shows Loading, then real harnesses', async ({ page }) => {
+  test.setTimeout(30_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await expect(settings.locator('#default-model')).toBeVisible({ timeout: 10_000 });
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await settings.locator('#default-model').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible({ timeout: 10_000 });
+  await expect(menu.locator('.model-menu-list')).toHaveText(/Loading…/);
+  await expect(menu.locator('.model-menu-rail [role="tab"][data-view^="h:"]')).toHaveCount(0);
+  const search = menu.locator('input').first();
+  await expect(search).toHaveAttribute('placeholder', 'Loading models…');
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: PROVIDERS_DELAY + 5_000 }).not.toBeNull();
+  await expect(menu).toBeVisible();
+  await expect(menu.locator('.model-menu-rail [data-view="h:claude"]')).toBeVisible();
+  await expect(menu.locator('.model-menu-list')).not.toHaveText(/^Loading…$/);
+  await expect(menu.locator('.model-menu-list [role="option"]:not([disabled])').first()).toBeVisible();
+  await expect(search).toHaveAttribute('placeholder', /^Search [1-9]\d* models, [1-9]\d* harnesses…$/);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(settings.locator('#default-provider')).toContainText('Claude Code');
+});
+
+test('Settings Recommended, Agents, and Model routing update live when list_providers settles', async ({ page }) => {
+  test.setTimeout(30_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  const installState = settings.locator('[data-recommendation="agent"] .recommended-state');
+  await expect(installState).toHaveText('Not set', { timeout: 10_000 });
+
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Model routing', exact: true }).click();
+  const routing = settings.locator('#model-routing-settings');
+  await expect(routing).toHaveText(/Loading…/);
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: PROVIDERS_DELAY + 5_000 }).not.toBeNull();
+  await expect(routing.locator('.model-routing')).toBeVisible({ timeout: 10_000 });
+  await expect(routing.locator('.routing-pool-harness[data-provider="claude"]')).toBeVisible();
+  // Recommended refreshed live on providersChanged without waiting to switch back to the tab.
+  await expect(installState).toHaveText('Set');
+  await settings.getByRole('tab', { name: 'Harnesses', exact: true }).click();
+  await expect(settings.locator('.provider-diagnostic[data-provider="claude"] code')).toHaveText('/sample/bin/claude');
+});
+
+test('moving a provisional draft to No project during an in-flight correction discards the empty project draft', async ({ page }) => {
+  test.setTimeout(60_000);
+  await slowProviders(page, [{ id: 'antigravity', name: 'Antigravity', installed: true, models: [] }], true);
+  await page.goto('/');
+  await paintedBeforeProviders(page, 25_000);
+  await page.waitForTimeout(PROVIDERS_DELAY + 300);
+  await page.locator('.sidebar-actions .new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible({ timeout: 10_000 });
+  const prompt = page.locator('#prompt');
+  const draft = (await prompt.getAttribute('data-session-id'))!;
+  const text = 'Move while provisional correction is in flight';
+  await prompt.fill(text);
+
+  // Open the project picker before the correction starts, then hold configure_session in flight.
+  await page.locator('#welcome-project').click();
+  const noProject = page.getByRole('option', { name: /No project/ });
+  await expect(noProject).toBeVisible({ timeout: 10_000 });
+  await page.evaluate(() => { (window as BootWindow).__holdConfigure = true; });
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => typeof (window as BootWindow).__releaseConfigure), { timeout: 10_000 }).toBe('function');
+
+  await noProject.click();
+  await page.waitForTimeout(200);
+  await expect(prompt).toHaveAttribute('data-session-id', draft);
+
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(page.getByRole('heading', { name: 'What’s on your mind?' })).toBeVisible({ timeout: 10_000 });
+  const chatId = (await prompt.getAttribute('data-session-id'))!;
+  expect(chatId).not.toBe(draft);
+  await expect(prompt).toHaveValue(text);
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude');
+
+  const sessions = await page.evaluate(async () => {
+    const preview = await import('/src/preview.ts');
+    return await preview.invoke('list_sessions', {}) as { id: string; provider: string; model: string; draft: boolean }[];
+  });
+  expect(sessions.find(item => item.id === draft)).toBeUndefined();
+  expect(sessions.filter(item => item.draft)).toEqual([]);
+  const chat = sessions.find(item => item.id === chatId);
+  expect(chat).toMatchObject({ provider: 'claude', model: 'sonnet' });
+});
+
+test('dismissing voice-compact mode invalidates promptMetricsCache and restores normal prompt sizing', async ({ page }) => {
+  test.setTimeout(30_000);
+  await page.goto('/');
+  const prompt = page.locator('#prompt');
+  await expect(prompt).toBeVisible({ timeout: 15_000 });
+  await prompt.fill('Hello');
+  const normalHeight = await prompt.evaluate(el => parseFloat((el as HTMLTextAreaElement).style.height));
+  expect(normalHeight).toBeGreaterThanOrEqual(70);
+
+  // Enter voice-compact mode and trigger a keystroke so promptMetricsCache records compact metrics.
+  await page.evaluate(() => {
+    const composer = document.querySelector<HTMLElement>('#composer')!;
+    const area = document.querySelector<HTMLElement>('#composer-area')!;
+    composer.style.setProperty('--voice-prompt-height', '40px');
+    composer.setAttribute('data-voice-compact', '');
+    area.setAttribute('data-voice-compact', '');
+  });
+  await prompt.focus();
+  await page.keyboard.press('Backspace');
+  const compactHeight = await prompt.evaluate(el => parseFloat((el as HTMLTextAreaElement).style.height));
+  expect(compactHeight).toBeLessThanOrEqual(40);
+
+  // Clear voice-compact mode (as VoicePillPlacement.clearCompactDraft does) and type a character.
+  await page.evaluate(() => {
+    const composer = document.querySelector<HTMLElement>('#composer')!;
+    const area = document.querySelector<HTMLElement>('#composer-area')!;
+    area.removeAttribute('data-voice-compact');
+    composer.removeAttribute('data-voice-compact');
+    composer.style.removeProperty('--voice-prompt-height');
+  });
+  await page.keyboard.type('o');
+  const restoredHeight = await prompt.evaluate(el => parseFloat((el as HTMLTextAreaElement).style.height));
+  expect(restoredHeight).toBe(normalHeight);
+});

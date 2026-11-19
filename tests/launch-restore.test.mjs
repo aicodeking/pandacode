@@ -903,6 +903,45 @@ test('a New task’s waiting text goes to its project key, and follows it when i
   assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'n1')).text, 'a new task, more');
 });
 
+test('evicting a New task drops its coalesced pending write so timer tick and flush cannot overwrite the new owner', () => {
+  // Timer tick path: n1 has coalesced pending text for project p; n2 moves from q into p and reclaims it.
+  {
+    const store = memory(), timer = manualTimer();
+    const projectOf = new Map([['n1', 'p'], ['n2', 'q']]);
+    const drafts = new PersistedDrafts(store, () => NOW, timer);
+    drafts.newTaskKey = id => projectOf.has(id) ? NEW_TASK_DRAFT + projectOf.get(id) : undefined;
+    drafts.set('n2', 'moved draft text');
+    drafts.flush();
+    drafts.set('n1', 'initial p draft');
+    drafts.set('n1', 'stale p draft'); // coalesced in pending while the write window is open
+    projectOf.set('n2', 'p');
+    drafts.reclaim('n2');
+    assert.equal(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'q'), null);
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    timer.tick();
+    assert.equal(timer.due.size, 0, 'window closes cleanly when no pending writes remain');
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    assert.equal(drafts.get('n1'), 'stale p draft', 'evicted draft stays in memory for this launch');
+  }
+  // Flush path: same eviction followed by flush() instead of timer.tick().
+  {
+    const store = memory(), timer = manualTimer();
+    const projectOf = new Map([['n1', 'p'], ['n2', 'q']]);
+    const drafts = new PersistedDrafts(store, () => NOW, timer);
+    drafts.newTaskKey = id => projectOf.has(id) ? NEW_TASK_DRAFT + projectOf.get(id) : undefined;
+    drafts.set('n2', 'moved draft text');
+    drafts.flush();
+    drafts.set('n1', 'initial p draft');
+    drafts.set('n1', 'stale p draft');
+    projectOf.set('n2', 'p');
+    drafts.reclaim('n2');
+    drafts.flush();
+    assert.equal(timer.due.size, 0);
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    assert.equal(drafts.get('n1'), 'stale p draft');
+  }
+});
+
 test('drafts are flushed when the window is hidden and on pagehide; main.ts flushes on app-quitting and before a thread switch', async () => {
   const { flushDraftsOnLeave } = await import('../src/launch-restore.ts');
   const docListeners = {}, winListeners = {}, doc = { visibilityState: 'visible', addEventListener: (name, run) => { docListeners[name] = run; } };

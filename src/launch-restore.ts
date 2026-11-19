@@ -248,8 +248,8 @@ export class PersistedDrafts extends Map<string, string> {
     safeRemove(this.store, DRAFT_PREFIX + (previous ?? id)); this.stored.delete(id);
     if (key === undefined) this.claimed.delete(id);
     else {
-      if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); }
-      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); }
+      if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); this.pending.delete(key); }
+      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); this.pending.delete(other); }
       this.claimed.set(id, key);
     }
     // Moved to another project, published, or a New task again: its text moves to the new key.
