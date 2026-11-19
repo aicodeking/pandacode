@@ -272,3 +272,79 @@ fn skill_manager_opencode_permission_keeps_a_bare_action_as_a_wildcard_before_th
         );
     }
 }
+
+#[test]
+fn skill_manager_opencode_1x_both_alias_collision_inline_vs_cross_layer() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let trailing = trailing_key(tool);
+    for (pattern, wildcard) in [
+        ("*", "ask"),
+        ("*", "deny"),
+        ("pandacode_architect_*", "ask"),
+        ("pandacode_architect_*", "deny"),
+    ] {
+        let rules = format!(r#"{{"{tool}":"deny","{trailing}":"deny","{pattern}":"{wildcard}"}}"#);
+        let inline_in = format!(
+            r#"{{"permission":{rules},"agent":{{"build":{{"permission":{rules}}},"plan":{{"permission":{rules}}}}}}}"#
+        );
+
+        // 1. Inline collision (`OPENCODE_CONFIG_CONTENT` and `OPENCODE_PERMISSION`):
+        // `opencode_tool_grants` removes and re-appends both keys after the wildcard, so `allow` wins.
+        let (inline_out, permission_out) =
+            opencode_tool_grants(&inline_in, Some(&rules), &["pandacode_explore"]).unwrap();
+        let permission_layer = format!(r#"{{"permission":{}}}"#, permission_out.unwrap());
+        let mut inline_only = object(&inline_out);
+        merge(&mut inline_only, object(&permission_layer));
+        for agent in ["build", "plan", "unconfigured"] {
+            assert_eq!(
+                permission_action(&inline_only, agent, tool, "*"),
+                "allow",
+                "inline collision should reinsert after {pattern}: {inline_out}"
+            );
+            assert_eq!(
+                permission_action(&inline_only, agent, &format!("{tool}2"), "*"),
+                wildcard,
+                "grants must stay exact on {agent}"
+            );
+        }
+
+        // 2. Cross-layer project `opencode.json` collision in OpenCode 1.x:
+        // When an untouched earlier project file ALREADY declares BOTH exact `<tool>` AND
+        // `<tool> *` before a matching wildcard, OpenCode 1.x `mergeDeep` updates both keys in
+        // place while preserving the project file's key order, so the trailing wildcard still
+        // wins (failing closed to `wildcard` rather than emitting an over-broad `<tool>*` glob
+        // that would also allow unrelated tools like `<tool>2` or `<tool>_other`).
+        // (In OpenCode 2.x, each layer is normalized to a `permissions` array and concatenated in
+        // precedence order, so the inline grants land after the project layer's wildcard.)
+        let (fresh_inline, fresh_perm) =
+            opencode_tool_grants("{}", Some(&rules), &["pandacode_explore"]).unwrap();
+        let mut cross_layer = object(&inline_in);
+        merge(&mut cross_layer, object(&fresh_inline));
+        merge(
+            &mut cross_layer,
+            object(&format!(r#"{{"permission":{}}}"#, fresh_perm.unwrap())),
+        );
+        let merged = serde_json::to_string(&cross_layer).unwrap();
+        assert!(
+            merged.contains(&format!(
+                r#""{tool}":"allow","{trailing}":"allow","{pattern}":"{wildcard}""#
+            )),
+            "1.x mergeDeep preserves earlier project key order: {merged}"
+        );
+        for agent in ["build", "plan", "unconfigured"] {
+            assert_eq!(
+                permission_action(&cross_layer, agent, tool, "*"),
+                wildcard,
+                "1.x cross-layer dual-alias collision fails closed to {wildcard}: {merged}"
+            );
+            assert_eq!(
+                permission_action(&cross_layer, agent, &format!("{tool}2"), "*"),
+                wildcard
+            );
+            assert_eq!(
+                permission_action(&cross_layer, agent, &format!("{tool}_other"), "*"),
+                wildcard
+            );
+        }
+    }
+}

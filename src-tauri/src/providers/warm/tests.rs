@@ -137,7 +137,7 @@ fn idle_spare(lead: bool, age: Duration) -> Spare {
     command.arg("30").kill_on_drop(true);
     let child = command.spawn().unwrap();
     let born = std::time::Instant::now().checked_sub(age).unwrap_or_else(std::time::Instant::now);
-    Spare { key: "launch".into(), child, group: ProcessGroup::register(None), server: None, born, idle: IDLE, lead }
+    Spare { key: "launch".into(), child, group: ProcessGroup::register(None), server: None, born, idle: IDLE, lead, cwd: None }
 }
 
 /// A pool of the test's own, so tests running in parallel never share spares.
@@ -538,7 +538,7 @@ async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     };
     let (pool, session) = (own_pool(), format!("warm-test-{}", uuid::Uuid::new_v4()));
     let insert = |child: Child, group: ProcessGroup| {
-        spares(pool).spares.insert(session.clone(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now(), idle: IDLE, lead: false });
+        spares(pool).spares.insert(session.clone(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now(), idle: IDLE, lead: false, cwd: None });
     };
     let (child, group) = spawn();
     insert(child, group);
@@ -547,7 +547,7 @@ async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     let (child, group) = spawn();
     insert(child, group);
     let mut adopted = take_in(pool, &session, "launch-a").0.expect("the matching agent is adopted");
-    adopted.child.kill().await.unwrap();
+    adopted.0.child.kill().await.unwrap();
     let (mut child, group) = spawn();
     child.kill().await.unwrap();
     child.wait().await.unwrap();
@@ -717,7 +717,7 @@ async fn an_exit_wait_started_during_a_spares_spawn_waits_until_the_spare_is_gon
     assert!(!waiter.is_finished(), "the wait found nothing to wait on while the spare was starting");
     // That launch moved the epoch, so the spare is refused and killed.
     launched(&session);
-    let spare = Spare { key: "k".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(), idle: IDLE, lead: false };
+    let spare = Spare { key: "k".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(), idle: IDLE, lead: false, cwd: None };
     assert!(!register(own_pool(), &session, launch, spare), "a spare from an older launch is refused");
     drop(starting);
     tokio::time::timeout(Duration::from_secs(10), waiter).await.unwrap().unwrap().unwrap();
@@ -731,7 +731,7 @@ async fn a_spare_whose_adoption_fails_is_retired_and_awaited() {
     let spare = idle_spare(false, Duration::ZERO);
     let pid = spare.child.id().unwrap();
     // Taken for adoption, then the launch failed before it owned the streams.
-    let adopting = Adopting { session_id: session.clone(), spare: Some(spare) };
+    let adopting = Adopting { session_id: session.clone(), spare: Some((spare, Pending::none())) };
     drop(adopting);
     assert!(exit_registry().lock().unwrap().contains_key(&session), "the failed adopt registered no exit");
     tokio::time::timeout(Duration::from_secs(10), await_exit(&session)).await.unwrap().unwrap();
@@ -762,4 +762,98 @@ fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch
     configure_command_with_skills(&mut command, &spare, &disabled);
     let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
     assert!(args.windows(2).any(|a| a[0] == "--append-system-prompt" && a[1].contains("Friendly skill")));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn quiesce_during_discard_gap_waits_for_the_retired_process_to_exit() {
+    let (pool, session) = (own_pool(), format!("warm-discard-gap-{}", uuid::Uuid::new_v4()));
+    launched(&session);
+    let mut spare = idle_spare(false, Duration::ZERO);
+    let cwd = PathBuf::from("/tmp/pandacode-discard-cwd");
+    spare.cwd = Some(cwd.clone());
+    let pid = pid_of(&spare);
+    assert!(register(pool, &session, epoch(&session), spare));
+    // Discard has removed the spare from the pool, but has not retired it yet.
+    let (spare, pending) = take_for_discard(pool, &session).expect("spare removed by discard");
+    assert!(super::super::exit::pending_exits().iter().any(|(id, dir)| id == &session && dir.as_ref() == Some(&cwd)));
+    let waiter = tokio::spawn({
+        let session = session.clone();
+        async move { quiesce_in(pool, &session).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiter.is_finished(), "quiesce returned before the discarded spare retired and exited");
+    assert!(!process_gone(pid), "spare process should still be alive before retire");
+    retire(&session, spare, pending);
+    tokio::time::timeout(Duration::from_secs(5), waiter).await.unwrap().unwrap().unwrap();
+    assert!(process_gone(pid), "quiesce returned before the spare process exited");
+    assert!(!exit_registry().lock().unwrap().contains_key(&session));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn quiesce_during_expiry_gap_waits_for_the_retired_process_to_exit() {
+    let (pool, session) = (own_pool(), format!("warm-expiry-gap-{}", uuid::Uuid::new_v4()));
+    launched(&session);
+    let spare = idle_spare(false, Duration::ZERO);
+    let born = spare.born;
+    let pid = pid_of(&spare);
+    assert!(register(pool, &session, epoch(&session), spare));
+    let (expired, pending) = take_expired(pool, &session, born).expect("spare removed by expiry");
+    let waiter = tokio::spawn({
+        let session = session.clone();
+        async move { quiesce_in(pool, &session).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiter.is_finished(), "quiesce returned before the expired spare retired and exited");
+    assert!(!process_gone(pid));
+    retire(&session, expired, pending);
+    tokio::time::timeout(Duration::from_secs(5), waiter).await.unwrap().unwrap().unwrap();
+    assert!(process_gone(pid));
+    assert!(!exit_registry().lock().unwrap().contains_key(&session));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn quiesce_during_eviction_gap_waits_for_the_retired_process_to_exit() {
+    let pool = own_pool();
+    let id = |name: &str| format!("warm-evict-gap-{name}-{}", uuid::Uuid::new_v4());
+    let (oldest, b, c) = (id("oldest"), id("b"), id("c"));
+    for session in [&oldest, &b, &c] {
+        launched(session);
+    }
+    let old = idle_spare(false, Duration::from_secs(50));
+    let old_pid = pid_of(&old);
+    assert!(register(pool, &oldest, epoch(&oldest), old));
+    assert!(register(pool, &b, epoch(&b), idle_spare(false, Duration::from_secs(10))));
+    let evicted = admit(&mut spares(pool), c.clone(), idle_spare(false, Duration::ZERO));
+    assert_eq!(evicted.len(), 1);
+    assert_eq!(evicted[0].0, oldest);
+    let waiter = tokio::spawn({
+        let oldest = oldest.clone();
+        async move { quiesce_in(pool, &oldest).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiter.is_finished(), "quiesce returned before the evicted spare retired and exited");
+    assert!(!process_gone(old_pid));
+    for (session, spare, pending) in evicted {
+        retire(&session, spare, pending);
+    }
+    tokio::time::timeout(Duration::from_secs(5), waiter).await.unwrap().unwrap().unwrap();
+    assert!(process_gone(old_pid));
+    assert!(!exit_registry().lock().unwrap().contains_key(&oldest));
+    for session in [&b, &c] {
+        quiesce_in(pool, session).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn pending_exits_exposes_and_clears_cwd() {
+    let session = format!("warm-pending-cwd-{}", uuid::Uuid::new_v4());
+    let cwd = PathBuf::from("/tmp/pandacode-pending-cwd");
+    let guard = pending_in_cwd(&session, Some(cwd.clone()));
+    assert!(super::super::exit::pending_exits().iter().any(|(id, dir)| id == &session && dir.as_ref() == Some(&cwd)));
+    drop(guard);
+    await_exit(&session).await.unwrap();
+    assert!(!super::super::exit::pending_exits().iter().any(|(id, _)| id == &session));
 }

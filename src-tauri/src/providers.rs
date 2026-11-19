@@ -84,13 +84,13 @@ mod text_stream;
 #[cfg(windows)]
 pub(crate) mod windows_job;
 pub use subagents::{SubagentActivity, HEARTBEAT};
-use exit::reap;
+use exit::{reap, Reaped};
 #[cfg(all(test, unix))]
 use exit::{await_exit_with_cap, exit_registry};
 use launch_input::{next_input, stop_requested};
-pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently};
-#[cfg(all(test, unix))]
-pub(crate) use exit::hold_for_test as hold_exit_for_test;
+pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently, pending_exits};
+#[cfg(test)]
+pub(crate) use exit::{hold_for_test as hold_exit_for_test, hold_in_cwd_for_test as hold_exit_in_cwd_for_test};
 use host_tools::apply_step;
 pub use host_tools::ToolHost;
 use redact::redact_run_error;
@@ -4317,7 +4317,7 @@ async fn run_process_launch(
     let (mut stdin, mut stdout, stderr) = match (child.stdin.take(), child.stdout.take(), child.stderr.take()) {
         (Some(stdin), Some(stdout), Some(stderr)) => (stdin, stdout, stderr),
         _ => {
-            exit::retire_parts(&config.session_id, child, group, mcp);
+            exit::retire_parts_in_cwd(&config.session_id, child, group, mcp, Some(external_path(&config.cwd)));
             return Err("Provider stdio unavailable".into());
         }
     };
@@ -4486,7 +4486,16 @@ async fn run_process_launch(
     if reap_in_background && result.is_ok() && !stopped && claude_family(&protocol.config.provider) {
         let mut secrets = secrets;
         secrets.extend(mcp.as_ref().map(|server| server.token().to_owned()));
-        reap(protocol.config.session_id.clone(), child, stdin, stdout, group, stderr_task, secrets);
+        reap(Reaped {
+            session_id: protocol.config.session_id.clone(),
+            cwd: Some(external_path(&protocol.config.cwd)),
+            child,
+            stdin,
+            stdout,
+            group,
+            stderr: stderr_task,
+            secrets,
+        });
         return Ok(());
     }
     if lingers && result.is_ok() && !stopped {

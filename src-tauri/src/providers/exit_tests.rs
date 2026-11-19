@@ -317,7 +317,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
     let stdin = child.stdin.take().unwrap();
     let mut group = ProcessGroup::register(Some(pid));
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), exiting);
+    exit_registry().lock().unwrap().insert(session.into(), exit::ExitEntry { exiting, cwd: None });
     let (release, gate) = tokio::sync::oneshot::channel();
     let reaper = tokio::spawn(async move {
         gate.await.unwrap();
@@ -342,7 +342,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
 async fn a_hard_cap_fails_without_clearing_the_exit_registration() {
     let session = "exit-hard-cap";
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), exiting);
+    exit_registry().lock().unwrap().insert(session.into(), exit::ExitEntry { exiting, cwd: None });
     let error = await_exit_with_cap(session, Duration::ZERO).await.unwrap_err();
     assert!(error.contains("still shutting down"), "{error}");
     assert!(exit_registry().lock().unwrap().contains_key(session));
@@ -383,7 +383,12 @@ async fn wait_child_reports_its_own_escalation() {
 }
 
 fn local_registry(entries: &[(&str, tokio::sync::watch::Receiver<()>)]) -> exit::Registry {
-    std::sync::Mutex::new(entries.iter().map(|(session, exiting)| (session.to_string(), exiting.clone())).collect())
+    std::sync::Mutex::new(
+        entries
+            .iter()
+            .map(|(session, exiting)| (session.to_string(), exit::ExitEntry { exiting: exiting.clone(), cwd: None }))
+            .collect(),
+    )
 }
 
 #[tokio::test]
@@ -428,7 +433,7 @@ async fn await_all_exits_waits_for_an_exit_registered_meanwhile() {
         async move { exit::wait_all(&registry, Duration::from_secs(30)).await }
     });
     let (second, b) = tokio::sync::watch::channel(());
-    registry.lock().unwrap().insert("b".into(), b);
+    registry.lock().unwrap().insert("b".into(), exit::ExitEntry { exiting: b, cwd: None });
     drop(first);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!waiting.is_finished(), "returned before the later exit finished");
@@ -478,7 +483,16 @@ async fn a_reaped_cli_sees_stdin_close_before_the_earlier_exit_finishes() {
     let mut child = command.spawn().unwrap();
     let group = ProcessGroup::register(child.id());
     let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
-    reap(session.into(), child, stdin, stdout, group, StderrReader(tokio::spawn(read_stderr(stderr))), Vec::new());
+    reap(Reaped {
+        session_id: session.into(),
+        cwd: None,
+        child,
+        stdin,
+        stdout,
+        group,
+        stderr: StderrReader(tokio::spawn(read_stderr(stderr))),
+        secrets: Vec::new(),
+    });
     let mut seen = false;
     for _ in 0..50 {
         if marker.exists() { seen = true; break; }
@@ -562,4 +576,42 @@ async fn a_launch_arriving_after_exit_wait_stops_the_process_at_once() {
     let took = began.elapsed();
     assert!(dead(pid));
     assert!(took < TERM_WAIT + Duration::from_millis(500), "a late launch waited for the natural exit: {took:?}");
+}
+
+#[tokio::test]
+async fn a_reaped_run_exposes_its_cwd_in_pending_exits_until_exited() {
+    let _serial = process_test_lock().lock().await;
+    let gate = fifo("reap-cwd");
+    let journal = std::env::temp_dir().join(format!("pandacode-exit-{}-cwd-journal", std::process::id()));
+    let _ = std::fs::remove_file(&journal);
+    let cwd = std::env::temp_dir().join(format!("pandacode-exit-cwd-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&cwd).unwrap();
+    let expected = external_path(&cwd);
+    let mut config = tests::config("claude");
+    config.session_id = "exit-reap-cwd".into();
+    config.cwd = cwd.clone();
+    let (_input, receiver) = unbounded_channel();
+    let (emit, _events) = unbounded_channel();
+    let sink: Sink = Arc::new(move |event| {
+        let _ = emit.send(event);
+    });
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(HELD).arg("pandacode-test").args([&gate, &journal]);
+    let task = tokio::spawn(run_process(config, sink, receiver, command, Vec::new()));
+    tokio::time::timeout(Duration::from_secs(10), task).await.unwrap().unwrap().unwrap();
+    assert!(
+        pending_exits().iter().any(|(id, dir)| id == "exit-reap-cwd" && dir.as_ref() == Some(&expected)),
+        "background-reaped CLI should report its cwd in pending_exits()"
+    );
+    let mut release = std::fs::OpenOptions::new().read(true).write(true).open(&gate).unwrap();
+    std::io::Write::write_all(&mut release, b"x\n").unwrap();
+    tokio::time::timeout(Duration::from_secs(5), await_exit("exit-reap-cwd")).await.unwrap().unwrap();
+    drop(release);
+    assert!(
+        !pending_exits().iter().any(|(id, _)| id == "exit-reap-cwd"),
+        "pending_exits() should clear once the reaped CLI exits"
+    );
+    let _ = std::fs::remove_file(gate);
+    let _ = std::fs::remove_file(journal);
+    let _ = std::fs::remove_dir_all(cwd);
 }

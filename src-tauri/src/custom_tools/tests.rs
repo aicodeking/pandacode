@@ -380,3 +380,133 @@ fn settings_listing_reports_directory_errors_but_allows_absent_folders() {
         std::fs::remove_file(path).unwrap();
     }
 }
+
+#[cfg(unix)]
+struct RestoreMode {
+    path: PathBuf,
+    mode: u32,
+}
+
+#[cfg(unix)]
+impl RestoreMode {
+    fn set(path: PathBuf, mode: u32, restore: u32) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        Self { path, mode: restore }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RestoreMode {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.path, std::fs::Permissions::from_mode(self.mode));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn failed_move_leaves_source_and_stats_intact_and_retry_succeeds() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let base = temp();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    save(&project, draft("deploy-it", "echo p", Vec::new()), author("s"), 1).unwrap();
+    save(&project, draft("no-stats", "echo plain", Vec::new()), author("s"), 1).unwrap();
+    store::record(&project, "deploy-it", "s1", Some(1), 10).unwrap();
+    store::record(&project, "deploy-it", "s2", Some(0), 42).unwrap();
+    let expected_stats = store::read_stats(&project).remove("deploy-it").unwrap();
+
+    // Read-only source dir: move must fail cleanly without leaving copies or stats in global.
+    let lock_project = RestoreMode::set(project.clone(), 0o555, 0o755);
+    assert!(store::move_tool(&project, &global, "deploy-it").is_err());
+    assert!(store::move_tool(&project, &global, "no-stats").is_err());
+    assert!(store::load(&global, "deploy-it").is_none());
+    assert!(store::load(&global, "no-stats").is_none());
+    assert!(!global.join("deploy-it.json").exists());
+    assert!(!global.join("no-stats.json").exists());
+    assert!(!store::read_stats(&global).contains_key("deploy-it"));
+    assert_eq!(store::read_stats(&project)["deploy-it"], expected_stats);
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert!(listed.global.is_empty(), "failed move must not leave anything in global");
+    assert_eq!(listed.projects.len(), 1);
+    let project_names: Vec<&str> = listed.projects[0].tools.iter().map(|t| t.tool.name.as_str()).collect();
+    assert_eq!(project_names, ["deploy-it", "no-stats"]);
+    assert_eq!(listed.projects[0].tools[0].stats, expected_stats);
+
+    // Restoring permissions lets retry succeed with stats intact and nothing left in project.
+    drop(lock_project);
+    store::move_tool(&project, &global, "deploy-it").unwrap();
+    store::move_tool(&project, &global, "no-stats").unwrap();
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert!(listed.projects.is_empty());
+    let global_names: Vec<&str> = listed.global.iter().map(|t| t.tool.name.as_str()).collect();
+    assert_eq!(global_names, ["deploy-it", "no-stats"]);
+    assert_eq!(listed.global[0].stats, expected_stats);
+    assert!(!store::read_stats(&project).contains_key("deploy-it"));
+
+    // Reverse direction (global -> project, where project dir already exists) also rolls back cleanly.
+    let lock_global = RestoreMode::set(global.clone(), 0o555, 0o755);
+    assert!(store::move_tool(&global, &project, "deploy-it").is_err());
+    assert!(store::load(&project, "deploy-it").is_none());
+    assert!(!store::read_stats(&project).contains_key("deploy-it"));
+    assert_eq!(store::read_stats(&global)["deploy-it"], expected_stats);
+    drop(lock_global);
+    store::move_tool(&global, &project, "deploy-it").unwrap();
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert_eq!(listed.global.iter().map(|t| t.tool.name.as_str()).collect::<Vec<_>>(), ["no-stats"]);
+    assert_eq!(listed.projects.len(), 1);
+    assert_eq!(listed.projects[0].tools[0].tool.name, "deploy-it");
+    assert_eq!(listed.projects[0].tools[0].stats, expected_stats);
+    assert!(!store::read_stats(&global).contains_key("deploy-it"));
+}
+
+#[cfg(unix)]
+#[test]
+fn settings_listing_reports_unsearchable_scope_and_unreadable_tool_files() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let base = temp();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    save(&global, draft("global-tool", "echo g", Vec::new()), author("s"), 1).unwrap();
+    save(&project, draft("proj-tool", "echo p", Vec::new()), author("s"), 1).unwrap();
+
+    // Enumerable but unsearchable (0444) global dir containing a valid tool must error in Settings.
+    let lock_global = RestoreMode::set(global.clone(), 0o444, 0o755);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0444 global dir must not silently list empty");
+    assert!(store::try_load_all(&global).is_err());
+    assert!(store::load_all(&global).is_empty(), "agent catalog stays fail-soft");
+    drop(lock_global);
+
+    // Enumerable but unsearchable (0444) project dir containing a valid tool must error in Settings.
+    let lock_project = RestoreMode::set(project.clone(), 0o444, 0o755);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0444 project dir must not silently list empty");
+    assert!(store::try_load_all(&project).is_err());
+    assert!(store::load_all(&project).is_empty(), "agent catalog stays fail-soft");
+    drop(lock_project);
+
+    // Enumerable but unsearchable (0444) projects root must also error in Settings.
+    let lock_projects = RestoreMode::set(base.0.join("projects"), 0o444, 0o755);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0444 projects root must report an access error");
+    drop(lock_projects);
+
+    // An unreadable tool file inside a normal directory must also error in Settings.
+    let lock_file = RestoreMode::set(project.join("proj-tool.json"), 0o000, 0o644);
+    assert!(ipc::listing(&base.0, str::to_owned).is_err(), "0000 tool file must report an access error");
+    assert!(store::load_all(&project).is_empty(), "agent catalog stays fail-soft");
+    drop(lock_file);
+
+    // Symlinks, invalid JSON and non-UTF-8 files stay ignored instead of failing Settings.
+    std::os::unix::fs::symlink(project.join("proj-tool.json"), project.join("link-tool.json")).unwrap();
+    std::fs::write(project.join("broken-tool.json"), "{not json").unwrap();
+    std::fs::write(project.join("binary-tool.json"), [0xff, 0xfe, 0x00]).unwrap();
+    let listed = ipc::listing(&base.0, str::to_owned).unwrap();
+    assert_eq!(listed.global.len(), 1);
+    assert_eq!(listed.projects.len(), 1);
+    assert_eq!(listed.projects[0].tools.len(), 1);
+    assert_eq!(listed.projects[0].tools[0].tool.name, "proj-tool");
+}

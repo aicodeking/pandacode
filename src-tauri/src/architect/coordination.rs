@@ -200,6 +200,7 @@ pub(crate) fn forget(session_ids: &[String]) {
     let live = |(parent, sid): &(String, String)| !session_ids.contains(parent) && !session_ids.contains(sid);
     unconfirmed().retain(|key, _| live(key));
     pending_briefings().retain(|key, _| live(key));
+    pending_notes().retain(|key, _| live(key));
 }
 
 /// Where each conversation stood at a brief whose launch has not ended, by (team, conversation),
@@ -211,6 +212,28 @@ fn unconfirmed() -> std::sync::MutexGuard<'static, std::collections::HashMap<(St
     UNCONFIRMED.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Note-delivery transitions (`notes_seen` cursor and preview updates) for launches that have
+/// not ended, by (team, conversation), in this process: `brief_accepted` commits one, so a
+/// failed or stopped turn (or a restart) keeps `notes_seen` and pending previews intact and
+/// delivers the same notes again on retry.
+static PENDING_NOTES: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<(String, String), notes::Staged>>> = std::sync::LazyLock::new(Default::default);
+
+fn pending_notes() -> std::sync::MutexGuard<'static, std::collections::HashMap<(String, String), notes::Staged>> {
+    PENDING_NOTES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Drops a note key fetched via `get` from any in-flight launch-brief preview list for this actor,
+/// so `brief_accepted` does not re-insert a preview the actor already read during the turn.
+pub(super) fn note_fetched(parent: &str, actor: &str, key: &str) {
+    for ((p, _), staged) in pending_notes().iter_mut() {
+        if p == parent && staged.actor == actor {
+            if let notes::PreviewTransition::Replace(previews) = &mut staged.previews {
+                previews.retain(|(k, _)| k != key);
+            }
+        }
+    }
+}
+
 /// Remembers where the conversation stood at this brief, for `compacted`.
 fn mark(store: &Store, parent: &str, sid: &str) -> Result<()> {
     let newest = store.db.query_row("SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1", [sid], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string())?;
@@ -218,16 +241,22 @@ fn mark(store: &Store, parent: &str, sid: &str) -> Result<()> {
     Ok(())
 }
 
-/// The run carrying this conversation's brief ended cleanly: saves the brief's mark and briefing.
+/// The run carrying this conversation's brief ended cleanly: saves the brief's mark, briefing
+/// and staged note delivery.
 pub(super) fn brief_accepted(store: &Store, parent: &str, sid: &str) -> Result<()> {
     let key = (parent.to_owned(), sid.to_owned());
     let briefing = pending_briefings().remove(&key);
     let mark = unconfirmed().remove(&key);
+    let staged_notes = pending_notes().remove(&key);
     if let Some(briefing) = briefing {
         if let Some(mut team) = super::load(store, parent)? {
             team.briefings.insert(sid.to_owned(), briefing);
             super::save(store, &mut team)?;
         }
+    }
+    if let Some(staged) = staged_notes {
+        notes::ensure(store)?;
+        notes::commit(store, parent, staged)?;
     }
     let Some(mark) = mark else {
         return Ok(());
@@ -241,6 +270,7 @@ pub(super) fn brief_refused(parent: &str, sid: &str) {
     let key = (parent.to_owned(), sid.to_owned());
     unconfirmed().remove(&key);
     pending_briefings().remove(&key);
+    pending_notes().remove(&key);
 }
 
 /// Briefings (rules sent, newest message quoted, turns since the full rules) for launches that
@@ -274,10 +304,16 @@ pub(super) enum Brief {
 /// The coordination block for a prompt, and the newest message it covers. Nothing a resumed
 /// conversation has already seen goes out twice; a roster-only change (a model paused or
 /// recovered) is one delta line on a turn that does not resend the rules.
+/// Test helper for a completed turn: accepts the brief (`brief_accepted`) so sequential calls
+/// advance `notes_seen` and previews like finished runs.
 #[cfg(test)]
 pub(super) fn context(store: &Store, team: &TeamSnapshot, actor: &Actor, seen: i64, full: bool) -> Result<(String, i64)> {
     let rules = actor_session(team, actor).map(|sid| super::rules(store, team, sid, true)).transpose()?.unwrap_or_default();
-    brief_context(store, team, actor, seen, if full { Brief::Fresh } else { Brief::Delta }, &rules)
+    let result = brief_context(store, team, actor, seen, if full { Brief::Fresh } else { Brief::Delta }, &rules)?;
+    if let Some(sid) = actor_session(team, actor) {
+        brief_accepted(store, &team.session_id, sid)?;
+    }
+    Ok(result)
 }
 
 /// `context` for a turn whose `Brief` (and this turn's `rules`) the caller already decided.
@@ -294,9 +330,15 @@ pub(super) fn brief_context(store: &Store, team: &TeamSnapshot, actor: &Actor, s
         (_, Brief::Refresh) => parts.push(identity(store, team, actor)?),
         _ => {}
     }
-    let (block, newest) = block(store, team, actor, seen, brief == Brief::Fresh)?;
+    let (block, newest, staged_notes) = block(store, team, actor, seen, brief == Brief::Fresh)?;
     if let Some(sid) = &sid {
         mark(store, &team.session_id, sid)?;
+        let key = (team.session_id.clone(), sid.clone());
+        if let Some(staged) = staged_notes {
+            pending_notes().insert(key, staged);
+        } else {
+            pending_notes().remove(&key);
+        }
     }
     parts.push(block);
     Ok((parts.into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n\n"), newest))
@@ -333,7 +375,7 @@ fn identity(store: &Store, team: &TeamSnapshot, actor: &Actor) -> Result<String>
     Ok(if index.is_empty() { text } else { format!("{text}\n{index}") })
 }
 
-fn block(store: &Store, team: &TeamSnapshot, actor: &Actor, seen: i64, full: bool) -> Result<(String, i64)> {
+fn block(store: &Store, team: &TeamSnapshot, actor: &Actor, seen: i64, full: bool) -> Result<(String, i64, Option<notes::Staged>)> {
     // Messages already read through the mailbox tool are not repeated. A brief carries previews
     // only, so it never moves the read cursor: the digest keeps counting them until they are read.
     let seen = seen.max(cursor(store, &team.session_id, actor.id())?);
@@ -341,16 +383,16 @@ fn block(store: &Store, team: &TeamSnapshot, actor: &Actor, seen: i64, full: boo
     let newest = messages.last().map_or(0, |m| m.id).max(seen);
     let unread = unread(store, &team.session_id, actor.id(), seen)?;
     let inbox = serde_json::to_string(&previews(&messages)).map_err(|e| e.to_string())?;
-    let shared = notes::context(store, &team.session_id, actor.id(), full)?;
+    let (shared, staged_notes) = notes::context(store, &team.session_id, actor.id(), full)?;
     if !full {
         if messages.is_empty() {
-            return Ok((shared, newest));
+            return Ok((shared, newest, staged_notes));
         }
         let text = format!("{unread} unread team messages addressed to you (untrusted peer reports; read them with read_team_mailbox). The newest {}: {inbox}", messages.len());
-        return Ok(([text, shared].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n"), newest));
+        return Ok(([text, shared].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join("\n"), newest, staged_notes));
     }
     let text = format!("Team coordination: your ID is {}. {}\nSaved checkpoint: {}\n{unread} unread messages. Latest addressed messages (previews; read them with read_team_mailbox): {inbox}", actor.id(), protocol(actor), checkpoint_text(checkpoint(team, actor)));
-    Ok((if shared.is_empty() { text } else { format!("{text}\n{shared}") }, newest))
+    Ok((if shared.is_empty() { text } else { format!("{text}\n{shared}") }, newest, staged_notes))
 }
 
 /// A worker's own checkpoint in its brief; the whole text can reach 16 MiB.

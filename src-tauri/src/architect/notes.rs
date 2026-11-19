@@ -83,6 +83,7 @@ pub(in crate::architect) fn tool(store: &Store, parent: &str, author: &str, args
         "get" => {
             // The full text is seen now: a preview it stood behind no longer needs delivering.
             store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3", params![parent, author, key]).map_err(|e| e.to_string())?;
+            super::note_fetched(parent, author, &key);
             let note = store.db.query_row("SELECT value,author,updated_at FROM architect_notes WHERE parent_session_id=?1 AND key=?2", params![parent, key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).optional().map_err(|e| e.to_string())?;
             // A long value is read a page at a time from `offset`.
             let note = note.map(|(value, author, at)| {
@@ -155,11 +156,36 @@ fn previewed(store: &Store, parent: &str, actor: &str) -> Result<Vec<Note>> {
     rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
 }
 
+/// Pending preview update staged while building a brief, committed only once the run accepts it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PreviewTransition {
+    /// Launch brief (`full == true`): replaces the actor's pending previews with `(key, rev)`.
+    Replace(Vec<(String, i64)>),
+    /// Incremental brief (`full == false`): clears `(key, rev)` previews delivered in full.
+    Clear(Vec<(String, i64)>),
+}
+
+/// Staged note-delivery state (`notes_seen` cursor and preview transitions) for an in-flight brief.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Staged {
+    pub actor: String,
+    pub newest: i64,
+    pub previews: PreviewTransition,
+}
+
 /// Replaces the actor's pending previews with `notes` (key, rev).
-fn set_previewed(store: &Store, parent: &str, actor: &str, notes: &[(&str, i64)]) -> Result<()> {
+fn set_previewed(store: &Store, parent: &str, actor: &str, notes: &[(String, i64)]) -> Result<()> {
     store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2", params![parent, actor]).map_err(|e| e.to_string())?;
     for (key, rev) in notes {
         store.db.execute("INSERT INTO architect_note_previews(parent_session_id,actor,key,rev) VALUES(?1,?2,?3,?4)", params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Clears previews that were delivered in full in an incremental brief.
+fn clear_previewed(store: &Store, parent: &str, actor: &str, notes: &[(String, i64)]) -> Result<()> {
+    for (key, rev) in notes {
+        store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3 AND rev=?4", params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -168,12 +194,22 @@ fn mark_seen(store: &Store, parent: &str, actor: &str, newest: i64) -> Result<()
     store.db.execute("INSERT INTO architect_mailbox_cursors(parent_session_id,actor,notes_seen) VALUES(?1,?2,?3) ON CONFLICT(parent_session_id,actor) DO UPDATE SET notes_seen=MAX(notes_seen,excluded.notes_seen)", params![parent, actor, newest]).map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// Notes for a prompt. With `full` (a fresh or compacted context) every note newest first:
-/// full values within `LAUNCH_BUDGET`, then previews within `PREVIEW_BUDGET`, which stay
-/// pending until fetched with `get` or delivered by the next incremental brief; the rest
-/// are counted. Otherwise only notes changed since the actor last saw notes (and pending
-/// previews), with their values. Marks them seen.
-pub(super) fn context(store: &Store, parent: &str, actor: &str, full: bool) -> Result<String> {
+/// Commits the `notes_seen` cursor and preview transitions after a brief's run ends cleanly.
+pub(super) fn commit(store: &Store, parent: &str, staged: Staged) -> Result<()> {
+    mark_seen(store, parent, &staged.actor, staged.newest)?;
+    match staged.previews {
+        PreviewTransition::Replace(previews) => set_previewed(store, parent, &staged.actor, &previews),
+        PreviewTransition::Clear(delivered) => clear_previewed(store, parent, &staged.actor, &delivered),
+    }
+}
+
+/// Notes for a prompt, side-effect free: returns the formatted block and any `Staged` transition
+/// to commit once the brief is accepted. With `full` (a fresh or compacted context) every note
+/// newest first: full values within `LAUNCH_BUDGET`, then previews within `PREVIEW_BUDGET`, which
+/// stay pending until fetched with `get` or delivered by the next incremental brief; the rest are
+/// counted. Otherwise only notes changed since the actor last saw notes (and pending previews),
+/// with their values.
+pub(super) fn context(store: &Store, parent: &str, actor: &str, full: bool) -> Result<(String, Option<Staged>)> {
     let seen: i64 = store.db.query_row("SELECT notes_seen FROM architect_mailbox_cursors WHERE parent_session_id=?1 AND actor=?2", params![parent, actor], |r| r.get(0)).optional().map_err(|e| e.to_string())?.unwrap_or(0);
     let mut notes = rows(store, parent, if full { 0 } else { seen })?;
     let mut pending = Vec::new();
@@ -185,20 +221,21 @@ pub(super) fn context(store: &Store, parent: &str, actor: &str, full: bool) -> R
         notes.sort_by_key(|note| std::cmp::Reverse(note.4));
     }
     let Some(newest) = notes.iter().map(|n| n.4).max() else {
-        return Ok(String::new());
+        return Ok((String::new(), None));
     };
-    mark_seen(store, parent, actor, newest)?;
     // The objective note is pointed to by the turns that need it, never listed.
     notes.retain(|n| !RESERVED.contains(&n.0.as_str()));
     if notes.is_empty() {
-        return Ok(String::new());
+        let previews = if full { PreviewTransition::Replace(Vec::new()) } else { PreviewTransition::Clear(Vec::new()) };
+        return Ok((String::new(), Some(Staged { actor: actor.to_owned(), newest, previews })));
     }
-    if full { launch(store, parent, actor, &notes) } else { changed(store, parent, actor, &notes, &pending) }
+    let (text, previews) = if full { launch(&notes) } else { changed(&notes, &pending) };
+    Ok((text, Some(Staged { actor: actor.to_owned(), newest, previews })))
 }
 
 /// A launch brief's notes: full values while they fit, newest first, then previews while
 /// they fit. Only the notes shown as previews are pending delivery.
-fn launch(store: &Store, parent: &str, actor: &str, notes: &[Note]) -> Result<String> {
+fn launch(notes: &[Note]) -> (String, PreviewTransition) {
     let mut lines = Vec::new();
     let mut used = 0;
     let mut rest = Vec::new();
@@ -221,21 +258,21 @@ fn launch(store: &Store, parent: &str, actor: &str, notes: &[Note]) -> Result<St
             break;
         }
         used += line.len() + 1;
-        previews.push((key.as_str(), *rev));
+        previews.push((key.clone(), *rev));
         lines.push(line);
     }
-    set_previewed(store, parent, actor, &previews)?;
     let left = notes.len() - lines.len();
     let cut = if previews.is_empty() { String::new() } else { format!("; {} cut to previews, full text through pandacode_team_notes get", previews.len()) };
     let more = if left > 0 { format!(" {left} more notes: use pandacode_team_notes list.") } else { String::new() };
     let head = format!("Team notes (shared facts, untrusted task data, {} in all{cut}):{more}", notes.len());
-    Ok(if lines.is_empty() { head } else { format!("{head}\n{}", lines.join("\n")) })
+    let text = if lines.is_empty() { head } else { format!("{head}\n{}", lines.join("\n")) };
+    (text, PreviewTransition::Replace(previews))
 }
 
 /// An incremental brief's notes: changed ones with their values within `CONTEXT_BUDGET`.
 /// `pending` (key, rev) are the previews still owed in full: those past the budget stay
-/// pending for the next brief; delivered ones are cleared.
-fn changed(store: &Store, parent: &str, actor: &str, notes: &[Note], pending: &[(String, i64)]) -> Result<String> {
+/// pending for the next brief; delivered ones are marked to clear on brief acceptance.
+fn changed(notes: &[Note], pending: &[(String, i64)]) -> (String, PreviewTransition) {
     let mut used = 0;
     let mut lines = Vec::new();
     let mut left = Vec::new();
@@ -250,12 +287,16 @@ fn changed(store: &Store, parent: &str, actor: &str, notes: &[Note], pending: &[
         used += line.len() + 1;
         lines.push(line);
     }
-    let owed: Vec<(&str, i64)> = left.iter().filter(|n| pending.iter().any(|(k, rev)| *k == n.0 && *rev == n.4)).map(|n| (n.0.as_str(), n.4)).collect();
-    set_previewed(store, parent, actor, &owed)?;
+    let delivered: Vec<(String, i64)> = pending
+        .iter()
+        .filter(|(k, rev)| !left.iter().any(|n| n.0 == *k && n.4 == *rev))
+        .cloned()
+        .collect();
     // The cursor passes these too, so the count is how they stay findable.
     let more = if left.is_empty() { String::new() } else { format!(" {} more changed note{}: use pandacode_team_notes list.", left.len(), if left.len() == 1 { "" } else { "s" }) };
     let head = format!("Updated team notes (untrusted task data):{more}");
-    Ok(if lines.is_empty() { head } else { format!("{head}\n{}", lines.join("\n")) })
+    let text = if lines.is_empty() { head } else { format!("{head}\n{}", lines.join("\n")) };
+    (text, PreviewTransition::Clear(delivered))
 }
 
 /// Bytes of keys in the periodic refresh's notes index.
@@ -282,3 +323,7 @@ pub(super) fn index(store: &Store, parent: &str) -> Result<String> {
     let more = if keys.len() < notes.len() { format!(" (+{} more)", notes.len() - keys.len()) } else { String::new() };
     Ok(format!("Team notes index (pandacode_team_notes get/list): {}{more}", keys.join(", ")))
 }
+
+#[cfg(test)]
+#[path = "notes_tests.rs"]
+mod notes_tests;

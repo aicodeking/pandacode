@@ -100,13 +100,32 @@ fn message_id_param(params: &Value) -> Result<i64> {
 // ---- shared ----
 
 fn is_running(ctx: &Ctx<'_>, session_id: &str) -> Result<bool> {
-    Ok(crate::run_requests::lock_agents(&ctx.state().agents).map_err(|e| e.to_string())?.contains_key(session_id))
+    is_running_in_state(&ctx.state(), session_id)
 }
 
-/// Refuses while any agent works in `root` (`files.rs`' `running_in`), not only this task's.
+fn is_running_in_state(state: &crate::AppState, session_id: &str) -> Result<bool> {
+    // Check `state.agents` before `pending_exits()` so a turn handing off to background reaping cannot slip between them.
+    if crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(session_id) {
+        return Ok(true);
+    }
+    Ok(crate::providers::pending_exits().iter().any(|(id, _)| id == session_id))
+}
+
+/// Refuses while any agent works or is exiting in `root` (`files.rs`' `running_in`), not only this task's.
 async fn refuse_running_here(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
     if super::files::running_in(ctx, root).await? {
         return Err(RUNNING.into());
+    }
+    Ok(())
+}
+
+async fn refuse_worktree_create_busy(ctx: &Ctx<'_>, session_id: &str, root: &Path) -> Result<()> {
+    refuse_worktree_create_busy_in_state(&ctx.state(), session_id, root).await
+}
+
+async fn refuse_worktree_create_busy_in_state(state: &crate::AppState, session_id: &str, root: &Path) -> Result<()> {
+    if is_running_in_state(state, session_id)? || super::files::running_in_state(state, root).await? {
+        return Err("Stop the agent before moving this task into a worktree.".into());
     }
     Ok(())
 }
@@ -772,10 +791,11 @@ async fn create_worktree(ctx: Ctx<'_>, this: WorktreeCreate) -> Result<Value> {
     if task.worktree_path.is_some() {
         return Err("This task already has a worktree.".into());
     }
-    if is_running(&ctx, &this.session_id)? {
-        return Err("Stop the agent before moving this task into a worktree.".into());
-    }
+    let root = task_root(&ctx.state(), &this.session_id).await?;
+    refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?;
     let _checkout = lock_task_checkout(&ctx, &this.session_id, &task.project_id, true).await?;
+    // Again under the lock: an agent or background exit may have started while this call waited for it.
+    refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?;
     let branch = this.branch.clone().unwrap_or_else(|| suggested_branch(&task));
     let (store, session_id, trust) = (ctx.state().store.clone(), this.session_id.clone(), trust_of(&ctx));
     let created = crate::blocking(move || create_task_worktree(&store, &session_id, &branch, trust)).await;
@@ -1667,5 +1687,60 @@ mod tests {
         let body = &source[source.find("async fn open_pull(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.find("crate::workspace::pull_base_default(&pin_root, trust)").unwrap() < body.find("crate::task_branches(").unwrap());
+    }
+
+    #[test]
+    fn worktree_create_checks_busy_checkout_before_and_after_the_lock() {
+        let source = include_str!("git.rs");
+        let body = &source[source.find("async fn create_worktree(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let lock = body.find("lock_task_checkout(&ctx").unwrap();
+        assert!(body[..lock].contains("refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?"), "before the lock");
+        assert!(body[lock..].contains("refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?"), "again under the lock");
+    }
+
+    #[tokio::test]
+    async fn pending_exit_refuses_sibling_git_mutations_and_worktree_create() {
+        let dir = std::env::temp_dir().join(format!("pandacode-git-pending-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = crate::AppState {
+            store: Arc::new(StdMutex::new(store)),
+            agents: Arc::new(StdMutex::new(HashMap::new())),
+            terminals: Arc::new(StdMutex::new(HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        };
+        let sibling_root = task_root(&state, &sibling.id).await.unwrap();
+
+        assert!(!is_running_in_state(&state, &first.id).unwrap());
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_ok());
+
+        let hold = crate::providers::hold_exit_for_test(&first.id);
+        assert!(is_running_in_state(&state, &first.id).unwrap(), "pending exit counts as running for its own session");
+        assert!(super::super::files::running_in_state(&state, &sibling_root).await.unwrap(), "git mutation guard reports busy for sibling session");
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_err(), "worktree.create refuses while sibling exit is pending");
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &elsewhere).await.is_ok(), "unrelated checkout is unaffected");
+        drop(hold);
+        crate::providers::await_exit(&first.id).await.unwrap();
+
+        assert!(!is_running_in_state(&state, &first.id).unwrap());
+        assert!(!super::super::files::running_in_state(&state, &sibling_root).await.unwrap());
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_ok());
+
+        // An unpersisted pending exit carrying cwd (e.g. worker/spare) also blocks this checkout only.
+        let ephemeral = format!("git-ephemeral-exit-{}", uuid::Uuid::new_v4().simple());
+        let hold_cwd = crate::providers::hold_exit_in_cwd_for_test(&ephemeral, root.clone());
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_err());
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &elsewhere).await.is_ok());
+        drop(hold_cwd);
+        crate::providers::await_exit(&ephemeral).await.unwrap();
+        assert!(refuse_worktree_create_busy_in_state(&state, &sibling.id, &sibling_root).await.is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -14,7 +14,7 @@ test('the worker skills switch is on by default, explains itself and saves', asy
   await openAgents(page);
   await expect(toggle(page)).toBeEnabled();
   await expect(toggle(page)).toBeChecked();
-  await expect(settings(page).getByText('Applies to Claude Code, GLM and MiMo team workers; off removes Skill next run.')).toBeVisible();
+  await expect(settings(page).getByText('Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.')).toBeVisible();
 
   // Flipped from the keyboard (WebKit does not focus a clicked checkbox), it keeps focus after the save.
   await toggle(page).focus();

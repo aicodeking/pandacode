@@ -45,6 +45,13 @@ fn read_entries(dir: &Path) -> Result<Vec<fs::DirEntry>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(format!("Could not read the tool folder: {e}")),
     };
+    // An enumerable but unsearchable folder (0444 on Unix) lets `read_dir` succeed while every
+    // stat/open inside it fails; check `.` so an empty unsearchable scope still reports an error.
+    match fs::symlink_metadata(dir.join(".")) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(format!("Could not read the tool folder: {e}")),
+    }
     entries.collect::<Result<Vec<_>, _>>().map_err(|e| format!("Could not read the tool folder: {e}"))
 }
 
@@ -62,13 +69,31 @@ fn tool_path(dir: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(dir.join(format!("{name}.json")))
 }
 
+/// A regular file of at most `limit` bytes; missing files, links and oversize files return
+/// `Ok(None)`, while access errors (`EACCES`, etc.) propagate to Settings.
+fn try_read_small(path: &Path, limit: u64) -> Result<Option<String>, String> {
+    let meta = match fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Could not read the tool folder: {e}")),
+    };
+    if !meta.is_file() || meta.len() > limit {
+        return Ok(None);
+    }
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("Could not read the tool folder: {e}")),
+    };
+    if bytes.len() as u64 > limit {
+        return Ok(None);
+    }
+    Ok(String::from_utf8(bytes).ok())
+}
+
 /// A regular file of at most `limit` bytes; links and oversize files read as missing.
 fn read_small(path: &Path, limit: u64) -> Option<String> {
-    let meta = fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > limit {
-        return None;
-    }
-    fs::read_to_string(path).ok()
+    try_read_small(path, limit).ok().flatten()
 }
 
 pub(super) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
@@ -82,11 +107,17 @@ pub(super) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
     })
 }
 
+/// One tool, if its file is present and valid; reports access errors instead of hiding them.
+fn try_load(dir: &Path, name: &str) -> Result<Option<Tool>, String> {
+    let Ok(path) = tool_path(dir, name) else { return Ok(None) };
+    let Some(text) = try_read_small(&path, MAX_FILE)? else { return Ok(None) };
+    let Ok(tool) = serde_json::from_str::<Tool>(&text) else { return Ok(None) };
+    Ok((tool.name == name && tool.validate().is_ok()).then_some(tool))
+}
+
 /// One tool, if its file is present and valid.
 pub(super) fn load(dir: &Path, name: &str) -> Option<Tool> {
-    let text = read_small(&tool_path(dir, name).ok()?, MAX_FILE)?;
-    let tool: Tool = serde_json::from_str(&text).ok()?;
-    (tool.name == name && tool.validate().is_ok()).then_some(tool)
+    try_load(dir, name).ok().flatten()
 }
 
 /// Every valid tool of one scope, by name.
@@ -102,14 +133,16 @@ pub(super) fn load_all(dir: &Path) -> Vec<Tool> {
     tools
 }
 
-/// Settings needs directory failures, while the agent catalog above stays fail-soft.
+/// Settings needs directory and entry access failures, while the agent catalog above stays fail-soft.
 pub(super) fn try_load_all(dir: &Path) -> Result<Vec<Tool>, String> {
-    let mut tools: Vec<Tool> = read_entries(dir)?
-        .into_iter()
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter_map(|file| file.strip_suffix(".json").map(str::to_owned))
-        .filter_map(|name| load(dir, &name))
-        .collect();
+    let mut tools = Vec::new();
+    for entry in read_entries(dir)? {
+        let Ok(file) = entry.file_name().into_string() else { continue };
+        let Some(name) = file.strip_suffix(".json") else { continue };
+        if let Some(tool) = try_load(dir, name)? {
+            tools.push(tool);
+        }
+    }
     tools.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(tools)
 }
@@ -150,25 +183,78 @@ pub(super) fn record(dir: &Path, name: &str, session: &str, exit: Option<i32>, n
     write_stats(dir, &all)
 }
 
+fn restore_tool_move(from_path: &Path, to_path: &Path, from: &Path, tool: &Tool) {
+    if fs::rename(to_path, from_path).is_err() && store(from, tool).is_ok() {
+        let _ = fs::remove_file(to_path);
+    }
+}
+
 /// Moves a tool and its stats between scopes; refuses when the name is taken there.
 pub(super) fn move_tool(from: &Path, to: &Path, name: &str) -> Result<(), String> {
     let _guard = lock();
     if from == to {
         return Ok(());
     }
-    let tool = load(from, name).ok_or("No such tool.")?;
-    if tool_path(to, name)?.exists() {
-        return Err(format!("A tool named {name} already exists there."));
+    let from_path = tool_path(from, name)?;
+    let to_path = tool_path(to, name)?;
+    let tool = try_load(from, name)?.ok_or("No such tool.")?;
+    match fs::symlink_metadata(&to_path) {
+        Ok(_) => return Err(format!("A tool named {name} already exists there.")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Could not check the destination tool folder: {e}")),
     }
-    store(to, &tool)?;
+    let created_to_dir = matches!(fs::symlink_metadata(to), Err(e) if e.kind() == std::io::ErrorKind::NotFound);
+    let cleanup_dir = || {
+        if created_to_dir {
+            let _ = fs::remove_dir(to);
+        }
+    };
+
+    // Move the tool file first so a read-only source fails before touching stats or leaving a copy.
+    fs::create_dir_all(to).map_err(|e| format!("Could not create the tool folder: {e}"))?;
+    match fs::rename(&from_path, &to_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+            if let Err(err) = store(to, &tool) {
+                cleanup_dir();
+                return Err(err);
+            }
+            if let Err(err) = remove(from, name) {
+                let _ = fs::remove_file(&to_path);
+                cleanup_dir();
+                return Err(err);
+            }
+        }
+        Err(e) => {
+            cleanup_dir();
+            return Err(format!("Could not move: {e}"));
+        }
+    }
+
     let mut source = read_stats(from);
     if let Some(stats) = source.remove(name) {
-        let mut target = read_stats(to);
+        let to_stats_path = to.join(STATS_FILE);
+        let had_to_stats = fs::symlink_metadata(&to_stats_path).is_ok();
+        let prev_to = read_stats(to);
+        let mut target = prev_to.clone();
         target.insert(name.to_owned(), stats);
-        write_stats(to, &target)?;
-        write_stats(from, &source)?;
+        if let Err(err) = write_stats(to, &target) {
+            restore_tool_move(&from_path, &to_path, from, &tool);
+            cleanup_dir();
+            return Err(err);
+        }
+        if let Err(err) = write_stats(from, &source) {
+            if had_to_stats {
+                let _ = write_stats(to, &prev_to);
+            } else {
+                let _ = fs::remove_file(&to_stats_path);
+            }
+            restore_tool_move(&from_path, &to_path, from, &tool);
+            cleanup_dir();
+            return Err(err);
+        }
     }
-    remove(from, name)
+    Ok(())
 }
 
 /// Deletes a tool and its stats.

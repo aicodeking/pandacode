@@ -748,7 +748,7 @@ impl Run for Write {
     }
 }
 
-/// Refuses while an agent runs in `root`: a task's worktree, or a main checkout a task works in.
+/// Refuses while an agent runs or is exiting in `root`: a task's worktree, or a main checkout a task works in.
 async fn refuse_running_in(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
     if running_in(ctx, root).await? {
         return Err(WRITE_RUNNING.into());
@@ -756,13 +756,27 @@ async fn refuse_running_in(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Whether an agent runs in `root`, literally or canonically (`git.discard` asks too).
+/// Whether an agent runs or is still exiting in `root`, literally or canonically (`git.discard` asks too).
 pub(super) async fn running_in(ctx: &Ctx<'_>, root: &Path) -> Result<bool> {
-    let state = ctx.state();
+    running_in_state(&ctx.state(), root).await
+}
+
+pub(super) async fn running_in_state(state: &AppState, root: &Path) -> Result<bool> {
+    // Snapshot `state.agents` before `pending_exits()` so a turn handing off from the agents map
+    // to background reaping (`exit::reap` registers before `lib.rs` removes the agent) cannot slip between them.
     let running: Vec<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.keys().cloned().collect();
-    let mut others = Vec::with_capacity(running.len());
+    let exiting = crate::providers::pending_exits();
+    let mut others = Vec::with_capacity(running.len() + exiting.len());
     for session_id in running {
-        if let Ok(other) = task_root(&state, &session_id).await {
+        if let Ok(other) = task_root(state, &session_id).await {
+            others.push(other);
+        }
+    }
+    for (session_id, cwd) in exiting {
+        if let Some(dir) = cwd {
+            others.push(dir);
+        }
+        if let Ok(other) = task_root(state, &session_id).await {
             others.push(other);
         }
     }
@@ -1514,5 +1528,60 @@ mod tests {
         assert!(open_no_follow(&root.join("escape.txt")).is_err(), "the final component is never followed");
         let _ = std::fs::remove_dir_all(dir);
         let _ = std::fs::remove_dir_all(outside);
+    }
+
+    fn test_state(store: crate::storage::Store) -> AppState {
+        AppState {
+            store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+            agents: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            terminals: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            shutdown: std::sync::atomic::AtomicU8::new(0),
+        }
+    }
+
+    #[tokio::test]
+    async fn pending_exit_marks_shared_checkout_busy_for_sibling_session() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-pending-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&root).unwrap();
+        let first = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+        let sibling_root = task_root(&state, &sibling.id).await.unwrap();
+
+        assert!(!running_in_state(&state, &sibling_root).await.unwrap());
+        let hold = crate::providers::hold_exit_for_test(&first.id);
+        assert!(running_in_state(&state, &sibling_root).await.unwrap(), "sibling session checkout must report busy while an exit is pending");
+        assert!(!running_in_state(&state, &elsewhere).await.unwrap(), "unrelated checkout must remain free");
+        drop(hold);
+        crate::providers::await_exit(&first.id).await.unwrap();
+        assert!(!running_in_state(&state, &sibling_root).await.unwrap(), "checkout must be free once the pending exit finishes");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn pending_exit_with_cwd_marks_checkout_busy_without_persisted_task() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-cwd-{}", uuid::Uuid::new_v4().simple()));
+        let root = dir.join("repo");
+        let elsewhere = dir.join("other");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let state = test_state(store);
+        let ephemeral = format!("ephemeral-exit-{}", uuid::Uuid::new_v4().simple());
+
+        assert!(!running_in_state(&state, &root).await.unwrap());
+        let hold = crate::providers::hold_exit_in_cwd_for_test(&ephemeral, root.clone());
+        assert!(running_in_state(&state, &root).await.unwrap(), "recorded cwd must mark checkout busy even without a persisted task");
+        assert!(running_in_state(&state, &root.join(".")).await.unwrap(), "canonical path spelling must also match");
+        assert!(!running_in_state(&state, &elsewhere).await.unwrap(), "unrelated checkout must stay free");
+        drop(hold);
+        crate::providers::await_exit(&ephemeral).await.unwrap();
+        assert!(!running_in_state(&state, &root).await.unwrap(), "checkout must clear once the pending exit ends");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

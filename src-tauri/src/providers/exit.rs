@@ -4,6 +4,7 @@
 use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
 use std::{
     collections::HashMap,
+    path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -27,7 +28,13 @@ fn hurry_session(session_id: &str) {
     }
 }
 
-pub(super) type Registry = Mutex<HashMap<String, tokio::sync::watch::Receiver<()>>>;
+#[derive(Clone)]
+pub(super) struct ExitEntry {
+    pub(super) exiting: tokio::sync::watch::Receiver<()>,
+    pub(super) cwd: Option<PathBuf>,
+}
+
+pub(super) type Registry = Mutex<HashMap<String, ExitEntry>>;
 
 /// Processes of clean Claude-family runs still exiting, by session id. Claude Code's natural exit
 /// after its `result` frame is within `BACKGROUND_EXIT_WAIT` (`EXIT_WAIT` once a launch waits); the run returns at once and `reap` waits instead.
@@ -35,6 +42,16 @@ pub(super) type Registry = Mutex<HashMap<String, tokio::sync::watch::Receiver<()
 pub(super) fn exit_registry() -> &'static Registry {
     static EXITING: OnceLock<Registry> = OnceLock::new();
     EXITING.get_or_init(Default::default)
+}
+
+/// Snapshot of `(session_id, cwd)` for every pending or in-flight exit in the registry.
+pub(crate) fn pending_exits() -> Vec<(String, Option<PathBuf>)> {
+    exit_registry()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .iter()
+        .map(|(session_id, entry)| (session_id.clone(), entry.cwd.clone()))
+        .collect()
 }
 
 /// Before any same-session launch, require the previous reaper to finish so the new
@@ -61,7 +78,11 @@ async fn wait_exit(session_id: &str, cap: Duration, hurry: bool) -> Result<(), S
     // ran (a pending spare killed, then retired) waits on it, so look again until none is left.
     let wait = async {
         loop {
-            let exiting = exit_registry().lock().unwrap_or_else(|p| p.into_inner()).get(session_id).cloned();
+            let exiting = exit_registry()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(session_id)
+                .map(|entry| entry.exiting.clone());
             let Some(mut exiting) = exiting else { return };
             if hurry {
                 hurry_session(session_id);
@@ -69,7 +90,11 @@ async fn wait_exit(session_id: &str, cap: Duration, hurry: bool) -> Result<(), S
             // Sender closure is the reaper's completion signal.
             let _ = exiting.changed().await;
             // A finished exit left in place (not removed) must not be waited on again.
-            let current = exit_registry().lock().unwrap_or_else(|p| p.into_inner()).get(session_id).cloned();
+            let current = exit_registry()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get(session_id)
+                .map(|entry| entry.exiting.clone());
             if current.is_none_or(|current| current.same_channel(&exiting)) {
                 return;
             }
@@ -97,6 +122,7 @@ pub(super) async fn wait_all(registry: &Registry, cap: Duration) {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .values()
+                .map(|entry| &entry.exiting)
                 .filter(|exiting| !waited.iter().any(|done| done.same_channel(exiting)))
                 .cloned()
                 .collect();
@@ -118,13 +144,23 @@ pub(super) async fn wait_all(registry: &Registry, cap: Duration) {
 /// a newer one). The one path every process removal takes (`reap`, `warm::retire`), so a
 /// same-session launch (`await_exit`) always waits for the last of them. Outside a runtime
 /// nothing can wait and `task` is dropped (its process dies with it).
+#[cfg(all(test, unix))]
 pub(super) fn spawn_exit(session_id: &str, task: impl std::future::Future<Output = ()> + Send + 'static) {
-    spawn_exit_hurried(session_id, |_| task);
+    spawn_exit_in_cwd(session_id, None, task);
+}
+
+pub(super) fn spawn_exit_in_cwd(
+    session_id: &str,
+    cwd: Option<PathBuf>,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    spawn_exit_hurried(session_id, cwd, |_| task);
 }
 
 /// `spawn_exit` for a task that can shorten its own wait: it receives the hurry signal.
 fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
     session_id: &str,
+    cwd: Option<PathBuf>,
     make: impl FnOnce(tokio::sync::watch::Receiver<bool>) -> F,
 ) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
@@ -132,7 +168,13 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
     let task = make(hurry.subscribe());
     hurries().lock().unwrap_or_else(|p| p.into_inner()).entry(session_id.to_owned()).or_default().push(hurry.clone());
     let (done, exiting) = tokio::sync::watch::channel(());
-    let previous = exit_registry().lock().unwrap_or_else(|p| p.into_inner()).insert(session_id.to_owned(), exiting.clone());
+    let previous = {
+        let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
+        let previous = registry.get(session_id).cloned();
+        let cwd = cwd.or_else(|| previous.as_ref().and_then(|entry| entry.cwd.clone()));
+        registry.insert(session_id.to_owned(), ExitEntry { exiting: exiting.clone(), cwd });
+        previous.map(|entry| entry.exiting)
+    };
     let session_id = session_id.to_owned();
     runtime.spawn(async move {
         if let Some(mut previous) = previous {
@@ -150,7 +192,7 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
             }
         }
         let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
-        if registry.get(&session_id).is_some_and(|current| current.same_channel(&exiting)) {
+        if registry.get(&session_id).is_some_and(|current| current.exiting.same_channel(&exiting)) {
             registry.remove(&session_id);
         }
         drop(done);
@@ -172,34 +214,42 @@ impl Pending {
     }
 }
 
-/// Register an exit for a process that is about to start under `session_id`. The caller drops
-/// the guard as soon as the process is registered (`warm::register`) or was never started;
-/// `await_exit`'s hard cap still bounds any wait.
-pub(super) fn pending(session_id: &str) -> Pending {
+/// Register an exit for a process that is about to start or retire under `session_id` (and
+/// optional working directory `cwd`). The caller drops the guard as soon as the process is
+/// registered (`warm::register`), retired (`warm::retire`), or was never started; `await_exit`'s
+/// hard cap still bounds any wait.
+pub(super) fn pending_in_cwd(session_id: &str, cwd: Option<PathBuf>) -> Pending {
     let (guard, released) = tokio::sync::oneshot::channel::<()>();
     // The guard's sender closing is the signal; the value is never sent.
-    spawn_exit(session_id, async move { let _ = released.await; });
+    spawn_exit_in_cwd(session_id, cwd, async move { let _ = released.await; });
     Pending { _guard: Some(guard) }
 }
 
 /// Test seam: an exit registered for `session_id` until the returned guard drops.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn hold_for_test(session_id: &str) -> Box<dyn std::any::Any + Send> {
-    Box::new(pending(session_id))
+    Box::new(pending_in_cwd(session_id, None))
+}
+
+/// Test seam: an exit registered for `session_id` in `cwd` until the returned guard drops.
+#[cfg(test)]
+pub(crate) fn hold_in_cwd_for_test(session_id: &str, cwd: PathBuf) -> Box<dyn std::any::Any + Send> {
+    Box::new(pending_in_cwd(session_id, Some(cwd)))
 }
 
 /// Kill a process the caller owns in pieces and cannot use (a spare that left the pool, or a
 /// launch whose streams were unavailable) and register its exit under the session, so the next
 /// same-session launch waits until it is really gone.
-pub(super) fn retire_parts(
+pub(super) fn retire_parts_in_cwd(
     session_id: &str,
     mut child: Child,
     group: ProcessGroup,
     server: Option<super::mcp_host::Server>,
+    cwd: Option<PathBuf>,
 ) {
     drop(group);
     let _ = child.start_kill();
-    spawn_exit(session_id, async move {
+    spawn_exit_in_cwd(session_id, cwd, async move {
         let _ = child.wait().await;
         drop(server);
     });
@@ -226,20 +276,25 @@ pub(super) fn exit_note(
 /// Characters of stderr kept in `exit_note`.
 pub(super) const NOTE_TAIL: usize = 300;
 
+/// Process handles handed to [`reap`] once a clean Claude-family run finishes.
+pub(super) struct Reaped {
+    pub(super) session_id: String,
+    pub(super) cwd: Option<PathBuf>,
+    pub(super) child: Child,
+    pub(super) stdin: ChildStdin,
+    pub(super) stdout: ChildStdout,
+    pub(super) group: ProcessGroup,
+    pub(super) stderr: StderrReader,
+    pub(super) secrets: Vec<String>,
+}
+
 /// Finish a clean run's process in the background, with `finish_child`'s escalation. stdin is
 /// closed at once, before the wait behind any earlier exit of the session, so the CLI never
 /// idles with it open. Stdout is read to EOF and discarded meanwhile: Claude Code may still
 /// write while it flushes after `result`, and a closed pipe would fail it. A nonzero exit is
 /// logged once (`exit_note`); `secrets` are redacted from its stderr tail.
-pub(super) fn reap(
-    session_id: String,
-    mut child: Child,
-    stdin: ChildStdin,
-    mut stdout: ChildStdout,
-    mut group: ProcessGroup,
-    mut stderr: StderrReader,
-    secrets: Vec<String>,
-) {
+pub(super) fn reap(reaped: Reaped) {
+    let Reaped { session_id, cwd, mut child, stdin, mut stdout, mut group, mut stderr, secrets } = reaped;
     // Outside a runtime nothing can drain or wait; the process dies with its handles.
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     drop(stdin);
@@ -251,7 +306,7 @@ pub(super) fn reap(
     });
     let id = session_id.clone();
     let began = Instant::now();
-    spawn_exit_hurried(&session_id, move |hurry| async move {
+    spawn_exit_hurried(&session_id, cwd, move |hurry| async move {
         wait_natural_exit(&mut child, hurry, began).await;
         // Past the natural deadline this escalates at once; a finished exit just returns.
         let (status, escalated) = wait_child(&mut child, &mut group, Duration::ZERO).await;
