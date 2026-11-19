@@ -859,7 +859,7 @@ test.describe('thread errors', () => {
     await expect(mirror.locator('.error-row-summary')).toHaveText('Build failed in 3 packages');
   });
 
-  for (const width of [1280, 860]) {
+  for (const width of [1800, 1280, 860]) {
     test(`error controls stay clear of the action dock at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 800 });
       // Earlier turns, so the thread scrolls and its error boxes can sit above, beside or below the dock.
@@ -876,10 +876,24 @@ test.describe('thread errors', () => {
         const inset = 6, points = [[box.left + box.width / 2, box.top + box.height / 2], [box.left + inset, box.top + inset], [box.right - inset, box.top + inset], [box.left + inset, box.bottom - inset], [box.right - inset, box.bottom - inset]];
         return points.flatMap(([x, y]) => { const hit = document.elementFromPoint(x, y); return hit && (hit === node || node.contains(hit)) ? [] : [`${node.className} at ${Math.round(x)},${Math.round(y)} hit ${hit?.className}`]; });
       }));
+      // Lets error-dock-overlap.ts measure the dock (it waits two frames, which run on the paused clock).
+      await page.clock.runFor(100);
       await page.screenshot({ path: test.info().outputPath(`errors-${width}.png`) });
       expect(await misses()).toEqual([]);
 
-      // Inside a turn card the error box runs the card's full width, like its reply; only the controls keep clear.
+      // A card's × sits at the card's right edge, like the card's other controls, unless the dock really reaches over the
+      // card; then it moves in by just that reach (plus a gap), never by a fixed clearance.
+      const reach = await page.locator('#transcript .turn-card-errors').last().evaluate(node => {
+        const dock = document.getElementById('action-dock')!.getBoundingClientRect(), card = node.closest('.turn-card')!.getBoundingClientRect();
+        const dismiss = node.querySelector('.error-row-dismiss')!.getBoundingClientRect(), row = node.querySelector('.message-error')!.getBoundingClientRect();
+        return { overlap: Math.max(0, Math.ceil(card.right - (dock.left - 10))), inset: Math.round(row.right - dismiss.right), clear: Math.round(dock.left - dismiss.right) };
+      });
+      // At 1800px the pane is wide enough that the dock sits clear of the card's column.
+      if (width === 1800) expect(reach.overlap).toBe(0);
+      if (reach.overlap === 0) expect(reach.inset).toBeLessThanOrEqual(4);
+      else expect(reach.clear).toBeGreaterThanOrEqual(10);
+
+      // Inside a turn card the error box runs the card's full width, like its reply; the controls move in only as far as the dock reaches.
       const edges = await page.locator('.turn-card:has(.turn-card-errors .message-error)').evaluateAll(cards => cards.map(card => {
         const box = card.querySelector('.turn-card-errors')!.getBoundingClientRect(), reply = card.querySelector('.turn-card-reply')?.getBoundingClientRect();
         return reply ? Math.round(reply.right - box.right) : 0;
@@ -896,7 +910,7 @@ test.describe('thread errors', () => {
       });
       await transcript(page).evaluate(node => { node.scrollTop = node.scrollHeight; });
       const atEnd = await geometry();
-      expect(atEnd.padding).not.toBe('3px');
+      if (reach.overlap > 0) expect(atEnd.padding).not.toBe('3px');
       const frames: unknown[] = [];
       for (let step = 0; step < 12; step++) {
         await transcript(page).evaluate(node => { node.scrollTop -= 60; });

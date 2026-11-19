@@ -37,6 +37,7 @@ import './redesign/board.css';
 import './redesign/bots.css';
 import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
+import { watchErrorDockOverlap } from './error-dock-overlap';
 import { setDocumentView } from './document-viewer';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
@@ -257,9 +258,18 @@ let designPanel: ReturnType<typeof import('./design-canvas').mountDesignCanvas> 
 let progressPip: import('./progress-pip').ProgressPip | undefined, progressPipLoading: Promise<void> | undefined;
 let browserLifecycle = Promise.resolve();
 let browserOwner = '', browserRevision = 0, inspectorSuppressed = false;
-/** The user's last explicit inspector toggle; a task without saved panel state follows it. */
-let inspectorChosen = true;
-type ThreadPanel = { workspace: string; open: boolean; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
+/** The user's last explicit inspector show or hide, kept across launches. Visibility is global across tasks, while each
+ * task remembers its own tab, folders, selected diff/file, and browser URL. */
+const INSPECTOR_CHOSEN_KEY = 'pandacode.inspector.chosen';
+let inspectorChosen = (() => {
+  try { return localStorage.getItem(INSPECTOR_CHOSEN_KEY) !== 'false'; } catch (cause) { console.warn('Could not read the inspector choice', cause); return true; }
+})();
+function chooseInspector(open: boolean): boolean {
+  inspectorChosen = open;
+  try { localStorage.setItem(INSPECTOR_CHOSEN_KEY, String(open)); } catch (cause) { console.warn('Could not save the inspector choice', cause); }
+  return open;
+}
+type ThreadPanel = { workspace: string; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
 const threadPanels = new Map<string, ThreadPanel>();
 const teams = new Map<string, TeamSnapshot | null>();
 let architectView: ArchitectView | undefined;
@@ -577,6 +587,7 @@ mountAgentsDock(document.querySelector<HTMLElement>('#agents-dock-host')!, { ope
 publishSpringEasings();
 syncPulses();
 mountActionDock($('#action-dock'));
+watchErrorDockOverlap($('#transcript'), $('#action-dock'));
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
 const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report);
 const projectRunner = new ProjectRunner({
@@ -757,7 +768,7 @@ function upsertSession(saved: Session): void { const index = state.sessions.find
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
   if (!session()?.pullRequest) return;
-  inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
+  inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
 }
 /** After a turn, link the pull request the agent opened, if there is one. */
 async function detectPullRequest(sessionId: string): Promise<void> {
@@ -859,7 +870,7 @@ const attachments = mountPromptAttachments({
   },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
   menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
-  projectFiles: () => { state.inspector = true; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
+  projectFiles: () => { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
 });
 async function openRecipes(): Promise<void> {
@@ -1247,14 +1258,15 @@ configureFileLinks({
 });
 function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
-  threadPanels.set(state.sessionId, { workspace: workspaceKey(), open: state.inspector, tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
+  threadPanels.set(state.sessionId, { workspace: workspaceKey(), tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
 function restoreThreadPanel(task?: Session): void {
   clearWorkspaceInspector(false);
   const saved = task && threadPanels.get(task.id);
   const sameWorkspace = saved?.workspace === workspaceKey();
-  // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
-  state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
+  // Inspector visibility follows the user's global show/hide choice (unless the view or narrow viewport hides it),
+  // while each task restores its own tab, folders, selected diff, and browser URL.
+  state.inspector = inspectorChosen && state.view === 'conversation' && !matchMedia('(max-width: 920px)').matches;
   state.inspectorTab = saved?.tab && inspectorTabs.open.includes(saved.tab) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
@@ -3931,6 +3943,7 @@ function setWorkspaceView(view: WorkspaceView): void {
   state.view = view; localStorage.setItem('pandacode.view', view);
   state.boardPanel = false;
   inspectorSuppressed = view !== 'conversation';
+  if (view === 'conversation') state.inspector = inspectorChosen && !matchMedia('(max-width: 920px)').matches;
   renderInspector();
   render();
   // The chosen view rises into place; board cards arrive as a short cascade (the pane does not also fade, or the two multiply).
@@ -4531,7 +4544,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('#agents-toggle:not([hidden])'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>'); break; }
     case 'mention':
       if (argumentsText) { await projectFileText(task, argumentsText); if (task.id === state.sessionId) attachFile(argumentsText); }
-      else { state.inspector = true; state.inspectorTab = 'files'; renderInspector(); }
+      else { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; renderInspector(); }
       break;
     case 'cd': {
       if (!argumentsText) { showOpenProject(); break; }
@@ -4558,7 +4571,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       if (prompt) { prompt.value = '/'; prompt.focus(); prompt.setSelectionRange(1, 1); prompt.dispatchEvent(new Event('input', { bubbles: true })); }
       break;
     }
-    case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
+    case 'diff': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
     case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
       if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
@@ -5275,7 +5288,7 @@ const btwPanel = new BtwPanel({
   command: (side, text) => btwSlash(side, text, document.querySelector('.btw-panel .btw-toolbar')),
   openFull: sideId => run(selectSession(sideId, true)),
   newThread: () => { writeLink(localStorage, state.sessionId, null); renderInspector(); btwPanel.focus(); },
-  close: () => { state.inspector = false; renderInspector(); },
+  close: () => { state.inspector = chooseInspector(false); renderInspector(); },
   insertMain: text => {
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (!prompt) return;
     prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${text}` : text; state.drafts.set(state.sessionId, prompt.value); resizePrompt();
@@ -5329,7 +5342,7 @@ function btwLink(mainId: string): BtwLink | undefined {
   const side = link && state.sessions.find(task => task.id === link.sideId);
   return side && !side.archived ? link : undefined;
 }
-function openBtw(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
+function openBtw(): void { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
 /** Why this task cannot open a side thread, if it cannot. */
 function btwRefusal(main: Session): string {
   if (main.remoteDevice || main.cloud) return 'Side threads run on this computer, and this task runs elsewhere.';
@@ -5846,8 +5859,8 @@ function syncDesignPanel(): void {
     if (state.inspector && state.inspectorTab === 'design' && !inspectorSuppressed) designPanel.show();
   }).catch(error => { designLoading = undefined; report(error); });
 }
-function openVm(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'vm'; state.selectedKind = ''; renderInspector(); }
-function openSimulator(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'simulator'; state.selectedKind = ''; renderInspector(); }
+function openVm(userInitiated = false): void { inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'vm'; state.selectedKind = ''; renderInspector(); }
+function openSimulator(userInitiated = false): void { inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'simulator'; state.selectedKind = ''; renderInspector(); }
 function syncBrowserPanel(): void {
   const wanted = state.inspector && state.inspectorTab === 'browser' && !inspectorSuppressed;
   const owner = state.sessionId;
@@ -5882,7 +5895,7 @@ function syncBrowserPanel(): void {
       navigated: url => { if (revision === browserRevision && state.sessionId === owner) state.browserUrl = url; },
       attach: attachBrowserContext,
       test: (url, anchor) => run(openJevTests(url, anchor)),
-      close: () => { state.inspector = false; renderInspector(); },
+      close: () => { state.inspector = chooseInspector(false); renderInspector(); },
     });
     if (!browserWanted || revision !== browserRevision) { await panel.close(); return; }
     browserPanel = panel;
@@ -5898,10 +5911,10 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   await active();
   const { action, args } = request;
   if (action === 'open_task') { await selectSession(String(args.taskId)); return { opened: state.sessionId === args.taskId }; }
-  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); await openFile(String(args.path), 'file'); return { opened: fileTabs.active === args.path }; }
+  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); await openFile(String(args.path), 'file', false, workspaceContext(), false, false); return { opened: fileTabs.active === args.path }; }
   if (action === 'open_terminal') { if (!terminalPanel.open) await toggleTerminal(); return { opened: terminalPanel.open }; }
   if (action === 'run_project') return projectRunner.run(request.requestId, active);
-  if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active); return { opened: true }; }
+  if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active, false); return { opened: true }; }
   if (action === 'open_browser') {
     state.inspector = true; state.inspectorTab = 'browser'; renderInspector();
     await browserLifecycle; await active();
@@ -6140,7 +6153,7 @@ function renderInspector(): void {
   if (state.jj?.isRepo && !state.jj.colocated) {
     showJjPanel(target, state.jj, {
       call, notify, notifyError, context: () => workspaceContext(), changed: status => { state.jj = status; },
-      openDiff: (path, patch) => { selectedFileContext = workspaceContext(); state.selectedFile = path; state.selectedContent = patch; state.selectedKind = 'diff'; state.selectedStaged = false; state.filePreviewLoading = false; state.inspector = true; renderInspector(); },
+      openDiff: (path, patch) => { selectedFileContext = workspaceContext(); state.selectedFile = path; state.selectedContent = patch; state.selectedKind = 'diff'; state.selectedStaged = false; state.filePreviewLoading = false; inspectorSuppressed = false; state.inspector = chooseInspector(true); renderInspector(); },
     });
     return;
   }
@@ -6155,21 +6168,21 @@ async function openRunPreview(url: string, context: { projectId: string; session
   if (!current() || !browserPanel) return;
   await browserPanel.navigate(url);
 }
-async function previewFile(path: string, context = workspaceContext(), active?: () => Promise<void>): Promise<void> {
+async function previewFile(path: string, context = workspaceContext(), active?: () => Promise<void>, userInitiated = true): Promise<void> {
   if (!context.projectId) return;
   const request = ++fileRequest, generation = state.generation;
   const file = await call<{ url: string; path: string; name: string }>('prepare_file_preview', { ...context, path });
   await active?.();
   // A slow filesystem lookup must not open a preview over a task selected meanwhile.
   if (request !== fileRequest || generation !== state.generation) return;
-  state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector();
+  inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector();
   await browserLifecycle;
   await active?.();
   if (request !== fileRequest || generation !== state.generation || !browserWanted) return;
   if (!browserPanel) throw new Error('Browser could not be opened.');
   await browserPanel.navigate(file.url);
 }
-async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false): Promise<void> {
+async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false, userInitiated = true): Promise<void> {
   const p = project(); if (!p) return;
   if (kind === 'file') {
     if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
@@ -6180,7 +6193,7 @@ async function openFile(path: string, kind: 'file' | 'diff', staged = false, con
   }
   const request = ++fileRequest, generation = state.generation; const content = await call<string>('git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
   selectedFileContext = { ...context };
-  state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; state.inspector = true; renderInspector();
+  state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; renderInspector();
 }
 function attachFile(path: string): void {
   if (!session()) { notify('Start a task before attaching files.'); return; }
@@ -7092,7 +7105,7 @@ async function openJevTests(url?: string, anchor?: HTMLElement): Promise<void> {
     settings: () => run(openJevSettings()),
     watch: (runId: string) => run((async () => {
       if (state.sessionId !== task.id) return;
-      state.inspector = true; state.inspectorTab = 'browser'; renderInspector();
+      inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'browser'; renderInspector();
       await browserLifecycle;
       if (state.sessionId === task.id) await browserPanel?.watchJev(runId);
     })()),
@@ -7420,7 +7433,7 @@ async function showCloudMenu(anchor: HTMLElement): Promise<void> {
     if (id === 'delete' && !await confirmDeleteMachine(s)) return;
     try { await call('cloud_agent_action', { sessionId: s.id, action: id }); }
     catch (error) { notifyError(errorText(error)); return; }
-    if (id === 'open') openVm();
+    if (id === 'open') openVm(true);
     else if (id === 'delete') notify('Deleted the cloud machine. Your next message creates a new one.');
   } });
 }
@@ -8061,16 +8074,16 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'copy-file': await navigator.clipboard.writeText(state.selectedContent); notify('File copied'); break;
     case 'copy-path': await navigator.clipboard.writeText(workspacePath()); notify(session()?.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
     case 'terminal': await toggleTerminal(); break;
-    case 'toggle-inspector': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;
-    case 'toggle-files': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector || state.inspectorTab !== 'files'; inspectorSuppressed = false; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); break;
-    case 'tab-vm': openVm(); break;
+    case 'toggle-inspector': state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); break;
+    case 'toggle-files': state.inspector = chooseInspector(inspectorSuppressed || !state.inspector || state.inspectorTab !== 'files'); inspectorSuppressed = false; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); break;
+    case 'tab-vm': openVm(true); break;
     case 'tab-btw': openBtw(); btwPanel.focus(); break;
     case 'inspector-add-tab': await showInspectorViews(element); break;
     case 'close-inspector-tab': closeInspectorTab(element.dataset.view as PanelView); break;
     case 'toggle-file-editor': fileTabs.toggle(); break;
-    case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
+    case 'tab-design': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
-    case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
+    case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(true); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
     case 'council': if (element.getAttribute('aria-disabled') !== 'true') council.open(element, state.sessionId, element.dataset.councilFocus === 'target' || element.dataset.councilFocus === 'maxRounds' ? element.dataset.councilFocus : undefined); break;
     case 'council-keep-fixing': case 'council-accept': if (element.closest<HTMLElement>('.council-strip')?.dataset.sessionId === state.sessionId) await council.act(state.sessionId, name === 'council-accept' ? 'accept' : 'keep', element); break;
@@ -8080,7 +8093,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
-    case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
+    case 'browser': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
     case 'locate-project-folder': await locateProjectFolder(); break;
     case 'file-menu': fileExplorer.menu(element, workspaceContext(), element.dataset.path!, element.dataset.directory === 'true'); break;
@@ -8283,7 +8296,7 @@ document.addEventListener('keydown', event => {
   if (command && event.code === 'KeyN') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
   else if (command && event.code === 'KeyJ') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.code === 'Comma') { event.preventDefault(); run(showSettings()); }
-  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
+  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
