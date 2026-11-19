@@ -1,0 +1,35 @@
+/* Settings → Memory: one card for the switch and the add form, one list of notes. */
+.memory-settings { display: flex; flex-direction: column; gap: 12px; }
+.memory-switch-row small { display: block; margin-top: 2px; max-width: 62ch; color: var(--muted); font-size: var(--ds-text-meta); }
+.memory-note { margin: 0; color: var(--muted); font-size: var(--ds-text-meta); }
+.memory-add { display: flex; flex-direction: column; gap: 8px; padding: 14px var(--ds-row-pad-x); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-card); background: var(--ds-card); }
+.memory-add > label { font-size: var(--ds-text-ui); font-weight: var(--weight-medium); }
+.memory-add textarea, .memory-edit { width: 100%; resize: vertical; padding: 8px 10px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--text); font: inherit; font-size: var(--ds-text-ui); }
+.memory-add-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.memory-add-row select { height: 32px; max-width: 18rem; padding: 0 10px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--text); font: inherit; font-size: var(--ds-text-ui); }
+.memory-scope-label { color: var(--muted); font-size: var(--ds-text-meta); }
+.memory-add-row .secondary-button { margin-left: auto; }
+.memory-count { margin: 0; color: var(--faint); font-size: var(--ds-text-meta); font-variant-numeric: tabular-nums; }
+.memory-error { margin: 0; color: var(--ds-danger); font-size: var(--ds-text-meta); }
+.memory-notice { margin: 0; color: var(--ds-success); font-size: var(--ds-text-meta); }
+.memory-browse { display: flex; flex-direction: column; gap: 8px; }
+.memory-browse-head { display: flex; align-items: center; gap: 12px; }
+.memory-browse-head h3 { margin: 0 auto 0 0; }
+.memory-browse-head input { width: 14rem; height: 30px; padding: 0 10px; border: 1px solid var(--ds-border); border-radius: var(--ds-radius-control); background: var(--ds-card-inner); color: var(--text); font: inherit; font-size: var(--ds-text-meta); }
+.memory-filters { position: relative; isolation: isolate; display: inline-flex; flex-wrap: wrap; gap: 2px; align-self: flex-start; padding: 3px; border: 1px solid var(--ds-border); border-radius: calc(var(--ds-radius-control) + 3px); background: var(--ds-track); }
+.memory-filters > button { position: relative; z-index: 1; min-height: 24px; padding: 0 10px; border: 0; border-radius: var(--ds-radius-control); background: transparent; color: var(--muted); font: inherit; font-size: var(--ds-text-meta); font-weight: var(--weight-medium); cursor: pointer; }
+.memory-filters > button:hover { color: var(--text); }
+.memory-filters > button[aria-pressed="true"] { color: var(--text); }
+.memory-filters > button small { color: var(--faint); font-variant-numeric: tabular-nums; }
+.memory-filters > .segment-thumb { border-radius: var(--ds-radius-control); background: var(--ds-thumb); box-shadow: var(--ds-thumb-shadow); }
+.memory-list { display: flex; flex-direction: column; gap: 6px; }
+.memory-row { padding: 12px var(--ds-row-pad-x); border: 1px solid var(--ds-border); border-radius: var(--ds-radius-inner); background: var(--ds-card); }
+.memory-content { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--ds-text-ui); }
+.memory-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 6px; color: var(--faint); font-size: var(--ds-text-meta); }
+.memory-scope { padding: 1px 6px; border-radius: var(--ds-radius-chip); background: var(--accent-tint); color: var(--accent-ink); }
+.memory-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; margin-top: 6px; }
+.memory-row-actions .icon-button { width: var(--control); height: var(--control); color: var(--muted); }
+.memory-confirm { margin-right: auto; color: var(--muted); font-size: var(--ds-text-meta); }
+.memory-danger { color: var(--ds-danger); }
+.memory-empty { margin: 0; padding: 14px; color: var(--muted); font-size: var(--ds-text-ui); text-align: center; }
+.memory-settings :is(input, select, textarea, button):focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }

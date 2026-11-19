@@ -484,16 +484,21 @@ mod tests {
     /// through `drivable_session_from`.
     #[test]
     fn schedules_check_bot_threads_where_they_send() {
-        let source = include_str!("schedules.rs");
+        let source = include_str!("schedules.rs").replace("\r\n", "\n");
+        let source = source.as_str();
         let act = &source[source.find("async fn act_on").unwrap()..source.find("// ---- schedules.create").unwrap()];
         assert!(act.contains("device_from_has_full(ctx.app, ctx.from)"));
         assert!(act.contains("check_target(store, &schedule.session_id, device_full, full_access)?"));
         assert!(act.contains("drivable_session_from(store, watch, device_full, full_access)?"));
         let save = &source[source.find("async fn save(").unwrap()..];
-        let save = &save[..save.find("\n}\n").unwrap()];
+        let end = save.find("\npub(crate) const METHODS")
+            .or_else(|| save.find("\r\npub(crate) const METHODS"))
+            .unwrap();
+        let save = &save[..end];
         assert!(save.contains("check_target(store, &target, device_full, full_access)?"));
         assert!(save.contains("drivable_session_from(store, watch, device_full, full_access)?"));
         let check = &source[source.find("fn check_target(").unwrap()..];
-        assert!(check[..check.find("\n}\n").unwrap()].contains("drivable_session_from(store, session_id, device_full, full_access)?"));
+        let end = check.find("\n}\n").or_else(|| check.find("\r\n}\r\n")).unwrap();
+        assert!(check[..end].contains("drivable_session_from(store, session_id, device_full, full_access)?"));
     }
 }

@@ -164,7 +164,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 
@@ -643,6 +643,11 @@ impl Store {
                   UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
+            }
+            if version < 38 {
+                // Memory Fabric: durable notes every thread and harness can share.
+                migration.execute_batch(crate::memory_fabric::SCHEMA).map_err(|e| e.to_string())?;
+                migration.execute_batch("PRAGMA user_version=38;").map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
