@@ -5,9 +5,9 @@ import { expect, test, type Page } from '@playwright/test';
  * once it answers, the labels follow it. */
 
 const PROVIDERS_DELAY = 3_000;
-const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url;\n';
+const previewBody = (source: string) => source + '\nwindow.__pandacodePreviewUrl = import.meta.url; window.__bootEmit = emit;\n';
 type SavedHarness = { provider: string; model: string };
-type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdRefresh?: boolean; __releaseRefresh?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __configured?: { sessionId: string; provider: string }[]; __discarded?: string[]; __teamConfigured?: { sessionId: string; lead: string; auto: boolean }[]; __modeUpdates?: { sessionId: string; mode: string }[]; __boardStarted?: { sessionId: string; provider: string; model: string }[]; __effortCalls?: { sessionId: string; reasoningEffort: string | null }[]; __speedCalls?: { sessionId: string; tier: string | null }[]; __connectionAssigns?: { sessionId: string; connectionId: string | null }[]; __getMessagesCalls?: string[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
+type BootWindow = Window & { __providersAnswered?: number; __providersAsked?: number; __installNotes?: string[]; __firstMessageAt?: number; __drafts?: number; __releaseProviders?: () => void; __holdRefresh?: boolean; __releaseRefresh?: () => void; __holdExplicit?: boolean; __releaseExplicit?: () => void; __failExplicit?: boolean; __holdConfigure?: boolean; __releaseConfigure?: (error?: string) => void; __holdDraft?: boolean; __releaseDraft?: () => void; __holdAgent?: boolean; __configured?: { sessionId: string; provider: string }[]; __discarded?: string[]; __teamConfigured?: { sessionId: string; lead: string; auto: boolean }[]; __teamStarted?: { sessionId: string; text: string }[]; __bootEmit?: (name: string, payload: unknown) => void; __modeUpdates?: { sessionId: string; mode: string }[]; __boardStarted?: { sessionId: string; provider: string; model: string }[]; __effortCalls?: { sessionId: string; reasoningEffort: string | null }[]; __speedCalls?: { sessionId: string; tier: string | null }[]; __connectionAssigns?: { sessionId: string; connectionId: string | null }[]; __getMessagesCalls?: string[]; __sent?: { sessionId: string; text: string }[]; __sentHarnesses?: SavedHarness[]; __refreshedHarnesses?: string[]; __cloudConnected?: boolean };
 
 /** list_providers answers PROVIDERS_DELAY after it is asked (with `held`, only once the test calls
  *  window.__releaseProviders()); the page records when, and any install note it shows. With `__holdDraft` set,
@@ -54,11 +54,14 @@ async function slowProviders(page: Page, lastLaunch?: unknown, held = false): Pr
         (window.__getMessagesCalls ??= []).push(args.sessionId);`)
       .replace(/case ["']send_message["']\s*:\s*\{/, `$&
         (window.__sent ??= []).push({ sessionId: args.sessionId, text: args.text });
-        { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }`)
+        { const { provider, model } = session(args.sessionId); (window.__sentHarnesses ??= []).push({ provider, model }); }
+        if (window.__holdAgent) { session(args.sessionId).status = 'running'; break; }`)
       .replace(/case ["']discard_draft["']\s*:\s*\{/, `$&
         (window.__discarded ??= []).push(args.sessionId);`)
       .replace(/case ["']architect_configure["']\s*:/, `$&
         (window.__teamConfigured ??= []).push({ sessionId: args.sessionId, lead: args.architect?.provider ?? session(args.sessionId).provider, auto: Boolean(args.config?.auto) });`)
+      .replace(/case ["']architect_start["']\s*:/, `$&
+        (window.__teamStarted ??= []).push({ sessionId: args.sessionId, text: args.text });`)
       .replace(/case ["']update_session["']\s*:\s*\{/, `$&
         if (args.mode) (window.__modeUpdates ??= []).push({ sessionId: args.sessionId, mode: args.mode });`)
       .replace(/case ["']start_task["']\s*:\s*\{/, `$&
@@ -1587,4 +1590,122 @@ test('showProviderConnections awaits knownProviders before mounting', async ({ p
   await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
   await expect(dialog.locator('.dialog-loading')).toHaveCount(0, { timeout: 10_000 });
   await expect(dialog.locator('.connection-card, #named-connections')).not.toHaveCount(0);
+});
+
+test('automatic Team while list_providers is pending blocks Send, Model picker, and queue dispatch until Team finishes', async ({ page }) => {
+  test.setTimeout(60_000);
+  await slowProviders(page, undefined, true);
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+
+  const prompt = page.locator('#prompt');
+  const team = page.locator('#team-trigger');
+  const sendButton = page.locator('#composer button[type="submit"].send-button');
+  const modelTrigger = page.locator('#model-picker-trigger');
+  const modeTrigger = page.locator('#mode-picker-trigger');
+
+  await prompt.fill('Run this with the team');
+  await team.click();
+  await page.getByRole('dialog', { name: 'Team', exact: true }).getByRole('menuitemradio', { name: 'Balanced team', exact: true }).click();
+  await expect(team).toHaveAttribute('aria-busy', 'true', { timeout: 10_000 });
+  await page.keyboard.press('Escape');
+
+  // While setTeam is awaiting list_providers, Send, Model picker, Permissions, and queue dispatch must stay locked.
+  await expect(sendButton).toBeDisabled();
+  await expect(modelTrigger).toBeDisabled();
+  await expect(modeTrigger).toBeDisabled();
+  await prompt.press('Enter');
+  await modelTrigger.click({ force: true });
+  await page.evaluate(async () => {
+    const preview = await import('/src/preview.ts');
+    await preview.invoke('queue_add', { sessionId: 'session-1', text: 'Queued during team setup', attachments: [] });
+    (window as BootWindow).__bootEmit?.('queue-changed', { sessionId: 'session-1' });
+  });
+  await page.waitForTimeout(250);
+  await expect(prompt).toHaveValue('Run this with the team');
+  await expect(page.locator('.model-menu')).toHaveCount(0);
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+  expect(await page.evaluate(() => (window as BootWindow).__sent ?? [])).toEqual([]);
+  expect(await page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([]);
+  expect(await page.evaluate(() => (window as BootWindow).__teamStarted ?? [])).toEqual([]);
+
+  // Releasing list_providers finishes Team setup and delivers the queued follow-up through the Team (never plain send_message).
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__teamConfigured ?? []), { timeout: 10_000 })
+    .toEqual([{ sessionId: 'session-1', lead: 'claude', auto: true }]);
+  await expect(team).toHaveAttribute('aria-busy', 'false');
+  await expect(team).toHaveAttribute('data-on', '');
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__teamStarted ?? []), { timeout: 10_000 })
+    .toEqual([{ sessionId: 'session-1', text: 'Queued during team setup' }]);
+  expect(await page.evaluate(() => (window as BootWindow).__sent ?? [])).toEqual([]);
+  await expect(prompt).toHaveValue('Run this with the team');
+});
+
+test('Classic Architect Setup still opens when provisional correction settles while ./architect is still loading', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => { localStorage.setItem('pandacode.teamClassic', 'true'); });
+  let architectRequested!: () => void;
+  const askedArchitect = new Promise<void>(resolve => { architectRequested = resolve; });
+  let releaseArchitect!: () => void;
+  const architectGate = new Promise<void>(resolve => { releaseArchitect = resolve; });
+  await page.route('**/src/architect.ts*', async route => {
+    architectRequested();
+    await architectGate;
+    await route.continue();
+  });
+
+  const draft = await heldCorrection(page, { openPicker: false });
+  const trigger = page.locator('#architect-setup-trigger');
+  await expect(trigger).toBeVisible();
+  await trigger.click();
+  await askedArchitect;
+  await expect(trigger).toHaveAttribute('aria-busy', 'true');
+
+  // Settle provisional correction while import('./architect') is still in flight.
+  await page.evaluate(() => (window as BootWindow).__releaseConfigure!());
+  await expect(page.locator('#model-picker-trigger [data-logo]')).toHaveAttribute('data-logo', 'claude', { timeout: 10_000 });
+  releaseArchitect();
+
+  const popover = page.getByRole('dialog', { name: 'Architect & workers', exact: true });
+  await expect(popover).toBeVisible({ timeout: 10_000 });
+  const leadButton = popover.getByRole('button', { name: 'Choose architect model', exact: true });
+  await expect(leadButton).toBeVisible({ timeout: 10_000 });
+  await expect(leadButton).toContainText(/Claude/);
+  await expect(leadButton).not.toContainText(/Antigravity/);
+  await popover.getByRole('button', { name: 'Save setup', exact: true }).click();
+  await expect(popover).toBeHidden({ timeout: 10_000 });
+  await expect.poll(() => page.evaluate(() => (window as BootWindow).__teamConfigured ?? [])).toEqual([
+    { sessionId: draft, lead: 'claude', auto: false },
+  ]);
+});
+
+test('open composer menu stays open when list_providers lands on a thread with queued messages and updates queue agent name in place', async ({ page }) => {
+  test.setTimeout(45_000);
+  await slowProviders(page, [{ id: 'claude', name: 'Claude (last launch)', installed: true, models: [] }], true);
+  await page.addInitScript(() => { (window as BootWindow).__holdAgent = true; });
+  await page.goto('/');
+  await paintedBeforeProviders(page);
+
+  await page.locator('#prompt').fill('Start a run before list_providers');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('#composer .stop-button')).toBeVisible({ timeout: 10_000 });
+  await page.locator('#prompt').fill('Queued before list_providers');
+  await page.locator('#prompt').press('Enter');
+
+  const queuePanel = page.locator('#composer > .queue-panel');
+  const queueNext = queuePanel.locator('.queue-next');
+  await expect(queueNext).toHaveText('Waiting – Claude (last launch) is working', { timeout: 10_000 });
+  await queuePanel.evaluate(el => { (el as HTMLElement & { __kept?: boolean }).__kept = true; });
+
+  await page.locator('#team-trigger').click();
+  const teamMenu = page.getByRole('dialog', { name: 'Team', exact: true });
+  await expect(teamMenu).toBeVisible({ timeout: 10_000 });
+  expect(await answered(page), 'still waiting for list_providers').toBeNull();
+
+  await release(page);
+  await expect.poll(() => answered(page), { timeout: 10_000 }).not.toBeNull();
+  await expect(queueNext).toHaveText('Waiting – Claude Code is working', { timeout: 10_000 });
+  await expect(teamMenu).toBeVisible();
+  expect(await queuePanel.evaluate(el => (el as HTMLElement & { __kept?: boolean }).__kept)).toBe(true);
 });

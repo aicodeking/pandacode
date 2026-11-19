@@ -234,8 +234,11 @@ const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
-/** True while either a non-provisional session mutation or an automatic provisional harness correction is in flight. */
-const configuringSession = (id: string): boolean => configuringSessions.has(id) || provisionalCorrections.has(id);
+const teamToggles = new Set<string>();
+/** True while a non-provisional session mutation or Team toggle is in flight. */
+const taskBusyConfiguring = (id: string): boolean => configuringSessions.has(id) || teamToggles.has(id);
+/** True while either a non-provisional session mutation, a Team toggle, or an automatic provisional harness correction is in flight. */
+const configuringSession = (id: string): boolean => taskBusyConfiguring(id) || provisionalCorrections.has(id);
 const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
@@ -342,17 +345,19 @@ function refreshMirrorTeam(id: string): void {
   }, 300));
 }
 async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
+  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (architectSetupCleanup) { architectSetupCleanup(); return; }
-  const task = session(); if (!task) return;
+  const task = session(); if (!task || taskBusyConfiguring(task.id)) return;
   if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
   closeMenus();
   const request = ++architectSetupRequest;
-  const { openArchitectSetup } = await import('./architect');
+  const { epoch, release } = beginMenuOpen(anchor);
+  const { openArchitectSetup } = await import('./architect').finally(release);
   const live = liveAnchor(anchor);
-  if (request !== architectSetupRequest || !live || task.id !== state.sessionId) return;
+  if (epoch !== menuEpoch || request !== architectSetupRequest || architectSetupCleanup || !live || task.id !== state.sessionId || taskBusyConfiguring(task.id)) return;
   architectSetupCleanup = openArchitectSetup(live, async () => {
     const [team, library, providers] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles'), knownProviders()]);
-    while (provisionalCorrections.has(task.id) || (providersKnown && provisionalTasks.has(task.id) && !configuringSessions.has(task.id))) {
+    while (provisionalCorrections.has(task.id) || (providersKnown && provisionalTasks.has(task.id) && !taskBusyConfiguring(task.id))) {
       const pending = provisionalCorrections.get(task.id);
       if (pending) {
         const outcome = await pending.catch(() => 'stale' as const);
@@ -372,7 +377,7 @@ async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
       save: (config, architect, profileId) => saveExplicitHarness(task.id, async () => {
         if (task.id !== state.sessionId) throw new Error('Select this task again to change its team.');
         while (provisionalCorrections.has(task.id)) await provisionalCorrections.get(task.id)?.catch(() => undefined);
-        if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id)) throw new Error('Select this task again to change its team.');
+        if (task.id !== state.sessionId || deletedSessions.has(task.id) || taskBusyConfiguring(task.id)) throw new Error('Select this task again to change its team.');
         configuringSessions.add(task.id);
         try {
           const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
@@ -438,15 +443,34 @@ let routingLoad: Promise<RoutingStatus | null> | null = null;
 /** A Settings status that arrived during a Team menu configure; applied if that configure fails. */
 let routingMissed: RoutingStatus | null = null;
 const ROUTING_RETRY_MS = 3000;
-/** Redraws only the Team button's label, so the prompt keeps its focus and caret. */
+/** Redraws only the Team button's label and composer busy state, so the prompt keeps its focus and caret. */
 function syncTeamButton(): void {
-  const trigger = document.querySelector<HTMLElement>('#team-trigger'), s = session(); if (!trigger || !s) return;
-  const html = teamButtonHtml(s);
-  if (trigger.innerHTML !== html) trigger.innerHTML = html;
-  trigger.setAttribute('aria-label', teamName(s));
-  trigger.toggleAttribute('data-on', Boolean(teams.get(s.id)));
-  trigger.setAttribute('aria-busy', String(teamToggles.has(s.id)));
-  trigger.dataset.tip = teamTip(s); trigger.setAttribute('aria-description', teamTip(s));
+  const s = session(); if (!s) return;
+  const toggling = teamToggles.has(s.id), running = isRunning(s.id), team = teams.get(s.id);
+  const trigger = document.querySelector<HTMLElement>('#team-trigger');
+  if (trigger) {
+    const html = teamButtonHtml(s);
+    if (trigger.innerHTML !== html) trigger.innerHTML = html;
+    trigger.setAttribute('aria-label', teamName(s));
+    trigger.toggleAttribute('data-on', Boolean(team));
+    if (pendingMenuOpen?.anchor !== trigger) trigger.setAttribute('aria-busy', String(toggling));
+    trigger.dataset.tip = teamTip(s); trigger.setAttribute('aria-description', teamTip(s));
+  }
+  const classic = document.querySelector<HTMLButtonElement>('#architect-setup-trigger');
+  if (classic) {
+    const on = Boolean(team);
+    classic.setAttribute('aria-description', on ? 'On' : 'Off');
+    classic.setAttribute('aria-pressed', String(on));
+    if (pendingMenuOpen?.anchor !== classic) classic.setAttribute('aria-busy', String(toggling));
+    classic.disabled = toggling;
+    classic.dataset.tip = `Architect & workers: ${on ? 'on' : 'off'}`;
+  }
+  const send = document.querySelector<HTMLButtonElement>('#composer button[type="submit"].send-button');
+  if (send) send.disabled = toggling;
+  const model = document.querySelector<HTMLButtonElement>('#model-picker-trigger');
+  if (model) model.disabled = (running && !team && !botForThread()) || toggling;
+  const mode = document.querySelector<HTMLButtonElement>('#mode-picker-trigger');
+  if (mode) mode.disabled = running || toggling;
   trayStateChanged();
 }
 function applyRouting(ticket: number, next: RoutingStatus): boolean {
@@ -541,12 +565,12 @@ function prepareModelRouting(): void {
     })
     .catch(cause => console.warn('Model routing could not prepare', cause));
 }
-const teamToggles = new Set<string>();
 const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${task.remoteDevice?.name ?? 'the other computer'}.`;
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
-  if (teamToggles.has(task.id) || configuringSessions.has(task.id)) return false;
+  if (taskBusyConfiguring(task.id)) return false;
+  const wasRunning = isRunning(task.id);
   teamToggles.add(task.id);
   let locked = false;
   try {
@@ -577,14 +601,14 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
       }
       while (explicitHarnessSaves.has(task.id)) await explicitHarnessSaves.get(task.id)?.catch(() => undefined);
     }
-    if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id)) return false;
+    if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id) || (!wasRunning && isRunning(task.id))) return false;
     configuringSessions.add(task.id); locked = true;
     let config: TeamConfig | null = null;
     if (on) {
       prepareModelRouting();
       config = await autoTeamConfig();
     }
-    if (task.id !== state.sessionId) return false;
+    if (task.id !== state.sessionId || deletedSessions.has(task.id) || (!wasRunning && isRunning(task.id))) return false;
     const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect: null, profileId: null });
     onArchitect(saved ?? { sessionId: task.id, removed: true });
     await reloadSessions();
@@ -595,9 +619,10 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
     return true;
   } finally {
     // A failed save keeps the menu open with its error, so only the button is redrawn.
-    if (teamToggles.delete(task.id) && task.id === state.sessionId) syncTeamButton();
     if (locked) configuringSessions.delete(task.id);
+    if (teamToggles.delete(task.id) && task.id === state.sessionId) syncTeamButton();
     run(dispatchQueue(task.id));
+    if (!on && providersKnown && provisionalTasks.has(task.id)) run(correctProvisionalTasks());
   }
 }
 const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
@@ -1383,7 +1408,7 @@ function discardDraft(id: string): void {
 function leaveDraft(nextId: string): void {
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
-  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || explicitHarnessSaves.has(draft.id) || teamToggles.has(draft.id) || draft.worktreePath) return;
+  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || taskBusyConfiguring(draft.id) || explicitHarnessSaves.has(draft.id) || draft.worktreePath) return;
   if (draftKept(draft.id)) return;
   discardDraft(draft.id);
 }
@@ -1401,6 +1426,20 @@ function authorName(id: ProviderId): string { return provider(id)?.name || short
 /** Messages signed before the harness list landed take its names in place: no redraw, so open menus stay open. */
 function refreshAuthorNames(): void {
   document.querySelectorAll<HTMLElement>('[data-author]').forEach(label => { const name = authorName(label.dataset.author as ProviderId); if (label.textContent !== name) label.textContent = name; });
+}
+/** Updates the queued-messages status agent name in place, so open composer menus stay open when list_providers lands. */
+function refreshQueueAgentNames(): void {
+  const patch = (selector: string, task: Session | undefined, agentName: string | undefined) => {
+    if (!task || !state.queues.get(task.id)?.length || state.queueHolds.has(task.id) || !isRunning(task.id)) return;
+    const label = document.querySelector<HTMLElement>(selector);
+    if (!label) return;
+    const text = agentName ? `Waiting – ${agentName} is working` : 'Sends when the agent finishes';
+    if (label.textContent !== text) label.textContent = text;
+  };
+  const main = session();
+  patch('#composer > .queue-panel .queue-next', main, main ? (botForThread()?.name ?? provider(main.provider)?.name) : undefined);
+  const side = btwSideTask();
+  patch('.btw-panel .queue-panel .queue-next', side, side ? provider(side.provider)?.name : undefined);
 }
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
@@ -4173,7 +4212,7 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
     const decision = await worktrees.cleanupOffer(s, 'complete');
     if (!decision.proceed) return;
     if (decision.remove) await worktrees.remove(s);
-    if (selected ? session()?.id !== s.id : !state.sessions.some(task => task.id === s.id) || isRunning(s.id)) return;
+    if (selected ? session()?.id !== s.id : !state.sessions.some(task => task.id === s.id) || isRunning(s.id) || configuringSession(s.id)) return;
   }
   configuringSessions.add(s.id);
   try {
@@ -4190,7 +4229,7 @@ let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
-  if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || configuringSessions.has(id)) return;
+  if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || taskBusyConfiguring(id)) return;
   startingBoardTasks.add(id);
   let locked = false, started = false;
   try {
@@ -4221,7 +4260,7 @@ async function startBoardTask(id: string): Promise<void> {
       }
     }
     const eligible = state.sessions.find(task => task.id === id);
-    if (!eligible || deletedSessions.has(id) || eligible.archived || taskStage(eligible) === 'completed' || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id)) return;
+    if (!eligible || deletedSessions.has(id) || eligible.archived || taskStage(eligible) === 'completed' || isRunning(id) || finishingStreams.has(id) || taskBusyConfiguring(id)) return;
     configuringSessions.add(id); locked = true;
     if (state.sessionId !== id || !state.boardPanel) await selectSession(id);
     const selected = state.sessions.find(task => task.id === id) ?? eligible;
@@ -5312,6 +5351,7 @@ async function send(): Promise<void> {
 }
 async function sendDraft(): Promise<void> {
   const waitingFor = state.sessionId, generation = state.generation;
+  if (waitingFor && teamToggles.has(waitingFor)) return;
   let intent = waitingFor ? sendIntent(waitingFor) : undefined;
   if (waitingFor && harnessWaitingSends.has(waitingFor)) { if (intent) harnessWaitingSends.set(waitingFor, intent); return; }
   if (waitingFor && intent && (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor))) {
@@ -5340,7 +5380,7 @@ async function sendDraft(): Promise<void> {
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
   const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
   if (councilFirstSends.has(s.id)) return;
-  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || configuringSessions.has(s.id)) return;
+  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || taskBusyConfiguring(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
   const fresh = !s.remoteDevice && newTaskView();
@@ -5365,7 +5405,7 @@ async function sendDraft(): Promise<void> {
     finally { councilFirstSends.delete(s.id); }
     if (state.sessionId !== s.id || (intent && !intentHolds(intent))) return;
     if (provisionalCorrections.has(s.id) || explicitHarnessSaves.has(s.id) || (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id))) { await sendDraft(); return; }
-    if (configuringSessions.has(s.id)) return;
+    if (taskBusyConfiguring(s.id)) return;
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
@@ -6588,11 +6628,11 @@ function showOpenProject(forTask = false): void {
 }
 async function changeTaskProject(projectId: string): Promise<void> {
   let selected = session();
-  if (!selected || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('A project can only be changed before starting the task.');
+  if (!selected || !newTaskView() || taskBusyConfiguring(selected.id)) throw new Error('A project can only be changed before starting the task.');
   const generation = state.generation;
   while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
   selected = state.sessions.find(s => s.id === selected!.id);
-  if (!selected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its project.');
+  if (!selected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its project.');
   if (selected.worktreePath && selected.projectId !== projectId) throw new Error('A worktree task stays with its original project. Start a new task to use another project.');
   if (selected.projectId === projectId) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
   configuringSessions.add(selected.id);
@@ -6620,14 +6660,14 @@ async function changeTaskProject(projectId: string): Promise<void> {
 async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (projectPickerCleanup) { closeProjectPicker(); return; }
-  const selected = session(); if (!selected || selected.worktreePath || !newTaskView() || configuringSessions.has(selected.id)) return;
+  const selected = session(); if (!selected || selected.worktreePath || !newTaskView() || taskBusyConfiguring(selected.id)) return;
   closeModelPicker();
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openProjectPicker } = await import('./project-picker').finally(release);
   const live = liveAnchor(anchor);
-  if (epoch !== menuEpoch || projectPickerCleanup || !live || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
+  if (epoch !== menuEpoch || projectPickerCleanup || !live || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || taskBusyConfiguring(selected.id)) return;
   anchor = live;
   projectPickerCleanup = openProjectPicker({
     anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
@@ -6657,7 +6697,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
-  const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
+  const selected = target; if (!selected || taskBusyConfiguring(selected.id)) return;
   // A side thread's picker acts on the side thread only, and only while the panel still shows it.
   const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
   if (teams.get(selected.id) && !selected.remoteDevice && !teams.get(selected.id)?.config.auto) { await showArchitectSetup(anchor); return; }
@@ -6669,7 +6709,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
   const live = liveAnchor(anchor);
-  if (epoch !== menuEpoch || modelPickerCleanup || !live || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
+  if (epoch !== menuEpoch || modelPickerCleanup || !live || !current() || generation !== state.generation || taskBusyConfiguring(selected.id) || (isRunning(selected.id) && !botNext)) return;
   anchor = live;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
@@ -6680,9 +6720,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
@@ -6699,10 +6739,10 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -6716,9 +6756,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its speed.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its speed.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
       if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
       try {
@@ -6734,10 +6774,10 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || configuringSessions.has(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       const previousProvider = savedSelection().provider;
       configuringSessions.add(selected.id);
       try {
@@ -6976,19 +7016,19 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   } });
 }
 async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
-  const s = target; if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
+  const s = target; if (!s || isRunning(s.id) || taskBusyConfiguring(s.id)) return;
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
   await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
-    if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
+    if (!current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
     if (isBtwDraft(s)) {
       const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
       saveBtwDraft(s, { mode: id as Mode }); return;
     }
     while (provisionalCorrections.has(s.id)) await provisionalCorrections.get(s.id)?.catch(() => undefined);
     const live = state.sessions.find(item => item.id === s.id);
-    if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
+    if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
     if (!chosen) throw new Error('Choose an available approval behavior.');
     configuringSessions.add(s.id);
@@ -9077,8 +9117,8 @@ function providersLanded(found: Provider[], generation: number, force = false): 
   settingsView?.providersChanged(state.providers);
   agentUpdates.providersChanged();
   if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
-  // Restored queues name the agent they wait for.
-  if (s && state.queues.get(s.id)?.length) renderComposer();
+  // Restored queues name the agent they wait for; patch in place so open composer menus stay open.
+  refreshQueueAgentNames();
   run(correctProvisionalTasks());
   if (!force && !preview && !state.providers.some(p => p.installed)) {
     const pending = bootPending;
@@ -9127,7 +9167,7 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
         provisionalTasks.delete(task.id);
         return 'stale';
       }
-      if (live.draft && live.id !== state.sessionId && !configuringSessions.has(live.id) && !explicitHarnessSaves.has(live.id) && !teamToggles.has(live.id) && !live.worktreePath && !teams.get(live.id) && !draftKept(live.id)) {
+      if (live.draft && live.id !== state.sessionId && !taskBusyConfiguring(live.id) && !explicitHarnessSaves.has(live.id) && !live.worktreePath && !teams.get(live.id) && !draftKept(live.id)) {
         state.sessions = state.sessions.filter(item => item.id !== live.id);
         state.drafts.delete(live.id);
         provisionalTasks.delete(live.id);
