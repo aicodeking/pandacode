@@ -122,10 +122,41 @@ function render(): void {
   resize();
 }
 
-async function load(): Promise<void> {
-  try { snapshot = await call<TraySnapshot>('tray_snapshot'); if (loadFailed) { loadFailed = false; setFailure(''); } render(); }
-  catch (error) { setFailure(errorText(error)); loadFailed = true; }
+/** `tray_snapshot` lists every task under the agents and store locks, and a usage check sends one `tray-changed` per
+ * provider, so loads are single flight: one request at a time, and a change that lands meanwhile only marks the list
+ * stale (`again`) for one more request once it answers — a burst of any size costs at most two. The latest request's
+ * ticket still guards the reply, so nothing older can put back a stale state (such as a finished check's spinner). */
+let loadTicket = 0, loading = false, again = false;
+/** The popover hides on blur (tray.rs), and shows focused: a hidden popover loads nothing until it is shown again. */
+const hidden = (): boolean => document.hidden || !document.hasFocus();
+function load(): void {
+  if (hidden() && snapshot) return;
+  if (loading) { again = true; return; }
+  loading = true; again = false;
+  void request(++loadTicket).finally(() => {
+    loading = false;
+    if (again) load();
+  });
 }
+async function request(ticket: number): Promise<void> {
+  try {
+    const next = await call<TraySnapshot>('tray_snapshot');
+    if (ticket !== loadTicket) return;
+    snapshot = next;
+    if (loadFailed) { loadFailed = false; setFailure(''); }
+    render();
+  } catch (error) {
+    if (ticket !== loadTicket) return;
+    setFailure(errorText(error)); loadFailed = true;
+  }
+}
+/** Shown again: always one fresh snapshot (coalesced with the `tray-changed` the show sends), so nothing that changed
+ * while hidden, and no elapsed time, is left over from the last look. */
+function shownAgain(): void {
+  if (!hidden()) load();
+}
+window.addEventListener('focus', shownAgain);
+document.addEventListener('visibilitychange', shownAgain);
 
 host.addEventListener('click', event => {
   const target = (event.target as HTMLElement).closest<HTMLElement>('button');
@@ -150,6 +181,6 @@ document.addEventListener('keydown', event => {
   rows[next].focus();
 });
 
-if (preview) void import('./preview').then(({ listen }) => listen('tray-changed', () => void load()));
-else void import('@tauri-apps/api/event').then(({ listen }) => listen('tray-changed', () => void load()));
-void load();
+if (preview) void import('./preview').then(({ listen }) => listen('tray-changed', load));
+else void import('@tauri-apps/api/event').then(({ listen }) => listen('tray-changed', load));
+load();

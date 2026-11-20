@@ -47,6 +47,10 @@ interface SettingsOptions {
   turnChecks: boolean;
   section?: SettingsSection;
   discover(): Promise<Provider[]>;
+  /** True while this harness's version is still being probed: installed with no version, it says "Checking…". */
+  versionPending?(id: Provider['id']): boolean;
+  /** True until the real harness list has answered: rows are the last launch's, so none is called missing yet. */
+  listPending?(): boolean;
   /** Mounts the optional GitHub row; returns its cleanup. */
   github?(host: HTMLElement): () => void;
   /** Projects listed under General; remove() rejects with the native refusal text. */
@@ -69,7 +73,12 @@ interface SettingsOptions {
   /** Leaves Settings for the workspace. */
   close(): void;
 }
-export interface SettingsView { show(section: SettingsSection): void; dispose(): void }
+export interface SettingsView {
+  show(section: SettingsSection): void;
+  /** Agents rows follow a changed harness list (versions reported later) in place: open rows stay open. */
+  providersChanged(providers: Provider[]): void;
+  dispose(): void;
+}
 
 const sectionOf = (page: SettingsPage) => SECTIONS.find(section => section.pages.some(item => item.id === page))!;
 
@@ -266,8 +275,13 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
       row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
-      row.querySelector('.settings-provider-version')!.textContent = provider.version || 'Not reported';
-      row.querySelector('code')!.textContent = provider.path || 'Install the agent, then refresh.';
+      // The last launch's installed harness, before the real list answers: pending, never "Install the agent".
+      const listing = provider.installed && !provider.path && Boolean(options.listPending?.());
+      const version = row.querySelector('.settings-provider-version')!;
+      const versionText = provider.version || (provider.installed && (listing || options.versionPending?.(provider.id)) ? 'Checking…' : 'Not reported');
+      if (version.textContent !== versionText) version.textContent = versionText;
+      const location = row.querySelector('code')!, locationText = provider.path || (listing ? 'Checking…' : 'Install the agent, then refresh.');
+      if (location.textContent !== locationText) location.textContent = locationText;
       if (list.children[index] !== row) list.insertBefore(row, list.children[index] ?? null);
       rows.delete(provider.id);
     }
@@ -336,6 +350,43 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     };
   };
   let recommended: ReturnType<typeof mountRecommended> | undefined;
+  let routingCleanup: (() => void) | undefined;
+  let routingKey = '';
+  let teamsCleanup: (() => void) | undefined;
+  let teamsKey = '';
+  const providerRosterKey = (all: Provider[]) => options.listPending?.()
+    ? 'pending'
+    : `ready:${all.map(p => `${p.id}:${p.installed ? 1 : 0}:${p.name}`).join('\n')}`;
+
+  function mountRouting(): void {
+    if (!options.teams || !mounted.has('routing')) return;
+    const slot = panels.get('routing')!.querySelector<HTMLElement>('#model-routing-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!routingCleanup) slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      return;
+    }
+    if (routingCleanup && routingKey === key) return;
+    routingCleanup?.();
+    routingCleanup = mountModelRouting(slot, { ...options.teams, providers: providersNow });
+    routingKey = key;
+  }
+
+  function mountTeams(): void {
+    if (!options.teams || !mounted.has('teams')) return;
+    const slot = panels.get('teams')!.querySelector<HTMLElement>('#agent-teams-settings')!;
+    const key = providerRosterKey(providersNow);
+    if (key === 'pending') {
+      if (!teamsCleanup) slot.innerHTML = '<p class="dialog-loading">Loading…</p>';
+      return;
+    }
+    if (teamsCleanup && teamsKey === key) return;
+    // Keep an open team edit form intact until the editor closes or the tab is revisited.
+    if (teamsCleanup && slot.querySelector('.agent-team-editor:not([hidden])')) return;
+    teamsCleanup?.();
+    teamsCleanup = mountAgentTeams(slot, { ...options.teams, providers: providersNow });
+    teamsKey = key;
+  }
 
   /** A group's live parts mount the first time it opens, and stay mounted while Settings is open. */
   function mountSection(id: SettingsPage): void {
@@ -355,8 +406,8 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
-    if (id === 'routing' && options.teams) cleanups.push(mountModelRouting(panel.querySelector<HTMLElement>('#model-routing-settings')!, { ...options.teams, providers: options.providers }));
-    if (id === 'teams' && options.teams) cleanups.push(mountAgentTeams(panel.querySelector<HTMLElement>('#agent-teams-settings')!, { ...options.teams, providers: options.providers }));
+    if (id === 'routing' && options.teams) mountRouting();
+    if (id === 'teams' && options.teams) mountTeams();
     if (id === 'schedules') cleanups.push(mountSchedulesSettings(panel.querySelector<HTMLElement>('#schedules-settings')!, options.schedules ?? { openThread: () => {} }));
     if (id === 'tools') {
       const slot = panel.querySelector<HTMLElement>('#capabilities-settings')!;
@@ -397,6 +448,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     subnavs.forEach(subnav => { subnav.hidden = subnav.dataset.sectionPages !== section.id; });
     panels.forEach((panel, key) => { panel.hidden = key !== page; });
     if (page === 'recommended' && mounted.has(page)) recommended?.refresh();
+    if (page === 'teams' && mounted.has(page)) mountTeams();
     mountSection(page);
     const selected = pageTabs.find(tab => tab.dataset.section === page);
     if (selected) trackSegment(selected.parentElement!, selected);
@@ -450,9 +502,18 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
   show(options.section ?? 'recommended', true);
   return {
     show: id => show(id, true),
+    providersChanged: providers => {
+      if (disposed) return;
+      updateProviders(providers);
+      recommended?.refresh();
+      mountRouting();
+      mountTeams();
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true; readinessCleanup.forEach(cleanup => cleanup());
+      routingCleanup?.(); routingCleanup = undefined;
+      teamsCleanup?.(); teamsCleanup = undefined;
       cleanups.forEach(cleanup => cleanup());
       host.removeEventListener('click', click); host.removeEventListener('keydown', keydown);
       refreshButton.removeEventListener('click', refresh);

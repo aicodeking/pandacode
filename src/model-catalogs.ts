@@ -13,6 +13,7 @@ const CATALOG_RETRY_MS = 30 * 1000;
 /** `failure`: the refresh behind this (older) list failed; it is not asked again until `expires`. */
 const catalogs = new Map<ProviderId, { expires: number; models?: ProviderModel[]; pending?: Promise<ProviderModel[]>; failure?: Error }>();
 export function clearCatalogs(id?: ProviderId): void { if (id) catalogs.delete(id); else catalogs.clear(); }
+export function hasCatalog(id: ProviderId): boolean { return catalogs.has(id); }
 const asError = (error: unknown) => error instanceof Error ? error : new Error(String(error));
 /** A harness's models: a fresh cached list at once; an expired one at once too while `fetch` refreshes it behind
  *  (`onFresh` hears the newer list, or why it failed); else the first fetch. `landed` applies each list that arrives

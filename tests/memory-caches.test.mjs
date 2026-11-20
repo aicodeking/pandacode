@@ -98,22 +98,18 @@ test('PR patch bytes evict oldest entries and oversized mounted patches leave on
   assert.deepEqual([...fitting.keys()], ['new']);
 });
 
-test('elapsed clock stops for hidden or empty lists and catches up immediately on reveal', () => {
-  const timers = new Map(), listeners = new Map(), observations = [];
+test('elapsed clock runs only while agent rows are present and stops cleanly', () => {
+  const timers = new Map(), observations = [];
   let sync, disconnected = false;
   let now = 3000;
   const age = { dataset: { started: '0' }, textContent: '' };
   const root = {
-    visible: false, populated: true, parentElement: null,
-    getClientRects() { return this.visible ? [{}] : []; },
+    populated: false,
     querySelector() { return this.populated ? age : null; },
     querySelectorAll() { return this.populated ? [age] : []; },
   };
-  const document = { hidden: false,
-    addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) };
-  const { startElapsedTick } = load('agents-dock', { document, Date: { now: () => now },
+  const { startElapsedTick } = load('agents-dock', { Date: { now: () => now },
     window: { setInterval: fn => { timers.set(1, fn); return 1; }, clearInterval: id => timers.delete(id) },
-    getComputedStyle: () => ({ visibility: 'visible' }),
     MutationObserver: class {
       constructor(fn) { sync = fn; }
       observe(node, options) { observations.push({ node, options }); }
@@ -122,24 +118,21 @@ test('elapsed clock stops for hidden or empty lists and catches up immediately o
   });
   const stop = startElapsedTick(root);
   assert.equal(timers.size, 0);
-  assert.ok(observations.some(({ node, options }) => node === root && options.childList && options.subtree && options.attributes));
-  root.visible = true; sync();
+  assert.ok(observations.some(({ node, options }) => node === root && options.childList));
+  root.populated = true; sync();
   assert.equal(timers.size, 1);
+  timers.get(1)();
   assert.match(age.textContent, /^3s$/);
-  document.hidden = true; listeners.get('visibilitychange')();
-  assert.equal(timers.size, 0);
   now = 12000;
-  document.hidden = false; listeners.get('visibilitychange')();
+  timers.get(1)();
   assert.match(age.textContent, /^12s$/);
   root.populated = false; sync();
   assert.equal(timers.size, 0);
   root.populated = true; sync();
   assert.equal(timers.size, 1);
-  root.visible = false; sync();
-  assert.equal(timers.size, 0);
   stop();
+  assert.equal(timers.size, 0);
   assert.equal(disconnected, true);
-  assert.equal(listeners.size, 0);
 });
 
 

@@ -864,7 +864,11 @@ async fn dispatch(
             )?
         }
         "pandacode_list_local_servers" => value(crate::local_servers::list().await?)?,
-        "pandacode_search_tasks" => json!({"tasks": state.store.lock().map_err(|e| e.to_string())?.search_tasks(&current.project_id, &string(&args, "query"), 20)?}),
+        "pandacode_search_tasks" => {
+            // Scans every message: on its own read-only connection, never under the store lock.
+            let (project, query) = (current.project_id.clone(), string(&args, "query"));
+            json!({"tasks": crate::read_scan(state.store.clone(), move |store| store.search_tasks(&project, &query, 20)).await?})
+        }
         "pandacode_code_search" => {
             let root = state.root(&current.project_id, Some(sid))?;
             let query = string(&args, "query");

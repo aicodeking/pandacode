@@ -553,11 +553,7 @@ pub(crate) fn leads_team(store: &Store, sid: &str) -> Result<bool> {
 /// Whether a task's saved team is working. Every listing asks this for every task while holding
 /// both global locks, so it reads the status alone: a team's snapshot can be megabytes.
 pub(crate) fn is_active(store: &Store, sid: &str) -> bool {
-    store.db.prepare_cached("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1")
-        .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
-        .ok()
-        .flatten()
-        .is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
+    store.team_status(sid).is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
 }
 /// The reset of the lead's usage limit, while it is still ahead.
 fn limit_reset(store: &Store, sid: &str) -> Result<Option<i64>> {
@@ -577,8 +573,7 @@ fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     team.revision = team.revision.saturating_add(1);
     refresh_council(store, team);
     let content = serde_json::to_string(team).map_err(|e| e.to_string())?;
-    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
-    Ok(())
+    store.save_team(&team.session_id, &content, &team.status)
 }
 /// Brings `changed_at` and `council_status` up to date. A failed read keeps the last value, so the
 /// save itself still goes ahead.
@@ -3695,5 +3690,114 @@ mod warm_agent_tests {
         assert!(!relaunch, "turning Council off keeps the spare");
         // A task that doesn't exist still refuses, as before.
         assert!(council_launch(&state, "no-such-task", None).is_err());
+    }
+}
+
+#[cfg(test)]
+mod is_active_tests {
+    use super::*;
+    /// `is_active` as it read before the status table: parse the snapshot row itself.
+    fn parsed_status(store: &Store, sid: &str) -> Option<String> {
+        store.db.prepare("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams NOT INDEXED WHERE session_id=?1")
+            .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
+            .ok()
+            .flatten()
+    }
+    fn parsed(store: &Store, sid: &str) -> bool {
+        parsed_status(store, sid).is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
+    }
+
+    #[test]
+    fn is_active_matches_parsing_the_snapshot_for_every_shape() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let snapshots = [
+            ("running", r#"{"status":"running","workers":[{"status":"completed"}]}"#, true),
+            ("waiting", r#"{"status":"waiting"}"#, true),
+            ("escaped", r#"{"status":"running"}"#, true),
+            ("completed", r#"{"status":"completed","workers":[{"status":"running"}]}"#, false),
+            ("interrupted", r#"{"status":"interrupted"}"#, false),
+            ("ready", r#"{"status":"ready"}"#, false),
+            ("upper", r#"{"status":"Running"}"#, false),
+            ("padded", r#"{"status":" running"}"#, false),
+            ("missing", r#"{"workers":[]}"#, false),
+            ("null", r#"{"status":null}"#, false),
+            ("number", r#"{"status":1}"#, false),
+            ("bool", r#"{"status":true}"#, false),
+            ("object", r#"{"status":{"status":"running"}}"#, false),
+            ("array", r#"["running"]"#, false),
+            ("scalar", r#""running""#, false),
+            ("corrupt", r#"{"status":"running""#, false),
+            ("empty", "", false),
+            ("not-json", "running", false),
+        ];
+        for (sid, content, _) in snapshots {
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", [sid, content]).unwrap();
+        }
+        let entries = |store: &Store| store.db.query_row("SELECT COUNT(*) FROM architect_team_status", [], |row| row.get::<_, i64>(0)).unwrap();
+        // Rows written by plain SQL have no entry and are parsed; the open-time backfill then
+        // records every shape, and the entries must answer the same.
+        for backfilled in [false, true] {
+            if backfilled {
+                store.db.execute_batch(storage::TEAM_STATUS_BACKFILL).unwrap();
+            }
+            assert_eq!(entries(&store), if backfilled { snapshots.len() as i64 } else { 0 });
+            for (sid, _, active) in snapshots.iter().copied().chain([("absent", "", false)]) {
+                assert_eq!(parsed(&store, sid), active, "{sid}: parsed");
+                assert_eq!(is_active(&store, sid), active, "{sid}: backfilled {backfilled}");
+                assert_eq!(store.team_status(sid), parsed_status(&store, sid), "{sid}: status, backfilled {backfilled}");
+            }
+        }
+        // A real save keeps the stored status current.
+        let config: TeamConfig = serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap();
+        let mut team = new_team("running".into(), config);
+        team.status = "completed".into();
+        save(&store, &mut team).unwrap();
+        assert!(!is_active(&store, "running") && !parsed(&store, "running"));
+        team.status = "waiting".into();
+        save(&store, &mut team).unwrap();
+        assert!(is_active(&store, "running") && parsed(&store, "running"));
+    }
+
+    /// Median of `runs` timings of `step`, in microseconds.
+    fn median_micros(runs: usize, mut step: impl FnMut()) -> u128 {
+        let mut times: Vec<u128> = (0..runs).map(|_| { let at = std::time::Instant::now(); step(); at.elapsed().as_micros() }).collect();
+        times.sort_unstable();
+        times[runs / 2]
+    }
+
+    #[test]
+    fn a_team_save_never_parses_the_snapshot_in_sqlite() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = Store::open(&directory.join("store.sqlite")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let config: TeamConfig = serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap();
+        let mut team = new_team("big".into(), config);
+        team.status = "running".into();
+        team.objective = "x".repeat(2 << 20);
+        save(&store, &mut team).unwrap();
+        let content = serde_json::to_string(&team).unwrap();
+        let status = team.status.clone();
+        let measure = |store: &Store, team: &mut TeamSnapshot| {
+            let write = median_micros(21, || store.save_team("big", &content, &status).unwrap());
+            let saved = median_micros(21, || save(store, team).unwrap());
+            let read = median_micros(201, || assert!(is_active(store, "big")));
+            (write, saved, read)
+        };
+        let (write, saved, read) = measure(&store, &mut team);
+        eprintln!("2 MiB team, status table: snapshot write {write} us, full save {saved} us, is_active {read} us (medians)");
+        // The status index this replaced, as SQLite maintained it on every save.
+        store.db.execute_batch("CREATE INDEX architect_teams_status ON architect_teams(session_id,(CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END))").unwrap();
+        let (old_write, old_saved, _) = measure(&store, &mut team);
+        let old_read = median_micros(201, || {
+            let status: Option<String> = store.db.query_row("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams INDEXED BY architect_teams_status WHERE session_id=?1", ["big"], |row| row.get(0)).unwrap();
+            assert_eq!(status.as_deref(), Some("running"));
+        });
+        eprintln!("2 MiB team, old status index: snapshot write {old_write} us, full save {old_saved} us, indexed read {old_read} us (medians)");
+        // Generous for loaded machines and debug SQLite; the index alone parses 4 MiB per save.
+        assert!(write < old_write, "a save no longer parses the snapshot: {write} us vs {old_write} us with the index");
+        drop(store);
+        let _ = std::fs::remove_dir_all(directory);
     }
 }

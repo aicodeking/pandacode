@@ -4,4 +4,4 @@ import { defineConfig } from 'vite';
 const { target } = JSON.parse(readFileSync(new URL('./tsconfig.json', import.meta.url), 'utf8')).compilerOptions;
 const tsconfigRaw = JSON.stringify({ compilerOptions: { target } });
 // ES-module workers: the diff highlighter worker (@pierre/diffs) imports Shiki chunks.
-export default defineConfig({ clearScreen: false, esbuild: { tsconfigRaw }, server: { port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**'] } }, build: { target: 'es2022', assetsInlineLimit: 0, rollupOptions: { input: { main: 'index.html', 'agents-dock': 'agents-dock.html' } } }, worker: { format: 'es' } });
+export default defineConfig({ clearScreen: false, esbuild: { tsconfigRaw }, server: { port: 1420, strictPort: true, watch: { ignored: ['**/src-tauri/**', '**/playwright-report/**', '**/test-results/**'] } }, build: { target: 'es2022', assetsInlineLimit: 0, rollupOptions: { input: { main: 'index.html', 'agents-dock': 'agents-dock.html' } } }, worker: { format: 'es' } });

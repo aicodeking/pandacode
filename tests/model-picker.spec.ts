@@ -352,6 +352,61 @@ test('a harness list that answers late still fills the picker', async ({ page })
   await expect(picker(page).getByRole('tab', { name: 'Grok Build', exact: true })).toBeVisible();
 });
 
+/** Holds `list_providers` until the test releases it, exposing `window.__releaseProviders`. */
+async function holdProviders(page: Page): Promise<void> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const marker = /switch\s*\(command\)\s*\{/;
+    const gate = `const __providersGate = new Promise(done => { window.__releaseProviders = done; });\n`;
+    const body = (await response.text()).replace(marker, `if (command === 'list_providers') await __providersGate;\nswitch (command) {`);
+    await route.fulfill({ response, body: `${gate}${body}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
+  });
+}
+
+test('opening the picker on a single-agent task with saved teams while harnesses load stays off Teams', async ({ page }) => {
+  await holdProviders(page);
+  await page.goto('/?teams');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  // While harnesses are still loading, saved teams must not hijack the view or Enter selection.
+  await expect(search(page)).toHaveAttribute('placeholder', 'Loading models…');
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'false');
+  await expect(picker(page).locator('.model-menu-list')).toHaveText(/Loading…/);
+  await expect(picker(page).locator('.model-menu-team')).toHaveCount(0);
+  await expect(activeOption(page)).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  await expect(picker(page)).toBeVisible();
+  await expect(trigger(page)).not.toContainText('Ship crew');
+  const teamBefore = await page.evaluate(async () => {
+    const { invoke } = await import((window as any).__pandacodePreviewUrl);
+    return invoke('architect_get', { sessionId: 'session-1' });
+  });
+  expect(teamBefore).toBeNull();
+  // Once harnesses resolve, the picker lands on the task's harness and current model, not Teams.
+  await page.evaluate(() => (window as any).__releaseProviders());
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'false');
+  await expect(activeOption(page)).toHaveAccessibleName('Claude Code · Claude Sonnet 5');
+  await expect(activeOption(page)).toHaveAttribute('aria-current', 'true');
+  await expect(picker(page).locator('.model-menu-team')).toHaveCount(0);
+});
+
+test('explicitly clicking Teams while harnesses load shows saved teams and stays there', async ({ page }) => {
+  await holdProviders(page);
+  await page.goto('/?teams');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  await trigger(page).click();
+  await expect(picker(page).locator('.model-menu-list')).toHaveText(/Loading…/);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).__releaseProviders());
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toBeVisible();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true })).toBeVisible();
+});
+
 test('the Model button pressed while New task is on its way opens on the new task and stays open', async ({ page }) => {
   await delayCommands(page, ['create_session']);
   await gotoApp(page, '/');

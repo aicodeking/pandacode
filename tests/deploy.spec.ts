@@ -17,6 +17,10 @@ async function open(page: Page): Promise<void> {
     expect(source).toMatch(marker);
     await route.fulfill({ response, body: source.replace(marker, `async function invoke(command, args) {
       (window.__deployCalls ??= []).push({ command, args: structuredClone(args) });
+      if (command === 'create_session' && window.__holdDeployDraft) {
+        window.__holdDeployDraft = false;
+        await new Promise(resolve => { window.__releaseDeployDraft = resolve; });
+      }
       return invokePreview(command, args);
     }
     async function invokePreview(command, args) {`) });
@@ -125,3 +129,36 @@ test('Cloudflare connects for deploys first and sets up container sandboxes sepa
   await expect(row.getByRole('button', { name: 'Set up sandboxes', exact: true })).toBeHidden();
   expect(await calls(page, 'cloud_setup_sandboxes')).toHaveLength(1);
 });
+
+for (const second of ['Netlify', 'Vercel']) {
+  test(`held Deploy Vercel followed by ${second} preserves distinct requests`, async ({ page }) => {
+    test.setTimeout(45_000);
+    await open(page);
+    await page.evaluate(async () => {
+      const preview = await import('/src/preview.ts');
+      await preview.invoke('cloud_connect', { provider: 'vercel', key: 'vcp_token', options: { team: 'acme' } });
+      await preview.invoke('cloud_connect', { provider: 'netlify', key: 'netlify-token', options: { siteId: '12345678-1234-4234-8234-123456789abc' } });
+    });
+    await page.evaluate(() => { (window as any).__holdDeployDraft = true; });
+    const choose = async (platform: string) => {
+      await page.getByRole('button', { name: 'Deploy', exact: true }).click();
+      await page.getByRole('menu', { name: 'Deploy' }).getByRole('menuitem', { name: `Deploy to ${platform}` }).click();
+    };
+    const before = (await calls(page, 'create_session')).length;
+    await choose('Vercel');
+    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseDeployDraft)).toBe('function');
+    await choose(second);
+    await page.evaluate(() => (window as any).__releaseDeployDraft());
+    const count = second === 'Vercel' ? 1 : 2;
+    await expect.poll(async () => (await calls(page, 'send_message')).length).toBe(count);
+    const sends = await calls(page, 'send_message');
+    expect(sends[0].text).toMatch(/^Deploy this project to Vercel\./);
+    if (count === 2) {
+      expect(sends[1].text).toMatch(/^Deploy this project to Netlify\./);
+      expect(sends[0].sessionId).not.toBe(sends[1].sessionId);
+    }
+    await page.waitForTimeout(400);
+    expect(await calls(page, 'send_message')).toHaveLength(count);
+    expect((await calls(page, 'create_session')).length - before).toBe(count);
+  });
+}

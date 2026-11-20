@@ -23,8 +23,12 @@ mod host_inputs;
 mod host_tools;
 mod mcp_host;
 mod warm;
+mod cli_versions;
 mod handshake_warm;
 mod codex_preload;
+
+pub(crate) use cli_versions::VersionReport;
+use cli_versions::VersionTarget;
 pub use warm::{debounce as warm_debounce, touch as touch_warm_agent, epoch as warm_epoch, release as release_warm_ticket, reserve as reserve_warm_agent, reserved as warm_reserved, supported as warms};
 /// A send's launch, as `run_process_with_tools` counts and settles it.
 #[cfg(test)]
@@ -1086,9 +1090,20 @@ pub(crate) fn mimo_endpoints() -> &'static [(&'static str, &'static str, &'stati
     &mimo::ENDPOINTS
 }
 
-fn version(path: &Path) -> Option<String> {
-    capture(launch::std_command(path).ok()?, &["--version"], Duration::from_secs(2))
-        .map(|text| text.chars().take(150).collect())
+/// Loads the saved CLI versions from the app data folder; call once at startup.
+pub(crate) fn load_version_cache(data_dir: &Path) {
+    cli_versions::shared().load(data_dir.join(cli_versions::CACHE_FILE));
+}
+
+/// Forgets every CLI version (Settings refresh), failures included, so the next list asks again.
+pub(crate) fn forget_versions() {
+    cli_versions::shared().forget();
+}
+
+/// Who hears what each background version round learned (the `provider-versions` event);
+/// called on a probe thread with no lock held. Set once at startup.
+pub(crate) fn set_version_announcer(announce: impl Fn(VersionReport) + Send + Sync + 'static) {
+    cli_versions::shared().set_announcer(Arc::new(announce));
 }
 
 /// Whether this Claude CLI takes `--include-hook-events` (absent in 2.1.0, present by 2.1.100):
@@ -1161,11 +1176,12 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     // Drained on its own thread: a child writing past the OS pipe buffer while we poll
     // must not block forever on the write (read only after exit would never drain it).
     let mut piped = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
+    let (sender, reader) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
         let mut bytes = Vec::new();
         use std::io::Read as _;
         let _ = piped.read_to_end(&mut bytes);
-        bytes
+        let _ = sender.send(bytes);
     });
     let deadline = std::time::Instant::now() + timeout;
     let status = loop {
@@ -1188,25 +1204,62 @@ fn capture(mut command: std::process::Command, args: &[&str], timeout: Duration)
     if !status.success() {
         return None;
     }
-    let mut bytes = reader.join().ok()?;
+    // shortcut: descendants can retain the reader after timeout; use process-group cleanup if this recurs.
+    let mut bytes = reader.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now())).ok()?;
     bytes.truncate(2 * 1024 * 1024);
     Some(String::from_utf8_lossy(&bytes).trim().to_owned())
 }
 
-/// Blocking discovery; invoke on a worker thread, not the UI event loop.
+/// Where each provider's CLI is, in `PROVIDERS` order: path lookups only.
+fn installed_paths() -> Vec<Option<PathBuf>> {
+    PROVIDERS.iter().map(|(id, _)| executable(id)).collect()
+}
+
+/// The binaries asked for a version. Antigravity's ACP server is not asked; it reports "ACP".
+fn version_targets(paths: &[Option<PathBuf>]) -> Vec<VersionTarget> {
+    PROVIDERS
+        .iter()
+        .zip(paths)
+        .map(|((id, _), path)| ((*id).to_owned(), if *id == "antigravity" { None } else { path.clone() }))
+        .collect()
+}
+
+/// Blocking discovery: joins the background version round (starting one if none runs) and waits
+/// up to 8 s for versions never asked; anything it learns is announced like any round. Invoke on
+/// a worker thread, not the UI event loop.
 pub fn discover() -> Vec<ProviderInfo> {
+    let paths = installed_paths();
+    let versions = cli_versions::shared().versions_blocking(&version_targets(&paths));
+    provider_infos(paths, versions)
+}
+
+/// Discovery that never waits on a probe: each version is the remembered one, else "". Versions
+/// unknown or due for a check go to one background round, whose answers are announced (see
+/// `set_version_announcer`). Path lookups only; still call it off the UI event loop.
+pub fn discover_now() -> Vec<ProviderInfo> {
+    let paths = installed_paths();
+    let versions = cli_versions::shared().versions_now(&version_targets(&paths), true);
+    provider_infos(paths, versions)
+}
+
+/// Discovery for callers that never show a version: remembered versions only, and no probe is
+/// started. Path lookups only; still call it off the UI event loop.
+pub fn discover_installed() -> Vec<ProviderInfo> {
+    let paths = installed_paths();
+    let versions = cli_versions::shared().versions_now(&version_targets(&paths), false);
+    provider_infos(paths, versions)
+}
+
+fn provider_infos(paths: Vec<Option<PathBuf>>, versions: Vec<String>) -> Vec<ProviderInfo> {
     PROVIDERS.into_iter()
-    .map(|(id, name)| {
-        let path = executable(id);
+    .zip(paths)
+    .zip(versions)
+    .map(|(((id, name), path), version)| {
         ProviderInfo {
             id: id.into(),
             name: name.into(),
             installed: path.is_some(),
-            version: if id == "antigravity" {
-                "ACP".into()
-            } else {
-                path.as_deref().and_then(version).unwrap_or_default()
-            },
+            version: if id == "antigravity" { "ACP".into() } else { version },
             path: path.map(|p| p.to_string_lossy().into_owned()),
             models: if id == "glm" {
                 glm::models()
@@ -4641,6 +4694,7 @@ mod tests {
         assert!(!super::should_shrink(10, 1024 * 1024));
         assert!(!super::should_shrink(super::FRAME_KEEP, 2 * 1024 * 1024));
     }
+
     /// Recorded from `opencode --standalone api model.list` 2.2.5 (trimmed to two models).
     const OPENCODE_V2_MODELS: &str = r#"{"location":{"directory":"/tmp"},"data":[{"id":"flint-40b-free","modelID":"flint-40b-free","providerID":"opencode","type":"chat","family":"flint","name":"Flint 40B Free","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[{"id":"low","settings":{"reasoningEffort":"low"}},{"id":"medium","settings":{"reasoningEffort":"medium"}},{"id":"high","settings":{"reasoningEffort":"high"}},{"id":"xhigh","settings":{"reasoningEffort":"xhigh"}},{"id":"max","settings":{"reasoningEffort":"max"}}],"time":{"released":1792540800000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":262144,"output":65536}},{"id":"big-pickle","modelID":"big-pickle","providerID":"opencode","type":"chat","family":"big-pickle","name":"Big Pickle","package":"@opencode/ai/providers/openai-compatible","settings":{"apiKey":"public","baseURL":"https://opencode.ai/inference/openai/v1","provider":"opencode"},"capabilities":{"tools":true,"input":["text"],"output":["text"],"temperature":true},"variants":[],"time":{"released":1760659200000},"cost":[{"input":0,"output":0,"cache":{"read":0,"write":0}}],"status":"active","enabled":true,"limit":{"context":200000,"input":160000,"output":32000}}]}"#;
 
@@ -4697,7 +4751,7 @@ mod tests {
         let path = super::executable("opencode").expect("Install OpenCode first");
         let models = super::opencode_catalog(&path).await.unwrap();
         let with_efforts = models.iter().filter(|model| !model.reasoning_efforts.is_empty()).count();
-        println!("{:?}: {} models, {with_efforts} with efforts", super::version(&path), models.len() - 1);
+        println!("{}: {} models, {with_efforts} with efforts", path.display(), models.len() - 1);
         assert!(with_efforts > 0);
     }
 

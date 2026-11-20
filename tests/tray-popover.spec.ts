@@ -110,3 +110,64 @@ test('menu bar shows "Asking Claude Code…" on the Claude row while PandaCode r
   await expect(claude.locator('.tray-asking')).toHaveText('Asking Claude Code…');
   await expect(page.locator('.tray-usage', { hasText: 'Codex' }).locator('.tray-asking')).toHaveCount(0);
 });
+
+/** Each tray_snapshot waits for the spec to release it (window.__trayRelease(index, patch)), so replies can be held. */
+async function holdSnapshots(page: import('@playwright/test').Page): Promise<void> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const marker = /\(window\.__trayCalls \?\?= \[\]\)\.push\(\{ command, args \}\);/;
+    expect(source).toMatch(marker);
+    await route.fulfill({response, body: source.replace(marker, match => `${match}
+      if (command === 'tray_snapshot' && !window.__trayInner) window.__trayRequests = (window.__trayRequests ?? 0) + 1;
+      if (command === 'tray_snapshot' && window.__trayHold && !window.__trayInner) {
+        const pending = (window.__trayPending ??= []);
+        return new Promise(resolve => pending.push(patch => { window.__trayInner = true; try { resolve({ ...trayCommand(command, args), ...patch }); } finally { window.__trayInner = false; } }));
+      }`)});
+  });
+}
+/** Snapshot requests the popover made (a held reply's own trayCommand call is not one). */
+const requests = (page: import('@playwright/test').Page) => page.evaluate(() => (window as any).__trayRequests as number);
+const snapshots = (page: import('@playwright/test').Page) => page.evaluate(() => ((window as any).__trayCalls as {command:string}[]).filter(call => call.command === 'tray_snapshot').length);
+const emit = (page: import('@playwright/test').Page) => page.evaluate(() => (window as any).__previewEmit('tray-changed', {}));
+
+test('a burst of tray-changed events costs at most two snapshots, one at a time, and the newest state lands', async ({page}) => {
+  await page.setViewportSize({width:340,height:560});
+  await holdSnapshots(page);
+  await page.goto('/?view=tray');
+  await expect(page.locator('.tray-row')).toHaveCount(5);
+  await page.evaluate(() => { (window as any).__trayHold = true; });
+  const pending = () => page.evaluate(() => ((window as any).__trayPending ?? []).length as number);
+  const release = (index: number, patch: Record<string, unknown>) => page.evaluate(([at, value]) => (window as any).__trayPending[at as number](value), [index, patch] as const);
+  const from = await requests(page);
+  // A usage check sends one event per provider: five in a row.
+  for (let i = 0; i < 5; i++) await emit(page);
+  await expect.poll(pending).toBe(1);
+  await page.waitForTimeout(200);
+  expect(await pending(), 'one request in flight').toBe(1);
+  // The first reply (still checking) lands; the changes that came meanwhile ask once more, for the newer state.
+  await release(0, { checking: true });
+  await expect.poll(pending).toBe(2);
+  await release(1, { checking: false, running: [] });
+  await expect(page.locator('.tray-summary')).toHaveText('3 to review');
+  await expect(page.locator('.tray-refresh.checking')).toHaveCount(0);
+  await expect(page.locator('.tray-row')).toHaveCount(3);
+  await page.waitForTimeout(300);
+  expect(await requests(page) - from, 'snapshots for a burst of five').toBeLessThanOrEqual(2);
+  expect(await pending()).toBe(2);
+});
+
+test('a hidden popover loads nothing on tray-changed, and loads once, fresh, when it is shown', async ({page}) => {
+  await page.setViewportSize({width:340,height:560});
+  await page.goto('/?view=tray');
+  await expect(page.locator('.tray-row')).toHaveCount(5);
+  // The popover hides on blur (tray.rs): the document has no focus while it is hidden.
+  await page.evaluate(() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); });
+  const from = await snapshots(page);
+  for (let i = 0; i < 5; i++) await emit(page);
+  await page.waitForTimeout(400);
+  expect(await snapshots(page) - from, 'snapshots while hidden').toBe(0);
+  await page.evaluate(() => { delete (document as any).hasFocus; window.dispatchEvent(new Event('focus')); });
+  await expect.poll(async () => await snapshots(page) - from).toBe(1);
+  await page.waitForTimeout(300);
+  expect(await snapshots(page) - from, 'snapshots on show').toBe(1);
+});

@@ -102,7 +102,8 @@ async function lastMessage(host: PreviewBotsHost, sessionId: string): Promise<Bo
 }
 
 const params = typeof location === 'undefined' ? new URLSearchParams() : new URLSearchParams(location.search);
-let sampled = false;
+/** The one sample seeding run; every caller awaits it, so a concurrent list never sees it half done. */
+let seeding: Promise<void> | null = null;
 let sampleChannelSeeded = false;
 /** Sample threads that look busy (their work is simulated by events, not a preview run), so a message waits in the queue as it would natively. */
 const sampleBusy = new Set<string>();
@@ -110,9 +111,17 @@ const sampleBusy = new Set<string>();
 export const previewBotBusy = (sessionId: string): boolean => sampleBusy.has(sessionId);
 /** `?bots=sample` starts with four bots, one in each sidebar state: waiting for approval, working,
  *  at a usage limit, and paused. `?botsDelay=ms` holds the first list, to show the loading rows. */
-async function seedSamples(host: PreviewBotsHost): Promise<void> {
-  if (sampled || params.get('bots') !== 'sample') return;
-  sampled = true;
+function seedSamples(host: PreviewBotsHost): Promise<void> {
+  if (params.get('bots') !== 'sample') return Promise.resolve();
+  seeding ??= createSamples(host).catch(error => {
+    // A failed run is forgotten, so the next caller tries again.
+    seeding = null;
+    throw error;
+  });
+  return seeding;
+}
+
+async function createSamples(host: PreviewBotsHost): Promise<void> {
   const base = { instructions: 'Sample bot.', goals: '', provider: 'claude', model: 'sonnet', mode: 'ask', heartbeatMinutes: 0 };
   const make = (name: string, role: string, avatar: string, profile: Partial<BotInput> = {}) => invokeBots<Bot>('bot_create', { input: { ...base, name, role, avatar, ...profile } }, host);
   const [waiting, working, limited, paused] = await Promise.all([make('Scout', 'Research', 'panda:5'), make('Writer', 'Drafts posts', 'panda:4'), make('Ledger', 'Finance', 'panda:7', { color: '#14b8a6', reasoningEffort: 'high', backupModels: [{ provider: 'codex', model: 'gpt-5' }], fallbackMode: 'auto', notify: false, whileWorking: 'steer', showPlan: true }), make('Dozy', 'Night shift', 'panda:8')]);
