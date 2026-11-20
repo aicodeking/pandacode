@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { REST_IDLE_FPS, type Scene } from './types';
 
 /** Rain on a window: blurred bokeh lights behind fogged glass (a cool, grey-blue city by day; amber, rose and magenta
  * lights by night, the clock's palette tinting the dusk), beads of water that come and go, and larger drops sliding down
@@ -9,6 +9,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'rain',
   label: 'Rain',
+  // Drops slide tens of pixels between two 3 fps paints: keep the full rest rate.
+  idleFps: () => REST_IDLE_FPS,
   fallback: colors => {
     const day = colors.top.reduce((sum, v) => sum + v, 0) > 1.2;
     return day ? [[.5, .58, .68], [.42, .5, .6], [.36, .42, .52]] : [[.05, .06, .12], [.1, .07, .14], [.2, .1, .12]];

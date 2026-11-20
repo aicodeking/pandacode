@@ -205,19 +205,26 @@ pub fn tiers() -> Tiers {
     RUNTIME.get().and_then(|rt| rt.tiers.lock().ok().map(|t| t.clone())).unwrap_or_default()
 }
 
+/// The routing commands are async with their work on the blocking pool: a sync command runs on
+/// the main thread, and a save holds a routing lock across its file write. Each takes at most
+/// one of this module's locks, never the store.
 #[tauri::command]
-pub fn model_routing_tiers() -> Result<Tiers, String> {
-    runtime()?.tiers.lock().map(|t| t.clone()).map_err(|e| e.to_string())
+pub async fn model_routing_tiers() -> Result<Tiers, String> {
+    crate::blocking(|| runtime()?.tiers.lock().map(|t| t.clone()).map_err(|e| e.to_string())).await
 }
 
+/// Takes the tiers lock alone, held across the file write so saves land in order.
 #[tauri::command]
-pub fn model_routing_set_tiers(tiers: Tiers) -> Result<Tiers, String> {
-    let next = validate_tiers(tiers)?;
-    let rt = runtime()?;
-    let mut current = rt.tiers.lock().map_err(|e| e.to_string())?;
-    write_tiers(&rt.root.join(TIERS_FILE), &next)?;
-    *current = next.clone();
-    Ok(next)
+pub async fn model_routing_set_tiers(tiers: Tiers) -> Result<Tiers, String> {
+    crate::blocking(move || {
+        let next = validate_tiers(tiers)?;
+        let rt = runtime()?;
+        let mut current = rt.tiers.lock().map_err(|e| e.to_string())?;
+        write_tiers(&rt.root.join(TIERS_FILE), &next)?;
+        *current = next.clone();
+        Ok(next)
+    })
+    .await
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -278,16 +285,22 @@ fn canonical_tiers(pool: &[PoolEntry], tiers: &Tiers) -> Option<Tiers> {
     (next != *tiers).then_some(next)
 }
 
+/// Takes the tiers lock alone (pure card lookups and the file write under it).
 #[tauri::command]
-pub fn model_routing_tier_models(pool: Vec<PoolEntry>) -> Result<Vec<TierModel>, String> {
-    validate_pool(&pool)?;
-    let rt = runtime()?;
-    let mut current = rt.tiers.lock().map_err(|e| e.to_string())?;
-    if let Some(next) = canonical_tiers(&pool, &current) {
-        write_tiers(&rt.root.join(TIERS_FILE), &next)?;
-        *current = next;
-    }
-    Ok(tier_models(&pool))
+pub async fn model_routing_tier_models(pool: Vec<PoolEntry>) -> Result<Vec<TierModel>, String> {
+    crate::blocking(move || {
+        validate_pool(&pool)?;
+        let rt = runtime()?;
+        {
+            let mut current = rt.tiers.lock().map_err(|e| e.to_string())?;
+            if let Some(next) = canonical_tiers(&pool, &current) {
+                write_tiers(&rt.root.join(TIERS_FILE), &next)?;
+                *current = next;
+            }
+        }
+        Ok(tier_models(&pool))
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -318,18 +331,22 @@ fn available(pool: Vec<PoolModel>) -> Vec<PoolModel> {
 }
 
 #[tauri::command]
-pub fn model_routing_exclusions() -> Result<Exclusions, String> {
-    runtime()?.exclusions.lock().map(|e| e.clone()).map_err(|e| e.to_string())
+pub async fn model_routing_exclusions() -> Result<Exclusions, String> {
+    crate::blocking(|| runtime()?.exclusions.lock().map(|e| e.clone()).map_err(|e| e.to_string())).await
 }
 
+/// Takes the exclusions lock alone, held across the file write so saves land in order.
 #[tauri::command]
-pub fn model_routing_set_exclusions(providers: Vec<String>, models: Vec<ExcludedModel>) -> Result<Exclusions, String> {
-    let next = Exclusions { providers, models }.validated()?;
-    let rt = runtime()?;
-    let mut exclusions = rt.exclusions.lock().map_err(|e| e.to_string())?;
-    write_exclusions(&rt.root.join(EXCLUSIONS_FILE), &next)?;
-    *exclusions = next.clone();
-    Ok(next)
+pub async fn model_routing_set_exclusions(providers: Vec<String>, models: Vec<ExcludedModel>) -> Result<Exclusions, String> {
+    crate::blocking(move || {
+        let next = Exclusions { providers, models }.validated()?;
+        let rt = runtime()?;
+        let mut exclusions = rt.exclusions.lock().map_err(|e| e.to_string())?;
+        write_exclusions(&rt.root.join(EXCLUSIONS_FILE), &next)?;
+        *exclusions = next.clone();
+        Ok(next)
+    })
+    .await
 }
 
 #[cfg(target_os = "macos")]
@@ -790,12 +807,26 @@ fn top_languages<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
 
 pub const OFF: &str = "Model routing is off (Settings → Agents → Model routing).";
 
-#[tauri::command]
+/// Checks the profiler files (and once `sw_vers`): the IPC command runs it on the blocking pool.
 pub fn model_routing_status() -> Result<RoutingStatus, String> {
     Ok(runtime()?.status())
 }
 
-#[tauri::command]
+/// `model_routing_status` for the webview, off the main thread. Takes the settings and error
+/// locks one at a time (`Runtime::status`).
+#[tauri::command(rename = "model_routing_status")]
+pub async fn model_routing_status_command() -> Result<RoutingStatus, String> {
+    crate::blocking(model_routing_status).await
+}
+
+/// `model_routing_configure` for the webview, off the main thread: the settings lock across the
+/// file write, released before `status` takes it again.
+#[tauri::command(rename = "model_routing_configure")]
+pub async fn model_routing_configure_command(enabled: Option<bool>, mode: Option<Mode>, min_p: Option<f64>) -> Result<RoutingStatus, String> {
+    crate::blocking(move || model_routing_configure(enabled, mode, min_p)).await
+}
+
+/// Saves the routing settings (a file write); see `model_routing_configure_command`.
 pub fn model_routing_configure(enabled: Option<bool>, mode: Option<Mode>, min_p: Option<f64>) -> Result<RoutingStatus, String> {
     let rt = runtime()?;
     if min_p.is_some_and(|p| !p.is_finite()) {

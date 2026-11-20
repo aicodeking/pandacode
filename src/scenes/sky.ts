@@ -1,11 +1,13 @@
 import { DARK_CEILING } from '../sky-math';
-import type { Scene } from './types';
+import { twinkleIdleFps, type Scene } from './types';
 
 /** The procedural sky: the clock's palette, sun and moon arcs, cirrus and three parallax cumulus layers (see AGENTS.md
  * 'Thread window'). It keeps its own grade (a dusk-aware variant of the prelude's) and is the scene with no thread. */
 export const scene: Scene = {
   id: 'sky',
   label: 'Sky',
+  // Stars twinkle at night.
+  idleFps: twinkleIdleFps,
   fallback: colors => [colors.top, colors.mid, colors.horizon],
   fragment: `/* Cumulus thickness: a billowy base (fbm over a slow domain warp), eroded at the edges by fine noise so they wisp out
  * while the interior keeps crisp billows; the erosion rides its own share of the warp, so it never tears into teeth in

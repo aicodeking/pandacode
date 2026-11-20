@@ -607,7 +607,7 @@ test('at boot the New task text of projects that no longer exist is dropped, fro
 test('main.ts drops removed projects\' New task text only after list_projects answered', async () => {
   const { readFile } = await import('node:fs/promises');
   const source = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
-  const listed = source.indexOf("[state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects')");
+  const listed = source.indexOf("[state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects')");
   const dropped = source.indexOf('dropRemovedProjectDrafts(state.drafts, state.projects.map(');
   assert.ok(listed > 0 && dropped > listed, 'called once the awaited list (which throws on failure) is in');
   assert.equal(source.split('dropRemovedProjectDrafts(').length, 2, 'called once, at boot');
@@ -814,4 +814,149 @@ test('Keep unsent drafts off: nothing is written, every stored draft goes at onc
   next.set('t1', 'kept again');
   assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 't1')).text, 'kept again');
   assert.equal(new PersistedDrafts(store, () => NOW).get('t1'), 'kept again');
+});
+
+/** A write timer the test runs by hand: `tick()` fires what is due. */
+const manualTimer = () => {
+  const due = new Map(); let next = 0;
+  return {
+    due, delays: [],
+    wait(run, ms) { this.delays.push(ms); const handle = ++next; due.set(handle, run); return handle; },
+    cancel: handle => { due.delete(handle); },
+    tick() { const runs = [...due.values()]; due.clear(); for (const run of runs) run(); },
+  };
+};
+
+test('with a write timer, the first change of a burst is written at once and the rest at most every DRAFT_WRITE_DELAY', async () => {
+  const { DRAFT_WRITE_DELAY } = await import('../src/launch-restore.ts');
+  const store = memory(), timer = manualTimer();
+  const drafts = new PersistedDrafts(store, () => NOW, timer);
+  drafts.set('a', 'h');
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')).text, 'h', 'a crash right after the first keystroke loses nothing');
+  assert.deepEqual(timer.delays, [DRAFT_WRITE_DELAY]);
+  assert.equal(DRAFT_WRITE_DELAY, 300);
+  store.writes.length = 0;
+  for (const text of ['ha', 'hal', 'half']) drafts.set('a', text);
+  drafts.set('b', 'other thread');
+  assert.deepEqual(store.writes, [], 'later keystrokes wait for the timer');
+  assert.equal(drafts.get('a'), 'half', 'memory is updated at once');
+  timer.tick();
+  assert.deepEqual(store.writes.sort(), [DRAFT_PREFIX + 'a', DRAFT_PREFIX + 'b'], 'one write per draft for the whole burst');
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')).text, 'half');
+  // The window that wrote stays open one more delay; one that wrote nothing closes, and the next change is written at once.
+  store.writes.length = 0;
+  drafts.set('a', 'half a');
+  assert.deepEqual(store.writes, []);
+  timer.tick();
+  assert.deepEqual(store.writes, [DRAFT_PREFIX + 'a']);
+  timer.tick();
+  assert.equal(timer.due.size, 0, 'an idle window closes');
+  drafts.set('a', 'half a thought');
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')).text, 'half a thought');
+});
+
+test('flush writes waiting drafts at once; removing a draft is never delayed and drops its waiting write', () => {
+  const store = memory(), timer = manualTimer();
+  const drafts = new PersistedDrafts(store, () => NOW, timer);
+  drafts.set('a', 'first'); drafts.set('a', 'first and more'); drafts.set('gone', 'to be sent');
+  drafts.flush();
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'a')).text, 'first and more');
+  assert.equal(timer.due.size, 0, 'flush closes the window');
+  drafts.set('a', 'typed'); drafts.set('a', 'typed on');
+  drafts.delete('a');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null, 'sent: removed at once');
+  timer.tick();
+  assert.equal(store.getItem(DRAFT_PREFIX + 'a'), null, 'and its waiting write does not bring it back');
+  drafts.set('b', 'x'); drafts.set('b', 'xy'); drafts.set('b', '   ');
+  assert.equal(store.getItem(DRAFT_PREFIX + 'b'), null, 'clearing the field removes it at once');
+  timer.tick();
+  assert.equal(store.getItem(DRAFT_PREFIX + 'b'), null);
+  drafts.set('c', 'one'); drafts.set('c', 'two');
+  drafts.clearStored();
+  timer.tick(); drafts.flush();
+  assert.equal(store.getItem(DRAFT_PREFIX + 'c'), null, 'Clear saved drafts drops waiting writes');
+});
+
+test('a draft waiting for the timer expires like any other, and its write is dropped', () => {
+  let clock = NOW;
+  const store = memory(), timer = manualTimer();
+  const drafts = new PersistedDrafts(store, () => clock, timer);
+  drafts.set('old', 'first'); drafts.set('old', 'second');
+  clock += DRAFT_MAX_AGE + 1;
+  drafts.expire();
+  assert.equal(drafts.has('old'), false);
+  timer.tick(); drafts.flush();
+  assert.equal(store.getItem(DRAFT_PREFIX + 'old'), null);
+});
+
+test('a New task’s waiting text goes to its project key, and follows it when it is published before the write', () => {
+  const store = memory(), timer = manualTimer();
+  const drafts = newTasks(new PersistedDrafts(store, () => NOW, timer));
+  drafts.set('n1', 'a'); drafts.set('n1', 'a new task');
+  timer.tick();
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'a new task');
+  drafts.set('n1', 'a new task, more');
+  drafts.newTaskKey = () => undefined;
+  drafts.reclaim('n1');
+  drafts.flush();
+  assert.equal(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p'), null);
+  assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'n1')).text, 'a new task, more');
+});
+
+test('evicting a New task drops its coalesced pending write so timer tick and flush cannot overwrite the new owner', () => {
+  // Timer tick path: n1 has coalesced pending text for project p; n2 moves from q into p and reclaims it.
+  {
+    const store = memory(), timer = manualTimer();
+    const projectOf = new Map([['n1', 'p'], ['n2', 'q']]);
+    const drafts = new PersistedDrafts(store, () => NOW, timer);
+    drafts.newTaskKey = id => projectOf.has(id) ? NEW_TASK_DRAFT + projectOf.get(id) : undefined;
+    drafts.set('n2', 'moved draft text');
+    drafts.flush();
+    drafts.set('n1', 'initial p draft');
+    drafts.set('n1', 'stale p draft'); // coalesced in pending while the write window is open
+    projectOf.set('n2', 'p');
+    drafts.reclaim('n2');
+    assert.equal(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'q'), null);
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    timer.tick();
+    assert.equal(timer.due.size, 0, 'window closes cleanly when no pending writes remain');
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    assert.equal(drafts.get('n1'), 'stale p draft', 'evicted draft stays in memory for this launch');
+  }
+  // Flush path: same eviction followed by flush() instead of timer.tick().
+  {
+    const store = memory(), timer = manualTimer();
+    const projectOf = new Map([['n1', 'p'], ['n2', 'q']]);
+    const drafts = new PersistedDrafts(store, () => NOW, timer);
+    drafts.newTaskKey = id => projectOf.has(id) ? NEW_TASK_DRAFT + projectOf.get(id) : undefined;
+    drafts.set('n2', 'moved draft text');
+    drafts.flush();
+    drafts.set('n1', 'initial p draft');
+    drafts.set('n1', 'stale p draft');
+    projectOf.set('n2', 'p');
+    drafts.reclaim('n2');
+    drafts.flush();
+    assert.equal(timer.due.size, 0);
+    assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + NEW_TASK_DRAFT + 'p')).text, 'moved draft text');
+    assert.equal(drafts.get('n1'), 'stale p draft');
+  }
+});
+
+test('drafts are flushed when the window is hidden and on pagehide; main.ts flushes on app-quitting and before a thread switch', async () => {
+  const { flushDraftsOnLeave } = await import('../src/launch-restore.ts');
+  const docListeners = {}, winListeners = {}, doc = { visibilityState: 'visible', addEventListener: (name, run) => { docListeners[name] = run; } };
+  let flushed = 0;
+  flushDraftsOnLeave({ flush: () => { flushed++; } }, doc, { addEventListener: (name, run) => { winListeners[name] = run; } });
+  docListeners.visibilitychange();
+  assert.equal(flushed, 0, 'not when shown');
+  doc.visibilityState = 'hidden'; docListeners.visibilitychange();
+  assert.equal(flushed, 1);
+  winListeners.pagehide();
+  assert.equal(flushed, 2);
+  const { readFile } = await import('node:fs/promises');
+  const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+  assert.match(main, /new PersistedDrafts\(localStorage, Date\.now, browserDraftTimer\)/, 'the app coalesces its writes');
+  assert.match(main, /flushDraftsOnLeave\(state\.drafts\)/);
+  assert.match(main, /const leave = \(\) => \{ state\.drafts\.flush\(\);/, 'app-quitting and pagehide write waiting drafts');
+  assert.match(main, /function selectSession\([^)]*\)[^{]*\{\n  state\.drafts\.flush\(\);/, 'a thread switch writes waiting drafts first');
 });

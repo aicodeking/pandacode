@@ -30,6 +30,8 @@ type ModelPickerOptions = {
 const RECENT_LIMIT = 5;
 const WIDTH = 520;
 const HEIGHT = 440;
+/** The harness list row while `loadProviders` is out; the search field then says "Loading models…". */
+const PROVIDERS_LOADING = 'Loading…';
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
   try {
@@ -54,7 +56,7 @@ type Kind = 'effort' | 'speed';
 type Choice = { id: string; name: string; description: string };
 
 /** A transient picker with local state and listeners released on dismissal. */
-export function openModelPicker(options: ModelPickerOptions): () => void {
+export function openModelPicker(options: ModelPickerOptions) {
   const { anchor, current, canSwitchProvider, onSelect, onEffortSelect, onSpeedSelect, loadModels, onClose } = options;
   let providers = options.providers.map(provider => ({ ...provider, models: [...provider.models] }));
   const teams = options.teams ?? [];
@@ -77,7 +79,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
   const anchorAction = anchor.dataset.action;
   const originalExpanded = anchor.getAttribute('aria-expanded');
   let pending = false;
-  let providersStatus = options.loadProviders ? 'Loading…' : '';
+  let providersStatus = options.loadProviders ? PROVIDERS_LOADING : '';
   let closed = false;
   let activeKey = '';
   let positionFrame = 0;
@@ -232,7 +234,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const all = groups();
     const recent = recentRows(all);
     const railKeys = [...(recent.length ? ['recent'] : []), ...(teams.length ? ['teams'] : []), ...all.map(group => group.key)];
-    if (!railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
+    // Keep the initial harness view while harnesses are loading or unavailable so saved teams cannot hijack it.
+    if (!providersStatus && !railKeys.includes(view)) view = railKeys.find(key => key === `h:${current.provider}`) ?? railKeys.find(key => key.startsWith('h:')) ?? railKeys[0] ?? '';
     const matchedTeams = query ? teams.filter(team => includes([team.name, team.detail, 'team'], normalized)) : teams;
     const namedHarness = all.some(group => [group.provider.id, group.provider.name, group.name].some(name => name.toLowerCase() === normalized));
     const hits = new Map<string, Row[]>();
@@ -240,7 +243,8 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       const groupMatches = includes([group.provider.id, group.provider.name, group.name], normalized);
       hits.set(group.key, models(group).filter(model => groupMatches || includes([model.id, model.name], normalized)).map(model => ({ group, model })));
     }
-    search.placeholder = `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
+    // While the harness list loads there is nothing to count yet ("Search 0 models, 0 harnesses…").
+    search.placeholder = providersStatus === PROVIDERS_LOADING ? 'Loading models…' : `Search ${all.reduce((count, group) => count + models(group).length, 0)} models, ${all.length} harnesses…`;
 
     // Rail: a tab per view; while searching it is a hit map.
     const inUse = (key: string) => !teamSelected && key === `h:${current.provider}`;
@@ -254,8 +258,10 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       return railItem(group.key, providerLogo(group.provider.id), group.name, count ? String(count) : '', classes, !query && view === group.key, group.name, group.failure);
     }).join('');
     if (railHtml !== railMarkup) {
+      const focused = rail.contains(document.activeElement);
       rail.innerHTML = railHtml;
       railMarkup = railHtml;
+      if (focused) (rail.querySelector<HTMLElement>('[tabindex="0"]') ?? search).focus({ preventScroll: true });
       if (query) rail.querySelector('.model-menu-count:not(:empty)')?.parentElement?.scrollIntoView({ block: 'nearest' });
     }
 
@@ -289,7 +295,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }
-    if (providersStatus) markup = `<button type="button" role="option" tabindex="-1" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-name">${escape(providersStatus)}</span></button>`;
+    if (providersStatus && (query ? !total : view !== 'teams')) markup = `<button type="button" role="option" tabindex="-1" class="model-menu-option" data-available="false" disabled>${icon('monitor')}<span class="model-menu-name">${escape(providersStatus)}</span></button>`;
     else if (!total) markup = '<p class="model-menu-empty">No matching models.</p>';
     // Loading and saving are in-place updates: retain rows and scroll position.
     const changed = markup !== listMarkup;
@@ -347,7 +353,7 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const keys = [...rail.querySelectorAll<HTMLElement>('[role="tab"]')].map(tab => tab.dataset.view!);
     if (!keys.length) return;
     const index = keys.indexOf(view);
-    const next = step === 'first' ? 0 : step === 'last' ? keys.length - 1 : (index + step + keys.length) % keys.length;
+    const next = step === 'first' ? 0 : step === 'last' ? keys.length - 1 : index < 0 ? (step > 0 ? 0 : keys.length - 1) : (index + step + keys.length) % keys.length;
     showView(keys[next], focusTab);
   }
 
@@ -385,11 +391,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
     const markup = teamSelected
       ? '<div class="model-menu-effort-row"><span class="model-menu-effort-label">Effort</span><span class="model-menu-effort-note">Set per worker</span></div>'
       : canSetEffort || canSetSpeed ? `${canSetEffort ? segmentRow('effort', 'Effort', choices.effort, model.defaultReasoningEffort) : ''}${canSetSpeed ? segmentRow('speed', 'Speed', choices.speed) : ''}<p class="model-menu-effort-hint"></p>` : '';
+    const focusedRadio = markup !== settingsKey && settings.contains(document.activeElement)
+      ? radioChoice(document.activeElement as HTMLElement) : undefined;
     if (markup !== settingsKey) {
-      const focused = settings.contains(document.activeElement);
       settings.innerHTML = markup;
       settingsKey = markup;
-      if (focused) (settings.querySelector<HTMLElement>('.selected') ?? search).focus({ preventScroll: true });
     }
     settings.querySelectorAll<HTMLElement>('.model-menu-effort').forEach(group => {
       const kind = group.dataset.kind as Kind;
@@ -405,6 +411,11 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       group.setAttribute('aria-disabled', String(disabled));
       trackSegment(group, selected);
     });
+    if (focusedRadio) {
+      const group = settings.querySelector<HTMLElement>(`[data-kind="${focusedRadio.kind}"]`);
+      const radio = group?.querySelector<HTMLElement>(`[data-${focusedRadio.kind}="${CSS.escape(focusedRadio.id ?? '')}"]:not(:disabled)`);
+      (radio ?? group?.querySelector<HTMLElement>('.selected:not(:disabled)') ?? search).focus({ preventScroll: true });
+    }
     const hint = settings.querySelector<HTMLElement>('.model-menu-effort-hint');
     if (!hint) return;
     const kind: Kind = hoveredChoice?.kind ?? (canSetEffort ? 'effort' : 'speed');
@@ -605,11 +616,12 @@ export function openModelPicker(options: ModelPickerOptions): () => void {
       providers = found.map(provider => ({ ...provider, models: [...provider.models] }));
       providersStatus = providers.length ? '' : 'No harnesses on this computer';
       loadCatalogs();
+      rail.querySelector('[tabindex="0"]')?.scrollIntoView({ block: 'nearest' });
     }).catch(failure => {
       if (closed) return;
       providersStatus = failure instanceof Error ? failure.message : String(failure);
       renderChoices();
     });
   } else loadCatalogs();
-  return () => close();
+  return Object.assign(() => close(), { refresh: renderChoices });
 }

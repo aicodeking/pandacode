@@ -71,17 +71,22 @@ test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]);
 test.describe('turn changes', () => {
   for (const view of ['conversation', 'board']) test(`shows one compact completed-turn card after streaming in ${view}`, async ({ page }) => {
     await page.clock.install(); await install(page);
+    // An installed clock still follows real time, and the preview's turn ends ~0.8 s after it starts: on a loaded machine
+    // it could finish before the "no card while streaming" check. Paused here, only runFor moves the turn.
+    const pause = async () => page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     if (view === 'board') {
       await page.getByRole('button', { name: /^Workspace view: / }).click(); await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
       await page.getByRole('region', { name: 'Project board', exact: true }).getByRole('button', { name: 'Add task', exact: true }).click();
       await page.getByRole('textbox', { name: 'Task title', exact: true }).fill('Sample change with a saved diff');
       await page.getByRole('button', { name: 'Add to pending', exact: true }).click();
-      await page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Start task', exact: true }).click();
+      const start = page.getByRole('region', { name: 'Task details', exact: true }).getByRole('button', { name: 'Start task', exact: true });
+      await expect(start).toBeVisible();
+      await pause(); await start.click();
     } else {
       await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
       await expect(page.getByRole('heading', { name: /^What should we build in/ })).toBeVisible();
       await expect(page.locator('#prompt')).toBeEnabled();
-      await page.locator('#prompt').fill('Sample change with a saved diff'); await page.locator('#prompt').press('Enter');
+      await page.locator('#prompt').fill('Sample change with a saved diff'); await pause(); await page.locator('#prompt').press('Enter');
     }
     await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
     await page.clock.runFor(400);

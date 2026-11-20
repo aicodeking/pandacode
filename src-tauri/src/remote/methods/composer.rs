@@ -826,7 +826,7 @@ async fn ledger_summary(app: &tauri::AppHandle, refresh: bool) -> Value {
 impl Run for UsageGet {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let providers: Vec<Value> = crate::local_providers(false).await.into_iter().filter(|p| p.installed).map(|p| json!({ "id": p.id, "name": p.name })).collect();
+            let providers: Vec<Value> = crate::installed_providers().await.into_iter().filter(|p| p.installed).map(|p| json!({ "id": p.id, "name": p.name })).collect();
             let ledger = ledger_summary(ctx.app, self.refresh).await;
             let task = match self.session_id {
                 None => Value::Null,

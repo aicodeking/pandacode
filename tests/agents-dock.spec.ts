@@ -156,3 +156,43 @@ test('the pinned window keeps one live region and shows a failed action in it', 
   const focused = await page.evaluate(() => document.activeElement?.closest('button,[data-agent-id]') !== null);
   expect(focused).toBe(true);
 });
+
+test('the elapsed clock runs only while the list has rows', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  const result = await page.evaluate(async () => {
+    const live = new Set<number>(), setInterval = window.setInterval.bind(window), clearInterval = window.clearInterval.bind(window);
+    // Count only the clock's own one-second intervals.
+    window.setInterval = ((handler: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      const id = setInterval(handler, ms, ...rest);
+      if (ms === 1_000) live.add(id);
+      return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = ((id?: number) => { if (id !== undefined) live.delete(id); clearInterval(id); }) as typeof window.clearInterval;
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const moduleUrl = '/src/agents-dock.ts';
+    const { renderAgentRows, startElapsedTick } = await import(moduleUrl);
+    const list = document.createElement('div');
+    document.body.append(list);
+    const agent = { id: 'a1', title: 'Task', projectName: 'orbit', provider: 'claude', model: 'opus', status: 'running', elapsedSeconds: 5 };
+    const steps: Record<string, number | string> = {};
+    renderAgentRows(list, [], Date.now(), 'empty');
+    const stop = startElapsedTick(list);
+    await settle(); steps.empty = live.size;
+    renderAgentRows(list, [agent], Date.now(), 'empty');
+    await settle(); steps.rows = live.size;
+    const before = list.querySelector('time')!.textContent;
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    steps.ticked = `${before} -> ${list.querySelector('time')!.textContent}`;
+    renderAgentRows(list, [], Date.now(), 'empty');
+    await settle(); steps.emptied = live.size;
+    renderAgentRows(list, [agent], Date.now(), 'empty');
+    await settle(); steps.again = live.size;
+    stop();
+    steps.stopped = live.size;
+    window.setInterval = setInterval as typeof window.setInterval; window.clearInterval = clearInterval;
+    list.remove();
+    return steps;
+  });
+  expect(result).toEqual({ empty: 0, rows: 1, ticked: '5s -> 7s', emptied: 0, again: 1, stopped: 0 });
+});

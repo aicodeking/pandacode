@@ -138,6 +138,38 @@ test('the reply loads only until the first text, then keeps the latest text, eve
   await expect(live.locator('.live-tools .activity-commentary')).toHaveText('Reading the config first.');
 });
 
+test('a growing live reply only ever grows, frame by frame after paint, and eases in', async ({ page }) => {
+  const errors = await open(page);
+  await liveEvent(page, step('grow', 'running'));
+  await liveEvent(page, { kind: 'text', text: 'Initial readable reply.' });
+  await expect(page.locator('#stream-region .turn-card-reply .live-text')).toHaveText('Initial readable reply.');
+  await page.waitForTimeout(300);
+  // Each sample is read after the frame painted (a task queued from requestAnimationFrame); two deltas are appended.
+  const frames = await page.evaluate(() => new Promise<{ body: number; content: number }[]>(resolve => {
+    const sessionId = document.querySelector<HTMLElement>('.task-item.selected')!.dataset.id;
+    const body = document.querySelector<HTMLElement>('#stream-region .turn-card-reply-body')!;
+    const more = (from: number) => '\n\n' + Array.from({ length: 6 }, (_, i) => `Additional paragraph ${from + i} with readable text.`).join('\n\n');
+    const rows: { body: number; content: number }[] = [];
+    const read = () => {
+      rows.push({ body: body.getBoundingClientRect().height, content: body.firstElementChild!.getBoundingClientRect().height });
+      if (rows.length === 3 || rows.length === 6) (window as any).__previewEmit('agent-event', { sessionId, kind: 'text', text: more(rows.length) });
+      if (rows.length >= 60) { resolve(rows); return; }
+      requestAnimationFrame(() => { const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); read(); }; channel.port2.postMessage(0); });
+    };
+    read();
+  }));
+  // A step back is the body painting shorter than it just was while its content is no shorter than that (the content
+  // itself may settle shorter as the streamed text becomes formatted Markdown; that is not a rewind).
+  const rewinds = frames.slice(1).filter((frame, i) => frame.body < frames[i].body - 1 && frame.content >= frames[i].body - 1);
+  const heights = frames.map(frame => frame.body);
+  expect(rewinds, frames.map(frame => `${Math.round(frame.body)}/${Math.round(frame.content)}`).join(' ')).toEqual([]);
+  const [first, last] = [heights[0], heights[heights.length - 1]];
+  expect(last).toBeGreaterThan(first + 200);
+  // It eases: some frame paints between the old and the new height.
+  expect(heights.some(height => height > first + 1 && height < last - 1)).toBe(true);
+  expect(errors).toEqual([]);
+});
+
 test('collapsing a step while the turn runs gives its height back, with no blank band under the card', async ({ page }) => {
   await open(page);
   const live = page.locator('#stream-region .turn-card.is-live');

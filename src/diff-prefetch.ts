@@ -1,5 +1,5 @@
 // Warm paths for the inspector's Changes view: the viewer module, its worker pool and
-// themes start after the app's first paint, and the pool warms the grammars of the
+// themes start once a diff is likely (preloadDiffsWhenWanted), and the pool warms the grammars of the
 // files in the current git status first. The patch splitting here is shared with
 // mounting, so every viewer derives the same pool cache keys.
 
@@ -10,16 +10,83 @@ export function preloadDiffs(): Promise<unknown> {
   return preloaded;
 }
 
+let afterPaint = false;
 /** preloadDiffs() right after the next paint, so it never delays the list it belongs to. */
 export function preloadDiffsAfterPaint(): void {
-  if (preloaded) return;
-  requestAnimationFrame(() => setTimeout(() => void preloadDiffs(), 0));
+  disarm();
+  if (preloaded || afterPaint) return;
+  afterPaint = true;
+  requestAnimationFrame(() => setTimeout(() => { afterPaint = false; void preloadDiffs(); }, 0));
+}
+
+/** With no diff asked for, the engine starts this long after boot, at the next idle moment, if the inspector is open
+ *  (diffSurfaceOpen) and the current project's git status has changes (noteChangedPaths). Otherwise it waits for intent,
+ *  for the inspector to open or for a change to appear: a closed inspector never loads the workers and Shiki on its own. */
+export const DIFF_IDLE_AFTER = 15_000;
+/** Pointing at or focusing one of these is a diff about to be opened: change rows, Open diff, the Changes tab. */
+export const DIFF_INTENT = '.turn-changes, [data-action="open-turn-diff"], [data-action="tab-changes"], .cv-file, .change-review-files';
+let disarm: () => void = () => {};
+/** Set once the idle moment passed without a reason to load (no changes, or the inspector closed): noted changes or the
+ *  inspector opening run it again. */
+let idleWaiting: (() => void) | undefined;
+
+/** The inspector, where Changes, the file tree and open files live, is shown and not on its way out. */
+export function diffSurfaceOpen(doc: Pick<Document, 'getElementById'> = document): boolean {
+  const inspector = doc.getElementById('inspector');
+  return Boolean(inspector && !inspector.hidden && !inspector.hasAttribute('data-leaving') && !inspector.closest('.inspector-closed'));
+}
+
+/** Calls `opened` when #inspector's hidden or data-leaving attribute changes; returns the stop function. */
+function watchInspector(doc: Pick<Document, 'getElementById'>, opened: () => void): () => void {
+  const inspector = doc.getElementById('inspector');
+  if (!inspector || typeof MutationObserver !== 'function') return () => {};
+  const observer = new MutationObserver(opened);
+  observer.observe(inspector, { attributes: true, attributeFilter: ['hidden', 'data-leaving'] });
+  return () => observer.disconnect();
+}
+
+/**
+ * Starts the engine only when a diff is likely: something matching DIFF_INTENT is hovered or
+ * focused (keyboard focus counts), `preloadDiffsAfterPaint()` is called (the Changes tab or a file
+ * or diff view opened), or DIFF_IDLE_AFTER has passed, the page is idle, the inspector is open and the
+ * current project's git status has changes. A diff opened before any of these still renders: mounting
+ * starts the engine itself.
+ */
+export function preloadDiffsWhenWanted(doc: Pick<Document, 'addEventListener' | 'removeEventListener' | 'getElementById'> = document, win: Pick<Window, 'setTimeout' | 'clearTimeout'> & { requestIdleCallback?: (run: () => void, options?: { timeout: number }) => number } = window): void {
+  if (preloaded || afterPaint) return;
+  disarm();
+  const near = (event: Event) => { if ((event.target as Element | null)?.closest?.(DIFF_INTENT)) preloadDiffsAfterPaint(); };
+  let armed = true, unwatch = () => {};
+  const wanted = () => armed && changedNames.length > 0 && diffSurfaceOpen(doc);
+  // The changes may be gone or the inspector closed by the idle moment: then it waits for the next chance again.
+  const idle = () => {
+    if (!armed) return;
+    unwatch(); unwatch = () => {};
+    if (wanted()) { whenIdle(); return; }
+    idleWaiting = idle;
+    unwatch = watchInspector(doc, () => { if (wanted()) idle(); });
+  };
+  const whenIdle = () => { idleWaiting = undefined; if (typeof win.requestIdleCallback === 'function') win.requestIdleCallback(() => { if (wanted()) preloadDiffsAfterPaint(); else idle(); }, { timeout: 2_000 }); else preloadDiffsAfterPaint(); };
+  const timer = win.setTimeout(idle, DIFF_IDLE_AFTER);
+  doc.addEventListener('pointerover', near, { passive: true });
+  doc.addEventListener('focusin', near);
+  disarm = () => {
+    disarm = () => {};
+    armed = false;
+    idleWaiting = undefined;
+    unwatch();
+    win.clearTimeout(timer);
+    doc.removeEventListener('pointerover', near);
+    doc.removeEventListener('focusin', near);
+  };
 }
 
 let changedNames: string[] = [];
 /** File names in the current git status, so the pool warms their grammars first. */
 export function noteChangedPaths(paths: string[]): void {
   changedNames = paths.slice(0, 50).map(path => path.slice(path.lastIndexOf('/') + 1));
+  const waiting = idleWaiting;
+  if (waiting && changedNames.length) waiting();
 }
 export function likelyFileNames(): string[] { return changedNames; }
 

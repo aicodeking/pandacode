@@ -6,7 +6,9 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
 /** The thread's window: a procedural scene (src/scenes/: the sky, the aurora, …; WebGL fragment shader, CSS gradient
  * fallback) behind the conversation, picked per thread by `setThread` and crossfaded (~300 ms) on a switch.
  * Wind follows the open thread's run (`#transcript[data-running]`), the pointer parts the clouds, and it renders
- * only while visible: about 8 fps at rest (on a timer, not rAF), 30 while only the wind moves, 60 while the pointer does,
+ * only while visible: about 8 fps at rest (on a timer, not rAF; after 10 s with no run, wind or pointer, the scene's idle
+ * rate — 3 fps, or 6–8 for a scene with fast motion — at the same scene pace, and 8 again on the next activity), 30 while
+ * only the wind moves, 60 while the pointer does,
  * and 8 again while a run is churning the transcript (`churning`: it is streaming, or the scroller's content height moved
  * within GROWTH_MS) — a thread relaying out on every frame cannot also pay a canvas frame every other frame, and the wind
  * still follows the run there, just a quarter as often, with the pointer's 60 fps burst held back for the same reason. It
@@ -26,7 +28,10 @@ import { PRELUDE, UNIFORMS, VERTEX } from './scenes/types';
  * without ever overshooting. The wind is caught up over the whole span — that is what makes it look continuous — while the
  * pointer is seeded from the resumed instant and steps at most one frame's worth, so a freeze resumes the parting where it
  * stopped instead of handing it the whole wait in one 16 ms frame.
- * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms. */
+ * A governor drops the render scale from 0.6 to 0.45 of device pixels when a paint averages over ~8 ms, and a second one
+ * halves the rest and idle rates where a painted frame stays costly (`rateSample`: a CPU-composited WebKit, where one
+ * costs ~40 ms of main-thread work), at the same scene pace; streaming, wind and pointer rates are never touched. Paints
+ * that stay costly for ~10 s also set `html[data-costly-paint]`, which turns the glass solid (`paintVerdict`). */
 export interface SkyOptions {
   /** Whether the sky should show at all (wallpapers off, no accessibility override). */
   wanted(): boolean;
@@ -51,6 +56,17 @@ const FADE_MS = 300;
 
 const css = (c: Rgb): string => `rgb(${c.map(v => Math.round(v * 255)).join(' ')})`;
 const IDLE_FPS = 8, WIND_FPS = 30;
+/** The idle rate: after IDLE_AFTER_MS with no run, no wind and no pointer on the sky, the resting sky paints at the
+ * scene's idle rate (`Scene.idleFps`, SLOW_FPS unless the scene has fast motion that would step at it; never above
+ * IDLE_FPS) — the same scene, still moving, only fewer paints — and any activity brings IDLE_FPS back on the next frame.
+ * Its frames span up to ~333 ms (500 ms under the rate governor, with room left for a late timer), so they integrate up
+ * to SLOW_DT of it (the ordinary .1 s clamp would run the scene at a third of the pace); `step` splits that span into
+ * 1/60 s substeps like any other. */
+const SLOW_FPS = 3, IDLE_AFTER_MS = 10_000, SLOW_DT = .75;
+/** The resting pace, in scene seconds per wall second: the 8 fps rest timer's ~125 ms frames are clamped to .1 s, so the
+ * resting scene has always run at ~0.8× the wall clock (as shipped; do not change it). Idle-rate frames are scaled by it,
+ * so nothing changes speed when the sky goes idle. */
+const REST_PACE = .1 * IDLE_FPS;
 /** Reader input holds frames this long past the last piece of it (a wheel, a touch drag, a press or a key on a
  * transcript, a keystroke or text input in a composer): long enough to span the gap between two wheel notches or two
  * keystrokes, short enough to read as an instant resume, and re-armed by the next one. */
@@ -67,6 +83,22 @@ const FIXED_DT = 1 / 60;
 /** Render scale (of device pixels) and the governor's budget: paint time averaged over SAMPLE frames above BUDGET_MS drops
  * to LOW_SCALE; it goes back up only after QUIET_MS of averages under half the budget. */
 const SCALE = .6, LOW_SCALE = .45, BUDGET_MS = 8, SAMPLE = 30, QUIET_MS = 60_000;
+/** The rate governor (#348, #351): on a CPU-composited renderer (WebKitGTK without GPU compositing, some Intel Macs) one
+ * painted frame costs ~40 ms of main-thread work, so the 8 fps rest is ~32% of a core and a 6 fps idle ~24%. Quiet
+ * frames (no run, wind or pointer) are measured in bursts (RESAMPLE_MS) — its `paint()` call plus the rendering update that composites it, timed
+ * from a rAF callback to a message posted from it, with no GPU readback — and when the median of the last RATE_SAMPLE
+ * stays above RATE_BUDGET_MS the rest and idle rates halve (never below RATE_FLOOR_FPS, or FAST_FLOOR_FPS for a scene whose
+ * idle rate is the full rest rate: rain's drops would jump at 2), at the same REST_PACE; a median under half the budget
+ * restores them. A GPU-composited frame costs well under a millisecond, so there nothing changes. */
+const RATE_SAMPLE = 8, RATE_BUDGET_MS = 16, RATE_FLOOR_FPS = 2, FAST_FLOOR_FPS = 4;
+/** Costly paint (#348, #351): when the rolling median has stayed over RATE_BUDGET_MS for COSTLY_PAINT_MS, the main sky
+ * sets `html[data-costly-paint]` and every glass takes its solid reduced-transparency fill (src/motion.css), since each
+ * blur re-blurs its backdrop on every canvas frame. Recovery needs solid frames that stayed over budget for COSTLY_PAINT_MS
+ * (at any point while solid) and then under half of it for CHEAP_PAINT_MS: cheap solid frames alone only show that the
+ * fallback helped, and a short spike never sustains. Once the
+ * verdict is settled (no change pending) the probe stops and takes RATE_SAMPLE fresh frames every RESAMPLE_MS, so a
+ * GPU-composited machine pays one burst of 8 probes every 30 s and never sees the attribute. */
+const COSTLY_PAINT_MS = 10_000, CHEAP_PAINT_MS = 30_000, RESAMPLE_MS = 30_000;
 /** `__sky.gpuMs` (preview) is the mean of this many GPU timer results. */
 const GPU_SAMPLE = 10;
 /** The precompile waits this long after the last input, and polls a parallel compile this often. */
@@ -158,6 +190,17 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let scale = SCALE, costs: number[] = [], droppedAt = 0, query: WebGLQuery | null = null, timing: 'gpu' | 'frame' = 'frame';
   // Preview only (`__sky.forcePaintMs`, `__sky.quietMs`): specs drive the governor with made-up paint times.
   let forcePaintMs: number | null = null, quietMs = QUIET_MS, gpuMs: number | null = null, gpuCosts: number[] = [];
+  // The rate governor (`rateSample`): the last RATE_SAMPLE quiet frames' costs, whether the rates are halved, whether a
+  // probe is in flight (one at a time), and `__sky.forceFrameMs` (preview: specs feed it made-up frame costs).
+  let frameCosts: readonly number[] = [], costly = false, probing = false, forceFrameMs: number | null = null;
+  // Costly paint (`rateSample`): whether this instance set `html[data-costly-paint]` (only the main sky does, `ownsPaint`),
+  // since when the median has read costly or cheap (0: not now), when the paused probe samples again, and the samples taken
+  // so far (preview: specs check the probe goes quiet once settled).
+  const ownsPaint = !options.tileRoot;
+  let costlyPaint = false, costlySince = 0, cheapSince = 0, resampleAt = 0, samples = 0;
+  let solidPaintCost: number | null = null;
+  let costlyPaintMs = COSTLY_PAINT_MS, cheapPaintMs = CHEAP_PAINT_MS, resampleMs = RESAMPLE_MS;
+  const probe = new MessageChannel();
   // The precompile (`precompile`): the idle callback or poll timer it is waiting on, and the last user input.
   let idle = 0, idleTimer = 0, inputAt = 0;
   // The reader-input hold (`hold`): no frame is painted before this time, and `resumeIn` marks the frame that ends it
@@ -166,6 +209,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   // A growing transcript (`churning`): the content height last sampled from its scroller, and when it last moved (a long
   // time ago, so a page that has not grown yet never reads as growing).
   let seenHeight = -1, grewAt = -1e9;
+  // The idle rate (SLOW_FPS): the last run, wind or pointer activity, and whether the pending wake was armed at the slow
+  // rate, which marks the frame it fires as one whose `dt` spans a slow interval (cleared by that frame).
+  let activityAt = performance.now(), slow = false, idleAfterMs = IDLE_AFTER_MS;
+  // The last painted clock's `night` (0..1): a scene's idle rate may depend on it (stars twinkle only at night).
+  let night = 0;
   // Wind and pointer are critically damped springs; drift is integrated so a speed change never jumps the clouds.
   let wind = 0, windVelocity = 0, drift = 0, time = 0;
   const pointer = { x: .5, y: .5, tx: .5, ty: .5, sx: 0, sy: 0, amt: 0, amtVelocity: 0, target: 0, vx: 0, vy: 0, movedAt: 0 };
@@ -188,6 +236,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       layer.style.setProperty('--sky-mid', mid);
       layer.style.setProperty('--sky-horizon', bottom);
     }
+    night = colors.night;
     setData('night', String(colors.night > .5));
     setData('threadScene', scene.id);
     const program = ctx ? programFor(ctx, scene) ?? null : null;
@@ -311,11 +360,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       const v = velocity + (k * (target - value) - c * velocity) * h;
       return [value + v * h, v];
     };
-    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, or a slow frame —
+    // Fixed-step integration. `dt` spans whatever the loop missed — up to .1 s across a reader hold, SLOW_DT × REST_PACE on an idle frame —
     // and that is past what explicit Euler can take on the parting spring's rising branch (k = 280, c = 33: stable to
     // about 2/c ≈ 60 ms; at .1 s a single step from rest drives `pointer.amt` to ~2.8 where the scene contract is 0..1,
     // and from mid-ramp it inverts the velocity). So the frame is split into equal substeps of at most 1/60 s — six at
-    // most, since `tick` clamps `dt` at .1 s — which advances the scene by exactly `dt` (each substep is `dt / substeps`,
+    // .1 s, up to thirty-six at an idle frame's .6 s — which advances the scene by exactly `dt` (each substep is `dt / substeps`,
     // so no time is lost and none is counted twice). Everything that is per frame rather than per step (the `data-wind`
     // write, `drift`/`time`, the settling reset, `stirring`) stays below the loop and runs once.
     const substeps = Math.max(1, Math.ceil(dt / FIXED_DT - 1e-9));
@@ -366,6 +415,10 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   function tick(now: number): void {
     const onFrame = frame !== 0;
     frame = 0; timer = 0;
+    // An idle-rate wait (`slow`) is read and cleared before the hold below: a held idle frame does not pass its longer
+    // span on to the frame that resumes after the hold, which keeps the .1 s clamp.
+    const spanSlow = slow;
+    slow = false;
     if (!active()) return;
     // The reader is moving the transcript or typing: paint nothing, and come back when the hold lifts. `last` stays where
     // it was, so the resumed frame spans the hold the way a slow frame spans its gap: `dt` is clamped at .1 s below, so a
@@ -381,16 +434,26 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     sampleGrowth(now);
     const churn = churning(now);
     const interval = now - (last || now);
-    const dt = Math.min(.1, interval / 1000);
+    // A frame that spans an idle-rate wait (`spanSlow`, not one resuming after a hold) integrates the real gap up to
+    // SLOW_DT at REST_PACE, so the idle scene moves exactly as fast as the 8 fps rest, whose .1 s clamp gives it that
+    // pace; every other frame keeps the .1 s clamp. Such a frame also steps the pointer once, like a resumed one: if a
+    // pointer move cut the wait short (`wake`), the parting starts from that instant instead of jumping by the whole wait.
+    const idleSpan = spanSlow && !resumeIn;
+    const dt = idleSpan ? Math.min(SLOW_DT, interval / 1000) * REST_PACE : Math.min(.1, interval / 1000);
     last = now;
     // Without a GPU timer, a 60 Hz frame that took longer than its slot is the paint cost showing. A held tick returned
     // above, before `paint()` and this sample; its wait is never sampled: the wake is a timer (`onFrame` false), and
     // `schedule()`, the only path that queues a frame across a hold, zeroes `last`.
     if (forcePaintMs !== null) sample(forcePaintMs);
-    else if (onFrame && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
-    const busy = step(dt, resumeIn);
+    else if (onFrame && !idleSpan && timing === 'frame' && interval > 0) sample(Math.max(0, interval - 1000 / 60));
+    const busy = step(dt, resumeIn || idleSpan);
     resumeIn = false;
+    if (busy || churn) activityAt = now;
+    const paintFrom = performance.now();
     paint();
+    // A quiet frame (the rest or idle rate) feeds the rate governor; a run, the wind and the pointer never do.
+    const quiet = !busy && !churn;
+    if (quiet) measureFrame(performance.now() - paintFrom);
     setData('skyState', busy ? 'moving' : 'idle');
     // Full frame rate only while the pointer stirs the clouds and the transcript is not churning under it; the wind alone
     // moves slowly enough for 30, and a streaming thread, relaying out every frame, gets the idle 8 — the wind keeps
@@ -403,8 +466,87 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // parting's springs integrate the real elapsed time (`step`), so at 8 fps the parting still arrives in its ~150 ms,
     // drawn one or two paints, and the moment the churn window closes the burst comes back — the parting is still live
     // then, so it finishes at 60 fps.
+    //
+    // At rest for idleAfterMs (no run, wind, churn or pointer) the timer drops to the scene's idle rate: the scene looks
+    // the same and keeps its pace, it just paints less often; `wake` cuts that wait short on any activity. A scene whose
+    // idle rate is IDLE_FPS (fast motion) never goes slow. Where frames are costly (`restRate`) the rest and idle rates
+    // halve, and such a wait is slow too: its frame integrates the real gap at REST_PACE, and activity cuts it short.
     if (busy && stirring && !churn) frame = requestAnimationFrame(tick);
-    else timer = window.setTimeout(() => tick(performance.now()), 1000 / (busy && !churn ? WIND_FPS : IDLE_FPS));
+    else {
+      const rate = quiet ? restRate(now - activityAt >= idleAfterMs) : busy && !churn ? WIND_FPS : IDLE_FPS;
+      slow = quiet && rate < IDLE_FPS;
+      timer = window.setTimeout(() => tick(performance.now()), 1000 / rate);
+    }
+  }
+  /** The quiet rate (fps): IDLE_FPS at rest, the scene's idle rate after the quiet stretch, each halved while frames are
+   * costly (`rateSample`), down to the scene's floor and never above the ungoverned rate. */
+  function restRate(idle: boolean): number {
+    const base = idle ? idleRate() : IDLE_FPS;
+    if (!costly) return base;
+    const floor = idleRate() >= IDLE_FPS ? FAST_FLOOR_FPS : RATE_FLOOR_FPS;
+    return Math.min(base, Math.max(floor, base / 2));
+  }
+  /** Measures one quiet frame for the rate governor: its synchronous `paint()` time plus the rendering update that
+   * composites it — from a rAF callback (the start of that update) to a message posted from it (which runs once the update
+   * is done). One probe at a time; the canvas has just changed, so the rAF asks for no frame that would not happen anyway. */
+  function measureFrame(paintMs: number): void {
+    // Settled: no probe (no rAF callback, no message) until the next periodic burst.
+    if (performance.now() < resampleAt) return;
+    if (forceFrameMs !== null) { rateSample(forceFrameMs); return; }
+    if (probing) return;
+    probing = true;
+    requestAnimationFrame(() => {
+      const from = performance.now();
+      probe.port1.onmessage = () => { probing = false; if (!disposed) rateSample(paintMs + performance.now() - from); };
+      probe.port2.postMessage(0);
+    });
+  }
+  /** One frame-cost sample: the median of the last RATE_SAMPLE above RATE_BUDGET_MS halves the quiet rates, under half of
+   * it restores them (the hysteresis keeps a borderline machine from flapping). The next scheduled wait reads it. */
+  function rateSample(ms: number): void {
+    samples++;
+    frameCosts = [...frameCosts.slice(1 - RATE_SAMPLE), ms];
+    if (frameCosts.length < RATE_SAMPLE) return;
+    const sorted = [...frameCosts].sort((a, b) => a - b), mid = RATE_SAMPLE / 2;
+    const median = (sorted[mid - 1] + sorted[mid]) / 2;
+    if (!costly && median > RATE_BUDGET_MS) costly = true;
+    else if (costly && median < RATE_BUDGET_MS / 2) costly = false;
+    paintVerdict(median, performance.now());
+  }
+  /** Costly paint: sustained over-budget glass enables the solid fill. Only a costly-to-cheap improvement measured
+   * entirely with solid fill can restore glass: cheap frames caused by removing blur are not recovery evidence. The
+   * costly half is the same sustain as the glass verdict (`costlySince` over `costlyPaintMs`, every sample solid since
+   * `setCostlyPaint` resets the window), recorded once in `solidPaintCost`; until it is proven, cheap solid frames are
+   * settled and the probe stays quiet. While a change is pending the probe keeps sliding its window; otherwise it pauses
+   * for `resampleMs` and starts over with a fresh burst. */
+  function paintVerdict(median: number, now: number): void {
+    const dear = median > RATE_BUDGET_MS, cheap = median < RATE_BUDGET_MS / 2;
+    costlySince = dear ? costlySince || now : 0;
+    const sustainedDear = costlySince !== 0 && now - costlySince >= costlyPaintMs;
+    if (costlyPaint && solidPaintCost === null && sustainedDear) solidPaintCost = median;
+    cheapSince = cheap && solidPaintCost !== null ? cheapSince || now : 0;
+    if (!costlyPaint && sustainedDear) { setCostlyPaint(true); return; }
+    else if (costlyPaint && cheapSince && now - cheapSince >= cheapPaintMs) { setCostlyPaint(false); return; }
+    // Solid and not yet proven costly: a dear median keeps sliding until it sustains or breaks.
+    const pending = costlyPaint ? cheapSince !== 0 || (solidPaintCost === null && costlySince !== 0) : costlySince !== 0;
+    if (pending) return;
+    frameCosts = [];
+    resampleAt = now + resampleMs;
+  }
+  function setCostlyPaint(on: boolean): void {
+    costlyPaint = on;
+    solidPaintCost = null;
+    resample(); // Never mix glass and solid frames in the recovery baseline.
+    if (ownsPaint) document.documentElement.toggleAttribute('data-costly-paint', on);
+  }
+  /** Measurement starts over (a spec's made-up cost): a fresh burst now, with no verdict carried across. */
+  function resample(): void {
+    frameCosts = []; resampleAt = 0; costlySince = 0; cheapSince = 0;
+  }
+  /** The open scene's idle rate (fps) for the clock it last painted, kept within SLOW_FPS..IDLE_FPS. */
+  function idleRate(): number {
+    const want = scene.idleFps?.(night) ?? SLOW_FPS;
+    return Number.isFinite(want) ? Math.min(IDLE_FPS, Math.max(SLOW_FPS, want)) : SLOW_FPS;
   }
   function stop(): void {
     window.clearTimeout(timer); window.clearInterval(timer); timer = 0;
@@ -412,7 +554,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   }
   function schedule(): void {
     stop();
-    last = 0;
+    last = 0; slow = false;
     if (!shown) { setData('skyState', 'off'); return; }
     if (!active()) { setData('skyState', 'paused'); return; }
     if (reducedMotion.matches) {
@@ -430,7 +572,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
    * A run flipping still gets its frame (`urgent`, `windChanged`): one rAF, with the clock kept (`last` untouched, unlike
    * `schedule`) so that frame advances the wind by the time since the last paint. */
   function wake(urgent = false): void {
+    activityAt = performance.now();
     if (frame || !active() || reducedMotion.matches) return;
+    // An idle-rate wait (up to 333 ms) is cut short so the full rate is back at once. `slow` stays set, and `last` is kept
+    // below, so the next frame integrates the real gap since the last paint: the scene neither loses that time nor jumps.
+    if (slow) { window.clearTimeout(timer); timer = 0; }
     // Held by the reader: a rAF burst now would only be skipped, and its frames counted. The hold's own wake starts the
     // burst (and, through `step`, lets the parting settle) the moment the input stops.
     if (holding()) {
@@ -452,6 +598,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
       return;
     }
     setData('skyState', 'moving');
+    if (slow) { frame = requestAnimationFrame(tick); return; }
     schedule();
   }
   /** The run flipped: the wind starts moving on this frame (a small push, still eased by its spring), not a beat later. */
@@ -578,6 +725,17 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     // The parting spring: `amt` is the 0..1 presence the scenes take as `ptrAmt`, `vel` its Euler velocity and `target`
     // whether the pointer holds it (1 over the bare scene, 0 over a readable surface or after ~350 ms of rest).
     get ptrAmt() { return pointer.amt; }, get ptrVel() { return pointer.amtVelocity; }, get ptrTarget() { return pointer.target; },
+    // The idle rate: scene seconds integrated so far, whether the pending wake is at the idle rate, the open scene's idle
+    // rate, and the quiet stretch before it (specs).
+    get time() { return time; }, get slow() { return slow; }, get idleFps() { return idleRate(); },
+    set idleAfterMs(ms: number) { idleAfterMs = ms; },
+    // The rate governor: whether the quiet rates are halved, the costs it holds, and made-up frame costs (null: measure).
+    get rateHalved() { return costly; }, get frameCosts() { return [...frameCosts]; },
+    set forceFrameMs(ms: number | null) { forceFrameMs = ms; resample(); },
+    // Costly paint: whether it is set, the samples taken (they stop while settled), when the next burst is due, and
+    // shorter sustain/hysteresis/resample spans for specs.
+    get costlyPaint() { return costlyPaint; }, get solidPaintCost() { return solidPaintCost; }, get samples() { return samples; }, get resampleIn() { return Math.max(0, resampleAt - performance.now()); },
+    set costlyPaintMs(ms: number) { costlyPaintMs = ms; }, set cheapPaintMs(ms: number) { cheapPaintMs = ms; }, set resampleMs(ms: number) { resampleMs = ms; },
     set forcePaintMs(ms: number | null) { forcePaintMs = ms; costs = []; }, set quietMs(ms: number) { quietMs = ms; } } });
   refresh();
 
@@ -587,6 +745,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     dispose(): void {
       disposed = true;
       stop();
+      if (costlyPaint) setCostlyPaint(false);
+      probe.port1.close(); probe.port2.close();
       if (idle) cancelIdleCallback(idle);
       window.clearTimeout(idleTimer);
       for (const type of ['pointerdown', 'keydown', 'wheel'] as const) window.removeEventListener(type, input, { capture: true });

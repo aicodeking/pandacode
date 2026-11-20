@@ -343,3 +343,33 @@ test('a run GitHub couldn’t start reads “Didn’t start”, and Fix looks at
   await expect(page.locator('#transcript .user-message').last()).toContainText('startup failure');
   await expect(page.locator('#navigation .task-item.selected')).toContainText('Fix .github/workflows/nightly.yml workflow file');
 });
+
+test('different Solve actions held during creation never mix links and prompts', async ({ page }) => {
+  test.setTimeout(45_000);
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    let body = await response.text();
+    body = body.replace(/case ["']create_session["']\s*:\s*\{/, '$& if (!window.__hubCreated) { window.__hubCreated = true; await new Promise(resolve => { window.__releaseHubCreation = resolve; }); }');
+    body = body.replace(/case ["']set_task_link["']\s*:\s*\{/, '$& (window.__hubLinks ??= []).push({ sessionId: args.sessionId, number: args.link?.number });');
+    body = body.replace(/case ["']send_message["']\s*:\s*\{/, '$& (window.__hubSends ??= []).push({ sessionId: args.sessionId, text: args.text });');
+    await route.fulfill({ response, body });
+  });
+  await openHub(page);
+  await tab(page, /Issues/).click();
+  await row(page, 128).hover();
+  await row(page, 128).getByRole('button', { name: 'Solve', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseHubCreation)).toBe('function');
+  await row(page, 131).hover();
+  await row(page, 131).getByRole('button', { name: 'Solve', exact: true }).click();
+  await page.evaluate(() => (window as any).__releaseHubCreation());
+  await expect.poll(() => page.evaluate(() => (window as any).__hubSends?.length ?? 0), { timeout: 15_000 }).toBe(2);
+  const { links, sends } = await page.evaluate(() => ({ links: (window as any).__hubLinks as { sessionId: string; number: number }[], sends: (window as any).__hubSends as { sessionId: string; text: string }[] }));
+  expect(new Set(sends.map(send => send.sessionId)).size).toBe(2);
+  for (const number of [128, 131]) {
+    const matching = links.filter(link => link.number === number);
+    expect(matching).toHaveLength(1);
+    const sent = sends.find(send => send.sessionId === matching[0].sessionId);
+    expect(sent?.text).toContain(`Fix issue #${number}:`);
+    expect(links.filter(link => link.sessionId === matching[0].sessionId)).toHaveLength(1);
+  }
+});

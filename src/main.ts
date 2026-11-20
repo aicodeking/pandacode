@@ -37,6 +37,7 @@ import './redesign/board.css';
 import './redesign/bots.css';
 import './voice-dictation.css';
 import { mountActionDock, mountAgents, snapDockDuring } from './action-dock';
+import { watchErrorDockOverlap } from './error-dock-overlap';
 import { setDocumentView } from './document-viewer';
 import { onQueueReorder, queuePanel, type HoldReason, type QueuedMessage } from './message-queue';
 import { initWakeups, openWakeComposer, scheduledMark, schedulesVersion, wakeCommand, wakeGlyph, wakeStrip } from './schedules-thread';
@@ -73,7 +74,7 @@ import { starPanda } from './star-panda';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
-import { describeTool, kindIcon, summarizeTools, traceRowHtml } from './tool-trace';
+import { describeTool, kindIcon, summarizeTools, toolKind, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
@@ -111,7 +112,7 @@ import { createAgentInput, type AgentInput } from './agent-input';
 import { mountSlashCommands, type SlashCommand } from './slash-commands';
 import { mountFileMentions, type MentionEntry } from './file-mentions';
 import { createFileTabs } from './file-tabs';
-import { createFileExplorer } from './file-explorer';
+import { createFileExplorer, noteFilePollActivity, noteFilePollChange, setFilePollMounted } from './file-explorer';
 import { bindFileLinkContext, configureFileLinks, isPreviewableFile, refreshFileLinks, type FileLinkContext, type ResolvedFile } from './file-links';
 import { createWorktrees } from './worktrees';
 import { createGithub, githubEnabled } from './github';
@@ -119,7 +120,7 @@ import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { heldBackOpened, showCrashRecovery, takeCrashRecovery, tasksChanged } from './crash-recovery';
 import { addToastClose, labelToastShortcut, wireToastKeys } from './toast-keys';
 import { keepToastClear } from './toast-clearance';
-import { NEW_TASK_DRAFT, PersistedDrafts, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
+import { NEW_TASK_DRAFT, PersistedDrafts, browserDraftTimer, flushDraftsOnLeave, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
 import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
@@ -146,7 +147,7 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
 import { TailText } from './tail-text';
-import { noteChangedPaths, preloadDiffsAfterPaint } from './diff-prefetch';
+import { noteChangedPaths, preloadDiffsAfterPaint, preloadDiffsWhenWanted } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
 import { errorText } from './error-text';
 import { escapeClosesToast, globalErrorText, isBenignGlobalError, nextToastCount, queueToast, shouldShowGlobalError, shouldToastLiveError, toastTitle, type ToastTone } from './toast-model';
@@ -185,7 +186,7 @@ const state = {
   git: null as GitStatus | null, jj: null as JjStatus | null, files: [] as FileEntry[], openFolders: new Set<string>(), folderFiles: new Map<string, FileEntry[]>(), gitError: '', filesError: '', inspectorLoading: false,
   selectedFile: '', selectedContent: '', selectedKind: '' as '' | 'diff', selectedStaged: false, filePreviewLoading: false,
   browserUrl: '',
-  attachments: [] as string[], drafts: new PersistedDrafts(localStorage), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
+  attachments: [] as string[], drafts: new PersistedDrafts(localStorage, Date.now, browserDraftTimer), defaultProvider: (localStorage.getItem('pandacode.defaultProvider') ?? localStorage.getItem('pandacode.provider') ?? 'claude') as ProviderId,
   browserAttachments: new Map<string, BrowserAttachment[]>(),
   moodboardAttachments: new Map<string, { id: string; projectId: string; name: string }[]>(),
   generation: 0, hasOlder: false,
@@ -234,11 +235,16 @@ const savedMarkdownSources = new WeakMap<HTMLElement, string>();
 let olderMessagesRequest: { sessionId: string; generation: number; beforeId: number } | undefined;
 const pendingApprovals = new Set<string>();
 const configuringSessions = new Set<string>();
+const teamToggles = new Set<string>();
+/** True while a non-provisional session mutation or Team toggle is in flight. */
+const taskBusyConfiguring = (id: string): boolean => configuringSessions.has(id) || teamToggles.has(id);
+/** True while either a non-provisional session mutation, a Team toggle, or an automatic provisional harness correction is in flight. */
+const configuringSession = (id: string): boolean => taskBusyConfiguring(id) || provisionalCorrections.has(id);
 const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
-let modelPickerCleanup: (() => void) | undefined;
+let modelPickerCleanup: (ReturnType<typeof import('./model-picker').openModelPicker> & { taskId?: string }) | undefined;
 let projectPickerCleanup: (() => void) | undefined;
 let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
@@ -257,9 +263,18 @@ let designPanel: ReturnType<typeof import('./design-canvas').mountDesignCanvas> 
 let progressPip: import('./progress-pip').ProgressPip | undefined, progressPipLoading: Promise<void> | undefined;
 let browserLifecycle = Promise.resolve();
 let browserOwner = '', browserRevision = 0, inspectorSuppressed = false;
-/** The user's last explicit inspector toggle; a task without saved panel state follows it. */
-let inspectorChosen = true;
-type ThreadPanel = { workspace: string; open: boolean; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
+/** The user's last explicit inspector show or hide, kept across launches. Visibility is global across tasks, while each
+ * task remembers its own tab, folders, selected diff/file, and browser URL. */
+const INSPECTOR_CHOSEN_KEY = 'pandacode.inspector.chosen';
+let inspectorChosen = (() => {
+  try { return localStorage.getItem(INSPECTOR_CHOSEN_KEY) !== 'false'; } catch (cause) { console.warn('Could not read the inspector choice', cause); return true; }
+})();
+function chooseInspector(open: boolean): boolean {
+  inspectorChosen = open;
+  try { localStorage.setItem(INSPECTOR_CHOSEN_KEY, String(open)); } catch (cause) { console.warn('Could not save the inspector choice', cause); }
+  return open;
+}
+type ThreadPanel = { workspace: string; tab: typeof state.inspectorTab; folders: string[]; file: string; kind: typeof state.selectedKind; staged: boolean; context?: FileLinkContext; browserUrl: string };
 const threadPanels = new Map<string, ThreadPanel>();
 const teams = new Map<string, TeamSnapshot | null>();
 let architectView: ArchitectView | undefined;
@@ -340,29 +355,54 @@ function refreshMirrorTeam(id: string): void {
   }, 300));
 }
 async function showArchitectSetup(anchor: HTMLElement): Promise<void> {
+  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (architectSetupCleanup) { architectSetupCleanup(); return; }
-  const task = session(); if (!task) return;
+  const task = session(); if (!task || taskBusyConfiguring(task.id)) return;
   if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
   closeMenus();
   const request = ++architectSetupRequest;
-  const { openArchitectSetup } = await import('./architect');
-  if (request !== architectSetupRequest || !anchor.isConnected || task.id !== state.sessionId) return;
-  architectSetupCleanup = openArchitectSetup(anchor, async () => {
-    const [team, library] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles')]);
-    return { task, team, library, providers: state.providers, loadModels,
-      save: async (config, architect, profileId) => {
+  const { epoch, release } = beginMenuOpen(anchor);
+  const { openArchitectSetup } = await import('./architect').finally(release);
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || request !== architectSetupRequest || architectSetupCleanup || !live || task.id !== state.sessionId || taskBusyConfiguring(task.id)) return;
+  architectSetupCleanup = openArchitectSetup(live, async () => {
+    const [team, library, providers] = await Promise.all([loadTeam(task.id), call<TeamLibrary>('architect_profiles'), knownProviders()]);
+    while (provisionalCorrections.has(task.id) || (providersKnown && provisionalTasks.has(task.id) && !taskBusyConfiguring(task.id))) {
+      const pending = provisionalCorrections.get(task.id);
+      if (pending) {
+        const outcome = await pending.catch(() => 'stale' as const);
+        if (outcome !== 'ok') break;
+        continue;
+      }
+      const liveTask = state.sessions.find(s => s.id === task.id);
+      if (!liveTask || deletedSessions.has(task.id) || liveTask.lastPromptAt != null || isRunning(task.id)) {
+        provisionalTasks.delete(task.id);
+        break;
+      }
+      const outcome = await correctProvisionalTask(liveTask).catch(() => 'stale' as const);
+      if (outcome !== 'ok') break;
+    }
+    const currentTask = state.sessions.find(s => s.id === task.id) ?? task;
+    return { task: currentTask, team, library, providers, loadModels,
+      save: (config, architect, profileId) => saveExplicitHarness(task.id, async () => {
         if (task.id !== state.sessionId) throw new Error('Select this task again to change its team.');
-        const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
-        // Completion may already have applied the pending setup before this IPC
-        // reply arrives. Honor the newer event instead of restoring stale state.
-        onArchitect(saved ?? { sessionId: task.id, removed: true });
-        if (task.id === state.sessionId) architectSetupCleanup?.();
-        await reloadSessions();
-        if (task.id === state.sessionId) {
-          renderComposer();
-          notify(teams.get(task.id)?.pendingSetup ? 'Team switch queued for the next architect turn. Existing workers keep their models.' : config ? 'Team setup saved for this and new tasks.' : 'New tasks will use a single agent. Saved profiles are kept.');
-        }
-      },
+        while (provisionalCorrections.has(task.id)) await provisionalCorrections.get(task.id)?.catch(() => undefined);
+        if (task.id !== state.sessionId || deletedSessions.has(task.id) || taskBusyConfiguring(task.id)) throw new Error('Select this task again to change its team.');
+        configuringSessions.add(task.id);
+        try {
+          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect, profileId });
+          if (config) provisionalTasks.delete(task.id);
+          // Completion may already have applied the pending setup before this IPC
+          // reply arrives. Honor the newer event instead of restoring stale state.
+          onArchitect(saved ?? { sessionId: task.id, removed: true });
+          if (task.id === state.sessionId) architectSetupCleanup?.();
+          await reloadSessions();
+          if (task.id === state.sessionId) {
+            renderComposer();
+            notify(teams.get(task.id)?.pendingSetup ? 'Team switch queued for the next architect turn. Existing workers keep their models.' : config ? 'Team setup saved for this and new tasks.' : 'New tasks will use a single agent. Saved profiles are kept.');
+          }
+        } finally { configuringSessions.delete(task.id); }
+      }),
     };
   }, () => { architectSetupCleanup = undefined; });
 }
@@ -400,7 +440,7 @@ function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
   return classicTeamSetup()
-    ? `<button type="button" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
+    ? `<button type="button" id="architect-setup-trigger" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
     : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
@@ -413,15 +453,34 @@ let routingLoad: Promise<RoutingStatus | null> | null = null;
 /** A Settings status that arrived during a Team menu configure; applied if that configure fails. */
 let routingMissed: RoutingStatus | null = null;
 const ROUTING_RETRY_MS = 3000;
-/** Redraws only the Team button's label, so the prompt keeps its focus and caret. */
+/** Redraws only the Team button's label and composer busy state, so the prompt keeps its focus and caret. */
 function syncTeamButton(): void {
-  const trigger = document.querySelector<HTMLElement>('#team-trigger'), s = session(); if (!trigger || !s) return;
-  const html = teamButtonHtml(s);
-  if (trigger.innerHTML !== html) trigger.innerHTML = html;
-  trigger.setAttribute('aria-label', teamName(s));
-  trigger.toggleAttribute('data-on', Boolean(teams.get(s.id)));
-  trigger.setAttribute('aria-busy', String(teamToggles.has(s.id)));
-  trigger.dataset.tip = teamTip(s); trigger.setAttribute('aria-description', teamTip(s));
+  const s = session(); if (!s) return;
+  const toggling = teamToggles.has(s.id), running = isRunning(s.id), team = teams.get(s.id);
+  const trigger = document.querySelector<HTMLElement>('#team-trigger');
+  if (trigger) {
+    const html = teamButtonHtml(s);
+    if (trigger.innerHTML !== html) trigger.innerHTML = html;
+    trigger.setAttribute('aria-label', teamName(s));
+    trigger.toggleAttribute('data-on', Boolean(team));
+    if (pendingMenuOpen?.anchor !== trigger) trigger.setAttribute('aria-busy', String(toggling));
+    trigger.dataset.tip = teamTip(s); trigger.setAttribute('aria-description', teamTip(s));
+  }
+  const classic = document.querySelector<HTMLButtonElement>('#architect-setup-trigger');
+  if (classic) {
+    const on = Boolean(team);
+    classic.setAttribute('aria-description', on ? 'On' : 'Off');
+    classic.setAttribute('aria-pressed', String(on));
+    if (pendingMenuOpen?.anchor !== classic) classic.setAttribute('aria-busy', String(toggling));
+    classic.disabled = toggling;
+    classic.dataset.tip = `Architect & workers: ${on ? 'on' : 'off'}`;
+  }
+  const send = document.querySelector<HTMLButtonElement>('#composer button[type="submit"].send-button');
+  if (send) send.disabled = toggling;
+  const model = document.querySelector<HTMLButtonElement>('#model-picker-trigger');
+  if (model) model.disabled = (running && !team && !botForThread()) || toggling;
+  const mode = document.querySelector<HTMLButtonElement>('#mode-picker-trigger');
+  if (mode) mode.disabled = running || toggling;
   trayStateChanged();
 }
 function applyRouting(ticket: number, next: RoutingStatus): boolean {
@@ -501,7 +560,7 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
 async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
-  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), installedCatalog(state.providers, loadModels)]);
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), Promise.resolve(knownProviders()).then(providers => installedCatalog(providers, loadModels))]);
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
 }
@@ -516,35 +575,64 @@ function prepareModelRouting(): void {
     })
     .catch(cause => console.warn('Model routing could not prepare', cause));
 }
-const teamToggles = new Set<string>();
 const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${task.remoteDevice?.name ?? 'the other computer'}.`;
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
-  if (configuringSessions.has(task.id)) return false;
-  teamToggles.add(task.id); configuringSessions.add(task.id);
+  if (taskBusyConfiguring(task.id)) return false;
+  const wasRunning = isRunning(task.id);
+  teamToggles.add(task.id);
+  let locked = false;
   try {
     // In place: the Team menu stays anchored to the button while it applies.
     if (task.id === state.sessionId) syncTeamButton();
+    if (on || provisionalCorrections.has(task.id)) {
+      if (on || provisionalTasks.has(task.id)) await knownProviders();
+      while (provisionalCorrections.has(task.id) || (on && providersKnown && provisionalTasks.has(task.id))) {
+        const pending = provisionalCorrections.get(task.id);
+        let outcome: 'ok' | 'missing' | 'stale';
+        if (pending) {
+          outcome = on ? await pending : await pending.catch(() => 'stale' as const);
+        } else {
+          const live = state.sessions.find(s => s.id === task.id);
+          if (!live || deletedSessions.has(task.id) || live.lastPromptAt != null || isRunning(task.id)) {
+            provisionalTasks.delete(task.id);
+            break;
+          }
+          outcome = await correctProvisionalTask(live);
+        }
+        if (outcome === 'missing' && on) {
+          const live = state.sessions.find(s => s.id === task.id) ?? task;
+          if (live.id === state.sessionId) showMissingHarness(live);
+          notify('Open Settings to check your installed agents.');
+          return false;
+        }
+        if (outcome !== 'ok') break;
+      }
+      while (explicitHarnessSaves.has(task.id)) await explicitHarnessSaves.get(task.id)?.catch(() => undefined);
+    }
+    if (task.id !== state.sessionId || deletedSessions.has(task.id) || configuringSessions.has(task.id) || (!wasRunning && isRunning(task.id))) return false;
+    configuringSessions.add(task.id); locked = true;
     let config: TeamConfig | null = null;
     if (on) {
       prepareModelRouting();
       config = await autoTeamConfig();
     }
-    if (task.id !== state.sessionId) return false;
+    if (task.id !== state.sessionId || deletedSessions.has(task.id) || (!wasRunning && isRunning(task.id))) return false;
     const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config, architect: null, profileId: null });
     onArchitect(saved ?? { sessionId: task.id, removed: true });
     await reloadSessions();
-    teamToggles.delete(task.id); configuringSessions.delete(task.id);
+    teamToggles.delete(task.id); configuringSessions.delete(task.id); locked = false;
     // "Turn on for new threads": a team starting on a thread with no messages yet starts Council with it.
     if (on && saved && task.id === state.sessionId && !state.messages.length) void council.enableForNewThread(task.id);
     if (task.id === state.sessionId) { if (render) renderComposer(); else syncTeamButton(); }
     return true;
   } finally {
     // A failed save keeps the menu open with its error, so only the button is redrawn.
+    if (locked) configuringSessions.delete(task.id);
     if (teamToggles.delete(task.id) && task.id === state.sessionId) syncTeamButton();
-    configuringSessions.delete(task.id);
     run(dispatchQueue(task.id));
+    if (!on && providersKnown && provisionalTasks.has(task.id)) run(correctProvisionalTasks());
   }
 }
 const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
@@ -577,6 +665,7 @@ mountAgentsDock(document.querySelector<HTMLElement>('#agents-dock-host')!, { ope
 publishSpringEasings();
 syncPulses();
 mountActionDock($('#action-dock'));
+watchErrorDockOverlap($('#transcript'), $('#action-dock'));
 installDialogMotion(document.querySelector<HTMLDialogElement>('#dialog')!);
 const terminalPanel = new TerminalPanel($('#terminal-drawer'), $('#terminal-host'), report);
 const projectRunner = new ProjectRunner({
@@ -626,7 +715,11 @@ const github = createGithub({
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
-    const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
+    // Synchronous for github.ts: before the harness list is known (and while the last launch's may not be used yet) say
+    // so instead of choosing from an empty or stale list or calling the agents missing.
+    const choice = providersForChoiceNow();
+    if (!choice) throw new Error('Agent harnesses are still loading. Try again in a moment.');
+    const harness = pickHarness(choice);
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     return { provider: harness.id, model: rememberedModel(harness.id) };
   },
@@ -690,6 +783,10 @@ const fileTabs = createFileTabs({
   },
   focusConversation: () => document.querySelector<HTMLElement>('#prompt')?.focus(),
   changed: () => {
+    // Every redraw of the tabs (an open file reloaded from disk included) is a change the poll keeps up with.
+    syncFilePoll(); noteFilePollChange();
+    // An open text tab mounts the editor, which needs the diff engine.
+    if (fileTabs.count) preloadDiffsAfterPaint();
     const toggle = $('#file-editor-toggle'); toggle.hidden = !fileTabs.count;
     toggle.classList.toggle('active', fileTabs.visible); toggle.setAttribute('aria-expanded', String(fileTabs.visible));
   },
@@ -712,7 +809,8 @@ const fileExplorer = createFileExplorer({
   },
   created: (context, parent) => { if (parent && context.projectId === state.projectId && (context.sessionId ?? '') === state.sessionId) state.openFolders.add(parent); },
   hasChanges: (context, path) => fileTabs.hasChanges(context, path),
-  refresh: async () => { fileTabs.reload(); await refreshExplorerFiles(); },
+  refresh: async () => { fileTabs.reload(); return refreshExplorerFiles(); },
+  busy: () => Boolean(state.sessionId) && isRunning(state.sessionId),
   notify, report,
 });
 document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('contextmenu', event => {
@@ -757,7 +855,7 @@ function upsertSession(saved: Session): void { const index = state.sessions.find
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
   if (!session()?.pullRequest) return;
-  inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
+  inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'pull'; state.selectedKind = ''; renderInspector();
 }
 /** After a turn, link the pull request the agent opened, if there is one. */
 async function detectPullRequest(sessionId: string): Promise<void> {
@@ -859,7 +957,7 @@ const attachments = mountPromptAttachments({
   },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
   menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
-  projectFiles: () => { state.inspector = true; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
+  projectFiles: () => { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
 });
 async function openRecipes(): Promise<void> {
@@ -1247,14 +1345,15 @@ configureFileLinks({
 });
 function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
-  threadPanels.set(state.sessionId, { workspace: workspaceKey(), open: state.inspector, tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
+  threadPanels.set(state.sessionId, { workspace: workspaceKey(), tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
 function restoreThreadPanel(task?: Session): void {
   clearWorkspaceInspector(false);
   const saved = task && threadPanels.get(task.id);
   const sameWorkspace = saved?.workspace === workspaceKey();
-  // Without saved state the conversation opens the panel on the selected tab, unless the user closed it or it would cover the chat.
-  state.inspector = saved?.open ?? (state.view === 'conversation' && inspectorChosen && !matchMedia('(max-width: 920px)').matches);
+  // Inspector visibility follows the user's global show/hide choice (unless the view or narrow viewport hides it),
+  // while each task restores its own tab, folders, selected diff, and browser URL.
+  state.inspector = inspectorChosen && state.view === 'conversation' && !matchMedia('(max-width: 920px)').matches;
   state.inspectorTab = saved?.tab && inspectorTabs.open.includes(saved.tab) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
@@ -1278,7 +1377,7 @@ async function restoreSelectedFile(): Promise<void> {
 }
 function clearWorkspaceInspector(render = true): void {
   ++inspectorRequest; ++fileRequest;
-  state.git = null; state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
+  state.git = null; noteChangedPaths([]); state.files = []; state.gitError = ''; state.filesError = ''; state.inspectorLoading = Boolean(state.projectId);
   state.openFolders = new Set(); state.folderFiles = new Map(); state.selectedFile = ''; state.selectedContent = ''; state.selectedKind = ''; state.filePreviewLoading = false;
   state.browserUrl = '';
   selectedFileContext = undefined;
@@ -1302,22 +1401,58 @@ function setProjectFilter(id: string): void { state.projectFilter = id; localSto
 function saveCollapsedFolders(): void { try { localStorage.setItem('pandacode.collapsedFolders', JSON.stringify([...state.collapsedFolders])); } catch { /* per-launch preference only */ } }
 /** Tasks shown in lists: a New task draft appears only after its first prompt. */
 function listedSessions(): Session[] { return state.sessions.filter(task => !task.draft); }
+function draftKept(id: string): boolean {
+  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const typed = prompt?.dataset.sessionId === id ? prompt.value : state.drafts.get(id) ?? '';
+  return voiceDictation.ownsThread(id) || Boolean(typed.trim()) || Boolean(attachments.list(id).length) || Boolean(state.browserAttachments.get(id)?.length) || Boolean(state.moodboardAttachments.get(id)?.length);
+}
+function discardDraft(id: string): void {
+  state.sessions = state.sessions.filter(task => task.id !== id);
+  state.drafts.delete(id);
+  provisionalTasks.delete(id);
+  deletedSessions.add(id);
+  const pending = provisionalCorrections.get(id);
+  const drop = () => void call<boolean>('discard_draft', { sessionId: id }).catch(() => undefined);
+  if (pending) void pending.catch(() => undefined).finally(drop);
+  else drop();
+}
 /** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
-  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || configuringSessions.has(draft.id) || draft.worktreePath) return;
-  const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  const typed = prompt?.dataset.sessionId === draft.id ? prompt.value : state.drafts.get(draft.id) ?? '';
-  if (voiceDictation.ownsThread(draft.id) || typed.trim() || attachments.list(draft.id).length || state.browserAttachments.get(draft.id)?.length || state.moodboardAttachments.get(draft.id)?.length) return;
-  state.sessions = state.sessions.filter(task => task.id !== draft.id);
-  state.drafts.delete(draft.id);
-  void call<boolean>('discard_draft', { sessionId: draft.id }).catch(() => undefined);
+  if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || taskBusyConfiguring(draft.id) || explicitHarnessSaves.has(draft.id) || draft.worktreePath) return;
+  if (draftKept(draft.id)) return;
+  discardDraft(draft.id);
 }
 function lastActivity(s: Session): number | null { return s.lastPromptAt == null ? s.lastResponseAt : Math.max(s.lastPromptAt, s.lastResponseAt ?? 0); }
 function activeTask(s: Session, now = Date.now()): boolean { const time = lastActivity(s); return time != null && time > now - ACTIVITY_WINDOW; }
 const pendingPromptActivity = new Map<string, number>();
 function session(): Session | undefined { return state.sessions.find(s => s.id === state.sessionId); }
+/** The harness a new task starts with: the default one if installed, else the first installed, else the first listed. */
+function pickHarness(providers: Provider[]): Provider | undefined {
+  return providers.find(p => p.id === state.defaultProvider && p.installed) ?? providers.find(p => p.installed) ?? providers[0];
+}
+/** A harness's name as messages sign it: the listed one (the last launch's until list_providers answers), else its
+ *  built-in short name, so nothing reads 'Agent' while the list is out. */
+function authorName(id: ProviderId): string { return provider(id)?.name || shortProvider(id) || 'Agent'; }
+/** Messages signed before the harness list landed take its names in place: no redraw, so open menus stay open. */
+function refreshAuthorNames(): void {
+  document.querySelectorAll<HTMLElement>('[data-author]').forEach(label => { const name = authorName(label.dataset.author as ProviderId); if (label.textContent !== name) label.textContent = name; });
+}
+/** Updates the queued-messages status agent name in place, so open composer menus stay open when list_providers lands. */
+function refreshQueueAgentNames(): void {
+  const patch = (selector: string, task: Session | undefined, agentName: string | undefined) => {
+    if (!task || !state.queues.get(task.id)?.length || state.queueHolds.has(task.id) || !isRunning(task.id)) return;
+    const label = document.querySelector<HTMLElement>(selector);
+    if (!label) return;
+    const text = agentName ? `Waiting – ${agentName} is working` : 'Sends when the agent finishes';
+    if (label.textContent !== text) label.textContent = text;
+  };
+  const main = session();
+  patch('#composer > .queue-panel .queue-next', main, main ? (botForThread()?.name ?? provider(main.provider)?.name) : undefined);
+  const side = btwSideTask();
+  patch('.btw-panel .queue-panel .queue-next', side, side ? provider(side.provider)?.name : undefined);
+}
 function provider(id?: ProviderId): Provider | undefined { return state.providers.find(p => p.id === (id ?? session()?.provider ?? state.defaultProvider)); }
 function isRunning(id = state.sessionId): boolean { return teamActive(teams.get(id)) || state.streams.has(id) || ['running', 'starting', 'waiting', 'waiting_approval'].includes(state.sessions.find(s => s.id === id)?.status ?? ''); }
 /** A team waiting out its lead's usage limit with nothing at work. It stays active (Stop works, prompts
@@ -1652,6 +1787,14 @@ async function openSupport(): Promise<void> {
   }
 }
 function cancelPendingMenu(): void { menuEpoch++; pendingMenuOpen?.release(); }
+/** The trigger a menu opens from, once its module has loaded: a composer re-render meanwhile (boot repaints it when the
+ *  harness list lands) replaces the button, so the one now carrying its id (#model-picker-trigger, #mode-picker-trigger)
+ *  stands in rather than the click being dropped. Undefined when there is none, or it is disabled now. */
+function liveAnchor(anchor: HTMLElement): HTMLElement | undefined {
+  if (anchor.isConnected) return anchor;
+  const again = anchor.id ? document.getElementById(anchor.id) : null;
+  return again instanceof HTMLElement && !(again instanceof HTMLButtonElement && again.disabled) ? again : undefined;
+}
 function closeModelPicker(): void { cancelPendingMenu(); const close = modelPickerCleanup; modelPickerCleanup = undefined; close?.(); }
 function closeProjectPicker(): void { cancelPendingMenu(); const close = projectPickerCleanup; projectPickerCleanup = undefined; close?.(); }
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
@@ -1715,7 +1858,11 @@ function loadModels(id: ProviderId): Promise<ProviderModel[]> {
     : call<ProviderModel[]>('list_provider_models', { provider: id });
   const pending = request.then(models => {
     if (modelCatalogs.get(id)?.pending === pending) {
-      const entry = provider(id); if (entry) entry.models = models;
+      const entry = provider(id);
+      if (entry) {
+        entry.models = models;
+        if (providersKnown) keepProviderCatalog(state.providers);
+      }
       if (session()?.provider === id) refreshModelLabels();
       else refreshTeamProgress();
     }
@@ -1864,7 +2011,7 @@ function renderNavigation(): void {
     const projectLabel = `<span class="task-project">${escape(p?.name ?? 'Project')}</span>`;
     // Row actions sit beside the row's button (buttons cannot nest), over its right edge. They
     // are not Tab stops: ⌘↩ completes and the menu key or ⇧F10 opens the menu.
-    const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSessions.has(s.id);
+    const title = escape(s.title), id = escape(s.id), busy = isRunning(s.id) || configuringSession(s.id);
     const tick = busy ? '' : `<button class="task-action task-check${done ? ' checked' : ''}" data-action="${done ? 'sidebar-reopen' : 'sidebar-complete'}" data-task="${id}" tabindex="-1" aria-label="${done ? 'Reopen' : 'Settle'}: ${title}" title="${done ? 'Reopen task' : 'Settle task'}">${icon('check')}</button>`;
     // Delete and the rest sit in the row's menu.
     const extra = `<button class="task-action task-more" data-action="sidebar-more" data-task="${id}" tabindex="-1" aria-haspopup="menu" aria-label="Task actions: ${title}" title="Task actions">${icon('more')}</button>`;
@@ -2691,7 +2838,7 @@ function messageHtml(m: Message, afterTrace = false, actions = true, thread = sh
   if (m.role === 'system') return accountSwitchHtml(m) ?? `<p class="message-note">${escape(m.content)}</p>`;
   const isUser = m.role === 'user';
   const author = historicalProvider(m, thread.messages, thread.provider);
-  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong>${isUser ? 'You' : escape(provider(author)?.name || 'Agent')}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
+  return `<article class="message ${isUser ? 'user-message' : 'agent-message'}${afterTrace && !isUser ? ' after-trace' : ''}" data-message-id="${m.id}"><div class="message-meta"><span class="message-avatar ${isUser ? 'user-avatar' : ''}">${isUser ? 'Y' : providerLogo(author)}</span><strong${isUser ? '' : ` data-author="${escape(author)}"`}>${isUser ? 'You' : escape(authorName(author))}</strong><time>${formatTime(m.createdAt)}</time></div><div class="message-content ${isUser ? '' : 'markdown'}" ${isUser ? '' : `data-markdown="${m.id}"`}>${isUser ? scheduledMark(m.content) + userContent(m.content, m.id) : escape(m.content)}</div>${isUser && m.id < 0 ? steerStateHtml(m) : ''}${actions ? messageActionsHtml(m.sessionId, m.id, m.id > 0 && (isUser || m.role === 'assistant'), isUser && m.id > 0) : ''}</article>`;
 }
 // Context appended at send time (files, documents, folders, GitHub, browser, images) shows as
 // read-only chips under what you said; each opens its attachment (see message-attachments.ts).
@@ -2808,7 +2955,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   let parts = streamParts.get(region);
   if (region.dataset.sessionId !== sessionId || !parts || !region.contains(parts.output)) {
     const thinkingHtml = `<details class="thinking-block" hidden><summary class="tool-group-summary"><span class="tool-group-label">Thinking</span>${icon('chevron')}</summary><div class="tool-group-body thinking-text"></div></details>`;
-    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong>${escape(provider()?.name || 'Agent')}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
+    const liveMessageHtml = `<article class="message agent-message live-message" hidden><div class="message-meta"><span class="message-avatar">${providerLogo(harness)}</span><strong data-author="${escape(harness)}">${escape(authorName(harness))}</strong><span class="streaming-label">Generating</span></div><div class="message-content streaming-content live-text"></div>${messageActionsHtml(state.sessionId, 'live', false)}</article>`;
     const trace = (meta = '', before = '') => activityHtml(current.turnKey, '', `${before}<div class="live-tools"></div><div class="live-status"></div>`, { live: true, meta });
     const earlier = main ? current.earlier?.turn : undefined;
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
@@ -3516,8 +3663,10 @@ const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="cu
  * not that one: the old code wrote the height and then read the box back to decide the overflow switch, so every keystroke
  * laid the text out twice. It now takes the overflow from the same measurement, and a call whose text is already fitted
  * (the resizePrompt() that follows a queued message, a redraw between keystrokes) returns without writing and without
- * laying anything out. A keystroke is not one of those: no focus path calls resizePrompt, and a keystroke's own call always
- * sees a value the memo has not fitted yet, so typing measures exactly once.
+ * laying anything out. A keystroke is not one of those, but it rarely needs the box released (fitTyped): one line of plain
+ * text at a known width has the one-line fit's height (measured on a canvas, no layout), and text added at the end can only
+ * grow the box, which its scrollHeight at the current height shows without a write. Only a deletion or an edit inside
+ * multi-line text releases the box and measures, and every path writes the height only when it changes.
  * The text is not the fit's only input though: how many lines it wraps to depends on the width it wraps at, and the prompt
  * is a column of a resizable pane beside a send control that is not one width: 62x36 for Send and Stop
  * (redesign/conversation.css sizes `.composer-pill>.send-button` 62x36, overriding the 28x28 `--control` square in
@@ -3540,12 +3689,25 @@ const GAUGE_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="cu
  * is only a few lines down: a const or let declared below its function's first caller leaves a window where a call (a
  * redraw, a future top-level one) throws instead of returning. */
 const PROMPT_MAX_HEIGHT = 180;
-/** Everything the fitted height depends on that can change without the text changing: the box's row count and its height
- *  limits. `rows` is an integer, the limits a serialization of the two computed lengths. */
-type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; limits: string };
+/** Everything the fitted height depends on that can change without the text changing: the box's row count and its
+ *  computed metrics (height limits and font, `promptMetrics`), the width it was fitted at (-1 when unknown) and the
+ *  text's natural height (scrollHeight with the box released). */
+type PromptFit = { prompt: HTMLTextAreaElement; value: string; rows: number; compact: string; limits: string; width: number; natural: number };
 let promptFit: PromptFit | undefined;
+/** The fit of any one-line text in this box at this width, rows and metrics: every one-line text needs the same height. */
+type PromptOneLine = { prompt: HTMLTextAreaElement; rows: number; limits: string; width: number; natural: number };
+let promptOneLine: PromptOneLine | undefined;
 let promptBoxWidth = -1;
 let promptObserved: HTMLTextAreaElement | null = null;
+/** The prompt's last computed metrics (`promptMetrics`): a keystroke reuses them instead of resolving styles. Forgotten on
+ *  every composer render, a resize, an interface-scale, theme or palette change, voice-compact changes and when web fonts load. */
+let promptMetricsCache: { prompt: HTMLTextAreaElement; compact: string; metrics: PromptMetrics } | undefined;
+/** Voice-compact state on `#composer` (`data-voice-compact` + `--voice-prompt-height`), read without layout or style resolution. */
+function promptCompactState(prompt: HTMLTextAreaElement): string {
+  const composer = prompt.form;
+  if (!composer?.hasAttribute('data-voice-compact')) return '';
+  return `1|${composer.style.getPropertyValue('--voice-prompt-height')}`;
+}
 const promptResize = new ResizeObserver(entries => {
   const width = entries.at(-1)?.contentRect.width ?? 0;
   // No box to fit (a view without a composer, the prompt hidden or collapsed): forget the width, so the width it comes back
@@ -3556,7 +3718,7 @@ const promptResize = new ResizeObserver(entries => {
   // An empty prompt is one line at any width, so a width change must not lay it out. The first
   // character still measures, at the width just recorded.
   const current = promptObserved;
-  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && current.style.height) return;
+  if (current && current.value === '' && promptFit?.prompt === current && promptFit.rows === current.rows && promptFit.compact === promptCompactState(current) && current.style.height) return;
   resizePrompt(true);
 });
 // Created once, never per render, and watching the prompt itself: its own inline size is exactly the quantity the fit
@@ -3575,41 +3737,102 @@ function watchPrompt(prompt: HTMLTextAreaElement | null): void {
 function resizePrompt(remeasure = false): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   watchPrompt(prompt);
-  if (!prompt) { promptFit = undefined; return; }
+  if (!prompt) { promptFit = undefined; promptOneLine = undefined; promptMetricsCache = undefined; return; }
+  if (remeasure) promptMetricsCache = undefined;
   const fit = promptFit?.prompt === prompt ? promptFit : undefined;
+  const compact = promptCompactState(prompt);
   // An empty prompt is one line at any width (docs/agent-reference.md). Every composer render asks, and resolving
   // min/max height here would restyle the page on each one, so an empty box that is already fitted returns before that
   // read. `rows` stays in the key: the template copies its row count onto the reused textarea. Interface scale passes
   // `remeasure` and refits, because the line height changed even though the width did not.
-  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && prompt.style.height) return;
-  // The same text, the same rows and the same height limits in a box that is already fitted, at a width promptResize has
-  // accounted for, needs the height it has: this call writes nothing and lays nothing out. `value` and `rows` are a string
-  // and an integer, so a keystroke short-circuits on the value before the only read here is reached, and a redraw that
-  // changed the row count or the limits re-fits instead of trusting the last fit.
-  if (!remeasure && fit && fit.value === prompt.value && prompt.style.height && fit.rows === prompt.rows && fit.limits === promptHeightLimits(prompt)) return;
+  if (!remeasure && fit && prompt.value === '' && fit.value === '' && fit.rows === prompt.rows && fit.compact === compact && prompt.style.height) return;
+  // The same text, the same rows and the same metrics in a box that is already fitted, at a width promptResize has
+  // accounted for, needs the height it has: this call writes nothing and lays nothing out. A keystroke changed the value,
+  // so it goes to fitTyped(), which writes the height only when it changes and, for one line of plain text at a known
+  // width, reads no layout at all.
+  if (!remeasure && fit && prompt.style.height && fit.rows === prompt.rows) {
+    const metrics = promptMetrics(prompt);
+    if (fit.limits === metrics.key && (fit.value === prompt.value || fitTyped(prompt, fit, metrics))) return;
+  }
   prompt.style.height = 'auto';
   const natural = prompt.scrollHeight;
   // A pane that is not laid out reports no content height: forget the fit and the width it was taken at, so the next layout
   // — the pane shown again, or the prompt's observer seeing it at a real width — measures instead of trusting it.
-  if (!natural) { promptFit = undefined; promptBoxWidth = -1; return; }
-  const height = Math.min(natural, PROMPT_MAX_HEIGHT);
-  prompt.style.height = `${height}px`;
+  if (!natural) { promptFit = undefined; promptOneLine = undefined; promptBoxWidth = -1; return; }
+  applyPromptHeight(prompt, natural);
+  // Laid out already: fresh metrics cost no extra style pass here, and keep the cache honest.
+  const metrics = promptMetrics(prompt, true);
+  promptFit = { prompt, value: prompt.value, rows: prompt.rows, compact, limits: metrics.key, width: promptBoxWidth, natural };
+  if (promptBoxWidth > 0 && oneLineText(prompt.value, metrics.font, promptBoxWidth)) promptOneLine = { prompt, rows: prompt.rows, limits: metrics.key, width: promptBoxWidth, natural };
+}
+/** Writes the height (and the overflow switch) for a natural height, each only when it changes. */
+function applyPromptHeight(prompt: HTMLTextAreaElement, natural: number): void {
+  const height = `${Math.min(natural, PROMPT_MAX_HEIGHT)}px`;
+  if (prompt.style.height !== height) prompt.style.height = height;
   // Scroll only past the cap; a pixel of rounding at rest must not show a scroll bar. At any height the box scrolls
   // exactly when the text is taller than it, so this is the same test, one measurement cheaper.
-  const overflow = natural > height + 1 ? 'auto' : 'hidden';
+  const overflow = natural > Math.min(natural, PROMPT_MAX_HEIGHT) + 1 ? 'auto' : 'hidden';
   if (prompt.style.overflowY !== overflow) prompt.style.overflowY = overflow;
-  promptFit = { prompt, value: prompt.value, rows: prompt.rows, limits: promptHeightLimits(prompt) };
 }
-/** The fitted height also depends on the box's own limits, and they can change without the text or the width changing (a
- *  rule above it in the cascade, a unit change). Read once where the answer is decided or recorded, never per keystroke. */
-function promptHeightLimits(prompt: HTMLTextAreaElement): string {
+/** A changed value in a box fitted at the same rows and metrics, without releasing its height. One line of plain text at
+ *  the width the one-line fit was taken at needs that fit's height (canvas-measured, no layout). Text added at the end
+ *  only adds lines: past the cap nothing changes, otherwise the box's scrollHeight read at its current height — the layout
+ *  the keystroke needs anyway, with nothing written before it — says whether it grew. Anything else (a deletion, an edit
+ *  inside multi-line text, an unknown width) returns false for the full measurement. */
+function fitTyped(prompt: HTMLTextAreaElement, fit: PromptFit, metrics: PromptMetrics): boolean {
+  const value = prompt.value, width = promptBoxWidth, one = promptOneLine;
+  if (width <= 0) return false;
+  if (one && one.prompt === prompt && one.rows === prompt.rows && one.limits === metrics.key && Math.abs(one.width - width) < .5 && oneLineText(value, metrics.font, width)) {
+    applyPromptHeight(prompt, one.natural);
+    promptFit = { ...fit, value, width, natural: one.natural };
+    return true;
+  }
+  if (Math.abs(fit.width - width) >= .5 || value.length <= fit.value.length || !value.startsWith(fit.value)) return false;
+  if (fit.natural > PROMPT_MAX_HEIGHT + 1) { promptFit = { ...fit, value }; return true; }
+  const scrolled = prompt.scrollHeight;
+  if (!scrolled) return false;
+  // Laid out already by the read above: the box's own height costs nothing more.
+  const natural = scrolled > prompt.clientHeight ? scrolled : fit.natural;
+  if (natural !== fit.natural) applyPromptHeight(prompt, natural);
+  promptFit = { ...fit, value, natural };
+  return true;
+}
+/** The computed styles the fit depends on besides text and width: the height limits and, when the canvas can measure
+ *  the text the way the box lays it out, the font (empty otherwise). One getComputedStyle, no layout. */
+type PromptMetrics = { key: string; font: string };
+function promptMetrics(prompt: HTMLTextAreaElement, fresh = false): PromptMetrics {
+  const compact = promptCompactState(prompt);
+  if (!fresh && promptMetricsCache?.prompt === prompt && promptMetricsCache.compact === compact) return promptMetricsCache.metrics;
+  const metrics = readPromptMetrics(prompt, compact);
+  promptMetricsCache = { prompt, compact, metrics };
+  return metrics;
+}
+function readPromptMetrics(prompt: HTMLTextAreaElement, compact: string): PromptMetrics {
   const style = getComputedStyle(prompt);
-  return `${style.minHeight}|${style.maxHeight}`;
+  const plain = style.letterSpacing === 'normal' && style.wordSpacing === '0px' && style.textTransform === 'none' && style.textIndent === '0px' && (style.fontStretch === '100%' || style.fontStretch === 'normal');
+  const font = plain ? `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}` : '';
+  return { key: `${compact}|${style.minHeight}|${style.maxHeight}|${style.lineHeight}|${font}`, font };
+}
+/** Latin text with no line breaks or tabs, whose glyphs come from the box's own font (no emoji or fallback fonts that
+ *  could change a line's height). Longer text always takes the measured path. */
+const ONE_LINE_PLAIN = /^[\x20-\x7e\u00a0-\u024f]{0,400}$/;
+let promptCanvas: { context: CanvasRenderingContext2D; font: string } | null | undefined;
+/** Whether `text` stays on one line in a box `width` wide, with a margin for the canvas and the layout rounding apart. */
+function oneLineText(text: string, font: string, width: number): boolean {
+  if (!text) return true;
+  if (!font || !ONE_LINE_PLAIN.test(text)) return false;
+  if (promptCanvas === undefined) { const context = document.createElement('canvas').getContext('2d'); promptCanvas = context ? { context, font: '' } : null; }
+  if (!promptCanvas) return false;
+  if (promptCanvas.font !== font) { promptCanvas.context.font = font; promptCanvas.font = font; }
+  return promptCanvas.context.measureText(text).width + Math.max(8, width * .02) < width;
 }
 // An interface-size change can leave the prompt's box the same width and still change how the text wraps (the preview scales
 // the root font while the actions keep their px widths), so the observer above stays silent and the fit has to be re-taken
 // from the event.
 window.addEventListener('pandacode-ui-scale-change', () => resizePrompt(true));
+const forgetPromptMetrics = () => { promptMetricsCache = undefined; };
+for (const change of ['resize', 'pandacode-theme-change', 'pandacode-palette-change']) window.addEventListener(change, forgetPromptMetrics);
+document.fonts?.addEventListener('loadingdone', forgetPromptMetrics);
 function renderComposer(): void {
   refreshTeamProgress();
   syncProgressPip();
@@ -3679,7 +3902,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
   $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
-  renderApprovalBar(); renderBotFailover(); syncOrchestration(); resizePrompt();
+  renderApprovalBar(); renderBotFailover(); syncOrchestration(); promptMetricsCache = undefined; resizePrompt();
   trayStateChanged();
   $('#transcript').toggleAttribute('data-running', running);
   void github.status(s.projectId);
@@ -3744,7 +3967,9 @@ function renderComposer(): void {
 /** Steer with nothing typed stays pressable (it focuses the prompt) but says it has nothing to send. */
 function syncSteerAvailability(): void {
   const steer = document.querySelector<HTMLElement>('#composer-area .steer-button'), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (steer && prompt) steer.setAttribute('aria-disabled', String(!prompt.value.trim()));
+  if (!steer || !prompt) return;
+  const disabled = String(!prompt.value.trim());
+  if (steer.getAttribute('aria-disabled') !== disabled) steer.setAttribute('aria-disabled', disabled);
 }
 document.addEventListener('input', event => { if ((event.target as Element | null)?.id === 'prompt') syncSteerAvailability(); });
 /** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
@@ -3844,21 +4069,24 @@ async function openHubTask(id: string): Promise<void> {
  * request or issue, titled, with the prompt filled in and sent when asked. Mentions like `#128`
  * attach the item's content as GitHub context once the project's GitHub status is known. */
 async function startHubTask({ projectId, prompt, title, link, send: start }: { projectId: string; prompt: string; title?: string; link?: TaskLink; send: boolean }): Promise<void> {
-  await github.status(projectId);
-  await createTask(projectId);
-  const task = session();
-  if (!task || task.projectId !== projectId) return;
-  const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
-  if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
-  if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
-  renderNavigation(); renderHeader();
-  const field = document.querySelector<HTMLTextAreaElement>('#prompt');
-  if (!field || field.dataset.sessionId !== task.id || !voiceDictation.prepareSubmit()) return;
-  field.value = prompt;
-  field.dispatchEvent(new Event('input', { bubbles: true }));
-  field.focus();
-  field.setSelectionRange(prompt.length, prompt.length);
-  if (start) await send();
+  // Keep creation, linking and sending together so the next action cannot take over this draft.
+  await pressCreation({ key: JSON.stringify(['github', projectId, prompt, title, link, start]), action: 'new-task', work: async () => {
+    await github.status(projectId);
+    const task = await startTask(projectId) ? openedDraft(projectId) : undefined;
+    if (!task) return false;
+    const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
+    if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
+    if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
+    renderNavigation(); renderHeader();
+    const field = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (!field || field.dataset.sessionId !== task.id || !voiceDictation.prepareSubmit()) return false;
+    field.value = prompt;
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    field.focus();
+    field.setSelectionRange(prompt.length, prompt.length);
+    if (start) await send();
+    return true;
+  } });
 }
 function renderSidebarVisibility(): void {
   // The board and the GitHub view are full-width; both hide the task sidebar.
@@ -3931,6 +4159,7 @@ function setWorkspaceView(view: WorkspaceView): void {
   state.view = view; localStorage.setItem('pandacode.view', view);
   state.boardPanel = false;
   inspectorSuppressed = view !== 'conversation';
+  if (view === 'conversation') state.inspector = inspectorChosen && !matchMedia('(max-width: 920px)').matches;
   renderInspector();
   render();
   // The chosen view rises into place; board cards arrive as a short cascade (the pane does not also fade, or the two multiply).
@@ -3967,12 +4196,16 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   let saved: Session;
   if (id) saved = await call<Session>('update_task_details', { sessionId: id, title, description });
   else {
-    const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed) ?? state.providers.find(p => p.installed) ?? state.providers[0];
+    const harness = pickHarness(await providersForChoice());
     if (!harness) throw new Error('Open Settings to check your installed agents.');
+    // Read before the await: the real list may land while the task is being created.
+    const provisional = !providersKnown;
     saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
+    noteProvisional(saved, provisional);
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
   if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved;
+  checkProvisionalTasks();
   if (saved.id === state.sessionId) fullTaskDescription = { id: saved.id, value: saved.taskDescription ?? '' };
   const current = form.isConnected && document.querySelector<HTMLDialogElement>('#dialog')!.open && generation === state.generation;
   if (current) closeModal();
@@ -3986,13 +4219,13 @@ async function changeBoardStage(stage: 'review' | 'completed'): Promise<void> {
 /** Settle or reopen any task. Settling a worktree task first offers to remove its clean checkout
  * (unless `offer` is false: the caller already dealt with it). */
 async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Promise<void> {
-  if (isRunning(s.id) || configuringSessions.has(s.id)) return;
+  if (isRunning(s.id) || configuringSession(s.id)) return;
   if (stage === 'completed' && offer && s.worktreePath) {
     const selected = s.id === state.sessionId;
     const decision = await worktrees.cleanupOffer(s, 'complete');
     if (!decision.proceed) return;
     if (decision.remove) await worktrees.remove(s);
-    if (selected ? session()?.id !== s.id : !state.sessions.some(task => task.id === s.id) || isRunning(s.id)) return;
+    if (selected ? session()?.id !== s.id : !state.sessions.some(task => task.id === s.id) || isRunning(s.id) || configuringSession(s.id)) return;
   }
   configuringSessions.add(s.id);
   try {
@@ -4009,14 +4242,46 @@ let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
-  if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || configuringSessions.has(id)) return;
-  startingBoardTasks.add(id); configuringSessions.add(id);
+  if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || taskBusyConfiguring(id)) return;
+  startingBoardTasks.add(id);
+  let locked = false, started = false;
   try {
+    if (!s.remoteDevice && (provisionalTasks.has(id) || provisionalCorrections.has(id))) {
+      await knownProviders();
+      while (explicitHarnessSaves.has(id) || provisionalCorrections.has(id) || (providersKnown && provisionalTasks.has(id))) {
+        const save = explicitHarnessSaves.get(id);
+        if (save) { await save.catch(() => undefined); continue; }
+        const pending = provisionalCorrections.get(id);
+        let outcome: 'ok' | 'missing' | 'stale';
+        if (pending) {
+          outcome = await pending;
+        } else {
+          const live = state.sessions.find(task => task.id === id);
+          if (!live || deletedSessions.has(id) || live.lastPromptAt != null || isRunning(id)) {
+            provisionalTasks.delete(id);
+            return;
+          }
+          outcome = await correctProvisionalTask(live);
+        }
+        if (outcome === 'missing') {
+          const live = state.sessions.find(task => task.id === id);
+          if (live && live.id === state.sessionId) showMissingHarness(live);
+          notify('Open Settings to check your installed agents.');
+          return;
+        }
+        if (outcome === 'stale' && !explicitHarnessSaves.has(id)) return;
+      }
+    }
+    const eligible = state.sessions.find(task => task.id === id);
+    if (!eligible || deletedSessions.has(id) || eligible.archived || taskStage(eligible) === 'completed' || isRunning(id) || finishingStreams.has(id) || taskBusyConfiguring(id)) return;
+    configuringSessions.add(id); locked = true;
     if (state.sessionId !== id || !state.boardPanel) await selectSession(id);
-    const selected = state.sessions.find(task => task.id === id) ?? s;
+    const selected = state.sessions.find(task => task.id === id) ?? eligible;
+    if (deletedSessions.has(id) || selected.archived || taskStage(selected) === 'completed' || isRunning(id)) return;
     const text = selected.taskDescription?.trim() || selected.title;
     selected.lastPromptAt = Date.now(); stream(id).lastPromptAt = selected.lastPromptAt;
     stream(id).status = 'Starting agent'; selected.status = 'running'; selected.taskStage = 'in_progress'; selected.completedAt = null;
+    started = true;
     if (state.sessionId === id) {
       state.messages = [...state.messages, { id: transientId--, sessionId: id, role: 'user', content: text, createdAt: Date.now() }];
       render();
@@ -4025,15 +4290,20 @@ async function startBoardTask(id: string): Promise<void> {
     const team = await loadTeam(id) && !selected.remoteDevice;
     await call(team ? 'architect_start' : 'start_task', { sessionId: id, ...(team ? { text } : {}) });
   } catch (error) {
-    state.streams.delete(id);
-    await reloadSessions();
-    const generation = state.generation;
-    if (id === state.sessionId) {
-      const page = await latestMessagePage(id);
-      if (id === state.sessionId && generation === state.generation) { setMessagePage(page); render(); }
+    if (started) {
+      state.streams.delete(id);
+      await reloadSessions();
+      const generation = state.generation;
+      if (id === state.sessionId) {
+        const page = await latestMessagePage(id);
+        if (id === state.sessionId && generation === state.generation) { setMessagePage(page); render(); }
+      }
     }
     throw error;
-  } finally { startingBoardTasks.delete(id); configuringSessions.delete(id); }
+  } finally {
+    startingBoardTasks.delete(id);
+    if (locked) configuringSessions.delete(id);
+  }
 }
 
 function render(): void { renderNavigation(); renderHeader(); renderTranscript(); renderComposer(); }
@@ -4242,6 +4512,7 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
 function selectSession(id: string, focusComposer = false): Promise<void> {
+  state.drafts.flush();
   if (id !== state.sessionId) voiceDictation.detach();
   return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
 }
@@ -4354,7 +4625,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
   // Resolve its display name in place, without delaying the task or replacing input.
-  if (provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  if (providersKnown && provider(details.provider)?.installed) void loadModels(details.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   if (generation !== state.generation) return;
   await refreshInspectorIfStale(); renderHeader();
@@ -4419,6 +4690,7 @@ function removeDeletedSessions(ids: string[]): void {
   terminalPanel.forget(ids);
   const removed = new Set(ids);
   for (const id of removed) {
+    provisionalTasks.delete(id);
     deletedSessions.add(id); writeLink(localStorage, id, null);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
@@ -4531,7 +4803,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
     case 'subagents': { const trigger = document.querySelector<HTMLButtonElement>('#agents-toggle:not([hidden])'); if (trigger) trigger.click(); else modal('Subagents', '<p class="dialog-description">No subagents have been reported for this task yet.</p>'); break; }
     case 'mention':
       if (argumentsText) { await projectFileText(task, argumentsText); if (task.id === state.sessionId) attachFile(argumentsText); }
-      else { state.inspector = true; state.inspectorTab = 'files'; renderInspector(); }
+      else { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; renderInspector(); }
       break;
     case 'cd': {
       if (!argumentsText) { showOpenProject(); break; }
@@ -4558,7 +4830,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       if (prompt) { prompt.value = '/'; prompt.focus(); prompt.setSelectionRange(1, 1); prompt.dispatchEvent(new Event('input', { bubbles: true })); }
       break;
     }
-    case 'diff': state.inspector = true; state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
+    case 'diff': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
     case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
       if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
@@ -4878,7 +5150,7 @@ async function dispatchQueue(id: string): Promise<void> {
   // The open thread's team may not be known yet: like sendDraft, wait for its load (openThread dispatches again then),
   // so a team thread's message never goes out as a plain one.
   if (id === state.sessionId && threadLoading()) return;
-  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSessions.has(id) || task.archived) return;
+  if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSession(id) || task.archived) return;
   if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
@@ -5063,19 +5335,65 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
+/** Explicit picker saves include their wait behind a provisional correction. */
+const explicitHarnessSaves = new Map<string, Promise<void>>();
+/** What Enter submitted: the thread, its text and its attachments as they were when pressed. A send that waits (harness
+ *  save, provisional correction, Council) goes only if all three are unchanged after the wait; an edit meanwhile cancels
+ *  it and leaves the edited draft and attachments alone, and a later Enter submits the edit instead. */
+type SendIntent = { sessionId: string; draft: string; items: unknown[] };
+/** Threads with a send waiting on a harness save; a second Enter replaces the intent it will check. */
+const harnessWaitingSends = new Map<string, SendIntent>();
+const composerItems = (id: string): unknown[] => [...state.attachments, ...(state.browserAttachments.get(id) ?? []), ...attachments.list(id), ...(state.moodboardAttachments.get(id) ?? [])];
+function sendIntent(id: string): SendIntent {
+  return { sessionId: id, draft: document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '', items: composerItems(id) };
+}
+function intentHolds(intent: SendIntent): boolean {
+  if (state.sessionId !== intent.sessionId || (document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '') !== intent.draft) return false;
+  const items = composerItems(intent.sessionId);
+  return items.length === intent.items.length && items.every((item, index) => item === intent.items[index]);
+}
+function saveExplicitHarness(id: string, save: () => Promise<void>): Promise<void> {
+  const pending = Promise.resolve().then(save);
+  explicitHarnessSaves.set(id, pending);
+  void pending.finally(() => { if (explicitHarnessSaves.get(id) === pending) explicitHarnessSaves.delete(id); }).catch(() => undefined);
+  return pending;
+}
 async function send(): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await sendDraft();
 }
 async function sendDraft(): Promise<void> {
+  const waitingFor = state.sessionId, generation = state.generation;
+  if (waitingFor && teamToggles.has(waitingFor)) return;
+  let intent = waitingFor ? sendIntent(waitingFor) : undefined;
+  if (waitingFor && harnessWaitingSends.has(waitingFor)) { if (intent) harnessWaitingSends.set(waitingFor, intent); return; }
+  if (waitingFor && intent && (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor))) {
+    harnessWaitingSends.set(waitingFor, intent);
+    try {
+      // The explicit choice can arrive while the correction is saving. Recheck after each await.
+      while (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
+        const outcome = await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
+        if (state.sessionId !== waitingFor || state.generation !== generation) return;
+        if (outcome === 'stale' && !explicitHarnessSaves.has(waitingFor)) return;
+        if (outcome === 'missing' && !explicitHarnessSaves.has(waitingFor)) {
+          const task = session();
+          if (task) showMissingHarness(task);
+          return;
+        }
+      }
+      intent = harnessWaitingSends.get(waitingFor) ?? intent;
+    } catch { return; } // The failed save reports its error; keep the draft for a deliberate retry.
+    finally { harnessWaitingSends.delete(waitingFor); }
+    if (!intentHolds(intent)) return;
+  }
   if (btwFromComposer()) return;
-  const draft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
+  const draft = intent?.draft ?? document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
   const hasBotAttachments = Boolean(bot && (state.attachments.length || state.browserAttachments.get(s.id)?.length || attachments.list(s.id).length || state.moodboardAttachments.get(s.id)?.some(item => item.projectId === s.projectId)));
   if (councilFirstSends.has(s.id)) return;
-  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || configuringSessions.has(s.id)) return;
+  if ((!text && !hasBotAttachments) || s.archived || taskStage(s) === 'completed' || isRunning() || finishingStreams.has(s.id) || threadLoading() || state.messagesError || taskBusyConfiguring(s.id)) return;
   clearComposerNote(s);
   if (remoteOffline(s)) { renderComposer(); return; }
   const fresh = !s.remoteDevice && newTaskView();
@@ -5086,13 +5404,21 @@ async function sendDraft(): Promise<void> {
   clearRemoteStart(s.id);
   const cloud = !s.remoteDevice && !s.cloud && newTaskView() ? cloudTargets.find(item => item.ready && item.provider === cloudProvider(remoteChoice)) : undefined;
   if (cloud) return sendCloud(s, cloud, draft, text);
+  // A deliberate retry joins the same wait as a Send pressed during the automatic save.
+  if (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id)) {
+    run(correctProvisionalTask(s));
+    await sendDraft();
+    return;
+  }
   // "Turn on for new threads": a local first send starts the team and Council before it goes. The guard holds a second
   // Enter meanwhile; a failure is shown, and the message still goes.
   if (!s.remoteDevice && !state.messages.length && !bot) {
     councilFirstSends.add(s.id);
     try { const failed = await council.enableForNewThread(s.id); if (failed) notifyError(`Council did not turn on: ${failed}`); }
     finally { councilFirstSends.delete(s.id); }
-    if (state.sessionId !== s.id) return;
+    if (state.sessionId !== s.id || (intent && !intentHolds(intent))) return;
+    if (provisionalCorrections.has(s.id) || explicitHarnessSaves.has(s.id) || (!s.remoteDevice && providersKnown && provisionalTasks.has(s.id))) { await sendDraft(); return; }
+    if (taskBusyConfiguring(s.id)) return;
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
@@ -5237,7 +5563,7 @@ const btwPanel = new BtwPanel({
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
     // A pick made while /btw creates the side thread could miss it, so the pickers wait.
-    const running = isRunning(side.id), busy = configuringSessions.has(side.id) || btwSending.has(state.sessionId);
+    const running = isRunning(side.id), busy = configuringSession(side.id) || btwSending.has(state.sessionId);
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
       : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
@@ -5275,7 +5601,7 @@ const btwPanel = new BtwPanel({
   command: (side, text) => btwSlash(side, text, document.querySelector('.btw-panel .btw-toolbar')),
   openFull: sideId => run(selectSession(sideId, true)),
   newThread: () => { writeLink(localStorage, state.sessionId, null); renderInspector(); btwPanel.focus(); },
-  close: () => { state.inspector = false; renderInspector(); },
+  close: () => { state.inspector = chooseInspector(false); renderInspector(); },
   insertMain: text => {
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (!prompt) return;
     prompt.value = prompt.value.trim() ? `${prompt.value.trimEnd()}\n\n${text}` : text; state.drafts.set(state.sessionId, prompt.value); resizePrompt();
@@ -5329,7 +5655,7 @@ function btwLink(mainId: string): BtwLink | undefined {
   const side = link && state.sessions.find(task => task.id === link.sideId);
   return side && !side.archived ? link : undefined;
 }
-function openBtw(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
+function openBtw(): void { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'btw'; state.selectedKind = ''; renderInspector(); }
 /** Why this task cannot open a side thread, if it cannot. */
 function btwRefusal(main: Session): string {
   if (main.remoteDevice || main.cloud) return 'Side threads run on this computer, and this task runs elsewhere.';
@@ -5555,6 +5881,9 @@ function loadWakeExchange(sessionId: string, current: Stream): void {
 }
 /** `MESSAGE_LIMIT` in lib.rs. */
 const MESSAGE_LIMIT = 16 * 1024 * 1024;
+/** Agent events that start or end a run: the Files poll takes the quick rate while the open thread's agent works. A tool
+ *  or a turn's changes may have changed files, and also reads them shortly after. */
+const RUN_STATE_EVENTS = new Set<AgentEvent['kind']>(['turn_start', 'status', 'done']);
 function onAgent(event: AgentEvent): void {
   remoteStartAttached(event.sessionId);
   queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
@@ -5581,6 +5910,15 @@ function onAgent(event: AgentEvent): void {
     return;
   }
   onAccountPoolSwitch(event);
+  // The open thread's agent at work: the Files tree and open file follow its edits within a poll tick, input or not.
+  // After this event is handled, so a run it starts already counts as working (isRunning) when the poll picks its rate.
+  if (event.sessionId === state.sessionId) {
+    const tool = event.kind === 'tool' ? event.tool : undefined;
+    const previous = tool && state.streams.get(event.sessionId)?.tools.find(item => item.key === 'tool:' + tool.id)?.content;
+    const stdoutOnly = tool && toolKind(tool.name) === 'shell' && tool.status === 'running' && previous && typeof previous !== 'string' && previous.status === 'running' && previous.name === tool.name && previous.input === tool.input;
+    if (event.kind === 'turn_changes' || event.kind === 'tool' && !stdoutOnly && !['read', 'search', 'web', 'fetch'].includes(toolKind(event.tool?.name ?? event.text))) queueMicrotask(noteFilePollActivity);
+    else if (RUN_STATE_EVENTS.has(event.kind)) queueMicrotask(noteFilePollChange);
+  }
   if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
   if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }
@@ -5733,22 +6071,34 @@ function onAgent(event: AgentEvent): void {
   if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
-async function refreshExplorerFiles(): Promise<void> {
-  if (!project() || session()?.remoteDevice || state.inspectorTab !== 'files' || !state.inspector || state.inspectorLoading) return;
+/** Whether two listings hold the same entries in the same order: the fields `list_files` returns, compared in place, so a
+ *  poll of an unchanged tree builds no strings (it used to JSON.stringify both sides every 2 s). */
+function sameListing(current: FileEntry[] | undefined, next: FileEntry[]): boolean {
+  const before = current ?? [];
+  if (before.length !== next.length) return false;
+  for (let i = 0; i < next.length; i++) {
+    const a = before[i], b = next[i];
+    if (a.name !== b.name || a.path !== b.path || a.isDir !== b.isDir) return false;
+  }
+  return true;
+}
+/** Re-reads the open tree; true when it changed and was redrawn. */
+async function refreshExplorerFiles(): Promise<boolean> {
+  if (!project() || session()?.remoteDevice || state.inspectorTab !== 'files' || !state.inspector || state.inspectorLoading) return false;
   const key = workspaceKey(), context = workspaceContext(), folders = ['', ...state.openFolders];
   const results = await Promise.allSettled(folders.map(path => call<FileEntry[]>('list_files', { ...context, path })));
-  if (key !== workspaceKey()) return;
-  const same = (current: FileEntry[] | undefined, next: FileEntry[]) => JSON.stringify(current ?? []) === JSON.stringify(next);
+  if (key !== workspaceKey()) return false;
   let changed = false;
   results.forEach((result, i) => {
     if (result.status !== 'fulfilled') return;
     if (!folders[i]) {
-      if (!same(state.files, result.value) || state.filesError) { state.files = result.value; state.filesError = ''; changed = true; }
-    } else if (state.openFolders.has(folders[i]) && !same(state.folderFiles.get(folders[i]), result.value)) {
+      if (!sameListing(state.files, result.value) || state.filesError) { state.files = result.value; state.filesError = ''; changed = true; }
+    } else if (state.openFolders.has(folders[i]) && !sameListing(state.folderFiles.get(folders[i]), result.value)) {
       state.folderFiles.set(folders[i], result.value); changed = true;
     }
   });
   if (changed) renderInspector();
+  return changed;
 }
 
 /** A thread switch within the workspace whose status loaded this long ago (ms) reuses it rather than reloading the
@@ -5783,7 +6133,8 @@ async function refreshInspector(): Promise<void> {
   const git = results[0].status === 'fulfilled' ? results[0].value : null;
   state.git = git && state.git && JSON.stringify(git) === JSON.stringify(state.git) ? state.git : git;
   inspectorLoaded = results.every(result => result.status === 'fulfilled') ? { key, at: Date.now() } : undefined;
-  if (state.git) noteChangedPaths(state.git.files.map(file => file.path));
+  // Also what the idle diff preload asks: a project with nothing changed never starts the engine at idle.
+  noteChangedPaths(state.git?.files.map(file => file.path) ?? []);
   state.gitError = results[0].status === 'rejected' ? errorText(results[0].reason) || 'Git status could not be loaded.' : '';
   state.files = results[1].status === 'fulfilled' ? results[1].value : [];
   state.jj = results[2].status === 'fulfilled' ? results[2].value : null;
@@ -5848,8 +6199,8 @@ function syncDesignPanel(): void {
     if (state.inspector && state.inspectorTab === 'design' && !inspectorSuppressed) designPanel.show();
   }).catch(error => { designLoading = undefined; report(error); });
 }
-function openVm(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'vm'; state.selectedKind = ''; renderInspector(); }
-function openSimulator(): void { inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'simulator'; state.selectedKind = ''; renderInspector(); }
+function openVm(userInitiated = false): void { inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'vm'; state.selectedKind = ''; renderInspector(); }
+function openSimulator(userInitiated = false): void { inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'simulator'; state.selectedKind = ''; renderInspector(); }
 function syncBrowserPanel(): void {
   const wanted = state.inspector && state.inspectorTab === 'browser' && !inspectorSuppressed;
   const owner = state.sessionId;
@@ -5884,7 +6235,7 @@ function syncBrowserPanel(): void {
       navigated: url => { if (revision === browserRevision && state.sessionId === owner) state.browserUrl = url; },
       attach: attachBrowserContext,
       test: (url, anchor) => run(openJevTests(url, anchor)),
-      close: () => { state.inspector = false; renderInspector(); },
+      close: () => { state.inspector = chooseInspector(false); renderInspector(); },
     });
     if (!browserWanted || revision !== browserRevision) { await panel.close(); return; }
     browserPanel = panel;
@@ -5900,10 +6251,10 @@ async function performAgentUiAction(request: AgentUiAction): Promise<unknown> {
   await active();
   const { action, args } = request;
   if (action === 'open_task') { await selectSession(String(args.taskId)); return { opened: state.sessionId === args.taskId }; }
-  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); await openFile(String(args.path), 'file'); return { opened: fileTabs.active === args.path }; }
+  if (action === 'open_file') { if (args.view === 'rendered' || args.view === 'raw') setDocumentView(String(args.path), args.view); await openFile(String(args.path), 'file', false, workspaceContext(), false, false); return { opened: fileTabs.active === args.path }; }
   if (action === 'open_terminal') { if (!terminalPanel.open) await toggleTerminal(); return { opened: terminalPanel.open }; }
   if (action === 'run_project') return projectRunner.run(request.requestId, active);
-  if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active); return { opened: true }; }
+  if (action === 'preview_file') { await previewFile(String(args.path), workspaceContext(), active, false); return { opened: true }; }
   if (action === 'open_browser') {
     state.inspector = true; state.inspectorTab = 'browser'; renderInspector();
     await browserLifecycle; await active();
@@ -6060,11 +6411,22 @@ let inspectorDrawn = false, inspectorView: WorkspaceView | undefined;
 let inspectorArmed = false;
 const armInspector = () => { inspectorArmed = true; removeEventListener('pointerdown', armInspector, true); removeEventListener('keydown', armInspector, true); };
 addEventListener('pointerdown', armInspector, true); addEventListener('keydown', armInspector, true);
+/** Runs the Files poll's interval only while the Files tree is open in a shown inspector or a file tab exists. */
+function syncFilePoll(): void {
+  const filesOpen = state.inspector && !inspectorSuppressed && !state.sharedChannelId && state.inspectorTab === 'files';
+  setFilePollMounted(filesOpen || fileTabs.count > 0);
+}
 function renderInspector(): void {
+  drawInspector();
+  syncFilePoll();
+}
+function drawInspector(): void {
   const diffEpoch = ++inspectorDiffEpoch;
   inspectorDiff?.dispose(); inspectorDiff = undefined;
   // A shared channel has no checkout of its own, so the inspector steps aside.
   const visible = state.inspector && !inspectorSuppressed && !state.sharedChannelId;
+  // An empty Changes view or file tree is not file-open intent; actual mounts also warm the engine on demand.
+  if (visible && (state.selectedKind || (state.inspectorTab === 'changes' && state.git?.files.length))) preloadDiffsAfterPaint();
   const inspector = $('#inspector');
   // Opening: the column appears at once and the panel slides in. Closing: the panel fades in its
   // column and the column snaps shut after (`inspector-closed`), so the thread never rewraps under a
@@ -6142,7 +6504,7 @@ function renderInspector(): void {
   if (state.jj?.isRepo && !state.jj.colocated) {
     showJjPanel(target, state.jj, {
       call, notify, notifyError, context: () => workspaceContext(), changed: status => { state.jj = status; },
-      openDiff: (path, patch) => { selectedFileContext = workspaceContext(); state.selectedFile = path; state.selectedContent = patch; state.selectedKind = 'diff'; state.selectedStaged = false; state.filePreviewLoading = false; state.inspector = true; renderInspector(); },
+      openDiff: (path, patch) => { selectedFileContext = workspaceContext(); state.selectedFile = path; state.selectedContent = patch; state.selectedKind = 'diff'; state.selectedStaged = false; state.filePreviewLoading = false; inspectorSuppressed = false; state.inspector = chooseInspector(true); renderInspector(); },
     });
     return;
   }
@@ -6157,21 +6519,21 @@ async function openRunPreview(url: string, context: { projectId: string; session
   if (!current() || !browserPanel) return;
   await browserPanel.navigate(url);
 }
-async function previewFile(path: string, context = workspaceContext(), active?: () => Promise<void>): Promise<void> {
+async function previewFile(path: string, context = workspaceContext(), active?: () => Promise<void>, userInitiated = true): Promise<void> {
   if (!context.projectId) return;
   const request = ++fileRequest, generation = state.generation;
   const file = await call<{ url: string; path: string; name: string }>('prepare_file_preview', { ...context, path });
   await active?.();
   // A slow filesystem lookup must not open a preview over a task selected meanwhile.
   if (request !== fileRequest || generation !== state.generation) return;
-  state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector();
+  inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector();
   await browserLifecycle;
   await active?.();
   if (request !== fileRequest || generation !== state.generation || !browserWanted) return;
   if (!browserPanel) throw new Error('Browser could not be opened.');
   await browserPanel.navigate(file.url);
 }
-async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false): Promise<void> {
+async function openFile(path: string, kind: 'file' | 'diff', staged = false, context = workspaceContext(), source = false, userInitiated = true): Promise<void> {
   const p = project(); if (!p) return;
   if (kind === 'file') {
     if (context.sessionId && context.sessionId !== state.sessionId) await selectSession(context.sessionId);
@@ -6182,7 +6544,7 @@ async function openFile(path: string, kind: 'file' | 'diff', staged = false, con
   }
   const request = ++fileRequest, generation = state.generation; const content = await call<string>('git_diff', { ...context, path, staged }); if (request !== fileRequest || p.id !== state.projectId || generation !== state.generation) return;
   selectedFileContext = { ...context };
-  state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; state.inspector = true; renderInspector();
+  state.selectedFile = path; state.selectedContent = content; state.selectedKind = kind; state.selectedStaged = staged; state.filePreviewLoading = false; inspectorSuppressed = false; state.inspector = userInitiated ? chooseInspector(true) : true; renderInspector();
 }
 function attachFile(path: string): void {
   if (!session()) { notify('Start a task before attaching files.'); return; }
@@ -6280,11 +6642,14 @@ function showOpenProject(forTask = false): void {
   if (forTask && newTaskView()) openingProjectForTask = { id: state.sessionId, generation: state.generation };
 }
 async function changeTaskProject(projectId: string): Promise<void> {
-  const selected = session();
-  if (!selected || !newTaskView() || configuringSessions.has(selected.id)) throw new Error('A project can only be changed before starting the task.');
+  let selected = session();
+  if (!selected || !newTaskView() || taskBusyConfiguring(selected.id)) throw new Error('A project can only be changed before starting the task.');
+  const generation = state.generation;
+  while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+  selected = state.sessions.find(s => s.id === selected!.id);
+  if (!selected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its project.');
   if (selected.worktreePath && selected.projectId !== projectId) throw new Error('A worktree task stays with its original project. Start a new task to use another project.');
   if (selected.projectId === projectId) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
-  const generation = state.generation;
   configuringSessions.add(selected.id);
   try {
     const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
@@ -6310,13 +6675,15 @@ async function changeTaskProject(projectId: string): Promise<void> {
 async function showProjectPicker(anchor: HTMLElement): Promise<void> {
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (projectPickerCleanup) { closeProjectPicker(); return; }
-  const selected = session(); if (!selected || selected.worktreePath || !newTaskView() || configuringSessions.has(selected.id)) return;
+  const selected = session(); if (!selected || selected.worktreePath || !newTaskView() || taskBusyConfiguring(selected.id)) return;
   closeModelPicker();
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openProjectPicker } = await import('./project-picker').finally(release);
-  if (epoch !== menuEpoch || projectPickerCleanup || !anchor.isConnected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView()) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || projectPickerCleanup || !live || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || taskBusyConfiguring(selected.id)) return;
+  anchor = live;
   projectPickerCleanup = openProjectPicker({
     anchor, projects: [{ id: NO_PROJECT, name: 'No project', path: 'Chat in its own folder' }, ...userProjects()], currentProjectId: chatTask(selected) ? NO_PROJECT : selected.projectId,
     onClose: () => { projectPickerCleanup = undefined; },
@@ -6345,7 +6712,7 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
-  const selected = target; if (!selected || configuringSessions.has(selected.id)) return;
+  const selected = target; if (!selected || taskBusyConfiguring(selected.id)) return;
   // A side thread's picker acts on the side thread only, and only while the panel still shows it.
   const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
   if (teams.get(selected.id) && !selected.remoteDevice && !teams.get(selected.id)?.config.auto) { await showArchitectSetup(anchor); return; }
@@ -6356,31 +6723,41 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
-  if (epoch !== menuEpoch || modelPickerCleanup || !anchor.isConnected || !current() || generation !== state.generation || (isRunning(selected.id) && !botNext)) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || modelPickerCleanup || !live || !current() || generation !== state.generation || taskBusyConfiguring(selected.id) || (isRunning(selected.id) && !botNext)) return;
+  anchor = live;
   const device = inPanel ? undefined : composerDevice();
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
+  const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
-    onTeamSelect: async id => {
+    onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       configuringSessions.add(selected.id);
       try {
         const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
+        provisionalTasks.delete(selected.id);
         onArchitect(saved ?? { sessionId: selected.id, removed: true });
         await reloadSessions();
         if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
-    },
-    anchor, providers: device ? [] : state.providers, current: { provider: selected.provider, model: selected.model || 'default', reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
+    }),
+    // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
+    // an empty list or the last launch's (which may name CLIs no longer installed).
+    anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
-    loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : undefined,
+    loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
     recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -6393,8 +6770,11 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       } finally { configuringSessions.delete(selected.id); }
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
-    onSpeedSelect: isBtwDraft(selected) || !['codex', 'claude'].includes(selected.provider) ? undefined : async tier => {
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its speed.');
+    onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
+      if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
@@ -6403,14 +6783,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
         else if (selected.id === state.sessionId) refreshModelLabels();
       } finally { configuringSessions.delete(selected.id); }
     },
-    onSelect: async (providerId, model) => {
+    onSelect: (providerId, model) => saveExplicitHarness(selected.id, async () => {
       if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
-      if (!current() || generation !== state.generation || isRunning(selected.id)) throw new Error('Select the task again to change its model.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
+      const previousProvider = savedSelection().provider;
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.
@@ -6425,16 +6808,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
         const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        provisionalTasks.delete(selected.id);
         const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
-        if (!device && providerId !== selected.provider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
+        if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {
           if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
           localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
         } else localChoice = undefined;
         if (inPanel) { if (current()) btwPanel.harnessChanged(); }
         else if (selected.id === state.sessionId && generation === state.generation) {
-          if (providerId !== selected.provider) {
+          if (providerId !== previousProvider) {
             // The harness change is already durable; a transcript refresh error
             // must not report the selection itself as failed or restore stale controls.
             try {
@@ -6450,8 +6834,9 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
         }
       } finally { configuringSessions.delete(selected.id); }
-    },
+    }),
   });
+  modelPickerCleanup.taskId = selected.id;
 }
 /** Deploy: pick a connected platform, then a new task in this project ships it end to end. */
 async function showDeploy(anchor: HTMLElement): Promise<void> {
@@ -6460,53 +6845,112 @@ async function showDeploy(anchor: HTMLElement): Promise<void> {
   await showChoices(anchor, { title: 'Deploy', width: 300, actions: true, items: deployItems(connections), onSelect: async id => {
     closeChoiceMenu();
     const projectId = state.projectId;
-    await createTask(projectId);
-    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (!prompt || state.projectId !== projectId) return;
-    prompt.value = deployBrief(id as import('./deploy').DeployTarget);
-    await send();
+    // Reuse a same-project New task already opening, as another New task press would.
+    const opening = pressInFlight?.press.key === `task:${projectId}` ? pressInFlight.settled : undefined;
+    // Keep creation and submission in one press: the next platform opens its own draft afterwards.
+    await pressCreation({ key: `deploy:${projectId}:${id}`, action: 'new-task', work: async () => {
+      const draft = (opening ? await opening : await startTask(projectId)) ? openedDraft(projectId) : undefined;
+      const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+      if (!draft || !prompt || prompt.dataset.sessionId !== draft.id) return false;
+      prompt.value = deployBrief(id as import('./deploy').DeployTarget);
+      await send();
+      return true;
+    } });
   } });
 }
 /** Settles once every New task under way has opened its thread (it waits for boot first, then for the session). */
 let taskCreation: Promise<unknown> | undefined;
-function createTask(projectId = state.projectId): Promise<void> {
-  const run = startTask(projectId);
+/* New task and New chat presses. One under way marks its buttons busy (aria-busy, progress cursor) until its draft is
+ * open, so a press made while the harness list or boot is awaited visibly registered. The same press again is the one
+ * under way (no second draft) and settles with it; a different one made meanwhile (New chat while a draft opens,
+ * another project's New task) is kept, only the latest, and runs once the first ends. Each press settles true when its
+ * work opened what it was for, false when it was dropped for a later press or opened nothing, so a caller that acts on
+ * the new thread afterwards (Deploy, a GitHub task) never acts on whatever thread happens to be open. */
+type CreationPress = { key: string; action: 'new-task' | 'new-chat'; work: () => Promise<boolean> };
+let pressInFlight: { press: CreationPress; settled: Promise<boolean> } | undefined;
+let pressQueued: { press: CreationPress; settled: Promise<boolean>; done: (opened: boolean) => void; failed: (error: unknown) => void } | undefined;
+function pressCreation(press: CreationPress): Promise<boolean> {
+  if (pressInFlight) {
+    if (press.key === pressInFlight.press.key) return pressInFlight.settled;
+    if (press.key === pressQueued?.press.key) return pressQueued.settled;
+    pressQueued?.done(false);
+    let done: (opened: boolean) => void = () => {}, failed: (error: unknown) => void = () => {};
+    const settled = new Promise<boolean>((resolve, reject) => { done = resolve; failed = reject; });
+    pressQueued = { press, settled, done, failed }; showCreationBusy();
+    return settled;
+  }
+  // Marked under way before its work starts, so the work's synchronous part already sees its buttons busy.
+  let markDone: (opened: boolean) => void = () => {}, markFailed: (error: unknown) => void = () => {};
+  const settled = new Promise<boolean>((resolve, reject) => { markDone = resolve; markFailed = reject; });
+  pressInFlight = { press, settled }; showCreationBusy();
+  press.work().then(markDone, markFailed).finally(() => {
+    pressInFlight = undefined;
+    const queued = pressQueued; pressQueued = undefined;
+    if (queued) pressCreation(queued.press).then(queued.done, queued.failed); else showCreationBusy();
+  });
+  return settled;
+}
+/** The draft a New task for `projectId` has just opened, if that is what is open now: unsent, idle, in that project. */
+function openedDraft(projectId: string): Session | undefined {
+  const task = session();
+  return task?.draft && task.projectId === projectId && task.lastPromptAt == null && !isRunning(task.id) && !finishingStreams.has(task.id) ? task : undefined;
+}
+function showCreationBusy(): void {
+  for (const action of ['new-task', 'new-chat'] as const) {
+    const busy = pressInFlight?.press.action === action || pressQueued?.press.action === action;
+    document.querySelectorAll<HTMLElement>(`button[data-action="${action}"]`).forEach(button => {
+      if (busy) { button.setAttribute('aria-busy', 'true'); button.style.cursor = 'progress'; }
+      else if (button.hasAttribute('aria-busy')) { button.removeAttribute('aria-busy'); button.style.removeProperty('cursor'); }
+    });
+  }
+}
+// Nothing acts on the chat a New chat opens, so its press only reports that it ran.
+function newChat(): Promise<boolean> { return pressCreation({ key: 'chat', action: 'new-chat', work: () => createChat().then(() => true) }); }
+/** Settles true once a draft for `projectId` is open from this press (see pressCreation), false when it opened none. */
+function createTask(projectId = state.projectId): Promise<boolean> {
+  const run = pressCreation({ key: `task:${projectId}`, action: 'new-task', work: () => startTask(projectId) });
   const tracked: Promise<unknown> = Promise.allSettled([taskCreation, run]).finally(() => { if (taskCreation === tracked) taskCreation = undefined; });
   taskCreation = tracked;
   return run;
 }
-async function startTask(projectId: string): Promise<void> {
+async function startTask(projectId: string): Promise<boolean> {
   if (bootPending) await bootPending.catch(() => undefined);
-  if (creatingTask) return;
+  if (creatingTask) return false;
   const projects = state.projects.filter(p => !isChatProject(p));
   const active = projects.find(p => p.id === projectId)
     ?? projects.find(p => p.id === localStorage.getItem('pandacode.project')) ?? userProjects()[0];
-  if (!active) { notify('Open a project to start a task.'); return; }
+  if (!active) { notify('Open a project to start a task.'); return false; }
   closeModelPicker();
   closeProjectPicker();
   const generation = state.generation;
-  const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
-    ?? state.providers.find(p => p.installed) ?? state.providers[0];
-  if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
-  // (typed text or a worktree) is reopened; from inside one, New task starts another.
-  const current = state.sessionId;
-  leaveDraft('');
-  // A settled draft (its worktree removed) is never reopened.
-  const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
-  if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return; }
+  // Held from before the harness list is awaited until the draft exists: a second New task meanwhile makes no second draft.
   creatingTask = true;
   let created: Session;
   try {
+    const harness = pickHarness(await providersForChoice());
+    if (generation !== state.generation) return false;
+    if (!harness) { notify('Open Settings to check your installed agents.'); return false; }
+    // An untouched draft is replaced so current defaults apply. Coming from elsewhere, a kept draft
+    // (typed text or a worktree) is reopened; from inside one, New task starts another.
+    const current = state.sessionId;
+    leaveDraft('');
+    // A settled draft (its worktree removed) is never reopened.
+    const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
+    if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return true; }
+    const provisional = !providersKnown;
     created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
+    noteProvisional(created, provisional);
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
-  if (generation !== state.generation) { renderNavigation(); return; }
+  checkProvisionalTasks();
+  if (generation !== state.generation) { renderNavigation(); return false; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
+  return true;
 }
 /** A projectless chat: its own folder, the usual harness and model. `from` is a New task moved to No project:
  *  the chat takes over its choices, typed text and attachments, so the draft is left empty and discarded on the way out. */
 async function createChat(from?: Session): Promise<void> {
+  if (bootPending) await bootPending.catch(() => undefined);
   if (creatingTask) return;
   closeModelPicker(); closeProjectPicker();
   const generation = state.generation;
@@ -6516,14 +6960,22 @@ async function createChat(from?: Session): Promise<void> {
     if (state.projectFilter) setProjectFilter('');
     state.query = ''; closeModal(); await selectSession(unused.id, true); return;
   }
-  const harness = state.providers.find(p => p.id === state.defaultProvider && p.installed)
-    ?? state.providers.find(p => p.installed) ?? state.providers[0];
-  if (!harness) { notify('Open Settings to check your installed agents.'); return; }
-  if (!from) leaveDraft('');
+  // Held from before the harness list is awaited until the chat exists: a second click meanwhile makes no second chat.
   creatingTask = true;
   let created: Session;
   try {
+    const harness = pickHarness(await providersForChoice());
+    if (generation !== state.generation) return;
+    if (!harness) { notify('Open Settings to check your installed agents.'); return; }
+    if (from) {
+      while (provisionalCorrections.has(from.id)) await provisionalCorrections.get(from.id)?.catch(() => undefined);
+      if (generation !== state.generation || from.id !== state.sessionId || deletedSessions.has(from.id)) return;
+      from = state.sessions.find(s => s.id === from!.id) ?? from;
+    }
+    if (!from) leaveDraft('');
+    const provisional = from ? provisionalTasks.has(from.id) : !providersKnown;
     created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    noteProvisional(created, provisional);
     if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
@@ -6533,7 +6985,11 @@ async function createChat(from?: Session): Promise<void> {
   } finally { creatingTask = false; }
   // chat_create announces the new row, so the refresh may already have listed it.
   upsertSession(created);
+  checkProvisionalTasks();
   if (from) {
+    // Wait out any correction that started while chat_create/list_projects ran so leaveDraft sees configuringSessions clear.
+    while (provisionalCorrections.has(from.id)) await provisionalCorrections.get(from.id)?.catch(() => undefined);
+    if (generation !== state.generation) { renderNavigation(); return; }
     const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'), open = prompt?.dataset.sessionId === from.id;
     const typed = open ? prompt!.value : state.drafts.get(from.id) ?? '';
     if (typed) state.drafts.set(created.id, typed);
@@ -6564,7 +7020,9 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
   const { openChoiceMenu } = await import('./choice-menu').finally(release);
-  if (epoch !== menuEpoch || generation !== state.generation || !anchor.isConnected) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || generation !== state.generation || !live) return;
+  anchor = live;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
@@ -6573,14 +7031,21 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   } });
 }
 async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
-  const s = target; if (!s || isRunning(s.id) || configuringSessions.has(s.id)) return;
+  const s = target; if (!s || isRunning(s.id) || taskBusyConfiguring(s.id)) return;
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
   await showChoices(anchor, { title: 'Permissions', width: 320, items: modes.map(mode => ({ ...mode, leading: toned(icon(mode.icon), MODE_TONES[mode.id]), selected: s.mode === mode.id })), onSelect: async id => {
-    if (!current() || generation !== state.generation || isRunning(s.id) || configuringSessions.has(s.id)) throw new Error('Select the task again to change its permissions.');
-    const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
-    if (isBtwDraft(s)) { saveBtwDraft(s, { mode: id as Mode }); return; }
+    if (!current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
+    if (isBtwDraft(s)) {
+      const chosen = modes.find(mode => mode.id === id); if (!chosen) throw new Error('Choose an available approval behavior.');
+      saveBtwDraft(s, { mode: id as Mode }); return;
+    }
+    while (provisionalCorrections.has(s.id)) await provisionalCorrections.get(s.id)?.catch(() => undefined);
+    const live = state.sessions.find(item => item.id === s.id);
+    if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
+    const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
+    if (!chosen) throw new Error('Choose an available approval behavior.');
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });
@@ -6607,12 +7072,12 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     { id: 'rename', label: 'Rename task', icon: 'edit' },
     { id: 'jev-tests', label: 'Browser tests with Jev', icon: 'spark' },
     ...jevDecisionsEnabled ? [{ id: 'jev-assist', label: 'Jev assistance', icon: 'spark' }] : [],
-    taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSessions.has(s.id) },
+    taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSession(s.id) },
     ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
-    { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSessions.has(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
+    { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSession(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: id => {
     if (s.id !== state.sessionId || generation !== state.generation) return;
     closeChoiceMenu(); run(action(id, anchor));
@@ -6673,7 +7138,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
   const group = anchor.closest<HTMLElement>('[data-thread-group]')?.dataset.threadGroup ?? '';
   // Active and Settled keep their own order: no Move up/down there.
   const movable = !['active', 'completed'].includes(group);
-  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSessions.has(id), done = taskStage(task) === 'completed';
+  const fixed = anchor.dataset.reorderable !== 'true', busy = isRunning(id) || configuringSession(id), done = taskStage(task) === 'completed';
   const unread = unreviewed?.has(id) ?? false, path = task.worktreePath ?? state.projects.find(p => p.id === task.projectId)?.path ?? '';
   const branch = task.worktreeBranch ?? '';
   await showChoices(anchor, { title: 'Task actions', point, actions: true, width: 280, items: [
@@ -6819,7 +7284,19 @@ async function showProjectFilter(anchor: HTMLElement): Promise<void> {
   } });
 }
 async function showDefaultProvider(anchor: HTMLElement): Promise<void> {
-  await showChoices(anchor, { title: 'Default agent', items: state.providers.map(p => ({ id: p.id, label: p.name, provider: p.id, selected: state.defaultProvider === p.id })), onSelect: id => {
+  let providers = state.providers;
+  if (!providersKnown) {
+    if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
+    if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+    closeMenus();
+    const { epoch, release } = beginMenuOpen(anchor);
+    const generation = state.generation;
+    providers = await Promise.resolve(knownProviders()).finally(release);
+    const live = liveAnchor(anchor);
+    if (epoch !== menuEpoch || generation !== state.generation || !live || !settingsView) return;
+    anchor = live;
+  }
+  await showChoices(anchor, { title: 'Default agent', items: providers.map(p => ({ id: p.id, label: p.name, provider: p.id, selected: state.defaultProvider === p.id })), onSelect: id => {
     state.defaultProvider = id as ProviderId; localStorage.setItem('pandacode.provider', id);
     localStorage.setItem('pandacode.defaultProvider', id);
     refreshDefaultAgent();
@@ -6840,10 +7317,12 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const { openModelPicker } = await import('./model-picker').finally(release);
-  if (epoch !== menuEpoch || !anchor.isConnected) return;
+  const live = liveAnchor(anchor);
+  if (epoch !== menuEpoch || !live) return;
+  anchor = live;
   modelPickerCleanup = openModelPicker({
-    anchor, providers: state.providers, current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
-    canSwitchProvider: true, loadModels, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
+    anchor, providers: providersKnown ? state.providers : [], current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
+    canSwitchProvider: true, loadModels, loadProviders: providersKnown ? undefined : () => providersReady, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
     onSelect: async (providerId, model) => {
       state.defaultProvider = providerId;
       localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
@@ -6853,7 +7332,7 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   });
 }
 function showDeleteTask(task = session()): void {
-  if (!task || isRunning(task.id) || configuringSessions.has(task.id)) return;
+  if (!task || isRunning(task.id) || configuringSession(task.id)) return;
   const dialog = modal('Delete task?', `<form id="delete-task-form"><p class="delete-task-name">${escape(task.title)}</p><p class="delete-task-description">Permanently delete this conversation and its worker history from PandaCode? This cannot be undone. Its terminal tabs close and running commands may stop. Project files and worktrees stay.</p><p class="delete-task-error" role="alert" hidden></p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="secondary-button delete-task-confirm">Delete task</button></div></form>`, 'delete-task-dialog');
   const form = dialog.querySelector<HTMLFormElement>('#delete-task-form')!;
   const confirm = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
@@ -6879,19 +7358,12 @@ function showDeleteTask(task = session()): void {
   });
 }
 function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
-let settingsDiscoveryGeneration = 0;
 async function discoverSettingsProviders(): Promise<Provider[]> {
-  const generation = ++settingsDiscoveryGeneration;
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
   modelCatalogs.clear();
-  const providers = await call<Provider[]>('list_providers', { force: true });
-  if (generation !== settingsDiscoveryGeneration) return state.providers;
-  for (const found of providers) {
-    const previous = provider(found.id);
-    if (previous?.path === found.path && previous?.version === found.version) found.models = previous.models;
-  }
-  state.providers = providers;
-  return providers;
+  const generation = askingProviderList();
+  providersLanded(await call<Provider[]>('list_providers', { force: true }), generation, true);
+  return state.providers;
 }
 /** Settings is a full page over the workspace; Back or Escape returns to where you were. */
 let settingsView: import('./settings').SettingsView | undefined;
@@ -6914,7 +7386,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
     settingsView = mountSettings(host, {
       providers: state.providers, defaultProvider: state.defaultProvider, defaultModel: defaultModelLabel(), activityExpanded: activityExpanded(),
       compact: document.body.classList.contains('compact'), wallpapers: wallpapers.preferences.enabled,
-      theme: currentTheme(), preview, section, discover: discoverSettingsProviders,
+      theme: currentTheme(), preview, section, discover: discoverSettingsProviders, versionPending: providerVersionPending, listPending: providerListPending,
       projects: { list: userProjects, remove: removeProject },
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
@@ -6937,7 +7409,10 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
           });
           return () => { unsubscribe(); cleanup(); };
         },
-        providerConnections: async target => (await import('./provider-settings')).mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections }),
+        providerConnections: async target => {
+          const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
+          return mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+        },
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
       },
@@ -7013,9 +7488,9 @@ async function showWallpaperSettings(): Promise<void> {
 async function showProviderConnections(): Promise<void> {
   const dialog = modal('Provider connections', '<div id="provider-connections-content"><p class="dialog-loading">Loading connections…</p></div><div class="dialog-footer"><button class="secondary-button" data-action="settings">Back to settings</button><button class="primary-button" data-action="close-dialog">Done</button></div>', 'provider-connections-dialog');
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
-  const { mountProviderSettings } = await import('./provider-settings');
+  const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: state.providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
   modelCatalogs.delete(id);
@@ -7094,7 +7569,7 @@ async function openJevTests(url?: string, anchor?: HTMLElement): Promise<void> {
     settings: () => run(openJevSettings()),
     watch: (runId: string) => run((async () => {
       if (state.sessionId !== task.id) return;
-      state.inspector = true; state.inspectorTab = 'browser'; renderInspector();
+      inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'browser'; renderInspector();
       await browserLifecycle;
       if (state.sessionId === task.id) await browserPanel?.watchJev(runId);
     })()),
@@ -7128,9 +7603,11 @@ async function showConversationImport(): Promise<void> {
   try {
     const { mountConversationImport } = await import('./conversation-import');
     if (!dialog.open || !host.isConnected) return;
+    const installed = (await knownProviders()).filter(p => p.installed).map(p => p.id);
+    if (!dialog.open || !host.isConnected) return;
     conversationImportCleanup = mountConversationImport(host, {
       call,
-      installed: state.providers.filter(p => p.installed).map(p => p.id),
+      installed,
       defaultModel: provider => rememberedModel(provider),
       openTask: id => { closeModal(); run(selectSession(id, true)); },
       onImported: result => run((async () => {
@@ -7162,7 +7639,7 @@ async function showBots(open: { botId?: string; startNew?: boolean } = {}): Prom
   try {
     const [{ mountBots }, providers] = await Promise.all([
       import('./bots'),
-      state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
+      (providersKnown ? Promise.resolve(state.providers) : providersReady),
     ]);
     if (!dialog.open || !host.isConnected) return;
     botsView = mountBots(host, { ...botsOptions(providers), initialBot: open.botId, startNew: open.startNew });
@@ -7176,7 +7653,7 @@ async function showBotSettings(botId: string, tab?: import('./bots').Section): P
   const dialog = modal(name ? `${name} settings` : 'Bot settings', '<div id="bots-host"><p role="status">Loading…</p></div>', 'bot-settings-dialog');
   const host = dialog.querySelector<HTMLElement>('#bots-host')!;
   try {
-    const [{ mountBots }, providers] = await Promise.all([import('./bots'), state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers')]);
+    const [{ mountBots }, providers] = await Promise.all([import('./bots'), (providersKnown ? Promise.resolve(state.providers) : providersReady)]);
     if (!dialog.open || !host.isConnected) return;
     botsView = mountBots(host, { ...botsOptions(providers), layout: 'settings', initialBot: botId, initialTab: tab, onDeleted: () => run((async () => { closeModal(); await reloadBotProjects(); await reloadSessions(); if (!session()) clearOpenSession(); render(); })()) });
   } catch {
@@ -7239,7 +7716,7 @@ async function showBotTaskMenu(anchor: HTMLElement): Promise<void> {
 }
 async function assignTaskBot(task: Session, botId: string | null): Promise<void> {
   if (!newTaskView() || state.sessionId !== task.id) throw new Error('Choose a bot before the task\'s first message.');
-  if (configuringSessions.has(task.id)) return;
+  if (configuringSession(task.id)) return;
   configuringSessions.add(task.id);
   try {
     const bot = await call<import('./bots').Bot | null>('bot_assign_task', { sessionId: task.id, botId });
@@ -7422,7 +7899,7 @@ async function showCloudMenu(anchor: HTMLElement): Promise<void> {
     if (id === 'delete' && !await confirmDeleteMachine(s)) return;
     try { await call('cloud_agent_action', { sessionId: s.id, action: id }); }
     catch (error) { notifyError(errorText(error)); return; }
-    if (id === 'open') openVm();
+    if (id === 'open') openVm(true);
     else if (id === 'delete') notify('Deleted the cloud machine. Your next message creates a new one.');
   } });
 }
@@ -7912,7 +8389,7 @@ async function showAgentUsage(): Promise<void> {
   try {
     const [{ mountAgentUsage }, providers] = await Promise.all([
       import('./agent-usage'),
-      state.providers.length ? Promise.resolve(state.providers) : call<Provider[]>('list_providers'),
+      (providersKnown ? Promise.resolve(state.providers) : providersReady),
     ]);
     if (!dialog.open || !host.isConnected) return;
     agentUsageCleanup = mountAgentUsage(host, providers);
@@ -7946,7 +8423,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
   switch (name) {
     case 'support': await openSupport(); break;
     case 'new-task': if (state.view === 'board') showBoardTaskForm(); else await createTask(); break;
-    case 'new-chat': if (state.view !== 'conversation') setWorkspaceView('conversation'); await createChat(); break;
+    case 'new-chat': if (state.view !== 'conversation') setWorkspaceView('conversation'); await newChat(); break;
     case 'board-view': setWorkspaceView('board'); break;
     case 'conversation-view': setWorkspaceView('conversation'); break;
     case 'github-view': setWorkspaceView('github'); break;
@@ -8063,16 +8540,16 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'copy-file': await navigator.clipboard.writeText(state.selectedContent); notify('File copied'); break;
     case 'copy-path': await navigator.clipboard.writeText(workspacePath()); notify(session()?.worktreePath ? 'Worktree path copied' : 'Project path copied'); break;
     case 'terminal': await toggleTerminal(); break;
-    case 'toggle-inspector': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); break;
-    case 'toggle-files': state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector || state.inspectorTab !== 'files'; inspectorSuppressed = false; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); break;
-    case 'tab-vm': openVm(); break;
+    case 'toggle-inspector': state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); break;
+    case 'toggle-files': state.inspector = chooseInspector(inspectorSuppressed || !state.inspector || state.inspectorTab !== 'files'); inspectorSuppressed = false; state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); break;
+    case 'tab-vm': openVm(true); break;
     case 'tab-btw': openBtw(); btwPanel.focus(); break;
     case 'inspector-add-tab': await showInspectorViews(element); break;
     case 'close-inspector-tab': closeInspectorTab(element.dataset.view as PanelView); break;
     case 'toggle-file-editor': fileTabs.toggle(); break;
-    case 'tab-design': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
+    case 'tab-design': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'design'; state.selectedKind = ''; renderInspector(); break;
     case 'deploy': await showDeploy(element); break;
-    case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(); break;
+    case 'tab-simulator': case 'simulator': if (name === 'simulator' && state.inspector && state.inspectorTab === 'simulator' && !inspectorSuppressed) { state.inspectorTab = 'changes'; renderInspector(); } else openSimulator(true); break;
     case 'token-saver': tokenSaver.open(element, state.sessionId); break;
     case 'council': if (element.getAttribute('aria-disabled') !== 'true') council.open(element, state.sessionId, element.dataset.councilFocus === 'target' || element.dataset.councilFocus === 'maxRounds' ? element.dataset.councilFocus : undefined); break;
     case 'council-keep-fixing': case 'council-accept': if (element.closest<HTMLElement>('.council-strip')?.dataset.sessionId === state.sessionId) await council.act(state.sessionId, name === 'council-accept' ? 'accept' : 'keep', element); break;
@@ -8082,7 +8559,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'open-pull': if (element.dataset.sessionId) await openPullRequest(element.dataset.sessionId); break;
     case 'tab-changes': case 'tab-files': state.inspectorTab = name === 'tab-files' ? 'files' : 'changes'; state.selectedKind = ''; renderInspector(); break;
     case 'tab-search': state.inspectorTab = 'search'; state.selectedKind = ''; renderInspector(); document.querySelector<HTMLInputElement>('#inspector-content .search-input')?.focus(); break;
-    case 'browser': inspectorSuppressed = false; state.inspector = true; state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
+    case 'browser': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'browser'; state.selectedKind = ''; renderInspector(); break;
     case 'refresh-inspector': if (state.inspectorTab === 'btw') { await btwPanel.reload(); break; } if (state.inspectorTab === 'pull') { pullView.forget(state.sessionId); renderInspector(); break; } if (state.inspectorTab === 'search') searchPanel.refresh(); refreshFileLinks(workspaceContext()); await refreshInspector(); break;
     case 'locate-project-folder': await locateProjectFolder(); break;
     case 'file-menu': fileExplorer.menu(element, workspaceContext(), element.dataset.path!, element.dataset.directory === 'true'); break;
@@ -8285,7 +8762,7 @@ document.addEventListener('keydown', event => {
   if (command && event.code === 'KeyN') { event.preventDefault(); if (state.view === 'board') showBoardTaskForm(); else run(createTask()); }
   else if (command && event.code === 'KeyJ') { event.preventDefault(); run(toggleTerminal()); }
   else if (command && event.code === 'Comma') { event.preventDefault(); run(showSettings()); }
-  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = inspectorChosen = inspectorSuppressed || !state.inspector; inspectorSuppressed = false; renderInspector(); }
+  else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
     // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
@@ -8344,13 +8821,22 @@ const windowDied = windowContentDied(localStorage);
 async function boot(): Promise<void> {
   // Asked first: paused crash restarts skip reopening the last thread.
   const crashRecovery = takeCrashRecovery();
-  await subscribe('agent-event', onAgent);
-  await subscribe('provider-models-changed', event => invalidateModels(event.provider));
-  await subscribe('architect-event', onArchitect);
+  // The harness list answers at once and its versions follow by event; the first thread needs neither (loadBootProviders),
+  // and the list is asked once the versions listener is in place.
+  const versionsListening = (subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('provider-versions', providerVersionsReported);
+  loadBootProviders(versionsListening);
+  // The listeners the task list depends on are registered together, all before the list is read.
+  const listening: Promise<unknown>[] = [
+    // Without the versions event the list still works; Settings then says "Not reported".
+    versionsListening.catch(error => console.warn('Could not listen for agent versions:', error)),
+    subscribe('agent-event', onAgent),
+    subscribe('provider-models-changed', event => invalidateModels(event.provider)),
+    subscribe('architect-event', onArchitect),
+    subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds)),
+    subscribe('sessions-changed', () => run(reloadSessions())),
+    subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
+  ];
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  await subscribe('sessions-deleted', event => removeDeletedSessions(event.sessionIds));
-  await subscribe('sessions-changed', () => run(reloadSessions()));
-  await subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event)));
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
@@ -8411,13 +8897,13 @@ async function boot(): Promise<void> {
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
-  await subscribe('queue-changed', payload => run((async () => {
+  listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
     setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
     if (id === state.sessionId) renderComposer();
     await dispatchQueue(id);
-  })()));
-  await subscribe('overlay-open-task', event => run((async () => {
+  })())));
+  listening.push(subscribe('overlay-open-task', event => run((async () => {
     const request = ++overlayOpenRequest, initialGeneration = state.generation;
     await reloadSessions();
     if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
@@ -8433,9 +8919,10 @@ async function boot(): Promise<void> {
     } else if (event.subagentId) {
       await subagents.showAgent(event.subagentId);
     }
-  })()));
-  await connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction);
-  [state.projects, state.sessions, state.providers] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions'), call<Provider[]>('list_providers')]);
+  })())));
+  listening.push(connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction));
+  await Promise.all(listening);
+  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
   // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
   void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
@@ -8467,7 +8954,8 @@ async function boot(): Promise<void> {
   activateProject(reopened?.projectId ?? newTask ?? state.projects.find(p => p.id === savedProject)?.id ?? recent?.projectId ?? state.projects[0]?.id ?? '');
   // A remembered New task whose project is gone (removed elsewhere) falls back like any launch.
   const first = reopened ?? (fallback && !newTask ? candidates.find(s => s.projectId === state.projectId) : undefined);
-  if (newTask) run(createTask(newTask));
+  // An explicit creation press is already waiting for boot. The saved text stays available to New task.
+  if (newTask && !pressInFlight) run(createTask(newTask));
   // selectSession bumps the generation before its first await; a later bump means the user picked a task meanwhile.
   const selecting = first ? selectSession(first.id) : undefined, bootGeneration = state.generation;
   showCrashNotice();
@@ -8476,7 +8964,254 @@ async function boot(): Promise<void> {
   run(fileIconsReady.then(refreshFileIcons));
   window.addEventListener('pandacode-theme-change', refreshFileIcons);
   if (state.view !== 'conversation' && state.generation === bootGeneration) { state.boardPanel = false; renderInspector(); renderBoardView(); }
-  if (!preview && !state.providers.some(p => p.installed)) notify('Open Settings to check your installed agent CLIs.');
+}
+/* Harnesses: `list_providers` answers at once (install state from path lookups, each version the cached one or ''), then
+ * probes versions in the background and reports them with the `provider-versions` event. Until the list answers,
+ * state.providers is the last launch's list (names, models and install state, PROVIDER_CATALOG_KEY), so names and
+ * labels paint as before, and nothing judges what is installed: no "check your agent CLIs" note, no model discovery on a
+ * stale answer. When it lands, labels refresh and the open thread's models load. */
+const PROVIDER_CATALOG_KEY = 'pandacode.providerCatalog';
+/** A choice (New task, New chat, a board task) waits this long for the real list before using the last launch's. */
+const PROVIDER_CHOICE_WAIT_MS = 3_000;
+/** Settings says "Checking…" for an installed harness with no version until `provider-versions` arrives, at most this long. */
+const PROVIDER_VERSIONS_PATIENCE_MS = 60_000;
+let providersKnown = false;
+/** Set once the boot list is late (PROVIDER_CHOICE_WAIT_MS without an answer) or has failed: choices may then use the
+ *  last launch's list, and drafts made from it are checked again when the real list lands (provisionalTasks). */
+let providersOverdue = false;
+let settleProviders: (providers: Provider[]) => void = () => {};
+let failProviders: (error: Error) => void = () => {};
+/** The real harness list, once `list_providers` or a Settings refresh has answered. Never the last launch's list:
+ *  rejected only when every boot attempt failed before a Settings refresh answered. */
+const providersReady = new Promise<Provider[]>((resolve, reject) => { settleProviders = resolve; failProviders = reject; });
+providersReady.catch(() => undefined);
+let markProvidersOverdue: () => void = () => {};
+const providersOverdueNow = new Promise<void>(resolve => { markProvidersOverdue = () => { providersOverdue = true; resolve(); }; });
+/** Tasks created from the last launch's list (the real one was late), checked again when the real list lands. */
+const provisionalTasks = new Set<string>();
+const provisionalCorrections = new Map<string, Promise<'ok' | 'missing' | 'stale'>>();
+/** The list a choice can use right now: the real one, or the last launch's once the real one is overdue and the last
+ *  launch's names an installed harness. */
+function providersForChoiceNow(): Provider[] | undefined {
+  if (providersKnown) return state.providers;
+  return providersOverdue && state.providers.some(p => p.installed) ? state.providers : undefined;
+}
+/** The harness list a choice relies on: the real one, waited for; the last launch's only when the real one has not
+ *  answered within PROVIDER_CHOICE_WAIT_MS (or failed). Callers note `!providersKnown` afterwards to mark what they
+ *  create as provisional. */
+function providersForChoice(): Promise<Provider[]> | Provider[] {
+  const now = providersForChoiceNow();
+  if (now) return now;
+  return Promise.race([providersReady, providersOverdueNow.then(() => providersForChoiceNow() ?? providersReady)]);
+}
+/** Marks a task made from the last launch's list, so the real list can correct its harness before its first Send.
+ *  `provisional` is `!providersKnown` read before the create call was awaited: when the real list landed meanwhile, its
+ *  correction pass has already run, so the caller checks again (checkProvisionalTasks) once the task is listed. */
+function noteProvisional(task: Session, provisional: boolean): void { if (provisional) provisionalTasks.add(task.id); }
+/** After a task joins state.sessions: one made from the last launch's list is checked now if the real list is in. */
+function checkProvisionalTasks(): void { if (providersKnown && provisionalTasks.size) run(correctProvisionalTasks()); }
+/** The real harness list, for anything that enumerates what is installed (team rosters, import sources). It waits for
+ *  `list_providers` through boot's retries and never answers with the last launch's list, which may name CLIs removed
+ *  since; it rejects when every boot attempt failed and no Settings refresh has answered. */
+function knownProviders(): Promise<Provider[]> | Provider[] {
+  return providersKnown ? state.providers : providersReady;
+}
+function lastProviderCatalog(): Provider[] {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(PROVIDER_CATALOG_KEY) ?? '[]');
+    if (!Array.isArray(saved)) return [];
+    return saved.filter((p): p is Pick<Provider, 'id' | 'name' | 'installed' | 'models'> => Boolean(p) && typeof p.id === 'string' && typeof p.name === 'string' && typeof p.installed === 'boolean' && Array.isArray(p.models))
+      .map(({ id, name, installed, models }) => ({ id, name, installed, models, path: null, version: '' }));
+  } catch { return []; }
+}
+function keepProviderCatalog(providers: Provider[]): void {
+  try { localStorage.setItem(PROVIDER_CATALOG_KEY, JSON.stringify(providers.map(({ id, name, installed, models }) => ({ id, name, installed, models })))); }
+  catch { /* the next launch waits for the list, as the first one does */ }
+}
+/* Versions. '' means not known yet (or not reported); only a real version replaced by a different real one is a new
+ * CLI, whose cached models are dropped. */
+/** The last real version seen per harness this launch. */
+const realVersions = new Map<ProviderId, string>();
+/** Versions `provider-versions` reported since the last list request, for a list answer that arrives after them. */
+let reportedVersions = new Map<ProviderId, string>();
+/** When the current probe round stops counting as pending: `done` from `provider-versions`, or the patience running out. */
+let versionsPendingUntil = 0;
+/** Whether a harness's version is still being probed: a round is out and has not reported this harness yet (a failed or
+ *  timed-out probe reports ''). Settings says "Checking…" for an installed harness with no version only then. */
+function providerVersionPending(id: ProviderId): boolean { return Date.now() < versionsPendingUntil && !reportedVersions.has(id); }
+/** Before the real list lands, Settings shows the last launch's installed harnesses as pending, not as missing. */
+function providerListPending(): boolean { return !providersKnown; }
+/** Records a version; true when it replaces a different real one (a '' on either side never counts). */
+function versionReplaced(id: ProviderId, version: string): boolean {
+  if (!version) return false;
+  const before = realVersions.get(id);
+  realVersions.set(id, version);
+  return Boolean(before && before !== version);
+}
+let providerListGeneration = 0;
+let appliedProviderListGeneration = 0;
+/** A list request is going out: its probe reports again, so earlier reports no longer apply. */
+function askingProviderList(): number {
+  reportedVersions = new Map();
+  versionsPendingUntil = Date.now() + PROVIDER_VERSIONS_PATIENCE_MS;
+  window.setTimeout(() => settingsView?.providersChanged(state.providers), PROVIDER_VERSIONS_PATIENCE_MS + 50);
+  return ++providerListGeneration;
+}
+/** A landed list, merged: versions reported meanwhile fill its blanks, and a harness at the same path keeps the version
+ *  shown until its probe reports (a refresh never blanks it); models found this launch stay unless `keep` says otherwise
+ *  or the harness's version really changed. New objects throughout. */
+function mergeProviderList(found: Provider[], keep: (entry: Provider, previous: Provider) => boolean): Provider[] {
+  return found.map(entry => {
+    const previous = provider(entry.id);
+    const samePath = Boolean(entry.path && previous?.path === entry.path);
+    const version = entry.version || reportedVersions.get(entry.id) || (samePath ? previous!.version : '') || '';
+    if (versionReplaced(entry.id, version)) { modelCatalogs.delete(entry.id); return { ...entry, version, models: [] }; }
+    return { ...entry, version, models: previous && keep(entry, previous) ? previous.models : entry.models };
+  });
+}
+/** `provider-versions`: fills versions in place (Settings rows, no redraw, so open menus stay open) and drops the cached
+ *  models of a harness whose real version changed. */
+function providerVersionsReported(event: unknown): void {
+  const payload = event && typeof event === 'object' ? event as { versions?: unknown; done?: unknown } : undefined;
+  const versions = payload?.versions;
+  if (!versions || typeof versions !== 'object' || Array.isArray(versions)) return;
+  const reported = Object.entries(versions as Record<string, unknown>).filter((pair): pair is [ProviderId, string] => typeof pair[1] === 'string');
+  reportedVersions = new Map([...reportedVersions, ...reported]);
+  // Each reported harness (a failed probe as '') stops pending on its own; `done` ends the round for the rest.
+  if (payload?.done === true) versionsPendingUntil = 0;
+  const byId = new Map(reported), dropped: ProviderId[] = [];
+  state.providers = state.providers.map(entry => {
+    // A probe that found nothing keeps the version already shown.
+    const version = byId.get(entry.id) || entry.version;
+    const replaced = versionReplaced(entry.id, version);
+    if (replaced) { modelCatalogs.delete(entry.id); dropped.push(entry.id); return { ...entry, version, models: [] }; }
+    return version === entry.version ? entry : { ...entry, version };
+  });
+  settingsView?.providersChanged(state.providers);
+  if (!dropped.length) return;
+  const s = session();
+  if (s && !s.remoteDevice && dropped.includes(s.provider)) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  refreshModelLabels(); refreshTeamProgress();
+}
+/** After a failed `list_providers`, boot asks again this long after each failure; the last failure is reported and
+ *  rejects providersReady. The first failure lets waiting choices use the last launch's list, so nothing hangs on the
+ *  retries. A Settings refresh (discoverSettingsProviders) answers it too and ends the retries. */
+const PROVIDER_RETRY_MS = [2_000, 5_000, 15_000];
+/** `listening`: the `provider-versions` subscription, registered before the first request so no report is missed. */
+function loadBootProviders(listening: Promise<unknown>): void {
+  if (!state.providers.length) state.providers = lastProviderCatalog();
+  window.setTimeout(() => { if (!providersKnown) markProvidersOverdue(); }, PROVIDER_CHOICE_WAIT_MS);
+  void listening.catch(() => undefined).then(() => askBootProviders(0));
+}
+function askBootProviders(attempt: number): void {
+  const generation = askingProviderList();
+  run(call<Provider[]>('list_providers').then(found => providersLanded(found, generation)).catch(error => {
+    if (providersKnown) return;
+    markProvidersOverdue();
+    const wait = PROVIDER_RETRY_MS[attempt];
+    if (wait === undefined) { failProviders(new Error('Could not list agent harnesses. Refresh them in Settings → Agents.')); throw error; }
+    console.warn(`Could not list agent harnesses; trying again in ${wait / 1000} s:`, error);
+    window.setTimeout(() => { if (!providersKnown) askBootProviders(attempt + 1); }, wait);
+  }));
+}
+function providersLanded(found: Provider[], generation: number, force = false): void {
+  if (!Array.isArray(found)) throw new Error('The agent harness list was not readable.');
+  // A pending or failed refresh leaves this answer usable. A newer successful one has already replaced it.
+  if (generation < appliedProviderListGeneration) return;
+  state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.has(entry.id));
+  appliedProviderListGeneration = generation;
+  keepProviderCatalog(state.providers);
+  const firstKnown = !providersKnown;
+  providersKnown = true;
+  settleProviders(state.providers);
+  const s = session();
+  if ((!force || firstKnown) && s && !s.remoteDevice && provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
+  // Names painted from the last launch's list (or the built-in short names) change in place: no transcript redraw, so a
+  // menu open over it stays open.
+  refreshModelLabels(); refreshAuthorNames(); refreshDefaultAgent(); renderHeader(); refreshTeamProgress();
+  settingsView?.providersChanged(state.providers);
+  agentUpdates.providersChanged();
+  if (s) architectView?.setTask(s.id, teams.get(s.id) ?? null, state.providers);
+  // Restored queues name the agent they wait for; patch in place so open composer menus stay open.
+  refreshQueueAgentNames();
+  run(correctProvisionalTasks());
+  if (!force && !preview && !state.providers.some(p => p.installed)) {
+    const pending = bootPending;
+    void (pending ?? Promise.resolve()).catch(() => undefined).then(() => notify('Open Settings to check your installed agent CLIs.'));
+  }
+}
+/** Tasks created from the last launch's list while the real one was late: one whose harness turns out to be missing,
+ *  and that has not been sent yet, moves to the harness a New task would pick now (or says to check Settings). */
+async function correctProvisionalTasks(): Promise<void> {
+  // Sends and explicit picker choices wait on the same per-task correction, including its native save.
+  for (const id of [...provisionalTasks]) {
+    // Read afresh after every earlier correction's await: a Send may have taken it or started it since.
+    if (!provisionalTasks.has(id) || configuringSession(id)) continue;
+    const task = state.sessions.find(s => s.id === id);
+    // Created but not listed yet (its creator is still finishing): it is checked once listed (checkProvisionalTasks).
+    if (!task) { if (deletedSessions.has(id)) provisionalTasks.delete(id); continue; }
+    if (task.lastPromptAt != null || isRunning(id)) { provisionalTasks.delete(id); continue; }
+    const outcome = await correctProvisionalTask(task);
+    if (outcome === 'missing') notify('Open Settings to check your installed agents.');
+  }
+}
+/** Checks one provisional task against the real list: 'ok' when its harness is installed (or it moved to the harness a
+ *  New task would pick now), 'missing' when no installed harness is left to move it to, 'stale' when it was deleted or
+ *  started while configure_session was out (its newer row is kept). */
+function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stale'> {
+  const pending = provisionalCorrections.get(task.id);
+  if (pending) return pending;
+  const correction = (async (): Promise<'ok' | 'missing' | 'stale'> => {
+    let saved = task;
+    while (provisionalTasks.has(task.id) && !explicitHarnessSaves.has(task.id)) {
+      if (provider(saved.provider)?.installed) {
+        provisionalTasks.delete(task.id);
+        return 'ok';
+      }
+      const harness = pickHarness(state.providers);
+      if (!harness?.installed) return 'missing';
+      try {
+        saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+      } catch (error) {
+        if (deletedSessions.has(task.id)) { provisionalTasks.delete(task.id); return 'stale'; }
+        throw error;
+      }
+      const index = state.sessions.findIndex(s => s.id === task.id);
+      const live = index >= 0 ? state.sessions[index] : undefined;
+      if (!live || deletedSessions.has(task.id) || live.lastPromptAt != null || isRunning(task.id)) {
+        provisionalTasks.delete(task.id);
+        return 'stale';
+      }
+      if (live.draft && live.id !== state.sessionId && !taskBusyConfiguring(live.id) && !explicitHarnessSaves.has(live.id) && !live.worktreePath && !teams.get(live.id) && !draftKept(live.id)) {
+        state.sessions = state.sessions.filter(item => item.id !== live.id);
+        state.drafts.delete(live.id);
+        provisionalTasks.delete(live.id);
+        deletedSessions.add(live.id);
+        void call<boolean>('discard_draft', { sessionId: live.id }).catch(() => undefined);
+        return 'stale';
+      }
+      // A queued picker save can still fail. Publish the successful write before yielding to it.
+      state.sessions[index] = saved;
+      if (modelPickerCleanup?.taskId === task.id) modelPickerCleanup.refresh();
+      if (task.id === state.sessionId) {
+        if (modelPickerCleanup || architectSetupCleanup || projectPickerCleanup || choiceMenuCleanup || pendingMenuOpen) {
+          refreshModelLabels();
+          syncTeamButton();
+        } else {
+          renderComposer();
+        }
+        renderHeader();
+      }
+    }
+    return 'stale';
+  })().finally(() => {
+    provisionalCorrections.delete(task.id);
+  });
+  provisionalCorrections.set(task.id, correction);
+  return correction;
+}
+function showMissingHarness(s: Session): void {
+  showComposerNote(s, 'This agent is not installed. Open Settings to check your installed agents.');
 }
 // PandaCode's own updates: checked on GitHub Releases, installed when no agent is working.
 mountUpdatePill($('#update-status') as HTMLButtonElement, startAppUpdates({ busy: () => state.sessions.some(task => isRunning(task.id)), notify, notifyError }));
@@ -8488,6 +9223,7 @@ window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true }
 // A New task's text is kept per project, since its draft session does not outlive the launch.
 state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
 expireDraftsWhileRunning(state.drafts);
+flushDraftsOnLeave(state.drafts);
 renderThemeToggle(); render(); renderInspector();
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
@@ -8505,7 +9241,7 @@ function showCrashNotice(): void {
 }
 // An orderly unload (reload, quit that reaches the page) is never a thread that took the app down.
 // WKWebView may not fire pagehide on Cmd+Q, so a committed quit's native `app-quitting` event does the same.
-const leave = () => leavePage(localStorage);
+const leave = () => { state.drafts.flush(); leavePage(localStorage); };
 window.addEventListener('pagehide', leave);
 void subscribe('app-quitting', leave).catch(error => console.warn('Could not listen for quitting:', error));
 // A page that outlives the native reload budget is stable: an earlier window death is forgotten.
@@ -8513,6 +9249,7 @@ window.setTimeout(() => windowStable(localStorage), WINDOW_STABLE_AFTER);
 wireToastKeys($('#toast'));
 keepToastClear($('#toast'), $('#composer-area'));
 void bootPending.catch(() => undefined).then(showCrashNotice);
-// The diff engine (module, highlighter workers, themes) starts right after the first paint.
-preloadDiffsAfterPaint();
+// The diff engine (module, highlighter workers, themes) starts once a diff is likely: the Changes tab or a diff
+// view open (renderInspector), a change row hovered or focused, or after boot has gone idle for a while.
+preloadDiffsWhenWanted();
 if (!preview) initializeNativeAppearance();

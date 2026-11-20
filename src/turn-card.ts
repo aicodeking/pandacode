@@ -59,13 +59,33 @@ const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeO
     const box = entry.borderBoxSize?.[0], height = box ? Math.round(box.blockSize) : content.offsetHeight;
     return [{ content, reply, body, live, height, limit: live ? 0 : clampHeight(body) }];
   });
-  for (const { content, reply, body, live, height, limit } of measured) {
-    const before = sizes.get(content);
+  for (const { content, reply, height, live, limit } of measured) {
     sizes.set(content, height);
-    if (live) { if (before !== undefined && before !== height) grow(body, before, height); }
-    else syncOverflow(reply, height, limit);
+    // A live reply's growth starts from liveGrowth, before layout. Writing a height here, during delivery, would resize
+    // the transcript's observed rows after they were measured; anything else that resizes a live reply (width, an image)
+    // is only recorded, so its body never steps back to an old height.
+    if (!live) syncOverflow(reply, height, limit);
   }
 });
+/** A live reply's text lands in a task or frame callback; this runs right after it, before style and layout, so its body
+ *  starts growing from the painted height in the very frame the new text first lays out: the height only ever moves on. */
+const liveGrowth = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(records => {
+  const contents = new Set<HTMLElement>();
+  for (const { target } of records) {
+    const content = (target instanceof Element ? target : target.parentElement)?.closest<HTMLElement>(REPLY_CONTENT);
+    if (content?.isConnected && content.parentElement && content.closest('.turn-card-reply.is-live')) contents.add(content);
+  }
+  if (!contents.size) return;
+  // One layout for the batch, then the writes.
+  const measured = [...contents].map(content => ({ content, body: content.parentElement!, height: Math.round(content.offsetHeight) }));
+  for (const { content, body, height } of measured) {
+    const before = sizes.get(content);
+    if (before === undefined || before === height) continue;
+    sizes.set(content, height);
+    grow(body, before, height);
+  }
+});
+const LIVE_MUTATIONS: MutationObserverInit = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] };
 
 const REPLY_CONTENT = '.turn-card-reply-content';
 /** What a visible Read more adds above the reply's row: turn-card.css `--reply-more-gap` (the row's margin-top, 0 without
@@ -99,7 +119,11 @@ export function measureReplies(root: ParentNode | readonly Node[], defer?: (cont
     shift,
     apply() {
       saved.forEach(({ reply, height, limit }) => syncOverflow(reply, height, limit));
-      fresh.forEach(content => { sizes.set(content, -1); observer?.observe(content); });
+      fresh.forEach(content => {
+        sizes.set(content, -1);
+        observer?.observe(content);
+        if (content.closest('.turn-card-reply.is-live')) liveGrowth?.observe(content, LIVE_MUTATIONS);
+      });
     },
   };
 }

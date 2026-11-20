@@ -1,4 +1,4 @@
-import type { Scene } from './types';
+import { SMOOTH_IDLE_FPS, type Scene } from './types';
 
 /** Polar night: three aurora curtains (sharp green lower hems, vertical rays fading up through teal into violet, folds
  * that brighten where the curtain turns edge-on) over two snowy ridges and a star field. The wind sways them faster
@@ -7,6 +7,8 @@ import type { Scene } from './types';
 export const scene: Scene = {
   id: 'aurora',
   label: 'Aurora',
+  // The curtains shimmer and the stars twinkle at any hour.
+  idleFps: () => SMOOTH_IDLE_FPS,
   fallback: () => [[.03, .06, .14], [.05, .16, .2], [.1, .32, .3]],
   fragment: `
 /* One curtain: its emission (linear) at p; k is the layer (0 far .. 2 near), g the pointer's pull. */

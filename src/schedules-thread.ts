@@ -28,6 +28,8 @@ export const schedulesVersion = (): number => version;
 let runs: ScheduleRun[] = [], runsFor = '';
 let settings: SchedulerSettings | null = null;
 let paused = false, expanded = false, confirming = '', loading = 0, ticker = 0;
+/** What the strip and the sidebar clocks last showed: the 30 s ticker writes only what changed. */
+let paintedInner: string | null = null, shownGlyphs = '';
 
 export async function initWakeups(next: WakeHost): Promise<void> {
   host = next;
@@ -62,7 +64,12 @@ export async function refreshWakeups(): Promise<void> {
     if (JSON.stringify(list) !== JSON.stringify(schedules)) version++;
     schedules = list; runs = history; runsFor = id; settings = loaded; paused = loaded.paused;
   } catch (error) { if (request === loading) host.report(error); return; }
-  paint(); host.changed();
+  paint(); shownGlyphs = glyphs(); host.changed();
+}
+
+/** Every sidebar clock, keyed by thread: a changed label or due state needs a sidebar redraw. */
+function glyphs(): string {
+  return [...new Set(schedules.map(s => s.sessionId))].map(id => `${id}:${wakeGlyph(id)}`).join('\n');
 }
 
 function upcoming(sessionId: string): TaskSchedule | undefined {
@@ -134,12 +141,20 @@ function paint(): void {
   const strip = document.getElementById('wake-strip');
   if (!strip || !host) return stopTicker();
   const inner = stripInner(host.sessionId());
+  paintedInner = inner;
   strip.hidden = !inner; strip.classList.toggle('is-paused', paused); morph(strip, inner, 6);
   // morph patches attributes; a switch the user already flipped keeps its property, so sync it.
   strip.querySelectorAll<HTMLInputElement>('.wake-switch').forEach(input => { input.checked = input.hasAttribute('checked'); });
   if (inner && !document.hidden) startTicker(); else stopTicker();
 }
-function startTicker(): void { if (!ticker) ticker = window.setInterval(() => { if (document.hidden || document.getElementById('wake-strip')?.hidden !== false) stopTicker(); else { paint(); host?.changed(); } }, TICK); }
+function startTicker(): void { if (!ticker) ticker = window.setInterval(tickStrip, TICK); }
+/** Relative times ("in 5 min", "Running for 3m") age: repaint the strip and the sidebar only when their markup moved. */
+function tickStrip(): void {
+  if (!host || document.hidden || document.getElementById('wake-strip')?.hidden !== false) { stopTicker(); return; }
+  if (stripInner(host.sessionId()) !== paintedInner) paint();
+  const next = glyphs();
+  if (next !== shownGlyphs) { shownGlyphs = next; host.changed(); }
+}
 function stopTicker(): void { window.clearInterval(ticker); ticker = 0; }
 
 /** Opens the strip on a schedule and focuses its row, if it is still there. */

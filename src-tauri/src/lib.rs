@@ -438,6 +438,91 @@ fn reconcile_inactive_task(
 }
 
 #[cfg(test)]
+mod read_scan_tests {
+    use super::*;
+
+    /// `prompt_activity` and the task search read on their own read-only connection: the shared
+    /// store lock is free while the query runs, and the answers match the store's own.
+    #[test]
+    fn long_scans_run_on_a_read_only_connection_with_the_store_lock_free() {
+        let dir = std::env::temp_dir().join(format!("pandacode-read-scan-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        store.db.execute("UPDATE sessions SET draft=0 WHERE id=?1", [&task.id]).unwrap();
+        store.message(&task.id, "user", "Find the needle in the haystack.").unwrap();
+        let since = storage::now() - 86_400_000;
+        let expected_activity = store.prompt_activity(since).unwrap();
+        let expected_search = store.search_tasks(&project.id, "needle", 20).unwrap();
+        assert_eq!(expected_activity.len(), 1);
+        assert_eq!(expected_search.len(), 1);
+        let shared = Arc::new(Mutex::new(store));
+
+        let probe = shared.clone();
+        let activity = tauri::async_runtime::block_on(read_scan(shared.clone(), move |reader| {
+            assert!(probe.try_lock().is_ok(), "the store lock is free while the scan runs");
+            assert!(reader.db.is_readonly(rusqlite::MAIN_DB).unwrap(), "a read-only connection");
+            reader.prompt_activity(since)
+        }))
+        .unwrap();
+        assert_eq!(activity, expected_activity);
+
+        let probe = shared.clone();
+        let project_id = project.id.clone();
+        let found = tauri::async_runtime::block_on(read_scan(shared.clone(), move |reader| {
+            assert!(probe.try_lock().is_ok(), "the store lock is free while the search runs");
+            reader.search_tasks(&project_id, "needle", 20)
+        }))
+        .unwrap();
+        assert_eq!(found, expected_search);
+
+        // A writer holding the store lock does not stop a scan that already has its path.
+        let held = shared.lock().unwrap();
+        let path = held.path.clone();
+        let reader = Store::open_read_only(&path).unwrap();
+        assert_eq!(reader.prompt_activity(since).unwrap(), expected_activity);
+        drop(held);
+        drop(reader);
+        drop(shared);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The app store's path is kept at startup: a scan runs while a writer holds the store lock.
+    #[test]
+    fn the_app_store_scans_while_a_writer_holds_its_lock() {
+        let dir = std::env::temp_dir().join(format!("pandacode-read-scan-held-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        store.message(&task.id, "user", "Count me.").unwrap();
+        let since = storage::now() - 86_400_000;
+        let expected = store.prompt_activity(since).unwrap();
+        let path = store.path.clone();
+        let shared = Arc::new(Mutex::new(store));
+        // Stands in for the app store, which lives for the whole process: its address is never reused.
+        std::mem::forget(shared.clone());
+        assert!(remember_db_path(&shared, path), "only this test keeps a path");
+
+        let held = shared.lock().unwrap();
+        let (done, answer) = std::sync::mpsc::channel();
+        let scanning = shared.clone();
+        std::thread::spawn(move || {
+            let _ = done.send(tauri::async_runtime::block_on(read_scan(scanning, move |reader| reader.prompt_activity(since))));
+        });
+        let activity = answer.recv_timeout(std::time::Duration::from_secs(30)).expect("the scan waited for the store lock");
+        drop(held);
+        assert_eq!(activity.unwrap(), expected);
+
+        // Any other store still finds its own path, under its lock.
+        let other = Arc::new(Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap()));
+        assert_eq!(db_path(&other).unwrap(), PathBuf::from(":memory:"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
 mod task_agent_tests {
     use super::*;
 
@@ -1012,6 +1097,42 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'sta
         .map_err(|e| e.to_string())?
 }
 
+/// The app's task database path, kept at startup beside its one shared store (`remember_db_path`)
+/// so a read-only scan never waits on the store lock (held by a long write) just to learn it.
+/// Keyed by that store's `Arc` address: the app store lives for the whole process, so the
+/// address is never reused, and any other store (tests, a second `AppState`) is not mistaken
+/// for it.
+static DB_PATH: std::sync::OnceLock<(usize, PathBuf)> = std::sync::OnceLock::new();
+
+/// Remembers `path` as `store`'s database. Once per process; a later call changes nothing.
+fn remember_db_path(store: &Arc<Mutex<Store>>, path: PathBuf) -> bool {
+    DB_PATH.set((Arc::as_ptr(store) as usize, path)).is_ok()
+}
+
+/// `store`'s database path: the one kept at startup for the app store, read without its lock;
+/// any other store's copied under its lock.
+fn db_path(store: &Arc<Mutex<Store>>) -> Result<PathBuf> {
+    match DB_PATH.get() {
+        Some((owner, path)) if *owner == Arc::as_ptr(store) as usize => Ok(path.clone()),
+        _ => Ok(store.lock().map_err(|e| e.to_string())?.path.clone()),
+    }
+}
+
+/// Runs a long read (a scan of the messages table) on its own read-only connection to the task
+/// database, never under the shared store lock: the app store's path is known without it.
+/// Call it on the blocking pool (`read_scan`).
+fn scan_read_only<T>(store: &Arc<Mutex<Store>>, scan: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
+    scan(&Store::open_read_only(&db_path(store)?)?)
+}
+
+/// `scan_read_only` on the blocking pool.
+async fn read_scan<T: Send + 'static>(
+    store: Arc<Mutex<Store>>,
+    scan: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+) -> Result<T> {
+    blocking(move || scan_read_only(&store, scan)).await
+}
+
 #[tauri::command(rename = "delete_session")]
 async fn delete_session_with_attachment_cleanup(
     app: tauri::AppHandle,
@@ -1042,9 +1163,11 @@ async fn delete_session_with_attachment_cleanup(
     Ok(deleted)
 }
 
+/// Store lock alone, on the blocking pool.
 #[tauri::command]
 async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>> {
-    state.store.lock().map_err(|e| e.to_string())?.projects()
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.projects()).await
 }
 #[tauri::command]
 async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project> {
@@ -1164,14 +1287,17 @@ async fn relink_project(state: State<'_, AppState>, project_id: String, path: St
     }
     Ok(project)
 }
+/// Agents then store (`listed_sessions`), on the blocking pool.
 #[tauri::command]
-async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>> {
-    listed_sessions(&state)
+async fn list_sessions(app: tauri::AppHandle) -> Result<Vec<Session>> {
+    blocking(move || listed_sessions(&app.state::<AppState>())).await
 }
 /// The ids among `ids` with no task row at all (launch restore drops their saved drafts).
+/// Store lock alone, on the blocking pool.
 #[tauri::command]
 async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Result<Vec<String>> {
-    state.store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.missing_sessions(&ids)).await
 }
 /// Tasks as the sidebar shows them, with stale running states settled.
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
@@ -1194,10 +1320,11 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     architect::wake(app);
     Ok(())
 }
+/// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
     let since = storage::now() - 366 * 86_400_000;
-    state.store.lock().map_err(|e| e.to_string())?.prompt_activity(since)
+    read_scan(state.store.clone(), move |store| store.prompt_activity(since)).await
 }
 #[tauri::command]
 async fn pin_session(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, pinned: bool) -> Result<Session> {
@@ -1217,15 +1344,16 @@ async fn reorder_sessions(app: tauri::AppHandle, state: State<'_, AppState>, ses
     let _ = app.emit("sessions-changed", ());
     Ok(tasks)
 }
+/// Agents then store (the existing order), on the blocking pool.
 #[tauri::command]
-async fn get_task(state: State<'_, AppState>, session_id: String) -> Result<Session> {
-    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    Ok(reconcile_inactive_task(
-        &store,
-        &agents,
-        store.session(&session_id)?,
-    ))
+async fn get_task(app: tauri::AppHandle, session_id: String) -> Result<Session> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        Ok(reconcile_inactive_task(&store, &agents, store.session(&session_id)?))
+    })
+    .await
 }
 #[tauri::command]
 async fn configure_window_appearance(
@@ -1455,11 +1583,9 @@ async fn get_messages(
     session_id: String,
     before_id: Option<i64>,
 ) -> Result<MessagePage> {
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .message_page(&session_id, before_id)
+    // Store lock alone, on the blocking pool.
+    let store = state.store.clone();
+    blocking(move || store.lock().map_err(|e| e.to_string())?.message_page(&session_id, before_id)).await
 }
 
 #[tauri::command]
@@ -3158,10 +3284,42 @@ async fn list_providers(app: tauri::AppHandle, force: Option<bool>, device_id: O
     if let Some(remote) = remote::catalog::providers(&app, device_id, force).await? {
         return Ok(remote);
     }
-    serde_json::to_value(local_providers(force).await).map_err(|e| e.to_string())
+    serde_json::to_value(listed_providers(force).await).map_err(|e| e.to_string())
 }
-/// This computer's harnesses; `force` drops the cached ACP catalogs first.
+/// This computer's harnesses for the app, from path lookups only: each version is the
+/// remembered one, else "". Versions unknown or due for a check are probed in the background and
+/// arrive as the `provider-versions` event, `{ versions: { [providerId]: string }, done: bool }`
+/// ('' for a failed or timed-out probe; `done` once no round is pending), announced by
+/// `announce_provider_versions`.
+async fn listed_providers(force: bool) -> Vec<providers::ProviderInfo> {
+    forget_provider_details(force);
+    tauri::async_runtime::spawn_blocking(providers::discover_now).await.unwrap_or_default()
+}
+/// This computer's harnesses with every version answered (joins the background probe and waits
+/// up to 8 s for versions never asked; the saved cache usually answers). For callers that show
+/// versions but cannot hear `provider-versions`.
 pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo> {
+    forget_provider_details(force);
+    tauri::async_runtime::spawn_blocking(providers::discover)
+        .await
+        .unwrap_or_default()
+}
+/// This computer's harnesses for callers that never show a version: remembered versions only,
+/// never waits on or starts a `--version` probe.
+pub(crate) async fn installed_providers() -> Vec<providers::ProviderInfo> {
+    tauri::async_runtime::spawn_blocking(providers::discover_installed).await.unwrap_or_default()
+}
+/// Sends every CLI version round's report to the webview as `provider-versions`.
+fn announce_provider_versions(app: tauri::AppHandle) {
+    providers::set_version_announcer(move |report| {
+        // Called by the probe thread with no lock held.
+        if let Err(error) = app.emit("provider-versions", &report) {
+            eprintln!("PandaCode: could not announce CLI versions: {error}");
+        }
+    });
+}
+/// `force` drops the cached ACP catalogs and CLI versions (failures included).
+fn forget_provider_details(force: bool) {
     if force {
         providers::acp_catalog::invalidate("antigravity");
         providers::acp_catalog::invalidate("grok");
@@ -3169,10 +3327,8 @@ pub(crate) async fn local_providers(force: bool) -> Vec<providers::ProviderInfo>
         providers::acp_catalog::invalidate("zcode");
         providers::acp_catalog::invalidate("hermes");
         providers::acp_catalog::invalidate("cursor");
+        providers::forget_versions();
     }
-    tauri::async_runtime::spawn_blocking(providers::discover)
-        .await
-        .unwrap_or_default()
 }
 #[tauri::command]
 async fn list_provider_models(app: tauri::AppHandle, provider: String, force: Option<bool>, device_id: Option<String>) -> Result<serde_json::Value> {
@@ -4809,6 +4965,8 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         crash_guard::narrow_webview_data(&webview_data);
     }
     secret_store::setup(&dir);
+    providers::load_version_cache(&dir);
+    announce_provider_versions(app.handle().clone());
     providers::sweep_cline_mcp_settings(&dir);
     provider_settings::setup(&dir)?;
     connections::setup(&dir)?;
@@ -4827,8 +4985,11 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
     }
     session_state::init(&dir);
     prune_session_state(&store);
+    let db_path = store.path.clone();
+    let store = Arc::new(Mutex::new(store));
+    remember_db_path(&store, db_path);
     app.manage(AppState {
-        store: Arc::new(Mutex::new(store)),
+        store,
         agents: Arc::new(Mutex::new(HashMap::new())),
         terminals: Arc::new(Mutex::new(HashMap::new())),
         shutdown: AtomicU8::new(0),
@@ -5165,10 +5326,10 @@ pub fn run() {
                 agents_dock::agents_dock_pin,
                 support::open_support,
                 support::support_details,
-                model_routing::model_routing_status,
+                model_routing::model_routing_status_command,
                 model_routing::model_routing_exclusions,
                 model_routing::model_routing_set_exclusions,
-                model_routing::model_routing_configure,
+                model_routing::model_routing_configure_command,
                 model_routing::model_routing_prepare,
                 model_routing::model_routing_route,
                 model_routing::model_routing_tiers,

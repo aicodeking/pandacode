@@ -1,9 +1,19 @@
 import type { AgentEvent, BrowserElement, BrowserStatus, TerminalEvent } from './types';
 
 export const preview = !('__TAURI_INTERNALS__' in window);
+/** One import, shared by every caller until it settles: boot fires dozens of IPC calls at once, and a dynamic
+ * `import()` per call makes WebKit fetch the module again for each one that starts before the first resolves. A failed
+ * import is forgotten, so the next call tries again instead of failing for the rest of the launch. */
+function sharedImport<M>(load: () => Promise<M>): () => Promise<M> {
+  let pending: Promise<M> | undefined;
+  return () => pending ??= load().catch(error => { pending = undefined; throw error; });
+}
+const previewImport = sharedImport(() => import('./preview'));
+const coreImport = sharedImport(() => import('@tauri-apps/api/core'));
+const eventImport = sharedImport(() => import('@tauri-apps/api/event'));
 export async function call<T>(command: string, args: Record<string, unknown> = {}): Promise<T> {
-  if (preview) return (await import('./preview')).invoke<T>(command, args);
-  return (await import('@tauri-apps/api/core')).invoke<T>(command, args);
+  if (preview) return (await previewImport()).invoke<T>(command, args);
+  return (await coreImport()).invoke<T>(command, args);
 }
 export async function subscribe(name: 'voice-event', callback: (event: import('./voice-types').VoiceEvent) => void): Promise<() => void>;
 export async function subscribe(name: 'voice://local-model', callback: (event: import('./voice-types').VoiceLocalModelEvent) => void): Promise<() => void>;
@@ -43,8 +53,8 @@ export async function subscribe(name: 'browser-state', callback: (event: Browser
 export async function subscribe(name: 'browser-element', callback: (event: BrowserElement) => void): Promise<() => void>;
 export async function subscribe(name: 'moodboards-changed', callback: (event: { projectId: string; boardId: string }) => void): Promise<() => void>;
 export async function subscribe(name: string, callback: (event: any) => void): Promise<() => void> {
-  if (preview) return (await import('./preview')).listen(name, callback);
-  return (await import('@tauri-apps/api/event')).listen(name, event => callback(event.payload));
+  if (preview) return (await previewImport()).listen(name, callback);
+  return (await eventImport()).listen(name, event => callback(event.payload));
 }
 export async function chooseFolder(title = 'Open a project in PandaCode'): Promise<string | null> {
   if (preview) return '/Users/you/Projects/new-project';
@@ -53,7 +63,7 @@ export async function chooseFolder(title = 'Open a project in PandaCode'): Promi
 }
 /** Files to attach to a message. The preview returns a fixed sample selection. */
 export async function chooseAttachments(): Promise<string[]> {
-  if (preview) return (await import('./preview')).samplePick('files');
+  if (preview) return (await previewImport()).samplePick('files');
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ multiple: true, title: 'Attach to your message', filters: [
     { name: 'Images and documents', extensions: ['png', 'jpg', 'jpeg', 'webp', 'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'yaml', 'yml', 'xml', 'html', 'rtf', 'doc', 'docx', 'odt', 'pages', 'key', 'numbers', 'pptx', 'xlsx', 'epub', 'log'] },
     { name: 'All files', extensions: ['*'] },
@@ -67,7 +77,7 @@ export async function chooseVsix(): Promise<string | null> {
   return typeof result === 'string' ? result : null;
 }
 export async function chooseAttachmentFolder(): Promise<string | null> {
-  if (preview) return (await import('./preview')).samplePick('folder')[0] ?? null;
+  if (preview) return (await previewImport()).samplePick('folder')[0] ?? null;
   const result = await (await import('@tauri-apps/plugin-dialog')).open({ directory: true, multiple: false, title: 'Attach a folder to your message' });
   return typeof result === 'string' ? result : null;
 }

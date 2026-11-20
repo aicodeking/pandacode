@@ -26,6 +26,10 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   let commands: SlashCommand[] = [], warnings: string[] = [], visibleCommands: SlashCommand[] = [];
   let context = options.contextKey(), loadedAt = 0, loading = false, slow = false, loadError = '';
   let active = '', opened = false, disposed = false, composing = false, dismissed = '', generation = 0, positionFrame = 0;
+  // The token the open menu last rendered from an event (`tokenKey`), so the input, keyup and selectionchange that one
+  // keystroke fires render once (as in file-mentions.ts). Cleared by anything else that changes what the menu shows.
+  let renderedFor = '';
+  const tokenKey = (current: Token): string => `${current.start}:${current.end}:${current.query}`;
 
   function token(): Token | undefined {
     if (textarea.disabled || textarea.readOnly || composing || document.activeElement !== textarea) return;
@@ -42,6 +46,7 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   }
   function close(suppress = false): void {
     if (suppress) dismissed = textarea.value;
+    renderedFor = '';
     if (!opened) return;
     opened = false; cancelAnimationFrame(positionFrame); positionFrame = 0;
     restoreAttributes(); hidePopover(panel);
@@ -158,9 +163,10 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
   }
   function refresh(force = false): void {
     if (disposed) return;
-    if (force) { generation++; loadedAt = 0; loading = false; }
+    if (force) { generation++; loadedAt = 0; loading = false; renderedFor = ''; }
     const key = options.contextKey();
     if (key !== context) {
+      renderedFor = '';
       context = key; generation++; loadedAt = 0; loading = false; loadError = ''; active = '';
       commands = []; warnings = []; rows.clear(); list.replaceChildren(); dismissed = '';
       panel.querySelector('.slash-menu-logo')!.innerHTML = options.provider ? providerLogo(options.provider()) : icon('command');
@@ -174,7 +180,11 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
       panel.querySelector('.slash-menu-logo')!.innerHTML = options.provider ? providerLogo(options.provider()) : icon('command');
       (textarea.closest('dialog[open]') ?? document.body).append(panel);
       render(); showPopover(panel, textarea);
-    } else render();
+      renderedFor = tokenKey(current);
+    } else if (renderedFor !== tokenKey(current)) {
+      // The query or the caret's token moved; a repeat event for the same keystroke leaves the menu as it is.
+      render(); renderedFor = tokenKey(current);
+    }
     // Runtime changes already refreshed the harness metadata. Only the explicit
     // refresh button asks discovery to start a new provider process.
     void load();

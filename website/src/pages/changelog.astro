@@ -35,7 +35,11 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
             {release.title && <h3>{release.title}</h3>}
             {release.blocks.map(block => block.kind === 'list'
               ? <ul>{block.items.map(item => <li><Fragment set:html={item.html} />{item.children.length > 0 && <ul>{item.children.map(child => <li set:html={child} />)}</ul>}</li>)}</ul>
-              : <p set:html={block.html} />)}
+              : block.kind === 'heading'
+                ? (block.level === 3
+                  ? (release.title ? <h5 class="release-subsection" set:html={block.html} /> : <h4 class="release-subsection" set:html={block.html} />)
+                  : (release.title ? <h4 set:html={block.html} /> : <h3 set:html={block.html} />))
+                : <p set:html={block.html} />)}
           </div>
         </li>
       ))}
@@ -43,3 +47,11 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
   </div>
   <p class="changelog-note section-width">PandaCode is an Alpha preview. macOS builds are signed and notarized by Apple. Windows builds aren’t Authenticode signed yet, so Windows may warn on first launch. Download builds only from <a href="https://github.com/aicodeking/pandacode/releases">GitHub Releases</a>, or build from source. Linux needs X11 or XWayland.</p>
 </Page>
+
+<style>
+  .release-subsection {
+    margin: 0;
+    font: inherit;
+    font-weight: bold;
+  }
+</style>

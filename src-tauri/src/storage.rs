@@ -165,6 +165,44 @@ type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
 pub const SCHEMA_VERSION: i64 = 37;
+/// A team snapshot's `status` parsed from its row, NULL for a corrupt snapshot.
+macro_rules! team_status_sql {
+    () => { "CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END" };
+}
+/// Each team's `status` beside its snapshot (megabytes for a large team), so a listing reads it
+/// without parsing JSON and a save makes SQLite parse nothing either: `save_team` writes it from
+/// the value it already has. Created at every open, never by a migration, so `user_version` stays
+/// put and 0.3.129 still opens the database. `status` is untyped so a backfilled non-text status
+/// keeps its type and reads exactly as it does from the row.
+///
+/// The triggers keep it honest without parsing anything: any write to a snapshot (open-time
+/// recovery, other modules' SQL, an older build after a rollback, since triggers live in the
+/// schema) drops that team's entry, and `team_status` then parses the row. `save_team` puts the
+/// entry back in the same savepoint. The index an unreleased build of this branch kept on the
+/// parsed status is dropped: SQLite parsed the old and new snapshot on every save to maintain it.
+const TEAM_STATUS_SCHEMA: &str = "DROP INDEX IF EXISTS architect_teams_status;
+    CREATE TABLE IF NOT EXISTS architect_team_status(session_id TEXT PRIMARY KEY,status);
+    CREATE TRIGGER IF NOT EXISTS architect_team_status_insert AFTER INSERT ON architect_teams
+      BEGIN DELETE FROM architect_team_status WHERE session_id=NEW.session_id; END;
+    CREATE TRIGGER IF NOT EXISTS architect_team_status_update AFTER UPDATE ON architect_teams
+      BEGIN DELETE FROM architect_team_status WHERE session_id IN (OLD.session_id,NEW.session_id); END;
+    CREATE TRIGGER IF NOT EXISTS architect_team_status_delete AFTER DELETE ON architect_teams
+      BEGIN DELETE FROM architect_team_status WHERE session_id=OLD.session_id; END;";
+const TEAM_STATUS_TRIGGERS: [&str; 3] = ["architect_team_status_insert", "architect_team_status_update", "architect_team_status_delete"];
+/// Parses only the snapshots without an entry: none on a typical launch, the few teams the
+/// restart just interrupted, or every team the first time (or after the triggers went missing).
+pub(crate) const TEAM_STATUS_BACKFILL: &str = concat!("INSERT INTO architect_team_status(session_id,status) SELECT session_id,", team_status_sql!(),
+    " FROM architect_teams t WHERE NOT EXISTS(SELECT 1 FROM architect_team_status s WHERE s.session_id=t.session_id)");
+/// Interrupts the teams a quit left running or waiting. The side table picks them (entries are
+/// complete once `TEAM_STATUS_BACKFILL` has run in the same transaction), and the parsed status
+/// confirms each, so the rows changed are exactly those the snapshots alone would select.
+const TEAM_RECOVERY: &str = concat!("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
+    '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
+    WHERE session_id IN (SELECT session_id FROM architect_team_status WHERE status IN ('running','waiting')) AND ", team_status_sql!(), " IN ('running','waiting')");
+const TEAM_STATUS_SAVED: &str = "SELECT status FROM architect_team_status WHERE session_id=?1";
+const TEAM_STATUS_BY_ROW: &str = concat!("SELECT ", team_status_sql!(), " FROM architect_teams WHERE session_id=?1");
+const TEAM_SAVE: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
+const TEAM_STATUS_SAVE: &str = "INSERT INTO architect_team_status(session_id,status) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET status=excluded.status";
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 
@@ -248,6 +286,49 @@ impl Store {
             path: path.into(),
             restart_interrupted: 0,
         })
+    }
+
+    /// A team's stored `status`; None without a team row, for a corrupt snapshot, or for a
+    /// status that is not a string. Reads `architect_team_status`; a team without an entry there
+    /// (written since by other SQL, or a database only ever opened read-only by this build, which
+    /// may lack the table) parses its row as before.
+    pub(crate) fn team_status(&self, sid: &str) -> Option<String> {
+        let text = |value: rusqlite::types::ValueRef<'_>| value.as_str().ok().map(str::to_owned);
+        let saved = self.db.prepare_cached(TEAM_STATUS_SAVED)
+            .and_then(|mut query| query.query_row([sid], |row| row.get_ref(0).map(text)).optional());
+        if let Ok(Some(status)) = saved {
+            return status;
+        }
+        let parsed = self.db.prepare_cached(TEAM_STATUS_BY_ROW)
+            .and_then(|mut query| query.query_row([sid], |row| row.get_ref(0).map(text)));
+        parsed.ok().flatten()
+    }
+
+    /// Writes a team's snapshot and its `status` in one savepoint (a caller may already hold a
+    /// transaction), so a listing never reads a status the snapshot does not have. SQLite parses
+    /// no JSON here: the status comes from the value being saved.
+    pub(crate) fn save_team(&self, sid: &str, content: &str, status: &str) -> Result<()> {
+        self.db.execute_batch("SAVEPOINT team_save").map_err(|e| e.to_string())?;
+        let written = self.db.prepare_cached(TEAM_SAVE).and_then(|mut query| query.execute(params![sid, content]))
+            .and_then(|_| self.db.prepare_cached(TEAM_STATUS_SAVE)?.execute(params![sid, status]));
+        let end = if written.is_ok() { "RELEASE team_save" } else { "ROLLBACK TO team_save; RELEASE team_save" };
+        let ended = self.db.execute_batch(end);
+        written.map_err(|e| e.to_string())?;
+        ended.map_err(|e| e.to_string())
+    }
+
+    /// Creates the status table and its triggers and drops the old status index. Without all
+    /// three triggers (first open by this build, or a migration that rebuilt `architect_teams`)
+    /// the entries may be stale, so they are cleared for `TEAM_STATUS_BACKFILL` to rebuild.
+    fn prepare_team_status(db: &mut Connection) -> Result<()> {
+        let tx = db.transaction().map_err(|e| e.to_string())?;
+        let triggers: i64 = tx.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND tbl_name='architect_teams' AND name IN (?1,?2,?3)",
+            TEAM_STATUS_TRIGGERS, |row| row.get(0)).map_err(|e| e.to_string())?;
+        tx.execute_batch(TEAM_STATUS_SCHEMA).map_err(|e| e.to_string())?;
+        if triggers != TEAM_STATUS_TRIGGERS.len() as i64 {
+            tx.execute_batch("DELETE FROM architect_team_status").map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
     }
 
     pub(crate) fn launch_session_project(&self, sid: &str) -> Result<Option<(String, String)>> {
@@ -646,6 +727,7 @@ impl Store {
             }
             migration.commit().map_err(|e| e.to_string())?;
         }
+        Self::prepare_team_status(&mut db)?;
         let recovery = db.transaction().map_err(|e| e.to_string())?;
         // Only rows from before typed coordination existed are eligible for the
         // narrowly scoped legacy display projection. New user copies stay user text.
@@ -691,9 +773,14 @@ impl Store {
                 [],
             )
             .map_err(|e| e.to_string())?;
-        recovery.execute_batch("UPDATE architect_teams SET content=json_set(content,'$.status','interrupted','$.pendingTurn',NULL,'$.error','PandaCode restarted. Resume explicitly to continue.','$.generation',COALESCE(json_extract(content,'$.generation'),0)+1,'$.revision',COALESCE(json_extract(content,'$.revision'),0)+1,
-            '$.workers',json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','stopped') ELSE value END)) FROM json_each(content,'$.workers') WHERE type='object')))
-            WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END IN ('running','waiting');").map_err(|e|e.to_string())?;
+        // Every snapshot written since the last open (or all of them after `prepare_team_status`
+        // cleared the entries) gets its entry first, so the side table names every running or
+        // waiting team and the recovery parses only those snapshots. Its writes drop the entries
+        // of the teams it interrupted (the update trigger), so a second backfill in the same
+        // transaction records them as interrupted.
+        recovery.execute_batch(TEAM_STATUS_BACKFILL).map_err(|e| e.to_string())?;
+        recovery.execute_batch(TEAM_RECOVERY).map_err(|e| e.to_string())?;
+        recovery.execute_batch(TEAM_STATUS_BACKFILL).map_err(|e| e.to_string())?;
         recovery.commit().map_err(|e| e.to_string())?;
         let ranked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE sidebar_order IS NOT NULL)", [], |r| r.get(0)).map_err(|e| e.to_string())?;
         if ranked { rank_published_drafts(&db)?; }
@@ -2822,6 +2909,198 @@ mod tests {
         assert_eq!(store.settle_archived().unwrap(), 0);
     }
 
+    fn saved_status(store: &Store, sid: &str) -> Option<Option<String>> {
+        store.db.query_row("SELECT status FROM architect_team_status WHERE session_id=?1", [sid], |row| row.get(0)).optional().unwrap()
+    }
+
+    #[test]
+    fn team_status_reads_the_side_table_without_parsing_the_snapshot() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = store.db.prepare(&format!("EXPLAIN QUERY PLAN {TEAM_STATUS_SAVED}")).unwrap()
+            .query_map(["t"], |row| row.get::<_, String>(3)).unwrap().map(|row| row.unwrap()).collect();
+        assert_eq!(plan, ["SEARCH architect_team_status USING INDEX sqlite_autoindex_architect_team_status_1 (session_id=?)"]);
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        store.save_team("t", r#"{"status":"running"}"#, "running").unwrap();
+        assert_eq!(saved_status(&store, "t"), Some(Some("running".into())));
+        assert_eq!(store.team_status("t").as_deref(), Some("running"));
+        // The entry, not the row, answers: a status the row does not hold proves it.
+        store.db.execute("UPDATE architect_team_status SET status='waiting' WHERE session_id='t'", []).unwrap();
+        assert_eq!(store.team_status("t").as_deref(), Some("waiting"));
+        // Any other write to the snapshot drops the entry, and the row is parsed.
+        store.db.execute("UPDATE architect_teams SET content='{\"status\":\"completed\"}' WHERE session_id='t'", []).unwrap();
+        assert_eq!(saved_status(&store, "t"), None);
+        assert_eq!(store.team_status("t").as_deref(), Some("completed"));
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES('bad','{broken')", []).unwrap();
+        assert_eq!(store.team_status("bad"), None);
+        assert_eq!(store.team_status("none"), None);
+        store.save_team("t", r#"{"status":"paused"}"#, "paused").unwrap();
+        store.db.execute("DELETE FROM architect_teams WHERE session_id='t'", []).unwrap();
+        assert_eq!(saved_status(&store, "t"), None, "a deleted team leaves no entry");
+        assert_eq!(store.team_status("t"), None);
+        assert!(store.db.query_row("PRAGMA integrity_check", [], |row| row.get::<_, String>(0)).unwrap() == "ok");
+    }
+
+    #[test]
+    fn a_team_save_makes_sqlite_parse_no_json() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        // Indexes, triggers and the tables themselves are the only work SQLite adds to a save.
+        let parsing: Vec<String> = store.db.prepare("SELECT name FROM sqlite_schema WHERE tbl_name IN ('architect_teams','architect_team_status') AND sql LIKE '%json%'").unwrap()
+            .query_map([], |row| row.get(0)).unwrap().map(|row| row.unwrap()).collect();
+        assert!(parsing.is_empty(), "{parsing:?}");
+        assert!(!TEAM_SAVE.contains("json") && !TEAM_STATUS_SAVE.contains("json"));
+        let indexed: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='architect_teams_status')", [], |row| row.get(0)).unwrap();
+        assert!(!indexed, "the old status index is gone");
+    }
+
+    #[test]
+    fn a_team_save_writes_the_snapshot_and_status_together() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        store.save_team("t", r#"{"status":"running"}"#, "running").unwrap();
+        store.db.execute_batch("CREATE TEMP TRIGGER reject_status BEFORE INSERT ON main.architect_team_status BEGIN SELECT RAISE(ABORT,'status write failed'); END;").unwrap();
+        assert!(store.save_team("t", r#"{"status":"completed"}"#, "completed").unwrap_err().contains("status write failed"));
+        let content: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id='t'", [], |row| row.get(0)).unwrap();
+        assert_eq!(content, r#"{"status":"running"}"#, "the snapshot rolled back with its status");
+        assert_eq!(saved_status(&store, "t"), Some(Some("running".into())));
+        store.db.execute_batch("DROP TRIGGER temp.reject_status;
+            CREATE TEMP TRIGGER reject_team BEFORE UPDATE ON main.architect_teams BEGIN SELECT RAISE(ABORT,'team write failed'); END;").unwrap();
+        assert!(store.save_team("t", r#"{"status":"completed"}"#, "completed").is_err());
+        assert_eq!(store.team_status("t").as_deref(), Some("running"));
+        // Inside a caller's transaction the savepoint nests and commits with it.
+        store.db.execute_batch("DROP TRIGGER temp.reject_team; BEGIN").unwrap();
+        store.save_team("t", r#"{"status":"waiting"}"#, "waiting").unwrap();
+        store.db.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(store.team_status("t").as_deref(), Some("running"));
+        assert_eq!(saved_status(&store, "t"), Some(Some("running".into())));
+    }
+
+    #[test]
+    fn team_status_survives_older_builds_and_never_bumps_the_schema() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-status-{}", id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+            store.save_team("t", r#"{"status":"running"}"#, "running").unwrap();
+            store.save_team("u", r#"{"status":"completed"}"#, "completed").unwrap();
+        }
+        {
+            // 0.3.129 after a rollback: it knows nothing of the table, but the triggers are in the
+            // schema, so its write drops the entry.
+            let db = Connection::open(&path).unwrap();
+            db.execute("UPDATE architect_teams SET content='{\"status\":\"paused\"}' WHERE session_id='t'", []).unwrap();
+            assert_eq!(db.query_row("SELECT COUNT(*) FROM architect_team_status WHERE session_id='t'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+        }
+        let read_only = Store::open_read_only(&path).unwrap();
+        assert_eq!(read_only.team_status("t").as_deref(), Some("paused"), "parses the row without an entry");
+        drop(read_only);
+        {
+            // A database whose triggers went missing (an unreleased build of this branch, or a
+            // migration that rebuilt the table) holds stale entries; the old index is still there.
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("PRAGMA foreign_keys=OFF; DROP TRIGGER architect_team_status_update;
+                UPDATE architect_teams SET content='{\"status\":\"ready\"}' WHERE session_id='u';
+                INSERT INTO architect_team_status(session_id,status) VALUES('t','running');
+                CREATE INDEX architect_teams_status ON architect_teams(session_id,(CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END));").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(saved_status(&store, "t"), Some(Some("paused".into())), "rebuilt from the snapshot");
+        assert_eq!(saved_status(&store, "u"), Some(Some("ready".into())));
+        assert_eq!(store.team_status("u").as_deref(), Some("ready"));
+        let schema: (i64, i64) = store.db.query_row("SELECT (SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'architect_team_status_%'),
+            (SELECT COUNT(*) FROM sqlite_schema WHERE name='architect_teams_status')", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(schema, (3, 0));
+        drop(store);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn a_restart_refreshes_the_status_of_interrupted_teams() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-restart-{}", id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        {
+            let store = Store::open(&path).unwrap();
+            store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+            store.save_team("t", r#"{"status":"running","workers":[]}"#, "running").unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        assert_eq!(saved_status(&store, "t"), Some(Some("interrupted".into())));
+        assert_eq!(store.team_status("t").as_deref(), Some("interrupted"));
+        drop(store);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn launch_recovery_picks_teams_from_the_side_table() {
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = store.db.prepare(&format!("EXPLAIN QUERY PLAN {TEAM_RECOVERY}")).unwrap()
+            .query_map([], |row| row.get::<_, String>(3)).unwrap().map(|row| row.unwrap()).collect();
+        assert!(plan.iter().any(|step| step.starts_with("SEARCH architect_teams USING INDEX sqlite_autoindex_architect_teams_1")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.starts_with("SCAN architect_teams")), "{plan:?}");
+        drop(store);
+
+        const RUNNING: &str = r#"{"status":"running","legacyPromptThroughId":0,"generation":1,"workers":[{"status":"waiting"},{"status":"done"}]}"#;
+        const WAITING: &str = r#"{"status":"waiting","legacyPromptThroughId":0,"workers":[]}"#;
+        const IDLE: &str = r#"{"status":"idle","legacyPromptThroughId":0,"workers":[{"status":"running"}]}"#;
+        const PAUSED: &str = r#"{"status":"paused","legacyPromptThroughId":0}"#;
+        let team = |db: &Connection, sid: &str| -> String {
+            db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [sid], |row| row.get(0)).unwrap()
+        };
+        let assert_recovered = |store: &Store| {
+            for (sid, workers) in [("run", r#"["stopped","done"]"#), ("wait", "[]")] {
+                let (status, error, workers_now): (String, String, String) = store.db.query_row(
+                    "SELECT json_extract(content,'$.status'),json_extract(content,'$.error'),
+                        (SELECT json_group_array(json_extract(value,'$.status')) FROM json_each(content,'$.workers'))
+                     FROM architect_teams WHERE session_id=?1", [sid], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+                assert_eq!((status.as_str(), workers_now.as_str()), ("interrupted", workers), "{sid}");
+                assert!(error.contains("PandaCode restarted"));
+                assert_eq!(saved_status(store, sid), Some(Some("interrupted".into())));
+            }
+            assert_eq!(team(&store.db, "idle"), IDLE, "an idle team is left byte for byte");
+            assert_eq!(saved_status(store, "idle"), Some(Some("idle".into())));
+            assert_eq!(team(&store.db, "stale"), PAUSED);
+        };
+        // Each case starts from a database whose snapshots say run, wait and idle, then reopens.
+        let cases: [(&str, &str); 4] = [
+            ("entries", ""),
+            ("table missing", "DROP TABLE architect_team_status;"),
+            ("written without entries", "DELETE FROM architect_team_status;"),
+            // Triggers missing: entries may be stale both ways, so they are rebuilt first.
+            ("stale", "DROP TRIGGER architect_team_status_update;
+                UPDATE architect_team_status SET status='idle' WHERE session_id='run';
+                UPDATE architect_team_status SET status='running' WHERE session_id IN ('idle','stale');"),
+        ];
+        for (case, damage) in cases {
+            let directory = std::env::temp_dir().join(format!("pandacode-team-recovery-{}", id()));
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("store.sqlite");
+            {
+                let store = Store::open(&path).unwrap();
+                store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+                for (sid, content, status) in [("run", RUNNING, "running"), ("wait", WAITING, "waiting"), ("idle", IDLE, "idle"), ("stale", PAUSED, "paused")] {
+                    store.save_team(sid, content, status).unwrap();
+                }
+                store.db.execute_batch(damage).unwrap();
+            }
+            let store = Store::open(&path).unwrap();
+            assert_recovered(&store);
+            let triggers: i64 = store.db.query_row("SELECT COUNT(*) FROM sqlite_schema WHERE type='trigger' AND name LIKE 'architect_team_status_%'", [], |row| row.get(0)).unwrap();
+            assert_eq!(triggers, 3, "{case}");
+            drop(store);
+            // A second open finds nothing left to recover and changes nothing.
+            let before: Vec<String> = ["run", "wait", "idle"].iter().map(|sid| team(&Connection::open(&path).unwrap(), sid)).collect();
+            let store = Store::open(&path).unwrap();
+            let after: Vec<String> = ["run", "wait", "idle"].iter().map(|sid| team(&store.db, sid)).collect();
+            assert_eq!(before, after, "{case}");
+            drop(store);
+            let _ = std::fs::remove_dir_all(directory);
+        }
+    }
+
     #[test]
     fn a_corrupt_team_row_never_stops_the_store_opening() {
         let directory = std::env::temp_dir().join(format!("pandacode-corrupt-team-{}", id()));
@@ -2839,6 +3118,9 @@ mod tests {
         assert_eq!(broken, "{broken");
         let worker: String = db.query_row("SELECT json_extract(content,'$.workers[0].status') FROM architect_teams WHERE session_id='bad-worker'", [], |row| row.get(0)).unwrap();
         assert_eq!(worker, "stopped");
+        let entries: Vec<(String, Option<String>)> = db.prepare("SELECT session_id,status FROM architect_team_status WHERE session_id IN ('not-json','bad-worker') ORDER BY session_id").unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?))).unwrap().map(|row| row.unwrap()).collect();
+        assert_eq!(entries, [("bad-worker".into(), Some("interrupted".into())), ("not-json".into(), None)]);
         let _ = std::fs::remove_dir_all(directory);
     }
 
