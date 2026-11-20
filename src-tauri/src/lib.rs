@@ -3094,6 +3094,7 @@ fn forget_provider_details(force: bool) {
         providers::acp_catalog::invalidate("hermes");
         providers::acp_catalog::invalidate("cursor");
         providers::forget_versions();
+        providers::acp_catalog::invalidate("gemini");
     }
 }
 #[tauri::command]

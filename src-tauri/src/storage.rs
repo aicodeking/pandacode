@@ -1462,6 +1462,7 @@ impl Store {
             "zcode",
             "hermes",
             "cursor",
+            "gemini",
         ]
         .contains(&provider)
         {
@@ -1650,6 +1651,7 @@ impl Store {
             "zcode",
             "hermes",
             "cursor",
+            "gemini",
         ]
         .contains(&provider)
         {
@@ -2293,6 +2295,7 @@ fn handoff_from_provider(content: &str) -> Option<String> {
                 | "zcode"
                 | "hermes"
                 | "cursor"
+                | "gemini"
         )
     };
     (known(from) && known(to)).then(|| from.to_owned())
@@ -4547,6 +4550,7 @@ mod tests {
                 "zcode",
                 "hermes",
                 "cursor",
+                "gemini",
             ] {
                 for mode in ["ask", "auto", "plan", "full"] {
                     let session = store

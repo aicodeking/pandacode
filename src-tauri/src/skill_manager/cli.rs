@@ -161,6 +161,7 @@ pub(super) fn agent_id(harness: &str) -> Option<&'static str> {
         "hermes" => "hermes-agent",
         "zcode" => "zcode",
         "cursor" => "cursor",
+        "gemini" => "gemini-cli",
         _ => return None,
     })
 }

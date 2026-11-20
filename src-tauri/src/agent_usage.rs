@@ -378,6 +378,7 @@ fn cache() -> &'static HashMap<&'static str, CacheSlot> {
             "zcode",
             "hermes",
             "cursor",
+            "gemini",
         ]
         .into_iter()
         .map(|id| (id, CacheSlot::default()))
@@ -818,6 +819,7 @@ async fn fetch_provider(provider: &str, env: &[(String, String)], refresh: bool,
         "zcode" => Usage::empty(provider, "unsupported", "ZCode does not expose plan usage. Check usage in ZCode itself."),
         "hermes" => Usage::empty(provider, "unsupported", "Hermes Agent does not expose usage limits through its ACP server. Check your LLM provider's dashboard."),
         "cursor" => Usage::empty(provider, "unsupported", "Cursor does not expose plan usage through its ACP server. Check usage in your Cursor dashboard."),
+        "gemini" => Usage::empty(provider, "unsupported", "Gemini CLI does not expose API key quota through its ACP server. Check usage in Google AI Studio."),
         _ => Usage::empty(provider, "unsupported", "Usage limits are not available for this agent."),
     };
     if provider == "claude" && result.status != "signedOut" {
