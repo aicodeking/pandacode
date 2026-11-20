@@ -51,10 +51,6 @@ button .icon{pointer-events:none}
 .header-leading>#view-divider{margin:0}
 .sidebar-actions{container-type:inline-size;container-name:sidebar-actions;padding:var(--space-3);display:grid;gap:var(--space-1)}
 .sidebar-actions button>span{white-space:nowrap}
-.sidebar-actions button[data-startup-wait]{cursor:progress;position:relative}
-.sidebar-actions button[data-startup-wait] kbd{visibility:hidden}
-.sidebar-actions button .startup-progress{position:absolute;right:10px;display:inline-block;font-size:var(--ds-text-meta);line-height:1}
-@media(prefers-reduced-motion:no-preference){html[data-ready] .startup-progress{animation:state-pulse 1.6s ease-in-out infinite}}
 @container sidebar-actions (max-width:14em){.sidebar-actions kbd{display:none}}
 .new-task-button{background:var(--accent);color:var(--on-accent);width:100%;height:var(--control-lg);justify-content:flex-start;padding:0 10px;border-radius:var(--radius-sm);font-size:var(--text-sm);font-weight:var(--weight-medium)}
 .new-task-button .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
@@ -369,8 +365,6 @@ mark{background:color-mix(in srgb,var(--accent) 45%,transparent);color:inherit;b
 .model-picker>span:nth-child(2){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .model-picker>.provider-small,.model-picker>.icon,.mode-picker{flex-shrink:0}
 .model-picker>.icon,.mode-picker>.icon:last-child{width:10px;height:10px;color:var(--muted)}
-/* A model or permissions change saving (or the picker waiting for it to open), or a send held until it lands: the label or icon breathes, opacity only. */
-@media(prefers-reduced-motion:no-preference){.model-picker[aria-busy="true"]>.model-detail,.mode-picker[aria-busy="true"]>*,.send-button[aria-busy="true"]>.icon{animation:state-pulse 1.6s ease-in-out infinite}}
 .provider-small{width:17px;height:17px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0}
 .provider-small .provider-logo{width:17px;height:17px}
 .model-detail{color:var(--muted)}

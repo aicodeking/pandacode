@@ -16,8 +16,8 @@ export type CouncilHost = {
   startTeam(sessionId: string): Promise<boolean>;
   /** A snapshot from native, for the app's usual team update. */
   updated(team: TeamSnapshot): void;
-  /** Keep fixing: a follow-up to the lead. Returns false when a choice refusal was already reported; throws for other failures. */
-  keepFixing(sessionId: string): Promise<boolean>;
+  /** Keep fixing: a follow-up to the lead. Throws with the reason when it cannot go. */
+  keepFixing(sessionId: string): Promise<void>;
   /** Settings → Classic team setup: a thread with no team opens that setup rather than starting an automatic team. */
   classicSetup(): boolean;
   openClassicSetup(anchor: HTMLElement): void;
@@ -404,19 +404,19 @@ export function createCouncil(host: CouncilHost) {
   async function act(sessionId: string, action: 'keep' | 'accept', pressed: HTMLElement): Promise<void> {
     if (actions.get(sessionId)?.busy) return;
     actions.set(sessionId, { busy: true, error: '' }); refresh(sessionId);
-    let error = '', sent = false;
+    let error = '';
     try {
-      if (action === 'keep') sent = await host.keepFixing(sessionId);
+      if (action === 'keep') await host.keepFixing(sessionId);
       else { const team = await host.call<TeamSnapshot | null>('architect_council_accept', { sessionId }); if (team) host.updated(team); }
     } catch (cause) {
       error = `${action === 'keep' ? 'Keep fixing' : 'Accept and finish'} did not go through: ${cause instanceof Error ? cause.message : String(cause)}`;
     }
     // A sent follow-up reads as fixing until native's state changes (which clears this entry).
-    actions.set(sessionId, { busy: false, error, sent: action === 'keep' && sent && !error }); refresh(sessionId);
+    actions.set(sessionId, { busy: false, error, sent: action === 'keep' && !error }); refresh(sessionId);
     // After the composer's own redraw (a send rebuilds it), so focus lands on what stays.
     await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)));
     const again = pressed.isConnected ? pressed : document.querySelector<HTMLElement>(`#composer .council-strip [data-action="${pressed.dataset.action}"]`);
-    (error || (action === 'keep' && !sent) ? again : document.querySelector<HTMLElement>('#composer .council-strip-toggle') ?? document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
+    (error ? again : document.querySelector<HTMLElement>('#composer .council-strip-toggle') ?? document.querySelector<HTMLElement>('#prompt'))?.focus({ preventScroll: true });
   }
   /** The disclosure: the reviewer rows, remembered per thread; collapsed by default. */
   function toggle(sessionId: string): void {

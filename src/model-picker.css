@@ -44,8 +44,6 @@ html[data-theme] .model-menu-tab.is-dim:not(:hover,[aria-selected="true"]){color
 .model-menu-group-heading>:is(.provider-logo,.icon){width:var(--icon-md);height:var(--icon-md);flex-shrink:0}
 .model-menu-group-name{flex:1;min-width:0;margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted);font-size:var(--ds-text-chip);font-weight:var(--weight-regular);letter-spacing:var(--ds-row-tracking)}
 .model-menu-group-heading>span:not(.model-menu-group-name){color:var(--faint);font-size:var(--ds-text-chip);white-space:nowrap}
-/* A refresh that failed behind a saved list: quieter than "Unavailable" (the list still works); the dotted line points to its tip. */
-.model-menu-group-heading>.model-menu-stale{color:var(--muted);text-decoration:underline dotted;text-underline-offset:2px;cursor:help}
 
 .model-menu-option{display:flex;align-items:center;justify-content:flex-start;gap:var(--space-2);width:100%;height:var(--row);padding:0 var(--space-2);border-radius:var(--ds-radius-control);text-align:left;white-space:nowrap;color:var(--ds-row-ink);font-size:var(--ds-text-meta);letter-spacing:var(--ds-row-tracking)}
 .model-menu-option>.provider-logo{width:var(--icon-md);height:var(--icon-md);flex-shrink:0}

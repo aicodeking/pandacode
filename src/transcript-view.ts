@@ -355,23 +355,14 @@ export type TranscriptView<Turn, Views> = ReturnType<typeof mountTranscriptView<
  *  markup (every input of which is in the turn's parts or markupEnv) is identical, and redraws the rest; a reply that
  *  finished formatting while out of the document is formatted again (main.ts staleMarkdown). `keys` are each row's
  *  turn's last message id, which a trim keys what the reader set by (takeTrimmed). */
-export function leftRowsCache<Views>(limit = 2, maxChars = 2_000_000, maxRows = 128) {
+export function leftRowsCache<Views>(limit = 2) {
   type Left = { rows: DrawnRow[]; trimmed: ReadonlyMap<string, Views>; keys: readonly string[] };
   const left = new Map<string, Left>();
   return {
     keep(sessionId: string, kept: Left): void {
       left.delete(sessionId);
       left.set(sessionId, kept);
-      // Find and a long scroll can widen a transcript far past its usual tail. Keep fast returns
-      // for ordinary windows without retaining arbitrarily large detached histories.
-      const weight = (entry: Left) => entry.rows.reduce((sum, row) => sum + row.html.length, 0);
-      const count = (entry: Left) => entry.rows.length + entry.trimmed.size;
-      let chars = 0, rows = 0;
-      for (const entry of left.values()) { chars += weight(entry); rows += count(entry); }
-      for (const [key, entry] of left) {
-        if (left.size <= limit && chars <= maxChars && rows <= maxRows) break;
-        left.delete(key); chars -= weight(entry); rows -= count(entry);
-      }
+      for (const key of left.keys()) { if (left.size <= limit) break; left.delete(key); }
     },
     /** `id`'s rows, once: only rows nothing else took into the document in the meantime. */
     take(id: string): Left | undefined {

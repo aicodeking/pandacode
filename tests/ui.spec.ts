@@ -3663,28 +3663,6 @@ test('state pulses share one phase, whenever they mount', async ({ page }) => {
   expect(apart(phases[0], phases[2]), String(phases)).toBeLessThan(17);
 });
 
-
-test('projects, thread and composer load while provider discovery is pending', async ({ page }) => {
-  await page.route('**/src/preview.ts*', async route => {
-    const response = await route.fetch();
-    const source = await response.text();
-    const marker = /case ["']list_providers["']:/;
-    expect(source).toMatch(marker);
-    await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match}
-      await new Promise(resolve => { window.__releaseBootProviders = resolve; });
-    `)) });
-  });
-  await page.goto('/');
-  await expect(page.locator('#navigation .task-item').first()).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
-  await expect(page.locator('#transcript .message, #transcript .turn-card').first()).toBeVisible();
-  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Draft kept during discovery');
-  expect(await page.evaluate(() => performance.getEntriesByType('resource').some(entry => /diff-viewer|worker\.js/.test(entry.name)))).toBe(false);
-  await page.evaluate(() => (window as any).__releaseBootProviders());
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveValue('Draft kept during discovery');
-  await expect(page.getByRole('button', { name: /^Model: / })).toBeEnabled();
-});
-
 test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
   // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
   // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's

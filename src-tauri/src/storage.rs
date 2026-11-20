@@ -2167,16 +2167,15 @@ impl Store {
 
     pub fn messages(&self, sid: &str, before: Option<i64>) -> Result<Vec<Message>> {
         self.session(sid)?;
-        // Read plain message previews before allocating the saved content.
-        // Structured roles and proven historical coordination candidates need complete JSON for projection.
+        // Read only the assistant preview before allocating the saved response.
         // BLOB substr preserves embedded NUL; four extra bytes keep any partial
         // UTF-8 code point beyond the existing byte-safe display truncation.
-        let mut stmt=self.db.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' OR (m.role='user' AND NOT EXISTS (SELECT 1 FROM architect_teams a WHERE a.session_id=m.session_id AND COALESCE(CASE WHEN json_valid(a.content) THEN json_extract(a.content,'$.legacyPromptThroughId') END,0)>=m.id AND (m.content LIKE 'A teammate sent a message or reported a blocker for this objective: %' OR m.content LIKE 'Review the settled workers for this objective: %'))) THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
+        let mut stmt=self.db.prepare("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id<?2 ORDER BY m.id DESC LIMIT 100").map_err(|e|e.to_string())?;
         let rows = stmt
             .query_map(params![sid, before.unwrap_or(i64::MAX)], |r| {
                 let role: String = r.get(2)?;
                 let content = match r.get_ref(3)? {
-                    rusqlite::types::ValueRef::Blob(bytes) if role == "assistant" || role == "user" => {
+                    rusqlite::types::ValueRef::Blob(bytes) if role == "assistant" => {
                         String::from_utf8_lossy(bytes).into_owned()
                     }
                     _ => r.get(3)?,
@@ -4352,53 +4351,6 @@ mod tests {
         assert!(store
             .configure(&session.id, "claude", &"x".repeat(200), None)
             .is_ok());
-    }
-
-    #[test]
-    fn user_previews_bound_allocation_and_keep_full_content_for_edit_and_copy() {
-        let (store, task) = empty_session();
-        for content in ["a".repeat(128 * 1024), "before\0after".into(), format!("a🌿{}", "🌿".repeat(2 * 1024 * 1024))] {
-            store.message(&task.id, "user", &content).unwrap();
-            let page = store.message_page(&task.id, None).unwrap();
-            let preview = &page.messages.last().unwrap().content;
-            assert!(preview.len() <= 128 * 1024);
-            assert!(preview.capacity() <= 2 * (128 * 1024 + 4));
-            if content.len() <= 128 * 1024 {
-                assert_eq!(preview, &content);
-            } else {
-                let prefix = preview.strip_suffix("\n\n[Message preview truncated at 128 KiB. The provider retains the complete conversation.]").unwrap();
-                assert!(content.starts_with(prefix));
-            }
-            assert_eq!(store.message_content(&task.id, page.messages.last().unwrap().id).unwrap(), content);
-        }
-    }
-
-    #[test]
-    fn long_legacy_coordination_still_projects_before_user_preview_clipping() {
-        let (store, task) = empty_session();
-        store.message(&task.id, "user", "Build the parser").unwrap();
-        let child = store.create_session(&task.project_id, "claude", "default", "ask").unwrap();
-        store.db.execute("INSERT INTO architect_workers(parent_session_id,worker_id,session_id) VALUES(?1,'legacy-worker',?2)", params![task.id, child.id]).unwrap();
-        let summary = serde_json::json!({
-            "round": 1, "readMore": "Use read_worker for a bounded full result when required.",
-            "workers": [{"id":"legacy-worker", "name":"Worker", "status":"completed", "attempt":1,
-                "changed":true, "summary":"private".repeat(32 * 1024), "error":null, "abandoned":false}]
-        });
-        let raw = format!("Review the settled workers for this objective: Build the parser\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{summary}");
-        store.message(&task.id, "user", &raw).unwrap();
-        let legacy_id = store.db.last_insert_rowid();
-        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![task.id, serde_json::json!({"legacyPromptThroughId": legacy_id}).to_string()]).unwrap();
-        let page = store.message_page(&task.id, None).unwrap();
-        assert_eq!(page.messages.last().unwrap().role, "coordination");
-        assert_eq!(page.messages.last().unwrap().content, "Reviewing worker results");
-        assert!(store.message_content(&task.id, legacy_id).is_err());
-        store.message(&task.id, "user", &raw).unwrap();
-        let page = store.message_page(&task.id, None).unwrap();
-        let copied = page.messages.last().unwrap();
-        assert_eq!(copied.role, "user");
-        assert!(copied.content.len() <= 128 * 1024);
-        assert!(copied.content.capacity() <= 2 * (128 * 1024 + 4));
-        assert_eq!(store.message_content(&task.id, copied.id).unwrap(), raw);
     }
 
     #[test]

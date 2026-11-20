@@ -276,47 +276,6 @@ fn same_path(a: &Snapshot, b: &Snapshot, path: &str) -> bool {
         _ => false,
     }
 }
-enum TrackerSlot {
-    Starting(mpsc::Receiver<Tracker>),
-    Ready(Option<Box<Tracker>>),
-}
-
-/// Lazy handle whose `Tracker::start` runs on a background blocking worker while the agent
-/// launches; every caller joins startup before mutating or diffing.
-#[derive(Clone)]
-pub(crate) struct SharedTracker(Arc<Mutex<TrackerSlot>>);
-
-impl SharedTracker {
-    pub(crate) fn spawn(init: impl FnOnce() -> Tracker + Send + 'static) -> Self {
-        let (tx, rx) = mpsc::sync_channel(1);
-        tauri::async_runtime::spawn_blocking(move || {
-            let _ = tx.send(init());
-        });
-        Self(Arc::new(Mutex::new(TrackerSlot::Starting(rx))))
-    }
-
-    pub(crate) fn start_background(root: PathBuf, cache: PathBuf) -> Self {
-        Self::spawn(move || Tracker::start(root, cache))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn ready(tracker: Tracker) -> Self {
-        Self(Arc::new(Mutex::new(TrackerSlot::Ready(Some(Box::new(tracker))))))
-    }
-
-    pub(crate) fn with<R>(&self, f: impl FnOnce(&mut Tracker) -> R) -> Option<R> {
-        let mut slot = self.0.lock().ok()?;
-        if let TrackerSlot::Starting(rx) = &*slot {
-            let received = rx.recv().ok().map(Box::new);
-            *slot = TrackerSlot::Ready(received);
-        }
-        match &mut *slot {
-            TrackerSlot::Ready(Some(tracker)) => Some(f(tracker)),
-            _ => None,
-        }
-    }
-}
-
 impl Tracker {
     pub fn start(root: PathBuf, cache: PathBuf) -> Self {
         let requested_root = root.clone();

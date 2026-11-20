@@ -71,15 +71,7 @@ pub(crate) fn cleanup(store: &Store, root: &Path, project_id: &str) -> Result<bo
 
 #[tauri::command]
 pub async fn chat_create(app: tauri::AppHandle, state: State<'_, AppState>, provider: String, model: String, mode: Option<String>) -> Result<Session> {
-    let (task, inherited) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        let task = create(&store, &root(), &provider, &model, mode.as_deref(), true)?;
-        let inherited = crate::architect::load(&store, &task.id)?;
-        (task, inherited)
-    };
-    if let Some(ref team) = inherited {
-        crate::architect::emit_snapshot(&app, team);
-    }
+    let task = create(&*state.store.lock().map_err(|e| e.to_string())?, &root(), &provider, &model, mode.as_deref(), true)?;
     let _ = app.emit("sessions-changed", ());
     Ok(task)
 }

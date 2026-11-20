@@ -1,8 +1,8 @@
 //! macOS: re-sign PandaCode's own bundle with a stable, per-machine self-signed identity, so
 //! keychain ACLs and privacy (TCC) grants, which pin the code signature, survive updates.
 //! Release builds are ad hoc signed, which gives every version a new identity. The identity
-//! lives in its own keychain beside its random 0600 password in the configured app data dir.
-//! A matching legacy keychain is copied on first use, preserving the signing identity. The certificate is untrusted, which codesign
+//! lives in its own keychain (`~/Library/Keychains/pandacode-signing.keychain-db`), unlocked by a
+//! random password kept 0600 in the app data dir. The certificate is untrusted, which codesign
 //! accepts when the identity is named by its SHA-1, and the key's partition list lets codesign
 //! use it without a prompt. A bundle signed by anyone else (Developer ID) is left alone.
 //! Elsewhere every entry point is a no-op.
@@ -20,22 +20,6 @@ fn bundle_of(exe: &Path) -> Option<PathBuf> {
     let app = contents.parent()?;
     (macos.file_name()? == "MacOS" && contents.file_name()? == "Contents" && app.extension()? == "app")
         .then(|| app.to_path_buf())
-}
-
-/// Both the keychain and its password belong to this build's configured data folder.
-/// Keeping them together prevents an isolated build from replacing another build's keychain
-/// after trying to unlock it with a different password.
-fn signing_paths(data_dir: &Path) -> (PathBuf, PathBuf) {
-    (data_dir.join("local-signing.keychain-db"), data_dir.join("local-signing.password"))
-}
-
-/// Preserve an existing identity only after this build's own password unlocked it.
-/// Copy rather than move or share: later recovery must never delete another build's keychain.
-fn migrate_keychain(legacy: &Path, local: &Path, owns_legacy: impl FnOnce() -> Result<bool, String>) -> Result<(), String> {
-    if !local.exists() && legacy.is_file() && owns_legacy()? {
-        std::fs::copy(legacy, local).map_err(|error| format!("Could not copy the existing signing keychain: {error}"))?;
-    }
-    Ok(())
 }
 
 #[derive(Debug, PartialEq)]
@@ -185,21 +169,17 @@ mod mac {
     }
 
     fn paths() -> Result<(PathBuf, PathBuf), String> {
-        let data_dir = crate::crash_guard::app_data_dir().ok_or("No app data directory")?;
-        Ok(super::signing_paths(&data_dir))
+        let home = PathBuf::from(std::env::var_os("HOME").ok_or("HOME is not set")?);
+        Ok((
+            home.join("Library/Keychains/pandacode-signing.keychain-db"),
+            home.join("Library/Application Support/ai.pandacode.desktop/local-signing.password"),
+        ))
     }
 
     /// Unlocks the signing keychain and returns it with our identity's SHA-1, creating both
     /// when missing or unusable (lost password, deleted identity).
     fn identity() -> Result<(PathBuf, String), String> {
         let (keychain, secret) = paths()?;
-        // A fresh bench/fork has no password and never even inspects the legacy keychain.
-        if secret.is_file() && !keychain.exists() {
-            if let Some(home) = dirs::home_dir() {
-                let legacy = home.join("Library/Keychains/pandacode-signing.keychain-db");
-                super::migrate_keychain(&legacy, &keychain, || unlock_and_find(&legacy, &secret).map(|hash| hash.is_some()))?;
-            }
-        }
         if let Some(hash) = unlock_and_find(&keychain, &secret)? {
             return Ok((keychain, hash));
         }
@@ -305,37 +285,6 @@ mod tests {
         );
         assert_eq!(bundle_of(Path::new("/repo/src-tauri/target/debug/pandacode")), None);
         assert_eq!(bundle_of(Path::new("/x/Tool/Contents/MacOS/pandacode")), None);
-    }
-
-    #[test]
-    fn signing_files_stay_in_each_builds_configured_data_directory() {
-        let base = std::env::temp_dir().join("signing-app-data");
-        let bench = base.join("ai.pandacode.bench");
-        let fork = base.join("org.example.fork");
-        let (keychain, password) = signing_paths(&bench);
-        assert_eq!(keychain, bench.join("local-signing.keychain-db"));
-        assert_eq!(password, bench.join("local-signing.password"));
-        let other = signing_paths(&fork);
-        assert_ne!(keychain, other.0);
-        assert_ne!(password, other.1);
-    }
-
-    #[test]
-    fn migrating_a_keychain_requires_ownership_and_keeps_the_legacy_copy() {
-        let dir = std::env::temp_dir().join(format!("pandacode-sign-migrate-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let legacy = dir.join("legacy");
-        let local = dir.join("local");
-        std::fs::write(&legacy, "existing identity").unwrap();
-        migrate_keychain(&legacy, &local, || Ok(false)).unwrap();
-        assert!(!local.exists());
-        migrate_keychain(&legacy, &local, || Ok(true)).unwrap();
-        assert_eq!(std::fs::read_to_string(&local).unwrap(), "existing identity");
-        assert_eq!(std::fs::read_to_string(&legacy).unwrap(), "existing identity");
-        std::fs::write(&local, "build-local identity").unwrap();
-        migrate_keychain(&legacy, &local, || panic!("an existing local identity needs no migration")).unwrap();
-        assert_eq!(std::fs::read_to_string(&local).unwrap(), "build-local identity");
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

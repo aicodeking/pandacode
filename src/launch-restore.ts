@@ -45,8 +45,6 @@ export const OPEN_THREAD_KEY = 'pandacode.openThread';
 export const OPEN_NEW_TASK_KEY = 'pandacode.openNewTask';
 /** Drafts key prefix (after DRAFT_PREFIX) of a project's New task text. */
 export const NEW_TASK_DRAFT = 'new:';
-/** Unsent side-thread text belongs to its main thread until a real side thread exists. */
-export const BTW_DRAFT = 'btw-draft:';
 /** Drafts key prefix (after DRAFT_PREFIX) of a shared bot channel's composer text. */
 export const CHANNEL_DRAFT = 'channel:';
 /** The drafts key of a shared channel's composer text. */
@@ -80,26 +78,7 @@ export interface DraftWriteTimer { wait: Schedule; cancel: (handle: unknown) => 
 export const browserDraftTimer: DraftWriteTimer = { wait: (run, ms) => setTimeout(run, ms), cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
 
 const bytes = (text: string) => text.length * 2;
-const keepPart = (text: string) => text.length <= MAX_DRAFT_CHARS;
-const keep = (text: string) => Boolean(text.trim()) && keepPart(text);
-
-/** Splits an oversized multi-line draft along newlines into `MAX_DRAFT_CHARS`-bounded pieces (reusing `hint` when exact). */
-function splitParts(text: string, hint?: readonly string[]): string[] {
-  if (!text.trim() || bytes(text) > DRAFTS_BYTE_BUDGET) return [];
-  if (keep(text)) return [text];
-  if (hint?.length && hint.join('\n') === text && hint.every(keepPart)) return [...hint];
-  const lines = text.split('\n');
-  if (lines.some(line => line.length > MAX_DRAFT_CHARS)) return [];
-  const parts: string[] = [];
-  let current = lines[0] ?? '';
-  for (const line of lines.slice(1)) {
-    const joined = `${current}\n${line}`;
-    if (joined.length <= MAX_DRAFT_CHARS) current = joined;
-    else { parts.push(current); current = line; }
-  }
-  parts.push(current);
-  return parts.length && parts.every(keepPart) && parts.join('\n') === text ? parts : [];
-}
+const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
 
 function safeRead(store: Pick<Store, 'getItem'>, key: string): string | null {
   try { return store.getItem(key); } catch { return null; }
@@ -113,34 +92,20 @@ function storedKeys(store: Store): string[] {
 }
 
 /** One stored draft, or null when it is malformed. */
-export function decodeDraft(raw: string | null): { t: number; text: string; parts?: string[] } | null {
+export function decodeDraft(raw: string | null): { t: number; text: string } | null {
   if (!raw) return null;
   try {
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object') return null;
-    const { t, text, parts } = value as Record<string, unknown>;
-    if (typeof t === 'number' && Number.isFinite(t) && Array.isArray(parts) && parts.length && parts.every(part => typeof part === 'string' && keepPart(part))) {
-      const combined = parts.join('\n');
-      if (combined.trim() && bytes(combined) <= DRAFTS_BYTE_BUDGET) return { t, text: combined, parts };
-    }
-    return typeof t === 'number' && Number.isFinite(t) && typeof text === 'string' && keep(text) ? { t, text } : null;
+    const { t, text } = value as Record<string, unknown>;
+    return typeof t === 'number' && Number.isFinite(t) && typeof text === 'string' ? { t, text } : null;
   } catch { return null; }
 }
 
-interface HeldEntry { id: string; text: string; parts: readonly string[]; refused: boolean }
-export interface DraftHold {
-  (): void;
-  owner(): string;
-  reject(current: string, restored?: string): string;
-}
 /** The drafts map, written through to storage (see the file comment). `newTaskKey` names the
  * project key (`new:<project id>`) of a task that is a New task, undefined for any other task. */
 export class PersistedDrafts extends Map<string, string> {
   newTaskKey: (id: string) => string | undefined = () => undefined;
-  private readonly held = new Map<string, HeldEntry[]>();
-  /** Original bounded pieces of an oversized combined recovery draft after launch. */
-  private readonly recoveredParts = new Map<string, string[]>();
-  private readonly displaced = new Map<string, string>();
   private readonly savedAt = new Map<string, number>();
   /** Bytes of each draft as stored; absent when it is not in storage. */
   private readonly stored = new Map<string, number>();
@@ -164,8 +129,7 @@ export class PersistedDrafts extends Map<string, string> {
     for (const key of storedKeys(store)) {
       if (!this.keeping) { safeRemove(store, key); continue; }
       const draft = decodeDraft(safeRead(store, key)), id = key.slice(DRAFT_PREFIX.length);
-      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t)) { safeRemove(store, key); continue; }
-      if (draft.parts) this.recoveredParts.set(id, draft.parts);
+      if (!id || id === NEW_TASK_DRAFT || id === CHANNEL_DRAFT || !draft || this.expired(draft.t) || !keep(draft.text)) { safeRemove(store, key); continue; }
       super.set(id, draft.text); this.savedAt.set(id, draft.t); this.stored.set(id, bytes(draft.text));
     }
     this.loaded = true;
@@ -176,88 +140,14 @@ export class PersistedDrafts extends Map<string, string> {
 
   override set(id: string, text: string): this {
     if (!this.loaded) return super.set(id, text);
-    if (super.get(id) !== text) this.displaced.delete(id);
-    if (text || super.has(id) || this.held.has(id)) this.claim(id);
+    this.claim(id);
     if (super.get(id) === text) return this;
-    this.recoveredParts.delete(id);
     super.set(id, text);
     this.savedAt.set(id, this.now());
-    if (!this.recoveryParts(id).length) { this.pending.delete(id); this.unstore(id); }
+    if (!keep(text)) { this.pending.delete(id); this.unstore(id); }
     else if (this.timer && this.window !== undefined) this.pending.add(id);
     else { this.write(id); this.openWindow(); }
     return this;
-  }
-
-  /** Keep submitted text recoverable until its send settles, without showing it in the live field.
-   * A fresh launch reads the combined text as an ordinary draft and never replays a send. */
-  hold(id: string, text: string): DraftHold {
-    const entry: HeldEntry = { id, text, parts: splitParts(text, this.recoveredParts.get(id)), refused: false };
-    const entries = (this.held.get(id) ?? []).filter(item => !item.refused);
-    this.held.set(id, [...entries, entry]);
-    this.savedAt.set(id, this.now());
-    this.write(id);
-    const release = () => {
-      if (entry.refused || !this.held.get(entry.id)?.includes(entry)) return;
-      this.held.set(entry.id, (this.held.get(entry.id) ?? []).filter(item => item !== entry));
-      this.finishSettled(entry.id);
-      this.write(entry.id);
-    };
-    return Object.assign(release, {
-      owner: () => entry.id,
-      reject: (current: string, restored?: string) => {
-        const entries = this.held.get(entry.id) ?? [];
-        if (entry.refused || !entries.includes(entry)) return current;
-        const preceding = entries.slice(0, entries.indexOf(entry)).filter(item => item.refused).map(item => item.text).join('\n');
-        const at = preceding && (current === preceding || current.startsWith(preceding + '\n')) ? preceding.length : 0;
-        const result = restored ?? [current.slice(0, at), entry.text, current.slice(at + (at ? 1 : 0))].filter(Boolean).join('\n');
-        entry.refused = true;
-        super.set(entry.id, result);
-        this.finishSettled(entry.id);
-        this.savedAt.set(entry.id, this.now());
-        this.write(entry.id);
-        return result;
-      },
-    });
-  }
-
-  /** Once all sends settle, only the editable text needs to survive. */
-  private finishSettled(id: string): void {
-    if (this.held.get(id)?.some(entry => !entry.refused)) return;
-    const live = super.get(id) ?? '';
-    if (live.length > MAX_DRAFT_CHARS) this.recoveredParts.set(id, this.recoveryParts(id));
-    this.held.delete(id);
-  }
-
-  hasContent(id: string): boolean {
-    return Boolean(this.get(id)?.trim() || this.held.get(id)?.some(entry => !entry.refused));
-  }
-
-  move(from: string, to: string): void {
-    const live = this.get(from), entries = this.held.get(from);
-    if (live === undefined && !entries) return;
-    if (entries) {
-      this.held.delete(from);
-      for (const entry of entries) entry.id = to;
-      this.held.set(to, entries);
-    }
-    const parts = this.recoveredParts.get(from);
-    if (parts) this.recoveredParts.set(to, parts);
-    if (live) super.set(to, live); else super.delete(to);
-    this.savedAt.set(to, this.savedAt.get(from) ?? this.now());
-    this.delete(from);
-    this.write(to);
-  }
-
-  private recoveryParts(id: string): string[] {
-    const entries = this.held.get(id) ?? [], live = super.get(id) ?? '';
-    const prefix = entries.filter(item => item.refused).map(item => item.text).join('\n');
-    if (prefix && (live === prefix || live.startsWith(prefix + '\n'))) {
-      const tail = live === prefix ? '' : live.slice(prefix.length + 1);
-      return [...entries.flatMap(item => item.parts), ...splitParts(tail)];
-    }
-    const parts = this.recoveredParts.get(id);
-    const liveParts = splitParts(live, parts);
-    return [...entries.filter(item => !item.refused).flatMap(item => item.parts), ...liveParts];
   }
 
   /** Writes every change still waiting for the write timer, at once. */
@@ -279,20 +169,16 @@ export class PersistedDrafts extends Map<string, string> {
     if (!this.pending.size) return false;
     const ids = [...this.pending];
     this.pending.clear();
-    for (const id of ids) if (super.has(id) || this.held.has(id)) this.write(id);
+    for (const id of ids) if (super.has(id)) this.write(id);
     return true;
   }
 
   override delete(id: string): boolean {
     this.pending.delete(id);
     this.savedAt.delete(id);
-    this.recoveredParts.delete(id);
-    if (!this.held.get(id)?.some(entry => !entry.refused)) this.held.delete(id);
-    const removed = super.delete(id);
-    if (this.held.has(id)) { this.write(id); return removed; }
     this.unstore(id);
     this.claimed.delete(id);
-    return removed;
+    return super.delete(id);
   }
   override clear(): void { for (const id of [...this.keys()]) this.delete(id); }
 
@@ -302,7 +188,7 @@ export class PersistedDrafts extends Map<string, string> {
   clearStored(keep: (id: string) => boolean = () => false): void {
     this.pending.clear();
     for (const key of storedKeys(this.store)) safeRemove(this.store, key);
-    this.stored.clear(); this.claimed.clear(); this.held.clear(); this.displaced.clear(); this.recoveredParts.clear();
+    this.stored.clear(); this.claimed.clear();
     for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); }
   }
 
@@ -334,8 +220,6 @@ export class PersistedDrafts extends Map<string, string> {
   private adopt(id: string): string | undefined {
     const key = this.newTaskKey(id), text = key === undefined ? undefined : super.get(key);
     if (key === undefined || text === undefined) return undefined;
-    const parts = this.recoveredParts.get(key);
-    if (parts) { this.recoveredParts.set(id, parts); this.recoveredParts.delete(key); }
     super.set(id, text); this.savedAt.set(id, this.savedAt.get(key) ?? this.now());
     const size = this.stored.get(key);
     if (size !== undefined) this.stored.set(id, size);
@@ -346,14 +230,11 @@ export class PersistedDrafts extends Map<string, string> {
 
   /** The task's New task state may have changed (a delivered queued message published it, or a
    * failed first send left it a New task again): its text follows, as on its next keystroke. */
-  reclaim(id: string): void {
-    if (!this.loaded) return;
-    if (super.has(id) || this.held.has(id)) this.claim(id);
-  }
+  reclaim(id: string): void { if (this.loaded) this.claim(id); }
 
   /** `reclaim` for every thread draft: call after the session list (or a task's draft flag) changed. */
   reclaimAll(): void {
-    for (const id of new Set([...this.keys(), ...this.held.keys()])) if (!id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT)) this.reclaim(id);
+    for (const id of [...this.keys()]) if (!id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT)) this.reclaim(id);
   }
 
   /** A New task typed in owns its project's key; one that owned it before keeps its text in memory
@@ -362,20 +243,17 @@ export class PersistedDrafts extends Map<string, string> {
    * text back to the project key. `rewrite`: write the moved text (false when a write is under way). */
   private claim(id: string, rewrite = true): void {
     const key = this.newTaskKey(id), previous = this.claimed.get(id);
-    if (key !== undefined && this.displaced.get(id) === key) return;
     if (previous === key) return;
     const moved = this.stored.has(id) || this.pending.has(id);
     safeRemove(this.store, DRAFT_PREFIX + (previous ?? id)); this.stored.delete(id);
     if (key === undefined) this.claimed.delete(id);
     else {
       if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); this.pending.delete(key); }
-      for (const [other, owned] of this.claimed) if (owned === key) { this.displaced.set(other, key); this.claimed.delete(other); this.stored.delete(other); this.pending.delete(other); }
+      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); this.pending.delete(other); }
       this.claimed.set(id, key);
     }
     // Moved to another project, published, or a New task again: its text moves to the new key.
-    if (rewrite && (previous !== undefined || moved) && (super.has(id) || this.held.has(id))) {
-      this.write(id);
-    }
+    if (rewrite && (previous !== undefined || moved) && super.has(id)) this.write(id);
   }
 
   private unstore(id: string): void {
@@ -387,13 +265,13 @@ export class PersistedDrafts extends Map<string, string> {
     this.pending.delete(id);
     // Its New task state may have changed since the change was typed.
     this.claim(id, false);
-    if (!this.keeping || (this.displaced.has(id) && this.displaced.get(id) === this.newTaskKey(id))) return;
-    const parts = this.recoveryParts(id), text = parts.join('\n');
-    if (!parts.length || bytes(text) > DRAFTS_BYTE_BUDGET) { this.unstore(id); return; }
+    if (!this.keeping) return;
+    const text = super.get(id);
+    if (text === undefined || !keep(text)) { this.unstore(id); return; }
     const size = bytes(text);
     this.stored.delete(id);
     this.evictOldest(DRAFTS_BYTE_BUDGET - size);
-    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), ...(text.length > MAX_DRAFT_CHARS ? { parts } : { text }) }), key = this.keyOf(id);
+    const value = JSON.stringify({ t: this.savedAt.get(id) ?? this.now(), text }), key = this.keyOf(id);
     try { this.store.setItem(key, value); }
     catch {
       // Full: make room by dropping the older half of what is stored, then try once more.
@@ -422,59 +300,44 @@ export class PersistedDrafts extends Map<string, string> {
 /** Most ids `sessions_missing` takes in one call, and the longest id it accepts. */
 export const MISSING_BATCH = 2000, MAX_SESSION_ID = 128;
 
-const draftParentId = (id: string): string => id.startsWith(BTW_DRAFT) ? id.slice(BTW_DRAFT.length) : id;
-
 /** The thread ids with a draft (not a project's New task text or a channel's), in batches for `sessions_missing`;
- * synthetic side-draft keys check their parent instead. An id the command would refuse is left out rather than failing its whole batch. */
+ * an id the command would refuse is left out rather than failing its whole batch. */
 export function draftThreadBatches(ids: Iterable<string>): string[][] {
-  const threads = [...new Set([...ids].map(draftParentId).filter(id => !id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT)))]
-    .filter(id => id && id.length <= MAX_SESSION_ID);
+  const threads = [...ids].filter(id => id && id.length <= MAX_SESSION_ID && !id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT));
   return Array.from({ length: Math.ceil(threads.length / MISSING_BATCH) }, (_, index) => threads.slice(index * MISSING_BATCH, (index + 1) * MISSING_BATCH));
 }
-
-type DraftCollection = Pick<Map<string, string>, 'keys' | 'delete'> & Partial<Pick<PersistedDrafts, 'flush'>>;
 
 /** At boot, after the task list: drops the drafts of threads deleted while the app was closed
  * (`missing` returns the asked ids that have no session at all). A failing check is logged once
  * and changes nothing more. */
-export async function dropDeletedDrafts(drafts: DraftCollection, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
-  drafts.flush?.();
+export async function dropDeletedDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
   for (const batch of draftThreadBatches(drafts.keys())) {
     let gone: unknown;
     try { gone = await missing(batch); } catch (error) { console.warn('Could not check for drafts of deleted threads:', error); return; }
     if (!Array.isArray(gone)) { console.warn('Could not check for drafts of deleted threads: unexpected answer', gone); return; }
     const asked = new Set(batch);
-    for (const id of gone) if (typeof id === 'string' && asked.has(id)) {
-      drafts.delete(id);
-      drafts.delete(BTW_DRAFT + id);
-    }
+    for (const id of gone) if (typeof id === 'string' && asked.has(id)) drafts.delete(id);
   }
 }
 
 /** At boot, once `list_projects` has answered (never after a failed load): drops the New task text
  * of projects that no longer exist, such as one removed by another window or a remote client. */
-export function dropRemovedProjectDrafts(drafts: DraftCollection, projectIds: readonly string[]): void {
-  drafts.flush?.();
+export function dropRemovedProjectDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, projectIds: readonly string[]): void {
   const live = new Set(projectIds);
-  for (const id of [...drafts.keys()]) {
-    const parent = draftParentId(id);
-    if (parent.startsWith(NEW_TASK_DRAFT) && !live.has(parent.slice(NEW_TASK_DRAFT.length))) drafts.delete(id);
-  }
+  for (const id of [...drafts.keys()]) if (id.startsWith(NEW_TASK_DRAFT) && !live.has(id.slice(NEW_TASK_DRAFT.length))) drafts.delete(id);
 }
 
 /** Once a launch, after `bot_shared_channels` has answered (never after a failed load; the list
  * includes archived channels): drops the composer text of channels that no longer exist. */
-export function dropRemovedChannelDrafts(drafts: DraftCollection, channelIds: readonly string[]): void {
-  drafts.flush?.();
+export function dropRemovedChannelDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, channelIds: readonly string[]): void {
   const live = new Set(channelIds);
   for (const id of [...drafts.keys()]) if (id.startsWith(CHANNEL_DRAFT) && !live.has(id.slice(CHANNEL_DRAFT.length))) drafts.delete(id);
 }
 
-/** Drops expired drafts while the app runs (once a day and whenever the window shows again) and
- * flushes pending debounced typing as soon as the window hides. */
-export function expireDraftsWhileRunning(drafts: Pick<PersistedDrafts, 'expire'> & Partial<Pick<PersistedDrafts, 'flush'>>, doc: Pick<Document, 'addEventListener' | 'visibilityState'> = document): void {
+/** Drops expired drafts while the app runs: once a day and whenever the window shows again. */
+export function expireDraftsWhileRunning(drafts: Pick<PersistedDrafts, 'expire'>, doc: Pick<Document, 'addEventListener' | 'visibilityState'> = document): void {
   setInterval(() => drafts.expire(), EXPIRE_EVERY);
-  doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'visible') drafts.expire(); else drafts.flush?.(); });
+  doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'visible') drafts.expire(); });
 }
 
 /** Writes drafts waiting for the write timer when the window is hidden or the page goes away

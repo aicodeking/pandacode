@@ -58,7 +58,7 @@ import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
 import { call, chooseFolder, preview, subscribe } from './bridge';
-import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, releaseToolImages, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
+import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
 import { attachToolImages, REVEAL_LABEL } from './tool-image-viewer';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
 import { $, button, escape, fileIcon, fileIconsReady, icon, isImeKey, markdown, markdownCache, markdownHtml, morph, showsHtml } from './dom';
@@ -67,8 +67,6 @@ import { LAZY_REPLY_CHARS, drawnFrom, lazyMarkdown, prepareMarkdown, touchedRows
 import { leftRowsCache, leftViews, mountTileWindows, mountTranscriptView } from './transcript-view';
 import { botAvatarHtml } from './bot-avatars';
 import * as botThread from './bot-thread';
-import * as modelSwitch from './model-switch';
-import * as modelCatalogs from './model-catalogs';
 import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { mountDesktopBrand } from './brand-mark';
@@ -122,7 +120,7 @@ import { mountUpdatePill, startAppUpdates } from './app-updates';
 import { heldBackOpened, showCrashRecovery, takeCrashRecovery, tasksChanged } from './crash-recovery';
 import { addToastClose, labelToastShortcut, wireToastKeys } from './toast-keys';
 import { keepToastClear } from './toast-clearance';
-import { BTW_DRAFT, NEW_TASK_DRAFT, PersistedDrafts, browserDraftTimer, flushDraftsOnLeave, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
+import { NEW_TASK_DRAFT, PersistedDrafts, browserDraftTimer, flushDraftsOnLeave, channelDraftKey, dropRemovedChannelDrafts, WINDOW_STABLE_AFTER, beginThreadRestore, dropDeletedDrafts, dropRemovedProjectDrafts, expireDraftsWhileRunning, finishThreadRestore, finishThreadRestoreAfterPaint, leavePage, rememberOpenThread, threadToReopen, windowContentDied, windowStable } from './launch-restore';
 import { mountTextUndo } from './text-undo';
 import { projectIconHtml } from './project-icons';
 import { createPullView } from './github-pull';
@@ -149,7 +147,6 @@ import { mountAgentsDock } from './agents-dock';
 import { mountChangesView, type ChangesView } from './changes-view';
 import { INSPECTOR_VIEWS, closeTab, closedViews, loadTabs, openTab, sameTabs, saveTabs, threadDefault, type InspectorView } from './inspector-tabs';
 import { TailText } from './tail-text';
-import { ImageCache } from './image-cache';
 import { noteChangedPaths, preloadDiffsAfterPaint, preloadDiffsWhenWanted } from './diff-prefetch';
 import { applyRestoredDraft, createCommittedDrafts } from './composer-restore';
 import { errorText } from './error-text';
@@ -197,25 +194,6 @@ const state = {
   sharedChannelLimits: new Map<string, number>(), sharedChannelFromBottom: null as number | null, sharedChannelScrollTop: 0, sharedChannelAtBottom: true, sharedChannelPosting: new Set<string>(),
 };
 let renderFrame = 0;
-const PROMPT_TYPING_YIELD_MS = 28, STREAM_DEFER_MS = 16;
-let lastPromptInputAt = -Infinity, deferredStreamTimer = 0;
-function cancelStreamRender(): void {
-  if (deferredStreamTimer) { window.clearTimeout(deferredStreamTimer); deferredStreamTimer = 0; }
-  if (renderFrame) { cancelAnimationFrame(renderFrame); renderFrame = 0; }
-}
-function scheduleStreamRender(): void {
-  if (renderFrame || deferredStreamTimer || !transcriptVisible()) return;
-  if (performance.now() - lastPromptInputAt < PROMPT_TYPING_YIELD_MS) {
-    deferredStreamTimer = window.setTimeout(() => {
-      deferredStreamTimer = 0;
-      if (!renderFrame && state.streams.has(state.sessionId) && transcriptVisible()) {
-        renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
-      }
-    }, STREAM_DEFER_MS);
-    return;
-  }
-  renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
-}
 /** Shows the open thread's scene behind the conversation (set once the sky mounts; `renderTranscript` calls it). */
 let showThreadScene: (id: string | null) => void = () => {};
 let navigationFrame = 0;
@@ -247,7 +225,6 @@ let pendingDismiss: PendingDismiss | null = null;
 const lastErrorToasts = new Map<string, number>();
 // Ignore late snapshots/events for IDs removed during this window's lifetime.
 const deletedSessions = new Set<string>();
-const prewarmedDrafts = new Set<string>();
 let inspectorRequest = 0;
 let fileRequest = 0;
 let selectedFileContext: FileLinkContext | undefined;
@@ -263,48 +240,16 @@ const teamToggles = new Set<string>();
 const taskBusyConfiguring = (id: string): boolean => configuringSessions.has(id) || teamToggles.has(id);
 /** True while either a non-provisional session mutation, a Team toggle, or an automatic provisional harness correction is in flight. */
 const configuringSession = (id: string): boolean => taskBusyConfiguring(id) || provisionalCorrections.has(id);
+const modelCatalogs = new Map<ProviderId, { expires: number; pending: Promise<ProviderModel[]> }>();
 let slashPicker: ReturnType<typeof mountSlashCommands> | undefined;
 let fileMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let boardMentionPicker: ReturnType<typeof mountFileMentions> | undefined;
 let modelPickerCleanup: (ReturnType<typeof import('./model-picker').openModelPicker> & { taskId?: string }) | undefined;
-// Only the main composer owns these anchors; side-thread and setup pickers keep their own lifecycle.
-let composerPickerLifecycle: { anchor: HTMLElement; current: () => boolean } | undefined;
-let composerPickerPress: { anchor: HTMLElement; current: () => boolean } | undefined;
-let composerPressRender = false;
-modelSwitch.initModelSwitch({
-  setBusy: (id, busy) => { if (busy) configuringSessions.add(id); else configuringSessions.delete(id); },
-  pickerOpening: () => Boolean(modelPickerCleanup || pendingMenuOpen?.anchor.matches('.model-picker')),
-  notify: text => notify(text),
-  task: id => state.sessions.find(task => task.id === id),
-  // Replace only: a pick's reply or refusal landing after the task was deleted must not add it back.
-  put: task => applyHeldPickerChoice(task.id, () => replaceSession(task)),
-  team: id => teams.get(id)?.config,
-  teamChanged: event => applyHeldPickerChoice(event.sessionId, () => onArchitect(event)),
-  autoTeam: async base => {
-    const config = await autoTeamConfig(base, knownModels(base));
-    const choice = pendingMenuOpen?.choice;
-    // Native can publish this exact roster before architect_configure returns; it keeps the current Council.
-    if (choice && teams.get(choice.id)?.config === base) choice.expectTeam(base.council ? { ...config, council: base.council } : config);
-    return config;
-  },
-  releaseAccount: async id => {
-    // Decide on a loaded snapshot: an empty one only means connections_list has not answered yet.
-    if (!namedConnectionsLoaded) await (namedConnectionsLoad ?? refreshNamedConnections()).catch(() => undefined);
-    if (namedConnections.tasks[id]) namedConnections = await call('connection_assign', { sessionId: id, connectionId: null });
-  },
-  label: task => modelLabel(task),
-  effortName: task => effortLabel(task),
-  remember: ({ provider, model, local }) => {
-    if (!local) { localChoice = undefined; return; }
-    if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = provider;
-    localStorage.setItem('pandacode.provider', provider); localStorage.setItem('pandacode.model.' + provider, model);
-  },
-});
 let projectPickerCleanup: (() => void) | undefined;
 let choiceMenuCleanup: (() => void) | undefined;
 let choiceMenuAnchor: HTMLElement | undefined;
 let menuEpoch = 0;
-let pendingMenuOpen: { anchor: HTMLElement; release: (cancelled?: boolean) => void; choice?: { id: string; apply: (change: () => void) => void; expectTeam: (config: TeamConfig) => void } } | undefined;
+let pendingMenuOpen: { anchor: HTMLElement; release: () => void } | undefined;
 let openingProjectForTask: { id: string; generation: number } | undefined;
 let creatingTask = false;
 let openingSupport = false;
@@ -357,7 +302,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { prewarmedDrafts.delete(team.sessionId); teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -372,7 +317,7 @@ function onArchitect(team: TeamEvent): void {
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
   // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
   if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
-  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team) || (!current && classicTeamSetup())); if (!current) syncTeamRows(); }
+  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team)); if (!current) syncTeamRows(); }
   scheduleNavigation();
 }
 /** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
@@ -381,7 +326,7 @@ function scheduleTeamRender(composer: boolean): void {
   teamComposer ||= composer;
   teamFrame ||= requestAnimationFrame(() => {
     const full = teamComposer; teamFrame = 0; teamComposer = false;
-    if (full) renderComposer(); else { syncTeamButton(); refreshModelLabels(); }
+    if (full) renderComposer(); else refreshModelLabels();
   });
 }
 async function loadTeam(id: string): Promise<TeamSnapshot | null> {
@@ -614,9 +559,8 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
 }
 /** An automatic team's config with the current installed models (the capped roster for the lead,
  * the full catalog for Panda Router), keeping the limits of `base` or the last saved setup. */
-async function autoTeamConfig(base?: TeamConfig, models: (id: ProviderId) => Promise<ProviderModel[]> = loadModels): Promise<TeamConfig> {
-  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), Promise.resolve(knownProviders()).then(providers => installedCatalog(providers, models))]);
-  if (!catalog.length) throw new Error('No installed models are available. Open Settings to check your agents.');
+async function autoTeamConfig(base?: TeamConfig): Promise<TeamConfig> {
+  const [library, { roster, catalog }] = await Promise.all([base ? Promise.resolve(null) : call<TeamLibrary>('architect_profiles'), Promise.resolve(knownProviders()).then(providers => installedCatalog(providers, loadModels))]);
   const limits = base ?? library?.lastSetup?.config;
   return { auto: true, workers: roster, catalog, maxParallel: limits?.maxParallel ?? 0, maxRounds: limits?.maxRounds ?? 8, maxAssignments: limits?.maxAssignments ?? 24, workspace: 'shared', summaryLimit: limits?.summaryLimit ?? 3072 };
 }
@@ -635,9 +579,6 @@ const mirrorTeamNote = (task: Session) => `Teams for this task are set up on ${t
 /** Turns an automatic team on (replacing any other team) or the task's team off; false when nothing changed.
  * While it saves, the task is configuring: the Team button shows it, and sending and queue dispatch wait. */
 async function setTeam(task: Session, on: boolean, render = true): Promise<boolean> {
-  // A model, effort or permission change still saving: wait for it, then go on if the task is still open and nothing
-  // else is configuring it. A refused one stops the team change, said once with what stays.
-  if (!await afterChoiceSaved(task.id, on ? 'Team not turned on' : 'Team not turned off') || !state.sessions.some(item => item.id === task.id)) return false;
   if (taskBusyConfiguring(task.id)) return false;
   const wasRunning = isRunning(task.id);
   teamToggles.add(task.id);
@@ -770,7 +711,7 @@ bindThreadReordering($('#navigation'), {
 });
 /* Branch and worktree control, plus optional GitHub through the user's gh CLI. */
 const github = createGithub({
-  call: taskCall, modal, closeModal, notify, notifyError,
+  call, modal, closeModal, notify, notifyError,
   sessions: () => state.sessions,
   project: id => state.projects.find(p => p.id === id),
   defaultHarness: () => {
@@ -897,10 +838,10 @@ document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('key
   next?.focus();
 });
 const pullView = createPullView({
-  call: taskCall,
+  call,
   openUrl: url => call('open_external_url', { url }),
   unlink: async task => {
-    const saved = await taskCall<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
+    const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
     upsertSession(saved); pullView.forget(task.id);
     if (state.inspectorTab === 'pull' && task.id === state.sessionId) state.inspectorTab = 'changes';
     renderNavigation(); renderHeader(); renderInspector();
@@ -909,14 +850,7 @@ const pullView = createPullView({
   merged: saved => { upsertSession(saved); renderNavigation(); renderHeader(); },
   notify, notifyError,
 });
-function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); state.drafts.reclaim(BTW_DRAFT + saved.id); }
-/** Puts a task native answered with in place of the one held; a task no longer held (deleted meanwhile) is not added back. */
-function replaceSession(next: Session): void { const index = state.sessions.findIndex(s => s.id === next.id); if (index >= 0) state.sessions[index] = next; }
-/** A native call whose reply may be a task or tasks (get_task, an update's answer): each keeps a model, effort or
- *  permission pick still saving or made while the call ran, which native may not have stored when it read
- *  (model-switch.ts readTasks). Every reply that replaces a task held in state comes through here, or, when the reply
- *  waits on something else before going in (loadSessions), through a read held open until then (beginRead). */
-function taskCall<T>(command: string, args?: Record<string, unknown>): Promise<T> { return modelSwitch.readTasks(() => call<T>(command, args), modelSwitch.fieldsWrittenBy(command)); }
+function upsertSession(saved: Session): void { const index = state.sessions.findIndex(s => s.id === saved.id); if (index < 0) state.sessions.unshift(saved); else state.sessions[index] = saved; state.drafts.reclaim(saved.id); }
 /** Show a task's linked pull request in the inspector. */
 async function openPullRequest(sessionId: string): Promise<void> {
   if (sessionId !== state.sessionId) await selectSession(sessionId);
@@ -928,7 +862,7 @@ async function detectPullRequest(sessionId: string): Promise<void> {
   const task = state.sessions.find(s => s.id === sessionId);
   if (!task || !githubEnabled() || !github.connected(task.projectId)) return;
   try {
-    const saved = await taskCall<Session | null>('github_detect_pull_request', { sessionId });
+    const saved = await call<Session | null>('github_detect_pull_request', { sessionId });
     if (!saved?.pullRequest) return;
     upsertSession(saved); pullView.forget(sessionId);
     renderNavigation(); renderHeader(); renderInspector();
@@ -936,8 +870,7 @@ async function detectPullRequest(sessionId: string): Promise<void> {
   } catch { /* Detection is best effort; the branch menu can link it by hand. */ }
 }
 const worktrees = createWorktrees({
-  // attach, create and recreate answer with the task, which afterAttach puts in place of the one held.
-  call: taskCall, modal, closeModal, notify, notifyError, showChoices,
+  call, modal, closeModal, notify, notifyError, showChoices,
   session, project,
   git: () => state.git, gitError: () => state.gitError,
   draft: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '',
@@ -945,7 +878,6 @@ const worktrees = createWorktrees({
   computer: (task, fresh) => computerControl(task, fresh, remoteTargets, remoteChoice, cloudTargets, remoteChoiceName) + botTaskControl(task, fresh),
   running: () => isRunning(),
   afterAttach: async (saved, live) => {
-    prewarmedDrafts.delete(saved.id);
     const index = state.sessions.findIndex(s => s.id === saved.id); if (index >= 0) state.sessions[index] = saved;
     if (live) closeModal();
     if (saved.id === state.sessionId) { clearWorkspaceInspector(); render(); terminalPanel.minimize(); await refreshInspector(); renderHeader(); if (live) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); }
@@ -1063,13 +995,10 @@ function commandDialog(): HTMLDialogElement { disposeSettingsViews(); activeComm
 async function updateGoal(task: Session, request: GoalAction): Promise<GoalState | null> {
   const goal = await call<GoalState | null>('task_goal', { sessionId: task.id, request });
   // Native goal events are authoritative and may be newer than this request's acknowledgment.
-  const held = () => state.sessions.find(item => item.id === task.id);
-  if (task.id === state.sessionId) goalBanner.update(held()?.goalState ?? null);
+  if (task.id === state.sessionId) goalBanner.update(task.goalState ?? null);
   // A newly created goal has an initiating user message; keep streamed text intact.
-  const current = await taskCall<Session>('get_task', { sessionId: task.id });
-  // The task as held now (a pick may have replaced it meanwhile) keeps its streamed goal; the read keeps held picks.
-  const live = held();
-  if (live) replaceSession({ ...current, goalState: live.goalState });
+  const current = await call<Session>('get_task', { sessionId: task.id });
+  Object.assign(task, current, { goalState: task.goalState });
   if (task.id === state.sessionId && request.action === 'set') {
     const page = await latestMessagePage(task.id);
     if (task.id === state.sessionId) { setMessagePage(page); renderTranscript(); renderComposer(); }
@@ -1097,7 +1026,7 @@ function openCommandPanel(task: Session, kind: string, argumentsText = ''): void
     if (action === 'import') { const result = await call<CommandPanel>('codex_command', { sessionId: task.id, request: { action: 'importSelected', ids: payload.ids } }); slashPicker?.refresh(); return result; }
     if (action === 'stop') { await call('codex_jobs', { sessionId: task.id, stopId: payload.id }); return load(); }
     if (action === 'resume' || action === 'fork') {
-      const adopted = await taskCall<Session>('fork_codex_task', { sessionId: task.id, remoteId: payload.id });
+      const adopted = await call<Session>('fork_codex_task', { sessionId: task.id, remoteId: payload.id });
       if (!state.sessions.some(s => s.id === adopted.id)) state.sessions.unshift(adopted);
       if (state.sessionId === task.id) { closeModal(); await selectSession(adopted.id, true); } else scheduleNavigation(); return;
     }
@@ -1367,7 +1296,6 @@ const sky = mountSky($('.main-pane'), $('.workspace'), {
 const skyTime = preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null;
 /** Threads tiled beside the open one (src/thread-tiles.ts); `tilePages` holds what the read-only views show. */
 const tilePages = new Map<string, MessagePage>();
-const tileRequests = new Map<string, HTMLElement>();
 /** Longest a run this window did not start waits for its page before its live card paints anyway (loadWakeExchange). */
 const WAKE_LOAD_HOLD_MS = 300;
 /** Open threads whose new run is holding its live card back, by the timer that ends the hold. */
@@ -1381,7 +1309,6 @@ const tiles = mountThreadTiles({
   open: (id, scrollTop) => openFromTile(id, scrollTop),
   focusPrompt: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
   draw: (id, rows, scroller) => drawTile(id, rows, scroller),
-  drop: id => { tilePages.delete(id); tileRequests.delete(id); },
   more: (id, rows, scroller) => tileWindows.showMore(id, rows, scroller),
   scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
   notify,
@@ -1420,9 +1347,8 @@ function saveThreadPanel(): void {
   if (!state.sessionId || deletedSessions.has(state.sessionId)) return;
   threadPanels.set(state.sessionId, { workspace: workspaceKey(), tab: state.inspectorTab, folders: [...state.openFolders], file: state.selectedFile, kind: state.selectedKind, staged: state.selectedStaged, context: selectedFileContext && { ...selectedFileContext }, browserUrl: state.browserUrl });
 }
-function restoreThreadPanel(task?: Session, keepFreshWorkspace = false): void {
-  if (keepFreshWorkspace) ++fileRequest;
-  else clearWorkspaceInspector(false);
+function restoreThreadPanel(task?: Session): void {
+  clearWorkspaceInspector(false);
   const saved = task && threadPanels.get(task.id);
   const sameWorkspace = saved?.workspace === workspaceKey();
   // Inspector visibility follows the user's global show/hide choice (unless the view or narrow viewport hides it),
@@ -1430,7 +1356,6 @@ function restoreThreadPanel(task?: Session, keepFreshWorkspace = false): void {
   state.inspector = inspectorChosen && state.view === 'conversation' && !matchMedia('(max-width: 920px)').matches;
   state.inspectorTab = saved?.tab && inspectorTabs.open.includes(saved.tab) ? saved.tab : threadDefault(inspectorTabs); state.openFolders = new Set(sameWorkspace ? saved?.folders : []);
   state.selectedFile = sameWorkspace ? saved?.file ?? '' : ''; state.selectedKind = sameWorkspace ? saved?.kind ?? '' : ''; state.selectedStaged = saved?.staged ?? false;
-  if (keepFreshWorkspace) state.selectedContent = '';
   state.browserUrl = sameWorkspace ? saved?.browserUrl ?? '' : ''; selectedFileContext = sameWorkspace && saved?.context ? { ...saved.context } : undefined;
   fileTabs.show(state.sessionId, workspaceKey());
   state.filePreviewLoading = Boolean(state.selectedKind);
@@ -1479,12 +1404,11 @@ function listedSessions(): Session[] { return state.sessions.filter(task => !tas
 function draftKept(id: string): boolean {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const typed = prompt?.dataset.sessionId === id ? prompt.value : state.drafts.get(id) ?? '';
-  return state.drafts.hasContent(BTW_DRAFT + id) || state.drafts.hasContent(id) || Boolean(btwLink(id)) || voiceDictation.ownsThread(id) || Boolean(typed.trim()) || Boolean(attachments.list(id).length) || Boolean(state.browserAttachments.get(id)?.length) || Boolean(state.moodboardAttachments.get(id)?.length);
+  return voiceDictation.ownsThread(id) || Boolean(typed.trim()) || Boolean(attachments.list(id).length) || Boolean(state.browserAttachments.get(id)?.length) || Boolean(state.moodboardAttachments.get(id)?.length);
 }
 function discardDraft(id: string): void {
   state.sessions = state.sessions.filter(task => task.id !== id);
   state.drafts.delete(id);
-  prewarmedDrafts.delete(id);
   provisionalTasks.delete(id);
   deletedSessions.add(id);
   const pending = provisionalCorrections.get(id);
@@ -1494,7 +1418,6 @@ function discardDraft(id: string): void {
 }
 /** Leaving an untouched draft discards it; one with typed text, attachments or a worktree stays hidden and New task reopens it. */
 function leaveDraft(nextId: string): void {
-  state.drafts.flush();
   if (nextId !== state.sessionId) voiceDictation.detach();
   const draft = session();
   if (!draft?.draft || draft.id === nextId || isRunning(draft.id) || state.messages.length || taskBusyConfiguring(draft.id) || explicitHarnessSaves.has(draft.id) || draft.worktreePath) return;
@@ -1627,8 +1550,6 @@ function modelTitle(s: Session): string {
   return `${modelLabel(s, false)}${effort ? ` · ${effort}` : ''} — ${team && !team.config.auto ? 'Choose team profile and models' : 'Choose harness and model'}`;
 }
 function refreshModelLabels(): void {
-  // A catalog can replace the hit-tested text node even when the button itself stays connected.
-  if (composerPickerPress?.current()) { composerPressRender = true; return; }
   const s = session(); if (!s) return;
   const name = modelLabel(s, false), effort = effortLabel(s);
   document.querySelectorAll<HTMLElement>('[data-model-label]').forEach(label => { if (label.textContent !== name) label.textContent = name; });
@@ -1649,8 +1570,6 @@ function refreshModelLabels(): void {
   if (modeTrigger && modeTrigger.dataset.mode !== mode.id) {
     modeTrigger.dataset.mode = mode.id; modeTrigger.dataset.tip = modeTip(mode); modeTrigger.setAttribute('aria-label', modeName(mode)); modeTrigger.setAttribute('aria-description', mode.description);
     modeTrigger.innerHTML = modeFaceHtml(mode);
-    // The new face's busy pulse joins the shared phase rather than restarting (a blink mid-save).
-    modelSwitch.joinPulses(modeTrigger);
     trayStateChanged();
   }
   council.sync(s.id);
@@ -1867,42 +1786,7 @@ async function openSupport(): Promise<void> {
     }
   }
 }
-/** A value snapshot: startup refreshes can mutate the Session in place. */
-function composerPickerTargetKey(task = session(), config = teams.get(task?.id ?? '')?.config ?? null): string {
-  return JSON.stringify([task?.id, task?.projectId, task?.provider, task?.model, task?.reasoningEffort ?? null,
-    task?.mode, task?.remoteDevice, task?.cloud, remoteChoice, config]);
-}
-function composerPickerContext(anchor: HTMLElement, botNext: boolean): { anchor: HTMLElement; current: () => boolean } {
-  const epoch = menuEpoch, generation = state.generation, id = state.sessionId, key = composerPickerTargetKey();
-  return { anchor, current: () => epoch === menuEpoch && generation === state.generation &&
-    session()?.id === id && anchor.isConnected && !state.sharedChannelId && !taskCreation &&
-    taskStage(session()!) !== 'completed' && !teamToggles.has(id) && (!isRunning(id) || botNext) && composerPickerTargetKey() === key };
-}
-function finishComposerPickerPress(press = composerPickerPress): void {
-  if (!press || press !== composerPickerPress) return;
-  composerPickerPress = undefined;
-  if (composerPressRender) { composerPressRender = false; renderComposer(); }
-}
-document.addEventListener('pointerdown', event => {
-  finishComposerPickerPress();
-  const anchor = (event.target as Element | null)?.closest<HTMLElement>('#model-picker-trigger, #mode-picker-trigger');
-  if (event.button !== 0 || !anchor || anchor.matches(':disabled')) return;
-  composerPickerPress = composerPickerContext(anchor, Boolean(botForThread()));
-}, true);
-document.addEventListener('pointerup', event => {
-  const press = composerPickerPress;
-  // An outside release has no trigger click to wait for. Keep a valid inside release through native activation,
-  // rather than assuming pointerup ends the interaction.
-  if (press && (!press.current() || !(event.target instanceof Node) || !press.anchor.contains(event.target))) finishComposerPickerPress(press);
-}, true);
-document.addEventListener('click', () => {
-  const press = composerPickerPress;
-  // Let this click reach the action handler and install its pending/open lifecycle before flushing the paint.
-  if (press) window.setTimeout(() => finishComposerPickerPress(press), 0);
-}, true);
-document.addEventListener('pointercancel', () => finishComposerPickerPress(), true);
-window.addEventListener('blur', () => finishComposerPickerPress());
-function cancelPendingMenu(): void { menuEpoch++; composerPickerLifecycle = undefined; pendingMenuOpen?.release(true); }
+function cancelPendingMenu(): void { menuEpoch++; pendingMenuOpen?.release(); }
 /** The trigger a menu opens from, once its module has loaded: a composer re-render meanwhile (boot repaints it when the
  *  harness list lands) replaces the button, so the one now carrying its id (#model-picker-trigger, #mode-picker-trigger)
  *  stands in rather than the click being dropped. Undefined when there is none, or it is disabled now. */
@@ -1916,17 +1800,16 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
-  if (composerPickerPress?.current() || composerPickerLifecycle?.current()) return;
   // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
 }
-function beginMenuOpen(anchor: HTMLElement, onCancel?: () => void): { epoch: number; release: () => void } {
+function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => void } {
   cancelPendingMenu();
   const epoch = menuEpoch, ownBusy = anchor.getAttribute('aria-busy');
   anchor.setAttribute('aria-busy', 'true');
   let released = false;
-  function release(cancelled = false): void {
+  function release(): void {
     if (released) return;
     released = true;
     if (ownBusy === null) anchor.removeAttribute('aria-busy'); else anchor.setAttribute('aria-busy', ownBusy);
@@ -1935,10 +1818,9 @@ function beginMenuOpen(anchor: HTMLElement, onCancel?: () => void): { epoch: num
     document.removeEventListener('focusin', onOutside, true);
     window.removeEventListener('blur', cancelPendingMenu);
     if (pendingMenuOpen?.release === release) pendingMenuOpen = undefined;
-    if (cancelled) onCancel?.();
   }
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape' || isImeKey(event)) return;
+    if (event.key !== 'Escape') return;
     event.preventDefault(); event.stopPropagation(); cancelPendingMenu();
   }
   function onOutside(event: Event): void {
@@ -1950,30 +1832,6 @@ function beginMenuOpen(anchor: HTMLElement, onCancel?: () => void): { epoch: num
   document.addEventListener('focusin', onOutside, true);
   window.addEventListener('blur', cancelPendingMenu);
   return { epoch, release };
-}
-/** Only the saving choice may advance a held menu's snapshot (including a refusal's rollback). */
-function applyHeldPickerChoice(id: string, change: () => void): void {
-  const choice = pendingMenuOpen?.choice;
-  if (choice?.id === id) choice.apply(change); else change();
-}
-/** Install dismissal before waiting for a save. A normal release hands off to the actual menu; cancellation aborts it. */
-function beginHeldMenuOpen(anchor: HTMLElement, target: Session) {
-  const controller = new AbortController();
-  const pending = beginMenuOpen(anchor, () => controller.abort());
-  const generation = state.generation, inPanel = Boolean(anchor.closest('.btw-panel'));
-  const task = () => inPanel ? btwSideTask() ?? btwDraftTask() : session();
-  let key = composerPickerTargetKey(target), expectedTeamKey: string | undefined, applying = false;
-  const current = () => pending.epoch === menuEpoch && generation === state.generation &&
-    task()?.id === target.id && !isRunning(target.id) && !taskCreation && !state.sharedChannelId &&
-    taskStage(task()!) !== 'completed' && !teamToggles.has(target.id) &&
-    (inPanel || anchor.isConnected) && (applying || composerPickerTargetKey(task()) === key || composerPickerTargetKey(task()) === expectedTeamKey);
-  pendingMenuOpen!.choice = { id: target.id, apply: change => {
-    if (!current()) { cancelPendingMenu(); change(); return; }
-    applying = true;
-    try { change(); } finally { applying = false; key = composerPickerTargetKey(task()); }
-  }, expectTeam: config => { if (current()) expectedTeamKey = composerPickerTargetKey(task(), config); } };
-  if (!inPanel) composerPickerLifecycle = { anchor, current };
-  return { ...pending, current, signal: controller.signal };
 }
 function rememberedModel(id: ProviderId): string {
   const model = localStorage.getItem('pandacode.defaultModel.' + id) || localStorage.getItem('pandacode.model.' + id) || state.sessions.find(s => s.provider === id && s.model)?.model || 'default';
@@ -1991,20 +1849,28 @@ function usedModels(id: ProviderId): string[] {
 }
 // Teams offer a long catalog's recent models only; OpenCode's saved selection is already short.
 setTeamRecency({ used: usedModels, unlimited: id => id === 'opencode' && openCodeSaved });
-/** A harness's models, cached and refreshed on demand (model-switch.ts); `onFresh` hears a refresh behind a stale list. */
-function loadModels(id: ProviderId, onFresh?: (update: ProviderModel[] | Error) => void): Promise<ProviderModel[]> {
+function loadModels(id: ProviderId): Promise<ProviderModel[]> {
+  const cached = modelCatalogs.get(id);
+  if (cached && cached.expires > Date.now()) return cached.pending;
   // OpenCode's own listing also says whether Settings saved a selection, which keeps the picker's full list.
-  const fetch = () => id === 'opencode'
+  const request = id === 'opencode'
     ? call<OpenCodeModels>('list_opencode_models').then(result => { openCodeSaved = result.selectedModelIds.length > 0; return openCodeChoices(result); })
     : call<ProviderModel[]>('list_provider_models', { provider: id });
-  return modelCatalogs.loadCatalog(id, fetch, models => {
-    const entry = provider(id);
-    if (entry) {
-      entry.models = models;
-      if (providersKnown) keepProviderCatalog(state.providers);
+  const pending = request.then(models => {
+    if (modelCatalogs.get(id)?.pending === pending) {
+      const entry = provider(id);
+      if (entry) {
+        entry.models = models;
+        if (providersKnown) keepProviderCatalog(state.providers);
+      }
+      if (session()?.provider === id) refreshModelLabels();
+      else refreshTeamProgress();
     }
-    if (session()?.provider === id) refreshModelLabels(); else refreshTeamProgress();
-  }, onFresh);
+    return models;
+  }).catch(error => { if (modelCatalogs.get(id)?.pending === pending) modelCatalogs.delete(id); throw error; });
+  // Refresh on demand, without polling or retaining an idle provider process.
+  modelCatalogs.set(id, { expires: Date.now() + 5 * 60 * 1000, pending });
+  return pending;
 }
 
 /* Another computer's catalog (PandaCode Connect): kept per device, never in state.providers. */
@@ -2018,13 +1884,7 @@ function taskConnection(s: Session): import('./connections').Connection | undefi
   const id = namedConnections.tasks[s.id];
   return namedConnections.connections.find(c => c.id === id && c.provider === s.provider);
 }
-function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; namedConnectionsLoaded = true; refreshModelLabels(); }
-/** Whether a connections snapshot has arrived yet; before it, `namedConnections` is empty, not "no bindings". */
-let namedConnectionsLoaded = false;
-let namedConnectionsLoad: Promise<void> | undefined;
-function refreshNamedConnections(): Promise<void> {
-  return namedConnectionsLoad ??= call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections).finally(() => { namedConnectionsLoad = undefined; });
-}
+function onNamedConnections(snapshot: import('./connections').ConnectionSnapshot): void { namedConnections = snapshot; refreshModelLabels(); }
 /** An account pool moved a running task to another account: show that one, never the old. */
 function onAccountPoolSwitch(event: AgentEvent): void {
   const pool = (event.data as { accountPool?: { connectionId?: string | null } } | null | undefined)?.accountPool; if (!pool) return;
@@ -2069,8 +1929,7 @@ async function adaptPickerToComputer(task: Session, deviceId: string, name: stri
     } catch { return; }
   }
   if (!choice || state.sessionId !== task.id || remoteChoice !== deviceId) return;
-  const updated = await taskCall<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
-  prewarmedDrafts.delete(task.id);
+  const updated = await call<Session>('configure_session', { sessionId: task.id, provider: choice.provider, model: choice.model });
   const index = state.sessions.findIndex(item => item.id === task.id); if (index >= 0) state.sessions[index] = updated;
   renderComposer(); renderHeader();
   if (notice) notify(notice);
@@ -2364,19 +2223,12 @@ function changesFoot(sessionId: string, changes: TurnChanges | undefined): strin
  *  messages change, so a stream's ticks touch just its live card. */
 function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
   const page = tilePages.get(id) ?? threadPages.get(id);
-  if (!tilePages.has(id) && tileRequests.get(id) !== rows) {
-    tileRequests.set(id, rows);
-    void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => {
-      if (!rows.isConnected || tileRequests.get(id) !== rows) return;
-      tilePages.set(id, fresh); drawTile(id, rows, scroller);
-    }).catch(error => {
-      if (!rows.isConnected || tileRequests.get(id) !== rows) return;
-      report(error);
-      // The live card must still show if the fresh page failed.
-      const known = threadPages.get(id);
-      if (known) { tilePages.set(id, known); drawTile(id, rows, scroller); }
-    }).finally(() => { if (tileRequests.get(id) === rows) tileRequests.delete(id); });
-  }
+  if (!tilePages.has(id)) void call<MessagePage>('get_messages', { sessionId: id }).then(fresh => { tilePages.set(id, fresh); if (rows.isConnected) drawTile(id, rows, scroller); }).catch(error => {
+    report(error);
+    // The live card must still show: the page this view already has stands in for the one that failed.
+    const known = threadPages.get(id);
+    if (known) { tilePages.set(id, known); if (rows.isConnected) drawTile(id, rows, scroller); }
+  });
   if (!page) return;
   // Until the fresh page is in, the saved rows stay alone: a wake's exchange joins its live card only once its message is known.
   const live = tilePages.has(id) ? state.streams.get(id) : undefined;
@@ -3001,82 +2853,24 @@ function contextBlocks(content: string): { typed: string; blocks: string[]; wake
 function userContent(content: string, messageId: number): string {
   const { typed, blocks, wake } = contextBlocks(content);
   const items = parseAttachments(blocks);
-  const thumbnails = new Map<string, string | null>();
-  // Sources are applied to mounted images only, so markup caches never retain data URLs.
+  for (const item of items) if (item.kind === 'image' && item.imageId) loadSentImage(item.imageId);
   const details = wake.length ? `<details class="message-context"><summary>${icon('clock')}Wake-up details</summary><pre>${escape(wake.join('\n\n'))}</pre></details>` : '';
-  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, thumbnails) + details;
+  return `<div class="user-prose" dir="auto">${escape(typed)}</div>` + attachmentChips(items, messageId, sentImages) + details;
 }
-// Encoded payloads share a byte budget; decoded sources belong only to intersecting chips.
-const visibleSentImages = new WeakSet<HTMLImageElement>();
-function sentImageInView(image: HTMLImageElement): boolean {
-  // A not-yet-loaded image is hidden; its chip still marks the visible place it will occupy.
-  const rect = (image.hidden ? image.parentElement! : image).getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < innerHeight && rect.right > 0 && rect.left < innerWidth;
-}
-function releaseSentImage(image: HTMLImageElement): void {
-  visibleSentImages.delete(image);
-  // Keep the chip's geometry while releasing both its data URL and decoded pixels.
-  const rect = image.getBoundingClientRect();
-  if (rect.width && rect.height) { image.width = Math.round(rect.width); image.height = Math.round(rect.height); }
-  image.removeAttribute('src');
-}
-const imageCache = new ImageCache(32 * 1024 * 1024, () => new Set(
-  Array.from(document.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')).filter(sentImageInView).map(image => 'sent:' + image.dataset.promptImage),
-), key => {
-  if (!key.startsWith('sent:')) return;
-  turnInputs.bump();
-  for (const image of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${CSS.escape(key.slice(5))}"]`)) {
-    releaseSentImage(image);
-    // A quick scroll away and back can precede the observer's offscreen record.
-    const chip = image.parentElement!;
-    sentImageObserver.unobserve(chip); sentImageObserver.observe(chip);
-  }
-});
-// Observe the chip: an image with no payload is hidden until its first successful load.
-const sentImageObserver = new IntersectionObserver(records => {
-  for (const record of records) {
-    for (const image of record.target.querySelectorAll<HTMLImageElement>('img[data-prompt-image]')) {
-      if (!record.isIntersecting || !image.isConnected) { releaseSentImage(image); continue; }
-      visibleSentImages.add(image);
-      if (!image.hasAttribute('src')) void loadSentImage(image.dataset.promptImage!, image);
+// Sent images live in the capture registry for a week; null marks one that is gone.
+const sentImages = new Map<string, string | null>();
+function loadSentImage(id: string): void {
+  if (sentImages.has(id)) return;
+  sentImages.set(id, null);
+  call<string | null>('prompt_image', { id }).then(url => {
+    if (!url?.startsWith('data:image/')) return;
+    sentImages.set(id, url);
+    turnInputs.bump();
+    for (const img of document.querySelectorAll<HTMLImageElement>(`img[data-prompt-image="${id}"]`)) {
+      img.src = url; img.hidden = false;
+      if (img.nextElementSibling?.matches('svg.icon')) img.nextElementSibling.remove();
     }
-  }
-});
-new MutationObserver(records => {
-  for (const record of records) for (const removed of record.removedNodes) if (removed instanceof Element && !removed.isConnected) {
-    // Cached rows keep their DOM for fast switching, but never keep image payloads or decoded pixels.
-    // Reattachment below observes the chip again and reloads through ImageCache.
-    releaseToolImages(removed);
-    const images = removed instanceof HTMLImageElement && removed.matches('[data-prompt-image]') ? [removed] : removed.querySelectorAll<HTMLImageElement>('img[data-prompt-image]');
-    for (const image of images) releaseSentImage(image);
-    // IntersectionObserver holds targets strongly; detached transcript rows must be released.
-    for (const chip of [removed, ...removed.querySelectorAll('.prompt-chip-image')]) {
-      sentImageObserver.unobserve(chip);
-    }
-  }
-  for (const record of records) for (const added of record.addedNodes) if (added instanceof Element && added.isConnected) {
-    const images = added.matches('img[data-prompt-image]') ? [added] : added.querySelectorAll('img[data-prompt-image]');
-    for (const image of images) {
-      const target = image.parentElement!;
-      // A reused chip may contain a newly rendered img; request its current intersection again.
-      sentImageObserver.unobserve(target); sentImageObserver.observe(target);
-    }
-  }
-  imageCache.trim();
-}).observe(document.body, { childList: true, subtree: true });
-document.addEventListener('scroll', () => imageCache.trim(), { capture: true, passive: true });
-function loadSentImage(id: string, image?: HTMLImageElement): Promise<string | null> {
-  const previous = imageCache.get('sent:' + id);
-  return imageCache.load('sent:' + id, () => call<string | null>('prompt_image', { id })).then(url => {
-    const retained = imageCache.get('sent:' + id) === url;
-    if (url && retained && url !== previous) turnInputs.bump();
-    // Shared requests may finish after a scroll or detach; never hydrate another copy of the same ID.
-    if (url && retained && image?.isConnected && visibleSentImages.has(image) && sentImageInView(image)) {
-      image.src = url; image.hidden = false;
-      if (image.nextElementSibling?.matches('svg.icon')) image.nextElementSibling.remove();
-    }
-    return url;
-  });
+  }).catch(() => { /* The chip keeps its icon and still opens the block's text. */ });
 }
 async function openMessageAttachment(element: HTMLElement): Promise<void> {
   // Chips in the By the way tab belong to the side thread's messages, not the open thread's.
@@ -3085,7 +2879,7 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
   if (!item) return;
   if (item.kind === 'github') { await call('open_external_url', { url: item.url }); return; }
   if (item.kind === 'image') {
-    const url = item.imageId ? await loadSentImage(item.imageId) : null;
+    const url = item.imageId ? sentImages.get(item.imageId) : null;
     if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog'); return; }
     modal(item.name, `<p class="dialog-description">This image is no longer stored. Here is what was sent with it.</p><pre class="message-attachment-raw">${escape(item.raw)}</pre>`, 'message-attachment-dialog'); return;
   }
@@ -4040,10 +3834,6 @@ const forgetPromptMetrics = () => { promptMetricsCache = undefined; };
 for (const change of ['resize', 'pandacode-theme-change', 'pandacode-palette-change']) window.addEventListener(change, forgetPromptMetrics);
 document.fonts?.addEventListener('loadingdone', forgetPromptMetrics);
 function renderComposer(): void {
-  // Replacing a pressed button suppresses its native click, even if the same node is put back afterwards.
-  // Delay only the same-target composer paint through this pointer gesture; navigation/target changes still paint.
-  if (composerPickerPress?.current()) { composerPressRender = true; return; }
-  composerPressRender = false;
   refreshTeamProgress();
   syncProgressPip();
   retryRouting(session());
@@ -4052,8 +3842,6 @@ function renderComposer(): void {
   slashPicker?.dispose(); slashPicker = undefined;
   fileMentionPicker?.dispose(); fileMentionPicker = undefined;
   closeContentMenus();
-  const pickerAnchor = composerPickerLifecycle?.current() ? composerPickerLifecycle.anchor : undefined;
-  const pickerFocused = pickerAnchor === document.activeElement;
   const voiceDetails = document.querySelector<HTMLElement>('#composer-area .voice-details');
   const voiceDetailsState = voiceDetails ? { focused: document.activeElement === voiceDetails, top: voiceDetails.scrollTop } : null;
   const voiceFocus = document.activeElement?.closest<HTMLElement>('[data-voice]')?.dataset.voice;
@@ -4093,26 +3881,10 @@ function renderComposer(): void {
     ? `<button type="button" class="send-button stop-button" data-action="stop" title="Stop task (Esc)" aria-label="${remoteStartCancels.has(s.id) ? 'Stopping…' : 'Stop task'}" ${remoteStartCancels.has(s.id) ? 'disabled' : ''}>${icon('stop')}</button>`
     : checking ? '<button type="button" class="secondary-button remote-checking" aria-label="Checking…" disabled>Checking…</button>'
     : offline ? `<button type="button" class="secondary-button remote-composer-retry" data-action="remote-retry" aria-label="${retrying ? 'Reconnecting…' : 'Retry connection'}" ${retrying ? 'disabled' : ''}>${icon('refresh')}<span>${retrying ? 'Reconnecting…' : 'Retry'}</span></button>`
-    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${modelSwitch.sendHeld(s.id) ? 'aria-busy="true" ' : ''}${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
   $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
-  // Keep the exact anchor used by the pending-open guards and the popover's positioning/listeners.
-  // A same-task refresh still rebuilds every other control, including the prompt's enabled state.
-  if (pickerAnchor) {
-    const fresh = document.getElementById(pickerAnchor.id) as HTMLButtonElement | null;
-    if (fresh && !fresh.disabled) {
-      pickerAnchor.innerHTML = fresh.innerHTML;
-      for (const name of ['aria-label', 'aria-description', 'data-tip']) {
-        const value = fresh.getAttribute(name);
-        if (value === null) pickerAnchor.removeAttribute(name); else pickerAnchor.setAttribute(name, value);
-      }
-      fresh.replaceWith(pickerAnchor);
-      if (pickerFocused) pickerAnchor.focus({ preventScroll: true });
-    } else closeMenus();
-  }
-  // A busy trigger, permissions button or send button redrawn mid-save carries on its pulse rather than blinking.
-  modelSwitch.joinPulses(document.querySelector('#composer'));
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -4203,11 +3975,11 @@ document.addEventListener('input', event => { if ((event.target as Element | nul
 /** The composer's harness/model trigger. `main` marks the open thread's (its id and the labels refreshModelLabels updates). */
 function modelTriggerHtml(s: Session, locked: boolean, main = false): string {
   const teamLabel = teamModelLabel(s), effort = effortLabel(s);
-  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model"${modelSwitch.triggerBusy(s.id) ? ' aria-busy="true"' : ''} aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
+  return `<button type="button" ${main ? 'id="model-picker-trigger" ' : ''}class="model-picker" data-action="model" aria-label="${escape(`Model: ${modelLabel(s)}`)}" aria-description="${escape(['Choose harness and model', teamLabel].filter(Boolean).join('. '))}" aria-haspopup="dialog" aria-expanded="false" data-tip="${escape(modelTitle(s))}" ${locked ? 'disabled' : ''}>${triggerLogo(s)}<span class="model-detail"${main ? ' data-model-label' : ''}>${escape(modelLabel(s, false))}</span><span class="model-effort-pill" ${effort ? '' : 'hidden'}>${GAUGE_ICON}<span class="model-effort"${main ? ' data-effort-label' : ''} ${effort ? '' : 'hidden'}>${escape(effort)}</span></span><span class="team-model-count"${main ? ' data-team-model-label' : ''} ${teamLabel ? '' : 'hidden'}>${teamLabel}</span>${icon('down')}</button>`;
 }
 function modeTriggerHtml(s: Session, disabled: boolean, main = false): string {
   const behavior = approvalMode(s.provider, s.mode);
-  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode"${modelSwitch.modeBusy(s.id) ? ' aria-busy="true"' : ''} data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
+  return `<button type="button" ${main ? 'id="mode-picker-trigger" ' : ''}class="mode-picker" data-action="mode" data-mode="${behavior.id}" aria-label="${escape(modeName(behavior))}" data-tip="${escape(modeTip(behavior))}" aria-description="${escape(behavior.description)}" aria-haspopup="dialog" aria-expanded="false" ${disabled ? 'disabled' : ''}>${modeFaceHtml(behavior)}</button>`;
 }
 function renderBrowserAttachments(): void {
   const target = document.querySelector('.browser-context-attachments'); if (!target) return;
@@ -4303,7 +4075,7 @@ async function startHubTask({ projectId, prompt, title, link, send: start }: { p
     const task = await startTask(projectId) ? openedDraft(projectId) : undefined;
     if (!task) return false;
     const replace = (next: Session) => { const index = state.sessions.findIndex(item => item.id === next.id); if (index >= 0) state.sessions[index] = next; };
-    if (link) replace(await taskCall<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
+    if (link) replace(await call<Session>('set_task_link', { sessionId: task.id, kind: link.kind, link }));
     if (title) { await call('update_session', { sessionId: task.id, title }); const current = state.sessions.find(item => item.id === task.id); if (current) current.title = title; }
     renderNavigation(); renderHeader();
     const field = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -4399,14 +4171,11 @@ function setWorkspaceView(view: WorkspaceView): void {
 async function editBoardTask(): Promise<void> {
   const task = session(), generation = state.generation;
   if (!task || task.archived || isRunning() || threadLoading() || state.messagesError) return;
-  // A pick still saving, or made while this read ran, keeps its fields: native may not have stored it yet.
-  const details = await taskCall<Session>('get_task', { sessionId: task.id });
+  const details = await call<Session>('get_task', { sessionId: task.id });
   if (task.id !== state.sessionId || generation !== state.generation || isRunning()) return;
   fullTaskDescription = { id: task.id, value: details.taskDescription ?? '' };
-  replaceSession(details);
-  // The task as now held (deleted meanwhile: nothing to edit).
-  const current = state.sessions.find(item => item.id === task.id);
-  if (current) showBoardTaskForm(current);
+  Object.assign(session()!, details);
+  showBoardTaskForm(details);
 }
 function showBoardTaskForm(task?: Session): void {
   const p = task ? state.projects.find(p => p.id === task.projectId) : project() ?? state.projects[0];
@@ -4425,13 +4194,13 @@ async function saveBoardTaskForm(form: HTMLFormElement, data: FormData): Promise
   if (!title) return;
   const id = form.dataset.sessionId, generation = state.generation;
   let saved: Session;
-  if (id) saved = await taskCall<Session>('update_task_details', { sessionId: id, title, description });
+  if (id) saved = await call<Session>('update_task_details', { sessionId: id, title, description });
   else {
     const harness = pickHarness(await providersForChoice());
     if (!harness) throw new Error('Open Settings to check your installed agents.');
     // Read before the await: the real list may land while the task is being created.
     const provisional = !providersKnown;
-    saved = await taskCall<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
+    saved = await call<Session>('create_board_task', { projectId: form.dataset.projectId, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', title, description });
     noteProvisional(saved, provisional);
   }
   const index = state.sessions.findIndex(s => s.id === saved.id);
@@ -4462,7 +4231,8 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
   try {
     // There is no archive any more: an archived task left over (old data, a mirror) is settled, and reopening clears the flag.
     if (stage !== 'completed' && s.archived) await call('update_session', { sessionId: s.id, archived: false });
-    replaceSession(await taskCall<Session>('set_task_stage', { sessionId: s.id, stage }));
+    const changed = await call<Session>('set_task_stage', { sessionId: s.id, stage });
+    const index = state.sessions.findIndex(task => task.id === s.id); if (index >= 0) state.sessions[index] = changed;
     if (s.id === state.sessionId) renderComposer();
   } finally { configuringSessions.delete(s.id); renderNavigation(); renderBoardView(); }
 }
@@ -4471,8 +4241,6 @@ let sessionsReload = 0;
 let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
-  // A model, permission or effort change still saving: start once it lands; a refused one stops the start and says so.
-  if (!await afterChoiceSaved(id, 'Not started')) return;
   const s = state.sessions.find(task => task.id === id);
   if (!s || s.archived || taskStage(s) === 'completed' || isRunning(id) || finishingStreams.has(id) || startingBoardTasks.has(id) || taskBusyConfiguring(id)) return;
   startingBoardTasks.add(id);
@@ -4699,7 +4467,7 @@ async function forkAtMessage(sessionId: string, messageId: number, draft?: strin
   pendingMessageForks.add(key);
   const generation = state.generation;
   try {
-    const fork = await taskCall<Session>('fork_session_at_message', { sessionId, messageId, exclusive: draft !== undefined });
+    const fork = await call<Session>('fork_session_at_message', { sessionId, messageId, exclusive: draft !== undefined });
     state.sessions = [fork, ...state.sessions.filter(task => task.id !== fork.id)];
     if (draft) state.drafts.set(fork.id, draft);
     if (generation === state.generation) {
@@ -4726,13 +4494,6 @@ async function editAtMessage(sessionId: string, messageId: number): Promise<void
 const THREAD_PAGES = 24;
 const THREAD_PAGES_CHARS = 4_000_000, THREAD_PAGE_CHARS = 1_000_000;
 const threadPages = new Map<string, MessagePage & { chars: number }>();
-const freshSessions = new Set<string>();
-function seedFreshSession(id: string): void {
-  threadPages.delete(id);
-  threadPages.set(id, { messages: [], hasOlder: false, chars: 0 });
-  if (!teams.has(id)) teams.set(id, null);
-  freshSessions.add(id);
-}
 function rememberThread(id: string): void {
   const messages = state.messages.filter(message => message.id > 0);
   // Only a page that really is this thread's: other paths can switch tasks without a reload.
@@ -4758,14 +4519,13 @@ function selectSession(id: string, focusComposer = false): Promise<void> {
 /** What a thread's load sends from its queue once the team is known (transcript-host.ts dispatchHeld). */
 const heldQueue: HeldQueueHost = { queued: id => queueOf(id).length > 0, hasTeam: id => teams.has(id), loadTeam, dispatch: id => dispatchQueue(id), run };
 async function openThread(id: string, focusComposer: boolean): Promise<void> {
-  const freshCreated = freshSessions.delete(id);
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
   closeMenus();
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
   // A first load left before its details landed never clears its own wait: its page, remembered, must not come back disabled.
-  if (changingTask) { cancelStreamRender(); if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
+  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
   // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
   // section its row is in while it stays open, so the row never jumps from under the pointer.
   if (changingTask) {
@@ -4779,27 +4539,20 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (state.view !== 'conversation') state.boardPanel = true;
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
-  const nextWorkspaceKey = `${s.projectId}:${s.worktreePath ?? ''}`;
-  const keepFreshWorkspace = freshCreated && changingTask && state.projectId === s.projectId && inspectorLoaded?.key === nextWorkspaceKey && Date.now() - inspectorLoaded.at < INSPECTOR_FRESH_MS && !state.inspectorLoading && Boolean(state.git) && !state.gitError && !state.filesError;
-  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s, keepFreshWorkspace); state.attachments = [];
+  state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
   // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
   beginThreadRestore(localStorage, id);
   // The thread boot kept closed is open now, by the crash notice's button or any other way.
   // Any thread or New task open: "no thread was opened" is no longer true, and the notice says so.
   const openedNothing = bootOpenedNothing; bootOpenedNothing = false;
   if (heldBackThread?.id === id) { heldBackThread = undefined; heldBackOpened(); } else if (openedNothing) tasksChanged();
-  const remembered = changingTask || freshCreated ? threadPages.get(id) : undefined;
+  const remembered = changingTask ? threadPages.get(id) : undefined;
   state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
   const generation = ++state.generation;
   // What acts on the task waits for this load's details and team. A remembered page whose team is already known has
   // been usable since it was left; one left before its team landed waits again, so a send never goes out as a plain
   // message to what turns out to be a team thread.
   taskDetailsPending = remembered && teams.has(id) ? undefined : { id, generation };
-  if (freshCreated) {
-    const freshTeam = teams.get(id) ?? null;
-    if (freshTeam) void ensureArchitectView().then(view => { if (state.sessionId === id) view.setTask(id, teams.get(id) ?? null, state.providers); }).catch(report);
-    else architectView?.setTask(id, null, state.providers);
-  }
   renderInspector();
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
@@ -4811,34 +4564,12 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   const settle = changingTask && Boolean(previousTask);
   if (settle && remembered) settleIn($('#transcript'));
   if (focusComposer) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-  if (freshCreated && remembered) {
-    rememberOpenThread(localStorage, id, s.draft);
-    finishThreadRestoreAfterPaint(localStorage, id);
-    fullTaskDescription = { id, value: s.taskDescription ?? '' };
-    if (queueOf(id).length) run(dispatchQueue(id));
-    if (provider(s.provider)?.installed) void loadModels(s.provider).catch(() => { /* Keep the exact model ID if discovery is unavailable. */ });
-    if (generation !== state.generation) return;
-    await refreshInspectorIfStale();
-    if (generation === state.generation) renderHeader();
-    return;
-  }
   // The rows draw the moment the page is in; the task's details and team land after, and a failure of theirs is met below.
   // The task as it was when its details were asked for: a field changed here since (a rename, a model picked, a run
   // starting) is newer than what the details say.
   const askedTask = state.sessions.find(task => task.id === id), asked = askedTask ? { ...askedTask } : undefined;
-  let pageSettled = false;
-  const taskLoad = Promise.all([taskCall<Session>('get_task', { sessionId: id }), loadTeam(id)]);
-  taskLoad.then(([details]) => {
-    if (generation !== state.generation) return;
-    taskDetailsPending = undefined;
-    if (!pageSettled && !state.messagesLoading) {
-      rememberOpenThread(localStorage, id, details.draft);
-      fullTaskDescription = { id, value: details.taskDescription ?? '' };
-      applyTaskDetails(id, details, asked, false);
-      renderHeader(); renderComposer();
-      if (queueOf(id).length) run(dispatchQueue(id));
-    }
-  }, () => undefined);
+  const taskLoad = Promise.all([call<Session>('get_task', { sessionId: id }), loadTeam(id)]);
+  taskLoad.catch(() => undefined);
   /* A load another one took over (a switch, the same thread opened again) never reaches its own dispatch, while a
    * dispatch made meanwhile waited for it (dispatchQueue): what the queue holds goes once the team is known. If this
    * thread is the open one loading again, dispatchQueue leaves it to that load. */
@@ -4862,7 +4593,6 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   let page: MessagePage;
   try { page = await latestMessagePage(id); }
   catch (error) { if (failLoad(error, requestedMessages)) throw error; return; }
-  finally { pageSettled = true; }
   if (generation !== state.generation) { superseded(); return; }
   // A send or completed turn can replace the transcript while this earlier
   // history request is in flight. Keep that newer state instead of erasing it.
@@ -4906,10 +4636,9 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
 function applyTaskDetails(id: string, details: Session, asked: Session | undefined, steady: boolean): void {
   const loaded = state.sessions.find(task => task.id === id);
   if (loaded && mergeTaskDetails(loaded, details, asked, steady, state.streams.has(id))) renderTranscript(); else syncTeamRows();
-  if (loaded) { state.drafts.reclaim(id); state.drafts.reclaim(BTW_DRAFT + id); }
 }
 /** Nothing selected; the next launch opens the newest thread of the current project, not the last one. */
-function clearOpenSession(): void { cancelStreamRender(); state.sessionId = ''; rememberOpenThread(localStorage, ''); }
+function clearOpenSession(): void { state.sessionId = ''; rememberOpenThread(localStorage, ''); }
 async function selectProject(id: string): Promise<void> {
   const first = listedSessions().find(s => s.projectId === id && !s.archived);
   if (first) { await selectSession(first.id); return; }
@@ -4925,15 +4654,9 @@ function reloadSessions(): Promise<void> {
   }
   return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
 }
-/** Picks saving or made from here on are newer than what the listing says. One read spans both calls and is held as the
- *  tasks go into state: the listing answers first and waits for the details, and a pick can land in between. */
 async function loadSessions(): Promise<void> {
-  const read = modelSwitch.beginRead();
-  try { await loadSessionsHeld(read); } finally { read.end(); }
-}
-async function loadSessionsHeld(read: modelSwitch.TaskRead): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
-  const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'), // task-read-guard: ok held by `read`, open until both are in
+  const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
   if (request !== sessionsReload) return;
   if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId)) throw detailResult.reason;
@@ -4941,7 +4664,7 @@ async function loadSessionsHeld(read: modelSwitch.TaskRead): Promise<void> {
   // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
   const listedIds = new Set(sessions.map(task => task.id));
   const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
-  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id)).map(read.hold);
+  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
   // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
   state.drafts.reclaimAll();
   scheduleLimitResumes();
@@ -4968,7 +4691,7 @@ function removeDeletedSessions(ids: string[]): void {
   const removed = new Set(ids);
   for (const id of removed) {
     provisionalTasks.delete(id);
-    deletedSessions.add(id); prewarmedDrafts.delete(id); writeLink(localStorage, id, null);
+    deletedSessions.add(id); writeLink(localStorage, id, null);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4977,7 +4700,6 @@ function removeDeletedSessions(ids: string[]): void {
     threadPanels.delete(id); fileTabs.forget(id);
   }
   state.sessions = state.sessions.filter(task => !removed.has(task.id));
-  modelSwitch.forgetTasks(removed);
   ++sessionsReload;
   if (fullTaskDescription && removed.has(fullTaskDescription.id)) fullTaskDescription = undefined;
   if (removed.has(state.sessionId)) {
@@ -4996,7 +4718,6 @@ async function removeProject(id: string): Promise<void> {
   removeDeletedSessions(state.sessions.filter(s => s.projectId === id).map(s => s.id));
   // Its unsent New task text goes with it.
   state.drafts.delete(NEW_TASK_DRAFT + id);
-  state.drafts.delete(BTW_DRAFT + NEW_TASK_DRAFT + id);
   state.projects = await call<Project[]>('list_projects');
   if (state.projectFilter === id) setProjectFilter('');
   if (state.projectId === id) activateProject(userProjects()[0]?.id ?? '');
@@ -5071,7 +4792,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     case 'usage': case 'hooks': case 'preferences': case 'imports': case 'conversations': case 'plugins': case 'jobs': openCommandPanel(task, action, argumentsText); break;
     case 'fork': {
-      const fork = await taskCall<Session>('fork_codex_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
+      const fork = await call<Session>('fork_codex_task', { sessionId: task.id }); state.sessions.unshift(fork); await selectSession(fork.id, true);
       if (argumentsText) await instruction(fork, argumentsText); break;
     }
     case 'archive': await call('archive_codex_task', { sessionId: task.id }); task.archived = true; render(); break;
@@ -5093,11 +4814,9 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       const settings = task.codexSettings;
       const current = action === 'plan' ? settings?.collaborationMode?.mode === 'plan' : Boolean(settings?.serviceTier);
       const enabled = argumentsText === 'off' ? false : argumentsText === 'on' || (action === 'plan' && Boolean(argumentsText)) ? true : !current;
-      replaceSession(await taskCall<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }));
-      prewarmedDrafts.delete(task.id);
+      const updated = await call<Session>('set_task_preference', { sessionId: task.id, request: { action, enabled } }); Object.assign(task, updated);
       notify(`${action === 'plan' ? 'Plan mode' : 'Fast service tier'} ${enabled ? 'enabled' : 'disabled'}`);
-      // The task as just stored (plan mode on), not the copy this command started with.
-      if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(state.sessions.find(item => item.id === task.id) ?? task, argumentsText);
+      if (action === 'plan' && argumentsText && !['on', 'off'].includes(argumentsText)) await instruction(task, argumentsText);
       break;
     }
     case 'init': case 'recap': await instruction(task, slashInstruction(action, argumentsText)); break;
@@ -5164,7 +4883,6 @@ async function enqueueFromComposer(forceQueue = false): Promise<void> {
   await enqueueDraft(forceQueue);
 }
 async function enqueueDraft(forceQueue: boolean): Promise<void> {
-  state.drafts.flush();
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -5232,12 +4950,12 @@ function clearSavedDrafts(): void {
 const committedDrafts = createCommittedDrafts();
 function noteCommittedDraft(s: Session, text: string): void { committedDrafts.note(s.id, text); }
 /** Restores a rejected message before newer draft text (after earlier rejected ones) without losing its selection. */
-function restoreComposerDraft(s: Session, text: string, hold?: ReturnType<PersistedDrafts['hold']>): void {
+function restoreComposerDraft(s: Session, text: string): void {
   const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
   const shown = prompt?.dataset.sessionId === s.id;
   const current = shown ? prompt.value : state.drafts.get(s.id) ?? '';
   const restored = committedDrafts.restore(s.id, text, current);
-  if (hold) hold.reject(current, restored.text); else state.drafts.set(s.id, restored.text);
+  state.drafts.set(s.id, restored.text);
   if (shown) { applyRestoredDraft(prompt, current, restored.text, restored.at); resizePrompt(); }
 }
 /** Restores an unsent message and its attachments alongside any newer draft. */
@@ -5309,7 +5027,6 @@ async function steerFromComposer(): Promise<void> {
   await steerDraft();
 }
 async function steerDraft(): Promise<void> {
-  state.drafts.flush();
   if (btwFromComposer()) return;
   const s = session(); if (!s) return;
   if (remoteOffline(s)) { renderComposer(); return; }
@@ -5458,7 +5175,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     const sentAt = Date.now();
     task.lastPromptAt = sentAt; task.draft = false; pendingPromptActivity.set(task.id, sentAt);
     // Published: text typed since the message was queued is the thread's own now, not its project's New task text.
-    state.drafts.reclaim(task.id); state.drafts.reclaim(BTW_DRAFT + task.id);
+    state.drafts.reclaim(task.id);
     stream(task.id).lastPromptAt = sentAt; stream(task.id).startedAt = Math.min(stream(task.id).startedAt, sentAt); stream(task.id).status = 'Starting agent'; task.status = 'running'; task.taskStage = 'in_progress'; task.completedAt = null;
     sent = sentPrompt(task, content, sentAt);
     if (task.id === state.sessionId) { state.messages = [...state.messages, sent]; render(); } else renderNavigation();
@@ -5492,19 +5209,8 @@ function scheduleLimitResumes(): void {
   }, Math.min(Math.max(0, next - Date.now()), 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
-/** Waits for the task's model, effort or permission change still saving; false when one was refused, so a turn never
- *  starts with the old choice. The wait holds the refusals' own notices back and says them once, as `<held> — <what>
- *  wasn't changed; still …`, naming each refused change no notice has said yet. */
-async function afterChoiceSaved(id: string, held: string): Promise<boolean> {
-  if (!modelSwitch.saving(id)) return true;
-  const refusals = await modelSwitch.holdChange(id);
-  const text = modelSwitch.unsaidText(refusals);
-  if (text) notify(`${held} — ${text}.`);
-  return !refusals.length;
-}
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
   if (teamHeld(task.id)) return clearLimit(task);
-  if (!await afterChoiceSaved(task.id, 'Not continued')) return;
   // The run's saved page is still landing: a click on the banner waits for it rather than being lost.
   const finishing = finishingStreams.get(task.id);
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
@@ -5551,7 +5257,7 @@ async function limitAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'limit-dismiss') return clearLimit(s);
   if (action === 'limit-resume-at-reset') {
     const enabled = (element as HTMLInputElement).checked;
-    try { replaceSession(await taskCall<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
+    try { Object.assign(s, await call<Session>('set_resume_at_reset', { sessionId: s.id, enabled })); }
     finally { scheduleLimitResumes(); renderComposer(); }
   }
 }
@@ -5618,16 +5324,14 @@ function remoteRefusal(s: Session, error: unknown): boolean {
 }
 /** The asking card's Keep fixing: a follow-up to the lead with its own text and no attachments, sent the way a queued
  *  message is (`deliverQueued`), so the prompt's draft and attachments are never touched. */
-async function councilKeepFixing(sessionId: string): Promise<boolean> {
+async function councilKeepFixing(sessionId: string): Promise<void> {
   const task = state.sessions.find(item => item.id === sessionId);
   if (!task) throw new Error('This task is gone.');
   if (isRunning(task.id)) throw new Error('The team is already working.');
-  if (!await afterChoiceSaved(task.id, 'Not sent')) return false;
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
   catch (error) { if (hold === undefined) state.queueHolds.delete(task.id); else state.queueHolds.set(task.id, hold); throw error; }
-  return true;
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
@@ -5659,43 +5363,22 @@ async function send(): Promise<void> {
   await sendDraft();
 }
 async function sendDraft(): Promise<void> {
-  state.drafts.flush();
-  if (btwFromComposer()) return;
   const waitingFor = state.sessionId, generation = state.generation;
-  if (!waitingFor || teamToggles.has(waitingFor)) return;
-  const initialTask = session();
-  if (!initialTask) return;
-  const initialDraft = document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? '';
-  const initialText = initialDraft.trim();
-  const initialBot = sidebarBots.find(item => item.desktopSession === initialTask.id);
-  const initialBotAttachments = Boolean(initialBot && (state.attachments.length || state.browserAttachments.get(initialTask.id)?.length || attachments.list(initialTask.id).length || state.moodboardAttachments.get(initialTask.id)?.some(item => item.projectId === initialTask.projectId)));
-  const wake = isWake(initialText);
-  if (!wake && ((!initialText && !initialBotAttachments) || councilFirstSends.has(initialTask.id) || initialTask.archived || taskStage(initialTask) === 'completed' || isRunning() || finishingStreams.has(initialTask.id) || threadLoading() || state.messagesError)) return;
-  const busyOther = taskBusyConfiguring(waitingFor) && !modelSwitch.saving(waitingFor) && !explicitHarnessSaves.has(waitingFor);
-  if (busyOther) return;
-  let intent = sendIntent(waitingFor);
-  if (harnessWaitingSends.has(waitingFor)) { harnessWaitingSends.set(waitingFor, intent); return; }
-  if (modelSwitch.saving(waitingFor) || explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
+  if (waitingFor && teamToggles.has(waitingFor)) return;
+  let intent = waitingFor ? sendIntent(waitingFor) : undefined;
+  if (waitingFor && harnessWaitingSends.has(waitingFor)) { if (intent) harnessWaitingSends.set(waitingFor, intent); return; }
+  if (waitingFor && intent && (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor))) {
     harnessWaitingSends.set(waitingFor, intent);
     try {
-      while (modelSwitch.saving(waitingFor) || explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
-        if (modelSwitch.saving(waitingFor)) {
-          // A refused model, permission or effort change (already rolled back) or another task opened meanwhile: nothing goes.
-          const refusals = await modelSwitch.holdSend(waitingFor, () => state.sessionId === waitingFor ? document.querySelector('#composer .send-button[type="submit"]') : null);
-          // Each refused change is said once, however many presses of Enter it held.
-          if (refusals.length) { const text = modelSwitch.unsaidText(refusals); if (text) notify(`Not sent — ${text}. Your draft is still there.`); return; }
-          if (state.sessionId !== waitingFor) { notify('Not sent — you switched tasks. Your draft is still there.'); return; }
-          if (state.generation !== generation) return;
-        } else {
-          // The explicit choice can arrive while the correction is saving. Recheck after each await.
-          const outcome = await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
-          if (state.sessionId !== waitingFor || state.generation !== generation) return;
-          if (outcome === 'stale' && !explicitHarnessSaves.has(waitingFor)) return;
-          if (outcome === 'missing' && !explicitHarnessSaves.has(waitingFor)) {
-            const task = session();
-            if (task) showMissingHarness(task);
-            return;
-          }
+      // The explicit choice can arrive while the correction is saving. Recheck after each await.
+      while (explicitHarnessSaves.has(waitingFor) || provisionalCorrections.has(waitingFor)) {
+        const outcome = await (explicitHarnessSaves.get(waitingFor) ?? provisionalCorrections.get(waitingFor));
+        if (state.sessionId !== waitingFor || state.generation !== generation) return;
+        if (outcome === 'stale' && !explicitHarnessSaves.has(waitingFor)) return;
+        if (outcome === 'missing' && !explicitHarnessSaves.has(waitingFor)) {
+          const task = session();
+          if (task) showMissingHarness(task);
+          return;
         }
       }
       intent = harnessWaitingSends.get(waitingFor) ?? intent;
@@ -5703,7 +5386,8 @@ async function sendDraft(): Promise<void> {
     finally { harnessWaitingSends.delete(waitingFor); }
     if (!intentHolds(intent)) return;
   }
-  const draft = intent.draft; const text = draft.trim(); const s = session();
+  if (btwFromComposer()) return;
+  const draft = intent?.draft ?? document.querySelector<HTMLTextAreaElement>('#prompt')?.value ?? ''; const text = draft.trim(); const s = session();
   if (!s) return;
   if (isWake(text)) { await wakeFromComposer(s, text); return; }
   const bot = sidebarBots.find(item => item.desktopSession === s.id);
@@ -5738,7 +5422,7 @@ async function sendDraft(): Promise<void> {
   }
   // Preparing attachments or awaiting admission blocks only this task.
   configuringSessions.add(s.id);
-  noteManualSend(s.id); modelSwitch.sent(s.id);
+  noteManualSend(s.id);
   const filePaths = [...state.attachments], browserItems = state.browserAttachments.get(s.id) ?? [];
   const moodboardItems = (state.moodboardAttachments.get(s.id) ?? []).filter(item => item.projectId === s.projectId);
   const promptItems = attachments.list(s.id);
@@ -5810,7 +5494,6 @@ async function sendDraft(): Promise<void> {
     // A bot's own conversation goes through the bot, which adds its brief and memories.
     if (bot) await call('bot_message', { botId: bot.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
     else await call(teams.get(s.id) && !s.remoteDevice && !moodboardItems.length ? 'architect_start' : 'send_message', { sessionId: s.id, text: content, imageIds, moodboardIds: moodboardItems.map(item => item.id) });
-    if (wasDraft) { state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id); }
   } catch (error) {
     pendingPromptActivity.delete(s.id); if (sent) dropMirrorPrompt(s.id, sent);
     state.streams.delete(s.id); s.status = 'idle';
@@ -5818,8 +5501,8 @@ async function sendDraft(): Promise<void> {
     // says otherwise, so its restored text is kept under its project (an empty draft session is
     // discarded at the next launch, and text under its id with it).
     if (wasDraft) {
-      listed.draft = true; state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id);
-      void taskCall<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); state.drafts.reclaim(BTW_DRAFT + s.id); renderNavigation(); }).catch(() => undefined);
+      listed.draft = true; state.drafts.reclaim(s.id);
+      void call<Session>('get_task', { sessionId: s.id }).then(saved => { listed.draft = saved.draft; state.drafts.reclaim(s.id); renderNavigation(); }).catch(() => undefined);
     }
     restoreComposerDraft(s, draft);
     if (promptItemsConsumed) attachments.restore(s.id, promptItems);
@@ -5844,9 +5527,7 @@ async function sendDraft(): Promise<void> {
 }
 // /btw side threads (docs/btw.md): a second task beside this one, fed what the main thread said.
 const btwPanel = new BtwPanel({
-  call, report: reportBtw,
-  mainId: () => state.sessionId,
-  draftKey: mainId => btwLink(mainId)?.sideId ?? BTW_DRAFT + mainId,
+  call, report,
   side: () => { const link = btwLink(state.sessionId), side = link && state.sessions.find(task => task.id === link.sideId); return side && { session: side, hiddenThrough: link.hiddenThrough ?? 0 }; },
   running: sideId => isRunning(sideId),
   streaming: sideId => state.streams.has(sideId) || finishingStreams.has(sideId),
@@ -5855,15 +5536,6 @@ const btwPanel = new BtwPanel({
     return Boolean(live?.approvals.size || live?.inputs.size) || status === 'waiting' || status === 'waiting_approval';
   },
   mainRunning: () => isRunning(),
-  holdDraft: (id, text) => state.drafts.hold(id, text),
-  restoreComposer: (key, apply) => {
-    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
-    if (!prompt?.isConnected || prompt.dataset.sessionId !== key) return false;
-    const current = prompt.value, restored = apply(current);
-    applyRestoredDraft(prompt, current, restored, 0);
-    resizePrompt();
-    return true;
-  },
   draft: sideId => state.drafts.get(sideId) ?? '',
   setDraft: (sideId, text) => { if (text) state.drafts.set(sideId, text); else state.drafts.delete(sideId); },
   // Dismissed error rows leave the list the panel keys its redraws on; the rows themselves get the whole list, so
@@ -5890,17 +5562,12 @@ const btwPanel = new BtwPanel({
     // Before the side thread exists, the choices apply to the one /btw creates (btwDraftTask).
     const side = shown ?? btwDraftTask();
     if (!side) return `<div class="composer-tools"></div><button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})">${icon('arrow')}</button>`;
-    // Before a side thread exists, a held first send waits on the main thread's pending choice (sendBtw's choiceId).
-    // A model, effort or permission save is not "busy": like the main composer, a press then is held (aria-busy pulse) until the save lands.
-    const choiceId = shown?.id ?? state.sessionId;
-    const saving = modelSwitch.saving(choiceId);
-    const held = shown ? modelSwitch.sendHeld(shown.id) : btwSending.has(state.sessionId) && modelSwitch.sendHeld(BTW_DRAFT + state.sessionId);
-    const running = isRunning(side.id), busy = (configuringSession(side.id) && !saving) || (btwSending.has(state.sessionId) && !held);
-    const lockTriggers = running || busy || (!shown && btwSending.has(state.sessionId));
+    // A pick made while /btw creates the side thread could miss it, so the pickers wait.
+    const running = isRunning(side.id), busy = configuringSession(side.id) || btwSending.has(state.sessionId);
     const send = running
       ? `${teams.get(side.id) ? '' : `<button type="button" class="steer-button" data-btw="steer" title="Send into the side thread's running turn (${shortcut('Enter')})" aria-label="Steer the side thread">${icon('spark')}<span>Steer</span></button>`}<button type="button" class="send-button stop-button" data-action="stop" title="Stop the side thread" aria-label="Stop side thread">${icon('stop')}</button>`
-      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${held ? 'aria-busy="true" ' : ''}${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
-    return `<div class="composer-tools">${modelTriggerHtml(side, lockTriggers)}<span class="composer-separator"></span>${modeTriggerHtml(side, lockTriggers)}</div>${send}`;
+      : `<button type="submit" class="send-button btw-send" aria-label="Send to side thread" title="Send to side thread (${shortcut('Enter')})" ${busy ? 'disabled' : ''}>${icon('arrow')}</button>`;
+    return `<div class="composer-tools">${modelTriggerHtml(side, running || busy)}<span class="composer-separator"></span>${modeTriggerHtml(side, running || busy)}</div>${send}`;
   },
   menuBusy: root => Boolean(root.querySelector('[aria-expanded="true"]') || (pendingMenuOpen && root.contains(pendingMenuOpen.anchor))),
   mountPickers: (textarea, side) => {
@@ -5927,7 +5594,7 @@ const btwPanel = new BtwPanel({
       return saved && saved.id > 0 && ['user', 'assistant'].includes(saved.role) ? call<string>('get_message_content', { sessionId, messageId: saved.id }) : saved?.content;
     }, onFork: (sessionId, messageId) => forkAtMessage(sessionId, messageId), onEdit: editAtMessage, report,
   }); },
-  send: (text, mainId, sideId) => sendBtw(text, mainId, sideId),
+  send: text => sendBtw(text),
   queue: (side, text) => btwPanelQueue(side, text),
   // A team takes messages between runs, as in the main composer.
   steer: (side, text) => teams.get(side.id) ? btwPanelQueue(side, text) : steerOrQueue(side, text),
@@ -5948,6 +5615,7 @@ async function btwPanelQueue(side: Session, text: string): Promise<void> {
 }
 /* Model, effort and permissions picked in the panel before a side thread exists: kept per main thread
  * on a stand-in task and applied to the side thread createBtw makes, before its first message. */
+const BTW_DRAFT = 'btw-draft:';
 const btwDrafts = new Map<string, Session>();
 const isBtwDraft = (task: Session): boolean => task.id.startsWith(BTW_DRAFT);
 function btwDraftTask(): Session | undefined {
@@ -5971,9 +5639,9 @@ async function applyBtwDraft(mainId: string, side: Session): Promise<Session> {
     try { return await work(); } catch (error) { throw new Error(`The side thread could not use the ${setting} you picked. ${errorText(error)}`); }
   };
   let current = side;
-  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) { current = await step('model', () => taskCall<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model })); prewarmedDrafts.delete(current.id); }
-  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) { current = await step('reasoning effort', () => taskCall<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null })); prewarmedDrafts.delete(current.id); }
-  if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); prewarmedDrafts.delete(current.id); current = { ...current, mode: draft.mode }; }
+  if (draft.provider !== current.provider || (draft.model || 'default') !== (current.model || 'default')) current = await step('model', () => call<Session>('configure_session', { sessionId: current.id, provider: draft.provider, model: draft.model }));
+  if ((draft.reasoningEffort ?? null) !== (current.reasoningEffort ?? null)) current = await step('reasoning effort', () => call<Session>('set_reasoning_effort', { sessionId: current.id, reasoningEffort: draft.reasoningEffort ?? null }));
+  if (draft.mode !== current.mode) { await step('permissions', () => call('update_session', { sessionId: current.id, mode: draft.mode })); current = { ...current, mode: draft.mode }; }
   return current;
 }
 /** The side thread the By the way panel shows for the open thread. */
@@ -6005,15 +5673,13 @@ function btwFromComposer(): boolean {
     notify('Side questions cannot carry attachments. Remove them, or send without /btw.'); return true;
   }
   const draft = prompt.value;
-  const releaseDraft = text ? state.drafts.hold(s.id, draft) : undefined;
-  noteCommittedDraft(s, draft);
   voiceDictation.draftCleared(s.id);
   prompt.value = ''; state.drafts.delete(s.id); resizePrompt(); openBtw();
   if (!text) { btwPanel.focus(); return true; }
-  run(voiceDictation.submit(() => sendBtw(text, s.id).catch(error => {
-    restoreComposerDraft(s, draft, releaseDraft);
-    if (!(error instanceof BtwChoiceRefusal) || error.message) throw error;
-  }).finally(releaseDraft)));
+  run(voiceDictation.submit(() => sendBtw(text).catch(error => {
+    restoreComposerDraft(s, draft);
+    throw error;
+  })));
   return true;
 }
 /** A new side thread in the main thread's project, harness, model and checkout. */
@@ -6024,11 +5690,11 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     const page = await call<MessagePage>('get_messages', { sessionId: main.id });
     const last = [...page.messages].reverse().find(m => m.id > 0 && (m.role === 'user' || m.role === 'assistant'));
     if (!last) throw new Error('Send a first message in this task before asking on the side.');
-    side = await taskCall<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
+    side = await call<Session>('fork_session_at_message', { sessionId: main.id, messageId: last.id });
     link = { sideId: side.id, seenId: last.id, hiddenThrough: 0 };
   } else {
     // `team: false`: a side thread never picks up the saved default team.
-    side = await taskCall<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
+    side = await call<Session>('create_session', { projectId: main.projectId, provider: main.provider, model: main.model, mode: main.mode, team: false, mainSessionId: main.id });
     link = { sideId: side.id, seenId: 0 };
   }
   const title = sideTitle(prompt);
@@ -6039,7 +5705,6 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
     }
     side = await applyBtwDraft(main.id, side);
     await call('update_session', { sessionId: side.id, title });
-    btwSendParent(main.id);
   } catch (error) {
     // Never leave a half-set-up task behind; the panel keeps its picks and the /btw text comes back.
     const created = side;
@@ -6049,85 +5714,24 @@ async function createBtw(main: Session, prompt: string): Promise<BtwLink> {
   }
   btwDrafts.delete(main.id);
   state.sessions = [{ ...side, title }, ...state.sessions.filter(task => task.id !== side.id)];
-  writeLink(localStorage, main.id, link);
-  state.drafts.move(BTW_DRAFT + main.id, side.id);
-  renderNavigation();
+  writeLink(localStorage, main.id, link); renderNavigation();
   return link;
 }
 /** One create-or-send at a time per main thread, so two quick /btw prompts share one side thread. */
 const btwSending = new Map<string, Promise<void>>();
-const BTW_PARENT_MISSING = 'Not sent — the main thread is no longer available. Your message is back in the box.';
-/** Recheck the captured parent and side after waits without depending on which task is now open. */
-function btwSendParent(mainId: string, sideId?: string): Session {
-  const main = state.sessions.find(task => task.id === mainId);
-  if (!main) throw new Error(BTW_PARENT_MISSING);
-  if (sideId && btwLink(mainId)?.sideId !== sideId) throw new Error('Not sent — the side thread has changed. Your message is back in the box.');
-  return main;
-}
-function sendBtw(text: string, mainId = state.sessionId, sideId = btwLink(mainId)?.sideId): Promise<void> {
-  const main = state.sessions.find(task => task.id === mainId); if (!main) return Promise.reject(new Error(BTW_PARENT_MISSING));
+function sendBtw(text: string): Promise<void> {
+  const main = session(); if (!main) return Promise.resolve();
   const refusal = btwRefusal(main);
   if (refusal) return Promise.reject(new Error(refusal));
-  // Capture this submission's pending choice before it queues: an earlier send may settle its refusal first.
-  const choiceId = sideId ?? main.id;
-  const held = modelSwitch.saving(choiceId) ? holdBtwSend(main.id, choiceId) : undefined;
-  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text, sideId, held));
+  const next = (btwSending.get(main.id) ?? Promise.resolve()).catch(() => undefined).then(() => deliverBtw(main, text));
   btwSending.set(main.id, next); btwPanel.refresh();
-  void next.catch(() => undefined).finally(() => {
-    if (btwSending.get(main.id) === next) btwSending.delete(main.id);
-    if (!modelSwitch.sendHeld?.(state.sessionId)) document.querySelector('#composer .send-button[type="submit"]')?.removeAttribute('aria-busy');
-    btwPanel.refresh();
-  });
+  void next.catch(() => undefined).finally(() => { if (btwSending.get(main.id) === next) btwSending.delete(main.id); btwPanel.refresh(); });
   return next;
 }
-/** Only the shown side thread's button (or its full-thread composer if opened full) carries this held send's cue. */
-function holdBtwSend(mainId: string, sideId: string): Promise<readonly modelSwitch.Unchanged[]> {
-  const bucket = sideId === mainId ? BTW_DRAFT + mainId : sideId;
-  return modelSwitch.holdSend(sideId, () => state.sessionId === sideId && sideId !== mainId
-    ? document.querySelector('#composer .send-button[type="submit"]')
-    : state.sessionId === mainId && (btwPanel.shownId() ?? mainId) === sideId
-    ? document.querySelector('.btw-panel .btw-send') : null, bucket);
-}
-/** Every held send rejects and restores its text; only the first reports the shared refusal. */
-class BtwChoiceRefusal extends Error {}
-function reportBtw(error: unknown): void {
-  if (error instanceof BtwChoiceRefusal && !error.message) return;
-  report(error);
-}
-function checkBtwChoice(refusals: readonly modelSwitch.Unchanged[]): void {
-  if (!refusals.length) return;
-  const text = modelSwitch.unsaidText(refusals);
-  throw new BtwChoiceRefusal(text ? `Not sent — ${text}. Your message is back in the box.` : '');
-}
 /** Sends to the side thread with the main thread's news since its last message. */
-async function deliverBtw(main: Session, text: string, sideId?: string, held?: Promise<readonly modelSwitch.Unchanged[]>): Promise<void> {
-  main = btwSendParent(main.id, sideId);
-  if (held) {
-    const refusals = await held;
-    btwPanel.refresh();
-    main = btwSendParent(main.id, sideId);
-    checkBtwChoice(refusals);
-  }
-  // A first side thread inherits confirmed main-task choices, never their optimistic, still-saving copy.
-  if (!btwLink(main.id)) {
-    if (modelSwitch.saving(main.id)) {
-      const refusals = await holdBtwSend(main.id, main.id);
-      btwPanel.refresh();
-      checkBtwChoice(refusals);
-    }
-    main = btwSendParent(main.id, sideId);
-  }
+async function deliverBtw(main: Session, text: string): Promise<void> {
   const link = btwLink(main.id) ?? await createBtw(main, text);
-  main = btwSendParent(main.id, link.sideId);
-  // Also wait for a choice made after submission, while this send was queued.
-  if (modelSwitch.saving(link.sideId)) {
-    const refusals = await holdBtwSend(main.id, link.sideId);
-    btwPanel.refresh();
-    checkBtwChoice(refusals);
-  }
-  main = btwSendParent(main.id, link.sideId);
-  const side = state.sessions.find(task => task.id === link.sideId);
-  if (!side) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
+  const side = state.sessions.find(task => task.id === link.sideId)!;
   if (isRunning(side.id)) throw new Error('The side thread is still answering. Send this when it finishes.');
   // Running from here on: no second send can pass the check above, and a failure below tears down only this run.
   stream(side.id).status = 'Starting agent'; side.status = 'running';
@@ -6136,8 +5740,6 @@ async function deliverBtw(main: Session, text: string, sideId?: string, held?: P
   let sentLink: BtwLink | undefined;
   try {
     const context = await btwContext(main, link);
-    btwSendParent(main.id, link.sideId);
-    if (!state.sessions.some(task => task.id === side.id)) throw new Error('Not sent — the side thread is no longer available. Your message is back in the box.');
     const content = text + context.text;
     sentLink = context.link;
     writeLink(localStorage, main.id, sentLink);
@@ -6189,7 +5791,6 @@ async function finishResponse(sessionId: string, finishing: FinishingStream): Pr
     setMessagePage(saved); state.messagesLoading = false; state.messagesError = ''; mirrorPrompts.delete(sessionId);
     // The composer lets go of the steer row's space (held since the run ended) in the task the saved card arrives,
     // whose bridge absorbs it (handOffCard), so a pinned thread does not move at the swap.
-    cancelStreamRender();
     handoffRect = document.querySelector('#stream-region .turn-card.is-live')?.getBoundingClientRect();
     renderComposer(); renderTranscript();
     await refreshInspector();
@@ -6232,7 +5833,7 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
     messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
     if (sessionId === state.sessionId) state.messages = messages;
     else {
-      if (tilePages.has(sessionId)) tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
+      tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
       if (threadPages.has(sessionId)) threadPages.set(sessionId, { messages, hasOlder: page!.hasOlder, chars: messages.reduce((total, message) => total + message.content.length, 0) });
     }
   }
@@ -6282,18 +5883,16 @@ const MESSAGE_LIMIT = 16 * 1024 * 1024;
  *  or a turn's changes may have changed files, and also reads them shortly after. */
 const RUN_STATE_EVENTS = new Set<AgentEvent['kind']>(['turn_start', 'status', 'done']);
 function onAgent(event: AgentEvent): void {
-  const plainDelta = event.kind === 'text' || (event.kind as string) === 'thinking';
   remoteStartAttached(event.sessionId);
-  if (btwPanel.shownId() === event.sessionId) queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
+  queueMicrotask(() => btwPanel.event(event.sessionId, event.kind));
   if (botsView) queueMicrotask(() => botsView?.agent(event.sessionId, event.kind));
-  if (!plainDelta && (event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
+  if ((event.kind === 'done' || event.kind === 'turn_start') && botForThread()) queueMicrotask(renderHeader);
   if (event.kind === 'done') tilePages.delete(event.sessionId);
-  if (tiles.has(event.sessionId)) queueMicrotask(() => tiles.event(event.sessionId));
+  queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
-  const s = state.sessions.find(item => item.id === event.sessionId);
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
-  if (!s) {
+  if (!state.sessions.some(s => s.id === event.sessionId)) {
     void ensureArchitectView().then(view => {
       if (deletedSessions.has(event.sessionId)) return;
       view.receive(event);
@@ -6308,44 +5907,7 @@ function onAgent(event: AgentEvent): void {
     }).catch(report);
     return;
   }
-  if (event.data) onAccountPoolSwitch(event);
-  if (plainDelta) {
-    const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
-    if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
-    const firstEvent = !state.streams.has(event.sessionId);
-    const current = stream(event.sessionId);
-    s.status = 'running'; s.taskStage = 'in_progress';
-    if (firstEvent) {
-      loadWakeExchange(event.sessionId, current);
-      if (event.sessionId === state.sessionId) queueMicrotask(noteFilePollChange);
-    }
-    let becameActive = false;
-    if (event.kind === 'text') {
-      if (event.text && current.retainedMessageKey) {
-        current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
-      }
-      current.body.append(event.text);
-      if (event.text.trim()) {
-        updateStreamStatus(current, 'Generating response');
-        current.lastResponseAt = Date.now();
-        becameActive = !activeTask(s);
-        s.lastResponseAt = current.lastResponseAt;
-      }
-    } else {
-      current.thought.append(event.text);
-    }
-    if (firstEvent || becameActive) {
-      if (firstEvent && event.sessionId === state.sessionId && !document.hidden) {
-        renderHeader();
-        if (document.querySelector<HTMLTextAreaElement>('#prompt')?.disabled === false || threadLoading()) renderComposer();
-      }
-      scheduleNavigation();
-    }
-    if (event.sessionId !== state.sessionId) return;
-    if (firstEvent && !wakeHolds.has(event.sessionId)) renderTranscript();
-    scheduleStreamRender();
-    return;
-  }
+  onAccountPoolSwitch(event);
   // The open thread's agent at work: the Files tree and open file follow its edits within a poll tick, input or not.
   // After this event is handled, so a run it starts already counts as working (isRunning) when the poll picks its rate.
   if (event.sessionId === state.sessionId) {
@@ -6355,12 +5917,12 @@ function onAgent(event: AgentEvent): void {
     if (event.kind === 'turn_changes' || event.kind === 'tool' && !stdoutOnly && !['read', 'search', 'web', 'fetch'].includes(toolKind(event.tool?.name ?? event.text))) queueMicrotask(noteFilePollActivity);
     else if (RUN_STATE_EVENTS.has(event.kind)) queueMicrotask(noteFilePollChange);
   }
-  if (event.kind === 'task_settings') { s.codexSettings = event.data as Session['codexSettings']; return; }
+  if (event.kind === 'task_settings') { const task = state.sessions.find(s => s.id === event.sessionId); if (task) task.codexSettings = event.data as Session['codexSettings']; return; }
   if (event.kind === 'goal_ready') return;
   if (event.kind === 'goal_input') { const current = state.streams.get(event.sessionId); if (current) { finishLiveMessage(current, event.sessionId); current.tools.push({ key: 'goal:' + transientId--, content: 'Goal updated: ' + event.text, commentary: true }); current.revision++; if (event.sessionId === state.sessionId) renderStream(); } return; }
   if (event.kind === 'goal') {
-    s.goalState = event.data as GoalState | null;
-    if (s.id === state.sessionId) goalBanner.update(s.goalState ?? null);
+    const task = state.sessions.find(s => s.id === event.sessionId);
+    if (task) { task.goalState = event.data as GoalState | null; if (task.id === state.sessionId) goalBanner.update(task.goalState ?? null); }
     return;
   }
   // Keep the final response intact until its persisted changes boundary arrives.
@@ -6371,13 +5933,14 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'subagent') { subagents.receive(event.sessionId, event.data); return; }
   // Hosts send `team` (a changed worker row) only for mirrors; it is not a local event kind.
   const workerRow = (event.kind as string) === 'team';
-  if ((workerRow || event.kind === 'done' && teams.get(event.sessionId)) && s.remoteDevice) refreshMirrorTeam(event.sessionId);
+  if ((workerRow || event.kind === 'done' && teams.get(event.sessionId)) && state.sessions.find(task => task.id === event.sessionId)?.remoteDevice) refreshMirrorTeam(event.sessionId);
   if (workerRow) return;
   // Native reports each steer's pending, delivered or failed state.
   if (event.kind === 'steer') { steerEvent(event); return; }
+  const s = state.sessions.find(s => s.id === event.sessionId);
   if (event.kind === 'usage') {
     const usage = parseContextUsage(event.data);
-    if (usage) {
+    if (s && usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
     }
@@ -6385,16 +5948,16 @@ function onAgent(event: AgentEvent): void {
   }
   if (event.kind === 'done') {
     subagents.runEnded(event.sessionId);
-    refreshFileLinks(workspaceContext(s));
+    if (s) refreshFileLinks(workspaceContext(s));
     void detectPullRequest(event.sessionId);
-    if (botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
+    if (s && botProjects.has(s.projectId)) { if (event.sessionId !== state.sessionId) respondedBots.add(s.projectId); void refreshBotPreviews(); }
     for (const [id, item] of steers) if (item.sessionId === event.sessionId) steers.delete(id);
     const finishing = { stream: state.streams.get(event.sessionId) ?? stream(event.sessionId), finishedAt: Date.now() };
     clearAgentInputs(finishing.stream);
     finishingStreams.set(event.sessionId, finishing);
-    state.streams.delete(event.sessionId); s.status = 'idle';
+    state.streams.delete(event.sessionId); if (s) s.status = 'idle';
     // A turn that finished out of view (another thread, the board, another app) shows unread until opened.
-    if (s.id !== state.sessionId || !transcriptVisible() || !document.hasFocus()) { (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(s.id); saveUnreviewed(); }
+    if (s && (s.id !== state.sessionId || !transcriptVisible() || !document.hasFocus())) { (unreviewed ??= readCollapsed(localStorage, UNREVIEWED_KEY)).add(s.id); saveUnreviewed(); }
     updateWorkTimer();
     // A failed or stopped run holds the queue; a clean finish sends the next queued message.
     const ending = runEndings.get(event.sessionId); runEndings.delete(event.sessionId);
@@ -6403,20 +5966,12 @@ function onAgent(event: AgentEvent): void {
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
     if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
     else if (ending) state.queueHolds.set(event.sessionId, ending);
-    if (botProjects.has(s.projectId)) {
+    if (s && botProjects.has(s.projectId)) {
       if (ending === 'failed') failedBotProjects.add(s.projectId);
       else if (!ending) failedBotProjects.delete(s.projectId);
     }
     if (!ending) void maybeTurnChecks(event.sessionId);
-    if (event.sessionId === state.sessionId) {
-      cancelStreamRender();
-      const restoreDoneAnchor = !stickToBottom && transcriptVisible() ? captureTranscriptAnchor(transcriptScroller) : undefined;
-      renderStream(); renderComposer();
-      if (restoreDoneAnchor) { restoreDoneAnchor(); lastTranscriptTop = transcriptScroller.scrollTop; }
-      void designPanel?.refresh();
-      progressPip?.refresh(event.sessionId);
-      if (document.hasFocus()) markTraySeen(event.sessionId);
-    }
+    if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
     void applyNextBotModel(event.sessionId);
     void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
   }
@@ -6424,17 +5979,17 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'limited') {
     // The account is out for now: remember the reset, hold any queue, and say when it resets.
     const until = (event.data as { resetsAt?: number | null } | undefined)?.resetsAt ?? null;
-    s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false;
+    if (s) { s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false; }
     runEndings.set(event.sessionId, 'limited');
     // A bot's limit already shows as its sidebar chip and above its composer.
-    if (!sidebarBots.some(bot => bot.projectId === s.projectId)) notify(`${s.title || 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
   const pendingChanges = state.streams.get(event.sessionId)?.pendingChanges;
   if (pendingChanges) materializeTurn(event.sessionId, pendingChanges);
-  const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); s.status = 'running'; s.taskStage = 'in_progress';
+  const firstEvent = !state.streams.has(event.sessionId); const current = stream(event.sessionId); if (s) { s.status = 'running'; s.taskStage = 'in_progress'; }
   if (firstEvent) loadWakeExchange(event.sessionId, current);
   if ((event.kind as string) === 'note') {
     const pool = (event.data as { accountPool?: { connectionId?: unknown } } | undefined)?.accountPool;
@@ -6449,8 +6004,21 @@ function onAgent(event: AgentEvent): void {
       if (event.sessionId === state.sessionId) announce('Account switched');
     }
   }
-  const becameActive = false;
+  let becameActive = false;
   if (event.kind === 'message_start') finishLiveMessage(current, event.sessionId);
+  if (event.kind === 'text') {
+    if (event.text && current.retainedMessageKey) {
+      current.body.set(''); current.retainedMessageKey = undefined; current.revision++;
+    }
+    current.body.append(event.text);
+    if (event.text.trim()) {
+      updateStreamStatus(current, 'Generating response');
+      current.lastResponseAt = Date.now();
+      if (s) { becameActive = !activeTask(s); s.lastResponseAt = current.lastResponseAt; }
+    }
+  }
+  // Not saved with the transcript, so the fold lives only while the turn streams.
+  if ((event.kind as string) === 'thinking') current.thought.append(event.text);
   if (event.kind === 'tool') {
     const tool = event.tool;
     const key = tool ? 'tool:' + tool.id : 'live:' + transientId--;
@@ -6468,7 +6036,7 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -6480,9 +6048,9 @@ function onAgent(event: AgentEvent): void {
       if (event.sessionId === state.sessionId) renderStream();
       btwPanel.event(event.sessionId, 'input');
       scheduleNavigation();
-    }, Boolean(s.remoteDevice)));
+    }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
-    if (event.sessionId !== state.sessionId) notify(`${(s.title || 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
+    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;
@@ -6498,7 +6066,7 @@ function onAgent(event: AgentEvent): void {
     scheduleNavigation();
   }
   if (firstEvent && event.sessionId === state.sessionId && !wakeHolds.has(event.sessionId)) renderTranscript();
-  if (event.sessionId === state.sessionId) scheduleStreamRender();
+  if (!renderFrame && event.sessionId === state.sessionId && transcriptVisible()) renderFrame = requestAnimationFrame(() => { renderFrame = 0; renderStream(); });
 }
 
 /** Whether two listings hold the same entries in the same order: the fields `list_files` returns, compared in place, so a
@@ -6788,7 +6356,7 @@ async function showInspectorViews(anchor: HTMLElement): Promise<void> {
 /** One Changes view lives while the Changes tab shows the same checkout, so folds, scroll and loaded diffs survive refreshes. */
 let changesView: ChangesView | undefined, changesViewKey = '';
 function disposeChangesView(): void { changesView?.dispose(); changesView = undefined; changesViewKey = ''; }
-function showChangesView(target: HTMLElement, key: string, visible: boolean): void {
+function showChangesView(target: HTMLElement, key: string): void {
   if (!changesView || changesViewKey !== key || !target.querySelector(':scope>.changes-view')) {
     disposeChangesView();
     const host = document.createElement('div');
@@ -6806,7 +6374,6 @@ function showChangesView(target: HTMLElement, key: string, visible: boolean): vo
     });
     changesViewKey = key;
   }
-  changesView.setVisible(visible);
   changesView.update(state.git, undefined);
 }
 /** Files tab rows, VS Code style: open folders list their children inline, indented by depth. */
@@ -6886,7 +6453,6 @@ function drawInspector(): void {
   const changesKey = `${state.projectId}\0${state.sessionId}\0${workspacePath()}`;
   const keepChanges = state.inspectorTab === 'changes' && !state.selectedKind && Boolean(project()) && !session()?.remoteDevice && !(state.jj?.isRepo && !state.jj.colocated) && changesViewKey === changesKey && (state.inspectorLoading || (!state.gitError && Boolean(state.git?.isRepo)));
   if (!keepChanges) disposeChangesView();
-  else changesView?.setVisible(visible);
   syncBrowserPanel();
   syncSimulatorPanel();
   syncVmPanel();
@@ -6913,7 +6479,6 @@ function drawInspector(): void {
     return;
   }
   if (state.selectedKind) {
-    if (!visible) return;
     if (state.filePreviewLoading) { target.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
     target.innerHTML = `<div class="file-preview-header"><button data-action="back-inspector">${icon('chevron', 'rotate-180')} Back</button><div class="file-preview-actions">${isPreviewableFile(state.selectedFile) ? button('preview-selected-file', 'Preview in browser', 'globe') : ''}${button('copy-file', 'Copy file', 'copy')}${button('toggle-diff-stage', state.selectedStaged ? 'Unstage file' : 'Stage file', state.selectedStaged ? 'close' : 'plus')}</div></div><div class="file-preview-title">${icon('file')}<span title="${escape(state.selectedFile)}">${escape(state.selectedFile)}</span></div><div class="inspector-diff-host"></div>`;
     if (state.selectedKind === 'diff' && state.inspector) {
@@ -6942,7 +6507,7 @@ function drawInspector(): void {
     return;
   }
   if (!state.git?.isRepo) { target.innerHTML = '<div class="inspector-empty">'+icon('branch')+'<h3>No Git repository</h3><p>Open a Git repository to review changes.</p></div>'; return; }
-  showChangesView(target, changesKey, visible);
+  showChangesView(target, changesKey);
 }
 async function openRunPreview(url: string, context: { projectId: string; sessionId?: string }): Promise<void> {
   const current = () => state.projectId === context.projectId && state.sessionId === (context.sessionId ?? '');
@@ -7083,15 +6648,10 @@ async function changeTaskProject(projectId: string): Promise<void> {
   if (!selected || selected.id !== state.sessionId || generation !== state.generation || !newTaskView() || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its project.');
   if (selected.worktreePath && selected.projectId !== projectId) throw new Error('A worktree task stays with its original project. Start a new task to use another project.');
   if (selected.projectId === projectId) { document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); return; }
-  // Adopt any saved side text while the task still belongs to its original project.
-  state.drafts.get(BTW_DRAFT + selected.id);
   configuringSessions.add(selected.id);
   try {
-    const updated = await taskCall<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
-    prewarmedDrafts.delete(selected.id);
+    const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: selected.provider, model: selected.model, projectId });
     const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-    state.drafts.reclaim(selected.id);
-    state.drafts.reclaim(BTW_DRAFT + selected.id);
     if (chatTask(selected)) await forgetChat(selected.projectId);
     if (selected.id !== state.sessionId) { renderNavigation(); return; }
     // The user may have left and reselected this task while the write ran.
@@ -7140,57 +6700,6 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
-/** A catalog as already loaded (possibly stale), never waiting on a request: the switch path must not hold on a provider. */
-// A harness whose list isn't loaded keeps the team's saved entries for it rather than dropping them from the roster.
-const knownModels = (base: TeamConfig) => (id: ProviderId): Promise<ProviderModel[]> => {
-  const listed = provider(id)?.models ?? [];
-  return Promise.resolve(listed.length ? listed : base.workers.filter(worker => worker.provider === id).map(worker => ({ id: worker.model, name: worker.name, description: '' })));
-};
-/** After a saved harness change: reload the transcript (the handoff note), unless a send has begun meanwhile. */
-async function reloadAfterHarnessSwitch(sessionId: string, shown: () => boolean): Promise<void> {
-  // A send replaces state.messages with its optimistic message; a page read before it would wipe that message.
-  const before = state.messages;
-  const sending = () => isRunning(sessionId) || configuringSessions.has(sessionId) || state.messages !== before;
-  if (!shown() || sending()) return;
-  // The harness change is already durable; a transcript refresh error must not report the selection as failed.
-  try {
-    const page = await latestMessagePage(sessionId);
-    if (!shown() || sending()) return;
-    setMessagePage(page);
-    // Painting the transcript closes open menus: with the model picker open or about to open, paint once it closes.
-    modelSwitch.deferTranscript(() => { if (state.sessionId === sessionId) renderTranscript(); });
-  } catch {
-    if (shown() && !sending()) notify('Harness changed. Reopen this task to refresh its conversation.');
-  }
-}
-/** Whether the task's next turn runs on this computer: not a mirror, not a cloud machine, and not a new task aimed at
- *  another computer or a cloud sandbox (composerDevice() misses cloud targets). Only such a task may warm. */
-function localTarget(task: Session): boolean {
-  return !task.remoteDevice && !task.cloud && !(task.id === state.sessionId && newTaskView() && remoteChoice !== LOCAL);
-}
-/** A task's effort or permissions changed: its labels (side thread: the panel, or full composer if opened full) and the launcher's context. */
-function paintTaskChoice(id: string, inPanel: boolean): void {
-  if (id === state.sessionId) {
-    const task = state.sessions.find(item => item.id === id);
-    if (!task) return;
-    refreshModelLabels();
-    syncOverlayContext({ projectId: task.projectId, provider: task.provider, model: task.model || 'default', mode: task.mode, reasoningEffort: task.reasoningEffort ?? null });
-    return;
-  }
-  if (inPanel || btwSideTask()?.id === id) btwPanel.refresh();
-}
-/** A picker row (a team, a speed) chosen while the task's model, effort or permission change saves: waits for it, and
- *  throws `<refused> — <what> wasn't changed` (shown in the picker) when that change was refused. */
-async function afterPickerChoiceSaved(id: string, refused: string): Promise<void> {
-  if (!modelSwitch.saving(id)) return;
-  // Held: the refusals' own notices wait for this one, which the picker shows, naming each and marking it said.
-  const refusals = await modelSwitch.holdChange(id);
-  if (refusals.length) {
-    const text = modelSwitch.unsaidText(refusals);
-    if (!text) throw new DOMException('The refused change was already reported.', 'AbortError');
-    throw new Error(`${refused} — ${text}.`);
-  }
-}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -7201,22 +6710,6 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   }
   if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
   if (modelPickerCleanup) { closeModelPicker(); return; }
-  // A model or effort change still saving: open once it lands, on the task as it is then (its trigger was redrawn meanwhile).
-  if (target && modelSwitch.saving(target.id)) {
-    const id = target.id, trigger = () => document.querySelector<HTMLElement>(anchor.closest('.btw-panel') ? '.btw-panel .model-picker' : '#model-picker-trigger');
-    const pending = beginHeldMenuOpen(anchor, target);
-    try {
-      await modelSwitch.holdOpen(id, trigger, async () => {
-        if (!pending.current() || modelPickerCleanup) return;
-        pending.release();
-        await openModel(trigger() ?? anchor, state.sessions.find(s => s.id === id) ?? target);
-      }, pending.signal);
-    } finally { pending.release(); modelSwitch.flushTranscript(); }
-    return;
-  }
-  try { await openModel(anchor, target); } finally { modelSwitch.flushTranscript(); }
-}
-async function openModel(anchor: HTMLElement, target: Session | undefined): Promise<void> {
   const selected = target; if (!selected || taskBusyConfiguring(selected.id)) return;
   // A side thread's picker acts on the side thread only, and only while the panel still shows it.
   const inPanel = selected.id !== state.sessionId, current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === selected.id : selected.id === state.sessionId;
@@ -7227,18 +6720,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   closeChoiceMenu();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
-  // The startup history load can repaint this same task while the module/library is loading or the picker is open.
-  // Preserve that interaction only while its actual target is unchanged; navigation and explicit dismissal still
-  // invalidate the existing menu epoch. Compare snapshots because startup refreshes mutate the Session in place.
-  const targetContext = composerPickerContext(anchor, botNext);
-  const context = !inPanel && anchor.id === 'model-picker-trigger' ? { anchor, current: () =>
-    targetContext.current() && Boolean(modelPickerCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
-  composerPickerLifecycle = context;
-  // Open with the cached team library (team saves update it) and refresh it behind; wait only when none is cached.
-  const library$ = modelCatalogs.pickerTeamLibrary();
-  void refreshNamedConnections().catch(() => undefined);
-  let openModelPicker: typeof import('./model-picker').openModelPicker, library: Awaited<typeof library$>;
-  try { [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), library$]); } finally { release(); }
+  const [{ openModelPicker }, library] = await Promise.all([import('./model-picker'), call<TeamLibrary>('architect_profiles').catch(() => null), call<import('./connections').ConnectionSnapshot>('connections_list').then(snapshot => { namedConnections = snapshot; }).catch(() => undefined)]).finally(release);
   const live = liveAnchor(anchor);
   if (epoch !== menuEpoch || modelPickerCleanup || !live || !current() || generation !== state.generation || taskBusyConfiguring(selected.id) || (isRunning(selected.id) && !botNext)) return;
   anchor = live;
@@ -7246,15 +6728,11 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
   // A side thread not created yet has no team to configure.
   const named = library && !device && !isBtwDraft(selected) ? namedTeams(library) : [];
   const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
-  // Re-picking the model in use closes the picker, which hands focus back to its trigger: the prompt takes it after.
-  let promptOnClose = false, pickerClosed = false;
   modelPickerCleanup = openModelPicker({
-    onDismissedError: report,
-    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: () => pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
+    teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
     onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      await afterPickerChoiceSaved(selected.id, 'The agent team wasn’t selected');
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
@@ -7264,8 +6742,7 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
         provisionalTasks.delete(selected.id);
         onArchitect(saved ?? { sessionId: selected.id, removed: true });
         await reloadSessions();
-        if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
-        else if (inPanel || btwSideTask()?.id === selected.id) btwPanel.refresh();
+        if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
       } finally { configuringSessions.delete(selected.id); }
     }),
     // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
@@ -7273,128 +6750,89 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
     anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
     canSwitchProvider: true,
     loadModels: device ? id => remoteModels(device, id) : loadModels, loadProviders: device ? () => remoteProviders(device) : providersKnown ? undefined : () => providersReady,
-    recent: device ? undefined : recentModels, onClose: () => {
-      pickerClosed = true;
-      if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
-      modelPickerCleanup = undefined;
-      modelSwitch.flushTranscript();
-      // The side thread's picker hands focus back to the panel's message box while the panel still shows that thread.
-      if (promptOnClose && generation === state.generation) {
-        if (!inPanel && selected.id === state.sessionId) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-        else if (inPanel && current()) btwPanel.focus();
-      }
-    },
+    recent: device ? undefined : recentModels, onClose: () => { modelPickerCleanup = undefined; },
     onEffortSelect: async reasoningEffort => {
-      if (!current() || generation !== state.generation || isRunning(selected.id) || (taskBusyConfiguring(selected.id) && !modelSwitch.saving(selected.id))) throw new Error('Select the task again to change its reasoning effort.');
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || (taskBusyConfiguring(selected.id) && !modelSwitch.saving(selected.id))) throw new Error('Select the task again to change its reasoning effort.');
-      // Shows at once and saves behind (model-switch.ts); side threads never warm.
-      await modelSwitch.pickEffort(selected.id, reasoningEffort, { warm: !inPanel && localTarget(selected), paint: () => paintTaskChoice(selected.id, inPanel), pickerShown: () => !pickerClosed && current() && generation === state.generation });
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      configuringSessions.add(selected.id);
+      try {
+        const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
+        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        if (inPanel) btwPanel.refresh();
+        else if (selected.id === state.sessionId) {
+          refreshModelLabels();
+          syncOverlayContext({ projectId: updated.projectId, provider: updated.provider, model: updated.model || 'default', mode: updated.mode, reasoningEffort: updated.reasoningEffort ?? null });
+        }
+      } finally { configuringSessions.delete(selected.id); }
     },
     // Speed is stored natively per task (Codex service tier, Claude fast mode); a side-thread draft has no task yet.
     onSpeedSelect: isBtwDraft(selected) ? undefined : async tier => {
-      await afterPickerChoiceSaved(selected.id, 'The speed wasn’t changed');
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its speed.');
-      // The model saved meanwhile may be one without speeds (another harness).
       if (!['codex', 'claude'].includes(savedSelection().provider)) throw new Error('This agent does not support speed tiers.');
       configuringSessions.add(selected.id);
       try {
-        const updated = await taskCall<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
-        prewarmedDrafts.delete(selected.id);
-        replaceSession(updated);
-        if (selected.id === state.sessionId) refreshModelLabels();
-        else if (inPanel || btwSideTask()?.id === selected.id) btwPanel.refresh();
-      } finally { if (!modelSwitch.saving(selected.id)) configuringSessions.delete(selected.id); }
+        const updated = await call<Session>('set_task_preference', { sessionId: selected.id, request: { action: 'speed', tier } });
+        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        if (inPanel) btwPanel.refresh();
+        else if (selected.id === state.sessionId) refreshModelLabels();
+      } finally { configuringSessions.delete(selected.id); }
     },
-    onSelect: async (providerId, model) => {
+    onSelect: (providerId, model) => saveExplicitHarness(selected.id, async () => {
       if (botNext && isRunning(selected.id) && current()) {
         const changed = providerId !== selected.provider || (model || 'default') !== (selected.model || 'default');
         botThread.setNextModel(selected.id, changed ? { provider: providerId, model, label: model && model !== 'default' ? model : provider(providerId)?.name ?? providerId } : undefined);
         renderHeader(); return;
       }
-      if (!current() || generation !== state.generation || isRunning(selected.id) || (taskBusyConfiguring(selected.id) && !modelSwitch.saving(selected.id))) throw new Error('Select the task again to change its model.');
-      if (isBtwDraft(selected)) { promptOnClose = true; saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
-      if (provisionalCorrections.has(selected.id)) {
-        await saveExplicitHarness(selected.id, async () => {
-          while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-          if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-          const previousProvider = savedSelection().provider;
-          configuringSessions.add(selected.id);
-          try {
-            if (teams.get(selected.id)?.config.rosterOnly) {
-              await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
-              onArchitect({ sessionId: selected.id, removed: true });
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
+      if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
+      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
+      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
+      const previousProvider = savedSelection().provider;
+      configuringSessions.add(selected.id);
+      try {
+        // A plain model leaves a named team.
+        if (teams.get(selected.id)?.config.rosterOnly) {
+          await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: null, architect: null, profileId: null });
+          onArchitect({ sessionId: selected.id, removed: true });
+        }
+        // An automatic team keeps its limits but learns about newly installed models.
+        const auto = teams.get(selected.id)?.config;
+        if (auto?.auto && !auto.rosterOnly) {
+          const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
+          onArchitect(saved ?? { sessionId: selected.id, removed: true });
+        }
+        const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        provisionalTasks.delete(selected.id);
+        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        // Same-harness model choices keep the account and its resumable conversation.
+        if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
+        if (!device) {
+          if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
+          localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
+        } else localChoice = undefined;
+        if (inPanel) { if (current()) btwPanel.harnessChanged(); }
+        else if (selected.id === state.sessionId && generation === state.generation) {
+          if (providerId !== previousProvider) {
+            // The harness change is already durable; a transcript refresh error
+            // must not report the selection itself as failed or restore stale controls.
+            try {
+              const page = await latestMessagePage(selected.id);
+              if (selected.id !== state.sessionId || generation !== state.generation) return;
+              setMessagePage(page);
+            } catch {
+              if (selected.id !== state.sessionId || generation !== state.generation) return;
+              notify('Harness changed. Reopen this task to refresh its conversation.');
             }
-            const auto = teams.get(selected.id)?.config;
-            if (auto?.auto && !auto.rosterOnly) {
-              const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
-              onArchitect(saved ?? { sessionId: selected.id, removed: true });
-            }
-            const updated = await taskCall<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
-            provisionalTasks.delete(selected.id);
-            const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
-            if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
-            if (!device) {
-              if (!localStorage.getItem('pandacode.defaultProvider')) state.defaultProvider = providerId;
-              localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
-            } else localChoice = undefined;
-            if (inPanel) { if (current()) btwPanel.harnessChanged(); }
-            else if (selected.id === state.sessionId && generation === state.generation) {
-              if (providerId !== previousProvider) {
-                try {
-                  const page = await latestMessagePage(selected.id);
-                  if (selected.id !== state.sessionId || generation !== state.generation) return;
-                  setMessagePage(page);
-                } catch {
-                  if (selected.id !== state.sessionId || generation !== state.generation) return;
-                  notify('Harness changed. Reopen this task to refresh its conversation.');
-                }
-              }
-              renderComposer(); renderHeader(); renderNavigation(); renderTranscript();
-              document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
-            }
-          } finally { configuringSessions.delete(selected.id); }
-        });
-        return;
-      }
-      // The model already in use only closes the picker (focus back on the prompt, as after a pick): nothing saves,
-      // nothing pulses, an automatic team keeps its roster.
-      // A named team's lead is not that model's row: picking it leaves the team (model-switch.ts leaveTeam).
-      const now = (inPanel ? btwSideTask() ?? btwDraftTask() : state.sessions.find(item => item.id === selected.id)) ?? selected;
-      const sameModel = providerId === now.provider && (model || 'default') === (now.model || 'default');
-      promptOnClose = true;
-      if (sameModel && !teams.get(selected.id)?.config.rosterOnly) return;
-      // Route post-save UI updates by live display surface (`state.sessionId` vs `btwSideTask()`), never by
-      // picker-open `generation` or `inPanel`, so A → B → A navigation and /btw ↔ full transitions clear aria-busy,
-      // restore refused model labels, and load "Switched harness" handoff cards cleanly.
-      const shownFull = () => selected.id === state.sessionId;
-      const shownSide = () => btwSideTask()?.id === selected.id;
-      const paint = (harness: boolean, reread = false) => {
-        if (shownFull()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
-        else if (shownSide()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); }
-      };
-      // `harness`: against the harness shown (a pending pick's, maybe); `changed`: native's harness changed once saved
-      // (model-switch.ts decides it from what native last confirmed), the only case that re-reads the thread.
-      const harness = providerId !== now.provider;
-      let changed = false;
-      const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
-        show: () => { paint(harness); if (!inPanel && shownFull() && generation === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
-        // `nativeHarness`: native's harness changed over the run of picks, told only by the last of them (a refused
-        // last pick may still follow an earlier one native stored on another harness).
-        repaint: (saved, nativeHarness) => {
-          if (saved) provisionalTasks.delete(selected.id);
-          changed = nativeHarness;
-          if (!saved || harness || nativeHarness || shownSide()) paint(harness || nativeHarness, changed);
-          else if (shownFull()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
-        },
-      });
-      void saveExplicitHarness(selected.id, () => saving.then(() => undefined));
-      void saving.then(() => changed ? reloadAfterHarnessSwitch(selected.id, shownFull) : undefined).catch(report);
-      return { saved: saving };
-    },
+          }
+          renderComposer(); renderHeader(); renderNavigation(); renderTranscript();
+          document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+        }
+      } finally { configuringSessions.delete(selected.id); }
+    }),
   });
   modelPickerCleanup.taskId = selected.id;
 }
@@ -7498,11 +6936,10 @@ async function startTask(projectId: string): Promise<boolean> {
     const existing = state.sessions.find(task => task.draft && task.id !== current && task.projectId === active.id && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
     if (existing) { state.query = ''; closeModal(); await selectSession(existing.id, true); return true; }
     const provisional = !providersKnown;
-    created = await taskCall<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
+    created = await call<Session>('create_session', { projectId: active.id, provider: harness.id, model: rememberedModel(harness.id), mode: 'full', draft: true });
     noteProvisional(created, provisional);
   } finally { creatingTask = false; }
   state.sessions.unshift(created);
-  seedFreshSession(created.id);
   checkProvisionalTasks();
   if (generation !== state.generation) { renderNavigation(); return false; }
   state.query = ''; closeModal(); await selectSession(created.id, true);
@@ -7513,8 +6950,8 @@ async function startTask(projectId: string): Promise<boolean> {
 async function createChat(from?: Session): Promise<void> {
   if (bootPending) await bootPending.catch(() => undefined);
   if (creatingTask) return;
-  const generation = state.generation;
   closeModelPicker(); closeProjectPicker();
+  const generation = state.generation;
   // A chat nobody has written in yet is reopened, as New task reopens its draft.
   const unused = from ? undefined : state.sessions.find(task => chatTask(task) && task.lastPromptAt == null && !task.resumeId && !task.archived && !deletedSessions.has(task.id) && taskStage(task) !== 'completed');
   if (unused) {
@@ -7535,9 +6972,9 @@ async function createChat(from?: Session): Promise<void> {
     }
     if (!from) leaveDraft('');
     const provisional = from ? provisionalTasks.has(from.id) : !providersKnown;
-    created = await taskCall<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
+    created = await call<Session>('chat_create', from ? { provider: from.provider, model: from.model, mode: from.mode } : { provider: harness.id, model: rememberedModel(harness.id), mode: 'full' });
     noteProvisional(created, provisional);
-    if (from?.reasoningEffort) { created = await taskCall<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort }); prewarmedDrafts.delete(created.id); }
+    if (from?.reasoningEffort) created = await call<Session>('set_reasoning_effort', { sessionId: created.id, reasoningEffort: from.reasoningEffort });
     // Fresh pooled conversations choose their own account when the native run starts.
     const pooled = from && (from.provider === 'claude' || from.provider === 'codex') && namedConnections.pools?.includes(from.provider);
     const connection = from && !pooled && taskConnection(from)?.id;
@@ -7546,7 +6983,6 @@ async function createChat(from?: Session): Promise<void> {
   } finally { creatingTask = false; }
   // chat_create announces the new row, so the refresh may already have listed it.
   upsertSession(created);
-  seedFreshSession(created.id);
   checkProvisionalTasks();
   if (from) {
     // Wait out any correction that started while chat_create/list_projects ran so leaveDraft sees configuringSessions clear.
@@ -7557,14 +6993,6 @@ async function createChat(from?: Session): Promise<void> {
     if (typed) state.drafts.set(created.id, typed);
     state.drafts.delete(from.id);
     if (open) prompt!.value = '';
-    // Adopt and move any unsent /btw side draft and side-panel choices before selectSession runs leaveDraft.
-    state.drafts.get(BTW_DRAFT + from.id);
-    state.drafts.move(BTW_DRAFT + from.id, BTW_DRAFT + created.id);
-    const sideChoice = btwDrafts.get(from.id);
-    if (sideChoice) {
-      btwDrafts.set(created.id, { ...sideChoice, id: BTW_DRAFT + created.id, projectId: created.projectId });
-      btwDrafts.delete(from.id);
-    }
     attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
     const browserItems = state.browserAttachments.get(from.id);
     if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);
@@ -7589,38 +7017,19 @@ async function showChoices(anchor: HTMLElement, options: ChoiceOptions): Promise
   closeMenus();
   const { epoch, release } = beginMenuOpen(anchor);
   const generation = state.generation;
-  const targetContext = composerPickerContext(anchor, false);
-  const context = anchor.id === 'mode-picker-trigger' ? { anchor, current: () =>
-    targetContext.current() && Boolean(choiceMenuCleanup || pendingMenuOpen?.anchor === anchor) } : undefined;
-  if (context) composerPickerLifecycle = context;
-  let openChoiceMenu: typeof import('./choice-menu').openChoiceMenu;
-  try { ({ openChoiceMenu } = await import('./choice-menu')); } finally { release(); }
+  const { openChoiceMenu } = await import('./choice-menu').finally(release);
   const live = liveAnchor(anchor);
   if (epoch !== menuEpoch || generation !== state.generation || !live) return;
   anchor = live;
   choiceMenuAnchor = anchor;
   choiceMenuCleanup = openChoiceMenu({ ...options, anchor, onClose: () => {
-    if (composerPickerLifecycle === context) composerPickerLifecycle = undefined;
     choiceMenuCleanup = undefined; choiceMenuAnchor = undefined;
     if (anchor.closest('#sidebar-bots-panel')) window.setTimeout(() => { if (botsListPendingRender) renderBots(); }, 0);
     options.afterClose?.();
   } });
 }
 async function showMode(anchor: HTMLElement, target = session()): Promise<void> {
-  if (pendingMenuOpen?.anchor === anchor) { cancelPendingMenu(); return; }
-  // A model, effort or permission change still saving: open once it lands (saved or not), on the task and its
-  // redrawn button as they are then.
-  if (target && modelSwitch.saving(target.id)) {
-    const id = target.id, inBtw = Boolean(anchor.closest('.btw-panel'));
-    const trigger = () => document.querySelector<HTMLElement>(inBtw ? '.btw-panel .mode-picker' : '#mode-picker-trigger');
-    const pending = beginHeldMenuOpen(anchor, target);
-    try {
-      await modelSwitch.holdModeOpen(id, trigger, pending.signal);
-      if (pending.signal.aborted || !pending.current()) return;
-      anchor = trigger() ?? anchor;
-    } finally { pending.release(); }
-  }
-  const s = target && (state.sessions.find(task => task.id === target.id) ?? target); if (!s || isRunning(s.id) || taskBusyConfiguring(s.id)) return;
+  const s = target; if (!s || isRunning(s.id) || taskBusyConfiguring(s.id)) return;
   const generation = state.generation, inPanel = s.id !== state.sessionId;
   const current = () => inPanel ? (btwSideTask() ?? btwDraftTask())?.id === s.id : s.id === state.sessionId;
   const modes = approvalModes(s.provider, s.mode);
@@ -7635,12 +7044,22 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
     if (!chosen) throw new Error('Choose an available approval behavior.');
-    // Shows at once with the button busy (kept by modeTriggerHtml through a repaint) and saves behind (model-switch.ts).
-    void modelSwitch.pickMode(s.id, id as Mode, {
-      warm: !inPanel && localTarget(live), paint: () => paintTaskChoice(s.id, inPanel), name: mode => modeName(approvalMode(live.provider, mode)),
-      trigger: () => s.id === state.sessionId ? document.querySelector<HTMLElement>('#mode-picker-trigger')
-        : btwSideTask()?.id === s.id ? document.querySelector<HTMLElement>('.btw-panel .mode-picker') : null,
-    });
+    configuringSessions.add(s.id);
+    try {
+      await call('update_session', { sessionId: s.id, mode: id as Mode });
+      const saved = state.sessions.find(item => item.id === s.id); if (saved) saved.mode = id as Mode;
+      architectView?.modeChanged();
+      if (inPanel) btwPanel.refresh();
+      else if (s.id === state.sessionId) {
+        if (saved) syncOverlayContext({ projectId: saved.projectId, provider: saved.provider, model: saved.model || 'default', mode: saved.mode, reasoningEffort: saved.reasoningEffort ?? null });
+        const trigger = document.querySelector<HTMLElement>('#mode-picker-trigger');
+        if (trigger) {
+          trigger.innerHTML = modeFaceHtml(chosen);
+          trigger.dataset.mode = chosen.id; trigger.dataset.tip = modeTip(chosen); trigger.setAttribute('aria-label', modeName(chosen)); trigger.setAttribute('aria-description', chosen.description);
+          trayStateChanged();
+        }
+      }
+    } finally { configuringSessions.delete(s.id); }
   } });
 }
 async function showTaskMenu(anchor: HTMLElement): Promise<void> {
@@ -7667,7 +7086,7 @@ async function pinTask(id: string): Promise<void> {
   if (!task || orderingBusy) return;
   orderingBusy = true; $('#navigation').setAttribute('aria-busy', 'true');
   try {
-    const saved = await taskCall<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
+    const saved = await call<Session>('pin_session', { sessionId: id, pinned: !task.pinned });
     const current = state.sessions.find(item => item.id === id);
     if (current) { current.pinned = saved.pinned; current.sidebarOrder = saved.sidebarOrder; }
     notify(saved.pinned ? 'Task pinned' : 'Task unpinned', saved.pinned ? undefined : () => run(pinTask(id)));
@@ -7679,7 +7098,7 @@ async function reorderThreads(ids: string[], focus: string): Promise<void> {
   orderingBusy = true; $('#navigation').setAttribute('aria-busy', 'true');
   // Keep navigation metadata separate from provider/stream state changed during IPC.
   try {
-    const saved = await taskCall<Session[]>('reorder_sessions', { sessionIds: ids });
+    const saved = await call<Session[]>('reorder_sessions', { sessionIds: ids });
     const ranks = new Map(saved.map(task => [task.id, task.sidebarOrder]));
     for (const task of state.sessions) if (ranks.has(task.id)) task.sidebarOrder = ranks.get(task.id);
   } finally {
@@ -7897,12 +7316,11 @@ async function showDefaultModel(anchor: HTMLElement): Promise<void> {
   const { epoch, release } = beginMenuOpen(anchor);
   const { openModelPicker } = await import('./model-picker').finally(release);
   const live = liveAnchor(anchor);
-  // A transcript paint held while this picker was opening or open (model-switch.ts deferTranscript) paints once it is gone.
-  if (epoch !== menuEpoch || !live) { modelSwitch.flushTranscript(); return; }
+  if (epoch !== menuEpoch || !live) return;
   anchor = live;
   modelPickerCleanup = openModelPicker({
     anchor, providers: providersKnown ? state.providers : [], current: { provider: state.defaultProvider, model: rememberedModel(state.defaultProvider) },
-    canSwitchProvider: true, loadModels, loadProviders: providersKnown ? undefined : () => providersReady, placement: 'below', onClose: () => { modelPickerCleanup = undefined; modelSwitch.flushTranscript(); },
+    canSwitchProvider: true, loadModels, loadProviders: providersKnown ? undefined : () => providersReady, placement: 'below', onClose: () => { modelPickerCleanup = undefined; },
     onSelect: async (providerId, model) => {
       state.defaultProvider = providerId;
       localStorage.setItem('pandacode.provider', providerId); localStorage.setItem('pandacode.model.' + providerId, model);
@@ -7940,7 +7358,7 @@ function showDeleteTask(task = session()): void {
 function showRename(task?: Session): void { const s = task ?? session(); if (!s) return; modal('Rename task', `<form id="rename-form" data-session-id="${escape(s.id)}"><label for="task-title" class="field-label">Task name</label><input id="task-title" name="title" value="${escape(s.title)}" maxlength="200" required><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button">Save</button></div></form>`); document.querySelector<HTMLInputElement>('#task-title')?.select(); }
 async function discoverSettingsProviders(): Promise<Provider[]> {
   // Refresh also retries unchanged harnesses and invalidates their older in-flight metadata.
-  modelCatalogs.clearCatalogs();
+  modelCatalogs.clear();
   const generation = askingProviderList();
   providersLanded(await call<Provider[]>('list_providers', { force: true }), generation, true);
   return state.providers;
@@ -7991,7 +7409,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
         },
         providerConnections: async target => {
           const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
-          return mountProviderSettings(target, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+          return mountProviderSettings(target, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
         },
         openCodeModels: async target => (await import('./opencode-model-settings')).mountOpenCodeModels(target, () => invalidateModels('opencode')),
         harnessPrivacy: async target => (await import('./harness-privacy')).mountHarnessPrivacy(target),
@@ -8070,10 +7488,10 @@ async function showProviderConnections(): Promise<void> {
   const host = dialog.querySelector<HTMLElement>('#provider-connections-content')!;
   const [{ mountProviderSettings }, providers] = await Promise.all([import('./provider-settings'), Promise.resolve(knownProviders()).catch(() => state.providers)]);
   if (!dialog.open || !host.isConnected) return;
-  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clearCatalogs(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
+  providerSettingsCleanup = mountProviderSettings(host, async () => { modelCatalogs.clear(); await discoverSettingsProviders(); renderComposer(); }, { harnesses: providers.map(p => ({ id: p.id, name: p.name, installed: p.installed })), saved: onNamedConnections });
 }
 function invalidateModels(id: ProviderId): void {
-  modelCatalogs.clearCatalogs(id);
+  modelCatalogs.delete(id);
   const entry = provider(id); if (entry) entry.models = [];
 }
 async function showOpenCodeModels(): Promise<void> {
@@ -8303,7 +7721,7 @@ async function assignTaskBot(task: Session, botId: string | null): Promise<void>
     if (bot) {
       taskBots.set(task.id, bot.id);
       // The bot's harness and model become the task's defaults; the picker can still change them.
-      if (bot.provider !== task.provider || bot.model !== task.model) { upsertSession(await taskCall<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model })); prewarmedDrafts.delete(task.id); }
+      if (bot.provider !== task.provider || bot.model !== task.model) upsertSession(await call<Session>('configure_session', { sessionId: task.id, provider: bot.provider, model: bot.model }));
     } else taskBots.delete(task.id);
   } finally { configuringSessions.delete(task.id); }
   if (state.sessionId === task.id) render();
@@ -8505,7 +7923,7 @@ async function sendCloud(s: Session, target: CloudTarget, draft: string, text: s
   try {
     const contexts = await Promise.all(filePaths.map(path => fileContext(s, path)));
     const content = text + contexts.join('') + attachments.contextFor(promptItems) + await github.contextFor(s.projectId, s.id, text) + tokenSaver.contextFor(s.id);
-    const started = await taskCall<Session>('cloud_agent_start', {
+    const started = await call<Session>('cloud_agent_start', {
       // The empty New task draft becomes the cloud task, so no stray draft is left behind.
       sessionId: s.id, projectId: s.projectId, provider: target.provider, prompt: content, harness: s.provider, model: s.model, mode: s.mode, effort: s.reasoningEffort ?? null,
     });
@@ -8949,8 +8367,7 @@ async function applyNextBotModel(sessionId: string): Promise<void> {
   const next = botThread.nextModel(sessionId);
   if (!next || isRunning(sessionId)) return;
   try {
-    const updated = await taskCall<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
-    prewarmedDrafts.delete(sessionId);
+    const updated = await call<Session>('configure_session', { sessionId, provider: next.provider, model: next.model });
     botThread.setNextModel(sessionId, undefined);
     state.sessions = state.sessions.map(task => task.id === sessionId ? updated : task);
     if (sessionId === state.sessionId) { renderComposer(); renderHeader(); }
@@ -9272,22 +8689,7 @@ document.addEventListener('submit', event => {
     } finally { if (submitter?.isConnected) submitter.disabled = false; }
   })());
 });
-document.addEventListener('input', event => {
-  const input = event.target as HTMLInputElement;
-  if (input.id === 'command-query') renderCommands(input.value);
-  if (input.id === 'prompt') {
-    lastPromptInputAt = performance.now();
-    if (renderFrame && state.streams.has(state.sessionId)) {
-      cancelAnimationFrame(renderFrame);
-      renderFrame = 0;
-      scheduleStreamRender();
-    }
-    resizePrompt();
-    if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value);
-  }
-  if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value);
-  if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); }
-});
+document.addEventListener('input', event => { const input = event.target as HTMLInputElement; if (input.id === 'command-query') renderCommands(input.value); if (input.id === 'prompt') { resizePrompt(); if (input.dataset.sessionId && !deletedSessions.has(input.dataset.sessionId)) state.drafts.set(input.dataset.sessionId, input.value); } if (input.id === 'shared-channel-prompt' && state.sharedChannelId) state.drafts.set(channelDraftKey(state.sharedChannelId), input.value); if (input.id === 'sidebar-filter') { state.query = input.value; renderNavigation(); } });
 document.addEventListener('scroll', event => {
   if (!state.sharedChannelId) return;
   const history = (event.target as Element | null)?.closest?.('.bc-history') as HTMLElement | null;
@@ -9433,13 +8835,17 @@ async function boot(): Promise<void> {
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
   ];
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  document.addEventListener('click', event => {
-    (event.target as Element).closest('.turn-changes summary')?.parentElement?.setAttribute('data-opened', '');
-  });
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
   run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
+  run(subscribe('agent-event', (event: AgentEvent) => {
+    if (event.kind !== 'done') return;
+    if (event.sessionId !== state.sessionId) return;
+    void designPanel?.refresh();
+    progressPip?.refresh(event.sessionId);
+    if (document.hasFocus()) markTraySeen(event.sessionId);
+  }).then(() => undefined));
   run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {
     if (typeof sessionId !== 'string') return;
     if (!state.sessions.some(s => s.id === sessionId)) await reloadSessions();
@@ -9474,17 +8880,20 @@ async function boot(): Promise<void> {
     void refreshBotThreadMeta(bot, sessionId, true);
   }).then(() => undefined));
   // Bots appear in the sidebar once loaded; startup does not wait for them.
-  run(ensureBotProjects());
+  botProjectsLoad = reloadBotProjects(false); run(botProjectsLoad);
   run(subscribe('bot-pairing', event => { if (event?.code) notify(`${event.senderName || 'Someone'} wants to talk to a bot. Approve code ${event.code} in Bots.`, undefined, { important: true }); }).then(() => undefined));
   // Wake-ups for the open thread and the sidebar's clocks; refreshed on schedules-changed.
+  // Motion only when the user opens these: a remembered thread or a redraw restores them still.
+  document.addEventListener('click', event => {
+    const target = event.target as Element;
+    target.closest('.turn-changes summary')?.parentElement?.setAttribute('data-opened', '');
+    // schedules-thread.ts paints synchronously in its own click listener, so the body exists by the next frame.
+    if (target.closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
+  });
   run(initWakeups({
     sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
-  // schedules-thread.ts registers its own click listener synchronously above, so #wake-body exists by the next frame.
-  document.addEventListener('click', event => {
-    if ((event.target as Element).closest('[data-wake="expand"]')) requestAnimationFrame(() => { const body = document.querySelector<HTMLElement>('#wake-body'); if (body) settleUnfolded(body); });
-  });
   // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
   listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
@@ -9511,7 +8920,7 @@ async function boot(): Promise<void> {
   })())));
   listening.push(connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction));
   await Promise.all(listening);
-  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), taskCall<Session[]>('list_sessions')]);
+  [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
   // Drafts of threads deleted while the app was closed go (the list leaves out older threads, so ask).
   void dropDeletedDrafts(state.drafts, ids => call<string[]>('sessions_missing', { ids }));
@@ -9654,7 +9063,7 @@ function mergeProviderList(found: Provider[], keep: (entry: Provider, previous: 
     const previous = provider(entry.id);
     const samePath = Boolean(entry.path && previous?.path === entry.path);
     const version = entry.version || reportedVersions.get(entry.id) || (samePath ? previous!.version : '') || '';
-    if (versionReplaced(entry.id, version)) { modelCatalogs.clearCatalogs(entry.id); return { ...entry, version, models: [] }; }
+    if (versionReplaced(entry.id, version)) { modelCatalogs.delete(entry.id); return { ...entry, version, models: [] }; }
     return { ...entry, version, models: previous && keep(entry, previous) ? previous.models : entry.models };
   });
 }
@@ -9673,7 +9082,7 @@ function providerVersionsReported(event: unknown): void {
     // A probe that found nothing keeps the version already shown.
     const version = byId.get(entry.id) || entry.version;
     const replaced = versionReplaced(entry.id, version);
-    if (replaced) { modelCatalogs.clearCatalogs(entry.id); dropped.push(entry.id); return { ...entry, version, models: [] }; }
+    if (replaced) { modelCatalogs.delete(entry.id); dropped.push(entry.id); return { ...entry, version, models: [] }; }
     return version === entry.version ? entry : { ...entry, version };
   });
   settingsView?.providersChanged(state.providers);
@@ -9707,7 +9116,7 @@ function providersLanded(found: Provider[], generation: number, force = false): 
   if (!Array.isArray(found)) throw new Error('The agent harness list was not readable.');
   // A pending or failed refresh leaves this answer usable. A newer successful one has already replaced it.
   if (generation < appliedProviderListGeneration) return;
-  state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.hasCatalog(entry.id));
+  state.providers = mergeProviderList(found, (entry, previous) => force ? previous.path === entry.path : modelCatalogs.has(entry.id));
   appliedProviderListGeneration = generation;
   keepProviderCatalog(state.providers);
   const firstKnown = !providersKnown;
@@ -9760,7 +9169,7 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
       const harness = pickHarness(state.providers);
       if (!harness?.installed) return 'missing';
       try {
-        saved = await taskCall<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
+        saved = await call<Session>('configure_session', { sessionId: task.id, provider: harness.id, model: rememberedModel(harness.id) });
       } catch (error) {
         if (deletedSessions.has(task.id)) { provisionalTasks.delete(task.id); return 'stale'; }
         throw error;
@@ -9810,23 +9219,10 @@ const agentUpdates = initializeAgentUpdates({
 });
 window.addEventListener('pagehide', () => agentUpdates.dispose(), { once: true });
 // A New task's text is kept per project, since its draft session does not outlive the launch.
-state.drafts.newTaskKey = id => {
-  const side = id.startsWith(BTW_DRAFT), parentId = side ? id.slice(BTW_DRAFT.length) : id;
-  const task = state.sessions.find(s => s.id === parentId);
-  return task?.draft ? (side ? BTW_DRAFT : '') + NEW_TASK_DRAFT + task.projectId : undefined;
-};
+state.drafts.newTaskKey = id => { const task = state.sessions.find(s => s.id === id); return task?.draft ? NEW_TASK_DRAFT + task.projectId : undefined; };
 expireDraftsWhileRunning(state.drafts);
 flushDraftsOnLeave(state.drafts);
 renderThemeToggle(); render(); renderInspector();
-// The model picker opens without a wait: its module and team library load at idle, or when its trigger is hovered or focused.
-setTimeout(modelCatalogs.warmModelPicker, 1500);
-// Typing a draft in a local task's composer lets native start its next turn ahead (once per draft; model-switch.ts).
-// Bot threads run on the bot's own schedule, so they never warm.
-document.addEventListener('input', event => {
-  const prompt = event.target as HTMLTextAreaElement | null, task = prompt?.id === 'prompt' ? session() : undefined;
-  if (task && localTarget(task) && !botForThread()) modelSwitch.draftChanged(task.id, prompt!.value);
-});
-for (const type of ['pointerover', 'focusin'] as const) document.addEventListener(type, event => { if ((event.target as Element | null)?.closest?.('.model-picker')) modelCatalogs.warmModelPicker(); }, { passive: true });
 // A failed boot still ends in a usable empty state (its error is reported by run()).
 bootPending = boot().finally(() => { bootPending = undefined; if (!projectsListed) { projectsListed = true; render(); } });
 run(bootPending);

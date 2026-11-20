@@ -47,7 +47,6 @@ mod cloud_agents;
 mod capabilities;
 mod vsix_themes;
 mod token_saver;
-mod warm_launch;
 mod tool_images;
 mod tool_images_auth;
 mod task_usage;
@@ -471,147 +470,6 @@ mod read_scan_tests {
 #[cfg(test)]
 mod task_agent_tests {
     use super::*;
-
-    #[tokio::test]
-    async fn a_discarded_draft_stops_what_was_started_ahead_for_it() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap();
-        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
-        let session = store.mark_draft(&task.id).unwrap();
-        // Typing in the New task started a spare and left a start pending.
-        providers::handshake_insert_for_test(&task.id, "codex");
-        providers::reserve_warm_agent(&task.id);
-        assert!(providers::has_warm_agent(&session));
-        let released = release_draft(&store, &task.id).unwrap().expect("still an empty draft");
-        drop(released);
-        assert_eq!(providers::handshake_spare_pid(&task.id), None, "its process is stopped");
-        assert!(!providers::has_warm_agent(&session), "and its pending start is gone");
-        // A task that is not an empty draft is left alone.
-        let kept = store.create_session(&project.id, "codex", "default", "ask").unwrap();
-        providers::handshake_insert_for_test(&kept.id, "codex");
-        assert!(release_draft(&store, &kept.id).unwrap().is_none());
-        assert!(providers::handshake_spare_pid(&kept.id).is_some());
-        providers::discard_warm_agent(&kept.id);
-    }
-
-    fn settings_state() -> (AppState, String) {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        let project = store.add_project(&std::env::temp_dir()).unwrap().id;
-        let state = AppState {
-            store: Arc::new(Mutex::new(store)),
-            agents: Arc::new(Mutex::new(HashMap::new())),
-            terminals: Arc::new(Mutex::new(HashMap::new())),
-            shutdown: AtomicU8::new(0),
-        };
-        (state, project)
-    }
-
-    #[tokio::test]
-    async fn a_model_or_mode_switch_keeps_the_warm_spare_and_archiving_drops_it() {
-        let (state, project) = settings_state();
-        let codex = state.store.lock().unwrap().create_session(&project, "codex", "default", "ask").unwrap();
-        let pid = providers::handshake_insert_for_test(&codex.id, "codex");
-        save_session_update(&state, &codex.id, None, None, None, Some("full".into())).unwrap();
-        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid), "a mode change keeps the same spare");
-        save_session_update(&state, &codex.id, None, None, Some("gpt-5.5".into()), None).unwrap();
-        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid), "so does a model change");
-        save_session_update(&state, &codex.id, Some("Renamed".into()), None, None, None).unwrap();
-        assert_eq!(providers::handshake_spare_pid(&codex.id), Some(pid));
-        // A Claude task's recorded agent stays, for the rewarm to switch in place.
-        let claude = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        providers::warm_record_for_test(&launch_config(&claude, std::env::temp_dir()));
-        save_session_update(&state, &claude.id, None, None, None, Some("plan".into())).unwrap();
-        let switched = state.store.lock().unwrap().session(&claude.id).unwrap();
-        assert!(providers::has_warm_agent(&switched), "the Claude agent was not discarded");
-        // Archiving stops what was started ahead.
-        save_session_update(&state, &codex.id, None, Some(true), None, None).unwrap();
-        assert_eq!(providers::handshake_spare_pid(&codex.id), None);
-        save_session_update(&state, &claude.id, None, Some(true), None, None).unwrap();
-        assert!(!providers::has_warm_agent(&switched));
-    }
-
-    #[test]
-    fn a_stale_running_row_without_an_agent_does_not_block_a_settings_change() {
-        let (state, project) = settings_state();
-        let task = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        let stale = |status: &str| {
-            state.store.lock().unwrap().db.execute("UPDATE sessions SET status=?2 WHERE id=?1", rusqlite::params![task.id, status]).unwrap();
-        };
-        // The run's end was never saved, and no agent is registered: reconciled, not refused.
-        stale("running");
-        save_reasoning_effort(&state, &task.id, None).expect("the effort is saved");
-        stale("waiting");
-        save_session_update(&state, &task.id, None, None, None, Some("plan".into())).expect("the mode is saved");
-        stale("running");
-        let session = save_configuration(&state, &task.id, "claude", "claude-opus-5-5", None).expect("the model is saved");
-        assert_eq!((session.model.as_str(), session.mode.as_str()), ("claude-opus-5-5", "plan"));
-        assert_eq!(session.status, "interrupted");
-    }
-
-    #[tokio::test]
-    async fn a_pick_after_a_start_ahead_is_reserved_turns_that_start_away() {
-        let (state, project) = settings_state();
-        let task = state.store.lock().unwrap().create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        // The turn end (or draft) reserved its start, then read the row...
-        let ticket = providers::reserve_warm_agent(&task.id);
-        let config = launch_config(&task, std::env::temp_dir());
-        // ...and a pick landed before it recorded: `plan_rewarm` superseded or cancelled it.
-        providers::cancel_warm_ticket(&task.id);
-        providers::prewarm_reserved(ticket, config, Vec::new(), HashSet::new(), providers::warm_epoch(&task.id)).await.unwrap();
-        assert!(!providers::has_warm_agent(&task), "nothing was started for the old settings");
-        let superseded = providers::reserve_warm_agent(&task.id);
-        let pick = providers::reserve_warm_agent(&task.id);
-        let codex = RunConfig { provider: "codex".into(), ..launch_config(&task, std::env::temp_dir()) };
-        providers::prewarm_reserved(superseded, codex, Vec::new(), HashSet::new(), providers::warm_epoch(&task.id)).await.unwrap();
-        assert!(providers::warm_reserved(&task.id, pick), "the pick's own start is untouched");
-        assert_eq!(providers::handshake_spare_pid(&task.id), None);
-        providers::release_warm_ticket(&task.id, pick);
-    }
-
-    #[test]
-    fn a_harness_pick_before_the_turn_end_start_keeps_its_own_start() {
-        let (state, project) = settings_state();
-        let store = state.store.lock().unwrap();
-        let task = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        // A pick to Codex landed between the run's `done` and the turn-end start, and
-        // reserved its own start for the new harness.
-        store.db.execute("UPDATE sessions SET provider='codex', model='gpt-5.5' WHERE id=?1", [&task.id]).unwrap();
-        let pick = providers::reserve_warm_agent(&task.id);
-        assert!(reserve_turn_end_warm(&store, &task.id, "claude").is_none(), "nothing reserved for the old harness");
-        assert!(providers::warm_reserved(&task.id, pick), "the pick's pending start is untouched");
-        // Same harness: the start is reserved with the row's current settings.
-        let (ticket, current) = reserve_turn_end_warm(&store, &task.id, "codex").expect("reserved");
-        assert!(providers::warm_reserved(&task.id, ticket));
-        assert_eq!((current.provider.as_str(), current.model.as_str()), ("codex", "gpt-5.5"));
-        providers::release_warm_ticket(&task.id, ticket);
-        assert!(reserve_turn_end_warm(&store, "missing", "codex").is_none());
-    }
-
-    #[test]
-    fn a_draft_with_nothing_to_start_ahead_holds_no_ticket() {
-        let (state, project) = settings_state();
-        let store = state.store.lock().unwrap();
-        // Codex drafts are warmed by a pick or keystroke, never by this start: nothing to start.
-        let codex = store.create_session(&project, "codex", "default", "ask").unwrap();
-        let codex = store.mark_draft(&codex.id).unwrap();
-        assert!(reserve_draft_prewarm(&store, &codex.id).unwrap().is_none());
-        assert!(!providers::has_warm_agent(&codex), "no ticket, so a send does not wait");
-        // A task that is not a draft reserves nothing either.
-        let kept = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        assert!(reserve_draft_prewarm(&store, &kept.id).unwrap().is_none());
-        assert!(!providers::has_warm_agent(&kept));
-        // A Claude draft reserves its start with the row as it is now; a pick supersedes it.
-        let draft = store.create_session(&project, "claude", "claude-sonnet-5-5", "ask").unwrap();
-        let draft = store.mark_draft(&draft.id).unwrap();
-        let (ticket, config) = reserve_draft_prewarm(&store, &draft.id).unwrap().expect("reserved");
-        assert_eq!(config.model, "claude-sonnet-5-5");
-        assert!(providers::warm_reserved(&draft.id, ticket));
-        let pick = providers::reserve_warm_agent(&draft.id);
-        assert!(!providers::warm_reserved(&draft.id, ticket), "the pick took its place");
-        providers::release_warm_ticket(&draft.id, ticket);
-        assert!(providers::warm_reserved(&draft.id, pick), "releasing the old ticket keeps the pick's");
-        providers::release_warm_ticket(&draft.id, pick);
-    }
 
     #[test]
     fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
@@ -1177,138 +1035,10 @@ async fn configure_window_appearance(
     )
     .await
 }
-fn draft_prewarm_config(store: &Store, session: &Session) -> Result<Option<RunConfig>> {
-    if !session.draft
-        || session.resume_id.is_some()
-        || session.remote_device.is_some()
-        || remote::mirror::of(store, &session.id)?.is_some()
-        || architect::leads_team(store, &session.id)?
-        || cloud_agents::transport::is_cloud(&session.id)
-        || cloud_agents::load(store, &session.id)?.is_some()
-        || bots::owner_of(store, &session.id)?.is_some()
-        || worker_launch(store, None, &session.id)?
-        || account_pool::enabled(&session.provider)
-    {
-        return Ok(None);
-    }
-    let cwd = store.workspace_root(&session.project_id, Some(&session.id))?;
-    let instructions = if providers::takes_system_instructions(&session.provider) {
-        app_instructions(chats::is_chat_folder(&cwd), false)
-    } else {
-        String::new()
-    };
-    let config = RunConfig {
-        session_id: session.id.clone(),
-        provider: session.provider.clone(),
-        model: session.model.clone(),
-        reasoning_effort: session.reasoning_effort.clone(),
-        mode: session.mode.clone(),
-        cwd,
-        resume_id: None,
-        prompt: String::new(),
-        instructions,
-        images: Vec::new(),
-        skill: None,
-        goal: None,
-        codex_settings: session.codex_settings.clone(),
-    };
-    Ok(providers::warms(&config).then_some(config))
-}
-
-/// A new draft's start ahead: its launch and ticket, read and reserved under the store lock. A
-/// pick saves its row and then, after the save has released the store lock, takes it again to
-/// plan its own start (`warm_launch::plan_rewarm`). Both sides read the row as it is when they
-/// hold the lock and tickets are ordered, so a pick planned after this supersedes or cancels the
-/// ticket, and a row saved before it is what is read here. A draft with nothing to start reserves
-/// nothing, so a send never waits for it.
-fn reserve_draft_prewarm(db: &Store, session_id: &str) -> Result<Option<(u64, RunConfig)>> {
-    if !db.is_empty_draft(session_id)? || architect::load(db, session_id)?.is_some() {
-        return Ok(None);
-    }
-    let session = db.session(session_id)?;
-    Ok(draft_prewarm_config(db, &session)?
-        .map(|config| (providers::reserve_warm_agent(session_id), config)))
-}
-
-fn spawn_draft_prewarm(app: &tauri::AppHandle, state: &AppState, session_id: &str) {
-    if cfg!(test) || headless::active() || state.shutdown.load(Ordering::SeqCst) != 0 {
-        return;
-    }
-    if !state.agents.lock().is_ok_and(|agents| agents.is_empty()) {
-        return;
-    }
-    let launch = providers::warm_epoch(session_id);
-    let app = app.clone();
-    let store = state.store.clone();
-    let agents = state.agents.clone();
-    let session_id = session_id.to_owned();
-    tauri::async_runtime::spawn(async move {
-        let reserved = blocking({
-            let store = store.clone();
-            let agents = agents.clone();
-            let session_id = session_id.clone();
-            move || {
-                if !agents.lock().is_ok_and(|running| running.is_empty()) {
-                    return Ok(None);
-                }
-                let db = store.lock().map_err(|e| e.to_string())?;
-                reserve_draft_prewarm(&db, &session_id)
-            }
-        })
-        .await;
-        // Nothing to start: no ticket was taken, so a send has nothing to wait for.
-        let Ok(Some((ticket, config))) = reserved else {
-            return;
-        };
-        // The catalog is built outside the store lock (its wrappers lock the store themselves).
-        let prepared = blocking({
-            let app = app.clone();
-            let session_id = session_id.clone();
-            move || {
-                // A send or pick already took this start's place: skip the slow build.
-                if !providers::warm_reserved(&session_id, ticket) {
-                    return Ok(None);
-                }
-                skill_manager::begin_launch_at(&config.session_id, &config.cwd);
-                let stopped = Arc::new(AtomicBool::new(false));
-                let (host, _) =
-                    build_task_host(&app, &config.session_id, stopped, None, false, None, None);
-                let (tools, approvals) = host
-                    .map(|host| (host.tools, host.approval_tools))
-                    .unwrap_or_default();
-                Ok(Some((config, tools, approvals)))
-            }
-        })
-        .await;
-        if let Ok(Some((config, tools, approvals))) = prepared {
-            let still_draft = agents.lock().is_ok_and(|running| running.is_empty())
-                && store.lock().is_ok_and(|db| db.is_empty_draft(&session_id).unwrap_or(false));
-            if still_draft {
-                // A stale ticket starts nothing; every path releases it.
-                providers::touch_warm_agent(&session_id);
-                let _ = providers::prewarm_reserved(ticket, config, tools, approvals, launch).await;
-            }
-        }
-        // Whatever happened, this ticket's start is over: a waiting send stops waiting for it.
-        providers::release_warm_ticket(&session_id, ticket);
-    });
-}
-
-#[tauri::command]
-async fn prewarm_draft_session(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<()> {
-    spawn_draft_prewarm(&app, &state, &session_id);
-    Ok(())
-}
-
 // Each argument is a field of the `create_session` IPC call.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 async fn create_session(
-    app: tauri::AppHandle,
     state: State<'_, AppState>,
     project_id: String,
     provider: String,
@@ -1318,30 +1048,21 @@ async fn create_session(
     team: Option<bool>,
     main_session_id: Option<String>,
 ) -> Result<Session> {
-    let (created, inherited) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        // A /btw side thread names its main thread, so a team worker's full access stays out of it.
-        let mode = architect::side_thread_mode(&store, main_session_id.as_deref(), mode)?;
-        let use_team = team.unwrap_or(true);
-        // `team: false` (a /btw side thread) skips the saved default team.
-        let create = if use_team {
-            architect::profiles::create_user_task
-        } else {
-            architect::profiles::create_task_without_team
-        };
-        let task = create(&store, &project_id, &provider, &model, mode.as_deref(), None)?;
-        let task = if draft.unwrap_or(false) {
-            store.mark_draft(&task.id)?
-        } else {
-            task
-        };
-        let inherited = if use_team { architect::load(&store, &task.id)? } else { None };
-        (task, inherited)
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    // A /btw side thread names its main thread, so a team worker's full access stays out of it.
+    let mode = architect::side_thread_mode(&store, main_session_id.as_deref(), mode)?;
+    // `team: false` (a /btw side thread) skips the saved default team.
+    let create = if team.unwrap_or(true) {
+        architect::profiles::create_user_task
+    } else {
+        architect::profiles::create_task_without_team
     };
-    if let Some(ref team) = inherited {
-        architect::emit_snapshot(&app, team);
+    let task = create(&store, &project_id, &provider, &model, mode.as_deref(), None)?;
+    if draft.unwrap_or(false) {
+        store.mark_draft(&task.id)
+    } else {
+        Ok(task)
     }
-    Ok(created)
 }
 /// Deletes a New task draft that was left before its first prompt. A task
 /// that has since saved a prompt, or never was a draft, is left untouched.
@@ -1352,27 +1073,13 @@ async fn discard_draft(app: tauri::AppHandle, window: tauri::WebviewWindow, sess
     }
     blocking(move || {
         let state = app.state::<AppState>();
-        let released = release_draft(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)?;
-        // The store lock is released: stopping the agents never holds it up.
-        let Some(released) = released else {
+        if !state.store.lock().map_err(|e| e.to_string())?.is_empty_draft(&session_id)? {
             return Ok(false);
-        };
-        drop(released);
+        }
         task_deletion::delete_state(&state, &session_id)?;
         Ok(true)
     })
     .await
-}
-
-/// Whether the task is still an empty draft; if so, whatever was started ahead for it (a warm
-/// agent with its tool servers, a pending start) is taken out, for the caller to stop once it
-/// releases the store, so a New task left before its first prompt keeps nothing running and
-/// frees its spare slot.
-fn release_draft(store: &Store, session_id: &str) -> Result<Option<providers::TakenWarmAgents>> {
-    if !store.is_empty_draft(session_id)? {
-        return Ok(None);
-    }
-    Ok(Some(providers::take_warm_agents(session_id)))
 }
 #[tauri::command]
 async fn create_board_task(
@@ -1433,78 +1140,7 @@ async fn set_task_stage(
     remote::orchestrate::retry(&app, &session_id);
     Ok(task)
 }
-/// A task's launch settings from its row, before the turn's prompt, images and skill.
-fn launch_config(session: &Session, cwd: std::path::PathBuf) -> RunConfig {
-    RunConfig {
-        session_id: session.id.clone(),
-        provider: session.provider.clone(),
-        model: session.model.clone(),
-        reasoning_effort: session.reasoning_effort.clone(),
-        mode: session.mode.clone(),
-        cwd,
-        resume_id: session.resume_id.clone(),
-        prompt: String::new(),
-        instructions: String::new(),
-        images: Vec::new(),
-        skill: None,
-        goal: None,
-        codex_settings: session.codex_settings.clone(),
-    }
-}
-
-/// App instructions for a harness that takes them with its system prompt (cached, paid once).
-/// `false` when the harness reads them in the message instead.
-fn apply_system_instructions(config: &mut RunConfig, worker: bool) -> bool {
-    if !providers::takes_system_instructions(&config.provider) {
-        return false;
-    }
-    config.instructions = app_instructions(chats::is_chat_folder(&config.cwd), worker);
-    true
-}
-
-/// The tools a task's launch offers, and whether a team's tools failed to build. Building the
-/// catalog only reads settings, secrets and the store; handlers run when a tool is called.
-fn task_tool_host(
-    app: &tauri::AppHandle,
-    session_id: &str,
-    stopped: &Arc<AtomicBool>,
-    team: Option<&architect::Admission>,
-    cloud: bool,
-    tracker: Option<turn_changes::SharedTracker>,
-    title_run: Option<&session_titles::TitleRun>,
-) -> (Option<providers::ToolHost>, bool) {
-    let (app, session_id, stopped) = (app.clone(), session_id.to_owned(), stopped.clone());
-    let host = if let Some(admission) = team {
-        architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
-            .map(|host| {
-                // Workers keep their scoped team tools; only the lead may manage other tasks.
-                if admission.parent == session_id {
-                    agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-                } else {
-                    host
-                }
-            })
-    } else {
-        Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
-    };
-    let team_tools_missing = team.is_some() && host.is_none();
-    let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
-    let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
-    // A cloud agent's checkout is on its machine, where screenshots cannot be read.
-    let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
-    let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
-    let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
-    let host = Some(turn_changes::with_host(host, tracker, stopped.clone()));
-    (Some(session_titles::with_host(title_run, host, stopped)), team_tools_missing)
-}
-
-/// Changes a task's harness, model or folder. Leaves warm agents alone apart from dropping one
-/// for an old folder: the app's command (`warm_launch::configure_session`) warms on a user pick.
+#[tauri::command]
 async fn configure_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1517,34 +1153,18 @@ async fn configure_session(
         remote::catalog::check_mirror(&app, &state, &session_id, &provider, &model)?;
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"provider": provider, "model": model})).await?;
     }
-    let session = save_configuration(&state, &session_id, &provider, &model, project_id.as_deref())?;
-    // A new folder changes everything about the launch. Every lock is released by now, so
-    // stopping the agent never holds up the store.
-    if project_id.is_some() {
-        providers::discard_warm_agent(&session_id);
-    }
-    Ok(session)
-}
-
-/// A row still `running` or `waiting` with no agent registered is a run whose end was never
-/// saved: reconciled under the caller's locks (`reconcile_inactive_task`), so a settings
-/// change is refused only while an agent really runs.
-fn reconcile_for_settings(store: &Store, agents: &HashMap<String, RunningAgent>, session_id: &str) -> Result<()> {
-    if !agents.contains_key(session_id) {
-        reconcile_inactive_task(store, agents, store.session(session_id)?);
-    }
-    Ok(())
-}
-
-fn save_configuration(state: &AppState, session_id: &str, provider: &str, model: &str, project_id: Option<&str>) -> Result<Session> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if agents.contains_key(session_id) {
+    if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    reconcile_for_settings(&store, &agents, session_id)?;
-    store.configure(session_id, provider, model, project_id)
+    state.store.lock().map_err(|e| e.to_string())?.configure(
+        &session_id,
+        &provider,
+        &model,
+        project_id.as_deref(),
+    )
 }
+#[tauri::command]
 async fn set_reasoning_effort(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1552,20 +1172,19 @@ async fn set_reasoning_effort(
     reasoning_effort: Option<String>,
 ) -> Result<Session> {
     remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"effort": reasoning_effort})).await?;
-    save_reasoning_effort(&state, &session_id, reasoning_effort.as_deref())
-}
-
-fn save_reasoning_effort(state: &AppState, session_id: &str, reasoning_effort: Option<&str>) -> Result<Session> {
     // Match send/configure's lock order so a send cannot capture the old
     // configuration halfway through a settings change.
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if agents.contains_key(session_id) {
+    if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    let store = state.store.lock().map_err(|e| e.to_string())?;
-    reconcile_for_settings(&store, &agents, session_id)?;
-    store.set_reasoning_effort(session_id, reasoning_effort)
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
 }
+#[tauri::command]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1592,181 +1211,21 @@ async fn update_session(
             return task_controls::rename_task(&state, &session_id, title).await;
         }
     }
+    let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
+    if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
+        return Err("Stop the agent before changing its model or permissions.".into());
+    }
     let restored = archived == Some(false);
-    save_session_update(&state, &session_id, title, archived, model, mode)?;
+    state
+        .store
+        .lock()
+        .map_err(|e| e.to_string())?
+        .update(&session_id, title, archived, model, mode)?;
+    drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
     }
     Ok(())
-}
-
-/// Saves a task's title, archive state, model or permissions. Only archiving drops its warm
-/// agents, after every lock is released: a model or permission switch leaves them to
-/// `warm_launch::update_session`'s rewarm, which switches a waiting Claude agent in place
-/// (`set_model`, `set_permission_mode`) and keeps a Codex spare these never reach. A send
-/// still adopts an agent only when its launch matches exactly (`warm::take`).
-fn save_session_update(
-    state: &AppState,
-    session_id: &str,
-    title: Option<String>,
-    archived: Option<bool>,
-    model: Option<String>,
-    mode: Option<String>,
-) -> Result<()> {
-    let switched = model.is_some() || mode.is_some();
-    let archive = archived == Some(true);
-    {
-        let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-        if switched && agents.contains_key(session_id) {
-            return Err("Stop the agent before changing its model or permissions.".into());
-        }
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        if switched {
-            reconcile_for_settings(&store, &agents, session_id)?;
-        }
-        store.update(session_id, title, archived, model, mode)?;
-    }
-    if archive {
-        providers::discard_warm_agent(session_id);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod draft_prewarm_tests {
-    use super::*;
-
-    #[test]
-    fn draft_prewarm_warm_key_matches_first_plain_turn_launch_exactly() {
-        for (mode, effort) in [
-            ("ask", None),
-            ("auto", Some("high")),
-            ("plan", Some("medium")),
-            ("full", None),
-        ] {
-            let (state, project_id) = concurrent_task_tests::test_state();
-            let draft = {
-                let db = state.store.lock().unwrap();
-                let created = architect::profiles::create_task_without_team(
-                    &db,
-                    &project_id,
-                    "claude",
-                    "claude-sonnet-4-6",
-                    Some(mode),
-                    None,
-                )
-                .unwrap();
-                if let Some(effort) = effort {
-                    db.set_reasoning_effort(&created.id, Some(effort)).unwrap();
-                }
-                db.mark_draft(&created.id).unwrap()
-            };
-            let spare_config = {
-                let db = state.store.lock().unwrap();
-                draft_prewarm_config(&db, &draft)
-                    .unwrap()
-                    .expect("draft Claude session must qualify for prewarm")
-            };
-
-            let stopped = Arc::new(AtomicBool::new(false));
-            let spare_host = session_titles::with_host(
-                None,
-                Some(turn_changes::with_host(None, None, stopped.clone())),
-                stopped.clone(),
-            );
-
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            let mut prepared = prepare_task_run(
-                &state,
-                draft.id.clone(),
-                Some("hi".into()),
-                Vec::new(),
-                tx,
-                stopped.clone(),
-            )
-            .unwrap();
-            let title_run = finalize_run_config(
-                &state.store,
-                &draft.id,
-                prepared.turn_message_id,
-                prepared.restore_stage.is_some(),
-                prepared.team_worker,
-                &mut prepared.config,
-            );
-            assert!(
-                title_run.is_some(),
-                "first plain prompt prepares title metadata on prompt without mutating instructions"
-            );
-
-            let tracker = turn_changes::SharedTracker::ready(turn_changes::Tracker::start(
-                prepared.config.cwd.clone(),
-                std::env::temp_dir().join("pandacode-draft-prewarm-test"),
-            ));
-            let cold_host = session_titles::with_host(
-                title_run.as_ref(),
-                Some(turn_changes::with_host(None, Some(tracker), stopped)),
-                Arc::new(AtomicBool::new(false)),
-            );
-            assert_eq!(spare_host.tools, cold_host.tools);
-            assert_eq!(spare_host.approval_tools, cold_host.approval_tools);
-
-            let (spare_key, cold_key) = providers::warm_spare_and_cold_keys_for_test(
-                spare_config,
-                prepared.config,
-                &spare_host.tools,
-            )
-            .unwrap();
-            assert_eq!(
-                spare_key, cold_key,
-                "draft prewarm key must 100% match first-turn take_warm_agent key ({mode}, {effort:?})"
-            );
-        }
-    }
-
-    #[test]
-    fn draft_prewarm_skips_non_draft_unsupported_resumed_and_team_sessions() {
-        let (state, project_id) = concurrent_task_tests::test_state();
-        let db = state.store.lock().unwrap();
-
-        let non_draft = db
-            .create_session(&project_id, "claude", "claude-sonnet-4-6", "ask")
-            .unwrap();
-        assert!(draft_prewarm_config(&db, &non_draft).unwrap().is_none());
-
-        let codex_draft = db
-            .mark_draft(
-                &db.create_session(&project_id, "codex", "default", "ask")
-                    .unwrap()
-                    .id,
-            )
-            .unwrap();
-        assert!(draft_prewarm_config(&db, &codex_draft).unwrap().is_none());
-
-        let mut resumed = db
-            .mark_draft(
-                &db.create_session(&project_id, "claude", "claude-sonnet-4-6", "ask")
-                    .unwrap()
-                    .id,
-            )
-            .unwrap();
-        resumed.resume_id = Some("existing-thread".into());
-        assert!(draft_prewarm_config(&db, &resumed).unwrap().is_none());
-
-        let team_draft = db
-            .mark_draft(
-                &db.create_session(&project_id, "claude", "claude-sonnet-4-6", "ask")
-                    .unwrap()
-                    .id,
-            )
-            .unwrap();
-        db.db
-            .execute(
-                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
-                rusqlite::params![team_draft.id, r#"{"status":"idle","workers":[]}"#],
-            )
-            .unwrap();
-        assert!(draft_prewarm_config(&db, &team_draft).unwrap().is_none());
-    }
 }
 #[tauri::command]
 async fn get_messages(
@@ -1944,12 +1403,7 @@ fn flush_assistant(db: &Store, sid: &str, assistant: &Mutex<String>) -> Result<(
 
 /// Streams an agent event to the window and remote viewers, merging text deltas
 /// (`providers::Coalescer`). The lock is held while emitting so order is kept.
-fn emit_coalesced(
-    app: &tauri::AppHandle,
-    coalescer: &Arc<Mutex<providers::Coalescer>>,
-    _agents: &Agents,
-    event: AgentEvent,
-) {
+fn emit_coalesced(app: &tauri::AppHandle, coalescer: &Arc<Mutex<providers::Coalescer>>, event: AgentEvent) {
     let mut buffer = coalescer.lock().unwrap_or_else(|poison| poison.into_inner());
     let now = std::time::Instant::now();
     for event in buffer.push(event, now) {
@@ -2568,7 +2022,21 @@ fn prepare_task_run_in_project(
         error
     };
     let prompt = architect::prompt(&store, &session_id, &prompt, admission.team.as_ref()).map_err(restore)?;
-    let config = RunConfig { prompt, images, skill, goal: admission.goal, ..launch_config(&session, cwd) };
+    let config = RunConfig {
+        session_id: session_id.clone(),
+        provider: session.provider,
+        model: session.model,
+        reasoning_effort: session.reasoning_effort,
+        mode: session.mode,
+        cwd,
+        resume_id: session.resume_id,
+        prompt,
+        instructions: String::new(),
+        images,
+        skill,
+        goal: admission.goal,
+        codex_settings: session.codex_settings,
+    };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
     let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
     architect::mark_started(&store, &session_id, admission.team.as_ref(), turn_message_id).map_err(restore)?;
@@ -2649,7 +2117,7 @@ fn prepare_cloud_attach(
         team: None,
         team_worker: agent.team_worker,
     };
-    agents.insert(session_id.clone(), agent);
+    agents.insert(session_id, agent);
     Ok(prepared)
 }
 
@@ -2820,102 +2288,6 @@ struct OperationAdmission {
     command: Option<PreparedCommand>,
 }
 
-#[cfg(test)]
-fn finalize_run_config(
-    store: &Mutex<Store>,
-    session_id: &str,
-    turn_message_id: i64,
-    has_restore_stage: bool,
-    team_worker: bool,
-    config: &mut RunConfig,
-) -> Option<session_titles::TitleRun> {
-    // Optional metadata must never block a conversation when its storage cannot
-    // be inspected. It is unavailable for maintenance, coordination, or named tasks.
-    let title_run = if !has_restore_stage {
-        store.lock().ok().and_then(|db| {
-            session_titles::TitleRun::prepare(&db, session_id, turn_message_id)
-                .ok()
-                .flatten()
-        })
-    } else {
-        None
-    };
-    if let Some(title) = &title_run {
-        config.prompt.push_str(&title.instruction());
-    }
-    if !has_restore_stage {
-        let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
-        if providers::takes_system_instructions(&config.provider) {
-            // Cached with the system prompt: paid once, then read at a tenth of the price.
-            config.instructions = instructions;
-        } else {
-            // In the message: on a new conversation, then as a periodic reminder.
-            let turns = store
-                .lock()
-                .ok()
-                .and_then(|db| db.user_turns(session_id).ok())
-                .unwrap_or(1);
-            if config.resume_id.is_none() || reminder_turn(turns) {
-                config.prompt.push_str(&instructions);
-            }
-        }
-    }
-    title_run
-}
-
-fn build_task_host(
-    app: &tauri::AppHandle,
-    session_id: &str,
-    stopped: Arc<AtomicBool>,
-    team: Option<&architect::Admission>,
-    cloud: bool,
-    tracker: Option<turn_changes::SharedTracker>,
-    title_run: Option<&session_titles::TitleRun>,
-) -> (Option<providers::ToolHost>, bool) {
-    let sid = session_id.to_owned();
-    let host = if let Some(admission) = team {
-        architect::host(app.clone(), sid.clone(), stopped.clone(), admission).map(|host| {
-            // Workers keep their scoped team tools; only the lead may manage other tasks.
-            if admission.parent == session_id {
-                agent_tools::with_app_host(
-                    host,
-                    agent_tools::host(app.clone(), sid.clone(), stopped.clone()),
-                )
-            } else {
-                host
-            }
-        })
-    } else {
-        Some(agent_tools::host(app.clone(), sid.clone(), stopped.clone()))
-    };
-    let team_tools_missing = team.is_some() && host.is_none();
-    let host = agent_tools::with_jev(host, app.clone(), sid.clone(), stopped.clone());
-    let host = bots::tools::with_bot(host, app.clone(), sid.clone(), stopped.clone());
-    let host = schedules::tools::with_schedules(host, app.clone(), sid.clone(), stopped.clone());
-    let host =
-        simulator::tools::with_simulator_for(host, app.clone(), sid.clone(), stopped.clone());
-    let host = vm::tools::with_vm(host, app.clone(), sid.clone(), stopped.clone());
-    let host = remote::orchestrate::with_machines(
-        host,
-        app.clone(),
-        sid.clone(),
-        stopped.clone(),
-        team.is_some(),
-    );
-    let host = design::with_design(host, app.clone(), sid.clone(), stopped.clone());
-    // A cloud agent's checkout is on its machine, where screenshots cannot be read.
-    let host = if cloud {
-        host
-    } else {
-        progress::with_progress(host, app.clone(), sid.clone(), stopped.clone())
-    };
-    let host = cloud::deploy::with_deploy(host, app.clone(), sid.clone(), stopped.clone());
-    let host = Some(agent_tools::with_preview(host, app.clone(), sid, stopped.clone()));
-    let host = Some(turn_changes::with_host(host, tracker, stopped.clone()));
-    let host = Some(session_titles::with_host(title_run, host, stopped));
-    (host, team_tools_missing)
-}
-
 async fn launch_operation_admitted(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -3046,12 +2418,17 @@ async fn launch_operation_admitted(
     if let Some(title) = &title_run {
         config.prompt.push_str(&title.instruction());
     }
-    if restore_stage.is_none() && !apply_system_instructions(&mut config, team_worker) {
-        // In the message: on a new conversation, then as a periodic reminder.
+    if restore_stage.is_none() {
         let instructions = app_instructions(chats::is_chat_folder(&config.cwd), team_worker);
-        let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
-        if config.resume_id.is_none() || reminder_turn(turns) {
-            config.prompt.push_str(&instructions);
+        if providers::takes_system_instructions(&config.provider) {
+            // Cached with the system prompt: paid once, then read at a tenth of the price.
+            config.instructions = instructions;
+        } else {
+            // In the message: on a new conversation, then as a periodic reminder.
+            let turns = store.lock().ok().and_then(|db| db.user_turns(&session_id).ok()).unwrap_or(1);
+            if config.resume_id.is_none() || reminder_turn(turns) {
+                config.prompt.push_str(&instructions);
+            }
         }
     }
     tauri::async_runtime::spawn(async move {
@@ -3062,7 +2439,6 @@ async fn launch_operation_admitted(
             .unwrap_or_else(|_| std::env::temp_dir().join("pandacode"))
             .join("turn-captures");
         // Goal inspection/pause/clear are control operations, not model turns.
-        // Start baseline capture in the background so launching the agent never waits on it.
         let tracker = if matches!(
             config.goal.as_ref(),
             Some(
@@ -3073,10 +2449,12 @@ async fn launch_operation_admitted(
         ) {
             None
         } else {
-            Some(turn_changes::SharedTracker::start_background(
-                changes_root,
-                changes_cache,
-            ))
+            tauri::async_runtime::spawn_blocking(move || {
+                turn_changes::Tracker::start(changes_root, changes_cache)
+            })
+            .await
+            .ok()
+            .map(|tracker| Arc::new(Mutex::new(tracker)))
         };
         let tracker_sink = tracker.clone();
         let persistence_error = Arc::new(Mutex::new(None::<String>));
@@ -3085,14 +2463,6 @@ async fn launch_operation_admitted(
         let store_sink = store.clone();
         let app_sink = app.clone();
         let subagents_sink = subagents.clone();
-        let subagent_flush_armed = Arc::new(AtomicBool::new(false));
-        let subagent_flush_armed_sink = subagent_flush_armed.clone();
-        let subagent_flush_done = Arc::new(AtomicBool::new(false));
-        let subagent_flush_done_sink = subagent_flush_done.clone();
-        let subagent_flush_handle: Arc<Mutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
-            Arc::new(Mutex::new(None));
-        let subagent_flush_handle_sink = subagent_flush_handle.clone();
-        let session_id_sink = session_id.clone();
         let goal_reply_sink = goal_reply.clone();
         let goal_agents_sink = agents.clone();
         let native_turn_sink = Mutex::new(String::new());
@@ -3134,7 +2504,9 @@ async fn launch_operation_admitted(
             if e.kind == "turn_start" {
                 if let Some(tracker) = &tracker_sink {
                     blocking_snapshot(|| {
-                        tracker.with(|tracker| tracker.started());
+                        if let Ok(mut tracker) = tracker.lock() {
+                            tracker.started();
+                        }
                     });
                 }
                 if let Some(turn) = e.data.as_ref().and_then(|data| data["turnId"].as_str()) {
@@ -3151,7 +2523,9 @@ async fn launch_operation_admitted(
             }
             if let Some(tracker) = tracker_sink.as_ref().filter(|_| e.tool.is_some() || e.kind == "subagent") {
                 blocking_snapshot(|| {
-                    tracker.with(|tracker| tracker.observe(&e));
+                    if let Ok(mut tracker) = tracker.lock() {
+                        tracker.observe(&e);
+                    }
                 });
             }
             if e.kind == providers::ACCOUNT_SWITCHED {
@@ -3159,7 +2533,7 @@ async fn launch_operation_admitted(
                 let cancelled = settle_account_switch(&store_sink, &own_run, &e.session_id);
                 if !cancelled.is_empty() {
                     for event in cancelled {
-                        emit_coalesced(&app_sink, &coalescer_sink, &goal_agents_sink, event);
+                        emit_coalesced(&app_sink, &coalescer_sink, event);
                     }
                     tray::refresh(&app_sink);
                 }
@@ -3169,8 +2543,6 @@ async fn launch_operation_admitted(
                 worker_approvals::stop_unanswered(team_worker, &own_run, &e);
                 return;
             }
-            let mut should_emit = e.kind != "subagent";
-            let mut spawn_subagent_flush = false;
             if e.kind == "text" {
                 if let Ok(mut text) = assistant_sink.lock() {
                     text.push_str(&e.text);
@@ -3181,25 +2553,7 @@ async fn launch_operation_admitted(
                     subagents_sink
                         .lock()
                         .map_err(|error| error.to_string())
-                        .and_then(|mut children| {
-                            children.record(&store_sink, &run_id, &mut e).map(|emit| {
-                                should_emit = false;
-                                if emit {
-                                    let subagent_event =
-                                        std::mem::replace(&mut e, event("", "subagent", ""));
-                                    emit_coalesced(
-                                        &app_sink,
-                                        &coalescer_sink,
-                                        &goal_agents_sink,
-                                        subagent_event,
-                                    );
-                                } else if !subagent_flush_done_sink.load(Ordering::SeqCst)
-                                    && !subagent_flush_armed_sink.swap(true, Ordering::SeqCst)
-                                {
-                                    spawn_subagent_flush = true;
-                                }
-                            })
-                        })
+                        .and_then(|mut children| children.record(&store_sink, &run_id, &mut e))
                 } else if matches!(
                     e.kind.as_str(),
                     "approval" | "approval_cancelled" | "input_request" | "input_cancelled"
@@ -3265,86 +2619,17 @@ async fn launch_operation_admitted(
             }
             // Cloned only for the turn boundary below.
             let completed = (e.kind == "turn_complete").then(|| e.session_id.clone());
-            if should_emit {
-                emit_coalesced(&app_sink, &coalescer_sink, &goal_agents_sink, e);
-            } else if spawn_subagent_flush {
-                let app_for_flush = app_sink.clone();
-                let coalescer_for_flush = coalescer_sink.clone();
-                let goal_agents_for_flush = goal_agents_sink.clone();
-                let subagents_for_flush = subagents_sink.clone();
-                let stopped_for_flush = own_run.stopped.clone();
-                let flush_armed = subagent_flush_armed_sink.clone();
-                let flush_done = subagent_flush_done_sink.clone();
-                let session_id_for_flush = session_id_sink.clone();
-                let handle = tauri::async_runtime::spawn(async move {
-                    loop {
-                        tokio::time::sleep(subagent_state::EMIT_INTERVAL).await;
-                        if stopped_for_flush.load(Ordering::SeqCst)
-                            || flush_done.load(Ordering::SeqCst)
-                            || (cloud
-                                && app_for_flush
-                                    .state::<AppState>()
-                                    .shutdown
-                                    .load(Ordering::SeqCst)
-                                    != 0)
-                        {
-                            flush_armed.store(false, Ordering::SeqCst);
-                            break;
-                        }
-                        let still_dirty = match subagents_for_flush.lock() {
-                            Ok(mut children) => {
-                                if flush_done.load(Ordering::SeqCst) {
-                                    flush_armed.store(false, Ordering::SeqCst);
-                                    false
-                                } else {
-                                    let events = children
-                                        .flush_due(&session_id_for_flush, false)
-                                        .unwrap_or_default();
-                                    let still_dirty = children.has_dirty();
-                                    if !still_dirty {
-                                        flush_armed.store(false, Ordering::SeqCst);
-                                    }
-                                    for ev in events {
-                                        emit_coalesced(
-                                            &app_for_flush,
-                                            &coalescer_for_flush,
-                                            &goal_agents_for_flush,
-                                            ev,
-                                        );
-                                    }
-                                    still_dirty
-                                }
-                            }
-                            Err(_) => {
-                                flush_armed.store(false, Ordering::SeqCst);
-                                false
-                            }
-                        };
-                        if !still_dirty {
-                            break;
-                        }
-                    }
-                });
-                if let Ok(mut slot) = subagent_flush_handle_sink.lock() {
-                    if let Some(previous) = slot.replace(handle) {
-                        previous.abort();
-                    }
-                    if subagent_flush_done_sink.load(Ordering::SeqCst) {
-                        if let Some(handle) = slot.take() {
-                            handle.abort();
-                        }
-                    }
-                }
-            }
+            emit_coalesced(&app_sink, &coalescer_sink, e);
             if let Some(changes_sid) = completed {
                 if let Some(tracker) = &tracker_sink {
                     let capture = blocking_snapshot(|| {
                         tracker
-                            .with(|tracker| {
+                            .lock()
+                            .ok()
+                            .and_then(|mut tracker| {
                                 let last_write = tracker.last_write();
                                 tracker.boundary().map(|capture| (capture, last_write))
                             })
-                            .flatten()
                     });
                     if let Some((capture, last_write)) = capture {
                         persist_turn_changes(&app_sink, &store_sink, &changes_sid, capture, last_write);
@@ -3352,12 +2637,38 @@ async fn launch_operation_admitted(
                 }
             }
         });
-        let (host, team_tools_missing) = task_tool_host(&app, &session_id, &stopped, team.as_ref(), cloud, tracker.clone(), title_run.as_ref());
+        let host = if let Some(admission) = team.as_ref() {
+            architect::host(app.clone(), session_id.clone(), stopped.clone(), admission)
+                .map(|host| {
+                    // Workers keep their scoped team tools; only the lead may manage other tasks.
+                    if admission.parent == session_id {
+                        agent_tools::with_app_host(host, agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+                    } else {
+                        host
+                    }
+                })
+        } else {
+            Some(agent_tools::host(app.clone(), session_id.clone(), stopped.clone()))
+        };
+        let team_tools_missing = team.is_some() && host.is_none();
+        let host = agent_tools::with_jev(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = bots::tools::with_bot(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
+        let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
+        // A cloud agent's checkout is on its machine, where screenshots cannot be read.
+        let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
+        let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
+        let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
+        let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
+        let host = Some(session_titles::with_host(title_run.as_ref(), host, stopped.clone()));
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
         let managed_worker = team.as_ref().is_some_and(|admission| admission.parent != session_id);
-        let warm_next = ((providers::warms(&config) || providers::handshake_warms(&config)) && !managed_worker && !cloud).then(|| {
+        let warm_next = (providers::warms(&config) && !managed_worker && !cloud).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
@@ -3376,31 +2687,6 @@ async fn launch_operation_admitted(
         } else {
             providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
         };
-        if let Ok(mut slot) = subagent_flush_handle.lock() {
-            if let Some(handle) = slot.take() {
-                handle.abort();
-            }
-        }
-        match subagents.lock() {
-            Ok(mut children) => {
-                subagent_flush_done.store(true, Ordering::SeqCst);
-                if !(cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0) {
-                    if let Ok(due) = children.flush_due(&session_id, true) {
-                        for ev in due {
-                            emit_coalesced(&app, &coalescer, &agents, ev);
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                subagent_flush_done.store(true, Ordering::SeqCst);
-            }
-        }
-        if let Ok(mut slot) = subagent_flush_handle.lock() {
-            if let Some(handle) = slot.take() {
-                handle.abort();
-            }
-        }
         flush_coalesced(&app, &coalescer);
         if cloud && app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             // The remote run continues; the next launch re-attaches to it.
@@ -3432,12 +2718,10 @@ async fn launch_operation_admitted(
         }
         if let Some(tracker) = tracker {
             if let Ok(Some((capture, last_write))) = tauri::async_runtime::spawn_blocking(move || {
-                tracker
-                    .with(|tracker| {
-                        let last_write = tracker.last_write();
-                        tracker.finish().map(|capture| (capture, last_write))
-                    })
-                    .flatten()
+                tracker.lock().ok().and_then(|mut tracker| {
+                    let last_write = tracker.last_write();
+                    tracker.finish().map(|capture| (capture, last_write))
+                })
             })
             .await
             {
@@ -3688,41 +2972,21 @@ async fn launch_operation_admitted(
             let waiting_on_workers = lead && store.lock().ok().and_then(|db| architect::load(&db, &session_id).ok().flatten()).is_some_and(|snapshot| {
                 snapshot.workers.iter().any(|worker| !worker.abandoned && architect::unsettled(&worker.status))
             });
-            // Reserved under the store lock, after reading the row (`reserve_turn_end_warm`).
-            let reserved = (replied && !waiting_on_workers)
-                .then(|| store.lock().ok())
-                .flatten()
-                .and_then(|db| reserve_turn_end_warm(&db, &session_id, &next.provider));
-            if let Some((ticket, task)) = reserved {
+            let task = store.lock().ok().filter(|_| replied && !waiting_on_workers).and_then(|db| db.session(&session_id).ok());
+            if let Some(task) = task {
                 next.resume_id = task.resume_id;
                 next.model = task.model;
                 next.mode = task.mode;
                 next.reasoning_effort = task.reasoning_effort;
-                next.codex_settings = task.codex_settings;
                 next.prompt.clear();
                 next.images.clear();
-                // A turn just ended: a follow-up is likely.
-                providers::touch_warm_agent(&session_id);
                 tauri::async_runtime::spawn(async move {
-                    let id = next.session_id.clone();
-                    let _ = providers::prewarm_reserved(ticket, next, tools, approvals, launch).await;
-                    providers::release_warm_ticket(&id, ticket);
+                    let _ = providers::prewarm_agent(next, tools, approvals, launch).await;
                 });
             }
         }
     });
     Ok(())
-}
-/// The turn-end start's ticket and the task's row, read and reserved under the store lock. A
-/// pick saves its row and then, after the save has released the store lock, takes it again to
-/// plan its own start (`warm_launch::plan_rewarm`). Both sides read the current row while holding
-/// the lock and tickets are ordered, so a pick planned after this supersedes or cancels the
-/// ticket, and a row saved before it is what is read here. A
-/// harness pick that landed first keeps its own pending start: the run's launch (tools,
-/// instructions) was built for the old harness, so nothing is reserved for it.
-fn reserve_turn_end_warm(store: &Store, session_id: &str, provider: &str) -> Option<(u64, Session)> {
-    let task = store.session(session_id).ok()?;
-    (task.provider == provider).then(|| (providers::reserve_warm_agent(session_id), task))
 }
 fn runs_team_maintenance(state: &AppState, session_id: &str) -> Result<bool> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
@@ -4235,10 +3499,6 @@ async fn attach_worktree(
         let attached = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| {
             format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display())
         });
-        drop(store);
-        if attached.is_ok() {
-            providers::discard_warm_agent(&source.id);
-        }
         skill_manager::projects_changed();
         attached
     })
@@ -5598,7 +4858,6 @@ pub fn run() {
                 set_resume_at_reset,
                 clear_usage_limit,
                 discard_draft,
-                prewarm_draft_session,
                 message_queue::queue_list,
                 message_queue::queue_add,
                 message_queue::queue_update,
@@ -5723,12 +4982,9 @@ pub fn run() {
                 update_task_details,
                 set_task_stage,
                 start_task,
-                warm_launch::configure_session,
-                warm_launch::set_reasoning_effort,
-                warm_launch::update_session,
-                warm_launch::warm_task,
-                warm_launch::start_ahead_get,
-                warm_launch::start_ahead_set,
+                configure_session,
+                set_reasoning_effort,
+                update_session,
                 delete_session_with_attachment_cleanup,
                 chats::chat_create,
                 chats::chat_cleanup,

@@ -22,7 +22,7 @@ test('saved turns: header sentence and time, clamped reply, footer only with cha
   await expect(short.locator('.turn-card-time')).toHaveText('4s');
   await expect(short.locator('.turn-card-foot')).toHaveCount(0);
   await expect(short.locator('.turn-card-more')).toBeHidden();
-  await expect(long.locator('.turn-activity-label')).toHaveText('Ran tests and read 2 files');
+  await expect(long.locator('.turn-activity-label')).toContainText('Read 2 files');
   await expect(long.locator('.turn-card-time')).toHaveText('1h 30m 10s');
   // The header opens the step trace inside the card.
   const header = long.locator('.turn-activity-summary');
@@ -113,64 +113,6 @@ const liveEvent = (page: Page, event: Record<string, unknown>) => page.evaluate(
   (window as any).__previewEmit('agent-event', { sessionId, text: '', ...event });
 }, event);
 const step = (id: string, status: string, output = '') => ({ kind: 'tool', tool: { id, name: 'Bash', status, input: `run ${id}`, output } });
-
-for (const theme of ['light', 'dark'] as const) {
-  test(`long streaming reply keeps full-height elements free of GPU effects (${theme})`, async ({ page, browserName }) => {
-    await page.addInitScript(value => localStorage.setItem('pandacode.theme', value), theme);
-    await open(page);
-    const text = Array.from({ length: 500 }, (_, i) => `Paragraph ${i + 1}: A long streaming answer stays readable over the scene while more text arrives.`).join('\n\n');
-    await liveEvent(page, { kind: 'text', text });
-    const live = page.locator('#stream-region .turn-card.is-live');
-    await expect(live.locator('.live-text')).toContainText('Paragraph 500:');
-    await expect(page.locator('.workspace')).toHaveAttribute('data-scene', 'sky');
-    const alpha = await live.evaluate(card => {
-      const context = document.createElement('canvas').getContext('2d')!;
-      context.fillStyle = getComputedStyle(card).backgroundColor;
-      context.fillRect(0, 0, 1, 1);
-      return context.getImageData(0, 0, 1, 1).data[3];
-    });
-    expect(alpha).toBe(255);
-    const effects = await live.evaluate(card => [card, ...card.querySelectorAll('*')]
-      .filter(node => node.getBoundingClientRect().height > innerHeight)
-      .map(node => {
-        const style = getComputedStyle(node);
-        return { element: node.className, backdrop: style.backdropFilter || style.getPropertyValue('-webkit-backdrop-filter'), mask: style.maskImage || style.getPropertyValue('-webkit-mask-image') };
-      }));
-    expect(effects.length).toBeGreaterThan(0);
-    for (const effect of effects) {
-      expect(effect.backdrop, `${effect.element} backdrop`).toBe('none');
-      expect(effect.mask, `${effect.element} mask`).toBe('none');
-    }
-    const fade = await live.locator('.live-text').evaluate(node => {
-      const style = getComputedStyle(node, '::after');
-      const surface = getComputedStyle(node.closest('.turn-card-reply')!).backgroundColor;
-      const context = document.createElement('canvas').getContext('2d')!;
-      context.fillStyle = surface; context.fillRect(0, 0, 1, 1);
-      return { height: parseFloat(style.height), line: parseFloat(getComputedStyle(node).lineHeight),
-        color: style.backgroundColor, surface, alpha: context.getImageData(0, 0, 1, 1).data[3] };
-    });
-    expect(fade.color, 'one-line fade matches the reply surface').toBe(fade.surface);
-    expect(fade.alpha, 'reply surface is opaque over scenes').toBe(255);
-    expect(fade.height).toBeGreaterThan(0);
-    expect(fade.height).toBeLessThanOrEqual(fade.line + 1);
-    await page.emulateMedia({ contrast: 'more' });
-    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
-    await page.emulateMedia({ contrast: 'no-preference', forcedColors: 'active' });
-    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
-    if (browserName === 'chromium') {
-      // Playwright's emulateMedia has no reduced-transparency option; exercise the browser's real CSS feature.
-      const cdp = await page.context().newCDPSession(page);
-      await cdp.send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }] });
-      expect(await page.evaluate(() => matchMedia('(prefers-reduced-transparency: reduce)').matches)).toBe(true);
-      expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
-      await cdp.send('Emulation.setEmulatedMedia', { features: [] });
-      await cdp.detach();
-    }
-    await page.emulateMedia({ forcedColors: 'none', reducedMotion: 'reduce' });
-    await expect(live.locator('.live-text')).toHaveCSS('mask-image', 'none');
-    expect(await live.locator('.live-text').evaluate(node => getComputedStyle(node, '::after').content)).toBe('none');
-  });
-}
 
 test('the reply loads only until the first text, then keeps the latest text, even between steps', async ({ page }) => {
   await open(page);

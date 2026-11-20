@@ -10,8 +10,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) const EMIT_INTERVAL: Duration = Duration::from_millis(150);
-
 #[derive(Default)]
 pub(crate) struct SubagentState {
     entries: HashMap<String, Entry>,
@@ -22,12 +20,6 @@ struct Entry {
     activity: SubagentActivity,
     last_saved: Option<Instant>,
     saved_status: String,
-    last_emitted: Option<Instant>,
-    emitted_status: String,
-    emitted_tools: usize,
-    emitted_tool_statuses: Vec<(String, String)>,
-    dirty_emit: bool,
-    seq: u64,
     number: usize,
 }
 
@@ -80,42 +72,13 @@ fn running(status: &str) -> bool {
     matches!(status, "running" | "waiting")
 }
 
-fn tool_statuses(activity: &SubagentActivity) -> Vec<(String, String)> {
-    activity
-        .tools
-        .iter()
-        .map(|tool| (tool.id.clone(), tool.status.clone()))
-        .collect()
-}
-
-fn tool_statuses_match(emitted: &[(String, String)], activity: &SubagentActivity) -> bool {
-    emitted.len() == activity.tools.len()
-        && emitted
-            .iter()
-            .zip(&activity.tools)
-            .all(|((id, status), tool)| id == &tool.id && status == &tool.status)
-}
-
-fn payload(entry: &Entry) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(&entry.activity).map_err(|error| error.to_string())?;
-    if let Some(object) = value.as_object_mut() {
-        object.insert("seq".into(), serde_json::Value::from(entry.seq));
-    }
-    Ok(value)
-}
-
 impl SubagentState {
-    /// Updates the live child snapshot and checkpoints durability. Returns `Ok(true)` when
-    /// `event.data` was populated for immediate window emission (first sighting, non-running
-    /// settlement, status/tool-count/tool-status transition, or `>= 150 ms` since the last emit),
-    /// or `Ok(false)` when back-to-back streaming updates were coalesced in memory without JSON
-    /// re-serialization.
     pub(crate) fn record(
         &mut self,
         store: &Mutex<Store>,
         run_id: &str,
         event: &mut AgentEvent,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let mut activity: SubagentActivity =
             serde_json::from_value(event.data.take().ok_or("Subagent snapshot is missing.")?)
                 .map_err(|error| error.to_string())?;
@@ -124,8 +87,8 @@ impl SubagentState {
         for tool in &mut activity.tools {
             tool.id = format!("{}:{}", activity.id, tool.id);
         }
-        let first_sighting = !self.entries.contains_key(&activity.id);
-        if first_sighting {
+        event.data = Some(serde_json::to_value(&activity).map_err(|error| error.to_string())?);
+        if !self.entries.contains_key(&activity.id) {
             self.next_number += 1;
         }
         let number = self.next_number;
@@ -136,35 +99,9 @@ impl SubagentState {
                 activity: activity.clone(),
                 last_saved: None,
                 saved_status: String::new(),
-                last_emitted: None,
-                emitted_status: String::new(),
-                emitted_tools: 0,
-                emitted_tool_statuses: Vec::new(),
-                dirty_emit: false,
-                seq: 0,
                 number,
             });
         entry.activity = activity;
-        entry.seq += 1;
-        let now = Instant::now();
-        let should_emit = first_sighting
-            || !running(&entry.activity.status)
-            || entry.emitted_status != entry.activity.status
-            || entry.emitted_tools != entry.activity.tools.len()
-            || !tool_statuses_match(&entry.emitted_tool_statuses, &entry.activity)
-            || entry
-                .last_emitted
-                .is_none_or(|emitted| now.duration_since(emitted) >= EMIT_INTERVAL);
-        if should_emit {
-            event.data = Some(payload(entry)?);
-            entry.last_emitted = Some(now);
-            entry.emitted_status.clone_from(&entry.activity.status);
-            entry.emitted_tools = entry.activity.tools.len();
-            entry.emitted_tool_statuses = tool_statuses(&entry.activity);
-            entry.dirty_emit = false;
-        } else {
-            entry.dirty_emit = true;
-        }
         // First sighting and lifecycle changes are durable immediately. Live
         // text/tools overwrite one in-memory snapshot and checkpoint at 1 Hz.
         if entry
@@ -179,36 +116,7 @@ impl SubagentState {
             entry.last_saved = Some(Instant::now());
             entry.saved_status.clone_from(&entry.activity.status);
         }
-        Ok(should_emit)
-    }
-
-    pub(crate) fn has_dirty(&self) -> bool {
-        self.entries.values().any(|entry| entry.dirty_emit)
-    }
-
-    pub(crate) fn flush_due(&mut self, session_id: &str, force: bool) -> Result<Vec<AgentEvent>> {
-        let mut entries: Vec<_> = self
-            .entries
-            .values_mut()
-            .filter(|entry| {
-                entry.dirty_emit
-                    && (force || entry.last_emitted.is_none_or(|t| t.elapsed() >= EMIT_INTERVAL))
-            })
-            .collect();
-        entries.sort_by_key(|entry| entry.number);
-        let now = Instant::now();
-        let mut events = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let mut ev = crate::event(session_id, "subagent", "");
-            ev.data = Some(payload(entry)?);
-            entry.dirty_emit = false;
-            entry.last_emitted = Some(now);
-            entry.emitted_status.clone_from(&entry.activity.status);
-            entry.emitted_tools = entry.activity.tools.len();
-            entry.emitted_tool_statuses = tool_statuses(&entry.activity);
-            events.push(ev);
-        }
-        Ok(events)
+        Ok(())
     }
 
     pub(crate) fn contains(&self, id: &str) -> bool {
@@ -305,10 +213,6 @@ impl SubagentState {
                         tool.status = "failed".into();
                     }
                 }
-                entry.dirty_emit = false;
-                changed.push(entry.activity.clone());
-            } else if entry.dirty_emit {
-                entry.dirty_emit = false;
                 changed.push(entry.activity.clone());
             }
             // Always flush: the final text snapshot may still be inside the
@@ -367,15 +271,10 @@ mod tests {
         run: &str,
         child: SubagentActivity,
     ) -> SubagentActivity {
-        let scoped_id = format!("{run}:{}", child.id);
         let mut event = crate::event(session_id, "subagent", "");
         event.data = Some(serde_json::to_value(child).unwrap());
-        if state.record(store, run, &mut event).unwrap() {
-            serde_json::from_value(event.data.unwrap()).unwrap()
-        } else {
-            assert!(event.data.is_none());
-            state.get(&scoped_id).unwrap()
-        }
+        state.record(store, run, &mut event).unwrap();
+        serde_json::from_value(event.data.unwrap()).unwrap()
     }
 
     #[test]
@@ -593,12 +492,6 @@ mod tests {
                 activity: child("new-worker", "running"),
                 last_saved: None,
                 saved_status: String::new(),
-                last_emitted: None,
-                emitted_status: String::new(),
-                emitted_tools: 0,
-                emitted_tool_statuses: Vec::new(),
-                dirty_emit: false,
-                seq: 0,
                 number: 1,
             },
         );
@@ -796,249 +689,5 @@ mod tests {
             .unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();
         assert_eq!(db.subagents(&sid).unwrap()[0].status, "stopped");
-    }
-
-    #[test]
-    fn streaming_updates_throttle_serialization_within_150ms_and_flush_on_transitions_or_finish() {
-        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
-        let sid = task(&store.lock().unwrap());
-        let mut state = SubagentState::default();
-        let mut activity = child("worker", "running");
-        activity.tools[0].status = "completed".into();
-
-        let push = |state: &mut SubagentState, snap: SubagentActivity| -> (bool, Option<serde_json::Value>) {
-            let mut event = crate::event(&sid, "subagent", "");
-            event.data = Some(serde_json::to_value(snap).unwrap());
-            let emit = state.record(&store, "run", &mut event).unwrap();
-            (emit, event.data)
-        };
-
-        // First sighting emits immediately with serialized payload.
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit && data.is_some());
-
-        // Back-to-back streaming updates within 150ms skip `to_value` while updating memory.
-        for n in 0..25 {
-            activity.response = format!("chunk {n}");
-            let (emit, data) = push(&mut state, activity.clone());
-            assert!(!emit, "intermediate chunk {n} within 150ms must not emit");
-            assert!(data.is_none(), "throttled update must skip event.data serialization");
-        }
-        assert_eq!(state.get("run:worker").unwrap().response, "chunk 24");
-
-        // Tool-count transition emits immediately even inside the 150ms window.
-        activity.tools.push(ToolActivity {
-            id: "grep".into(),
-            name: "Grep".into(),
-            status: "completed".into(),
-            input: "foo".into(),
-            output: "bar".into(),
-            write_paths: None,
-        });
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit && data.is_some());
-
-        // Elapsed >= 150ms emits immediately.
-        state.entries.get_mut("run:worker").unwrap().last_emitted =
-            Some(Instant::now() - EMIT_INTERVAL);
-        activity.response = "after interval".into();
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit && data.is_some());
-
-        // Terminal snapshots never throttle, even when a post-settlement suffix arrives inside 150ms.
-        activity.status = "completed".into();
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit && data.is_some());
-        activity.response = "completed trailing suffix".into();
-        let (emit, data) = push(&mut state, activity);
-        assert!(emit && data.is_some());
-
-        // A throttled running update is settled and returned by `finish()`.
-        let mut live = child("live-worker", "running");
-        live.tools[0].status = "completed".into();
-        assert!(push(&mut state, live.clone()).0);
-        live.response = "running trailing suffix".into();
-        let (emit, data) = push(&mut state, live);
-        assert!(!emit && data.is_none());
-
-        let db = store.lock().unwrap();
-        let (changed, saved) = state.finish(&db, &sid, "stopped");
-        saved.unwrap();
-        assert_eq!(changed.len(), 1);
-        assert_eq!(changed[0].id, "run:live-worker");
-        assert_eq!(changed[0].response, "running trailing suffix");
-    }
-
-    #[test]
-    fn in_place_tool_status_transition_within_150ms_emits_immediately() {
-        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
-        let sid = task(&store.lock().unwrap());
-        let mut state = SubagentState::default();
-        let mut activity = child("worker", "running");
-        assert_eq!(activity.tools.len(), 1);
-        assert_eq!(activity.tools[0].status, "running");
-
-        let mut first = crate::event(&sid, "subagent", "");
-        first.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(state.record(&store, "run", &mut first).unwrap());
-        assert!(first.data.is_some());
-
-        // Tool finishes in < 150ms while tools.len() == 1 and subagent stays "running".
-        activity.tools[0].status = "completed".into();
-        activity.tools[0].output = "42 lines".into();
-        let mut second = crate::event(&sid, "subagent", "");
-        second.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(
-            state.record(&store, "run", &mut second).unwrap(),
-            "in-place tool status change must emit immediately inside 150ms"
-        );
-        let emitted: SubagentActivity = serde_json::from_value(second.data.unwrap()).unwrap();
-        assert_eq!(emitted.tools.len(), 1);
-        assert_eq!(emitted.tools[0].status, "completed");
-        assert!(!state.has_dirty());
-    }
-
-    #[test]
-    fn post_settlement_completed_snapshot_within_150ms_emits_immediately() {
-        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
-        let sid = task(&store.lock().unwrap());
-        let mut state = SubagentState::default();
-        let mut activity = child("worker", "completed");
-        activity.tools[0].status = "completed".into();
-
-        let mut first = crate::event(&sid, "subagent", "");
-        first.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(state.record(&store, "run", &mut first).unwrap());
-
-        // Post-settlement snapshot within < 150ms of the earlier "completed" snapshot.
-        activity.response = "Final summary after settlement".into();
-        let mut second = crate::event(&sid, "subagent", "");
-        second.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(
-            state.record(&store, "run", &mut second).unwrap(),
-            "settled snapshots must never be throttled"
-        );
-        let emitted: SubagentActivity = serde_json::from_value(second.data.unwrap()).unwrap();
-        assert_eq!(emitted.status, "completed");
-        assert_eq!(emitted.response, "Final summary after settlement");
-        assert!(!state.has_dirty());
-    }
-
-    #[test]
-    fn rapid_running_text_deltas_coalesce_and_flush_due_emits_latest_once() {
-        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
-        let sid = task(&store.lock().unwrap());
-        let mut state = SubagentState::default();
-        let mut activity = child("worker", "running");
-        activity.tools[0].status = "completed".into();
-
-        let mut first = crate::event(&sid, "subagent", "");
-        first.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(state.record(&store, "run", &mut first).unwrap());
-        assert!(!state.has_dirty());
-
-        for n in 1..=5 {
-            activity.response = format!("delta {n}");
-            let mut ev = crate::event(&sid, "subagent", "");
-            ev.data = Some(serde_json::to_value(&activity).unwrap());
-            assert!(!state.record(&store, "run", &mut ev).unwrap());
-            assert!(ev.data.is_none());
-        }
-        assert!(state.has_dirty());
-        // Before EMIT_INTERVAL elapses, non-forced flush_due holds back.
-        assert!(state.flush_due(&sid, false).unwrap().is_empty());
-        assert!(state.has_dirty());
-
-        // After EMIT_INTERVAL elapses, flush_due(..., false) emits the latest snapshot once.
-        state.entries.get_mut("run:worker").unwrap().last_emitted =
-            Some(Instant::now() - EMIT_INTERVAL);
-        let flushed = state.flush_due(&sid, false).unwrap();
-        assert_eq!(flushed.len(), 1);
-        assert_eq!(flushed[0].session_id, sid);
-        assert_eq!(flushed[0].kind, "subagent");
-        let payload: SubagentActivity =
-            serde_json::from_value(flushed[0].data.clone().unwrap()).unwrap();
-        assert_eq!(payload.response, "delta 5");
-        assert!(!state.has_dirty());
-        assert!(state.flush_due(&sid, false).unwrap().is_empty());
-
-        // Forced flush_due(..., true) flushes immediately even inside EMIT_INTERVAL.
-        activity.response = "delta 6".into();
-        let mut ev = crate::event(&sid, "subagent", "");
-        ev.data = Some(serde_json::to_value(&activity).unwrap());
-        assert!(!state.record(&store, "run", &mut ev).unwrap());
-        assert!(state.has_dirty());
-        let forced = state.flush_due(&sid, true).unwrap();
-        assert_eq!(forced.len(), 1);
-        let payload: SubagentActivity =
-            serde_json::from_value(forced[0].data.clone().unwrap()).unwrap();
-        assert_eq!(payload.response, "delta 6");
-        assert!(!state.has_dirty());
-    }
-
-    #[test]
-    fn seq_strictly_increases_across_creation_coalesced_flush_tool_transition_and_completion() {
-        let store = Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap());
-        let sid = task(&store.lock().unwrap());
-        let mut state = SubagentState::default();
-        let mut activity = child("worker", "running");
-
-        let push =
-            |state: &mut SubagentState, snap: SubagentActivity| -> (bool, Option<serde_json::Value>) {
-                let mut ev = crate::event(&sid, "subagent", "");
-                ev.data = Some(serde_json::to_value(snap).unwrap());
-                let emit = state.record(&store, "run", &mut ev).unwrap();
-                (emit, ev.data)
-            };
-
-        // 1. Initial creation emits seq == 1.
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit);
-        let seq_created = data.unwrap()["seq"].as_u64().unwrap();
-        assert_eq!(seq_created, 1);
-
-        // 2. Coalesced running deltas advance seq internally, and flush_due emits latest seq.
-        for n in 1..=3 {
-            activity.response = format!("delta {n}");
-            let (emit, data) = push(&mut state, activity.clone());
-            assert!(!emit && data.is_none());
-        }
-        state.entries.get_mut("run:worker").unwrap().last_emitted =
-            Some(Instant::now() - EMIT_INTERVAL);
-        let flushed = state.flush_due(&sid, false).unwrap();
-        assert_eq!(flushed.len(), 1);
-        let seq_flushed = flushed[0].data.as_ref().unwrap()["seq"].as_u64().unwrap();
-        assert!(seq_flushed > seq_created);
-        assert_eq!(seq_flushed, 4);
-
-        // 3. Another coalesced delta followed by an immediate tool-status transition inside 150ms.
-        activity.response = "delta 4".into();
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(!emit && data.is_none());
-        activity.tools[0].status = "completed".into();
-        activity.tools[0].output = "done".into();
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit);
-        let seq_tool_transition = data.unwrap()["seq"].as_u64().unwrap();
-        assert!(seq_tool_transition > seq_flushed);
-        assert_eq!(seq_tool_transition, 6);
-        assert!(!state.has_dirty());
-
-        // 4. Terminal completion emits strictly higher seq.
-        activity.status = "completed".into();
-        activity.response = "All done".into();
-        let (emit, data) = push(&mut state, activity.clone());
-        assert!(emit);
-        let seq_completed = data.unwrap()["seq"].as_u64().unwrap();
-        assert!(seq_completed > seq_tool_transition);
-        assert_eq!(seq_completed, 7);
-
-        // 5. Post-settlement completion suffix also advances seq strictly.
-        activity.response = "All done (final)".into();
-        let (emit, data) = push(&mut state, activity);
-        assert!(emit);
-        let seq_post_completed = data.unwrap()["seq"].as_u64().unwrap();
-        assert!(seq_post_completed > seq_completed);
-        assert_eq!(seq_post_completed, 8);
     }
 }
