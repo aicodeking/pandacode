@@ -782,7 +782,9 @@ mod tests {
         let mut taken = take_out(id).expect("the waiting agent");
         assert!(!waiting(id), "out of the map at once");
         // The map's lock is free while the process still runs: it is killed by the caller's drop.
-        assert!(SPARES.try_lock().is_ok());
+        // Acquiring `spares()` (not `try_lock`, which races other parallel warm tests) proves `taken`
+        // does not hold the mutex while its child still runs.
+        assert!(!spares().contains_key(id));
         assert!(matches!(taken.child.try_wait(), Ok(None)));
         drop(taken);
     }
