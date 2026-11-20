@@ -1,8 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { ownsVoiceResult, voiceInsertion, voiceInsertionRange } from '../src/voice-dictation.ts';
 import { fakeDom, deferred, settle, controller, threadController } from './voice-dictation-harness.mjs';
+
+// These tests slice main.ts by line, and Git checks it out with CRLF on Windows: read it as LF
+// so the same slice boundaries (and the phrases inside it) match on every checkout.
+async function mainSource() {
+  const { readFile } = await import('node:fs/promises');
+  return (await readFile(new URL('../src/main.ts', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
+}
 
 test('ownership rejects stale requests, captures, navigation generations and threads', () => {
   const owner = { requestId: 'r', captureId: 'c', threadId: 't', generation: 2 };
@@ -316,8 +322,7 @@ test('binding an idle composer does no style or layout reads', async () => {
 });
 
 test('the composer and dictation describe the prompt with one shared function', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const main = await readFile(new URL('../src/main.ts', import.meta.url), 'utf8');
+  const main = await mainSource();
   // Each phrase is written once, in promptDescription, so bot steering and GitHub mentions read the same everywhere.
   for (const phrase of ['Enter to queue for when the agent finishes', 'Shift Enter for a new line', 'steer current work', 'Type @ to mention a project file${']) {
     assert.equal(main.split(phrase).length - 1, 1, phrase);
@@ -329,8 +334,8 @@ test('the composer and dictation describe the prompt with one shared function', 
   assert.match(main, /describePrompt: promptDescription/);
 });
 
-test('renderComposer binds dictation once on the normal path, after the prompt node is final', () => {
-  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8');
+test('renderComposer binds dictation once on the normal path, after the prompt node is final', async () => {
+  const main = await mainSource();
   const start = main.indexOf('function renderComposer(): void {');
   const body = main.slice(start, main.indexOf('\n}\n', start));
   assert.deepEqual(body.match(/voiceDictation\.bind\((?!null\))[^)]*\)/g), ['voiceDictation.bind(prompt)']);
