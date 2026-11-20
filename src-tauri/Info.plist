@@ -3,4 +3,11 @@
 <plist version="1.0"><dict>
   <key>NSMicrophoneUsageDescription</key>
   <string>PandaCode records your voice for dictation when you start it. Audio is transcribed on this Mac or sent to the speech service you chose in Settings → Voice.</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key>
+    <string>ai.pandacode.desktop.open</string>
+    <key>CFBundleURLSchemes</key>
+    <array><string>pandacode</string></array>
+  </dict></array>
 </dict></plist>

@@ -30,6 +30,7 @@ mod command_operations;
 mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
+mod deep_link;
 mod design;
 mod progress;
 mod file_preview;
@@ -4505,6 +4506,12 @@ fn on_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             tauri::WindowEvent::Destroyed => crash_guard::window_focused(label, false),
             _ => {}
         }
+    }
+    // A `pandacode://open?session=<id>` link from another app (Tuck's notch, a script).
+    #[cfg(target_os = "macos")]
+    if let tauri::RunEvent::Opened { urls } = &event {
+        deep_link::open_urls(app, urls);
+        return;
     }
     // A Dock click: other PandaCode windows can be up while the main one is hidden, so always show it.
     #[cfg(target_os = "macos")]
