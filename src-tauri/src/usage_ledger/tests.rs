@@ -306,7 +306,7 @@ fn live_local_logs() {
     refresh_cache(&mut cache, &agent_roots(), since);
     let again = started.elapsed();
     let ledger = aggregate(&cache, &PriceBook::bundled(), since.div_euclid(3_600_000), 0);
-    for agent in [Agent::Claude, Agent::Codex] {
+    for agent in [Agent::Claude, Agent::Codex, Agent::Pi] {
         let rows = ledger.rows.iter().filter(|row| ledger.models[row.1].provider == agent);
         let (tokens, cost) = rows.fold((0u64, 0f64), |(tokens, cost), row| (tokens + row.2 + row.3 + row.4 + row.5, cost + row.6));
         let sessions = ledger.sessions.iter().filter(|session| session.provider == agent).count();
@@ -316,4 +316,137 @@ fn live_local_logs() {
     let cache_bytes = serde_json::to_vec(&cache).unwrap().len();
     let ledger_bytes = serde_json::to_vec(&ledger).unwrap().len();
     println!("first scan {first:?}, rescan {again:?}, rows {}, cache {cache_bytes} B, payload {ledger_bytes} B, unpriced {unpriced:?}", ledger.rows.len());
+}
+
+fn pi_assistant(id: &str, model: &str) -> String {
+    json!({"type":"message","id":id,"parentId":"prev1234","timestamp":"2026-10-02T09:15:02.000Z","message":{"role":"assistant","api":"openai-completions","provider":"acme","model":model,"content":[{"type":"text","text":"secret reply"}],"usage":{"input":290,"output":271,"cacheRead":12544,"cacheWrite":64,"cacheWrite1h":16,"reasoning":188,"totalTokens":13105,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}}}}).to_string()
+}
+
+#[test]
+fn pi_entries_count_each_billed_call_once_and_keep_no_content() {
+    let record = parse::pi_line(&pi_assistant("a1b2c3d4", "Acme:Example-Model")).unwrap();
+    assert_eq!((record.input, record.cache_read, record.cache_write, record.cache_write_1h, record.output), (290, 12544, 48, 16, 271), "reasoning and 1h cache writes are not added again");
+    assert_eq!(record.model.as_str(), "acme:example-model");
+    assert_eq!(record.hour, parse::unix_seconds("2026-10-02T09:15:02Z").unwrap() / 3600);
+    assert_eq!(record.class, 0);
+    assert!(record.key.is_some());
+    assert!(!serde_json::to_string(&record).unwrap().contains("secret"));
+    // A forked session keeps the entry id, so the key is stable for de-duplication.
+    assert_eq!(parse::pi_line(&pi_assistant("a1b2c3d4", "Acme:Example-Model")).unwrap().key, record.key);
+    assert_ne!(parse::pi_line(&pi_assistant("other123", "Acme:Example-Model")).unwrap().key, record.key);
+
+    let warm = json!({"type":"usage","id":"f6g7h8i9","timestamp":"2026-10-02T09:18:00Z","kind":"cache_warm","provider":"acme","model":"example-model","usage":{"input":0,"output":0,"cacheRead":50000,"cacheWrite":0,"totalTokens":50000}}).to_string();
+    let warm = parse::pi_line(&warm).unwrap();
+    assert_eq!((warm.input, warm.cache_read, warm.model.as_str()), (0, 50000, "example-model"));
+
+    let compaction = json!({"type":"compaction","id":"c0ffee00","timestamp":"2026-10-02T09:20:00Z","summary":"secret summary","firstKeptEntryId":"a1b2c3d4","tokensBefore":50000,"usage":{"input":100,"output":20,"cacheRead":200,"cacheWrite":0,"totalTokens":320}}).to_string();
+    let summary = parse::pi_line(&compaction).unwrap();
+    assert_eq!((summary.input, summary.cache_read, summary.output, summary.model.as_str()), (100, 200, 20, "unknown"), "summary entries have no model but still count");
+    assert!(!serde_json::to_string(&summary).unwrap().contains("secret"));
+    let branch = json!({"type":"branch_summary","id":"deadbeef","timestamp":"2026-10-02T09:21:00Z","fromId":"a1b2c3d4","summary":"s","usage":{"input":3,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":5}}).to_string();
+    assert_eq!(parse::pi_line(&branch).unwrap().input, 3);
+
+    // Nested tool-result usage is not a model call; counting it would double a turn.
+    let tool = json!({"type":"message","id":"tool0001","timestamp":"2026-10-02T09:16:00Z","message":{"role":"toolResult","toolName":"bash","content":[],"isError":false,"usage":{"input":9,"output":9,"cacheRead":0,"cacheWrite":0,"totalTokens":18}}}).to_string();
+    assert_eq!(parse::pi_line(&tool), None);
+    let header = json!({"type":"session","version":3,"id":"uuid","timestamp":"2026-10-02T09:00:00Z","cwd":"/p"}).to_string();
+    assert_eq!(parse::pi_line(&header), None);
+    let zero = json!({"type":"usage","id":"zero","timestamp":"2026-10-02T09:22:00Z","model":"m","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0}}).to_string();
+    assert_eq!(parse::pi_line(&zero), None);
+}
+
+#[test]
+fn pi_partial_usage_does_not_panic_or_invent_missing_tokens() {
+    let line = json!({"type":"usage","id":"partial","timestamp":"2026-10-02T09:22:00Z","model":"example-model","usage":{"input":7}}).to_string();
+    let record = parse::pi_line(&line).unwrap();
+    assert_eq!((record.input, record.cache_read, record.cache_write, record.output), (7, 0, 0, 0));
+    for usage in [json!({}), json!(null), json!([])] {
+        let line = json!({"type":"usage","id":"empty","timestamp":"2026-10-02T09:22:00Z","usage":usage}).to_string();
+        assert_eq!(parse::pi_line(&line), None);
+    }
+}
+
+#[test]
+fn pi_hour_cache_writes_keep_token_totals_and_use_their_own_price() {
+    let prices = parse_prices(&json!({"model-x":{"mode":"chat","input_cost_per_token":1e-6,"output_cost_per_token":5e-6,"cache_creation_input_token_cost":1e-6,"cache_creation_input_token_cost_above_1hr":2e-6}}));
+    let book = PriceBook::from_prices(prices);
+    for hour_writes in [0, 16, 64, 96] {
+        let line = json!({"type":"usage","id":"cache","timestamp":"2026-10-02T09:22:00Z","model":"model-x","usage":{"cacheWrite":64,"cacheWrite1h":hour_writes}}).to_string();
+        let record = parse::pi_line(&line).unwrap();
+        let expected_hour = hour_writes.min(64) as u64;
+        assert_eq!((record.tokens(), record.cache_write, record.cache_write_1h), (64, 64 - expected_hour, expected_hour));
+        let (cost, _) = book.cost(&record).unwrap();
+        assert!((cost - (64 + expected_hour) as f64 * 1e-6).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn pi_roots_expand_home_and_prefer_the_session_override() {
+    let home = std::env::temp_dir().join("pi-home");
+    for (sessions, agent, expected) in [
+        (None, None, home.join(".pi/agent/sessions")),
+        (None, Some("~/.pi-work"), home.join(".pi-work/sessions")),
+        (Some("~/logs"), Some("~/.pi-work"), home.join("logs")),
+        (Some("logs"), Some("~/.pi-work"), home.join(".pi-work/sessions")),
+        (Some("~"), None, home.clone()),
+    ] {
+        let root = pi_root(Some(&home), |name| match name {
+            "PI_CODING_AGENT_SESSION_DIR" => sessions.map(Into::into),
+            "PI_CODING_AGENT_DIR" => agent.map(Into::into),
+            _ => None,
+        });
+        assert_eq!(root, Some(expected));
+    }
+}
+
+#[test]
+fn pi_sessions_are_discovered_deduped_and_linked_to_tasks() {
+    let root = std::env::temp_dir().join(format!("pandacode-ledger-pi-{}", uuid::Uuid::new_v4()));
+    let sessions = root.join("agent").join("sessions").join("--home-user-proj--");
+    std::fs::create_dir_all(&sessions).unwrap();
+    let warm = json!({"type":"usage","id":"warm1","timestamp":"2026-10-02T09:18:00Z","provider":"acme","model":"example-model","usage":{"input":0,"output":0,"cacheRead":50000,"cacheWrite":0,"totalTokens":50000}}).to_string();
+    let compaction = json!({"type":"compaction","id":"comp1","timestamp":"2026-10-02T09:20:00Z","summary":"s","usage":{"input":100,"output":20,"cacheRead":200,"cacheWrite":0,"totalTokens":320}}).to_string();
+    let linked = sessions.join("2026-10-02T09-15-02_aaaa1111.jsonl");
+    // A forked session copies the same assistant entry under a new session id.
+    std::fs::write(&linked, format!("{}\n{}\n{}\n{}\n", pi_assistant("a1b2c3d4", "acme:example-model"), pi_assistant("a1b2c3d4", "acme:example-model"), warm, compaction)).unwrap();
+    let forked = pi_assistant("a1b2c3d4", "acme:example-model");
+    let reused_id = forked.replace("2026-10-02T09:15:02.000Z", "2026-10-02T09:15:02.001Z");
+    std::fs::write(sessions.join("2026-10-02T10-00-00_bbbb2222.jsonl"), format!("{forked}\n{reused_id}\n{}\n", pi_assistant("other0001", "acme:example-model"))).unwrap();
+
+    let roots: Roots = vec![(Agent::Pi, vec![root.join("agent").join("sessions")])];
+    let links = vec!["aaaa1111".to_string()];
+    let empty = || Cache { version: CACHE_VERSION, files: HashMap::new() };
+    let (mut full, mut slim) = (empty(), empty());
+    assert!(refresh_cache(&mut full, &roots, 0));
+    assert!(refresh_linked(&mut slim, &roots, &links, 0));
+    let per_assistant: u64 = 290 + 12544 + 64 + 271;
+    let ledger = aggregate(&full, &book(), 0, 1);
+    let tokens: u64 = ledger.rows.iter().map(|row| row.2 + row.3 + row.4 + row.5).sum();
+    assert_eq!(tokens, per_assistant * 3 + 50000 + 100 + 200 + 20, "fork copies count once; independent same-ID calls still count");
+    assert_eq!(ledger.sessions.len(), 2, "each Pi session file counts as a session");
+    assert_eq!(task_usage_from_cache(&full, &links, 0), task_usage_from_cache(&slim, &links, 0));
+    let task = task_usage_from_cache(&full, &links, 0);
+    assert_eq!((task.input, task.cache_read, task.cache_write, task.output), (390, 12544 + 50000 + 200, 64, 291));
+    assert_eq!(slim.files.len(), 1, "unlinked Pi sessions are not read");
+
+    // The timestamp ends at the first underscore, and a custom ID can contain others.
+    assert!(file_belongs_to("aaaa1111", Agent::Pi, &linked));
+    assert!(!file_belongs_to("1111", Agent::Pi, &linked));
+    let custom = sessions.join("2026-10-02T10-00-00_other_project.jsonl");
+    assert!(file_belongs_to("other_project", Agent::Pi, &custom));
+    assert!(!file_belongs_to("project", Agent::Pi, &custom));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn price_lookup_strips_relay_prefixes() {
+    let prices = parse_prices(&json!({
+        "example-model": {"mode":"chat","input_cost_per_token":1e-6,"output_cost_per_token":5e-6}
+    }));
+    let book = PriceBook::from_prices(prices);
+    assert!(book.find("example-model").is_some());
+    assert!(book.find("acme/example-model").is_some());
+    assert!(book.find("acme:example-model").is_some());
+    assert!(book.find("relay:acme:example-model-20260101").is_some());
+    assert!(book.find("nope").is_none());
 }
