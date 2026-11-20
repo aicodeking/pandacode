@@ -1,7 +1,7 @@
 # Provider integrations
 
 PandaCode launches each installed CLI directly. Claude, Codex, Kimi, OpenCode,
-Antigravity, Grok Build, Devin CLI, ZCode, Hermes Agent, and Cursor CLI own their authentication; sign in using their official
+Antigravity, Grok Build, Devin CLI, ZCode, Hermes Agent, Cursor CLI, and Gemini CLI own their authentication; sign in using their official
 CLI or extension.
 The optional Z.AI Coding Plan and MiMo Token Plan API keys are stored as separate
 entries in PandaCode's secrets store (see [secret storage](#secret-storage)) and injected only into their isolated Claude subprocesses. The app discovers executable paths
@@ -1194,6 +1194,57 @@ and in the sign-in error those frames record. Live tests, which need a signed-in
 CLI: `cargo test --lib installed_cursor -- --ignored`
 (`installed_cursor_lists_models` reads the catalog without a prompt;
 `installed_cursor_runs_and_resumes_a_task` sends two short prompts to `composer-2.5`).
+
+## Gemini CLI
+
+Google's Gemini CLI (install with `npm install -g @google/gemini-cli`) serves ACP v1
+with `gemini --acp`. PandaCode drives it with the shared ACP adapter
+(`providers/gemini.rs` holds its quirks). Official docs:
+[Gemini CLI](https://geminicli.com/docs/) and its
+[repository](https://github.com/google-gemini/gemini-cli).
+
+**Shown only with an API key.** The harness is listed as installed only when the
+`gemini` executable is found *and* a Gemini Developer API key is set: `GEMINI_API_KEY`
+or `GOOGLE_API_KEY` in the harness's environment variables, in the environment
+PandaCode starts with, or in `~/.gemini/.env` (or `~/.env`), the files the CLI loads
+itself. PandaCode does not pass the key into a run or put it on the command line; the
+CLI loads it. PandaCode reads it only to list models (below). `~/.gemini/.env` is the recommended place (make it
+`chmod 600`); the harness environment list is saved as plain text in
+`provider-settings.json`.
+
+**Sign-in.** After `initialize`, when the CLI advertises `gemini-api-key`, PandaCode
+calls `authenticate` with it and then opens or resumes the session, so a CLI that was
+set up for Google sign-in still uses the key instead of opening a browser. A rejected
+or missing key fails that call (ACP `-32000`) and the turn stops with “Gemini CLI could
+not use a Gemini API key. Put GEMINI_API_KEY=<your key> in ~/.gemini/.env…”. Prompts
+and model calls go to Google under your API key's quota and billing.
+
+**Trusted folders.** Gemini CLI ignores a folder's settings and `.env` until the folder
+is trusted. PandaCode passes `--skip-trust`, which trusts the task's project for that
+process only and does not change `~/.gemini/trustedFolders.json`.
+
+**Models.** `session/new` lists only a few models in `models.availableModels` (`auto`,
+then each Gemini model by ID), but `session/set_model` accepts any model the key can
+use. So discovery also calls the Gemini API's `models.list` with the key (sent in the
+`x-goog-api-key` header) and appends every `gemini-*` model that supports
+`generateContent`, skipping TTS, image, audio, live, Omni, transcription, embedding, robotics
+and computer-use models. The CLI's own entries come first and take their display names
+and context sizes from the API. If the API cannot be reached, the CLI's list is used
+alone. Discovery opens one empty session in a scratch folder and caches the merged list
+like other ACP catalogs. **Default** keeps the model chosen in the CLI; a model picked
+in a task is set with `session/set_model`, even when the CLI did not advertise it.
+
+**Approvals.** Each PandaCode mode maps to one Gemini session mode, and a CLI that
+does not advertise it fails the turn rather than widening access: Standard →
+`default` (asks before edits and commands), Accept edits → `autoEdit`, Plan mode →
+`plan` (read-only on Gemini's side), Full access → `yolo`.
+
+**Turn data.** Text, thoughts, tool calls, cancel, images and steering use the common
+ACP paths. Gemini advertises HTTP MCP, so `session/new` and `session/load` include
+PandaCode's per-run tool server. `session/load` replays the conversation before it
+answers; that replay is ignored. Gemini does not report API quota over ACP, so the
+Usage panel points to Google AI Studio. There is no terminal console: ACP sessions are
+not saved where `gemini --resume` finds them.
 
 ## Kilo Code
 

@@ -50,6 +50,7 @@ mod github_copilot;
 mod devin;
 mod cursor;
 pub(crate) mod hermes;
+pub(crate) mod gemini;
 mod glm;
 mod mimo;
 mod alibaba;
@@ -103,7 +104,7 @@ const PREVIEW_TRUNCATED: &str = "\n[Preview truncated]";
 fn should_shrink(len: usize, capacity: usize) -> bool {
     capacity > 1024 * 1024 && len <= FRAME_KEEP / 2
 }
-pub(crate) const PROVIDERS: [(&str, &str); 21] = [
+pub(crate) const PROVIDERS: [(&str, &str); 22] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
     ("kimi", "Kimi Code"),
@@ -125,6 +126,7 @@ pub(crate) const PROVIDERS: [(&str, &str); 21] = [
     ("zcode", "ZCode"),
     ("hermes", "Hermes Agent"),
     ("cursor", "Cursor CLI"),
+    ("gemini", "Gemini CLI"),
 ];
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
@@ -776,7 +778,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
     let valid = match (provider, effort) {
         (
             "claude" | "codex" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "alibaba"
-            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor",
+            | "pi" | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor" | "gemini",
             None,
         ) => true,
         ("claude" | "glm" | "mimo" | "alibaba", Some(value)) => {
@@ -784,7 +786,7 @@ pub fn validate_reasoning_effort(provider: &str, effort: Option<&str>) -> Result
         }
         // The current app-server schema deliberately permits catalog-defined effort IDs.
         // Kimi's thinking option lists on/off or the model's levels (low/high/max).
-        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "cursor", Some(value)) => {
+        ("codex" | "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "devin" | "zcode" | "hermes" | "cursor" | "gemini", Some(value)) => {
             !value.is_empty()
                 && !value.starts_with('-')
                 && value.len() <= 64
@@ -832,6 +834,10 @@ impl ModelInfo {
 }
 
 pub(crate) fn executable(name: &str) -> Option<PathBuf> {
+    // Gemini CLI is offered as a harness only once a Gemini API key is set.
+    if name == "gemini" && !gemini::api_key_set() {
+        return None;
+    }
     if let Some(path) = crate::provider_settings::executable_override(name) {
         return Some(path);
     }
@@ -1285,7 +1291,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     let semaphore = &model_discovery_semaphores()[index];
     let _permit = if matches!(
         provider,
-        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor"
+        "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "muse" | "devin" | "zcode" | "hermes" | "cursor" | "gemini"
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
@@ -1320,6 +1326,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
         "zcode" => zcode::models(&path).await,
         "hermes" => hermes::models(&path).await,
         "cursor" => cursor::models(&path).await,
+        "gemini" => gemini::models(&path).await,
         _ => unreachable!(),
     }
 }
@@ -2312,7 +2319,7 @@ impl Protocol {
                     json!({"experimentalApi":true,"requestAttestation":false});
                 request
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" | "gemini" => {
                 let capabilities = if self.config.provider == "cursor" { cursor::client_capabilities() } else { json!({}) };
                 json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":capabilities,"clientInfo":{"name":"pandacode","version":"0.1.0"}}})
             }
@@ -2358,7 +2365,7 @@ impl Protocol {
                 json!({"id":request["id"],"result":result})
             }
             "devin" => devin::decision(&request, approved),
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "cursor" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "hermes" | "cursor" | "gemini" => {
                 let options = request["params"]["options"].as_array();
                 let kinds = if approved {
                     ["allow_once", "allow_always"]
@@ -2386,7 +2393,7 @@ impl Protocol {
             "codex" => {
                 json!({"id":900,"method":"turn/interrupt","params":{"threadId":self.remote_id,"turnId":self.turn_id}})
             }
-            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => {
+            "kimi" | "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" | "gemini" => {
                 json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.remote_id}})
             }
             _ => {
@@ -2429,7 +2436,7 @@ impl Protocol {
             "pi" | "omp" => self.pi(value).map(|step| self.steered(step)),
             "zcode" => self.zcode(value).map(|step| self.steered(step)),
             "muse" => self.muse(value),
-            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" => self.acp(value),
+            "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" | "github-copilot" | "devin" | "hermes" | "cursor" | "gemini" => self.acp(value),
             _ => self.claude(value),
         }
     }
@@ -3648,7 +3655,7 @@ fn configure_command_with_agents(
         "zcode" => zcode::configure(command),
         "muse" => muse::configure(command, config),
         "opencode" | "antigravity" | "grok" | "deepseek" | "commandcode" | "cline" | "kilo" => acp::configure(command, config),
-        "github-copilot" | "devin" | "hermes" | "cursor" => acp::configure(command, config),
+        "github-copilot" | "devin" | "hermes" | "cursor" | "gemini" => acp::configure(command, config),
         "kimi" => {
             if use_model {
                 command.args(["--model", &config.model]);
@@ -3793,6 +3800,7 @@ async fn run_inner(
         "zcode",
         "hermes",
         "cursor",
+        "gemini",
     ]
     .contains(&config.provider.as_str())
     {
@@ -4037,7 +4045,7 @@ async fn run_process_with_tools(
         }
         (
             "claude" | "glm" | "mimo" | "alibaba" | "kimi" | "opencode" | "antigravity" | "grok" | "pi"
-            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor" | "zcode",
+            | "deepseek" | "commandcode" | "cline" | "kilo" | "omp" | "github-copilot" | "muse" | "devin" | "hermes" | "cursor" | "gemini" | "zcode",
             Some(host),
         ) => (
             None,
@@ -4681,7 +4689,7 @@ mod tests {
         for provider in ["claude", "glm", "mimo", "alibaba"] {
             assert!(review_supported(provider, "review").is_ok());
         }
-        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes", "cursor"] {
+        for provider in ["codex", "kimi", "opencode", "antigravity", "grok", "pi", "omp", "deepseek", "commandcode", "cline", "kilo", "github-copilot", "muse", "hermes", "cursor", "gemini"] {
             assert!(review_supported(provider, "review").unwrap_err().contains("Approve for me"), "{provider}");
             assert!(review_supported(provider, "ask").is_ok());
         }

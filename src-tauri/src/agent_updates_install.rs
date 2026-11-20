@@ -53,6 +53,7 @@ pub(super) fn docs(provider: &str) -> Option<&'static str> {
         "devin" => "https://docs.devin.ai/cli",
         "hermes" => "https://hermes-agent.org",
         "cursor" => "https://cursor.com/docs/cli/overview",
+        "gemini" => "https://geminicli.com/docs/",
         _ => return None,
     })
 }

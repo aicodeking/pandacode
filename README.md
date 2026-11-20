@@ -3,7 +3,7 @@
 A small, native desktop workspace for coding agents. PandaCode runs the coding
 CLIs you already use — **Claude Code, Codex, Kimi Code, OpenCode, GLM Coding
 Plan, Xiaomi MiMo and Alibaba Token Plan** (through Claude Code), **GitHub Copilot CLI, Antigravity,
-xAI's Grok Build, DeepSeek, Command Code, Cline, Kilo Code, Devin CLI, Hermes Agent and Cursor CLI** (through ACP), **ZCode** (through its app-server protocol), **Pi** and its
+xAI's Grok Build, DeepSeek, Command Code, Cline, Kilo Code, Devin CLI, Hermes Agent, Cursor CLI and Gemini CLI** (through ACP), **ZCode** (through its app-server protocol), **Pi** and its
 fork **omp** (through Pi's RPC mode), and Meta's **Muse Code** (through its MSP
 protocol) — side by side, with your projects, Git, a
 terminal and a browser in one window.
@@ -402,6 +402,8 @@ Antigravity runs Google's `agy_acp_server`, or `agy acp --process-per-session` t
 [Hermes Agent](https://hermes-agent.org) installs with `curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash`; run `hermes acp --setup` or configure `~/.hermes/config.yaml`, then select **Hermes Agent** in PandaCode. PandaCode launches `hermes acp` and uses Hermes' configured provider and models. See [provider details](docs/providers.md#hermes-agent).
 
 [Cursor CLI](https://cursor.com/docs/cli/overview) installs with `curl https://cursor.com/install -fsS | bash`; run `agent login` once in a terminal (or set `CURSOR_API_KEY`), then select **Cursor CLI** in PandaCode. PandaCode launches `agent acp` with the CLI's own sign-in and lists the models on your Cursor plan, each with its own thinking levels. See [provider details](docs/providers.md#cursor-cli).
+
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) installs with `npm install -g @google/gemini-cli`. Get a key from [Google AI Studio](https://aistudio.google.com/apikey) and put `GEMINI_API_KEY=…` in `~/.gemini/.env`; **Gemini CLI** then shows up as a harness. PandaCode launches `gemini --acp --skip-trust`, signs in with the key, and lists every Gemini chat model your key can use (Gemini CLI's own list plus the rest from Google's API). See [provider details](docs/providers.md#gemini-cli).
 
 ## Build from source
 

@@ -23,6 +23,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? 'Devin’s Code mode: edits inside this project apply; commands it does not judge safe ask you.'
     : provider === 'cursor'
     ? 'Cursor’s Agent mode: edits apply; commands outside your Cursor allowlist ask you.'
+    : provider === 'gemini'
+    ? 'Gemini’s Default mode: it asks you before edits, commands and other tools that change state.'
     : pi
     ? `${pi} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.`
     : provider === 'deepseek'
@@ -58,6 +60,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? 'Skip approval prompts: Hermes runs every tool without asking (equivalent to its --yolo).'
     : provider === 'cursor'
     ? 'Cursor’s Agent mode with every permission request approved: commands outside your allowlist run without asking.'
+    : provider === 'gemini'
+    ? 'Gemini’s YOLO mode: every tool runs without asking.'
     : provider === 'github-copilot'
     ? 'Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.'
     : provider === 'zcode'
@@ -82,6 +86,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ...review, full];
   return [standard, provider === 'muse'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Work freely inside the sandbox. Muse asks only to leave it.' }
+    : provider === 'gemini'
+    ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Gemini’s Auto Edit mode: file edits apply automatically; commands and other tools still ask you.' }
     : provider === 'deepseek'
     ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Like Standard, and edits outside this project are approved too. Other actions still ask.' }
     : ['claude', 'glm', 'mimo', 'alibaba', 'opencode', 'grok', 'pi', 'omp', 'commandcode', 'cline', 'kilo', 'zcode', 'hermes'].includes(provider)
@@ -111,6 +117,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'ZCode’s plan mode: it investigates and proposes a plan; implementation waits for your approval.' }
     : provider === 'hermes'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Read-only: Hermes researches and proposes a plan; edits and commands are declined.' }
+    : provider === 'gemini'
+    ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Gemini’s Plan mode: read-only; it researches and proposes a plan before any change.' }
     : CLAUDE_FAMILY.includes(provider)
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Explore and plan: reads and web lookups run, even outside this project; edits wait for implementation and commands ask you.' }
     : provider === 'opencode'

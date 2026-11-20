@@ -28,6 +28,8 @@ export const HARNESSES: Record<string, Harness> = {
   zcode: { name: 'ZCode', logo: require('../../assets/providers/zcode.svg'), mono: true },
   hermes: { name: 'Hermes', logo: require('../../assets/providers/hermes.svg') },
   cursor: { name: 'Cursor', logo: require('../../assets/providers/cursor.svg') },
+  // No redistributable Gemini CLI mark yet; the row shows the name alone.
+  gemini: { name: 'Gemini CLI' },
 };
 
 export const harnessName = (id: string) => HARNESSES[id]?.name ?? id;

@@ -239,6 +239,7 @@ const providers: Provider[] = [
   { id: 'zcode', name: 'ZCode', installed: true, path: '/sample/bin/zcode', version: '3.16.3', models: [] },
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
   { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
+  { id: 'gemini', name: 'Gemini CLI', installed: true, path: '/sample/bin/gemini', version: '0.70.0 (sample)', models: [] },
 ];
 /* Mirrors the native list_providers contract: install state at once, each version the cached one or '' until probed;
  * the probe reports by `provider-versions` ({ versions, done }) shortly after (force clears the cache). Tests: `window.__previewHoldVersions
@@ -350,6 +351,13 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'anthropic/claude-sonnet-4', name: 'Claude Sonnet 4', description: 'Sample Hermes provider model.' },
     // A long catalog (over the team limit of 10) for Settings → Model routing.
     ...Array.from({ length: 12 }, (_, i) => ({ id: `nous/sample-${i + 1}`, name: `Nous Sample ${i + 1}`, description: 'Sample Hermes provider model.' })),
+  ],
+  // As `gemini --acp` lists them: Auto first, then each Gemini model by ID.
+  gemini: [
+    { id: 'auto', name: 'Auto', description: 'Let Gemini CLI decide the best model for the task.' },
+    { id: 'gemini-3.1-pro-preview-customtools', name: 'gemini-3.1-pro-preview', description: '' },
+    { id: 'gemini-3.8-flash', name: 'gemini-3.8-flash', description: '' },
+    { id: 'gemini-3.5-flash-lite', name: 'gemini-3.5-flash-lite', description: '' },
   ],
   // Shaped like `cursor-agent acp`'s parameterized catalog: each base model lists its own thinking levels.
   cursor: ([

@@ -269,6 +269,12 @@ pub(crate) fn skill_roots(
                 }
             }
         }
+        "gemini" => {
+            roots.push((home.join(".gemini/skills"), "~/.gemini/skills"));
+            if let Some(project) = project {
+                roots.push((project.join(".gemini/skills"), ".gemini/skills"));
+            }
+        }
         "zcode" | "github-copilot" | "commandcode" | "grok" | "hermes" => {
             let (user, display, local) = match harness {
                 "zcode" => (".zcode/skills", "~/.zcode/skills", ".zcode/skills"),

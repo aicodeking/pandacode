@@ -85,7 +85,7 @@ const MAX_BUFFER: usize = 4096;
 const LAGGED: &str = "lagged";
 const CUT: &str = "\n…[cut on the host to fit a remote page]";
 /// Harness ids `providers.models` accepts (the same list `storage` allows).
-pub(crate) const PROVIDERS: [&str; 21] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes", "cursor"];
+pub(crate) const PROVIDERS: [&str; 22] = ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes", "cursor", "gemini"];
 
 /// Whether this host serves `method`: a built-in one or one from the `methods/` registry.
 /// client.rs checks calls to other hosts against it too.
@@ -4929,7 +4929,7 @@ mod tests {
         assert!(parse(true, "providers.list", &json!({"force": "yes"})).is_err());
         assert_eq!(parse(true, "providers.models", &json!({"provider": "codex", "force": null})), Ok(Call::Models { provider: "codex".into(), force: false }));
         assert_eq!(parse(true, "providers.models", &json!({"provider": "omp", "force": true})), Ok(Call::Models { provider: "omp".into(), force: true }));
-        for bad in [json!({}), json!({"provider": "../bin/sh"}), json!({"provider": "gemini"}), json!({"provider": 3})] {
+        for bad in [json!({}), json!({"provider": "../bin/sh"}), json!({"provider": "not-a-harness"}), json!({"provider": 3})] {
             assert!(parse(true, "providers.models", &bad).is_err(), "{bad}");
         }
     }

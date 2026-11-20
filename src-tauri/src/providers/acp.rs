@@ -74,6 +74,7 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "devin" => super::devin::configure(command),
         "cursor" => super::cursor::configure(command),
         "hermes" => super::hermes::configure(command, config),
+        "gemini" => super::gemini::configure(command),
         "antigravity" => antigravity_args(command),
         _ => {
             #[cfg(target_os = "linux")]
@@ -246,6 +247,9 @@ impl Protocol {
             if self.config.provider == "cursor" && (value["id"] == 7 || value["error"]["code"] == -32000) {
                 return Err(super::cursor::SIGN_IN.into());
             }
+            if self.config.provider == "gemini" && (value["id"] == 7 || value["error"]["code"] == -32000) {
+                return Err(format!("{}\n{}", super::gemini::SIGN_IN, rpc_error(&value, "authenticate")));
+            }
             if self.config.provider == "hermes" {
                 let err_str = value["error"]["data"].as_str()
                     .or_else(|| value["error"]["data"]["details"].as_str())
@@ -341,7 +345,11 @@ impl Protocol {
                         let method = cached_auth_method(result).ok_or(GROK_SIGN_IN)?;
                         self.acp_pending_session = Some(session);
                         step.write.push(json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}}));
-                    } else if let Some(method) = super::cursor::login_method(self.config.provider.as_str(), result) {
+                    } else if let Some(method) = super::cursor::login_method(self.config.provider.as_str(), result)
+                        .or_else(|| super::gemini::login_method(self.config.provider.as_str(), result))
+                    {
+                        // Gemini's API key method keeps a CLI set to Google sign-in
+                        // from opening a browser in a headless run.
                         // Cursor's documented flow is initialize, then authenticate
                         // with the advertised cursor_login method, then the session.
                         self.acp_pending_session = Some(session);
@@ -707,6 +715,8 @@ impl Protocol {
             &[super::devin::mode_id(&self.config.mode)]
         } else if self.config.provider == "cursor" {
             &[super::cursor::mode_id(&self.config.mode)]
+        } else if self.config.provider == "gemini" {
+            &[super::gemini::mode_id(&self.config.mode)]
         } else if self.config.provider == "hermes" {
             match self.config.mode.as_str() {
                 "auto" => &["accept_edits", "default"],
@@ -763,7 +773,7 @@ impl Protocol {
         };
         // On these harnesses the ACP mode is the approval policy, so a missing
         // one must fail the run rather than silently widen access.
-        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor");
+        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor" | "gemini");
         if let Some(option) = options(&self.acp_config, "mode") {
             let found = candidates
                 .iter()
@@ -885,7 +895,9 @@ impl Protocol {
             )?);
         } else {
             // Legacy ACP servers expose availableModels + session/set_model.
-            if !self.acp_config["models"]["availableModels"]
+            // Gemini CLI advertises only a few models but switches to any
+            // model its API key can use, which PandaCode lists from Google.
+            if self.config.provider != "gemini" && !self.acp_config["models"]["availableModels"]
                 .as_array()
                 .is_some_and(|models| {
                     models
@@ -1162,7 +1174,9 @@ async fn inspect_state(
             } else if frame["id"] == 1 {
                 if frame["result"]["protocolVersion"] != 1 { return Err("This harness does not support ACP protocol v1.".into()); }
                 acp_ready = true;
-                match cached_auth_method(&frame["result"]).filter(|_| authenticate) {
+                // Grok's cached sign-in, or Gemini's API key method.
+                let method = cached_auth_method(&frame["result"]).or_else(|| super::gemini::login_method("gemini", &frame["result"]).map(str::to_owned));
+                match method.filter(|_| authenticate) {
                     Some(method) => {
                         stage = "authenticate";
                         pipe.send(&json!({"jsonrpc":"2.0","id":7,"method":"authenticate","params":{"methodId":method}})).await.map_err(|_| transport_error(&pipe, stage))?;

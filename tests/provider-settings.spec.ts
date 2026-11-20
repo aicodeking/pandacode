@@ -66,7 +66,7 @@ test('every harness has environment settings, and all but GLM, MiMo and Alibaba 
     executables: [...document.querySelectorAll<HTMLInputElement>('input[data-executable]')].map(input => input.dataset.executable!),
   }));
   // Mirrors providers::PROVIDERS, so a new harness has to show up here too.
-  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
+  const roster = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor', 'gemini'];
   expect([...editors.toggles].sort()).toEqual([...roster].sort());
   expect([...editors.env].sort()).toEqual(['*', ...roster].sort());
   expect([...editors.executables].sort()).toEqual(roster.filter(id => id !== 'glm' && id !== 'mimo' && id !== 'alibaba').sort());
@@ -391,7 +391,7 @@ test('provider connections expose all harnesses and real GLM model names', async
   await expect(page.getByText('GLM-5.3', { exact: true }).first()).toBeVisible();
 });
 
-for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor']) {
+for (const providerId of ['claude', 'codex', 'kimi', 'opencode', 'glm', 'antigravity', 'grok', 'mimo', 'alibaba', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'omp', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor', 'gemini']) {
   test(`provider connections start ${providerId} tasks with Full access and retain explicit restrictions when switching`, async ({ page }) => {
     await page.addInitScript(provider => localStorage.setItem('pandacode.provider', provider), providerId);
     await page.route('**/src/preview.ts*', async route => {
@@ -670,3 +670,31 @@ test('Hermes Agent has an install card, four approval modes, and executable sett
   await expect(card.getByLabel('Hermes Agent executable', { exact: true })).toBeVisible();
 });
 
+
+test('Gemini CLI has an API key card, four approval modes, and executable settings', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.defaultProvider', 'gemini');
+    localStorage.setItem('pandacode.provider', 'gemini');
+  });
+  await page.goto('/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('.new-task-welcome')).toBeVisible();
+  const items = page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio');
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await items.count()) await page.locator('#mode-picker-trigger').click();
+    await expect(items).toHaveCount(4, { timeout: 1000 });
+  }).toPass();
+  await expect(items.filter({ hasText: 'Auto Edit' })).toHaveCount(1);
+  await expect(items.filter({ hasText: 'YOLO' })).toHaveCount(1);
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Agents', exact: true }).click(); await page.getByRole('region', { name: 'Settings', exact: true }).getByRole('tab', { name: 'Providers', exact: true }).click(); await page.locator('#settings-panel-providers details.connection-card').first().waitFor(); for (const s of await page.locator('#settings-panel-providers details.connection-card>summary').all()) await s.click();
+  const card = page.locator('.connection-card').filter({ has: page.getByRole('heading', { name: 'Gemini CLI', exact: false }) });
+  await expect(card).toContainText('gemini --acp');
+  await expect(card).toContainText('GEMINI_API_KEY');
+  await expect(card.getByRole('link', { name: 'Google AI Studio' })).toHaveAttribute('href', 'https://aistudio.google.com/apikey');
+  await expect(card.getByRole('link', { name: 'GitHub repository' })).toHaveAttribute('href', 'https://github.com/google-gemini/gemini-cli');
+  await card.locator('details.connection-path > summary').click();
+  await expect(card.getByLabel('Gemini CLI executable', { exact: true })).toBeVisible();
+});
