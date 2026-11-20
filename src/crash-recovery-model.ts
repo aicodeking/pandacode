@@ -204,6 +204,9 @@ export interface NoticeContext {
   agentsHidden?: boolean;
   /** The held-back thread was not the user's last place (boot reopened a New task instead). */
   notLast?: boolean;
+  /** How the crash time is written: the user's locale when unset. Tests pin one, because a clock
+   * time's width decides which lines the notice's character limit trims. */
+  locale?: string;
 }
 
 /** The optional sentences, each '' when it does not apply; `last` is pausedLine, or PAUSED_REPORT_LINE
@@ -254,7 +257,7 @@ export function crashNotice(recovery: CrashRecovery, now: number, context: Notic
   const paused = recovery.restartsPaused;
   // Only when it did not restart: after a restart the report holds the cause.
   const cause = paused || recovery.restarted ? null : plainCause(recovery.summary);
-  const when = crashTime(recovery.crashedAt, now);
+  const when = crashTime(recovery.crashedAt, now, context.locale);
   const off = !paused && !recovery.restarted && context.restartsOff ? RESTARTS_OFF_LINE : '';
   // Not restarted: the restarts-off line says why, or the lead says it didn't restart.
   const lead = paused ? PAUSED_LEAD : recovery.restarted ? `PandaCode crashed ${when} and restarted.` : off ? `PandaCode crashed ${when}.` : notRestartedLead(when);
@@ -273,7 +276,7 @@ export function crashNotice(recovery: CrashRecovery, now: number, context: Notic
     off,
     agents,
     back: resumed ? RESTARTS_BACK_LINE : '',
-    last: !paused ? '' : !resumed ? pausedLine(resumeTime(recovery.crashedAt, now)) : recovery.hasReport ? PAUSED_REPORT_LINE : '',
+    last: !paused ? '' : !resumed ? pausedLine(resumeTime(recovery.crashedAt, now, context.locale)) : recovery.hasReport ? PAUSED_REPORT_LINE : '',
     hint: !paused && !recovery.restarted && !off && recovery.hasReport ? REPORT_LINE : '',
     noOther: Boolean(context.nothingOpened),
     compact: false,
