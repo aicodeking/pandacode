@@ -403,7 +403,7 @@ Antigravity runs Google's `agy_acp_server`, or `agy acp --process-per-session` t
 
 [Cursor CLI](https://cursor.com/docs/cli/overview) installs with `curl https://cursor.com/install -fsS | bash`; run `agent login` once in a terminal (or set `CURSOR_API_KEY`), then select **Cursor CLI** in PandaCode. PandaCode launches `agent acp` with the CLI's own sign-in and lists the models on your Cursor plan, each with its own thinking levels. See [provider details](docs/providers.md#cursor-cli).
 
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) installs with `npm install -g @google/gemini-cli`. Get a key from [Google AI Studio](https://aistudio.google.com/apikey) and put `GEMINI_API_KEY=…` in `~/.gemini/.env`; **Gemini CLI** then shows up as a harness. PandaCode launches `gemini --acp --skip-trust`, signs in with the key, and lists Gemini's own models. See [provider details](docs/providers.md#gemini-cli).
+[Gemini CLI](https://github.com/google-gemini/gemini-cli) installs with `npm install -g @google/gemini-cli`. Get a key from [Google AI Studio](https://aistudio.google.com/apikey) and put `GEMINI_API_KEY=…` in `~/.gemini/.env`; **Gemini CLI** then shows up as a harness. PandaCode launches `gemini --acp --skip-trust`, signs in with the key, and lists every Gemini chat model your key can use (Gemini CLI's own list plus the rest from Google's API). See [provider details](docs/providers.md#gemini-cli).
 
 ## Build from source
 

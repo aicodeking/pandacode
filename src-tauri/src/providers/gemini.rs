@@ -1,9 +1,11 @@
 //! Google's Gemini CLI over its ACP stdio server (`gemini --acp`). The harness is
 //! offered only when a Gemini API key is available: in PandaCode's saved
 //! environment for the harness, in the app's own environment, or in the CLI's
-//! `~/.gemini/.env` (which the CLI loads itself). PandaCode never reads the key's
-//! value into a run; it only checks that one is set. Session modes are Default,
-//! Auto Edit, YOLO and Plan, and each PandaCode approval mode maps to one of them.
+//! `~/.gemini/.env` (which the CLI loads itself). PandaCode never passes the key
+//! into a run; the CLI loads it itself. PandaCode reads it only to ask Google's
+//! API which models the key can use, since the CLI advertises just a few of them
+//! but switches to any of them. Session modes are Default, Auto Edit, YOLO and
+//! Plan, and each PandaCode approval mode maps to one of them.
 use super::*;
 
 /// The variables the Gemini CLI accepts for the Gemini Developer API.
@@ -41,26 +43,23 @@ pub(super) fn login_method<'a>(provider: &str, result: &'a Value) -> Option<&'a 
     })
 }
 
-/// Whether a `.env` file assigns a non-empty Gemini key.
-fn env_file_has_key(text: &str) -> bool {
-    text.lines().any(|line| {
+/// The Gemini key a `.env` file assigns, if any.
+fn env_file_key(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
         let line = line.trim();
         let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((name, value)) = line.split_once('=') else {
-            return false;
-        };
+        let (name, value) = line.split_once('=')?;
         let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-        KEY_VARIABLES.contains(&name.trim()) && !value.is_empty()
+        (KEY_VARIABLES.contains(&name.trim()) && !value.is_empty()).then(|| value.to_string())
     })
 }
 
-fn has_key(saved: &[(String, String)], process: impl Fn(&str) -> Option<String>, env_files: &[PathBuf]) -> bool {
-    let set = |value: &str| !value.trim().is_empty();
-    saved.iter().any(|(name, value)| KEY_VARIABLES.contains(&name.as_str()) && set(value))
-        || KEY_VARIABLES.iter().any(|name| process(name).is_some_and(|value| set(&value)))
-        || env_files.iter().any(|path| {
-            std::fs::read_to_string(path).is_ok_and(|text| env_file_has_key(&text))
-        })
+/// The first Gemini key set in PandaCode's saved environment, the process, or a `.env` file.
+fn find_key(saved: &[(String, String)], process: impl Fn(&str) -> Option<String>, env_files: &[PathBuf]) -> Option<String> {
+    let set = |value: &str| (!value.trim().is_empty()).then(|| value.trim().to_string());
+    saved.iter().find(|(name, _)| KEY_VARIABLES.contains(&name.as_str())).and_then(|(_, value)| set(value))
+        .or_else(|| KEY_VARIABLES.iter().find_map(|name| process(name).and_then(|value| set(&value))))
+        .or_else(|| env_files.iter().find_map(|path| std::fs::read_to_string(path).ok().and_then(|text| env_file_key(&text))))
 }
 
 /// The `.env` files the CLI falls back to outside a project: its own, then the home one.
@@ -70,12 +69,87 @@ fn home_env_files() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-pub(crate) fn api_key_set() -> bool {
-    has_key(
+fn api_key() -> Option<String> {
+    find_key(
         &crate::provider_settings::environment("gemini"),
         |name| std::env::var(name).ok(),
         &home_env_files(),
     )
+}
+
+pub(crate) fn api_key_set() -> bool {
+    api_key().is_some()
+}
+
+/// Gemini API models that are not text chat models the CLI can drive.
+const NOT_CHAT: [&str; 10] = ["tts", "image", "banana", "transcribe", "robotics", "computer-use", "embedding", "live", "audio", "omni"];
+
+/// Chat models from a Gemini API `models.list` response.
+fn api_models(list: &Value) -> Vec<ModelInfo> {
+    let Some(models) = list["models"].as_array() else {
+        return Vec::new();
+    };
+    models
+        .iter()
+        .filter_map(|model| {
+            let id = model["name"].as_str()?.strip_prefix("models/")?;
+            let generates = model["supportedGenerationMethods"].as_array()?.iter().any(|m| m == "generateContent");
+            if !generates || !id.starts_with("gemini-") || NOT_CHAT.iter().any(|word| id.contains(word)) {
+                return None;
+            }
+            let description = model["description"].as_str().unwrap_or_default();
+            let description = description.split_inclusive(". ").next().unwrap_or_default().trim();
+            Some(ModelInfo {
+                id: id.to_string(),
+                name: model["displayName"].as_str().filter(|n| !n.is_empty()).unwrap_or(id).to_string(),
+                description: description.to_string(),
+                reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: model["inputTokenLimit"].as_u64(),
+                speed_tiers: Vec::new(),
+            })
+        })
+        .collect()
+}
+
+/// The CLI's own choices first, named and sized by the API where it knows
+/// them, then every other chat model the key can use.
+fn merge_models(mut cli: Vec<ModelInfo>, api: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    let mut extra = Vec::new();
+    for model in api {
+        match cli.iter_mut().find(|known| known.id == model.id) {
+            Some(known) => {
+                // The CLI may show a variant under its base model's name.
+                known.name = model.name;
+                if known.description.is_empty() {
+                    known.description = model.description;
+                }
+                known.context_window = known.context_window.or(model.context_window);
+            }
+            None => extra.push(model),
+        }
+    }
+    cli.extend(extra);
+    cli
+}
+
+/// The chat models Google's API offers this key, or none when it cannot be reached.
+async fn fetch_api_models() -> Vec<ModelInfo> {
+    let Some(key) = api_key() else {
+        return Vec::new();
+    };
+    let Ok(client) = crate::cloud::http::client(std::time::Duration::from_secs(15)) else {
+        return Vec::new();
+    };
+    let response = client
+        .get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+        .header("x-goog-api-key", key)
+        .send()
+        .await;
+    match response {
+        Ok(response) if response.status().is_success() => response.json::<Value>().await.map(|list| api_models(&list)).unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
@@ -89,11 +163,13 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let discovery = acp_catalog::begin("gemini", path);
     let mut command = super::provider_command("gemini", path)?;
     configure(&mut command);
-    let (metadata, _) = acp::inspect_with(command, &std::env::temp_dir(), false, true)
-        .await
+    let temp = std::env::temp_dir();
+    let (inspected, api) = tokio::join!(acp::inspect_with(command, &temp, false, true), fetch_api_models());
+    let (metadata, _) = inspected
         .map_err(|error| if error.contains("Authentication") || error.contains("API key") { format!("{SIGN_IN}\n{error}") } else { error })?;
-    acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    let models = merge_models(acp::parse_models(&metadata), api);
+    acp_catalog::store_models(discovery, models.clone());
+    Ok(models)
 }
 
 #[cfg(test)]
@@ -129,6 +205,23 @@ mod tests {
     }
 
     #[test]
+    fn api_chat_models_are_added_after_the_cli_models() {
+        let list = json!({"models":[
+            {"name":"models/gemini-3.8-flash","displayName":"Gemini 3.8 Flash","description":"Fast. More text.","inputTokenLimit":1048576,"supportedGenerationMethods":["generateContent","countTokens"]},
+            {"name":"models/gemini-4-neon","displayName":"Gemini 4 Neon","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/gemini-3.8-flash-tts","displayName":"TTS","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/gemini-3.1-flash-image","displayName":"Nano Banana 2","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/gemma-4-31b-it","displayName":"Gemma","supportedGenerationMethods":["generateContent"]},
+            {"name":"models/gemini-embedding-2","displayName":"Embedding","supportedGenerationMethods":["embedContent"]}]});
+        let models = merge_models(acp::parse_models(&session()), api_models(&list));
+        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "auto", "gemini-2.5-pro", "gemini-3.8-flash", "gemini-4-neon"]);
+        let flash = &models[3];
+        assert_eq!((flash.name.as_str(), flash.description.as_str(), flash.context_window), ("Gemini 3.8 Flash", "Fast.", Some(1048576)));
+        assert_eq!(models[4].name, "Gemini 4 Neon");
+        assert_eq!(merge_models(acp::parse_models(&session()), api_models(&json!({"error":{}}))).len(), 4);
+    }
+
+    #[test]
     fn every_approval_mode_maps_to_an_advertised_session_mode() {
         let advertised = session();
         let ids: Vec<&str> = advertised["modes"]["availableModes"].as_array().unwrap().iter().map(|m| m["id"].as_str().unwrap()).collect();
@@ -158,6 +251,9 @@ mod tests {
     #[test]
     fn key_is_found_in_saved_environment_process_or_env_file() {
         let none = |_: &str| None;
+        fn has_key(saved: &[(String, String)], process: impl Fn(&str) -> Option<String>, files: &[PathBuf]) -> bool {
+            find_key(saved, process, files).is_some()
+        }
         assert!(!has_key(&[], none, &[]));
         assert!(has_key(&[("GEMINI_API_KEY".into(), "k".into())], none, &[]));
         assert!(!has_key(&[("GEMINI_API_KEY".into(), "  ".into())], none, &[]));
@@ -171,6 +267,7 @@ mod tests {
         std::fs::write(&file, "export GEMINI_API_KEY=\"abc\"\n").unwrap();
         assert!(has_key(&[], none, std::slice::from_ref(&file)));
         assert!(!has_key(&[], none, &[dir.join("missing.env")]));
+        assert_eq!(find_key(&[], none, std::slice::from_ref(&file)).as_deref(), Some("abc"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -202,7 +299,8 @@ mod tests {
     async fn installed_gemini_lists_models() {
         let path = executable("gemini").expect("Install Gemini CLI and set GEMINI_API_KEY first");
         let models = models(&path).await.expect("Gemini ACP discovery should succeed");
-        assert!(models.len() > 1, "{models:?}");
+        // Google's API lists more chat models than the CLI advertises.
+        assert!(models.len() > 8, "{models:?}");
     }
 
     #[tokio::test]
@@ -213,6 +311,8 @@ mod tests {
         let mut config = super::super::tests::config("gemini");
         config.cwd = cwd.clone();
         config.prompt = "Reply with exactly the word PANDA and nothing else.".into();
+        // Listed from Google's API, not advertised by the CLI.
+        config.model = "gemini-2.5-flash".into();
         let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::<crate::providers::AgentEvent>::new()));
         let seen = events.clone();
         let sink: crate::providers::Sink = std::sync::Arc::new(move |event| seen.lock().unwrap().push(event));

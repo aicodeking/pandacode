@@ -895,7 +895,9 @@ impl Protocol {
             )?);
         } else {
             // Legacy ACP servers expose availableModels + session/set_model.
-            if !self.acp_config["models"]["availableModels"]
+            // Gemini CLI advertises only a few models but switches to any
+            // model its API key can use, which PandaCode lists from Google.
+            if self.config.provider != "gemini" && !self.acp_config["models"]["availableModels"]
                 .as_array()
                 .is_some_and(|models| {
                     models

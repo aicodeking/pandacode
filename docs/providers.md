@@ -1207,8 +1207,8 @@ with `gemini --acp`. PandaCode drives it with the shared ACP adapter
 `gemini` executable is found *and* a Gemini Developer API key is set: `GEMINI_API_KEY`
 or `GOOGLE_API_KEY` in the harness's environment variables, in the environment
 PandaCode starts with, or in `~/.gemini/.env` (or `~/.env`), the files the CLI loads
-itself. PandaCode only checks that a value is present; it does not read the key into a
-run or put it on the command line. `~/.gemini/.env` is the recommended place (make it
+itself. PandaCode does not pass the key into a run or put it on the command line; the
+CLI loads it. PandaCode reads it only to list models (below). `~/.gemini/.env` is the recommended place (make it
 `chmod 600`); the harness environment list is saved as plain text in
 `provider-settings.json`.
 
@@ -1223,10 +1223,16 @@ and model calls go to Google under your API key's quota and billing.
 is trusted. PandaCode passes `--skip-trust`, which trusts the task's project for that
 process only and does not change `~/.gemini/trustedFolders.json`.
 
-**Models.** `session/new` lists the models in `models.availableModels` (`auto`, then
-each Gemini model by ID). Discovery opens one empty session in a scratch folder and
-caches the list like other ACP catalogs. **Default** keeps the model chosen in the CLI;
-a model picked in a task is set with `session/set_model`.
+**Models.** `session/new` lists only a few models in `models.availableModels` (`auto`,
+then each Gemini model by ID), but `session/set_model` accepts any model the key can
+use. So discovery also calls the Gemini API's `models.list` with the key (sent in the
+`x-goog-api-key` header) and appends every `gemini-*` model that supports
+`generateContent`, skipping TTS, image, audio, live, Omni, transcription, embedding, robotics
+and computer-use models. The CLI's own entries come first and take their display names
+and context sizes from the API. If the API cannot be reached, the CLI's list is used
+alone. Discovery opens one empty session in a scratch folder and caches the merged list
+like other ACP catalogs. **Default** keeps the model chosen in the CLI; a model picked
+in a task is set with `session/set_model`, even when the CLI did not advertise it.
 
 **Approvals.** Each PandaCode mode maps to one Gemini session mode, and a CLI that
 does not advertise it fails the turn rather than widening access: Standard →
