@@ -5669,8 +5669,8 @@ async function sendDraft(): Promise<void> {
   const initialText = initialDraft.trim();
   const initialBot = sidebarBots.find(item => item.desktopSession === initialTask.id);
   const initialBotAttachments = Boolean(initialBot && (state.attachments.length || state.browserAttachments.get(initialTask.id)?.length || attachments.list(initialTask.id).length || state.moodboardAttachments.get(initialTask.id)?.some(item => item.projectId === initialTask.projectId)));
-  if (!isWake(initialText) && !initialText && !initialBotAttachments) return;
-  if (councilFirstSends.has(initialTask.id) || initialTask.archived || taskStage(initialTask) === 'completed' || isRunning() || finishingStreams.has(initialTask.id) || threadLoading() || state.messagesError) return;
+  const wake = isWake(initialText);
+  if (!wake && ((!initialText && !initialBotAttachments) || councilFirstSends.has(initialTask.id) || initialTask.archived || taskStage(initialTask) === 'completed' || isRunning() || finishingStreams.has(initialTask.id) || threadLoading() || state.messagesError)) return;
   const busyOther = taskBusyConfiguring(waitingFor) && !modelSwitch.saving(waitingFor) && !explicitHarnessSaves.has(waitingFor);
   if (busyOther) return;
   let intent = sendIntent(waitingFor);
@@ -7367,35 +7367,32 @@ async function openModel(anchor: HTMLElement, target: Session | undefined): Prom
       const sameModel = providerId === now.provider && (model || 'default') === (now.model || 'default');
       promptOnClose = true;
       if (sameModel && !teams.get(selected.id)?.config.rosterOnly) return;
-      // The switch shows at once and saves behind; a failure puts the previous model back and says why (model-switch.ts).
-      // Side threads never warm. A same-harness change touches only the composer and header (the sidebar shows the
-      // harness, not the model), and once saved only the labels and the trigger's busy cue.
-      const shown = () => !inPanel && selected.id === state.sessionId && generation === state.generation;
-      // The side thread re-reads its rows only once a harness change has saved; until then (and for a model change
-      // within its harness) only its composer repaints.
+      // Route post-save UI updates by live display surface (`state.sessionId` vs `btwSideTask()`), never by
+      // picker-open `generation` or `inPanel`, so A → B → A navigation and /btw ↔ full transitions clear aria-busy,
+      // restore refused model labels, and load "Switched harness" handoff cards cleanly.
+      const shownFull = () => selected.id === state.sessionId;
+      const shownSide = () => btwSideTask()?.id === selected.id;
       const paint = (harness: boolean, reread = false) => {
-        if (inPanel) {
-          if (current()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); }
-          else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
-        } else if (shown()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+        if (shownFull()) { renderComposer(); renderHeader(); if (harness) renderNavigation(); }
+        else if (shownSide()) { if (reread) btwPanel.harnessChanged(); else btwPanel.refresh(); }
       };
       // `harness`: against the harness shown (a pending pick's, maybe); `changed`: native's harness changed once saved
       // (model-switch.ts decides it from what native last confirmed), the only case that re-reads the thread.
       const harness = providerId !== now.provider;
       let changed = false;
       const saving = modelSwitch.pickModel(selected.id, { provider: providerId, model, warm: !inPanel && !device && localTarget(selected), local: !device }, {
-        show: () => { paint(harness); if (shown()) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
+        show: () => { paint(harness); if (!inPanel && shownFull() && generation === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(); },
         // `nativeHarness`: native's harness changed over the run of picks, told only by the last of them (a refused
         // last pick may still follow an earlier one native stored on another harness).
         repaint: (saved, nativeHarness) => {
           if (saved) provisionalTasks.delete(selected.id);
           changed = nativeHarness;
-          if (!saved || harness || nativeHarness || inPanel) paint(harness || nativeHarness, changed);
-          else if (shown()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
+          if (!saved || harness || nativeHarness || shownSide()) paint(harness || nativeHarness, changed);
+          else if (shownFull()) { refreshModelLabels(); if (!modelSwitch.triggerBusy(selected.id)) document.querySelector('#model-picker-trigger')?.removeAttribute('aria-busy'); }
         },
       });
       void saveExplicitHarness(selected.id, () => saving.then(() => undefined));
-      void saving.then(() => changed ? reloadAfterHarnessSwitch(selected.id, shown) : undefined).catch(report);
+      void saving.then(() => changed ? reloadAfterHarnessSwitch(selected.id, shownFull) : undefined).catch(report);
       return { saved: saving };
     },
   });
@@ -7560,6 +7557,14 @@ async function createChat(from?: Session): Promise<void> {
     if (typed) state.drafts.set(created.id, typed);
     state.drafts.delete(from.id);
     if (open) prompt!.value = '';
+    // Adopt and move any unsent /btw side draft and side-panel choices before selectSession runs leaveDraft.
+    state.drafts.get(BTW_DRAFT + from.id);
+    state.drafts.move(BTW_DRAFT + from.id, BTW_DRAFT + created.id);
+    const sideChoice = btwDrafts.get(from.id);
+    if (sideChoice) {
+      btwDrafts.set(created.id, { ...sideChoice, id: BTW_DRAFT + created.id, projectId: created.projectId });
+      btwDrafts.delete(from.id);
+    }
     attachments.restore(created.id, attachments.list(from.id)); attachments.clear(from.id);
     const browserItems = state.browserAttachments.get(from.id);
     if (browserItems?.length) state.browserAttachments.set(created.id, browserItems);

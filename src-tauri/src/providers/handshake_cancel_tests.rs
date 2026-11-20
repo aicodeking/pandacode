@@ -121,7 +121,7 @@ async fn superseding_keys_stop_old_initializers_without_clearing_the_newest() {
         std::fs::write(fixture.launches[3].join("answer"), "").map_err(|e| e.to_string())?;
         require(poll(|| fixture.jobs[3].is_finished()).await, "current initializer did not finish")?;
         for job in fixture.jobs.drain(..) { job.await.map_err(|e| e.to_string())??; }
-        let mut adopted = take(&fixture.id, "key-3", None, None).await.ok_or("newest spare was not adopted")?;
+        let mut adopted = take(&fixture.id, "key-3", None, None).await?.ok_or("newest spare was not adopted")?;
         adopted.child.kill().await.map_err(|e| e.to_string())?;
         drop(adopted);
         Ok::<_, String>(())
@@ -189,7 +189,7 @@ async fn same_key_initialization_completes_and_is_adopted_without_an_extra_spawn
         fixture.jobs.remove(0).await.map_err(|e| e.to_string())??;
         fixture.launch("same-key", &duplicate).await?;
         require(!duplicate.join("pids").exists(), "ready same-key spare was replaced")?;
-        let mut adopted = take(&fixture.id, "same-key", None, None).await.ok_or("wanted spare was not adopted")?;
+        let mut adopted = take(&fixture.id, "same-key", None, None).await?.ok_or("wanted spare was not adopted")?;
         let same_pid = adopted.child.id() == Some(original[0]);
         let replayed = handshake_spare::reply(&adopted.pending).is_some();
         adopted.child.kill().await.map_err(|e| e.to_string())?;

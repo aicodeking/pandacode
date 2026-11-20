@@ -2581,3 +2581,131 @@ test('first side submission parked at send_message with linked side retains draf
   await prompt.press('Enter');
   await expect(box).toHaveValue('parked first side question');
 });
+
+test('navigating A -> B -> A during a held switch clears aria-busy, restores refused labels, and renders the harness handoff card', async ({ page }) => {
+  await loadHeld(page, '/');
+  const before = await trigger(page).locator('[data-model-label]').textContent();
+  // 1. Refusal after A -> B -> A clears aria-busy and restores the previous model label.
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-1');
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Refused after navigation.');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(trigger(page).locator('[data-model-label]')).toHaveText(before!);
+
+  // 2. Successful harness switch after A -> B -> A clears aria-busy and renders the "Switched harness" handoff card.
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
+  await page.locator('.task-item[data-id="session-1"]').click();
+  await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-1');
+  await releaseCall(page, 'configure_session');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(trigger(page)).toContainText('GPT-6-Astra');
+  await expect(page.locator('#transcript')).toContainText('Switched harness');
+});
+
+test('opening a side thread as a full thread during a held harness switch clears aria-busy and renders its handoff card', async ({ page }) => {
+  await loadHeld(page, '/');
+  const prompt = page.locator('#prompt'), box = page.locator('.btw-input');
+  await prompt.fill('/btw hello side');
+  await prompt.press('Enter');
+  await expect(page.locator('.btw-panel .btw-transcript .user-message').first()).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.btw-panel .btw-send')).toBeEnabled({ timeout: 10_000 });
+
+  await holdCall(page, 'configure_session');
+  await page.locator('.btw-panel .model-picker').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible();
+  await menu.locator('[role="tab"][data-view="h:codex"]').click();
+  await menu.locator('[role="option"][data-model="gpt-6-astra"]').click();
+  await expect(menu).toBeHidden();
+  // Move the side thread to the main pane while configure_session is still in flight.
+  await page.locator('.btw-panel [data-btw="open"]').click();
+  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session');
+  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
+  await expect(trigger(page)).toContainText('GPT-6-Astra');
+  await expect(page.locator('#transcript')).toContainText('Switched harness');
+});
+
+test('pressing Enter on an empty composer during a held save never holds, toasts, or auto-sends later typing, and held /wake dispatches once', async ({ page }) => {
+  await loadHeld(page, '/');
+  const prompt = page.locator('#prompt');
+  const sendButton = page.locator('#composer .send-button[type="submit"]');
+
+  // 1. Empty Enter during a held switch that succeeds: never sets aria-busy and never auto-sends later unsubmitted typing.
+  await holdCall(page, 'configure_session');
+  await pickAstra(page);
+  await prompt.fill('');
+  await prompt.press('Enter');
+  await expect(sendButton).not.toHaveAttribute('aria-busy', 'true');
+  await prompt.fill('unsubmitted later typing');
+  await releaseCall(page, 'configure_session');
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() => (window as any).__calls.includes('send_message'))).toBe(false);
+  await expect(prompt).toHaveValue('unsubmitted later typing');
+
+  // 2. Empty Enter during a held switch that fails: never shows a false "Your draft is still there" toast.
+  await prompt.fill('');
+  await holdCall(page, 'configure_session');
+  await trigger(page).click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible();
+  await menu.locator('[role="tab"][data-view="h:claude"]').click();
+  await menu.locator('[role="option"][data-model="sonnet"]').click();
+  await prompt.press('Enter');
+  await expect(sendButton).not.toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session', 'Refused empty check.');
+  await expect(page.locator('#toast')).toContainText('Refused empty check');
+  await expect(page.locator('#toast')).not.toContainText('Your draft is still there');
+
+  // 3. Pressing Enter twice on /wake during a held switch dispatches only once.
+  await holdCall(page, 'configure_session');
+  await trigger(page).click();
+  await expect(menu).toBeVisible();
+  await menu.locator('[role="tab"][data-view="h:claude"]').click();
+  await menu.locator('[role="option"][data-model="sonnet"]').click();
+  await prompt.fill('/wake 30m check build');
+  await prompt.press('Enter');
+  await prompt.press('Enter');
+  await expect(sendButton).toHaveAttribute('aria-busy', 'true');
+  await releaseCall(page, 'configure_session');
+  await expect(sendButton).not.toHaveAttribute('aria-busy', 'true');
+  await expect.poll(() => page.evaluate(() => (window as any).__calls.filter((name: string) => name === 'schedule_create').length)).toBe(1);
+  await page.waitForTimeout(150);
+  expect(await page.evaluate(() => (window as any).__calls.filter((name: string) => name === 'schedule_create').length)).toBe(1);
+});
+
+test('moving a New task to No project keeps unsent /btw draft and choices and discards the old draft', async ({ page }) => {
+  await loadHeld(page, '/');
+  await page.locator('.new-task-button').click();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
+  const fromId = (await page.locator('#prompt').getAttribute('data-session-id'))!;
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await page.locator('.btw-input').fill('keep this side draft in chat');
+  await page.locator('.btw-panel .model-picker').click();
+  const menu = page.locator('.model-menu');
+  await expect(menu).toBeVisible();
+  await menu.locator('[role="tab"][data-view="h:codex"]').click();
+  await menu.locator('[role="option"][data-model="gpt-6-astra"]').click();
+  await expect(page.locator('.btw-panel .model-picker')).toContainText('GPT-6-Astra');
+
+  await page.getByRole('button', { name: 'Change task project', exact: true }).first().click();
+  await page.getByRole('option', { name: /^No project/ }).click();
+  await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', fromId);
+  await expect.poll(() => page.evaluate(id =>
+    (window as any).__callArgs.some(([name, args]: [string, { sessionId?: string }]) => name === 'discard_draft' && args?.sessionId === id),
+  fromId)).toBe(true);
+  await page.locator('#prompt').fill('/btw ');
+  await page.locator('#prompt').press('Enter');
+  await expect(page.locator('.btw-input')).toHaveValue('keep this side draft in chat');
+  await expect(page.locator('.btw-panel .model-picker')).toContainText('GPT-6-Astra');
+});

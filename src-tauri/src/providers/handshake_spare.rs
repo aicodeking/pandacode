@@ -306,7 +306,7 @@ while IFS= read -r line; do :; done"#;
         assert!(spare.thread.is_some(), "the prepared thread is retained");
         let thread_key = super::super::super::codex_preload::key_of(spare.thread.as_ref()).map(str::to_owned);
         state().spares.insert(config.session_id.clone(), spare);
-        let mut adopted = take(&config.session_id, "startup", thread_key.as_deref(), None).await.expect("adopted");
+        let mut adopted = take(&config.session_id, "startup", thread_key.as_deref(), None).await.unwrap().expect("adopted");
         adopted.child.kill().await.unwrap();
         warm::launch_settled(&config.session_id);
         assert_eq!(adopted.early_stderr.len(), EARLY_STDERR);

@@ -1176,3 +1176,21 @@ test('drafts are flushed when the window is hidden and on pagehide; main.ts flus
   assert.match(main, /const leave = \(\) => \{ state\.drafts\.flush\(\);/, 'app-quitting and pagehide write waiting drafts');
   assert.match(main, /function selectSession\([^)]*\)[^{]*\{\n  state\.drafts\.flush\(\);/, 'a thread switch writes waiting drafts first');
 });
+
+test('a 50,000-character draft with a trailing newline or blank chunk persists and decodes without wiping, while all-whitespace multi-part drafts are rejected', () => {
+  const store = memory(), drafts = new PersistedDrafts(store, () => NOW);
+  const fullWithTrailingNewline = 'a'.repeat(MAX_DRAFT_CHARS) + '\n';
+  drafts.set('long-nl', fullWithTrailingNewline);
+  assert.equal(new PersistedDrafts(store, () => NOW).get('long-nl'), fullWithTrailingNewline);
+
+  const blankMiddle = 'a'.repeat(MAX_DRAFT_CHARS) + '\n   \n' + 'b'.repeat(20);
+  drafts.set('blank-mid', blankMiddle);
+  assert.equal(new PersistedDrafts(store, () => NOW).get('blank-mid'), blankMiddle);
+
+  assert.equal(decodeDraft(JSON.stringify({ t: NOW, parts: ['', '   '] })), null, 'all-whitespace parts still rejected');
+  assert.deepEqual(decodeDraft(JSON.stringify({ t: NOW, parts: ['x'.repeat(MAX_DRAFT_CHARS), ''] })), {
+    t: NOW,
+    text: 'x'.repeat(MAX_DRAFT_CHARS) + '\n',
+    parts: ['x'.repeat(MAX_DRAFT_CHARS), ''],
+  });
+});

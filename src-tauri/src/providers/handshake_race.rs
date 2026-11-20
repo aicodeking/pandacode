@@ -31,8 +31,9 @@ fn loading(session_id: &str, key: &str, thread: Option<&str>) -> bool {
 
 /// The task's spare, if it was started for exactly this launch (`key`, and `thread`: the Codex
 /// thread the send would load, `codex_preload::thread_key`) and still runs. A spare for any
-/// other launch is discarded without being waited for.
-pub(in crate::providers) async fn take(session_id: &str, key: &str, thread: Option<&str>, cold: Option<Cold<'_>>) -> Option<Spare> {
+/// other launch is discarded without being waited for. Returns `Err` when a raced cold launch
+/// (`cold`) already ran `start_from` and failed, so the caller does not spawn `&mut command` twice.
+pub(in crate::providers) async fn take(session_id: &str, key: &str, thread: Option<&str>, cold: Option<Cold<'_>>) -> Result<Option<Spare>, String> {
     // A spare for exactly this launch may still be starting (or a first start debouncing):
     // wait until it is ready, has failed, its process runs, or `GRACE` has passed.
     warm::hurry(session_id);
@@ -49,9 +50,9 @@ pub(in crate::providers) async fn take(session_id: &str, key: &str, thread: Opti
         }
     }
     if loading(session_id, key, thread) {
-        return loaded(session_id, key, thread).await;
+        return Ok(loaded(session_id, key, thread).await);
     }
-    ready(session_id, key, thread).await
+    Ok(ready(session_id, key, thread).await)
 }
 
 /// Wait for a spare loading this send's thread: a cold launch would have to load it too. Only
@@ -71,13 +72,16 @@ async fn loaded(session_id: &str, key: &str, thread: Option<&str>) -> Option<Spa
 /// away). A send is so never much slower than a cold start because of a stalled spare. Once
 /// the spare has answered and loads its thread, the send's launch is dropped and the load
 /// waited for (`loaded`).
-async fn race(session_id: &str, key: &str, thread: Option<&str>, from: tokio::time::Instant, cold: Cold<'_>) -> Option<Spare> {
+async fn race(session_id: &str, key: &str, thread: Option<&str>, from: tokio::time::Instant, cold: Cold<'_>) -> Result<Option<Spare>, String> {
     let Cold { command, cwd, provider } = cold;
     let request = initialize_request(provider);
     let spare_ready = warm::wait_while(tokio::time::Instant::now() + SPAWNED, || starting_for(session_id, key, thread) && !loading(session_id, key, thread));
+    let cold_started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mark_started = cold_started.clone();
     // Boxed, so it can be dropped (killing its process) while the spare's load is waited for.
     let mut launch = Box::pin(async move {
         tokio::time::sleep_until(from).await;
+        mark_started.store(true, std::sync::atomic::Ordering::Release);
         start_from(command, cwd, &request, || {}).await
     });
     tokio::pin!(spare_ready);
@@ -96,23 +100,36 @@ async fn race(session_id: &str, key: &str, thread: Option<&str>, from: tokio::ti
         _ = &mut spare_ready => {
             if loading(session_id, key, thread) {
                 drop(launch);
-                return loaded(session_id, key, thread).await;
+                return Ok(loaded(session_id, key, thread).await);
             }
             if let Some(spare) = ready(session_id, key, thread).await {
-                return Some(spare);
+                return Ok(Some(spare));
             }
-            // The spare failed or stalled: the send's own launch is already on its way.
-            launch.await.ok().map(adopted)
+            // The spare failed before the cold contender woke up: return immediately without
+            // sleeping out `COLD_BUDGET`, letting the caller launch cold right away.
+            if !cold_started.load(std::sync::atomic::Ordering::Acquire) || tokio::time::Instant::now() < from {
+                drop(launch);
+                return Ok(None);
+            }
+            // The cold launch already started `start_from`: await it and propagate any failure
+            // so the caller does not spawn `&mut command` a second cold time.
+            match launch.await {
+                Ok(started) => Ok(Some(adopted(started))),
+                Err(error) => {
+                    eprintln!("A cold start raced with a warm agent failed ({error}).");
+                    Err(error)
+                }
+            }
         }
         started = &mut launch => {
             // The send's launch won: the stalled start is turned away (its process is killed
             // when it finishes) and the launch is used as the spare would have been.
             turn_away(session_id);
             match started {
-                Ok(started) => Some(adopted(started)),
+                Ok(started) => Ok(Some(adopted(started))),
                 Err(error) => {
                     eprintln!("A cold start raced with a warm agent failed ({error}).");
-                    None
+                    Err(error)
                 }
             }
         }
@@ -173,7 +190,7 @@ mod tests {
         // The next turn begins while it loads: it counts, then drops what it did not take.
         crate::providers::warm_launched(id);
         assert!(!store(id, generation, launch, Some(spare("launch-a", Some("thread-a")))), "its thread would miss that turn");
-        assert!(take(id, "launch-a", Some("thread-a"), None).await.is_none(), "a later send never adopts it");
+        assert!(take(id, "launch-a", Some("thread-a"), None).await.unwrap().is_none(), "a later send never adopts it");
         assert!(claim_for(id, Some("thread-a"), None, launch).is_none(), "nor may a start claim after that launch");
         // A debounced start whose ticket a newer pick replaced claims nothing either.
         let ticket = warm::reserve(id);
@@ -194,15 +211,15 @@ mod tests {
         assert!(claim_for(id, Some("thread-b"), None, launch).is_none(), "that thread is already starting");
         // A send for thread-a does not wait for the start loading thread-b.
         let started = std::time::Instant::now();
-        assert!(take(id, "launch-a", Some("thread-a"), None).await.is_none());
+        assert!(take(id, "launch-a", Some("thread-a"), None).await.unwrap().is_none());
         assert!(started.elapsed() < Duration::from_millis(500), "no wait-then-cold: {:?}", started.elapsed());
         assert!(!store(id, b, launch, Some(spare("launch-a", Some("thread-b")))), "and that start is turned away");
         // A waiting spare with another thread is discarded unused; one that loaded none fits.
         state().spares.insert(id.into(), spare("launch-a", Some("thread-b")));
-        assert!(take(id, "launch-a", Some("thread-a"), None).await.is_none());
+        assert!(take(id, "launch-a", Some("thread-a"), None).await.unwrap().is_none());
         assert!(!present(id));
         state().spares.insert(id.into(), spare("launch-a", None));
-        let mut adopted = take(id, "launch-a", Some("thread-a"), None).await.expect("an initialize-only spare serves any send");
+        let mut adopted = take(id, "launch-a", Some("thread-a"), None).await.unwrap().expect("an initialize-only spare serves any send");
         adopted.child.kill().await.unwrap();
         warm::launch_settled(id);
     }
@@ -224,7 +241,7 @@ mod tests {
         let mut command = Command::new("sh");
         command.args(["-c", r#": > "$1"; IFS= read -r line; printf '%s\n' '{"id":1,"result":{}}'; while IFS= read -r line; do :; done"#, "fake-cold"]).arg(dir.join("cold"));
         let started = std::time::Instant::now();
-        let mut adopted = take(id, "launch-a", Some("thread-a"), Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.expect("the loaded spare");
+        let mut adopted = take(id, "launch-a", Some("thread-a"), Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.unwrap().expect("the loaded spare");
         assert!(adopted.thread.is_some(), "the spare with its thread, not a cold launch");
         assert!(started.elapsed() >= COLD_BUDGET + Duration::from_millis(900), "it waited for the load");
         assert!(!dir.join("cold").exists(), "the send's own launch never ran");
@@ -244,7 +261,7 @@ mod tests {
         // be as fast, answers, and is used; the stalled start is turned away.
         let mut command = fake_initialize(&dir.join("cold"));
         let started = std::time::Instant::now();
-        let mut adopted = take(id, "launch-a", None, Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.expect("the cold launch won");
+        let mut adopted = take(id, "launch-a", None, Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.unwrap().expect("the cold launch won");
         let waited = started.elapsed();
         assert!(waited >= COLD_BUDGET && waited < COLD_BUDGET + Duration::from_millis(700), "about a cold start, not 6.5 s: {waited:?}");
         assert!(String::from_utf8_lossy(&adopted.pending).contains("\"id\":1"), "its reply is replayed");
@@ -260,11 +277,53 @@ mod tests {
             assert!(store(id, generation, warm::epoch(id), Some(spare("launch-a", None))));
         });
         let mut command = fake_initialize(&dir.join("unused"));
-        let mut adopted = take(id, "launch-a", None, Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.expect("the spare won");
+        let mut adopted = take(id, "launch-a", None, Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await.unwrap().expect("the spare won");
         assert_eq!(adopted.key, "launch-a");
         assert!(!dir.join("unused").exists(), "the send's own launch never ran");
         adopted.child.kill().await.unwrap();
         warm::launch_settled(id);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn early_spare_failure_returns_immediately_and_failed_cold_race_propagates_error() {
+        let dir = std::env::temp_dir().join(format!("codex-warm-early-fail-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        // 1. A spare that fails before COLD_BUDGET returns Ok(None) immediately without sleeping
+        //    out COLD_BUDGET or running the raced cold command.
+        let id = "codex-warm-early-fail";
+        let generation = claim(id, "launch-a", "codex").unwrap();
+        spawned(id, generation);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            assert!(!store(id, generation, warm::epoch(id), None));
+        });
+        let marker = dir.join("early-unused");
+        let mut command = fake_initialize(&marker);
+        let started = std::time::Instant::now();
+        let outcome = take(id, "launch-a", None, Some(Cold { command: &mut command, cwd: &dir, provider: "codex" })).await;
+        let waited = started.elapsed();
+        assert!(matches!(outcome, Ok(None)), "early spare failure falls back to caller's single cold launch");
+        assert!(waited < Duration::from_millis(600), "did not sleep out COLD_BUDGET: {waited:?}");
+        assert!(!marker.exists(), "raced cold command never started before from");
+        warm::launch_settled(id);
+
+        // 2. When the cold contender runs after COLD_BUDGET and fails, take() returns Err so the
+        //    caller never spawns `&mut command` a second cold time.
+        let id2 = "codex-warm-cold-fail";
+        let generation2 = claim(id2, "launch-a", "codex").unwrap();
+        spawned(id2, generation2);
+        let counter = dir.join("cold-runs");
+        let mut failing = Command::new("sh");
+        failing.args(["-c", r#"printf '1\n' >> "$1"; exit 1"#, "failing-cold"]).arg(&counter);
+        let err = take(id2, "launch-a", None, Some(Cold { command: &mut failing, cwd: &dir, provider: "codex" }))
+            .await
+            .err()
+            .expect("failed cold contender must return Err instead of Ok(None)");
+        assert!(!err.is_empty());
+        assert_eq!(std::fs::read_to_string(&counter).unwrap().lines().count(), 1, "cold command ran exactly once");
+        assert!(!present(id2) && !state().starting.contains_key(id2));
+        warm::launch_settled(id2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -278,7 +337,7 @@ mod tests {
         let started = std::time::Instant::now();
         let result = tokio::time::timeout(Duration::from_secs(4), take(id, "startup", None, Some(Cold { command: &mut command, cwd: &cwd, provider: "codex" }))).await;
         let mut adopted = match result {
-            Ok(Some(spare)) => spare,
+            Ok(Ok(Some(spare))) => spare,
             _ => {
                 turn_away(id);
                 warm::launch_settled(id);

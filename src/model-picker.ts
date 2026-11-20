@@ -613,6 +613,7 @@ export function openModelPicker(options: ModelPickerOptions) {
   });
   panel.addEventListener('click', event => event.stopPropagation());
   panel.addEventListener('keydown', event => {
+    if (isImeKey(event)) return;
     const target = event.target as HTMLElement;
     const key = event.key;
     if (key === 'Tab') { event.preventDefault(); cycleFocus(event.shiftKey); return; }
@@ -637,7 +638,7 @@ export function openModelPicker(options: ModelPickerOptions) {
       else if (key === 'Enter' || key === 'ArrowRight') { event.preventDefault(); search.focus({ preventScroll: true }); }
       return;
     }
-    if (target !== search || isImeKey(event)) return;
+    if (target !== search) return;
     if (key === 'ArrowDown' || key === 'ArrowUp') { event.preventDefault(); moveActive(key === 'ArrowDown' ? 1 : -1); }
     else if (key === 'Home' || key === 'End') { event.preventDefault(); moveActive(key === 'Home' ? 'first' : 'last'); }
     else if ((key === 'ArrowLeft' || key === 'ArrowRight') && !search.value) { event.preventDefault(); stepView(key === 'ArrowRight' ? 1 : -1, false); }

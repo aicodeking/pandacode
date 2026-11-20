@@ -194,6 +194,8 @@ const openReads = new Map<symbol, number>();
 const modelsSaving = new Map<string, number>();
 /** Each task's newest model pick: an older one's reply or refusal must not paint over it. */
 const latestPick = new Map<string, symbol>();
+/** Whether the active queued model pick kept the previous model's effort (e.g. leaving a named team for its lead). */
+const modelKeepsEffort = new Map<string, boolean>();
 /** While a task's model picks save: the task as native last confirmed it (before the first pick, then each saved
  *  reply), which a refused pick goes back to (not an older pick that was only shown, or itself refused). */
 const modelBase = new Map<string, Session>();
@@ -230,7 +232,7 @@ function pruneWritten(): void {
 }
 /** Per-task pick state a deleted task must not keep (in-flight counts end with their saves). */
 const perTask = (): readonly { has(id: string): boolean; delete(id: string): boolean }[] =>
-  [written, modelBase, latestPick, leftTeams, runStart, storedPick, accountReleased, latestMode, modeBase, refused, sentWarm];
+  [written, modelBase, latestPick, modelKeepsEffort, leftTeams, runStart, storedPick, accountReleased, latestMode, modeBase, refused, sentWarm];
 /** Tasks deleted: their marks and pick state go, so a pick still in flight acts as replaced (it shows and says nothing). */
 export function forgetTasks(ids: Iterable<string>): void { for (const id of ids) perTask().forEach(map => map.delete(id)); }
 /** Whether any pick state is kept for the task (for tests: a deleted task keeps none). */
@@ -374,12 +376,11 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     const base = modelBase.get(id) ?? previous, start = runStart.get(id) ?? previous;
     // Replaced before its turn: the newer pick saves instead (no configure, no warm start).
     if (superseded()) return false;
-    let previousEffort = base.reasoningEffort;
     // A model picked while an effort change saves goes after it, so the effort reply can't land on the new model.
     for (let queue = efforts.get(id); queue; queue = efforts.get(id)) {
       await queue.chain;
-      previousEffort = hooks.task(id)?.reasoningEffort;
     }
+    const previousEffort = (modelBase.get(id) ?? base).reasoningEffort;
     if (superseded()) return false;
     const saved = await configure(base, previousEffort);
     // Replaced while it saved: the newer pick settles the run, so nothing here (account, team, default, reload).
@@ -394,7 +395,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
     return saved;
   }, saved => {
     count(modelsSaving, id, -1);
-    if (!superseded()) [latestPick, modelBase, leftTeams, runStart, storedPick, accountReleased].forEach(map => map.delete(id));
+    if (!superseded()) [latestPick, modelBase, modelKeepsEffort, leftTeams, runStart, storedPick, accountReleased].forEach(map => map.delete(id));
     ui.repaint(saved, harness);
   });
   /** Team removal and the durable configure; a refusal (unless a newer pick decides) goes back to `base` and says so. */
@@ -443,6 +444,7 @@ export function pickModel(id: string, choice: ModelChoice, ui: { show(): void; r
   const native = modelBase.get(id) ?? previous;
   const shownHarness = choice.provider !== previous.provider;
   const sameModel = !shownHarness && (choice.model || 'default') === (previous.model || 'default');
+  modelKeepsEffort.set(id, modelKeepsEffort.has(id) ? Boolean(modelKeepsEffort.get(id)) && sameModel : sameModel);
   const continuity = !shownHarness ? previous : choice.provider === native.provider ? native : undefined;
   put({ ...previous, provider: choice.provider, model: choice.model, reasoningEffort: sameModel ? previous.reasoningEffort : null, codexSettings: continuity?.codexSettings ?? null, resumeId: continuity?.resumeId ?? null, goalState: continuity?.goalState ?? null, contextUsage: sameModel ? previous.contextUsage : null }, MODEL_FIELDS);
   ui.show();
@@ -530,10 +532,13 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
 }): Promise<void> {
   const queue = efforts.get(id) ?? { seq: 0, inFlight: 0, confirmed: options.initial, chain: Promise.resolve() };
   const seq = queue.seq + 1;
+  const pickAtStart = latestPick.get(id);
   const reply = queue.chain.then(options.request);
   efforts.set(id, { ...queue, seq, inFlight: queue.inFlight + 1, chain: reply.catch(() => undefined) });
   if (queue.inFlight === 0) busy(id, 1);
   const latest = () => efforts.get(id)?.seq === seq;
+  // A different model queued behind this effort owns the shown effort (null); don't clobber it in state or UI.
+  const queuedNewModel = () => modelsSaving.has(id) && latestPick.get(id) !== pickAtStart && !modelKeepsEffort.get(id);
   options.paint(effort);
   try {
     const confirmed = options.confirmed(await reply);
@@ -541,12 +546,15 @@ export async function saveEffort<T>(id: string, effort: string | null, options: 
     // A model pick saving goes back to the effort native now has, should it be refused.
     const base = modelBase.get(id);
     if (base) modelBase.set(id, { ...base, reasoningEffort: confirmed });
-    if (latest()) options.paint(confirmed);
+    if (latest() && !queuedNewModel()) options.paint(confirmed);
   } catch (error) {
     if (!latest() || !hooks.task(id)) throw new SupersededEffort(message(error));
-    options.paint(efforts.get(id)!.confirmed);
+    const confirmed = efforts.get(id)!.confirmed;
+    const base = modelBase.get(id);
+    if (base) modelBase.set(id, { ...base, reasoningEffort: confirmed });
+    if (!queuedNewModel()) options.paint(confirmed);
     // A model queued behind this save owns the outcome; its rollback still needs the confirmed effort.
-    if (switches.has(id)) throw new SupersededEffort(message(error));
+    if (switches.has(id) && latestPick.get(id) !== pickAtStart) throw new SupersededEffort(message(error));
     refuse(id, { what: 'effort', reason: message(error), still: options.still?.() ?? '' });
     throw error;
   } finally {

@@ -4306,7 +4306,7 @@ async fn run_process_with_tools(
         let key = crate::blocking(move || Ok(launch.key(&provider, &cwd))).await?;
         // A spare slow to answer `initialize` is raced by this run's own launch.
         let cold = handshake_warm::Cold { command: &mut command, cwd: &config.cwd, provider: &config.provider };
-        Ok::<_, String>(handshake_warm::take(&config.session_id, &key, codex_thread.as_deref(), Some(cold)).await)
+        handshake_warm::take(&config.session_id, &key, codex_thread.as_deref(), Some(cold)).await
     };
     let host_start = async {
         Ok::<_, String>(match (config.provider.as_str(), host) {

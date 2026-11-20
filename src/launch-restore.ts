@@ -80,13 +80,14 @@ export interface DraftWriteTimer { wait: Schedule; cancel: (handle: unknown) => 
 export const browserDraftTimer: DraftWriteTimer = { wait: (run, ms) => setTimeout(run, ms), cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
 
 const bytes = (text: string) => text.length * 2;
-const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
+const keepPart = (text: string) => text.length <= MAX_DRAFT_CHARS;
+const keep = (text: string) => Boolean(text.trim()) && keepPart(text);
 
-/** Splits an oversized multi-line draft along newlines into `keep`-sized pieces (reusing `hint` when exact). */
+/** Splits an oversized multi-line draft along newlines into `MAX_DRAFT_CHARS`-bounded pieces (reusing `hint` when exact). */
 function splitParts(text: string, hint?: readonly string[]): string[] {
   if (!text.trim() || bytes(text) > DRAFTS_BYTE_BUDGET) return [];
   if (keep(text)) return [text];
-  if (hint?.length && hint.join('\n') === text && hint.every(keep)) return [...hint];
+  if (hint?.length && hint.join('\n') === text && hint.every(keepPart)) return [...hint];
   const lines = text.split('\n');
   if (lines.some(line => line.length > MAX_DRAFT_CHARS)) return [];
   const parts: string[] = [];
@@ -97,7 +98,7 @@ function splitParts(text: string, hint?: readonly string[]): string[] {
     else { parts.push(current); current = line; }
   }
   parts.push(current);
-  return parts.length && parts.every(keep) && parts.join('\n') === text ? parts : [];
+  return parts.length && parts.every(keepPart) && parts.join('\n') === text ? parts : [];
 }
 
 function safeRead(store: Pick<Store, 'getItem'>, key: string): string | null {
@@ -118,9 +119,9 @@ export function decodeDraft(raw: string | null): { t: number; text: string; part
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== 'object') return null;
     const { t, text, parts } = value as Record<string, unknown>;
-    if (typeof t === 'number' && Number.isFinite(t) && Array.isArray(parts) && parts.length && parts.every(part => typeof part === 'string' && keep(part))) {
+    if (typeof t === 'number' && Number.isFinite(t) && Array.isArray(parts) && parts.length && parts.every(part => typeof part === 'string' && keepPart(part))) {
       const combined = parts.join('\n');
-      if (bytes(combined) <= DRAFTS_BYTE_BUDGET) return { t, text: combined, parts };
+      if (combined.trim() && bytes(combined) <= DRAFTS_BYTE_BUDGET) return { t, text: combined, parts };
     }
     return typeof t === 'number' && Number.isFinite(t) && typeof text === 'string' && keep(text) ? { t, text } : null;
   } catch { return null; }

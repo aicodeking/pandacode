@@ -139,7 +139,7 @@ export class BtwPanel {
     });
     // Esc leaves the panel for the main prompt; it never reaches the global stop-the-agent key.
     root.addEventListener('keydown', event => {
-      if (event.key !== 'Escape' || event.isComposing || event.defaultPrevented) return;
+      if (event.key !== 'Escape' || isImeKey(event) || event.defaultPrevented) return;
       event.preventDefault(); event.stopPropagation();
       document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
     });

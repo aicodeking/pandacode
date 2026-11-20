@@ -583,16 +583,16 @@ done"#;
     async fn a_codex_spare_is_adopted_only_on_its_exact_key() {
         let id = "codex-warm-take";
         state().spares.insert(id.into(), spare("launch-a", sleeper()));
-        assert!(take(id, "launch-b", None, None).await.is_none(), "a different launch starts cold");
+        assert!(take(id, "launch-b", None, None).await.unwrap().is_none(), "a different launch starts cold");
         assert!(!state().spares.contains_key(id), "and the stale spare is gone");
         state().spares.insert(id.into(), spare("launch-a", sleeper()));
-        let mut adopted = take(id, "launch-a", None, None).await.expect("the matching spare is adopted");
+        let mut adopted = take(id, "launch-a", None, None).await.unwrap().expect("the matching spare is adopted");
         adopted.child.kill().await.unwrap();
         let (mut child, group) = sleeper();
         child.kill().await.unwrap();
         child.wait().await.unwrap();
         state().spares.insert(id.into(), spare("launch-a", (child, group)));
-        assert!(take(id, "launch-a", None, None).await.is_none(), "a spare that exited is never adopted");
+        assert!(take(id, "launch-a", None, None).await.unwrap().is_none(), "a spare that exited is never adopted");
     }
 
     #[cfg(unix)]
@@ -626,7 +626,7 @@ done"#;
             warm::changed();
         });
         let started = std::time::Instant::now();
-        let mut adopted = take(id, "launch-a", None, None).await.expect("the starting spare is adopted");
+        let mut adopted = take(id, "launch-a", None, None).await.unwrap().expect("the starting spare is adopted");
         assert!(started.elapsed() < Duration::from_millis(900), "no polling delay after it is ready");
         adopted.child.kill().await.unwrap();
         warm::launch_settled(id);
@@ -634,7 +634,7 @@ done"#;
         // late spare is turned away.
         let generation = claim(id, "launch-a", "codex").unwrap();
         let started = std::time::Instant::now();
-        assert!(take(id, "launch-a", None, None).await.is_none());
+        assert!(take(id, "launch-a", None, None).await.unwrap().is_none());
         let waited = started.elapsed();
         assert!(waited >= GRACE && waited < GRACE + Duration::from_millis(400), "{waited:?}");
         assert!(state().starting.get(id).is_none_or(|(current, ..)| *current != generation));
@@ -651,7 +651,7 @@ done"#;
             warm::changed();
         });
         let started = std::time::Instant::now();
-        assert!(take(id, "launch-a", None, None).await.is_none());
+        assert!(take(id, "launch-a", None, None).await.unwrap().is_none());
         assert!(started.elapsed() < Duration::from_secs(1));
         warm::launch_settled(id);
     }
@@ -671,7 +671,7 @@ done"#;
             drop(state);
             warm::changed();
         });
-        let mut adopted = take(id, "launch-a", None, None).await.expect("the spawned spare is adopted, not a second cold start");
+        let mut adopted = take(id, "launch-a", None, None).await.unwrap().expect("the spawned spare is adopted, not a second cold start");
         adopted.child.kill().await.unwrap();
         warm::launch_settled(id);
     }
@@ -725,7 +725,7 @@ done"#;
             warm::changed();
         });
         let started = std::time::Instant::now();
-        let mut adopted = take(id, "launch-a", None, None).await.expect("the debounced spare is adopted, not a second cold start");
+        let mut adopted = take(id, "launch-a", None, None).await.unwrap().expect("the debounced spare is adopted, not a second cold start");
         assert!(started.elapsed() < warm::DEBOUNCE, "the send ended the debounce early");
         rewarm.await.unwrap();
         adopted.child.kill().await.unwrap();

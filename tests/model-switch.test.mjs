@@ -819,3 +819,64 @@ for (const saved of [true, false]) test(`a model refusal keeps a newer ${saved ?
   assert.equal(tasks.get(id).reasoningEffort, 'high');
   if (!saved) await save();
 });
+
+test('an in-flight effort settling behind a queued new-model switch does not clobber the new model effort or held reads, and a refused switch rolls back to confirmed effort', async () => {
+  const id = 'effort-then-new-model-ok';
+  tasks.set(id, stored(id, { provider: 'claude', model: 'sonnet', reasoningEffort: 'low' }));
+  const paints = [];
+  const effort = switcher.pickEffort(id, 'high', { warm: false, paint: () => paints.push(tasks.get(id).reasoningEffort) });
+  const model = switcher.pickModel(id, { provider: 'codex', model: 'astra', warm: false, local: true }, ui);
+  assert.equal(tasks.get(id).reasoningEffort, null);
+  paints.length = 0;
+  await reply('set_reasoning_effort', args => stored(id, { reasoningEffort: args.reasoningEffort }));
+  await effort;
+  assert.equal(tasks.get(id).reasoningEffort, null, 'new model keeps null effort while configure_session is in flight');
+  assert.deepEqual(paints, [], 'effort completion must not paint old model effort over the new model');
+  const held = await switcher.readTasks(async () => stored(id, { provider: 'claude', model: 'sonnet', reasoningEffort: 'high' }));
+  assert.deepEqual([held.provider, held.model, held.reasoningEffort], ['codex', 'astra', null]);
+  await reply('configure_session', new Error('Model refused.'));
+  assert.equal(await model, false);
+  assert.deepEqual([tasks.get(id).provider, tasks.get(id).model, tasks.get(id).reasoningEffort], ['claude', 'sonnet', 'high']);
+});
+
+test('a refused in-flight effort behind queued model switches rolls modelBase back so later refused switches restore confirmed effort', async () => {
+  const id = 'effort-refused-then-models-refused';
+  tasks.set(id, stored(id, { provider: 'claude', model: 'sonnet', reasoningEffort: 'low' }));
+  const paints = [];
+  const effort = switcher.pickEffort(id, 'high', { warm: false, paint: () => paints.push(tasks.get(id).reasoningEffort) });
+  const effortOutcome = assert.rejects(effort, switcher.SupersededEffort);
+  const first = switcher.pickModel(id, { provider: 'codex', model: 'astra', warm: false, local: true }, ui);
+  assert.equal(tasks.get(id).reasoningEffort, null);
+  paints.length = 0;
+  await reply('set_reasoning_effort', new Error('Effort refused.'));
+  await effortOutcome;
+  assert.equal(tasks.get(id).reasoningEffort, null, 'refused effort does not clobber queued new model effort');
+  assert.deepEqual(paints, [], 'refused effort does not paint over queued new model');
+  // Queue a second model pick before the first configure_session fails, then refuse both.
+  const second = switcher.pickModel(id, { provider: 'claude', model: 'opus', warm: false, local: true }, ui);
+  await reply('configure_session', new Error('First refused.'));
+  assert.equal(await first, false);
+  await reply('configure_session', new Error('Second refused.'));
+  assert.equal(await second, false);
+  assert.deepEqual([tasks.get(id).provider, tasks.get(id).model, tasks.get(id).reasoningEffort], ['claude', 'sonnet', 'low']);
+});
+
+test('an in-flight effort behind a same-model switch leaving a named team still paints confirmed effort', async () => {
+  const id = 'effort-then-same-model-leave-team';
+  tasks.set(id, stored(id, { provider: 'claude', model: 'sonnet', reasoningEffort: 'low' }));
+  teams.set(id, { rosterOnly: true, name: 'Reviewers' });
+  const paints = [];
+  const effort = switcher.pickEffort(id, 'high', { warm: false, paint: () => paints.push(tasks.get(id).reasoningEffort) });
+  const model = switcher.pickModel(id, { provider: 'claude', model: 'sonnet', warm: false, local: true }, ui);
+  assert.equal(tasks.get(id).reasoningEffort, 'high');
+  paints.length = 0;
+  await reply('set_reasoning_effort', () => stored(id, { reasoningEffort: 'medium' }));
+  await effort;
+  assert.equal(tasks.get(id).reasoningEffort, 'medium');
+  assert.deepEqual(paints, ['medium']);
+  await reply('architect_configure', () => null);
+  await reply('configure_session', args => stored(id, { provider: args.provider, model: args.model, reasoningEffort: 'medium' }));
+  assert.equal(await model, true);
+  assert.equal(tasks.get(id).reasoningEffort, 'medium');
+  teams.delete(id);
+});

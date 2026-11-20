@@ -130,7 +130,7 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     if (target && !panel.contains(target) && !anchor.contains(target)) close(false);
   }
   function onEscape(event: KeyboardEvent): void {
-    if (event.key !== 'Escape') return;
+    if (event.key !== 'Escape' || isImeKey(event)) return;
     event.preventDefault(); event.stopPropagation(); close();
   }
 

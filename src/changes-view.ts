@@ -1,6 +1,6 @@
 import type { GitFile, GitStatus } from './types';
 import type { DiffViewerController, DiffViewerReaderState } from './diff-viewer';
-import { escape, fileIcon, icon } from './dom';
+import { escape, fileIcon, icon, isImeKey } from './dom';
 import './changes-view.css';
 import { errorText } from './error-text';
 
@@ -663,7 +663,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
   commitInput.addEventListener('input', totals, { signal: listeners.signal });
   commitInput.addEventListener('keydown', event => {
-    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeCommit(); }
+    if (event.key === 'Escape' && !isImeKey(event)) { event.preventDefault(); event.stopPropagation(); closeCommit(); }
   }, { signal: listeners.signal });
 
   render();
