@@ -72,6 +72,8 @@ const paths: Record<string, string> = {
   circle: '<circle cx="12" cy="12" r="8"/>',
   line: '<path d="m5 19 14-14"/>',
   minimize: '<path d="M5 12h14"/>',
+  maximize: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
+  restore: '<path d="M9 3v6H3M15 3v6h6M3 15h6v6M21 15h-6v6"/>',
   pin: '<path d="m16 3 5 5-4 2-3 5-2-2-6 6m3-9L7 8l5-3Z"/>',
   'arrow-right': '<path d="M5 12h14m-6-6 6 6-6 6"/>',
   text: '<path d="M5 6h14M12 6v14m-4 0h8"/>',

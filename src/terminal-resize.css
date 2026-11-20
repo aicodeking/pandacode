@@ -1,0 +1,17 @@
+.terminal-resize-handle{position:absolute;inset:0 0 auto;height:8px;z-index:7;cursor:row-resize;touch-action:none;user-select:none;-webkit-user-select:none;outline:none}
+.terminal-resize-handle::after{content:"";position:absolute;left:50%;top:0;width:44px;height:2px;margin-left:-22px;border-radius:var(--radius-xs);background:var(--accent);opacity:0;transition:opacity var(--ds-ease-in) ease-out}
+.terminal-resize-handle:is(:hover,:focus-visible)::after,.terminal-resizing .terminal-resize-handle::after{opacity:.8}
+.terminal-resize-handle:focus-visible::after{width:64px;height:4px;margin-left:-32px;background:var(--focus);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 35%,transparent)}
+.terminal-resizing,.terminal-resizing *{cursor:row-resize!important;user-select:none!important;-webkit-user-select:none!important}
+/* The drawer is its own stacking context, so the handle and the raised tab strip only outrank each
+   other: the header (z-index 6) and its floating action dock still paint above the whole drawer. */
+.terminal-drawer{isolation:isolate}
+.terminal-drawer>.drawer-heading :is(.terminal-tab,.terminal-heading-actions){position:relative;z-index:8}
+/* action-dock.ts sets --terminal-dock-clear while the floating dock hangs over the drawer, so its
+   buttons, the tab strip and the rightmost terminal columns never sit under one another. */
+.terminal-drawer :is(.terminal-heading-actions,#terminal-host){margin-right:var(--terminal-dock-clear,0px)}
+.terminal-drawer.terminal-maximized{height:auto;min-height:0;max-height:none;flex:1 1 auto}
+.terminal-drawer.terminal-maximized>.terminal-resize-handle{display:none}
+.main-pane.terminal-maximized>.work-area{display:none}
+@media(prefers-reduced-motion:reduce){.terminal-resize-handle::after{transition:none}}
+@media(prefers-contrast:more){.terminal-resize-handle::after{background:var(--text)}}

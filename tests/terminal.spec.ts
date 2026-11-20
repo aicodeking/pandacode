@@ -3,6 +3,9 @@ import { expect, test, type Page } from '@playwright/test';
 const drawer = (page: Page) => page.locator('#terminal-drawer');
 const screen = (page: Page) => drawer(page).locator('.xterm-screen:visible');
 const toggle = (page: Page) => page.locator('.workspace-header [data-action="terminal"]');
+const resizeHandle = (page: Page) => page.getByRole('separator', { name: 'Resize terminal', exact: true });
+const drawerHeight = (page: Page) => drawer(page).evaluate(node => node.getBoundingClientRect().height);
+const storedHeight = (page: Page) => page.evaluate(() => localStorage.getItem('pandacode.terminalHeight'));
 const calls = (page: Page, command: string) => page.evaluate(command => (window as any).__terminalCalls.filter((entry: any) => entry.command === command), command);
 const warning = (page: Page) => page.getByRole('dialog', { name: /terminal/i });
 
@@ -68,6 +71,172 @@ test.describe('terminal', () => {
     expect(await calls(page, 'start_terminal')).toHaveLength(1);
     expect(await calls(page, 'close_terminal')).toHaveLength(0);
     expect(await calls(page, 'get_terminal_activity')).toHaveLength(0);
+  });
+
+  test('resizes the terminal by dragging or keyboard, remembers the height, and resets it', async ({ page }) => {
+    await open(page);
+    await expect(resizeHandle(page)).toBeVisible();
+    const initial = await drawerHeight(page);
+    const handle = (await resizeHandle(page).boundingBox())!;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2, handle.y - 120, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(() => drawerHeight(page)).toBeGreaterThan(initial + 100);
+    const dragged = await drawerHeight(page);
+    await expect.poll(async () => Number(await storedHeight(page))).toBeCloseTo(dragged, 0);
+
+    await resizeHandle(page).focus();
+    await page.keyboard.press('ArrowUp');
+    await expect.poll(() => drawerHeight(page)).toBeGreaterThan(dragged + 8);
+    const keyboardHeight = await drawerHeight(page);
+    await expect.poll(async () => Number(await storedHeight(page))).toBeCloseTo(keyboardHeight, 0);
+
+    // The drawer reopens at the saved height after a reload.
+    await page.reload();
+    await expect(page.locator('.task-item.selected')).toBeVisible();
+    await toggle(page).click();
+    await expect(screen(page)).toBeVisible();
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(keyboardHeight, 0);
+
+    // Double-click restores the default and forgets the preference.
+    await resizeHandle(page).dblclick();
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(245, 0);
+    await expect.poll(() => storedHeight(page)).toBeNull();
+  });
+
+  test('maximizes the terminal, refits xterm, and restores the previous height', async ({ page }) => {
+    await open(page);
+    const initial = await drawerHeight(page);
+    const pane = (await page.locator('.main-pane').boundingBox())!;
+    const screenBefore = (await screen(page).boundingBox())!;
+    await drawer(page).getByRole('button', { name: 'Maximize terminal', exact: true }).click();
+    await expect(drawer(page)).toHaveClass(/terminal-maximized/);
+    await expect(page.locator('.main-pane')).toHaveClass(/terminal-maximized/);
+    await expect(drawer(page).getByRole('button', { name: 'Restore terminal', exact: true })).toBeVisible();
+    await expect(resizeHandle(page)).toBeHidden();
+    const expanded = (await drawer(page).boundingBox())!;
+    expect(expanded.height).toBeGreaterThan(initial * 2);
+    expect(Math.abs(expanded.y + expanded.height - (pane.y + pane.height))).toBeLessThan(2);
+    await expect.poll(async () => (await screen(page).boundingBox())!.height).toBeGreaterThan(screenBefore.height + 100);
+
+    await drawer(page).getByRole('button', { name: 'Restore terminal', exact: true }).click();
+    await expect(drawer(page)).not.toHaveClass(/terminal-maximized/);
+    await expect(page.locator('.main-pane')).not.toHaveClass(/terminal-maximized/);
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(initial, 0);
+
+    // Minimizing from the maximized view restores the conversation instead of leaving it hidden.
+    await drawer(page).getByRole('button', { name: 'Maximize terminal', exact: true }).click();
+    await drawer(page).getByRole('button', { name: 'Minimize terminal', exact: true }).click();
+    await expect(drawer(page)).toBeHidden();
+    await expect(page.locator('.main-pane')).not.toHaveClass(/terminal-maximized/);
+    await expect(page.locator('.work-area')).toBeVisible();
+    await toggle(page).click();
+    await expect(drawer(page)).toBeVisible();
+    await expect(drawer(page)).not.toHaveClass(/terminal-maximized/);
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(initial, 0);
+  });
+
+  test('keeps the action dock and the composer clear of a tall or maximized terminal', async ({ page }) => {
+    await open(page);
+    // Every visible dock button still receives its own clicks, never the drawer's handle, tabs or Close button.
+    const dockHits = () => page.evaluate(() => [...document.querySelectorAll<HTMLElement>('#action-dock button')].filter(button => button.getClientRects().length).flatMap(button => {
+      const box = button.getBoundingClientRect(), x = box.left + box.width / 2;
+      return [box.top + 2, box.top + box.height / 2, box.bottom - 2].filter(y => !button.contains(document.elementFromPoint(x, y))).map(y => `${button.getAttribute('aria-label')} @${Math.round(y)}`);
+    }));
+    const rect = (selector: string) => page.locator(selector).evaluate(node => node.getBoundingClientRect().toJSON() as DOMRect);
+    const dockClear = () => drawer(page).evaluate(node => node.style.getPropertyValue('--terminal-dock-clear'));
+    await expect.poll(() => page.locator('#action-dock button:visible').count()).toBeGreaterThan(3);
+    await resizeHandle(page).focus();
+    await page.keyboard.press('End');
+    await expect.poll(async () => (await rect('#composer-area')).bottom - (await rect('#terminal-drawer')).top).toBeLessThanOrEqual(1);
+    await expect.poll(dockHits).toEqual([]);
+
+    await drawer(page).getByRole('button', { name: 'Maximize terminal', exact: true }).click();
+    await expect(page.locator('.main-pane')).toHaveClass(/terminal-maximized/);
+    // Maximized, the dock always hangs over the drawer, so the hit test below is not vacuous.
+    await expect.poll(dockClear).toMatch(/^\d+px$/);
+    await expect.poll(dockHits).toEqual([]);
+    // The drawer's own controls sit left of the dock instead of under it.
+    await expect.poll(async () => (await rect('.terminal-heading-actions')).right - (await rect('#action-dock')).left).toBeLessThanOrEqual(0);
+  });
+
+  test('clamps to a short window without forgetting the saved height, cancels drags, and ignores invalid saved heights', async ({ page }) => {
+    await open(page);
+    await resizeHandle(page).focus();
+    await page.keyboard.press('Home');
+    await expect(resizeHandle(page)).toHaveAttribute('aria-valuenow', '150');
+    await page.keyboard.press('Shift+ArrowUp');
+    await page.keyboard.press('ArrowDown');
+    await expect(resizeHandle(page)).toHaveAttribute('aria-valuenow', '182');
+    await expect.poll(() => storedHeight(page)).toBe('182');
+    await page.keyboard.press('End');
+    const tallest = Number(await resizeHandle(page).getAttribute('aria-valuemax'));
+    await expect(resizeHandle(page)).toHaveAttribute('aria-valuenow', String(tallest));
+    await expect.poll(() => storedHeight(page)).toBe(String(tallest));
+
+    // A temporarily short window clamps the drawer but keeps the saved choice.
+    const viewport = page.viewportSize()!;
+    await page.setViewportSize({ width: viewport.width, height: 480 });
+    await expect.poll(() => drawerHeight(page)).toBeLessThan(tallest - 100);
+    expect(await storedHeight(page)).toBe(String(tallest));
+    await page.setViewportSize(viewport);
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(tallest, 0);
+
+    // Escape cancels a drag; a pointer drag hands focus back to the terminal.
+    await page.keyboard.press('Home');
+    await screen(page).click();
+    const handle = (await resizeHandle(page).boundingBox())!;
+    await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + handle.width / 2, handle.y - 100, { steps: 4 });
+    await expect.poll(() => drawerHeight(page)).toBeGreaterThan(200);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect.poll(() => drawerHeight(page)).toBeCloseTo(150, 0);
+    expect(await storedHeight(page)).toBe('150');
+    await expect(drawer(page).locator('.xterm-helper-textarea')).toBeFocused();
+
+    for (const invalid of ['abc', '-5', '1e9']) {
+      await page.evaluate(value => localStorage.setItem('pandacode.terminalHeight', value), invalid);
+      await page.reload();
+      await expect(page.locator('.task-item.selected')).toBeVisible();
+      await toggle(page).click();
+      await expect(screen(page)).toBeVisible();
+      await expect.poll(() => drawerHeight(page)).toBeCloseTo(245, 0);
+    }
+  });
+
+  test('leaves the maximized view when switching threads or views and when the last tab closes', async ({ page }) => {
+    const maximize = () => drawer(page).getByRole('button', { name: 'Maximize terminal', exact: true }).click();
+    const conversationShown = async () => {
+      await expect(page.locator('.main-pane')).not.toHaveClass(/terminal-maximized/);
+      await expect(page.locator('.work-area')).toBeVisible();
+    };
+    await open(page);
+    await select(page, 'session-2');
+    await toggle(page).click();
+    await expect(screen(page)).toContainText('Ready terminal-2');
+    await maximize();
+    await expect(page.locator('.work-area')).toBeHidden();
+    // Thread 1's drawer is open too, but the switch brings its conversation back.
+    await select(page, 'session-1');
+    await conversationShown();
+    await expect(drawer(page)).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeVisible();
+
+    await maximize();
+    await page.getByRole('button', { name: /^Workspace view: / }).click();
+    await page.getByRole('menuitemradio', { name: 'Board', exact: true }).click();
+    await conversationShown();
+    await expect(page.locator('#project-board')).toBeVisible();
+    await page.getByRole('button', { name: /^Workspace view: / }).click();
+    await page.getByRole('menuitemradio', { name: 'Conversation', exact: true }).click();
+
+    await maximize();
+    await drawer(page).getByRole('button', { name: 'Close Terminal 1', exact: true }).click();
+    await expect(drawer(page)).toBeHidden();
+    await conversationShown();
   });
 
   test('top toggle and keyboard shortcut hide the terminal without stopping it', async ({ page }) => {
