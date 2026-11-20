@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
+const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor', 'alibaba'];
 const usageButton = (page: Page) => page.getByRole('button', { name: 'Agent usage', exact: true });
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Agent usage', exact: true });
 const card = (page: Page, name: string) => dialog(page).locator('.usage-card').filter({ hasText: name });
@@ -59,7 +59,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
       if (command === 'usage_ledger') {
         const fixture = window.__usageFixture;
         fixture.ledgerCalls.push(structuredClone(args));
-        if (fixture.ledgerError) throw new Error(fixture.ledgerError);
+        if (fixture.ledgerError) throw fixture.ledgerError;
         return structuredClone(fixture.ledger);
       }
       if (command === 'prompt_activity') return structuredClone(window.__usageFixture.prompts);
@@ -571,14 +571,14 @@ test('Agent usage isolates a failed IPC request and recovers on refresh', async 
   await openApp(page, [], ['codex']);
   await openUsage(page);
   await tab(page, 'Codex').click();
-  await expect(card(page, 'Codex')).toContainText('Could not read limits. Try Refresh.');
+  await expect(card(page, 'Codex')).toContainText('Usage service temporarily unavailable.');
   await expect(card(page, 'Codex').getByRole('progressbar')).toHaveCount(0);
   await expect(card(page, 'Claude Code')).toContainText('22% used');
   await expect(refresh(page)).toBeEnabled();
   await page.evaluate(() => { (window as any).__usageFixture.failures = []; });
   await refresh(page).click();
   await expect(card(page, 'Codex').getByRole('progressbar').first()).toHaveAttribute('aria-valuenow', '35');
-  await expect(card(page, 'Codex')).not.toContainText('Could not read limits. Try Refresh.');
+  await expect(card(page, 'Codex')).not.toContainText('Usage service temporarily unavailable.');
   await expect(refresh(page)).toBeEnabled();
   expect(errors).toEqual([]);
 });
