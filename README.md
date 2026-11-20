@@ -274,7 +274,7 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   Nothing is sent; Settings → General can turn automatic restarts off. See
   [crash recovery](docs/crash-recovery.md).
 - **Unsent drafts are kept as plain text.** What you type in the composer (or a
-  shared bot channel's) and haven't sent (up to 50,000 characters per draft) is saved unencrypted in the
+  shared bot channel's) and haven't sent (up to 50,000 characters per line and 1 MB across all saved drafts) is saved unencrypted in the
   app's local web storage for up to 30 days (cleared at launch and daily while the app
   runs; longer only while PandaCode is not opened), so it usually survives a restart
   (the web view may write it to disk slightly later, so the very last keystrokes before
