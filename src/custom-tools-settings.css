@@ -8,8 +8,8 @@
 .custom-tools-none{padding:.7rem 1rem}
 .custom-tools-empty{margin:0}
 .custom-tool-row{display:flex;align-items:center;gap:12px;padding:.6rem 1rem;min-height:3rem}
-.custom-tool[draggable=true]{cursor:grab}
-.custom-tool[draggable=true]:active{cursor:grabbing}
+.custom-tool-row[draggable=true]{cursor:grab}
+.custom-tool-row[draggable=true]:active{cursor:grabbing}
 .custom-tool[data-disabled=true] .custom-tool-main{opacity:.6}
 .custom-tool-main{display:flex;flex-direction:column;gap:2px;flex:1;min-width:0}
 .custom-tool-title{display:flex;align-items:center;gap:6px;min-width:0}

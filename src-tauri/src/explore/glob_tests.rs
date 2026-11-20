@@ -135,3 +135,30 @@ fn a_glob_says_what_it_filtered_out() {
     let nothing = repo.explore(json!({"search":["needle"]}));
     assert!(nothing["search"][0].get("outside_glob").is_none() && nothing.get("glob_warnings").is_none());
 }
+
+#[test]
+fn windows_backslash_globs_match_normalized_paths() {
+    let repo = Repo::new();
+    repo.write("src/a.rs", "needle\n");
+    repo.write("src/b.rs", "needle\n");
+    repo.write("src/gen/c.rs", "needle\n");
+    repo.write("web/d.ts", "needle\n");
+    repo.write("src/a,b.txt", "needle\n");
+    let paths = |globs: Value| search_paths(&repo.explore(json!({"search":["needle"],"glob":globs})));
+    assert_eq!(paths(json!([r"src\a.rs"])), ["src/a.rs"]);
+    assert_eq!(paths(json!([r"web\"])), ["web/d.ts"]);
+    assert_eq!(paths(json!([r".\web", r".\web\"])), ["web/d.ts"]);
+    assert_eq!(paths(json!([r"src\**\*.rs"])), ["src/a.rs", "src/b.rs", "src/gen/c.rs"]);
+    assert_eq!(paths(json!([r"src\sub\..\a.rs"])), ["src/a.rs"]);
+    assert_eq!(paths(json!([r"!web\"])), ["src/a,b.txt", "src/a.rs", "src/b.rs", "src/gen/c.rs"]);
+    assert_eq!(paths(json!([r"!gen\"])), ["src/a,b.txt", "src/a.rs", "src/b.rs", "web/d.ts"]);
+    assert_eq!(paths(json!([r"src\{a,b}.rs"])), ["src/a.rs", "src/b.rs"]);
+    assert_eq!(paths(json!([r"src\sub\..\a\,b.txt"])), ["src/a,b.txt"]);
+    // `Ctx::relative_slash` normalizes backslashes after stripping the root prefix.
+    let limit = limit::Limit::new(Arc::default());
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: index::Policy::Auto };
+    let with_backslash = format!("{}/{}", repo.0.display(), r"src\a.rs");
+    assert_eq!(ctx.relative_slash(&with_backslash).as_deref(), Some("src/a.rs"));
+    let trailing_backslash = format!("{}/{}", repo.0.display(), r"web\");
+    assert_eq!(ctx.relative_slash(&trailing_backslash).as_deref(), Some("web/"));
+}

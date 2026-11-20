@@ -368,7 +368,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
 - Every 30 seconds the app also settles a worker whose run is gone without reporting
   back, releases a lead turn that never started, and runs the scheduler. One team's
   error never stops scheduling for the others.
-- On plain Claude (`warm::supported`; GLM and MiMo leads start cold, because an idle
+- On plain Claude (`warm::supported`; GLM, MiMo and Alibaba Token Plan leads start cold, because an idle
   relay spare is not free of network traffic, see [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)),
   an architect turn that ends while its workers are unsettled starts the next turn's process in the background (`lead_spare.rs`,
   `providers/warm.rs`), so the review wake skips the CLI's startup. Lead spares

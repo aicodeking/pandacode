@@ -123,6 +123,11 @@ impl Ctx<'_> {
         let path = Path::new(absolute);
         path.strip_prefix(self.root).or_else(|_| path.strip_prefix(self.given)).ok().and_then(Path::to_str)
     }
+
+    /// Like `relative`, with Windows `\` separators normalized to `/` for glob matching.
+    fn relative_slash(&self, absolute: &str) -> Option<String> {
+        self.relative(absolute).map(|rel| rel.replace('\\', "/"))
+    }
 }
 
 /// With the plain secret rule and no stop flag, for tests.

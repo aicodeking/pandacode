@@ -405,9 +405,16 @@ mod tests {
             lead
         };
         let generation = architect::load(&state.store.lock().unwrap(), &lead).unwrap().unwrap().generation;
-        // Dispatch starts at standard speed, then fast mode is enabled before the turn finishes.
+        // Dispatch starts at standard speed, then fast mode is enabled mid-turn before the turn finishes.
         let (dispatch, dispatch_tools) = prepare(&state, &lead, "Build the feature with a team.", generation, None, false);
         assert!(dispatch.codex_settings.is_none());
+        providers::warm_launched(&lead);
+        let mid_turn_before = providers::warm_epoch(&lead);
+        assert_ne!(mid_turn_before, 0);
+        task_controls::save_claude_preference(&state, &lead, task_controls::TaskPreference::Fast { enabled: true }).unwrap();
+        let mid_turn_after = providers::warm_epoch(&lead);
+        assert_ne!(mid_turn_after, 0, "mid-turn /fast must keep warm_epoch nonzero so post-turn start_spare succeeds");
+        assert!(mid_turn_after > mid_turn_before, "mid-turn /fast must advance the epoch to invalidate prior spares");
         state.agents.lock().unwrap().remove(&lead);
         {
             let store = state.store.lock().unwrap();
@@ -415,10 +422,11 @@ mod tests {
             store.message(&lead, "assistant", "Dispatched one worker.").unwrap();
             store.finish_task_turn(&lead, true, false).unwrap();
         }
-        task_controls::save_claude_preference(&state.store, &lead, task_controls::TaskPreference::Fast { enabled: true }).unwrap();
-        // `spare_config` refreshes `codex_settings` from the saved task so the spare matches the wake.
+        // `spare_config` refreshes `codex_settings` from the saved task so the post-turn spare
+        // matches the wake at fast speed (and `warm_epoch` is still nonzero for `prewarm_agent`).
         let fast_spare = spare_config(dispatch.clone(), state.store.lock().unwrap().session(&lead).unwrap());
         assert_eq!(fast_spare.codex_settings, Some(serde_json::json!({"serviceTier": "fast"})));
+        assert_eq!(providers::warm_epoch(&lead), mid_turn_after);
         save_team(&state.store.lock().unwrap(), &lead, &[("task-w1", "completed")]);
         let (fast_wake, fast_wake_tools) = prepare(&state, &lead, "Review the settled workers.", generation, Some(architect::internal_turns::CoordinationKind::WorkerReview), false);
         assert_eq!(shape(&fast_spare), shape(&fast_wake));
@@ -433,13 +441,25 @@ mod tests {
         save_team(&state.store.lock().unwrap(), &lead, &[("task-w2", "running")]);
         assert!(matches!(pool(&state.store, &lead, true), Pool::Lead(_)));
         let waiting_spare = spare_config(fast_wake.clone(), state.store.lock().unwrap().session(&lead).unwrap());
+        #[cfg(unix)]
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        #[cfg(unix)]
+        let stale_pid = providers::insert_spare_in_cwd_for_test(&lead, waiting_spare.cwd.clone(), true);
+        #[cfg(not(unix))]
         providers::warm_launched(&lead);
         let launch_before = providers::warm_epoch(&lead);
         assert_ne!(launch_before, 0);
-        // Turning fast mode off discards the stale fast spare and invalidates its renewal epoch.
-        task_controls::save_claude_preference(&state.store, &lead, task_controls::TaskPreference::Fast { enabled: false }).unwrap();
-        assert_eq!(providers::warm_epoch(&lead), 0, "the stale fast-mode lead spare must not renew");
-        assert_ne!(providers::warm_epoch(&lead), launch_before);
+        // Turning fast mode off retires the stale fast spare and advances its renewal epoch without zeroing it.
+        task_controls::save_claude_preference(&state, &lead, task_controls::TaskPreference::Fast { enabled: false }).unwrap();
+        let launch_after = providers::warm_epoch(&lead);
+        assert_ne!(launch_after, 0, "invalidation preserves a nonzero epoch");
+        assert!(launch_after > launch_before, "the stale fast-mode lead spare must not renew");
+        #[cfg(unix)]
+        {
+            assert!(!providers::has_spare_for_test(&lead), "stale fast spare must be retired");
+            providers::await_exit(&lead).await.unwrap();
+            assert!(providers::process_gone_for_test(stale_pid));
+        }
         // The next wake runs at standard speed, so the old fast spare's shape no longer matches.
         save_team(&state.store.lock().unwrap(), &lead, &[("task-w2", "completed")]);
         let (standard_wake, _) = prepare(&state, &lead, "Review the second worker.", generation, Some(architect::internal_turns::CoordinationKind::WorkerReview), false);

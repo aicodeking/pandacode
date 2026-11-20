@@ -1,6 +1,7 @@
 //! Running a tool: arguments reach the script only as `PC_<NAME>` environment variables, the
-//! script runs with `sh -c` in the task's checkout in its own process group (so Stop and the
-//! timeout end everything it started), and the reply keeps the tail of each stream.
+//! script runs with `sh -c` in the task's checkout in its own process group (or Windows Job
+//! Object, so Stop and the timeout end everything it started), and the reply keeps the tail
+//! of each stream.
 use super::{Param, Tool};
 use serde_json::{json, Map, Value};
 use std::{
@@ -136,25 +137,56 @@ fn exited(child: &mut Child) -> bool {
     !matches!(child.try_wait(), Ok(None))
 }
 
-/// Ends the script and everything it started, then reaps it: its process group gets SIGTERM,
-/// then SIGKILL after `GRACE` (at once when the shell has already exited). On Windows the
-/// child is killed.
-fn stop(child: &mut Child) -> Option<ExitStatus> {
+/// A spawned shell and, on Windows, the Job Object owning its process tree.
+struct Run {
+    child: Child,
+    #[cfg(windows)]
+    job: Option<crate::providers::windows_job::Job>,
+}
+
+impl Run {
+    fn new(child: Child) -> Self {
+        #[cfg(windows)]
+        let job = crate::providers::windows_job::Job::attach(child.id());
+        Self {
+            child,
+            #[cfg(windows)]
+            job,
+        }
+    }
+}
+
+/// Ends the script and everything it started, then reaps it: on unix its process group gets
+/// SIGTERM, then SIGKILL after `GRACE` (at once when the shell has already exited); on Windows
+/// its Job Object is closed (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) to end the entire process
+/// tree (falling back to `kill_group` if attaching the job failed) before killing and reaping
+/// the shell.
+fn stop(run: &mut Run) -> Option<ExitStatus> {
     #[cfg(unix)]
     {
-        let group = -(child.id() as i32);
+        let group = -(run.child.id() as i32);
         // SAFETY: signals only the group made for this script (`process_group(0)`), whose
         // leader is not reaped yet.
         unsafe { libc::kill(group, libc::SIGTERM) };
         let until = Instant::now() + GRACE;
-        while Instant::now() < until && !exited(child) {
+        while Instant::now() < until && !exited(&mut run.child) {
             thread::sleep(Duration::from_millis(10));
         }
         unsafe { libc::kill(group, libc::SIGKILL) };
     }
-    #[cfg(not(unix))]
-    let _ = child.kill();
-    child.wait().ok()
+    #[cfg(windows)]
+    {
+        let job = run.job.take();
+        let attached = job.is_some();
+        drop(job);
+        if !attached {
+            crate::providers::kill_group(run.child.id());
+        }
+        let _ = run.child.kill();
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = run.child.kill();
+    run.child.wait().ok()
 }
 
 /// How a run ended before the script exited on its own.
@@ -177,9 +209,7 @@ fn wait(child: &mut Child, deadline: Instant, stopped: &AtomicBool) -> Result<()
     Ok(())
 }
 
-fn spawn(root: &Path, tool: &Tool, env: Vec<(String, String)>) -> std::io::Result<Child> {
-    let mut command = Command::new("sh");
-    command.arg("-c").arg(&tool.script).current_dir(root).envs(env);
+fn start(mut command: Command) -> std::io::Result<Run> {
     crate::child_env::sanitize(&mut command);
     #[cfg(unix)]
     {
@@ -191,7 +221,20 @@ fn spawn(root: &Path, tool: &Tool, env: Vec<(String, String)>) -> std::io::Resul
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+    Ok(Run::new(command.spawn()?))
+}
+
+fn spawn(root: &Path, tool: &Tool, env: Vec<(String, String)>) -> std::io::Result<Run> {
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(&tool.script)
+        .current_dir(root)
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    start(command)
 }
 
 /// A timeout is no script bug: it says which limit the run hit and what to do instead.
@@ -212,19 +255,19 @@ pub(super) fn execute(root: &Path, tool: &Tool, args: &Value, stopped: &AtomicBo
     };
     let seconds = tool.timeout_secs.min(HOST_LIMIT_SECS);
     let started = Instant::now();
-    let mut child = match spawn(root, tool, env) {
-        Ok(child) => child,
+    let mut run = match spawn(root, tool, env) {
+        Ok(run) => run,
         Err(error) => return failed(format!("Could not start {}: {error}", tool.name)),
     };
-    let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
-        let _ = stop(&mut child);
+    let (Some(out), Some(err)) = (run.child.stdout.take(), run.child.stderr.take()) else {
+        let _ = stop(&mut run);
         return failed("Could not read the script's output.".into());
     };
     let readers = [read_tail(out), read_tail(err)];
-    let ended = wait(&mut child, started + Duration::from_secs(seconds), stopped);
+    let ended = wait(&mut run.child, started + Duration::from_secs(seconds), stopped);
     // A tool is one-shot: background jobs it left behind are ended with it, so they cannot
     // hold its output pipes open (or outlive the task) after the shell exits.
-    let status = stop(&mut child);
+    let status = stop(&mut run);
     let [(stdout, dropped_out), (stderr, dropped_err)] = collect(readers);
     let status = match (ended, status) {
         (Ok(()), Some(status)) => status,
@@ -263,32 +306,22 @@ const SYNTAX_LIMIT: Duration = Duration::from_secs(10);
 /// `sh -n`: refuses a script that does not parse, with the shell's message.
 pub(super) fn syntax_check(script: &str) -> Result<(), String> {
     let mut command = Command::new("sh");
-    command.arg("-n").arg("-c").arg(script);
-    crate::child_env::sanitize(&mut command);
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command
+    command
+        .arg("-n")
+        .arg("-c")
+        .arg(script)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("Could not start sh: {error}"))?;
-    let Some(err) = child.stderr.take() else {
-        let _ = stop(&mut child);
+        .stderr(Stdio::piped());
+    let mut run = start(command).map_err(|error| format!("Could not start sh: {error}"))?;
+    let Some(err) = run.child.stderr.take() else {
+        let _ = stop(&mut run);
         return Err("Could not read the syntax check's output.".into());
     };
     let (kept, closed) = read_tail(err);
     let deadline = Instant::now() + SYNTAX_LIMIT;
-    let ended = wait(&mut child, deadline, &AtomicBool::new(false));
-    let status = stop(&mut child);
+    let ended = wait(&mut run.child, deadline, &AtomicBool::new(false));
+    let status = stop(&mut run);
     if ended.is_err() {
         return Err("The syntax check timed out.".into());
     }

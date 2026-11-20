@@ -2779,7 +2779,7 @@ mod tests {
 
     #[test]
     fn opencode_allow_tools_keeps_opaque_inline_and_populates_permission_env() {
-        let opaque = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        let opaque = r#"{"provider":{"work": broken"#;
         let tool = "pandacode_architect_pandacode_explore";
         let trailing = "pandacode_architect_pandacode_explore *";
 
@@ -2807,5 +2807,61 @@ mod tests {
         assert_eq!(perm_val["skill"]["review"], "deny");
         assert_eq!(perm_val[tool], "allow");
         assert_eq!(perm_val[trailing], "allow");
+    }
+
+    #[test]
+    fn opencode_allow_tools_preserves_env_and_file_tokens_in_inline_config() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-acp-opencode-tokens-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(
+            root.join("opencode.jsonc"),
+            r#"{
+                "provider": {"work": {"options": {"timeout": {env:TIMEOUT}}}},
+                "agents": {"custom-v2": {"permissions": [{"action": "*", "resource": "*", "effect": "deny"}]}}
+            }"#,
+        )
+        .unwrap();
+
+        let tool = "pandacode_architect_pandacode_explore";
+        let trailing = "pandacode_architect_pandacode_explore *";
+
+        // 2.x inline config with `{env:...}` and `{file:...}` receives native 2.x grants inline
+        // for all built-ins + discovered agents without falling back to OPENCODE_PERMISSION.
+        let inline_v2 = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT},"cert":{file:./cert.pem}}}},"permissions":[{"action":"*","resource":"*","effect":"ask"}],"agents":{"build":{"permissions":[{"action":"*","resource":"*","effect":"deny"}]}}}"#;
+        let mut command = Command::new("opencode");
+        command.current_dir(&root);
+        command.env("OPENCODE_CONFIG_CONTENT", inline_v2);
+        command.env_remove("OPENCODE_PERMISSION");
+        allow_tools(&mut command, &["pandacode_explore"]);
+        let out = super::super::command_environment(&command, "OPENCODE_CONFIG_CONTENT").unwrap();
+        assert!(
+            super::super::command_environment(&command, "OPENCODE_PERMISSION").is_none(),
+            "inline config parsed cleanly; no OPENCODE_PERMISSION fallback needed"
+        );
+        assert!(out.contains(r#""timeout":{env:TIMEOUT}"#), "{out}");
+        assert!(out.contains(r#""cert":{file:./cert.pem}"#), "{out}");
+        let normalized = out
+            .replace("{env:TIMEOUT}", "\"ENV\"")
+            .replace("{file:./cert.pem}", "\"FILE\"");
+        let parsed: Value = serde_json::from_str(&normalized).unwrap();
+        assert!(parsed.get("permission").is_none(), "{out}");
+        assert!(parsed.get("agent").is_none(), "{out}");
+        for agent in ["build", "plan", "general", "explore", "custom-v2"] {
+            let rules = parsed["agents"][agent]["permissions"].as_array().unwrap();
+            let last_two = &rules[rules.len() - 2..];
+            assert_eq!(
+                last_two,
+                &[
+                    json!({"action": tool, "resource": "*", "effect": "allow"}),
+                    json!({"action": trailing, "resource": "*", "effect": "allow"}),
+                ],
+                "{agent}: {out}"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

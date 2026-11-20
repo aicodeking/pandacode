@@ -88,9 +88,9 @@ fn a_project_tool_hides_a_global_one() {
     let project = store::scope_dir(&base.0, Some("p1")).unwrap();
     save(&global, draft("lint-all", "echo global", Vec::new()), author("s"), 1).unwrap();
     save(&global, draft("only-global", "echo g", Vec::new()), author("s"), 1).unwrap();
-    assert_eq!(resolve(&base.0, "p1", "lint-all").unwrap().1, Scope::Global);
+    assert_eq!(resolve(&base.0, "p1", "lint-all").unwrap().unwrap().1, Scope::Global);
     save(&project, draft("lint-all", "echo project", Vec::new()), author("s"), 1).unwrap();
-    let (found, scope) = resolve(&base.0, "p1", "lint-all").unwrap();
+    let (found, scope) = resolve(&base.0, "p1", "lint-all").unwrap().unwrap();
     assert_eq!((found.script.as_str(), scope), ("echo project", Scope::Project));
     let names: Vec<(String, Scope)> = visible(&base.0, "p1").into_iter().map(|(t, _, s)| (t.name, s)).collect();
     assert_eq!(names, [("lint-all".to_owned(), Scope::Project), ("only-global".to_owned(), Scope::Global)]);
@@ -645,4 +645,63 @@ fn settings_listing_reports_unreadable_stats_files() {
     std::fs::write(project.join(".stats.json"), "{not json").unwrap();
     let listed = ipc::listing(&base.0, str::to_owned).unwrap();
     assert_eq!(listed.projects[0].tools[0].stats.uses, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn save_refuses_to_overwrite_unreadable_tool_file() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let dir = temp();
+    save(&dir.0, draft("protected", "echo v1", Vec::new()), author("a"), 10).unwrap();
+    store::set_disabled(&dir.0, "protected", true).unwrap();
+
+    let lock_file = RestoreMode::set(dir.0.join("protected.json"), 0o000, 0o644);
+    let err = save(&dir.0, draft("protected", "echo v2", Vec::new()), author("b"), 20).unwrap_err();
+    assert!(err.contains("Could not read the tool folder"), "{err}");
+    drop(lock_file);
+
+    let kept = store::try_load(&dir.0, "protected").unwrap().unwrap();
+    assert_eq!(
+        (kept.version, kept.created_at, kept.created_by.session_id.as_str(), kept.script.as_str(), kept.disabled),
+        (1, 10, "a", "echo v1", true)
+    );
+
+    let updated = save(&dir.0, draft("protected", "echo v2", Vec::new()), author("b"), 20).unwrap();
+    assert_eq!((updated.version, updated.created_at, updated.disabled), (2, 10, true));
+}
+
+#[cfg(unix)]
+#[test]
+fn resolve_and_run_fail_closed_on_unreadable_project_tool() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let (base, root) = (temp(), temp());
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    save(&global, draft("shadowed", "echo global", Vec::new()), author("s"), 1).unwrap();
+    save(&global, draft("only-global", "echo g", Vec::new()), author("s"), 1).unwrap();
+    save(&project, draft("shadowed", "echo project", Vec::new()), author("s"), 1).unwrap();
+
+    let session = format!("resolve-eacces-{}", uuid::Uuid::new_v4());
+    approval::register(&session, approval::Place { base: base.0.clone(), project: "p1".into() });
+
+    let lock_file = RestoreMode::set(project.join("shadowed.json"), 0o000, 0o644);
+    let resolve_err = resolve(&base.0, "p1", "shadowed").unwrap_err();
+    assert!(resolve_err.contains("Could not read the tool folder"), "{resolve_err}");
+    let tools = host(None, full_ctx(&base, &root, &session), Arc::default(), false);
+    let run_err = tauri::async_runtime::block_on((tools.handler)(TOOL_RUN.into(), json!({"name": "shadowed"}))).unwrap_err();
+    assert!(run_err.contains("Could not read the tool folder"), "{run_err}");
+    let prep_err = approval::prepare(&session, "req-eacces", TOOL_RUN, &json!({"name": "shadowed"})).unwrap().unwrap_err();
+    assert!(prep_err.contains("Could not read the tool folder"), "{prep_err}");
+    assert_eq!(resolve(&base.0, "p1", "only-global").unwrap().unwrap().1, Scope::Global);
+    drop(lock_file);
+
+    let (found, scope) = resolve(&base.0, "p1", "shadowed").unwrap().unwrap();
+    assert_eq!((found.script.as_str(), scope), ("echo project", Scope::Project));
+    let ran = tauri::async_runtime::block_on((tools.handler)(TOOL_RUN.into(), json!({"name": "shadowed"}))).unwrap();
+    assert_eq!(ran["stdout"], "project\n");
+    run_ended(&session);
 }

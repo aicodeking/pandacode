@@ -264,7 +264,7 @@ fn save(dir: &Path, draft: Draft, author: Author, now: i64) -> Result<Tool, Stri
     tool.validate()?;
     run::syntax_check(&tool.script)?;
     let _guard = store::lock();
-    if let Some(old) = store::load(dir, &tool.name) {
+    if let Some(old) = store::try_load(dir, &tool.name)? {
         tool.version = old.version + 1;
         tool.created_at = old.created_at;
         tool.created_by = old.created_by;
@@ -276,9 +276,15 @@ fn save(dir: &Path, draft: Draft, author: Author, now: i64) -> Result<Tool, Stri
 }
 
 /// The tool `name` as a project's agents see it: the project's own, else the global one.
-fn resolve(base: &Path, project: &str, name: &str) -> Option<(Tool, Scope)> {
-    let project_dir = store::scope_dir(base, Some(project)).ok()?;
-    store::load(&project_dir, name).map(|tool| (tool, Scope::Project)).or_else(|| store::load(&store::scope_dir(base, None).ok()?, name).map(|tool| (tool, Scope::Global)))
+/// Fails closed with the underlying error if reading a tool file fails (e.g. `EACCES`),
+/// so an unreadable project file never falls through to a shadowed global tool of the same name.
+fn resolve(base: &Path, project: &str, name: &str) -> Result<Option<(Tool, Scope)>, String> {
+    let project_dir = store::scope_dir(base, Some(project))?;
+    if let Some(tool) = store::try_load(&project_dir, name)? {
+        return Ok(Some((tool, Scope::Project)));
+    }
+    let global_dir = store::scope_dir(base, None)?;
+    Ok(store::try_load(&global_dir, name)?.map(|tool| (tool, Scope::Global)))
 }
 
 /// Every tool a project's agents see, a project tool hiding a global one of the same name.

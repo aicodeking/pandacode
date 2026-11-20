@@ -23,23 +23,49 @@ pub(crate) fn edits_wait_for_approval(provider: &str, mode: &str) -> bool {
 /// through without asking (`claude_allows_edits`): then the full begin/complete handshake is
 /// used for native edits too. Reads a few small settings files on each launch.
 pub(crate) fn edits_wait_for_run(config: &crate::providers::RunConfig) -> bool {
-    edits_wait_for_approval(&config.provider, &config.mode) && !claude_allows_edits(config)
+    edits_wait_for_run_using(config, claude_allows_edits)
+}
+
+fn edits_wait_for_run_using(
+    config: &crate::providers::RunConfig,
+    allows_edits: impl FnOnce(&crate::providers::RunConfig) -> bool,
+) -> bool {
+    edits_wait_for_approval(&config.provider, &config.mode) && !allows_edits(config)
 }
 
 /// Whether Claude Code may apply this run's edits without asking. GLM, MiMo and Alibaba launch
-/// with `--setting-sources ""`, so no settings file applies to them. A task on a named connection
-/// may use another Claude config folder, which is not followed: treated as allowing.
+/// with `--setting-sources ""`, so user, project and local settings files do not apply to them,
+/// but Claude Code still enforces enterprise `managed-settings.json`, and a named connection on
+/// any Claude-family harness may pass `--allowedTools` or use another Claude config folder
+/// (not followed: treated as allowing).
 fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
+    claude_allows_edits_with(
+        config,
+        || crate::connections::for_task(&config.session_id, &config.provider).is_some(),
+        MANAGED_SETTINGS.map(std::path::Path::new),
+        crate::agent_usage::claude_config_dir,
+    )
+}
+
+fn claude_allows_edits_with(
+    config: &crate::providers::RunConfig,
+    has_connection: impl FnOnce() -> bool,
+    managed_settings: Option<&std::path::Path>,
+    claude_config_dir: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> bool {
+    if !crate::providers::claude_family(&config.provider) {
+        return false;
+    }
+    if has_connection() {
+        return true;
+    }
+    if managed_settings_may_allow(managed_settings) {
+        return true;
+    }
     if config.provider != "claude" {
         return false;
     }
-    if crate::connections::for_task(&config.session_id, &config.provider).is_some() {
-        return true;
-    }
-    if managed_settings_may_allow(MANAGED_SETTINGS.map(std::path::Path::new)) {
-        return true;
-    }
-    match crate::agent_usage::claude_config_dir() {
+    match claude_config_dir() {
         Some(dir) => edit_allow_rules(&dir, &config.cwd),
         None => true,
     }
@@ -563,15 +589,99 @@ mod tests {
 
     #[test]
     fn relays_without_setting_files_and_other_harnesses_skip_the_settings_check() {
-        // GLM, MiMo and Alibaba load no settings files; other harnesses never wait in the first place.
-        for provider in ["glm", "mimo", "alibaba", "codex"] {
-            let config = crate::providers::RunConfig { provider: provider.into(), ..crate::providers::tests::config("claude") };
-            assert!(!claude_allows_edits(&config), "{provider}");
-        }
+        // Non-Claude-family harnesses never check Claude settings or wait for edit approval.
+        let codex = crate::providers::RunConfig { provider: "codex".into(), ..crate::providers::tests::config("claude") };
+        assert!(!claude_allows_edits(&codex));
+        assert!(!edits_wait_for_run(&codex));
+        // GLM, MiMo and Alibaba ignore user/project/local settings files, but still inherit
+        // enterprise managed-settings.json if present on this host.
+        let host_managed = managed_settings_may_allow(MANAGED_SETTINGS.map(std::path::Path::new));
         for provider in ["glm", "mimo", "alibaba"] {
             let config = crate::providers::RunConfig { mode: "ask".into(), ..crate::providers::tests::config(provider) };
-            assert!(edits_wait_for_run(&config), "{provider}");
+            assert_eq!(claude_allows_edits(&config), host_managed, "{provider}");
+            assert_eq!(edits_wait_for_run(&config), !host_managed, "{provider}");
         }
+    }
+
+    #[test]
+    fn claude_family_relays_respect_connections_and_managed_settings_but_ignore_user_settings() {
+        let with_allow_rule = Settings::new();
+        with_allow_rule
+            .user("settings.json", r#"{"permissions":{"allow":["Edit"]}}"#)
+            .project("settings.json", r#"{"permissions":{"allow":["Write"]}}"#);
+        let absent_managed = with_allow_rule.base.join("absent-managed-settings.json");
+        let present_managed = with_allow_rule.base.join("managed-settings.json");
+        std::fs::write(&present_managed, "{}").unwrap();
+
+        let config_dir = with_allow_rule.base.join("config");
+        let project_dir = with_allow_rule.base.join("project");
+
+        for provider in ["glm", "mimo", "alibaba"] {
+            let config = crate::providers::RunConfig {
+                mode: "ask".into(),
+                cwd: project_dir.clone(),
+                ..crate::providers::tests::config(provider)
+            };
+            // Neither named connection nor managed settings: relays skip user/project settings
+            // (and never query claude_config_dir), even when an Edit allow rule is present there.
+            assert!(
+                !claude_allows_edits_with(&config, || false, Some(&absent_managed), || panic!("relays must not read claude_config_dir")),
+                "{provider} without connection or managed settings"
+            );
+            assert!(
+                edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(config_dir.clone()))),
+                "{provider} waits when neither connection nor managed settings apply"
+            );
+            // A named connection may pass --allowedTools or another config folder: do not rely on the wait.
+            assert!(
+                claude_allows_edits_with(&config, || true, Some(&absent_managed), || panic!("connection short-circuits before config dir")),
+                "{provider} with named connection"
+            );
+            assert!(
+                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || true, Some(&absent_managed), || None)),
+                "{provider} does not wait with named connection"
+            );
+            // Enterprise managed-settings.json still applies even with --setting-sources "".
+            assert!(
+                claude_allows_edits_with(&config, || false, Some(&present_managed), || panic!("managed settings short-circuit before config dir")),
+                "{provider} with managed settings"
+            );
+            assert!(
+                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, Some(&present_managed), || None)),
+                "{provider} does not wait with managed settings"
+            );
+        }
+
+        // Plain `claude` still checks claude_config_dir / project settings when no connection or
+        // managed policy applies, and treats an unknown config dir as allowing.
+        let claude = crate::providers::RunConfig {
+            mode: "ask".into(),
+            cwd: project_dir,
+            ..crate::providers::tests::config("claude")
+        };
+        assert!(claude_allows_edits_with(&claude, || false, Some(&absent_managed), || Some(config_dir.clone())));
+        assert!(!edits_wait_for_run_using(&claude, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(config_dir.clone()))));
+        assert!(claude_allows_edits_with(&claude, || false, Some(&absent_managed), || None));
+        let clean = Settings::new();
+        let claude_clean = crate::providers::RunConfig {
+            mode: "ask".into(),
+            cwd: clean.base.join("project"),
+            ..crate::providers::tests::config("claude")
+        };
+        assert!(!claude_allows_edits_with(&claude_clean, || false, Some(&absent_managed), || Some(clean.base.join("config"))));
+        assert!(edits_wait_for_run_using(&claude_clean, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(clean.base.join("config")))));
+
+        // Non-Claude-family harnesses short-circuit before connection/managed/config checks.
+        let codex = crate::providers::RunConfig {
+            mode: "ask".into(),
+            ..crate::providers::tests::config("codex")
+        };
+        assert!(!claude_allows_edits_with(
+            &codex,
+            || panic!("non-Claude harnesses must not check connections"),
+            Some(&present_managed),
+            || panic!("non-Claude harnesses must not check claude_config_dir"),
+        ));
     }
 
     #[test]

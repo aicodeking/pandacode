@@ -82,11 +82,11 @@ This is the dimension that most affects speed and tokens.
   - a "your turn ends when you reply" rule
   - when explore is on, the `LOOK` line: "Use pandacode_explore to locate code … with all your questions in one call"
   - agent-made tool hints
-- **Instructions for other harnesses.** Harnesses without a system prompt (all but Claude Code, GLM, MiMo, Pi and OMP) get them in the message on a new conversation and every 8th turn.
+- **Instructions for other harnesses.** Harnesses without a system prompt (all but Claude Code, GLM, MiMo, Alibaba Token Plan, Pi and OMP) get them in the message on a new conversation and every 8th turn.
 - **Per-message notes.** Short notes can still ride a message: a title note, a Plan-mode note, a 160 B edit-tracking note (only when native edits wait for approval) and the Project tools note (first message, on change, a fresh conversation, every 8th) (`lib.rs`, `app_instructions.rs`).
 - **Denied tools.** `--disallowedTools` removes `ScheduleWakeup,Monitor,CronCreate`, because the process ends with the turn. Team workers also lose `Agent`, `Task`, `Workflow`, `SendMessage`, worktree tools and more. `Skill` stays on for workers by default; it is denied only when the user turns Settings → Agents → Workers can use skills off (`docs/worker-tokens.md`).
 - **MCP tools.** They are attached with `--mcp-config`.
-- **Warm processes.** After a successful Claude turn, PandaCode starts the next turn's process in the background: 2 ordinary spares for 10 idle minutes, plus a separate pool of up to 2 for team leads waiting on their workers, which ordinary tasks never evict. An expired lead spare restarts at most 2 times while its workers still run and none waits on the user, and it is dropped when the task stops or its team is paused or stopped. A follow-up reuses a spare only when model, mode, effort, folder, resume ID, instructions, tool catalog and worker trim (opt-in, off by default: Settings → Agents → Trim worker tools, the `worker-trim-on` marker) all match (`AGENTS.md`, `providers/warm.rs`).
+- **Warm processes.** After a successful Claude turn, PandaCode starts the next turn's process in the background: 2 ordinary spares for 10 idle minutes, plus a separate pool of up to 2 for team leads waiting on their workers, which ordinary tasks never evict. An expired lead spare restarts at most 2 times while its workers still run and none waits on the user, and it is dropped when the task stops or its team is paused or stopped. A follow-up reuses a spare only when model, mode, effort, Fast Mode, folder, resume ID, instructions, tool catalog and worker trim (opt-in, off by default: Settings → Agents → Trim worker tools, the `worker-trim-on` marker) all match (`AGENTS.md`, `providers/warm.rs`).
 
 **T3 Code (Claude)** ([`ClaudeAdapterV2.ts`](https://github.com/pingdotgg/t3code/blob/25bf84ab07f53f141c20239c63e383823a9d5ea0/apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts), around lines 1770–1890):
 
@@ -343,7 +343,7 @@ These can change steps, latency or tokens for the same harness and model. A benc
    - The system prompt is cached once: PandaCode, T3 Code.
    - A user-message append costs again on each send: Vibe Kanban.
    - First prompt and mode changes: T3 Code on ACP.
-   - Every 8th turn: PandaCode on harnesses without a system prompt (all but Claude Code, GLM, MiMo, Pi and OMP).
+   - Every 8th turn: PandaCode on harnesses without a system prompt (all but Claude Code, GLM, MiMo, Alibaba Token Plan, Pi and OMP).
 3. **Extra MCP tools and how they load.** Listed tools add schema tokens on every step. Tools loaded through ToolSearch add a lookup step but keep the prefix small; T3 Code relies on this. PandaCode's batch S3 measured about $0.037 per worker run for a bundle of changes (`Skill` denied, `TaskStop` restored, agent-made tools and `REUSE` dropped) with a real skills library; `Skill`'s own share was not isolated.
 4. **Denied tools.** PandaCode removes `ScheduleWakeup`, `Monitor` and `CronCreate` for everyone, and a longer list for workers (plus `Skill` only when the user turns worker skills off). Vibe Kanban removes `AskUserQuestion` in some modes. This changes both prompt size and agent behaviour.
 5. **A search tool given to the agent.** `pandacode_explore` changed step counts in PandaCode's benchmark. A baseline needs the same built-in tools: PandaCode's BEFORE arm had no Grep/Glob.

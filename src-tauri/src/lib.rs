@@ -879,6 +879,82 @@ mod task_agent_tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_and_recreate_task_worktree_retire_sibling_and_own_pooled_warm_spares() {
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        let base = std::env::temp_dir().join(format!("pandacode-wt-spares-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        let main = std::fs::canonicalize(main).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").args(args).current_dir(cwd).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        git(&main, &["init", "-b", "main"]);
+        git(&main, &["config", "user.name", "Tests"]);
+        git(&main, &["config", "user.email", "tests@example.invalid"]);
+        std::fs::write(main.join("readme.txt"), "base\n").unwrap();
+        git(&main, &["add", "readme.txt"]);
+        git(&main, &["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-m", "init"]);
+
+        let wt = workspace::create_worktree_for(&main, "feature", None, false, workspace::Trust::Desktop).unwrap();
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let wt_task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let wt_fork = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let main_sibling = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        for sid in [&wt_task.id, &wt_fork.id] {
+            store
+                .db
+                .execute(
+                    "UPDATE sessions SET worktree_path=?2, worktree_branch=?3 WHERE id=?1",
+                    rusqlite::params![sid, wt.path.to_string_lossy(), wt.branch],
+                )
+                .unwrap();
+        }
+        let state = Arc::new(AppState {
+            store: Arc::new(Mutex::new(store)),
+            agents: Arc::new(Mutex::new(HashMap::new())),
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        });
+
+        // Remove worktree must retire a forked sibling's pooled warm spare holding `&wt.path`,
+        // while leaving an unrelated spare in `&main` untouched (kept in the lead pool so it is
+        // never evicted by the two ordinary spares inserted below).
+        let fork_pid = providers::insert_spare_in_cwd_for_test(&wt_fork.id, wt.path.clone(), false);
+        let main_pid = providers::insert_spare_in_cwd_for_test(&main_sibling.id, main.clone(), true);
+        remove_task_worktree(&state, wt_task.id.clone(), false, workspace::Trust::Desktop)
+            .await
+            .unwrap();
+        assert!(!wt.path.exists(), "worktree should be removed");
+        assert!(!providers::has_spare_for_test(&wt_fork.id), "forked sibling's pooled spare must be retired");
+        assert!(providers::process_gone_for_test(fork_pid), "forked sibling's spare process must exit");
+        assert!(providers::has_spare_for_test(&main_sibling.id), "main checkout spare must stay pooled");
+        assert!(!providers::process_gone_for_test(main_pid));
+
+        // Recreate worktree (after the folder disappeared externally) must retire both the task's
+        // own spare and any sibling spare pinned to the deleted directory's old inode.
+        recreate_task_worktree(&state, wt_task.id.clone()).await.unwrap();
+        assert!(wt.path.exists(), "worktree should exist before simulating external deletion");
+        let own_pid = providers::insert_spare_in_cwd_for_test(&wt_task.id, wt.path.clone(), false);
+        let fork_pid_2 = providers::insert_spare_in_cwd_for_test(&wt_fork.id, wt.path.clone(), false);
+        std::fs::remove_dir_all(&wt.path).unwrap();
+        assert!(!wt.path.exists());
+
+        recreate_task_worktree(&state, wt_task.id.clone()).await.unwrap();
+        assert!(wt.path.exists(), "worktree should be recreated");
+        assert!(!providers::has_spare_for_test(&wt_task.id), "own stale-inode spare must be retired");
+        assert!(!providers::has_spare_for_test(&wt_fork.id), "sibling stale-inode spare must be retired");
+        assert!(providers::process_gone_for_test(own_pid), "own spare process must exit");
+        assert!(providers::process_gone_for_test(fork_pid_2), "sibling spare process must exit");
+        assert!(providers::has_spare_for_test(&main_sibling.id), "main checkout spare must stay pooled");
+
+        providers::quiesce(&main_sibling.id).await.unwrap();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     #[test]
     fn stale_running_status_recovers_after_completion_write_failure_without_hiding_live_runs() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
@@ -1016,10 +1092,12 @@ fn project_removal_sessions(
 }
 
 async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<()> {
-    let session_ids = {
+    let (session_ids, project_path) = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        project_removal_sessions(&agents, &store, project_id)?
+        let ids = project_removal_sessions(&agents, &store, project_id)?;
+        let path = store.project(project_id).ok().map(|project| PathBuf::from(project.path));
+        (ids, path)
     };
     // Quiesce every project session before removing its rows so warm spares and pending exits
     // do not leak or hold Windows `cwd` handles.
@@ -1029,6 +1107,10 @@ async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<(
     .await;
     if let Some(error) = results.into_iter().find_map(Result::err) {
         return Err(error);
+    }
+    if let Some(path) = project_path {
+        providers::end_lingering_in(&path).await;
+        providers::quiesce_spares_in(&path).await?;
     }
     let removed = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
@@ -1282,15 +1364,19 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    let session = state.store.lock().map_err(|e| e.to_string())?.configure(
-        &session_id,
-        &provider,
-        &model,
-        project_id.as_deref(),
-    )?;
-    drop(agents);
+    let session = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.configure(
+            &session_id,
+            &provider,
+            &model,
+            project_id.as_deref(),
+        )?
+    };
     // A lead's spare keeps the config it launched with, so it would renew on the old provider/model.
-    providers::discard_warm_agent(&session_id);
+    // Invalidate while turn admission is serialized so a new turn's epoch cannot be clobbered.
+    providers::invalidate_warm_agent(&session_id);
+    drop(agents);
     Ok(session)
 }
 #[tauri::command]
@@ -1307,14 +1393,13 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    let session = state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
-    drop(agents);
+    let session = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.set_reasoning_effort(&session_id, reasoning_effort.as_deref())?
+    };
     // Like a model change: a lead's spare launched at the old effort could renew until its next wake.
-    providers::discard_warm_agent(&session_id);
+    providers::invalidate_warm_agent(&session_id);
+    drop(agents);
     Ok(session)
 }
 #[tauri::command]
@@ -1350,16 +1435,15 @@ async fn update_session(
     }
     let restored = archived == Some(false);
     let reconfigured = model.is_some() || mode.is_some();
-    state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
-    drop(agents);
+    {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        store.update(&session_id, title, archived, model, mode)?;
+    }
     // A lead's spare launched with the old model/mode could renew until its next wake.
     if reconfigured {
-        providers::discard_warm_agent(&session_id);
+        providers::invalidate_warm_agent(&session_id);
     }
+    drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
     }
@@ -3797,15 +3881,40 @@ pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, d
     // started or entered background reaping meanwhile.
     refuse_worktree_remove_busy(state, &session_id).await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
-    // A lingering agent's working directory would block the removal on Windows.
+    // A lingering agent or pooled warm spare (from a forked/sibling session) holding `&path`
+    // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
     providers::end_lingering_in(&path).await;
+    providers::quiesce_spares_in(&path).await?;
+    refuse_worktree_remove_busy(state, &session_id).await?;
     let removed = blocking(move || workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)).await;
     skill_manager::projects_changed();
     removed
 }
 
-#[tauri::command]
-async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Result<Session> {
+pub(crate) async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
+    const BUSY: &str = "Stop the agent before recreating its worktree.";
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
+        return Err(BUSY.into());
+    }
+    let (_, path, _) = worktree_paths(&state.store, &session_id)?;
+    if any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await? {
+        return Err(BUSY.into());
+    }
+    // Quiesce this task and any pooled/lingering process still holding the deleted folder's old
+    // inode, so the recreated checkout cannot adopt a warm spare pinned to an unlinked directory.
+    guard_idle(
+        || lock_agents(&state.agents).map_or(true, |agents| agents.contains_key(&session_id)),
+        providers::quiesce(&session_id),
+        BUSY,
+    )
+    .await?;
+    providers::end_lingering_in(&path).await;
+    providers::quiesce_spares_in(&path).await?;
+    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id)
+        || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
+    {
+        return Err(BUSY.into());
+    }
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
@@ -3814,6 +3923,11 @@ async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Re
         store.lock().map_err(|e| e.to_string())?.session(&session_id)
     })
     .await
+}
+
+#[tauri::command]
+async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Result<Session> {
+    recreate_task_worktree(&state, session_id).await
 }
 
 #[tauri::command]

@@ -210,12 +210,15 @@ this one:
 | Codex | `readOnlyHint` in the MCP listing; an approval that still arrives is answered only for this exact server, tool and message | real 0.162.1 app-server against a stub model, all modes; no real model |
 | Kimi | its permission request is titled with the tool's registered name, which the harness sets (`buildPermissionToolCallUpdate` in its bundled source); built-in tools (`Bash`…) still ask | live for the MCP frame; built-in frame from source |
 | Grok | `use_tool` with the qualified name in `rawInput` | live, Standard and Plan |
-| OpenCode | an allow rule for its tool ID `pandacode_architect_pandacode_explore`, added only when this run serves the tool | rule order checked with `opencode debug agent`; no live turn |
+| OpenCode | an allow rule for its tool ID `pandacode_architect_pandacode_explore`, added only when this run serves the tool | rule order checked with `opencode debug agent` (OpenCode 1.x; `opencode debug agents` on OpenCode 2.x); no live turn |
 | Pi, omp | app tools pass the extension; listed for Plan mode | code only |
 
 OpenCode's permissions are keyed by tool ID, which joins server and tool names, so
 the rule cannot name the server alone: a user's server named
 `pandacode_architect_pandacode` with a tool `explore` would share the ID.
+Grants are merged into `OPENCODE_CONFIG_CONTENT` (preserving unquoted `{env:...}`
+and `{file:...}` tokens via sentinel substitution) and fall back to
+`OPENCODE_PERMISSION` only for unparseable inline configs.
 
 Hermes, Devin, ZCode, Cursor CLI, Cline, Kilo, GitHub Copilot, DeepSeek, Command Code, Muse and
 Antigravity do not get it until a frame recorded from them can be matched. Grok

@@ -274,7 +274,7 @@ pub(super) fn save_call(ctx: &Ctx, args: Value) -> Result<Value, String> {
 fn approved_tool(ctx: &Ctx, token: Option<String>, name: &str) -> Result<(Tool, Scope), String> {
     match token {
         Some(token) => approval::take(&token, &ctx.author.session_id, name).ok_or_else(|| "This approval is no longer valid; call pandacode_tool_run again.".to_owned()),
-        None if ctx.full => super::resolve(&ctx.base, &ctx.project, name).ok_or_else(|| format!("No tool named {name} in this project.")),
+        None if ctx.full => super::resolve(&ctx.base, &ctx.project, name)?.ok_or_else(|| format!("No tool named {name} in this project.")),
         None => Err("pandacode_tool_run runs only after the user approves it in PandaCode; call it again.".into()),
     }
 }

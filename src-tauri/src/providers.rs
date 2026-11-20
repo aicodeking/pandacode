@@ -96,7 +96,21 @@ pub use host_tools::ToolHost;
 use redact::redact_run_error;
 #[cfg(test)]
 pub(crate) use warm::launched as warm_launched;
-pub use warm::{begin_quit as warm_begin_quit, discard as discard_warm_agent, quiesce, epoch as warm_epoch, prewarm as prewarm_agent, supported as warms, Renew as WarmRenew};
+#[cfg(all(test, unix))]
+pub(crate) use warm::{
+    has_spare_for_test, insert_spare_in_cwd_for_test, process_gone_for_test, spare_pool_test_lock,
+};
+pub use warm::{
+    begin_quit as warm_begin_quit,
+    discard as discard_warm_agent,
+    epoch as warm_epoch,
+    invalidate as invalidate_warm_agent,
+    prewarm as prewarm_agent,
+    quiesce,
+    quiesce_spares_in,
+    supported as warms,
+    Renew as WarmRenew,
+};
 
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// Capacity the frame buffer keeps after a large message has been consumed.
@@ -3587,12 +3601,12 @@ pub(crate) async fn end_lingering(session_id: &str) {
 /// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
 /// is removed: on Windows a process's working directory cannot be deleted.
 pub(crate) async fn end_lingering_in(folder: &Path) {
-    let folder = folder.canonicalize().unwrap_or_else(|_| folder.to_owned());
+    let resolved = warm::resolve_path(folder);
     let tasks: Vec<String> = lingering()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
-        .filter(|(_, lingering)| lingering.cwd.starts_with(&folder))
+        .filter(|(_, lingering)| warm::path_in_folder(&lingering.cwd, folder, &resolved))
         .map(|(task, _)| task.clone())
         .collect();
     for task in tasks {
@@ -5389,8 +5403,8 @@ pub(crate) mod tests {
         let disabled = std::collections::BTreeSet::from(["review".into()]);
         let mut cfg = config("opencode");
         let mut command = Command::new("opencode");
-        let text = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
-        command.env("OPENCODE_CONFIG_CONTENT", text);
+        let unreadable = r#"{"provider":{"work":{"options":{"timeout":}}}}"#;
+        command.env("OPENCODE_CONFIG_CONTENT", unreadable);
         enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
         let env = |name: &str| {
             command
@@ -5404,11 +5418,21 @@ pub(crate) mod tests {
                 .unwrap()
                 .to_owned()
         };
-        assert_eq!(env("OPENCODE_CONFIG_CONTENT"), text);
+        assert_eq!(env("OPENCODE_CONFIG_CONTENT"), unreadable);
         let permission: Value = serde_json::from_str(&env("OPENCODE_PERMISSION")).unwrap();
         assert_eq!(permission["skill"]["review"], "deny");
         assert!(format!("{}{}", cfg.prompt, cfg.instructions)
             .contains("Do not use these skills in this session: review."));
+        // Unquoted {env:...} value tokens are preserved verbatim while denies merge cleanly.
+        let mut cfg = config("opencode");
+        let mut command = Command::new("opencode");
+        let env_token = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        command.env("OPENCODE_CONFIG_CONTENT", env_token);
+        enforce_opencode_after_connection(&mut command, &mut cfg, &disabled, &Default::default());
+        let merged = env_of(&command, "OPENCODE_CONFIG_CONTENT");
+        assert!(merged.contains(r#""timeout":{env:TIMEOUT}"#), "merged: {merged}");
+        assert!(merged.contains(r#""review":"deny""#), "merged: {merged}");
+        assert!(!format!("{}{}", cfg.prompt, cfg.instructions).contains("review"));
         // A readable connection configuration gets the denies merged in and no reminder.
         let mut cfg = config("opencode");
         let mut command = Command::new("opencode");
@@ -5465,11 +5489,12 @@ pub(crate) mod tests {
 
     #[test]
     fn opencode_served_tools_keep_unreadable_and_unserved_launches_unchanged() {
-        let raw = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+        let raw = r#"{"provider":{"work":{"options":{"timeout":}}}}"#;
+        let env_token = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
         let jsonc = "// named connection\n{\"permission\":{\"bash\":\"deny\"},}";
         let names = HashSet::from([EXPLORE_TOOL.into()]);
 
-        // Opaque inline config stays verbatim while bound-tool grants ride through OPENCODE_PERMISSION.
+        // Genuinely unreadable inline config stays verbatim while bound-tool grants fall back to OPENCODE_PERMISSION.
         let mut command = Command::new("unused");
         command.env("OPENCODE_CONFIG_CONTENT", raw);
         command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
@@ -5481,9 +5506,19 @@ pub(crate) mod tests {
         assert_eq!(permission["pandacode_architect_pandacode_explore"], "allow");
         assert_eq!(permission["pandacode_architect_pandacode_explore *"], "allow");
 
+        // Unquoted {env:...} value tokens stay verbatim while top-level and per-agent grants merge into OPENCODE_CONFIG_CONTENT.
+        let mut command = Command::new("unused");
+        command.env("OPENCODE_CONFIG_CONTENT", env_token);
+        command.env("OPENCODE_PERMISSION", r#"{"skill":{"review":"deny"}}"#);
+        allow_opencode_tools(&mut command, &config("opencode"), true, &names, None);
+        let merged = env_of(&command, "OPENCODE_CONFIG_CONTENT");
+        assert!(merged.contains(r#""timeout":{env:TIMEOUT}"#), "merged: {merged}");
+        assert!(merged.contains(r#""explore":{"permission":{"pandacode_architect_pandacode_explore":"allow""#), "merged: {merged}");
+
         // Unserved launches leave both OPENCODE_CONFIG_CONTENT and OPENCODE_PERMISSION untouched.
         for (provider, bound, names, inline) in [
             ("opencode", false, &names, raw),
+            ("opencode", false, &names, env_token),
             ("opencode", false, &names, jsonc),
             ("opencode", true, &HashSet::new(), jsonc),
             ("kimi", true, &names, jsonc),

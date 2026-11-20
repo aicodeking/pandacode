@@ -103,7 +103,7 @@ pub(super) fn write_atomic(path: &Path, text: &str) -> Result<(), String> {
 }
 
 /// One tool, if its file is present and valid; reports access errors instead of hiding them.
-fn try_load(dir: &Path, name: &str) -> Result<Option<Tool>, String> {
+pub(super) fn try_load(dir: &Path, name: &str) -> Result<Option<Tool>, String> {
     let Ok(path) = tool_path(dir, name) else { return Ok(None) };
     let Some(text) = try_read_small(&path, MAX_FILE)? else { return Ok(None) };
     let Ok(tool) = serde_json::from_str::<Tool>(&text) else { return Ok(None) };

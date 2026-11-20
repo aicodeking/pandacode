@@ -138,14 +138,31 @@ fn config_agents(file: &Path, add: &mut impl FnMut(Option<&str>)) {
     let Some(text) = read_text(file) else {
         return;
     };
+    let (scrubbed, tokens) = super::enforcement::scrub_opencode_tokens(&text);
     let Ok(value) =
-        serde_json::from_str::<serde_json::Value>(&crate::vsix_themes::strip_jsonc(&text))
+        serde_json::from_str::<serde_json::Value>(&crate::vsix_themes::strip_jsonc(&scrubbed))
     else {
+        add(None);
+        return;
+    };
+    let Some(root) = value.as_object() else {
+        add(None);
         return;
     };
     for key in ["agent", "agents", "mode"] {
-        for name in value[key].as_object().into_iter().flat_map(|m| m.keys()) {
-            add(Some(name));
+        let Some(entry) = root.get(key) else {
+            continue;
+        };
+        if let Some(map) = entry.as_object() {
+            for name in map.keys() {
+                if tokens.contains_sentinel_str(name) {
+                    add(None);
+                } else {
+                    add(Some(name));
+                }
+            }
+        } else if tokens.is_sentinel_value(entry) {
+            add(None);
         }
     }
 }
@@ -283,5 +300,50 @@ mod tests {
             );
         }
         assert!(!user_only.names.contains("project-v2"), "{:?}", user_only.names);
+    }
+
+    #[test]
+    fn skill_manager_opencode_agents_scrub_env_file_tokens_and_mark_invalid_json_incomplete() {
+        let f = Fixture::new();
+        let home = f.0.join("home");
+        let repo = f.0.join("repo");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        fs::create_dir_all(home.join(".config/opencode")).unwrap();
+
+        // Valid JSONC on disk containing unquoted `{env:...}` and `{file:...}` tokens discovers
+        // custom 1.x `agent` and 2.x `agents` cleanly with `complete = true`.
+        fs::write(
+            repo.join("opencode.jsonc"),
+            r#"{
+                // project config with OpenCode substitutions
+                "provider": {"work": {"options": {"timeout": {env:TIMEOUT}, "cert": {file:./cert.pem}}}},
+                "agent": {"from-v1": {"temperature": {env:TEMP}}},
+                "agents": {"from-v2": {"system": {file:./prompt.md}}},
+            }"#,
+        )
+        .unwrap();
+        let found = agents(&repo, &home, &Homes::default());
+        assert!(found.complete, "env/file tokens should not mark scan incomplete");
+        assert!(found.names.contains("from-v1"), "{:?}", found.names);
+        assert!(found.names.contains("from-v2"), "{:?}", found.names);
+
+        // Unquoted token standing in for the whole `agents` map cannot be enumerated statically.
+        fs::write(
+            repo.join("opencode.jsonc"),
+            r#"{"agents": {file:./agents.json}}"#,
+        )
+        .unwrap();
+        let opaque_map = agents(&repo, &home, &Homes::default());
+        assert!(!opaque_map.complete, "opaque agents map must set complete = false");
+
+        // Genuinely unparseable JSON on disk must set `complete = false` rather than staying true.
+        fs::write(repo.join("opencode.jsonc"), r#"{"agents": {"broken": "#).unwrap();
+        let broken = agents(&repo, &home, &Homes::default());
+        assert!(!broken.complete, "invalid JSON must set complete = false");
+
+        // Non-object JSON root on disk also marks `complete = false`.
+        fs::write(repo.join("opencode.jsonc"), "[]").unwrap();
+        let non_object = agents(&repo, &home, &Homes::default());
+        assert!(!non_object.complete, "non-object JSON must set complete = false");
     }
 }

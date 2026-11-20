@@ -75,6 +75,9 @@ pub(super) struct Spare {
 #[derive(Default)]
 struct Spares {
     spares: HashMap<String, Spare>,
+    /// In-flight `spawn_spare` calls, keyed by a monotonic token, recording `(session_id, cwd)`
+    /// so folder-scoped `discard_in` can advance their launch epochs before they spawn or register.
+    starting: HashMap<u64, (String, PathBuf)>,
     gone: HashMap<String, Gone>,
     /// Lead wakes that adopted their spare, and those that found one unusable or gone, since
     /// launch: in memory only, read from the adoption log line (docs/worker-tokens.md).
@@ -128,11 +131,32 @@ impl Spares {
 }
 
 static SPARES: LazyLock<Pool> = LazyLock::new(Pool::default);
+/// Monotonic token for `Spares::starting` entries.
+static NEXT_INFLIGHT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 /// Each task's latest Claude launch, numbered from one app-wide sequence (`NEXT_LAUNCH`) so a
 /// forgotten task's number never comes back. A spare started for launch N is useless once a
 /// later launch has begun: it would resume the conversation without that turn.
 static NEXT_LAUNCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static LAUNCHES: LazyLock<Mutex<HashMap<String, u64>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct InFlight {
+    pool: &'static Pool,
+    token: u64,
+}
+
+impl InFlight {
+    fn enter(pool: &'static Pool, session_id: String, cwd: PathBuf) -> Self {
+        let token = NEXT_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        spares(pool).starting.insert(token, (session_id, cwd));
+        Self { pool, token }
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        spares(self.pool).starting.remove(&self.token);
+    }
+}
 
 /// Set once the app begins quitting (`on_run_event` in `lib.rs`): a spare already waiting on
 /// an exit, or a lead's renewal, must not start a process the quit would then wait for.
@@ -355,16 +379,107 @@ fn miss(alive: bool, spare_key: &str, key: &str, age: Duration, idle: Duration) 
     Some(format!("changed: {}", changed.join(", ")))
 }
 
-/// Drop a task's warm agent: its team stopped or paused, the task was deleted, or its model or
-/// mode changed (`update_session` in `lib.rs` calls this so a lead's spare cannot renew on the
-/// old launch until its next wake; an ordinary spare would already miss on its key).
-/// It also forgets the task's launch number, so a deleted task leaves nothing behind: a spare
-/// (or a lead's renewal) still starting for the old launch, numbered at least 1, never matches
-/// the forgotten 0 and is dropped instead of idling for `IDLE`.
+/// Best-effort canonical path: uses `canonicalize` when `path` exists, and otherwise
+/// canonicalizes the deepest existing ancestor so deleted folders (e.g. during
+/// `recreate_worktree`) still match spares recorded under a canonical or symlinked spelling.
+pub(super) fn resolve_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return external_path(&canonical);
+    }
+    let mut suffix = Vec::new();
+    let mut cursor = path;
+    loop {
+        if let Ok(canonical) = cursor.canonicalize() {
+            let mut resolved = external_path(&canonical);
+            for component in suffix.into_iter().rev() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    other => resolved.push(other.as_os_str()),
+                }
+            }
+            return resolved;
+        }
+        let Some(parent) = cursor.parent() else {
+            return external_path(path);
+        };
+        if let Some(last) = cursor.components().next_back() {
+            suffix.push(last);
+        }
+        if parent == cursor {
+            return external_path(path);
+        }
+        cursor = parent;
+    }
+}
+
+/// Whether `candidate` lies inside (or equals) `folder`, literally or once both resolve
+/// through [`resolve_path`]. `folder_resolved` is `resolve_path(folder)` computed once.
+pub(super) fn path_in_folder(candidate: &Path, folder: &Path, folder_resolved: &Path) -> bool {
+    let candidate_ext = external_path(candidate);
+    let folder_ext = external_path(folder);
+    if candidate_ext == folder_ext || candidate_ext.starts_with(&folder_ext) {
+        return true;
+    }
+    if candidate_ext == folder_resolved || candidate_ext.starts_with(folder_resolved) {
+        return true;
+    }
+    let resolved = resolve_path(candidate);
+    resolved == folder_resolved || resolved.starts_with(folder_resolved)
+}
+
+/// Advance `session_id`'s launch epoch when it already has one, without forgetting the task
+/// or inserting an entry for a task that never launched.
+fn advance_launch_if_present(launches: &mut HashMap<String, u64>, session_id: &str) {
+    if let Some(slot) = launches.get_mut(session_id) {
+        *slot = NEXT_LAUNCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Drop a task's pooled warm spare and advance its launch epoch (when one exists) without
+/// forgetting the task: any spare or lead renewal still starting for the old epoch is refused,
+/// while a turn currently running still reads a nonzero epoch at turn end so its post-turn spare
+/// starts with the updated settings.
+/// Must run inside a tokio runtime: only there does the killed spare register its exit, so a
+/// later `await_exit` waits for it.
+pub fn invalidate(session_id: &str) {
+    invalidate_from(&SPARES, session_id);
+}
+
+fn invalidate_from(pool: &Pool, session_id: &str) {
+    if let Some((spare, pending)) = take_for_invalidate(pool, session_id) {
+        retire(session_id, spare, pending);
+    }
+}
+
+fn take_for_invalidate(pool: &Pool, session_id: &str) -> Option<(Spare, Pending)> {
+    // Lock order: SPARES before LAUNCHES (matching `register`), so no concurrent `register` can
+    // slip between advancing the epoch and removing an already-pooled spare.
+    let mut pool = spares(pool);
+    {
+        let mut launches = LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        advance_launch_if_present(&mut launches, session_id);
+    }
+    pool.remove(session_id, Gone::Discarded)
+}
+
+/// Drop a task's warm agent and forget its launch number: its team stopped or paused, or the task
+/// was deleted / quiesced. A spare (or a lead's renewal) still starting for the old launch,
+/// numbered at least 1, never matches the forgotten 0 and is dropped instead of idling for `IDLE`.
 /// Must run inside a tokio runtime: only there does the killed spare register its exit, so a
 /// later `await_exit` waits for it.
 pub fn discard(session_id: &str) {
-    discard_in(&SPARES, session_id);
+    discard_from(&SPARES, session_id);
+}
+
+/// Drop every pooled warm spare whose working directory lies in `folder`, and advance the launch
+/// epochs of those sessions and any in-flight spare spawns targeting `folder` so none can race
+/// back into the pool. Returns the affected session IDs.
+/// Must run inside a tokio runtime so retired spares register their exits.
+pub fn discard_in(folder: &Path) -> Vec<String> {
+    discard_pool_in(&SPARES, folder)
 }
 
 /// `discard`, then wait (bounded by `await_exit`'s hard cap) until every process of the session
@@ -377,12 +492,18 @@ pub async fn quiesce(session_id: &str) -> Result<(), String> {
     quiesce_in(&SPARES, session_id).await
 }
 
+/// Retire every pooled warm spare in `folder` and wait (bounded by `EXIT_HARD_CAP`) until those
+/// spares and any other pending exits in `folder` have exited. Never call with a lock held.
+pub async fn quiesce_spares_in(folder: &Path) -> Result<(), String> {
+    quiesce_spares_in_with(&SPARES, folder, discard_in).await
+}
+
 async fn quiesce_in(pool: &Pool, session_id: &str) -> Result<(), String> {
-    discard_in(pool, session_id);
+    discard_from(pool, session_id);
     await_exit(session_id).await
 }
 
-fn discard_in(pool: &Pool, session_id: &str) {
+fn discard_from(pool: &Pool, session_id: &str) {
     // Killed outside the lock; `Pending` was registered under the pool lock so `await_exit`
     // waits even before `retire` registers the real exit.
     if let Some((spare, pending)) = take_for_discard(pool, session_id) {
@@ -391,8 +512,112 @@ fn discard_in(pool: &Pool, session_id: &str) {
 }
 
 fn take_for_discard(pool: &Pool, session_id: &str) -> Option<(Spare, Pending)> {
+    let mut pool = spares(pool);
     LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(session_id);
-    spares(pool).remove(session_id, Gone::Discarded)
+    pool.remove(session_id, Gone::Discarded)
+}
+
+fn take_for_discard_in(pool: &Pool, folder: &Path) -> (Vec<(String, Spare, Pending)>, Vec<String>) {
+    let folder_resolved = resolve_path(folder);
+    let mut pool = spares(pool);
+    let matching_spares: Vec<String> = pool
+        .spares
+        .iter()
+        .filter(|(_, spare)| {
+            spare
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| path_in_folder(cwd, folder, &folder_resolved))
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    let matching_starting: Vec<(u64, String)> = pool
+        .starting
+        .iter()
+        .filter(|(_, (_, cwd))| path_in_folder(cwd, folder, &folder_resolved))
+        .map(|(token, (id, _))| (*token, id.clone()))
+        .collect();
+    let mut affected = Vec::with_capacity(matching_spares.len() + matching_starting.len());
+    for id in &matching_spares {
+        if !affected.contains(id) {
+            affected.push(id.clone());
+        }
+    }
+    for (token, id) in matching_starting {
+        pool.starting.remove(&token);
+        if !affected.contains(&id) {
+            affected.push(id);
+        }
+    }
+    if !affected.is_empty() {
+        // Lock order: SPARES before LAUNCHES (matching `register`).
+        let mut launches = LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for id in &affected {
+            advance_launch_if_present(&mut launches, id);
+        }
+    }
+    let mut removed = Vec::with_capacity(matching_spares.len());
+    for id in matching_spares {
+        if let Some((spare, pending)) = pool.remove(&id, Gone::Discarded) {
+            removed.push((id, spare, pending));
+        }
+    }
+    (removed, affected)
+}
+
+fn discard_pool_in(pool: &Pool, folder: &Path) -> Vec<String> {
+    let (removed, affected) = take_for_discard_in(pool, folder);
+    for (id, spare, pending) in removed {
+        retire(&id, spare, pending);
+    }
+    affected
+}
+
+fn has_spare_in(pool: &Pool, folder: &Path) -> bool {
+    let folder_resolved = resolve_path(folder);
+    let pool = spares(pool);
+    pool.spares.values().any(|spare| {
+        spare
+            .cwd
+            .as_deref()
+            .is_some_and(|cwd| path_in_folder(cwd, folder, &folder_resolved))
+    }) || pool
+        .starting
+        .values()
+        .any(|(_, cwd)| path_in_folder(cwd, folder, &folder_resolved))
+}
+
+#[cfg(all(test, unix))]
+async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String> {
+    quiesce_spares_in_with(pool, folder, |dir| discard_pool_in(pool, dir)).await
+}
+
+async fn quiesce_spares_in_with(
+    pool: &Pool,
+    folder: &Path,
+    discard: impl Fn(&Path) -> Vec<String>,
+) -> Result<(), String> {
+    let wait = async {
+        loop {
+            let affected = discard(folder);
+            if !affected.is_empty() {
+                let results = futures_util::future::join_all(
+                    affected.iter().map(|id| await_exit(id)),
+                )
+                .await;
+                if let Some(error) = results.into_iter().find_map(Result::err) {
+                    return Err(error);
+                }
+            }
+            await_exits_in(folder).await?;
+            if !has_spare_in(pool, folder) {
+                return Ok(());
+            }
+        }
+    };
+    tokio::time::timeout(EXIT_HARD_CAP, wait)
+        .await
+        .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())?
 }
 
 fn take_expired(pool: &Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
@@ -461,6 +686,9 @@ fn failure_note(renewals: u32, error: &str) -> String {
 /// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
 /// lead spare may start again (`renews`).
 async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, renewals: u32) -> Result<(), String> {
+    let session_id = config.session_id.clone();
+    let cwd_path = external_path(&config.cwd);
+    let inflight = InFlight::enter(life.pool, session_id.clone(), cwd_path.clone());
     // What a renewal starts again with, unchanged: no turn launched in between.
     // `inputs` reads files, so on a blocking thread.
     let renewal = match renew {
@@ -471,12 +699,12 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         }
         None => None,
     };
-    let session_id = config.session_id.clone();
-    let cwd = Some(external_path(&config.cwd));
+    let cwd = Some(cwd_path);
     let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch).await? else { return Ok(()) };
     let spare_key = key.clone();
     let born = std::time::Instant::now();
     let registered = register(life.pool, &session_id, launch, Spare { key, child, group, server, born, idle: life.idle, lead: renewal.is_some(), cwd });
+    drop(inflight);
     // The spare is now pooled, or killed with its own exit registered (`retire`).
     drop(starting);
     if !registered {
@@ -513,7 +741,7 @@ fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<St
 }
 
 async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
-    if !supported(&config) {
+    if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() {
         return Ok(None);
     }
     let connection = crate::connections::for_task(&config.session_id, &config.provider)
@@ -651,6 +879,48 @@ pub(super) fn waiting(session_id: &str) -> bool {
 #[cfg(test)]
 fn waiting_in(pool: &Pool, session_id: &str) -> bool {
     spares(pool).spares.contains_key(session_id)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn spare_pool_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+    &LOCK
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn insert_spare_in_cwd_for_test(session_id: &str, cwd: PathBuf, lead: bool) -> u32 {
+    launched(session_id);
+    let mut command = Command::new("sleep");
+    command.arg("30").kill_on_drop(true);
+    if cwd.exists() {
+        command.current_dir(&cwd);
+    }
+    let child = command.spawn().unwrap();
+    let pid = child.id().unwrap();
+    let spare = Spare {
+        key: "test-spare".into(),
+        child,
+        group: ProcessGroup::register(Some(pid)),
+        server: None,
+        born: std::time::Instant::now(),
+        idle: IDLE,
+        lead,
+        cwd: Some(external_path(&cwd)),
+    };
+    let registered = register(&SPARES, session_id, epoch(session_id), spare);
+    assert!(registered, "test spare must register for {session_id}");
+    pid
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn has_spare_for_test(session_id: &str) -> bool {
+    waiting_in(&SPARES, session_id)
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn process_gone_for_test(pid: u32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid as i32, 0) == -1 }
 }
 
 #[cfg(test)]

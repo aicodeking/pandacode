@@ -58,8 +58,8 @@ function rowHtml(tool: CustomTool, projectId: string | null, view: View): string
     ? `<span class="custom-tool-confirm">Delete?</span><button type="button" class="secondary-button custom-tool-delete-yes" data-delete-yes aria-label="Delete ${escape(tool.name)}">Delete</button><button type="button" class="secondary-button" data-delete-no aria-label="Keep ${escape(tool.name)}">Keep</button>`
     : `<button type="button" class="icon-button" data-more aria-haspopup="menu" aria-label="More for ${escape(tool.name)}" title="More">${icon('more')}</button>`;
   const script = view.viewing === k ? `<pre class="custom-tool-script" aria-label="Script of ${escape(tool.name)}" tabindex="0">${escape(tool.script)}</pre>` : '';
-  return `<li class="custom-tool" data-name="${escape(tool.name)}" data-project="${escape(projectId ?? '')}" data-disabled="${tool.disabled}"${projectId !== null ? ' draggable="true"' : ''}>
-    <div class="custom-tool-row">
+  return `<li class="custom-tool" data-name="${escape(tool.name)}" data-project="${escape(projectId ?? '')}" data-disabled="${tool.disabled}">
+    <div class="custom-tool-row"${projectId !== null ? ' draggable="true"' : ''}>
       <div class="custom-tool-main">
         <span class="custom-tool-title"><strong>${escape(tool.name)}</strong>${tool.disabled ? '<span class="custom-tool-badge">Disabled</span>' : ''}${tool.description ? infoMark(tool.description, `About ${tool.name}`) : ''}</span>
         <span class="custom-tool-meta"><span class="custom-tool-when">${escape(tool.when)}</span><span class="custom-tool-usage"${usage.never ? ' data-never' : ''}>${escape(usage.text)}</span></span>
@@ -231,6 +231,7 @@ export function mountCustomTools(host: HTMLElement, call: Call, listen: Listen):
   const ctx: Ctx = { host, call, data: null, projects: [], error: '', loadFailed: '', disposed: false, view: { confirming: '', viewing: '' } };
   let stop: (() => void) | undefined;
   const projectRow = (target: Element) => {
+    if (!target.closest('.custom-tool-row[draggable="true"]')) return null;
     const found = located(ctx, target);
     return found?.projectId ? { name: found.tool.name, projectId: found.projectId } : null;
   };

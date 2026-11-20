@@ -251,7 +251,7 @@ pub(super) async fn set_task_preference(
         return Err("Close this task's harness console before changing its settings here.".into());
     }
     if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
-        return save_claude_preference(&state.store, &session_id, request);
+        return save_claude_preference(&state, &session_id, request);
     }
     let running = state
         .agents
@@ -315,18 +315,25 @@ fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
 }
 
 pub(crate) fn save_claude_preference(
-    store: &Mutex<Store>,
+    state: &AppState,
     session_id: &str,
     request: TaskPreference,
 ) -> Result<Session> {
     // Claude reads fast mode at launch, so the choice applies from the next turn.
     let delta = json!({"serviceTier": claude_tier(request)?});
+    // Match send/configure's lock order (`agents` before `store`) so concurrent turn admission
+    // either reads the updated speed or finishes admitting before we invalidate stale spares.
+    let _agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let session = {
-        let store = store.lock().map_err(|e| e.to_string())?;
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        if store.session(session_id)?.provider != "claude" {
+            return Err("This task's harness changed. Open its settings again.".into());
+        }
         save_preference(&store, session_id, &delta)?
     };
-    // Drop any warm spare (or renewing lead spare) that started at the old speed.
-    providers::discard_warm_agent(session_id);
+    // Retire any pooled warm spare and advance the epoch so older in-flight spares/renewals
+    // cannot register, while keeping a running turn's epoch nonzero for its post-turn spare.
+    providers::invalidate_warm_agent(session_id);
     Ok(session)
 }
 
@@ -909,20 +916,42 @@ mod command_tests {
         providers::warm_launched(&sid);
         let before = providers::warm_epoch(&sid);
         assert_ne!(before, 0);
-        // Invalid preferences fail without discarding the existing warm spare.
-        assert!(save_claude_preference(&state.store, &sid, TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
-        assert!(save_claude_preference(&state.store, &sid, TaskPreference::Plan { enabled: true }).is_err());
+        // Invalid preferences fail without invalidating the existing warm spare or epoch.
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Speed { tier: Some("priority".into()) }).is_err());
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Plan { enabled: true }).is_err());
         assert_eq!(providers::warm_epoch(&sid), before);
-        // Enabling fast mode persists the tier and discards any warm spare / renewal epoch.
-        let enabled = save_claude_preference(&state.store, &sid, TaskPreference::Fast { enabled: true }).unwrap();
+        // Enabling fast mode mid-turn persists the tier, retires any stale spare, and advances the
+        // epoch without zeroing it so the post-turn spare still spawns with fast mode enabled.
+        #[cfg(unix)]
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        #[cfg(unix)]
+        let stale_pid = providers::insert_spare_in_cwd_for_test(&sid, std::env::temp_dir(), false);
+        let before_enable = providers::warm_epoch(&sid);
+        let enabled = save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: true }).unwrap();
         assert_eq!(enabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&json!("fast")));
-        assert_eq!(providers::warm_epoch(&sid), 0);
-        // Disabling fast mode persists null and discards any warm spare started in fast mode.
-        providers::warm_launched(&sid);
-        assert_ne!(providers::warm_epoch(&sid), 0);
-        let disabled = save_claude_preference(&state.store, &sid, TaskPreference::Fast { enabled: false }).unwrap();
+        let after_enable = providers::warm_epoch(&sid);
+        assert_ne!(after_enable, 0, "mid-turn /fast must not zero the running turn's warm epoch");
+        assert!(after_enable > before_enable, "epoch must advance to invalidate prior spares");
+        #[cfg(unix)]
+        {
+            assert!(!providers::has_spare_for_test(&sid));
+            providers::await_exit(&sid).await.unwrap();
+            assert!(providers::process_gone_for_test(stale_pid));
+        }
+        // Disabling fast mode persists null and advances the epoch again without zeroing it.
+        let disabled = save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: false }).unwrap();
         assert_eq!(disabled.codex_settings.as_ref().map(|v| &v["serviceTier"]), Some(&Value::Null));
-        assert_eq!(providers::warm_epoch(&sid), 0);
+        let after_disable = providers::warm_epoch(&sid);
+        assert_ne!(after_disable, 0);
+        assert!(after_disable > after_enable);
+        // Rejects if the session's harness changed away from Claude before locking.
+        state
+            .store
+            .lock()
+            .unwrap()
+            .configure(&sid, "codex", "default", None)
+            .unwrap();
+        assert!(save_claude_preference(&state, &sid, TaskPreference::Fast { enabled: true }).is_err());
     }
     #[test]
     fn imported_task_lookup_includes_history_outside_the_sidebar_limit() {

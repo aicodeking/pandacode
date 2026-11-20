@@ -439,7 +439,7 @@ fn skill_manager_opencode_tool_grants_cover_builtins_and_project_agents_after_wi
 #[test]
 fn skill_manager_opencode_opaque_inline_grants_win_through_permission_env() {
     let tool = "pandacode_architect_pandacode_explore";
-    let opaque = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT}}}}}"#;
+    let opaque = r#"{"provider":{"work": broken"#;
     let project_rules = format!(
         r#"{{"{tool}":"deny","*":"deny","pandacode_architect_*":"ask","skill":{{"review":"deny"}}}}"#
     );
@@ -456,5 +456,180 @@ fn skill_manager_opencode_opaque_inline_grants_win_through_permission_env() {
             "ask"
         );
         assert_eq!(action(&config, "unconfigured", "review"), "deny");
+    }
+}
+
+#[test]
+fn skill_manager_opencode_env_file_tokens_grant_per_agent_inline_over_wildcards() {
+    let tool = "pandacode_architect_pandacode_explore";
+    let agents = OpenCodeAgents {
+        names: BTreeSet::from([
+            "build".into(),
+            "plan".into(),
+            "general".into(),
+            "explore".into(),
+            "reviewer".into(),
+        ]),
+        complete: true,
+    };
+    let inline_in = r#"{"provider":{"work":{"options":{"timeout":{env:TIMEOUT},"cert":{file:./cert.pem}}}}}"#;
+    let project_rules = format!(r#"{{"{tool}":"deny","*":"deny","pandacode_architect_*":"ask"}}"#);
+    let project = r#"{
+        "permission": RULES,
+        "agent": {
+            "build": {"permission": RULES},
+            "plan": {"permission": RULES},
+            "general": {"permission": RULES},
+            "explore": {"permission": RULES},
+            "reviewer": {"permission": RULES}
+        }
+    }"#
+    .replace("RULES", &project_rules);
+
+    let (inline_out, permission_out) =
+        opencode_tool_grants_with(inline_in, None, &["pandacode_explore"], &agents).unwrap();
+    assert!(permission_out.is_none());
+    assert!(inline_out.contains(r#""timeout":{env:TIMEOUT}"#), "{inline_out}");
+    assert!(inline_out.contains(r#""cert":{file:./cert.pem}"#), "{inline_out}");
+
+    let (scrubbed, _) = scrub_opencode_tokens(&inline_out);
+    let mut config = object(&project);
+    merge(&mut config, object(&scrubbed));
+    for agent in ["build", "plan", "general", "explore", "reviewer"] {
+        assert_eq!(
+            permission_action(&config, agent, tool, "*"),
+            "allow",
+            "{agent}: {inline_out}"
+        );
+        assert_eq!(
+            permission_action(&config, agent, &format!("{tool}2"), "*"),
+            "ask",
+            "{agent}: {inline_out}"
+        );
+        assert_eq!(
+            permission_action(&config, agent, "pandacode_architect_pandacode_tool_run", "*"),
+            "ask",
+            "{agent}: {inline_out}"
+        );
+    }
+}
+
+/// Evaluates OpenCode 2.x layered `permissions` arrays (`findLast` over top-level layers followed
+/// by agent-level layers, matching OpenCode 2.2.7 `ConfigAgentPlugin` + `Permission.evaluate`).
+fn eval_v2_action(
+    layers: &[&serde_json::Value],
+    agent: &str,
+    action_name: &str,
+    resource: &str,
+) -> String {
+    let mut rules = Vec::new();
+    for layer in layers {
+        if let Some(arr) = layer.get("permissions").and_then(|v| v.as_array()) {
+            rules.extend(arr.iter());
+        }
+    }
+    for layer in layers {
+        if let Some(arr) = layer
+            .get("agents")
+            .and_then(|a| a.get(agent))
+            .and_then(|a| a.get("permissions"))
+            .and_then(|v| v.as_array())
+        {
+            rules.extend(arr.iter());
+        }
+    }
+    rules
+        .into_iter()
+        .rfind(|rule| {
+            let a = rule["action"].as_str().unwrap_or("");
+            let r = rule["resource"].as_str().unwrap_or("");
+            matches(a, action_name) && matches(r, resource)
+        })
+        .and_then(|rule| rule["effect"].as_str())
+        .unwrap_or("ask")
+        .to_owned()
+}
+
+#[test]
+fn skill_manager_opencode_v2_disabled_skills_and_grants_evaluate_cleanly_across_layers() {
+    let disabled = BTreeSet::from(["review".into()]);
+    let agents = OpenCodeAgents {
+        names: BTreeSet::from([
+            "build".into(),
+            "plan".into(),
+            "general".into(),
+            "explore".into(),
+            "custom-v2".into(),
+        ]),
+        complete: true,
+    };
+    let project_v2: serde_json::Value = serde_json::json!({
+        "permissions": [
+            {"action": "skill", "resource": "*", "effect": "allow"},
+            {"action": "pandacode_architect_*", "resource": "*", "effect": "deny"}
+        ],
+        "agents": {
+            "build": {
+                "permissions": [
+                    {"action": "*", "resource": "*", "effect": "deny"},
+                    {"action": "skill", "resource": "*", "effect": "allow"},
+                    {"action": "skill", "resource": "review", "effect": "allow"}
+                ]
+            },
+            "explore": {
+                "permissions": [
+                    {"action": "*", "resource": "*", "effect": "deny"},
+                    {"action": "skill", "resource": "*", "effect": "allow"},
+                    {"action": "skill", "resource": "review", "effect": "allow"}
+                ]
+            },
+            "custom-v2": {
+                "permissions": [
+                    {"action": "*", "resource": "*", "effect": "deny"},
+                    {"action": "skill", "resource": "*", "effect": "allow"},
+                    {"action": "skill", "resource": "review", "effect": "allow"}
+                ]
+            }
+        }
+    });
+    let connection_v2 = r#"{
+        "provider": {"work": {"options": {"timeout": {env:TIMEOUT}}}},
+        "permissions": [{"action": "*", "resource": "*", "effect": "ask"}],
+        "agents": {
+            "build": {"permissions": [{"action": "skill", "resource": "*", "effect": "allow"}]}
+        }
+    }"#;
+
+    let launch = opencode_launch_with(connection_v2, None, &disabled, &agents);
+    assert!(launch.enforced);
+    let (final_inline, _) = opencode_tool_grants_with(
+        &launch.content,
+        launch.permission.as_deref(),
+        &["pandacode_explore", "pandacode_tool_list", "pandacode_tool_save"],
+        &agents,
+    )
+    .unwrap();
+    assert!(final_inline.contains(r#""timeout":{env:TIMEOUT}"#));
+    let (scrubbed, _) = scrub_opencode_tokens(&final_inline);
+    let inline_v2: serde_json::Value = serde_json::from_str(&scrubbed).unwrap();
+    assert!(inline_v2.get("permission").is_none());
+    assert!(inline_v2.get("agent").is_none());
+
+    let layers = [&project_v2, &inline_v2];
+    for agent in ["build", "plan", "general", "explore", "custom-v2"] {
+        assert_eq!(eval_v2_action(&layers, agent, "skill", "review"), "deny", "{agent}");
+        assert_ne!(eval_v2_action(&layers, agent, "skill", "other"), "deny", "{agent}");
+        for granted in [
+            "pandacode_architect_pandacode_explore",
+            "pandacode_architect_pandacode_tool_list",
+            "pandacode_architect_pandacode_tool_save",
+        ] {
+            assert_eq!(eval_v2_action(&layers, agent, granted, "*"), "allow", "{agent}/{granted}");
+        }
+        assert_ne!(
+            eval_v2_action(&layers, agent, "pandacode_architect_pandacode_tool_run", "*"),
+            "allow",
+            "tool_run must stay ungranted on {agent}"
+        );
     }
 }

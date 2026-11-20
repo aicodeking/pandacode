@@ -208,7 +208,7 @@ async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     // Discarded (settings changed, team paused or stopped).
     let discarded = id("discarded");
     admit(&mut spares(pool), discarded.clone(), with_key(true, Duration::ZERO, &launch));
-    discard_in(pool, &discarded);
+    discard_from(pool, &discarded);
     assert_eq!(take_in(pool, &discarded, &launch).1.as_deref(), Some("Team lead's warm Claude agent not used (it was discarded); starting cold. Lead spares since launch: 1 adopted, 4 not used."));
     // Each reason is said once; a task that never had a lead spare logs nothing.
     assert_eq!(take_in(pool, &discarded, &launch).1, None);
@@ -244,7 +244,7 @@ async fn a_spare_still_starting_when_its_task_is_discarded_never_registers() {
     launched(&session);
     let launch = epoch(&session);
     // ...while the team is paused or stopped (`architect_control`) and its spare discarded.
-    discard_in(pool, &session);
+    discard_from(pool, &session);
     assert!(!register(pool, &session, launch, idle_spare(true, Duration::ZERO)), "the in-flight spare is dropped");
     assert!(!waiting_in(pool, &session), "no idle process is left behind");
     let waiting_lead: Renew = Arc::new(|| true);
@@ -253,7 +253,7 @@ async fn a_spare_still_starting_when_its_task_is_discarded_never_registers() {
     launched(&session); // a prewarm always follows a launch, never launch 0
     assert!(register(pool, &session, epoch(&session), idle_spare(true, Duration::ZERO)));
     assert!(waiting_in(pool, &session));
-    discard_in(pool, &session);
+    discard_from(pool, &session);
     assert!(!waiting_in(pool, &session));
 }
 
@@ -321,7 +321,7 @@ async fn an_expired_lead_spare_really_renews_then_the_chain_ends() {
     start(holding, held_config, Vec::new(), HashSet::new(), epoch(&held), lead(waiting_lead.clone()), 0).await.unwrap();
     assert!(waiting_in(holding.pool, &held) && stub_starts(&held) == 1, "the first spare waits in the lead pool");
     assert!(spares(holding.pool).spares.get(&held).is_some_and(|spare| spare.lead));
-    discard_in(holding.pool, &held);
+    discard_from(holding.pool, &held);
     let life = stub();
     let waiting = |session: &str| waiting_in(life.pool, session);
     launched(&session); // a prewarm always follows a launch, never launch 0
@@ -448,7 +448,7 @@ async fn discarding_a_task_drops_its_spare_and_launch_count() {
     launched(&session);
     let launch = epoch(&session);
     assert!(register(pool, &session, launch, idle_spare(true, Duration::ZERO)));
-    discard_in(pool, &session);
+    discard_from(pool, &session);
     assert!(!waiting_in(pool, &session), "no idle process is left behind");
     assert!(!LAUNCHES.lock().unwrap().contains_key(&session), "the count is gone");
     assert!(!register(pool, &session, launch, idle_spare(true, Duration::ZERO)), "a spare still starting is dropped");
@@ -474,7 +474,7 @@ async fn quiesce_leaves_no_spare_and_no_pending_exit() {
 async fn a_spare_that_read_launch_zero_after_a_discard_is_refused() {
     let (pool, session) = (own_pool(), format!("warm-zero-{}", uuid::Uuid::new_v4()));
     launched(&session);
-    discard_in(pool, &session);
+    discard_from(pool, &session);
     assert_eq!(epoch(&session), 0, "the discard forgot the count");
     assert!(!register(pool, &session, 0, idle_spare(false, Duration::ZERO)), "0 == 0 must not pass");
     assert!(!waiting_in(pool, &session));
@@ -553,7 +553,7 @@ async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     child.wait().await.unwrap();
     insert(child, group);
     assert!(take_in(pool, &session, "launch-a").0.is_none(), "an agent that exited is never adopted");
-    discard_in(pool, &session);
+    discard_from(pool, &session);
 }
 
 #[cfg(unix)]
@@ -583,7 +583,7 @@ async fn a_discarded_spare_is_gone_before_the_console_may_resume_the_session() {
     let spare = idle_spare(false, Duration::ZERO);
     let pid = spare.child.id().unwrap();
     spares(pool).spares.insert(session.clone(), spare);
-    discard_in(pool, &session);
+    discard_from(pool, &session);
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid), "the console would have overlapped the spare");
@@ -637,7 +637,7 @@ async fn replaced_and_evicted_spares_are_gone_before_their_sessions_may_launch()
     assert!(process_gone(first_pid), "the replaced spare outlived await_exit");
     assert!(process_gone(old_pid), "the evicted spare outlived await_exit");
     for session in [&replaced, &b, &c] {
-        discard_in(pool, session);
+        discard_from(pool, session);
         await_exit(session).await.unwrap();
     }
 }
@@ -661,6 +661,7 @@ async fn an_expired_spare_is_gone_before_its_session_may_launch() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_launch_without_a_spare_retires_the_pooled_one() {
+    let _serial = spare_pool_test_lock().lock().await;
     let session = format!("warm-hostless-{}", uuid::Uuid::new_v4());
     let spare = idle_spare(false, Duration::ZERO);
     let pid = pid_of(&spare);
@@ -943,4 +944,186 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     assert!(note.is_none());
     let (mut spare, _pending) = adopted.expect("standard None and serviceTier:null share one warm key");
     spare.child.kill().await.unwrap();
+}
+
+#[test]
+fn path_in_folder_matches_canonical_nested_and_deleted_folders() {
+    let base = std::env::temp_dir().join(format!("pandacode-warm-path-{}", uuid::Uuid::new_v4().simple()));
+    let folder = base.join("wt");
+    let nested = folder.join("sub/dir");
+    let sibling = base.join("wt-other");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir_all(&sibling).unwrap();
+
+    let resolved = resolve_path(&folder);
+    assert!(path_in_folder(&folder, &folder, &resolved));
+    assert!(path_in_folder(&folder.join("."), &folder, &resolved));
+    assert!(path_in_folder(&nested, &folder, &resolved));
+    assert!(!path_in_folder(&sibling, &folder, &resolved));
+
+    // After the leaf directory disappears (e.g. `recreate_worktree`), canonicalizing the deepest
+    // existing ancestor still matches canonical and non-canonical spellings of the deleted folder.
+    let canonical_folder = folder.canonicalize().unwrap();
+    let canonical_nested = nested.canonicalize().unwrap();
+    std::fs::remove_dir_all(&folder).unwrap();
+    let deleted_resolved = resolve_path(&folder);
+    assert!(path_in_folder(&canonical_folder, &folder, &deleted_resolved));
+    assert!(path_in_folder(&canonical_nested, &folder, &deleted_resolved));
+    assert!(!path_in_folder(&sibling, &folder, &deleted_resolved));
+
+    let _ = std::fs::remove_dir_all(base);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allows_post_turn_prewarm() {
+    let pool = own_pool();
+    let never = format!("warm-never-{}", uuid::Uuid::new_v4());
+    // Invalidating a task that has never launched does not insert a launch epoch.
+    invalidate_from(pool, &never);
+    assert_eq!(epoch(&never), 0);
+
+    let session = format!("warm-invalidate-{}", uuid::Uuid::new_v4());
+    let base = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let standard_key = key(&base, &[]);
+    let fast_cfg = RunConfig { codex_settings: Some(json!({"serviceTier": "fast"})), ..base.clone() };
+    let fast_key = key(&fast_cfg, &[]);
+
+    launched(&session);
+    let before = epoch(&session);
+    assert_ne!(before, 0);
+
+    // Put a stale standard-speed lead spare in the pool for `before`.
+    let stale = Spare { key: standard_key.clone(), ..idle_spare(true, Duration::ZERO) };
+    let stale_pid = pid_of(&stale);
+    assert!(register(pool, &session, before, stale));
+    assert!(waiting_in(pool, &session));
+
+    // Mid-turn `/fast` invalidation retires the stale spare and advances the epoch (never zeroing it).
+    invalidate_from(pool, &session);
+    assert!(!waiting_in(pool, &session), "stale pooled spare must be retired");
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(stale_pid), "stale spare process must exit");
+
+    let after = epoch(&session);
+    assert_ne!(after, 0, "mid-turn invalidation must keep a nonzero epoch for the running turn");
+    assert!(after > before, "epoch must advance so older in-flight spawns and renewals abort");
+
+    // Any in-flight spare or renewal from `before` is refused.
+    let waiting_lead: Renew = Arc::new(|| true);
+    assert!(!renews(Some(&waiting_lead), before, after, 0, true));
+    let mut cmd = Command::new("sleep");
+    cmd.arg("30").kill_on_drop(true);
+    assert!(spawn_when_current(&session, before, async { Ok(()) }, &mut cmd, || false).await.unwrap().is_none());
+    assert!(!register(pool, &session, before, Spare { key: standard_key, ..idle_spare(true, Duration::ZERO) }));
+
+    // When the running turn finishes cleanly, its post-turn prewarm reads `after` and succeeds
+    // with the refreshed `fastMode` key.
+    let (child, starting) = spawn_when_current(&session, after, async { Ok(()) }, &mut cmd, || false)
+        .await
+        .unwrap()
+        .expect("post-turn spare with nonzero advanced epoch must spawn");
+    let pid = child.id().unwrap();
+    let fresh = Spare {
+        key: fast_key.clone(),
+        child,
+        group: ProcessGroup::register(Some(pid)),
+        server: None,
+        born: std::time::Instant::now(),
+        idle: IDLE,
+        lead: true,
+        cwd: Some(external_path(&fast_cfg.cwd)),
+    };
+    assert!(register(pool, &session, after, fresh), "post-turn spare must register");
+    drop(starting);
+    assert!(waiting_in(pool, &session));
+
+    let (adopted, _) = take_in(pool, &session, &fast_key);
+    let (mut spare, _pending) = adopted.expect("next turn adopts the fast-mode spare");
+    spare.child.kill().await.unwrap();
+    let _ = spare.child.wait().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_with_pending_handoff() {
+    let pool = own_pool();
+    let base = std::env::temp_dir().join(format!("pandacode-warm-folder-{}", uuid::Uuid::new_v4().simple()));
+    let folder = base.join("wt");
+    let nested = folder.join("sub");
+    let other = base.join("other");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+
+    let id = |name: &str| format!("warm-dir-{name}-{}", uuid::Uuid::new_v4().simple());
+    let (same_id, nested_id, inflight_id, other_id) = (id("same"), id("nested"), id("inflight"), id("other"));
+    for sid in [&same_id, &nested_id, &inflight_id, &other_id] {
+        launched(sid);
+    }
+
+    let make_spare = |lead: bool, cwd: PathBuf| {
+        let mut spare = idle_spare(lead, Duration::ZERO);
+        spare.cwd = Some(external_path(&cwd));
+        spare
+    };
+    // Cover both ordinary and lead pools (and stay within `LIMIT`/`LEAD_LIMIT` = 2 each).
+    let same_spare = make_spare(false, folder.join("."));
+    let same_pid = pid_of(&same_spare);
+    let nested_spare = make_spare(true, nested.clone());
+    let nested_pid = pid_of(&nested_spare);
+    let other_spare = make_spare(false, other.clone());
+    let other_pid = pid_of(&other_spare);
+    assert!(register(pool, &same_id, epoch(&same_id), same_spare));
+    assert!(register(pool, &nested_id, epoch(&nested_id), nested_spare));
+    assert!(register(pool, &other_id, epoch(&other_id), other_spare));
+
+    // Also register an in-flight spawn targeting `folder` before `take_for_discard_in`.
+    let inflight_epoch = epoch(&inflight_id);
+    let inflight_guard = InFlight::enter(pool, inflight_id.clone(), external_path(&folder));
+
+    // Simulate the gap between removing from `SPARES` (with `Pending` registered under the lock)
+    // and calling `retire`, verifying `quiesce_pool_spares_in` blocks until retired processes exit.
+    let (removed, affected) = take_for_discard_in(pool, &folder);
+    assert_eq!(removed.len(), 2, "only spares inside folder (same + nested) are removed");
+    assert!(affected.contains(&same_id) && affected.contains(&nested_id) && affected.contains(&inflight_id));
+    assert!(!waiting_in(pool, &same_id) && !waiting_in(pool, &nested_id));
+    assert!(waiting_in(pool, &other_id), "unrelated folder spare must stay pooled");
+    assert!(epoch(&inflight_id) > inflight_epoch, "in-flight spawn epoch must advance");
+    assert!(!register(pool, &inflight_id, inflight_epoch, make_spare(false, folder.clone())), "in-flight spawn must be refused");
+    drop(inflight_guard);
+
+    let waiter = tokio::spawn({
+        let folder = folder.clone();
+        async move { quiesce_pool_spares_in(pool, &folder).await }
+    });
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(!waiter.is_finished(), "quiesce_spares_in must wait while Pending handoff is active");
+    assert!(!process_gone(same_pid) && !process_gone(nested_pid));
+
+    for (sid, spare, pending) in removed {
+        retire(&sid, spare, pending);
+    }
+    tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .expect("quiesce_spares_in must complete once retired spares exit")
+        .unwrap()
+        .unwrap();
+    assert!(process_gone(same_pid) && process_gone(nested_pid));
+    assert!(!process_gone(other_pid) && waiting_in(pool, &other_id));
+
+    // Deleted-folder quiesce (like `recreate_worktree`): register a spare with canonical cwd,
+    // remove the directory on disk, then quiesce using the non-canonical `folder` path.
+    let deleted_id = id("deleted");
+    launched(&deleted_id);
+    let deleted_spare = make_spare(false, folder.canonicalize().unwrap());
+    let deleted_pid = pid_of(&deleted_spare);
+    assert!(register(pool, &deleted_id, epoch(&deleted_id), deleted_spare));
+    std::fs::remove_dir_all(&folder).unwrap();
+    quiesce_pool_spares_in(pool, &folder).await.unwrap();
+    assert!(!waiting_in(pool, &deleted_id), "spare pinned to deleted folder must be retired");
+    assert!(process_gone(deleted_pid), "retired deleted-folder spare must exit");
+
+    quiesce_in(pool, &other_id).await.unwrap();
+    assert!(process_gone(other_pid));
+    let _ = std::fs::remove_dir_all(base);
 }

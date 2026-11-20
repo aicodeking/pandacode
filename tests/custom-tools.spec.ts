@@ -35,13 +35,56 @@ test('lists Global then each project, with usage', async ({ page }) => {
   expect(order).toEqual(['Global', 'pandacode']);
 });
 
-test('dragging a project tool onto Global makes it global', async ({ page }) => {
+test('dragging a project tool onto Global makes it global with a clean tool-name ghost', async ({ page }) => {
   await openTools(page);
   await expect(group(page, 'Global')).toBeVisible();
-  await row(page, 'pandacode', 'run-e2e-subset').dragTo(group(page, 'Global').locator('.custom-tools-list'));
+  await more(page, 'pandacode', 'run-e2e-subset');
+  await menuItem(page, 'View script').click();
+  const item = row(page, 'pandacode', 'run-e2e-subset');
+  const handle = item.locator('.custom-tool-row');
+  await expect(item).not.toHaveAttribute('draggable', 'true');
+  await expect(handle).toHaveAttribute('draggable', 'true');
+  const from = (await handle.boundingBox())!;
+  const target = (await group(page, 'Global').locator('.custom-tools-list').boundingBox())!;
+  await page.mouse.move(from.x + 40, from.y + from.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(from.x + 40, from.y + from.height / 2 - 20, { steps: 3 });
+  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 6 });
+  await expect(page.locator('.drag-ghost')).toBeVisible();
+  await expect(page.locator('.drag-ghost')).toHaveText('run-e2e-subset');
+  await page.mouse.up();
   await expect(row(page, 'Global', 'run-e2e-subset')).toBeVisible();
   await expect(row(page, 'pandacode', 'run-e2e-subset')).toHaveCount(0);
+  await expect(page.locator('.drag-ghost')).toHaveCount(0);
   await expect(group(page, 'Global').locator('[data-over]')).toHaveCount(0);
+});
+
+test('dragging across an open script preview does not start a drag or promote the tool', async ({ page }) => {
+  await openTools(page);
+  await more(page, 'pandacode', 'run-e2e-subset');
+  await menuItem(page, 'View script').click();
+  const script = row(page, 'pandacode', 'run-e2e-subset').locator('.custom-tool-script');
+  await expect(script).toBeVisible();
+  const scriptBox = (await script.boundingBox())!;
+  const target = (await group(page, 'Global').locator('.custom-tools-list').boundingBox())!;
+  // Drag horizontally across the script to select text.
+  await page.mouse.move(scriptBox.x + 16, scriptBox.y + scriptBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(scriptBox.x + 140, scriptBox.y + scriptBox.height / 2, { steps: 6 });
+  await expect(page.locator('.drag-ghost')).toHaveCount(0);
+  await expect(settings(page).locator('#custom-tools-settings.is-dragging')).toHaveCount(0);
+  await page.mouse.up();
+  const selected = await page.evaluate(() => window.getSelection()?.toString() ?? '');
+  expect(selected.length).toBeGreaterThan(0);
+  // Dragging from the script preview onto Global must not start a row drag or promote.
+  await page.mouse.move(scriptBox.x + 24, scriptBox.y + scriptBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 6 });
+  await expect(page.locator('.drag-ghost')).toHaveCount(0);
+  await expect(settings(page).locator('#custom-tools-settings.is-dragging')).toHaveCount(0);
+  await page.mouse.up();
+  await expect(row(page, 'pandacode', 'run-e2e-subset')).toBeVisible();
+  await expect(row(page, 'Global', 'run-e2e-subset')).toHaveCount(0);
 });
 
 test('Make global from the keyboard keeps focus on the moved row', async ({ page }) => {

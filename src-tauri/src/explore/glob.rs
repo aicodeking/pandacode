@@ -27,7 +27,12 @@ pub(super) struct Globs {
 /// mean what they say.
 fn normalize(ctx: &Ctx, raw: &str) -> Result<String, String> {
     let (negated, body) = raw.strip_prefix('!').map_or((false, raw), |body| (true, body));
-    let body = if Path::new(body).is_absolute() { ctx.relative(body).ok_or_else(|| format!("{raw}: outside the project"))? } else { body };
+    let relative = if Path::new(body).is_absolute() {
+        Some(ctx.relative_slash(body).ok_or_else(|| format!("{raw}: outside the project"))?)
+    } else {
+        None
+    };
+    let body = relative.as_deref().unwrap_or(body);
     let body = &without_dot_dot(raw, body.strip_prefix("./").unwrap_or(body))?;
     let mark = if negated { "!" } else { "" };
     if let Some(folder) = body.strip_suffix('/') {
@@ -39,15 +44,45 @@ fn normalize(ctx: &Ctx, raw: &str) -> Result<String, String> {
     Ok(format!("{mark}{body}"))
 }
 
+/// Whether `body` contains a Windows `\` separator (any `\` other than `\,`, which `split_list`
+/// uses to keep an escaped literal comma in one glob).
+fn has_path_backslash(body: &str) -> bool {
+    let bytes = body.as_bytes();
+    bytes.iter().enumerate().any(|(at, &b)| b == b'\\' && bytes.get(at + 1) != Some(&b','))
+}
+
+/// Splits `body` on `/` and Windows `\` separators, keeping `\,` intact as an escaped comma.
+fn split_segments(body: &str) -> impl Iterator<Item = &str> {
+    let bytes = body.as_bytes();
+    let (mut from, mut at, mut done) = (0, 0, false);
+    std::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        while at < bytes.len() {
+            if bytes[at] == b'/' || (bytes[at] == b'\\' && bytes.get(at + 1) != Some(&b',')) {
+                let part = &body[from..at];
+                at += 1;
+                from = at;
+                return Some(part);
+            }
+            at += 1;
+        }
+        done = true;
+        Some(&body[from..])
+    })
+}
+
 /// `src/../web/**` and `src//../web/**` are `web/**`, `src/.` is `src` and `.` is `**`; a `..`
-/// that would leave the project, or step back over a wildcard, is refused.
+/// that would leave the project, or step back over a wildcard, is refused. Windows `\`
+/// separators (including a trailing `\`) are normalized to `/`.
 fn without_dot_dot(raw: &str, body: &str) -> Result<String, String> {
-    let inner = body.strip_suffix(['/', '\\']).unwrap_or(body);
-    if !inner.is_empty() && !inner.split(['/', '\\']).any(|part| matches!(part, "" | "." | "..")) {
+    let inner = body.strip_suffix('/').unwrap_or(body);
+    if !inner.is_empty() && !has_path_backslash(body) && !inner.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Ok(body.to_owned());
     }
     let mut parts: Vec<&str> = Vec::new();
-    for part in body.split(['/', '\\']) {
+    for part in split_segments(body) {
         match part {
             "" | "." => {}
             ".." => match parts.pop() {
@@ -60,8 +95,8 @@ fn without_dot_dot(raw: &str, body: &str) -> Result<String, String> {
     if parts.is_empty() {
         return Ok("**".to_owned());
     }
-    // A trailing `/` still says the glob is a folder.
-    let folder = if body.ends_with(['/', '\\']) && !parts.is_empty() { "/" } else { "" };
+    // A trailing `/` or `\` still says the glob is a folder.
+    let folder = if body.ends_with(['/', '\\']) { "/" } else { "" };
     Ok(parts.join("/") + folder)
 }
 
@@ -77,8 +112,13 @@ pub(super) fn split_list(raw: &str, names_path: impl Fn(&str) -> bool) -> Vec<&s
     }
     let (mut parts, mut from, mut braces, mut class, mut escaped) = (Vec::new(), 0, 0usize, false, false);
     for (at, c) in raw.char_indices() {
+        if escaped {
+            escaped = false;
+            if c == ',' {
+                continue;
+            }
+        }
         match c {
-            _ if escaped => escaped = false,
             '\\' => escaped = true,
             '[' => class = true,
             ']' => class = false,
@@ -214,6 +254,8 @@ mod tests {
         // A class or an escaped comma is one glob; braces inside a class are plain characters.
         assert_eq!(split("data[,_]*.csv,b"), ["data[,_]*.csv", "b"]);
         assert_eq!(split("a\\,b.txt,c"), ["a\\,b.txt", "c"]);
+        assert_eq!(split("src\\{a,b}.rs,docs\\*.md"), ["src\\{a,b}.rs", "docs\\*.md"]);
+        assert_eq!(split("src\\[a,b].rs,c.rs"), ["src\\[a,b].rs", "c.rs"]);
         assert_eq!(split("[{]x,y"), ["[{]x", "y"]);
         // A real path is never split, whatever it holds.
         assert_eq!(super::split_list(" a,b.txt ", |item| item == "a,b.txt"), ["a,b.txt"]);
@@ -230,6 +272,20 @@ mod tests {
         assert_eq!(super::without_dot_dot("x", "src/../").unwrap(), "**");
         // `.` parts go; nothing left is the whole project.
         for (body, clean) in [(".", "**"), ("./.", "**"), ("src/.", "src"), ("src/./", "src/"), ("src/./*.rs", "src/*.rs"), ("src", "src"), ("src/", "src/")] {
+            assert_eq!(super::without_dot_dot("x", body).unwrap(), clean, "{body}");
+        }
+        // Windows `\` separators normalize to `/` on both fast and slow paths; `\,` stays escaped.
+        for (body, clean) in [
+            (r"src\a.rs", "src/a.rs"),
+            (r"web\", "web/"),
+            (r"src\**\*.rs", "src/**/*.rs"),
+            (r"src\sub\..\a.rs", "src/a.rs"),
+            (r".\web\", "web/"),
+            (r".\.", "**"),
+            (r"\", "**"),
+            (r"a\,b.txt", r"a\,b.txt"),
+            (r"src\..\a\,b.txt", r"a\,b.txt"),
+        ] {
             assert_eq!(super::without_dot_dot("x", body).unwrap(), clean, "{body}");
         }
     }

@@ -72,7 +72,7 @@ fn prepare_run(session: &str, request: &str, args: &Value) -> Result<String, Str
         return Err("Only name and args are accepted.".into());
     }
     let name = args["name"].as_str().ok_or("name is required.")?;
-    let (tool, scope) = super::resolve(&place.base, &place.project, name).ok_or_else(|| format!("No tool named {name} in this project."))?;
+    let (tool, scope) = super::resolve(&place.base, &place.project, name)?.ok_or_else(|| format!("No tool named {name} in this project."))?;
     if tool.disabled {
         return Err(format!("The tool {name} is disabled in Settings."));
     }
