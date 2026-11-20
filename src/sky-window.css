@@ -7,8 +7,6 @@ html[data-theme="dark"] .thread-sky::after{background:rgb(0 0 0 / .62)}
 .thread-sky[data-gl]::after{content:none}
 .thread-sky>canvas{position:absolute;inset:0;width:100%;height:100%;display:block;opacity:0}
 .thread-sky[data-gl]>canvas{opacity:1}
-.thread-sky>canvas.thread-sky-still{opacity:1}
-.thread-sky>canvas.thread-sky-still[hidden]{display:none}
 .thread-sky>canvas.thread-sky-fade{opacity:1}
 .thread-sky>canvas.thread-sky-fade[hidden]{display:none}
 .thread-sky[hidden],.workspace:is(.board-view,.github-view,[data-wallpaper]) .thread-sky{display:none}
