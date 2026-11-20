@@ -350,6 +350,48 @@ test.describe('bots', () => {
     await expect(panel(page).getByText('No schedules yet.', { exact: false })).toBeVisible();
   });
 
+  test('webhooks show secrets once, rotate with confirmation, test, disable and delete', async ({ page }) => {
+    await captureOutside(page);
+    await newBot(page);
+    await openSettings(page, 'Webhooks');
+    const form = panel(page).locator('.bots-webhook');
+    await form.getByRole('textbox', { name: 'Webhook name' }).fill('Deploy');
+    await form.getByRole('textbox', { name: 'What should it do with an event?' }).fill('Summarize the deployment');
+    await form.getByRole('button', { name: 'Add webhook' }).click();
+    const row = panel(page).locator('[data-webhook]', { hasText: 'Deploy' });
+    await expect(row.getByLabel('Webhook URL')).toHaveValue(/^http:\/\/127\.0\.0\.1:47321\/hook\/[\w-]+$/);
+    const url = await row.getByLabel('Webhook URL').inputValue();
+    await row.getByRole('button', { name: 'Copy URL', exact: true }).click();
+    await expect.poll(() => copied(page)).toEqual([url]);
+    const secret = row.getByLabel('Signing secret', { exact: true });
+    await expect(secret).toHaveValue(/^[a-f0-9]{64}$/);
+    const first = await secret.inputValue();
+    await expect(row).toContainText('Shown once.');
+    await row.getByRole('button', { name: 'Copy secret', exact: true }).click();
+    await expect.poll(() => copied(page)).toEqual([url, first]);
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(secret).toHaveCount(0);
+    await tab(page, 'Memory').click();
+    await tab(page, 'Webhooks').click();
+    await expect(secret).toHaveCount(0);
+    await row.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+    const confirm = panel(page).getByRole('alertdialog', { name: 'Rotate signing secret?' });
+    await expect(confirm).toBeVisible();
+    await expect(secret).toHaveCount(0);
+    await confirm.getByRole('button', { name: 'Rotate secret', exact: true }).click();
+    await expect(secret).toHaveValue(/^[a-f0-9]{64}$/);
+    expect(await secret.inputValue()).not.toBe(first);
+    await row.getByRole('button', { name: 'Done', exact: true }).click();
+    await row.getByRole('button', { name: 'Send test event', exact: true }).click();
+    await expect(page.getByText('Test event accepted (HTTP 202)', { exact: true })).toBeVisible();
+    await row.getByRole('checkbox', { name: 'Deploy webhook on' }).uncheck();
+    await expect(row).toHaveClass(/off/);
+    await row.getByRole('button', { name: 'Send test event', exact: true }).click();
+    await expect(page.getByText('Test event failed (HTTP 403): This webhook is disabled.', { exact: true })).toBeVisible();
+    await row.getByRole('button', { name: 'Delete Deploy webhook', exact: true }).click();
+    await expect(panel(page).getByText('No webhooks yet.', { exact: true })).toBeVisible();
+  });
+
   test('Telegram setup walks through BotFather, catches a bad token, and pairs the first sender', async ({ page }) => {
     await captureOutside(page);
     await newBot(page);
@@ -516,7 +558,7 @@ test.describe('bots', () => {
     await expect(tab(page, 'Profile')).toHaveAttribute('aria-selected', 'true');
     // Sections are a vertical list, like Settings, and arrow keys move through it.
     await expect(panel(page).getByRole('tablist', { name: 'Bot settings' })).toHaveAttribute('aria-orientation', 'vertical');
-    await expect(panel(page).getByRole('tab')).toHaveText([/^Profile/, /^Connections/, /^Schedules/, /^Memory/, /^Skills/, /^Activity/]);
+    await expect(panel(page).getByRole('tab')).toHaveText([/^Profile/, /^Connections/, /^Schedules/, /^Webhooks/, /^Memory/, /^Skills/, /^Activity/]);
     await tab(page, 'Profile').focus();
     await page.keyboard.press('ArrowDown');
     await expect(tab(page, 'Connections')).toHaveAttribute('aria-selected', 'true');

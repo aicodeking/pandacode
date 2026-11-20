@@ -68,6 +68,7 @@ impl Response {
 fn reason(status: u16) -> &'static str {
     match status {
         200 => "OK",
+        202 => "Accepted",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -173,6 +174,16 @@ async fn route(app: &tauri::AppHandle, request: Request) -> Response {
         ["chat", channel] => web::page(channel),
         ["api", "chat", channel, action] => web::api(app, channel, action, &request).await,
         ["whatsapp", channel] => whatsapp::webhook(app, channel, &request).await,
+        ["hook", id] => {
+            use tauri::Manager;
+            let error = |status, text| Response::json(status, &serde_json::json!({"error": text}));
+            if !request.loopback_host() { return error(403, "A loopback Host is required."); }
+            if request.method != "POST" { return error(405, "Use POST for webhook events."); }
+            let Ok(body) = std::str::from_utf8(&request.body) else { return error(400, "The event must be UTF-8 text.") };
+            let state = app.state::<crate::AppState>();
+            let Ok(store) = state.store.lock() else { return error(500, "Store is unavailable.") };
+            crate::bots::webhooks::route(app, &store, id, request.header("x-pandacode-timestamp"), request.header("x-pandacode-signature"), body, crate::storage::now() / 1000)
+        }
         ["assets", "md4c.js"] => Response::markdown_engine(),
         [""] => Response::text(200, "PandaCode bots are running on this computer."),
         _ => Response::text(404, "Not found."),
