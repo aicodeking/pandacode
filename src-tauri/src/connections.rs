@@ -24,7 +24,7 @@ const MAX_NAME: usize = 60;
 // on task deletion if this ever matters.
 const MAX_TASKS: usize = 5000;
 const PROVIDERS: &[&str] = &[
-    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "hermes", "cursor",
+    "claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "github-copilot", "muse", "devin", "zcode", "omniroute", "hermes", "cursor",
 ];
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

@@ -3827,6 +3827,7 @@ fn forget_provider_details(force: bool) {
         providers::acp_catalog::invalidate("grok");
         providers::acp_catalog::invalidate("devin");
         providers::acp_catalog::invalidate("zcode");
+        providers::acp_catalog::invalidate("omniroute");
         providers::acp_catalog::invalidate("hermes");
         providers::acp_catalog::invalidate("cursor");
         providers::forget_versions();

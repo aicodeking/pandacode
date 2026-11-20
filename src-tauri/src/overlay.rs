@@ -166,6 +166,7 @@ fn validate_selection(selection: &ModelSelection) -> Result<()> {
         "muse",
         "devin",
         "zcode",
+        "omniroute",
         "hermes",
         "cursor",
     ]
@@ -1767,6 +1768,7 @@ mod tests {
             "muse",
             "devin",
             "zcode",
+        "omniroute",
             "hermes",
             "cursor",
         ] {

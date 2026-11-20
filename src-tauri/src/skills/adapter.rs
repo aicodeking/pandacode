@@ -26,7 +26,7 @@ pub fn read_text(path: &Path) -> std::io::Result<String> {
 /// Harnesses with file-based skills and instruction files.
 pub const FILE_HARNESSES: &[&str] = &["claude", "codex"];
 /// Every other PandaCode harness; their skills and rules ride in the prompt.
-pub const PROMPT_HARNESSES: &[&str] = &["kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "muse", "devin", "zcode", "hermes", "cursor"];
+pub const PROMPT_HARNESSES: &[&str] = &["kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "kilo", "omp", "muse", "devin", "zcode", "omniroute", "hermes", "cursor"];
 
 pub enum Surface {
     /// A folder `<dir>/<id>/` holding the skill's files.
