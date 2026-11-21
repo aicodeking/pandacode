@@ -1009,21 +1009,48 @@ process is trusted like any local CLI. Each run spawns one `zcode app-server` an
 speaks `session/create` → `session/subscribe` → `session/send`, mirroring how the
 ZCode desktop app drives the same binary.
 
+**Launch.** When running the desktop app's bundled CLI (`…/glm/zcode.cjs`),
+PandaCode launches it on the app's own Electron binary (`ELECTRON_RUN_AS_NODE=1`).
+Since ZCode 3.18.2 moved `zcode-builtin.json` out of the CLI's default lookup
+paths (`provider/` beside the script, or five directories up), PandaCode checks
+those paths first and, when neither exists, locates the app's `zcode-builtin.json`
+(first `<resources>/config/provider/`, then a bounded search three directory
+levels below `<resources>` that visits at most 512 directories per level in sorted
+order, skips `node_modules` and does not follow symlinks)
+and passes it as `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`. A non-empty value already
+present in the inherited environment or in Settings → ZCode → environment wins.
+
 **Sign-in.** ZCode owns its authentication; sign in once with `zcode` in a terminal.
 PandaCode never handles credentials. If the account is not signed in, the turn stops
 with “ZCode requires sign-in. Run `zcode` in a terminal and sign in, then send again.”
 
 **Models and effort.** Model discovery opens a throwaway session and reads the
 catalog from the `session/create` snapshot (`settings.model.available`), never
-sending a prompt. Each entry keeps its label as the invocation id, with the
-provider label, context window and per-model reasoning levels as advertised; the
-`default` choice delegates to whatever the CLI has configured. Selected model and
-thinking level are applied with `session/setModel` / `session/setThoughtLevel` and
-verified against the returned snapshot — a model the server refuses fails the turn
-instead of silently running in a different one.
+sending a prompt. Positive catalogs are cached for five minutes and cleared by
+Refresh. Discovery drains stderr from spawn and reports cleaned causes on early
+exit or timeout (ANSI stripped, credential-looking lines omitted, and values of
+8+ characters from Settings → ZCode → environment redacted, or 4+ for secret-like
+variable names), with a dedicated
+message when `zcode-builtin.json` / `Built-in Provider Config` is missing. Up to
+50 stray non-JSON stdout lines are skipped; a pre-JSON early exit (other than
+that missing-config cause) retries once within one shared 20 s deadline. A unique
+entry label stays the model id, while labels that repeat across providers get the
+id `providerId/modelId` and the name `label (provider label)`; a saved bare label
+resolves to the entry the session already uses when it carries that label, else
+the first match. The `default` choice delegates to whatever the CLI has
+configured, and a configured thinking level is sent with `default` only when the
+session's current model lists it (or is absent from the catalog). Selected model and thinking level are applied
+with `session/setModel` / `session/setThoughtLevel` and verified against the
+returned snapshot — a model the server refuses fails the turn instead of silently
+running in a different one.
 
 **Approvals.** See [approvals](approvals.md): Plan → `plan`, Standard → `build`,
-Accept edits → `edit`, Full access → `yolo`. Permission requests arrive as
+Accept edits → `edit`, Full access → `yolo`. On CLI 3.18.2 `"plan"` is no longer
+a session mode value (its execution state is `build`, `edit`, `yolo`, `guarded`,
+or `auto` plus a plan flag the snapshot does not expose), so an error-free
+`session/setMode` reply reporting `build` for a `plan` request counts as applied;
+any other mismatch still fails the run. A resumed Standard session re-applies
+`build` to clear that hidden plan flag. Permission requests arrive as
 `interaction/requestPermission` reverse requests with ready-made response objects;
 PandaCode answers with the offered `allow`/`deny` response, never inventing a
 standing grant. In Full access, a request that offers a one-time allow is answered
@@ -1035,8 +1062,12 @@ across turns.
 
 **Turn data.** Streaming text and reasoning deltas (`model.streaming`), tool calls
 (`tool.updated`), per-turn token usage (`turn.completed`) and titles all come from
-the `session/event` stream; a busy session queues a second message server-side, so
-steering holds for the next turn.
+the `session/event` stream; the event type is read from `params.type` (with
+`payload.type` as fallback for older builds). On 3.18.2 `tool.updated`/`scheduled`
+omits tool arguments, so tool rows take their input from `model.streaming` with
+kind `tool_call`. In `turn.completed`, `usage.inputTokens` already includes
+`cacheReadTokens`, so context used is `inputTokens`. A busy session queues a
+second message server-side, so steering holds for the next turn.
 
 **Not yet.** Screenshots are refused (the composer offers documents and folders
 with a note); interactive questions (`interaction/requestUserInput`) decline with a
@@ -1097,6 +1128,16 @@ a fresh deferred session may answer session-not-found there until its first
 send. Coding Plan quota itself is the desktop app's account state and is not
 exposed on this protocol. Event names during a real turn were not re-recorded
 (no prompt was sent), so streaming frames stay pinned to the 3.16.3 recordings.
+
+Re-verified on 2026-11-21 against the CLI bundled with ZCode.app 3.18.2 by driving
+`zcode app-server` directly (create, `setMode`, `setModel` on two providers that
+share a label, `setThoughtLevel`, subscribe, one short turn with a shell tool
+call, `session/resume` on a fresh process, `mcp/list` connect with an unreachable
+server) and through PandaCode's ignored live tests (`installed_zcode_lists_models`,
+`installed_zcode_snapshot_capabilities`, `installed_zcode_connects_the_native_bridge`).
+No `interaction/requestPermission` frame was observed on 3.18.2 (the plain `echo`
+command ran in `build` mode without asking), so the approval round-trip stays
+pinned to the 3.16.3 recordings.
 
 ## Hermes Agent
 
