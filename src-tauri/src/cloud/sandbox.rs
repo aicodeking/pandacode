@@ -88,7 +88,7 @@ pub fn checked((code, output): (Option<i32>, String)) -> Result<()> {
 }
 
 /// Every provider cloud agents can run on, with its display name.
-pub const AGENT_PROVIDERS: [(&str, &str); 21] = [
+pub const AGENT_PROVIDERS: [(&str, &str); 22] = [
     ("daytona", "Daytona"),
     ("docker", "Docker"),
     ("digitalocean", "DigitalOcean"),
@@ -109,6 +109,7 @@ pub const AGENT_PROVIDERS: [(&str, &str); 21] = [
     ("railway", "Railway"),
     ("boat", "boat"),
     ("instabox", "InstaBox"),
+    ("boxd", "boxd"),
     ("agentcore", "AWS AgentCore"),
 ];
 
@@ -135,6 +136,7 @@ pub fn connected(provider: &str) -> Result<Box<dyn Sandbox>> {
         "railway" => super::railway_sandbox::sandbox()?,
         "boat" => super::boat::sandbox()?,
         "instabox" => super::instabox::sandbox()?,
+        "boxd" => super::boxd::sandbox()?,
         _ => return Err("This provider can't run cloud agents.".into()),
     })
 }
@@ -156,6 +158,7 @@ pub fn connect(provider: &str, key: &str, options: &Value) -> Result<()> {
         "freestyle" => super::freestyle::connect(key, options),
         "boat" => super::boat::connect(key, options),
         "instabox" => super::instabox::connect(key, options),
+        "boxd" => super::boxd::connect(key, options),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
@@ -174,11 +177,12 @@ pub fn disconnect(provider: &str) -> Result<()> {
         "freestyle" => super::freestyle::disconnect(),
         "boat" => super::boat::disconnect(),
         "instabox" => super::instabox::disconnect(),
+        "boxd" => super::boxd::disconnect(),
         _ => Err("Unknown cloud provider.".into()),
     }
 }
 /// Providers whose connect/disconnect live in this registry.
-pub const KEYED: [&str; 13] = ["digitalocean", "vultr", "hetzner", "runpod", "e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"];
+pub const KEYED: [&str; 14] = ["digitalocean", "vultr", "hetzner", "runpod", "e2b", "modal", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox", "boxd"];
 
 /// Whether a provider is connected well enough to run cloud agents (no network call).
 pub fn ready(provider: &str) -> bool {

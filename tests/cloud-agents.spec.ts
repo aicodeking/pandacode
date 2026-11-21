@@ -106,7 +106,7 @@ test('the cloud machine menu syncs, stops and deletes after confirming', async (
 test('Settings → Cloud connects keyed providers and saves a Claude token', async ({ page }) => {
   await newTask(page);
   const settings = await openCloudSettings(page);
-  for (const name of ['E2B', 'Modal', 'CodeSandbox', 'Runloop', 'Blaxel', 'Tensorlake', 'Freestyle', 'boat']) await expect(settings.getByRole('button', { name: `Connect ${name}`, exact: true })).toBeVisible();
+  for (const name of ['E2B', 'Modal', 'CodeSandbox', 'Runloop', 'Blaxel', 'Tensorlake', 'Freestyle', 'boat', 'boxd']) await expect(settings.getByRole('button', { name: `Connect ${name}`, exact: true })).toBeVisible();
 
   await settings.getByRole('button', { name: 'Connect Modal', exact: true }).click();
   const modal = settings.getByRole('form', { name: 'Connect Modal' });

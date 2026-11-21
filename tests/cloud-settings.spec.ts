@@ -33,7 +33,7 @@ test('cloud sandboxes: connected providers lead, the rest alphabetical, and only
   expect(await cardOrder(page)).toEqual([
     'boat', 'instabox',
     'aws', 'cloudflare', 'daytona', 'docker', 'gcloud', 'netlify', 'railway', 'vercel',
-    'blaxel', 'codesandbox', 'digitalocean', 'e2b', 'freestyle', 'hetzner', 'modal', 'runloop', 'runpod', 'tensorlake', 'vultr',
+    'blaxel', 'boxd', 'codesandbox', 'digitalocean', 'e2b', 'freestyle', 'hetzner', 'modal', 'runloop', 'runpod', 'tensorlake', 'vultr',
   ]);
   await expect(page.locator('.cloud-more .cloud-provider[data-provider="boat"]')).toHaveCount(0);
   await connect(page, 'daytona');
