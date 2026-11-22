@@ -341,7 +341,7 @@ fn block_ends(lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit
     let mut openings = openings.into_iter().peekable();
     let mut open = BinaryHeap::new();
     let mut closed = 0usize;
-    for index in 0..lines.len() {
+    for (index, &depth) in lex.depth_after.iter().take(lines.len()).enumerate() {
         if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
             return;
         }
@@ -349,7 +349,7 @@ fn block_ends(lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit
             let (_, base, sym_idx) = openings.next().expect("opening exists");
             open.push((base, sym_idx));
         }
-        while open.peek().is_some_and(|&(base, _)| lex.depth_after[index] <= base) {
+        while open.peek().is_some_and(|&(base, _)| depth <= base) {
             if closed.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
                 return;
             }
