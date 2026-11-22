@@ -212,17 +212,14 @@ fn deniable(disabled: &BTreeSet<String>) -> bool {
 /// Lists every OpenCode agent configured for `cwd` (built-ins plus user/project configs and
 /// agent Markdown files), regardless of whether any skill is switched off.
 pub(crate) fn opencode_all_agents_at(cwd: &Path) -> OpenCodeAgents {
-    opencode_agents_opt(Some(cwd))
+    let env = OpenCodeEnv::from_environment(|name| std::env::var_os(name));
+    opencode_all_agents_with_env(Some(cwd), &env)
 }
 
-/// Lists built-in and user-level OpenCode agents when no task directory is known yet.
-pub(crate) fn opencode_user_agents() -> OpenCodeAgents {
-    opencode_agents_opt(None)
-}
-
-fn opencode_agents_opt(cwd: Option<&Path>) -> OpenCodeAgents {
+/// Lists user/project agents using the effective launch paths, retaining every configured home.
+pub(crate) fn opencode_all_agents_with_env(cwd: Option<&Path>, env: &OpenCodeEnv) -> OpenCodeAgents {
     let agents = crate::agent_usage_providers::home()
-        .map(|home| super::opencode_agents::agents_opt(cwd, &home, &Homes::for_scan()));
+        .map(|home| super::opencode_agents::agents_with_env(cwd, &home, &Homes::for_scan(), env));
     let complete = agents.as_ref().is_none_or(|agents| agents.complete);
     let names = agents.map(|agents| agents.names).unwrap_or_else(|| {
         super::opencode_agents::BUILTIN

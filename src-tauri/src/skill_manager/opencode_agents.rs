@@ -26,11 +26,40 @@ pub(super) struct Agents {
     pub(super) complete: bool,
 }
 
+/// Effective launch paths: `None` also represents an explicit environment removal.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OpenCodeEnv {
+    pub(crate) config: Option<PathBuf>,
+    pub(crate) config_dir: Option<PathBuf>,
+    pub(crate) xdg_config: Option<PathBuf>,
+}
+
+impl OpenCodeEnv {
+    pub(crate) fn from_environment(read: impl Fn(&str) -> Option<std::ffi::OsString>) -> Self {
+        Self {
+            config: read("OPENCODE_CONFIG").map(PathBuf::from),
+            config_dir: read("OPENCODE_CONFIG_DIR").map(PathBuf::from),
+            xdg_config: read("XDG_CONFIG_HOME").map(PathBuf::from),
+        }
+    }
+}
+
 pub(super) fn agents(cwd: &Path, home: &Path, homes: &Homes) -> Agents {
     agents_opt(Some(cwd), home, homes)
 }
 
 pub(super) fn agents_opt(cwd: Option<&Path>, home: &Path, homes: &Homes) -> Agents {
+    let mut env = OpenCodeEnv::from_environment(|name| std::env::var_os(name));
+    env.xdg_config = homes.xdg_config.clone();
+    agents_with_env(cwd, home, homes, &env)
+}
+
+pub(super) fn agents_with_env(
+    cwd: Option<&Path>,
+    home: &Path,
+    homes: &Homes,
+    env: &OpenCodeEnv,
+) -> Agents {
     let mut names: BTreeSet<String> = BUILTIN.iter().map(|n| (*n).to_owned()).collect();
     let mut complete = true;
     let mut add = |name: Option<&str>| match name {
@@ -40,7 +69,7 @@ pub(super) fn agents_opt(cwd: Option<&Path>, home: &Path, homes: &Homes) -> Agen
         }
         _ => complete = false,
     };
-    let mut config_dirs = vec![homes
+    let mut config_dirs = vec![env
         .xdg_config
         .clone()
         .filter(|p| p.is_absolute())
@@ -55,15 +84,16 @@ pub(super) fn agents_opt(cwd: Option<&Path>, home: &Path, homes: &Homes) -> Agen
             .cloned(),
     );
     config_dirs.push(home.join(".opencode"));
-    config_dirs.extend(
-        std::env::var_os("OPENCODE_CONFIG_DIR")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute()),
-    );
+    config_dirs.extend(env.config_dir.clone().filter(|p| p.is_absolute()));
     for dir in &config_dirs {
         read_dir_agents(dir, &mut add);
     }
-    if let Some(file) = std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from) {
+    if let Some(file) = &env.config {
+        let file = if file.is_relative() {
+            cwd.map(|cwd| cwd.join(file)).unwrap_or_else(|| file.clone())
+        } else {
+            file.clone()
+        };
         config_agents(&file, &mut add);
     }
     // Project configs from the task folder up to its repository root.
@@ -219,6 +249,47 @@ mod tests {
         }
         // Like OpenCode, mode folders are not nested.
         assert!(!names.contains("nested/ignored"), "{names:?}");
+    }
+
+    #[test]
+    fn skill_manager_opencode_agents_use_effective_paths_and_keep_configured_homes() {
+        let f = Fixture::new();
+        let home = f.0.join("home");
+        let repo = f.0.join("repo");
+        let xdg = f.0.join("launch-xdg");
+        let dir = f.0.join("launch-config-dir");
+        let saved_home = f.0.join("saved-config-dir");
+        let old_xdg = f.0.join("old-xdg");
+        fs::create_dir_all(repo.join(".git")).unwrap();
+        for (folder, name) in [
+            (xdg.join("opencode"), "from-launch-xdg"),
+            (dir.clone(), "from-launch-dir"),
+            (saved_home.clone(), "from-configured-home"),
+            (old_xdg.join("opencode"), "from-old-xdg"),
+            (home.join(".config/opencode"), "from-default-home"),
+        ] {
+            fs::create_dir_all(folder.join("agents")).unwrap();
+            fs::write(folder.join("agents").join(format!("{name}.md")), "Review").unwrap();
+        }
+        fs::write(repo.join("launch.json"), r#"{"agents":{"from-launch-file":{}}}"#).unwrap();
+        let mut homes = Homes { xdg_config: Some(old_xdg), ..Default::default() };
+        // Homes::for_scan contributes saved provider/connection homes; keep their coverage.
+        homes.configured.insert("opencode".into(), vec![saved_home]);
+        let env = OpenCodeEnv { config: Some("launch.json".into()), config_dir: Some(dir), xdg_config: Some(xdg) };
+        let found = agents_with_env(Some(&repo), &home, &homes, &env);
+        assert!(found.complete);
+        for name in ["from-launch-xdg", "from-launch-dir", "from-launch-file", "from-configured-home"] {
+            assert!(found.names.contains(name), "{name}: {:?}", found.names);
+        }
+        assert!(!found.names.contains("from-old-xdg"));
+        // Explicitly absent effective paths don't fall back to the scanner's primary XDG home.
+        let removed = agents_with_env(Some(&repo), &home, &homes, &OpenCodeEnv::default());
+        assert!(removed.complete);
+        for name in ["from-launch-xdg", "from-launch-dir", "from-launch-file", "from-old-xdg"] {
+            assert!(!removed.names.contains(name), "{name}: {:?}", removed.names);
+        }
+        assert!(removed.names.contains("from-default-home"));
+        assert!(removed.names.contains("from-configured-home"));
     }
 
     #[test]

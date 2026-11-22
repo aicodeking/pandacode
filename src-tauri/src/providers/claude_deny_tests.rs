@@ -16,14 +16,14 @@ fn workers_launch_without_the_tools_their_brief_forbids() {
     assert_eq!(launch(None), ["--disallowedTools=ScheduleWakeup,Monitor,CronCreate"]);
     // Writers and read-only workers differ by the edit tools; Skill goes unless allowed.
     assert_eq!(launch(Some(WorkerTrim { read_only: false, skills: false, trim: true })), [format!("{worker},Skill")]);
-    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: false, trim: true })), [format!("{worker},Edit,Write,NotebookEdit,Skill")]);
+    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: false, trim: true })), [format!("{worker},Edit,Write,Skill")]);
     assert_eq!(launch(Some(WorkerTrim { read_only: false, skills: true, trim: true })), [worker]);
-    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: true, trim: true })), [format!("{worker},Edit,Write,NotebookEdit")]);
+    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: true, trim: true })), [format!("{worker},Edit,Write")]);
     // Trim off (the default): a worker launches like a plain task, apart from read-only
     // enforcement and the Skill switch.
     let plain = "--disallowedTools=ScheduleWakeup,Monitor,CronCreate";
     assert_eq!(launch(Some(WorkerTrim { read_only: false, skills: true, trim: false })), [plain]);
-    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: true, trim: false })), [format!("{plain},Edit,Write,NotebookEdit")]);
+    assert_eq!(launch(Some(WorkerTrim { read_only: true, skills: true, trim: false })), [format!("{plain},Edit,Write")]);
     assert_eq!(launch(Some(WorkerTrim { read_only: false, skills: false, trim: false })), [format!("{plain},Skill")]);
     let fresh = crate::app_instructions::History::fresh(false);
     assert_eq!(claude_kept_natives(Some(WorkerTrim { read_only: false, skills: true, trim: false }), &fresh), claude_kept_natives(None, &fresh));
@@ -45,8 +45,8 @@ fn a_resumed_read_only_worker_keeps_the_notebook_definition_and_is_denied_its_ca
         args.into_iter().find(|arg| arg.starts_with("--disallowedTools")).unwrap()
     };
     let denies = |flag: &str, tool: &str| flag.split(['=', ',']).any(|denied| denied == tool);
-    // A new conversation holds nothing, so the definition goes.
-    assert!(denies(&launch(None), CLAUDE_NOTEBOOK_TOOL));
+    // NotebookEdit stays listed from the first turn so a promotion can use it.
+    assert!(!denies(&launch(None), CLAUDE_NOTEBOOK_TOOL));
     // After a restart the history is unknown: it may have loaded it, so it stays defined.
     let resumed = launch(Some("conv-1"));
     assert!(!denies(&resumed, CLAUDE_NOTEBOOK_TOOL), "{resumed}");
@@ -64,36 +64,81 @@ fn a_resumed_read_only_worker_keeps_the_notebook_definition_and_is_denied_its_ca
 }
 
 #[test]
-fn a_conversation_keeps_the_deny_set_it_started_with() {
+fn promoted_read_only_workers_regain_all_edit_tools_without_changing_deferred_definitions() {
     use crate::app_instructions::{remember_catalog, History};
-    let session = format!("deny-{}", uuid::Uuid::new_v4());
-    let read_only = Some(WorkerTrim { read_only: true, skills: true, trim: true });
-    let writer = Some(WorkerTrim { read_only: false, skills: true, trim: true });
-    let launch = |worker, resume: Option<&str>| {
-        let history = History::of(&session, "claude", resume);
-        remember_catalog(&session, resume, None, &claude_kept_natives(worker, &history));
-        let mut command = tokio::process::Command::new("claude");
-        configure_command(&mut command, &RunConfig { session_id: session.clone(), worker, resume_id: resume.map(str::to_owned), ..config("claude") });
-        let args: Vec<String> = command.as_std().get_args().map(|arg| arg.to_string_lossy().into()).collect();
-        args.into_iter().find(|arg| arg.starts_with("--disallowedTools")).unwrap()
-    };
-    // A read-only worker's new conversation denies it, and its follow-ups send the same flag.
-    let first = launch(read_only, None);
-    assert!(first.split(['=', ',']).any(|tool| tool == CLAUDE_NOTEBOOK_TOOL), "{first}");
-    assert_eq!(launch(read_only, Some("conv-1")), first);
-    // Becoming a writer gives back the edit tools, not the deferred definition.
-    let flipped = launch(writer, Some("conv-1"));
-    assert!(flipped.split(['=', ',']).any(|tool| tool == CLAUDE_NOTEBOOK_TOOL), "{flipped}");
-    assert!(!flipped.split(['=', ',']).any(|tool| tool == "Edit"), "{flipped}");
-    // A writer's conversation holds it, so turning read-only keeps it defined and refused.
-    let other = format!("deny-{}", uuid::Uuid::new_v4());
-    let started = History::fresh(false);
-    remember_catalog(&other, None, None, &claude_kept_natives(writer, &started));
-    let resumed = History::of(&other, "claude", Some("conv-2"));
-    let flag = claude_disallowed_tools(read_only, &resumed);
-    assert!(!flag.split(['=', ',']).any(|tool| tool == CLAUDE_NOTEBOOK_TOOL), "{flag}");
-    assert!(flag.split(['=', ',']).any(|tool| tool == "SendMessage"), "{flag}");
-    crate::app_instructions::forget(&[session.clone(), other]);
+    for trim in [false, true] {
+        let session = format!("deny-{}", uuid::Uuid::new_v4());
+        let read_only = Some(WorkerTrim { read_only: true, skills: true, trim });
+        let writer = Some(WorkerTrim { read_only: false, skills: true, trim });
+        let launch = |worker, resume: Option<&str>| {
+            let history = History::of(&session, "claude", resume);
+            let kept = claude_kept_natives(worker, &history);
+            remember_catalog(&session, resume, None, &kept);
+            let mut command = Command::new("claude");
+            configure_command(&mut command, &RunConfig { session_id: session.clone(), worker, resume_id: resume.map(str::to_owned), ..config("claude") });
+            let flag = command.as_std().get_args().find(|arg| arg.to_string_lossy().starts_with("--disallowedTools")).unwrap().to_string_lossy().into_owned();
+            (flag, kept)
+        };
+        let (first, kept) = launch(read_only, None);
+        assert!(kept.iter().any(|tool| tool == CLAUDE_NOTEBOOK_TOOL));
+        assert!(!first.split(['=', ',']).any(|tool| tool == CLAUDE_NOTEBOOK_TOOL), "{first}");
+        assert_eq!(launch(read_only, Some("conv-1")), (first, kept.clone()));
+        let (promoted, promoted_kept) = launch(writer, Some("conv-1"));
+        assert_eq!(kept, promoted_kept, "promotion must preserve the deferred-tool list");
+        for tool in ["Edit", "Write", CLAUDE_NOTEBOOK_TOOL] {
+            assert!(!promoted.split(['=', ',']).any(|denied| denied == tool), "{tool}: {promoted}");
+        }
+        let mut p = Protocol::new(RunConfig { worker: writer, resume_id: Some("conv-1".into()), ..config("claude") });
+        let hooks = p.initial();
+        assert!(!hooks["request"]["hooks"]["PreToolUse"][0]["matcher"].as_str().unwrap_or("").split('|').any(|tool| tool == CLAUDE_NOTEBOOK_TOOL));
+        assert!(!claude_refuses_native(writer, CLAUDE_NOTEBOOK_TOOL));
+        let step = p.receive(json!({"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":CLAUDE_REFUSAL_HOOK,"input":{"tool_name":CLAUDE_NOTEBOOK_TOOL}}})).unwrap();
+        assert_eq!(step.write[0]["response"]["response"], json!({}));
+        let step = p.receive(json!({"type":"control_request","request_id":"tool","request":{"subtype":"can_use_tool","tool_name":CLAUDE_NOTEBOOK_TOOL,"input":{}}})).unwrap();
+        assert!(step.write.is_empty() && !step.events.is_empty(), "a promoted writer gets ordinary approval");
+        // Turning read-only again keeps the catalog and restores the refusal.
+        let (demoted, demoted_kept) = launch(read_only, Some("conv-1"));
+        assert_eq!(demoted_kept, kept);
+        assert!(!demoted.split(['=', ',']).any(|tool| tool == CLAUDE_NOTEBOOK_TOOL));
+        assert!(claude_refuses_native(read_only, CLAUDE_NOTEBOOK_TOOL));
+        crate::app_instructions::forget(&[session]);
+    }
+}
+
+#[test]
+fn fresh_read_only_workers_refuse_listed_notebook_edits_in_every_permission_mode() {
+    for trim in [false, true] {
+        let worker = Some(WorkerTrim { read_only: true, skills: true, trim });
+        let flag = claude_disallowed_tools(worker, &crate::app_instructions::History::fresh(false));
+        for tool in ["Edit", "Write"] {
+            assert!(flag.split(['=', ',']).any(|denied| denied == tool), "{tool}: {flag}");
+        }
+        assert!(!flag.split(['=', ',']).any(|denied| denied == CLAUDE_NOTEBOOK_TOOL));
+        for mode in ["ask", "auto", "full"] {
+            let mut p = Protocol::new(RunConfig { worker, mode: mode.into(), ..config("claude") });
+            let initial = p.initial();
+            let hook = &initial["request"]["hooks"]["PreToolUse"][0];
+            assert_eq!(hook["matcher"], CLAUDE_NOTEBOOK_TOOL);
+            assert_eq!(hook["hookCallbackIds"][0], CLAUDE_REFUSAL_HOOK);
+            let step = p.receive(json!({"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":CLAUDE_REFUSAL_HOOK,"input":{"tool_name":CLAUDE_NOTEBOOK_TOOL}}})).unwrap();
+            assert_eq!(step.write[0]["response"]["response"]["hookSpecificOutput"]["permissionDecision"], "deny");
+            assert!(step.events.is_empty());
+            let step = p.receive(json!({"type":"control_request","request_id":"tool","request":{"subtype":"can_use_tool","tool_name":CLAUDE_NOTEBOOK_TOOL,"input":{}}})).unwrap();
+            assert_eq!(step.write[0]["response"]["response"]["behavior"], "deny");
+            assert!(step.events.is_empty());
+        }
+    }
+}
+
+#[test]
+fn fresh_trimmed_writers_disallow_deferred_role_tools_without_a_refusal_hook() {
+    let worker = Some(WorkerTrim { read_only: false, skills: true, trim: true });
+    let flag = claude_disallowed_tools(worker, &crate::app_instructions::History::fresh(false));
+    for tool in CLAUDE_DEFERRED_TOOLS.into_iter().filter(|tool| *tool != CLAUDE_NOTEBOOK_TOOL) {
+        assert!(flag.split(['=', ',']).any(|denied| denied == tool), "{tool}: {flag}");
+    }
+    let p = Protocol::new(RunConfig { worker, ..config("claude") });
+    assert!(p.initial()["request"]["hooks"].is_null());
 }
 
 #[test]
@@ -147,12 +192,11 @@ fn kept_deferred_tools_are_refused_in_every_permission_mode() {
         assert_eq!(step.write[0]["response"]["response"]["hookSpecificOutput"]["permissionDecision"], "deny", "{mode}");
         assert!(step.events.is_empty(), "a refused call never asks the user");
     }
-    // A writer may use the notebook tool; a new conversation or a plain task needs no hook.
+    // A writer may use the notebook tool; a plain task needs no hook.
     let writer = Some(WorkerTrim { read_only: false, skills: true, trim: true });
     let mut p = Protocol::new(RunConfig { worker: writer, resume_id: Some("conv-1".into()), ..config("claude") });
     let step = p.receive(json!({"type":"control_request","request_id":"hook","request":{"subtype":"hook_callback","callback_id":CLAUDE_REFUSAL_HOOK,"input":{"tool_name":CLAUDE_NOTEBOOK_TOOL}}})).unwrap();
     assert_eq!(step.write[0]["response"]["response"], json!({}));
-    assert!(Protocol::new(RunConfig { worker: read_only, ..config("claude") }).initial()["request"]["hooks"].is_null());
     assert!(Protocol::new(RunConfig { resume_id: Some("conv-1".into()), ..config("claude") }).initial()["request"]["hooks"].is_null());
 }
 

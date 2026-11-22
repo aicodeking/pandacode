@@ -42,7 +42,7 @@ fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
     claude_allows_edits_with(
         config,
         || crate::connections::for_task(&config.session_id, &config.provider).is_some(),
-        MANAGED_SETTINGS.map(std::path::Path::new),
+        host_managed_settings_may_allow,
         crate::agent_usage::claude_config_dir,
     )
 }
@@ -50,7 +50,7 @@ fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
 fn claude_allows_edits_with(
     config: &crate::providers::RunConfig,
     has_connection: impl FnOnce() -> bool,
-    managed_settings: Option<&std::path::Path>,
+    managed_settings: impl FnOnce() -> bool,
     claude_config_dir: impl FnOnce() -> Option<std::path::PathBuf>,
 ) -> bool {
     if !crate::providers::claude_family(&config.provider) {
@@ -59,7 +59,7 @@ fn claude_allows_edits_with(
     if has_connection() {
         return true;
     }
-    if managed_settings_may_allow(managed_settings) {
+    if managed_settings() {
         return true;
     }
     if config.provider != "claude" {
@@ -71,24 +71,116 @@ fn claude_allows_edits_with(
     }
 }
 
-/// Claude Code's managed (enterprise) policy file, which takes precedence over every other
-/// settings file and may allow edits or set a permissive default mode.
-#[cfg(target_os = "macos")]
-const MANAGED_SETTINGS: Option<&str> = Some("/Library/Application Support/ClaudeCode/managed-settings.json");
-#[cfg(target_os = "linux")]
-const MANAGED_SETTINGS: Option<&str> = Some("/etc/claude-code/managed-settings.json");
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const MANAGED_SETTINGS: Option<&str> = None;
+/// A policy's presence (including an unreadable path or registry key) is enough to require
+/// tracking. Policy contents need not be read, and unknown platforms never assume absence.
+fn host_managed_settings_may_allow() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        managed_settings_may_allow(Some(std::path::Path::new(
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+        )))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        managed_settings_may_allow(Some(std::path::Path::new(
+            "/etc/claude-code/managed-settings.json",
+        )))
+    }
+    #[cfg(windows)]
+    {
+        windows_managed_settings_may_allow_with(
+            std::env::var_os("PROGRAMDATA"),
+            managed_path_may_allow,
+            windows_registry_policy_status,
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        managed_settings_may_allow(None)
+    }
+}
 
-/// Whether a managed policy file may let edits through: any file there (or one whose presence
-/// cannot be checked) counts, without parsing it, so the approval wait is only relied on when
-/// no policy exists. ponytail: presence only; parse it like `file_allows_edits` if managed
-/// installs that forbid edit rules become common.
+/// macOS/Linux policy file and its sibling drop-in directory. An unknown location fails closed.
+#[cfg(any(not(windows), test))]
 fn managed_settings_may_allow(path: Option<&std::path::Path>) -> bool {
-    match path.map(std::fs::symlink_metadata) {
-        None => false,
-        Some(Ok(_)) => true,
-        Some(Err(error)) => error.kind() != std::io::ErrorKind::NotFound,
+    path.is_none_or(|path| {
+        managed_path_may_allow(path) || managed_path_may_allow(&path.with_extension("d"))
+    })
+}
+
+fn managed_path_may_allow(path: &std::path::Path) -> bool {
+    managed_path_may_allow_with(|| std::fs::symlink_metadata(path).map(|_| ()))
+}
+
+fn managed_path_may_allow_with(stat: impl FnOnce() -> std::io::Result<()>) -> bool {
+    match stat() {
+        Ok(()) => true,
+        Err(error) => error.kind() != std::io::ErrorKind::NotFound,
+    }
+}
+
+/// Inject both probes so every platform can test Windows policy paths and registry failures.
+#[cfg(any(windows, test))]
+fn windows_managed_settings_may_allow_with(
+    program_data: Option<std::ffi::OsString>,
+    mut path_may_allow: impl FnMut(&std::path::Path) -> bool,
+    mut registry_status: impl FnMut(u32, &str) -> i32,
+) -> bool {
+    let Some(program_data) = program_data.filter(|value| !value.is_empty()) else {
+        return true;
+    };
+    let root = std::path::PathBuf::from(program_data).join("ClaudeCode");
+    let paths = [
+        root.join("managed-settings.json"),
+        root.join("managed-settings.d"),
+        std::path::PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
+    ];
+    if paths.iter().any(|path| path_may_allow(path)) {
+        return true;
+    }
+    // ERROR_FILE_NOT_FOUND alone proves absence. Success or any other error (including
+    // access denied) requires the handshake.
+    const HKEY_LOCAL_MACHINE: u32 = 0x8000_0002;
+    const HKEY_CURRENT_USER: u32 = 0x8000_0001;
+    const ERROR_FILE_NOT_FOUND: i32 = 2;
+    [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER]
+        .into_iter()
+        .any(|root| registry_status(root, r"SOFTWARE\Policies\ClaudeCode") != ERROR_FILE_NOT_FOUND)
+}
+
+#[cfg(windows)]
+fn windows_registry_policy_status(root: u32, path: &str) -> i32 {
+    use std::ffi::c_void;
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn RegOpenKeyExW(
+            key: *mut c_void,
+            subkey: *const u16,
+            options: u32,
+            access: u32,
+            result: *mut *mut c_void,
+        ) -> i32;
+        fn RegCloseKey(key: *mut c_void) -> i32;
+    }
+    const KEY_READ: u32 = 0x20019;
+    const ERROR_SUCCESS: i32 = 0;
+    let path: Vec<u16> = path.encode_utf16().chain(Some(0)).collect();
+    let mut key = std::ptr::null_mut();
+    // SAFETY: predefined HKEY constants are sign-extended from a 32-bit LONG, as in winreg.h.
+    // The UTF-16 path is NUL-terminated, and the output handle stays valid until closed here.
+    // KEY_READ (0x20019) only opens existing keys and does not modify enterprise policy.
+    unsafe {
+        let status = RegOpenKeyExW(
+            root as i32 as isize as *mut c_void,
+            path.as_ptr(),
+            0,
+            KEY_READ,
+            &mut key,
+        );
+        if status == ERROR_SUCCESS {
+            RegCloseKey(key);
+        }
+        status
     }
 }
 
@@ -104,7 +196,7 @@ const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 /// asking, in `config_dir`'s and `project`'s `.claude` settings files (`permissions.allow`, or a
 /// `permissions.defaultMode` other than `default`). Any unreadable, oversized or unexpected file
 /// counts as holding one, so the wait is never relied on by mistake. Managed (enterprise)
-/// settings are checked separately (`managed_settings_may_allow`). Limits: `--settings` flags, parent folders of `project` and the user's
+/// settings are checked separately (`host_managed_settings_may_allow`). Limits: `--settings` flags, parent folders of `project` and the user's
 /// environment are not read, so a rule there still lets a write beat its baseline; the
 /// tracker then marks the turn partial. Nothing from a file's contents is ever logged.
 pub(crate) fn edit_allow_rules(config_dir: &std::path::Path, project: &std::path::Path) -> bool {
@@ -537,7 +629,7 @@ mod tests {
     fn a_managed_policy_file_means_the_approval_wait_is_not_relied_on() {
         let settings = Settings::new();
         let managed = settings.base.join("managed-settings.json");
-        assert!(!managed_settings_may_allow(None));
+        assert!(managed_settings_may_allow(None), "unknown policy location fails closed");
         assert!(!managed_settings_may_allow(Some(&managed)), "absent");
         std::fs::write(&managed, "{}").unwrap();
         assert!(managed_settings_may_allow(Some(&managed)), "present, even without rules");
@@ -552,6 +644,143 @@ mod tests {
             let unreadable = managed_settings_may_allow(Some(&locked.join("managed-settings.json")));
             std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
             assert!(unreadable, "presence cannot be checked");
+        }
+    }
+
+    #[test]
+    fn a_managed_drop_in_directory_requires_the_tracking_handshake() {
+        let settings = Settings::new();
+        let managed = settings.base.join("managed-settings.json");
+        let drop_ins = settings.base.join("managed-settings.d");
+        let config = crate::providers::RunConfig {
+            mode: "ask".into(),
+            ..crate::providers::tests::config("glm")
+        };
+        let waits = || {
+            edits_wait_for_run_using(&config, |config| {
+                claude_allows_edits_with(
+                    config,
+                    || false,
+                    || managed_settings_may_allow(Some(&managed)),
+                    || panic!("relay config"),
+                )
+            })
+        };
+        assert!(waits(), "no managed policy");
+        std::fs::create_dir(&drop_ins).unwrap();
+        assert!(
+            !waits(),
+            "even an empty drop-in directory requires the handshake"
+        );
+        std::fs::write(
+            drop_ins.join("edits.json"),
+            r#"{"permissions":{"allow":["Edit"]}}"#,
+        )
+        .unwrap();
+        assert!(!waits(), "drop-in policy present");
+    }
+
+    #[test]
+    fn managed_policy_stat_errors_fail_closed_on_every_platform() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::NotADirectory,
+            std::io::ErrorKind::Other,
+        ] {
+            let config = crate::providers::tests::config("glm");
+            let allows = || managed_path_may_allow_with(|| Err(std::io::Error::from(kind)));
+            assert!(
+                claude_allows_edits_with(&config, || false, allows, || panic!("relay config")),
+                "{kind:?}"
+            );
+        }
+        assert!(!managed_path_may_allow_with(|| Err(
+            std::io::ErrorKind::NotFound.into()
+        )));
+        assert!(managed_path_may_allow_with(|| Ok(())));
+        assert!(windows_managed_settings_may_allow_with(
+            Some(r"C:\ProgramData".into()),
+            |_| managed_path_may_allow_with(|| Err(std::io::ErrorKind::PermissionDenied.into())),
+            |_, _| panic!("unreadable policy path already requires tracking"),
+        ));
+    }
+
+    #[test]
+    fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state() {
+        let program_data = std::path::PathBuf::from(r"D:\Enterprise Data");
+        let mut paths = Vec::new();
+        let mut keys = Vec::new();
+        assert!(!windows_managed_settings_may_allow_with(
+            Some(program_data.clone().into_os_string()),
+            |path| {
+                paths.push(path.to_owned());
+                false
+            },
+            |root, path| {
+                keys.push((root, path.to_owned()));
+                2
+            },
+        ));
+        let root = program_data.join("ClaudeCode");
+        assert_eq!(
+            paths,
+            [
+                root.join("managed-settings.json"),
+                root.join("managed-settings.d"),
+                std::path::PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
+            ]
+        );
+        assert_eq!(
+            keys,
+            [
+                (0x8000_0002, r"SOFTWARE\Policies\ClaudeCode".to_owned()),
+                (0x8000_0001, r"SOFTWARE\Policies\ClaudeCode".to_owned()),
+            ]
+        );
+        for present in &paths {
+            assert!(
+                windows_managed_settings_may_allow_with(
+                    Some(program_data.clone().into_os_string()),
+                    |path| path == present,
+                    |_, _| 2,
+                ),
+                "{present:?}"
+            );
+        }
+        for unknown in [None, Some(std::ffi::OsString::new())] {
+            assert!(windows_managed_settings_may_allow_with(
+                unknown,
+                |_| panic!("unknown PROGRAMDATA must fail closed"),
+                |_, _| panic!("unknown PROGRAMDATA must fail closed")
+            ));
+        }
+    }
+
+    #[test]
+    fn windows_registry_presence_and_errors_require_native_edit_tracking() {
+        for policy_root in [0x8000_0002, 0x8000_0001] {
+            for status in [0, 5, 3, 87] {
+                let config = crate::providers::RunConfig {
+                    mode: "ask".into(),
+                    ..crate::providers::tests::config("glm")
+                };
+                let allows = || {
+                    windows_managed_settings_may_allow_with(
+                        Some(r"C:\ProgramData".into()),
+                        |_| false,
+                        |root, _| if root == policy_root { status } else { 2 },
+                    )
+                };
+                assert!(
+                    !edits_wait_for_run_using(&config, |config| claude_allows_edits_with(
+                        config,
+                        || false,
+                        allows,
+                        || panic!("relay config"),
+                    )),
+                    "root {policy_root:#x}, status {status}"
+                );
+            }
         }
     }
 
@@ -595,7 +824,7 @@ mod tests {
         assert!(!edits_wait_for_run(&codex));
         // GLM, MiMo and Alibaba ignore user/project/local settings files, but still inherit
         // enterprise managed-settings.json if present on this host.
-        let host_managed = managed_settings_may_allow(MANAGED_SETTINGS.map(std::path::Path::new));
+        let host_managed = host_managed_settings_may_allow();
         for provider in ["glm", "mimo", "alibaba"] {
             let config = crate::providers::RunConfig { mode: "ask".into(), ..crate::providers::tests::config(provider) };
             assert_eq!(claude_allows_edits(&config), host_managed, "{provider}");
@@ -625,29 +854,29 @@ mod tests {
             // Neither named connection nor managed settings: relays skip user/project settings
             // (and never query claude_config_dir), even when an Edit allow rule is present there.
             assert!(
-                !claude_allows_edits_with(&config, || false, Some(&absent_managed), || panic!("relays must not read claude_config_dir")),
+                !claude_allows_edits_with(&config, || false, || managed_settings_may_allow(Some(&absent_managed)), || panic!("relays must not read claude_config_dir")),
                 "{provider} without connection or managed settings"
             );
             assert!(
-                edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(config_dir.clone()))),
+                edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))),
                 "{provider} waits when neither connection nor managed settings apply"
             );
             // A named connection may pass --allowedTools or another config folder: do not rely on the wait.
             assert!(
-                claude_allows_edits_with(&config, || true, Some(&absent_managed), || panic!("connection short-circuits before config dir")),
+                claude_allows_edits_with(&config, || true, || managed_settings_may_allow(Some(&absent_managed)), || panic!("connection short-circuits before config dir")),
                 "{provider} with named connection"
             );
             assert!(
-                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || true, Some(&absent_managed), || None)),
+                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || true, || managed_settings_may_allow(Some(&absent_managed)), || None)),
                 "{provider} does not wait with named connection"
             );
             // Enterprise managed-settings.json still applies even with --setting-sources "".
             assert!(
-                claude_allows_edits_with(&config, || false, Some(&present_managed), || panic!("managed settings short-circuit before config dir")),
+                claude_allows_edits_with(&config, || false, || managed_settings_may_allow(Some(&present_managed)), || panic!("managed settings short-circuit before config dir")),
                 "{provider} with managed settings"
             );
             assert!(
-                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, Some(&present_managed), || None)),
+                !edits_wait_for_run_using(&config, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&present_managed)), || None)),
                 "{provider} does not wait with managed settings"
             );
         }
@@ -659,17 +888,17 @@ mod tests {
             cwd: project_dir,
             ..crate::providers::tests::config("claude")
         };
-        assert!(claude_allows_edits_with(&claude, || false, Some(&absent_managed), || Some(config_dir.clone())));
-        assert!(!edits_wait_for_run_using(&claude, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(config_dir.clone()))));
-        assert!(claude_allows_edits_with(&claude, || false, Some(&absent_managed), || None));
+        assert!(claude_allows_edits_with(&claude, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone())));
+        assert!(!edits_wait_for_run_using(&claude, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(config_dir.clone()))));
+        assert!(claude_allows_edits_with(&claude, || false, || managed_settings_may_allow(Some(&absent_managed)), || None));
         let clean = Settings::new();
         let claude_clean = crate::providers::RunConfig {
             mode: "ask".into(),
             cwd: clean.base.join("project"),
             ..crate::providers::tests::config("claude")
         };
-        assert!(!claude_allows_edits_with(&claude_clean, || false, Some(&absent_managed), || Some(clean.base.join("config"))));
-        assert!(edits_wait_for_run_using(&claude_clean, |c| claude_allows_edits_with(c, || false, Some(&absent_managed), || Some(clean.base.join("config")))));
+        assert!(!claude_allows_edits_with(&claude_clean, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config"))));
+        assert!(edits_wait_for_run_using(&claude_clean, |c| claude_allows_edits_with(c, || false, || managed_settings_may_allow(Some(&absent_managed)), || Some(clean.base.join("config")))));
 
         // Non-Claude-family harnesses short-circuit before connection/managed/config checks.
         let codex = crate::providers::RunConfig {
@@ -679,7 +908,7 @@ mod tests {
         assert!(!claude_allows_edits_with(
             &codex,
             || panic!("non-Claude harnesses must not check connections"),
-            Some(&present_managed),
+            || panic!("non-Claude harnesses must not check managed settings"),
             || panic!("non-Claude harnesses must not check claude_config_dir"),
         ));
     }

@@ -273,8 +273,8 @@ fn lookups(ctx: &Ctx, ask: &Ask, out: &mut Map<String, Value>) -> Vec<Item> {
 /// A lookup with no answer, when what was skipped may be why.
 fn came_back_empty(job: &Job, result: &JobResult) -> bool {
     match job.kind {
-        Kind::Definition { .. } => result.files.iter().all(|file| file.definitions.is_empty()),
-        _ => result.files.is_empty(),
+        Kind::Definition { .. } => result.total_definitions == 0,
+        _ => result.total_files == 0,
     }
 }
 
@@ -332,13 +332,12 @@ fn trim_hits(block: &mut Block, most: usize, context: usize) {
 }
 
 fn search_item(pattern: &str, result: JobResult, context: usize) -> Item {
-    let JobResult { files, matched_lines, outside, crossing_files } = result;
-    let file_count = files.len();
+    let JobResult { files, matched_lines, outside, crossing_files, total_files: file_count, outside_files, outside_matches, .. } = result;
     let clipped_lines = files.iter().map(|file| file.clipped_lines).sum();
     let blocks: Vec<Block> = files.into_iter().map(|file| Block { path: file.path.to_string(), groups: file.groups, matched: file.matched }).collect();
     let mut head = head(&[("pattern", json!(pattern)), ("matches", json!(matched_lines)), ("files", json!(file_count))]);
-    if !outside.is_empty() {
-        let mut summary = json!({"matches": outside.iter().map(|file| file.matched).sum::<usize>(), "files": outside.len()});
+    if outside_files > 0 {
+        let mut summary = json!({"matches": outside_matches, "files": outside_files});
         // Nothing in the glob: the first hits outside it save a round of widening it. With hits
         // inside, the counts are enough: names outside led agents to more extra files than gold.
         if matched_lines == 0 {
@@ -375,21 +374,25 @@ fn definition_line(definition: &Definition) -> Line {
 }
 
 fn symbols_item(name: &str, result: JobResult) -> Item {
-    let unsupported = result.files.iter().filter(|file| !symbols::supported(&file.path)).count();
-    let mentioned = result.files.len();
+    let unsupported = result.unsupported_files;
+    let mentioned = result.mentioned_files;
+    let found = result.total_definitions;
+    let file_count = result.definition_files;
     let mut blocks = Vec::new();
-    for file in result.files.into_iter().filter(|file| !file.definitions.is_empty()) {
+    for file in result.files.into_iter().filter(|file| file.definition_count > 0) {
         let lines: Vec<Line> = file.definitions.iter().map(definition_line).collect();
-        blocks.push(Block { path: file.path.to_string(), matched: lines.len(), groups: vec![Group { symbol: None, lines }] });
+        blocks.push(Block { path: file.path.to_string(), matched: file.definition_count, groups: vec![Group { symbol: None, lines }] });
     }
-    let found: usize = blocks.iter().map(|block| block.matched).sum();
     let mut head = head(&[("name", json!(name)), ("definitions", json!(found))]);
     if found == 0 && unsupported > 0 {
         head.insert("note".into(), json!(format!("Mentioned in {unsupported} files of types with no definition lookup; search for it. Lookup covers {}.", symbols::SUPPORTED)));
     } else if found == 0 && mentioned > 0 {
         head.insert("note".into(), json!(format!("Mentioned in {mentioned} files, but no definition was recognised; search for it.")));
     }
-    Item::new(Category::Symbols, head, Body::Files(blocks))
+    let mut item = Item::new(Category::Symbols, head, Body::Files(blocks));
+    item.total_lines = found;
+    item.total_files = file_count;
+    item
 }
 
 /// Settings → Agents → Local code explorer: on unless this `app_marker` exists.

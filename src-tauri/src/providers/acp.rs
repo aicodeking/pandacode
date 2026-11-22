@@ -157,10 +157,8 @@ pub(super) fn allow_tools(command: &mut Command, served: &[&str]) {
     if served.is_empty() {
         return;
     }
-    let agents = match command.as_std().get_current_dir() {
-        Some(cwd) => crate::skill_manager::opencode_all_agents_at(cwd),
-        None => crate::skill_manager::opencode_user_agents(),
-    };
+    let env = super::opencode_environment(command);
+    let agents = crate::skill_manager::opencode_all_agents_with_env(command.as_std().get_current_dir(), &env);
     allow_tools_with_agents(command, served, &agents);
 }
 

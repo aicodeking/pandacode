@@ -60,7 +60,7 @@ test('Linux cache cloning uses portable cp flags and preserves independent files
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('cloned Cargo cache regenerates missing build outputs without changing the source cache', async () => {
+for (const layout of ['flat', 'nested']) test(`cloned Cargo cache regenerates missing build outputs in the ${layout} layout without changing the source cache`, async () => {
   const dir = scratch();
   const tree = path => readdirSync(path, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)).flatMap(entry => {
     const file = join(path, entry.name);
@@ -74,12 +74,16 @@ test('cloned Cargo cache regenerates missing build outputs without changing the 
     writeFileSync(join(crate, 'build.rs'), 'fn main() { println!("cargo:rerun-if-changed=build.rs"); let out = std::env::var("OUT_DIR").unwrap(); std::fs::write(std::path::Path::new(&out).join("generated.rs"), "pub const VALUE: u32 = 42;").unwrap(); }');
     const source = 'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n';
     writeFileSync(join(crate, 'src', 'lib.rs'), source);
-    const cargo = target => spawnSync('cargo', ['build', '--offline'], { cwd: crate, env: { ...process.env, CARGO_TARGET_DIR: target, CARGO_INCREMENTAL: '0' }, encoding: 'utf8' });
+    // Scope the unstable layout opt-in to this dependency-free fixture; exercise both layouts on stable Cargo.
+    const cargo = target => spawnSync('cargo', ['build', '--offline', '--config', `unstable.build-dir-new-layout=${layout === 'nested'}`], { cwd: crate, env: { ...process.env, RUSTC_BOOTSTRAP: '1', CARGO_TARGET_DIR: target, CARGO_INCREMENTAL: '0' }, encoding: 'utf8', timeout: 60_000 });
     const initial = cargo(cached);
     assert.equal(initial.status, 0, initial.stderr);
     const debug = join(cached, 'debug');
     const generated = tree(join(debug, 'build')).filter(([name]) => name.endsWith('generated.rs'));
     assert.equal(generated.length, 1);
+    assert.match(generated[0][0].split(/[\\/]/).join('/'), layout === 'nested'
+      ? /^cache-regeneration-fixture\/[0-9a-f]+\/(?:build-script-execution\/)?out\/generated\.rs$/
+      : /^cache-regeneration-fixture-[0-9a-f]+\/out\/generated\.rs$/);
     rmSync(join(debug, 'build', generated[0][0]));
     const before = tree(cached);
     const deps = depsFingerprint(debug);
@@ -95,13 +99,23 @@ test('cloned Cargo cache regenerates missing build outputs without changing the 
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('cloneTarget removes run-build-script fingerprints in both flat and nested layouts without touching build-script-build or source', async () => {
+for (const pkg of ['new-layout-pkg', 'out', 'run', 'fingerprint']) test(`cloneTarget removes execution fingerprints for ${pkg} while retaining compiled artifacts and run markers`, async () => {
   const dir = scratch();
   try {
     const source = join(dir, 'source', 'debug');
     const flat = join('.fingerprint', 'flat-pkg-1234');
     const nested = join('.fingerprint', 'nested-pkg', '5678abcd');
-    for (const rel of ['deps', flat, nested]) mkdirSync(join(source, rel), { recursive: true });
+    const buildUnit = join('build', pkg, '9abcdef0');
+    const buildFingerprint = join(buildUnit, 'fingerprint');
+    const flatRun = join('build', 'flat-pkg-1234');
+    const preserved = [
+      join(flatRun, 'invoked.timestamp'), join(flatRun, 'output'), join(flatRun, 'root-output'),
+      join(buildUnit, 'run', 'invoked.timestamp'), join(buildUnit, 'run', 'stdout'), join(buildUnit, 'run', 'stderr'), join(buildUnit, 'run', 'root-output'),
+      join(buildUnit, 'build-script-execution', 'output'), join(buildUnit, 'build-script-execution', 'root-output'),
+      join(buildUnit, 'build-script-execution', 'out', 'fingerprint', 'run-build-script-generated-file'),
+      join(buildUnit, 'out', 'build_script_build'), join(buildUnit, 'out', 'fingerprint', 'run-build-script-generated-file'),
+    ];
+    for (const rel of ['deps', flat, nested, buildFingerprint, flatRun, join(buildUnit, 'run'), join(buildUnit, 'out', 'fingerprint'), join(buildUnit, 'build-script-execution', 'out', 'fingerprint')]) mkdirSync(join(source, rel), { recursive: true });
     writeFileSync(join(source, 'deps', 'libfixture-123.rlib'), 'dep');
     for (const rel of [
       join(flat, 'run-build-script-build-script-build'),
@@ -112,12 +126,29 @@ test('cloneTarget removes run-build-script fingerprints in both flat and nested 
       join(nested, 'run-build-script-build-script-build.json'),
       join(nested, 'build-script-build'),
       join(nested, 'build-script-build.json'),
+      join(buildFingerprint, 'run-build-script-build-script-build'),
+      join(buildFingerprint, 'run-build-script-build-script-build.json'),
+      join(buildFingerprint, 'build-script-build-script-build'),
+      join(buildFingerprint, 'build-script-build-script-build.json'),
+      ...preserved,
     ]) writeFileSync(join(source, rel), 'cached');
+    // A copied directory symlink must never let cleanup reach back into the source cache.
+    symlinkSync(join(source, 'build', pkg), join(source, 'build', 'linked-pkg'));
     const to = join(dir, 'cloned');
     await cloneTarget(to, source);
     const cloned = join(to, 'debug');
     assert.deepEqual(readdirSync(join(cloned, flat)).sort(), ['build-script-build', 'build-script-build.json']);
     assert.deepEqual(readdirSync(join(cloned, nested)).sort(), ['build-script-build', 'build-script-build.json']);
+    assert.deepEqual(readdirSync(join(cloned, buildFingerprint)).sort(), ['build-script-build-script-build', 'build-script-build-script-build.json']);
+    assert.deepEqual(depsFingerprint(cloned), depsFingerprint(source));
+    assert.equal(readlinkSync(join(cloned, 'build', 'linked-pkg')), join(source, 'build', pkg));
+    for (const rel of preserved) {
+      assert.equal(readFileSync(join(cloned, rel), 'utf8'), 'cached');
+      assert.equal(readFileSync(join(source, rel), 'utf8'), 'cached');
+    }
+    assert.deepEqual(readdirSync(join(source, buildFingerprint)).sort(), [
+      'build-script-build-script-build', 'build-script-build-script-build.json', 'run-build-script-build-script-build', 'run-build-script-build-script-build.json',
+    ]);
     assert.deepEqual(readdirSync(join(source, flat)).sort(), [
       'build-script-build', 'build-script-build.json', 'run-build-script-build-script-build', 'run-build-script-build-script-build.json',
     ]);

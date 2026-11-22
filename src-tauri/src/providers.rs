@@ -225,7 +225,9 @@ fn claude_role_denied(worker: Option<WorkerTrim>) -> Vec<&'static str> {
 /// what the conversation may hold, which decides the deferred tools.
 pub(crate) fn claude_disallowed_tools(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> String {
     let role = claude_role_denied(worker);
-    let kept = |tool: &str| history.lists_native(tool, role.contains(&tool));
+    // Keep NotebookEdit from the first turn: read-only enforcement refuses calls instead of
+    // removing a deferred definition that a later writer turn cannot safely add back.
+    let kept = |tool: &str| history.lists_native(tool, role.contains(&tool) && tool != CLAUDE_NOTEBOOK_TOOL);
     let denied = role.iter().copied().filter(|tool| !CLAUDE_DEFERRED_TOOLS.contains(tool) || !kept(tool));
     // A deferred tool the role now allows stays denied if the conversation started without it.
     let sticky = CLAUDE_DEFERRED_TOOLS.iter().copied().filter(|tool| !role.contains(tool) && !kept(tool));
@@ -235,20 +237,22 @@ pub(crate) fn claude_disallowed_tools(worker: Option<WorkerTrim>, history: &crat
 /// The deferred tools a launch leaves defined, for `app_instructions::remember_catalog`.
 pub(crate) fn claude_kept_natives(worker: Option<WorkerTrim>, history: &crate::app_instructions::History) -> Vec<String> {
     let role = claude_role_denied(worker);
-    CLAUDE_DEFERRED_TOOLS.iter().filter(|tool| history.lists_native(tool, role.contains(*tool))).map(|tool| (*tool).to_owned()).collect()
+    CLAUDE_DEFERRED_TOOLS.iter().filter(|tool| history.lists_native(tool, role.contains(*tool) && **tool != CLAUDE_NOTEBOOK_TOOL)).map(|tool| (*tool).to_owned()).collect()
 }
 
-/// Whether `name` is a deferred tool kept only so a resumed conversation holds its definition.
+/// Whether `name` is a listed deferred tool the worker role forbids calling.
 fn claude_refuses_native(worker: Option<WorkerTrim>, name: &str) -> bool {
     CLAUDE_DEFERRED_TOOLS.contains(&name) && claude_role_denied(worker).contains(&name)
 }
 
 /// The `initialize` hooks of a Claude Code launch. `can_use_tool` is not consulted in
 /// bypassPermissions, nor for edits in acceptEdits, so a `PreToolUse` callback refuses the
-/// deferred tools a resumed worker keeps. A new conversation denies them outright and needs none.
+/// deferred tools a resumed worker keeps. Fresh read-only workers also keep NotebookEdit,
+/// so they register its refusal from the first turn; other fresh denied tools are removed.
 fn claude_refusal_hooks(worker: Option<WorkerTrim>, resumed: bool) -> Value {
-    let refused: Vec<&str> = claude_role_denied(worker).into_iter().filter(|tool| CLAUDE_DEFERRED_TOOLS.contains(tool)).collect();
-    if !resumed || refused.is_empty() {
+    let refused: Vec<&str> = claude_role_denied(worker).into_iter()
+        .filter(|tool| CLAUDE_DEFERRED_TOOLS.contains(tool) && (resumed || *tool == CLAUDE_NOTEBOOK_TOOL)).collect();
+    if refused.is_empty() {
         return Value::Null;
     }
     json!({"PreToolUse":[{"matcher":refused.join("|"),"hookCallbackIds":[CLAUDE_REFUSAL_HOOK]}]})
@@ -3284,7 +3288,7 @@ impl Protocol {
                     if name == "AskUserQuestion" {
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":"Ask the user in your response; this UI supports free-text replies."}}}));
                     } else if claude_refuses_native(self.config.worker, &name) {
-                        // Listed only so a resumed conversation keeps its definition.
+                        // Its deferred definition stays listed; the current role still forbids calls.
                         step.write.push(json!({"type":"control_response","response":{"subtype":"success","request_id":value["request_id"],"response":{"behavior":"deny","message":format!("{name} is not available to this worker.")}}}));
                     } else if name.strip_prefix("mcp__pandacode_architect__").is_some_and(|tool| self_scoped_host_tool(tool) || tool == EXPLORE_TOOL || crate::custom_tools::auto_allowed(tool) || self.refused_tools.contains(tool))
                         && self.mcp_tool_names.contains(&name)
@@ -4153,6 +4157,25 @@ pub(crate) const EXPLORE_TOOL: &str = "pandacode_explore";
 pub(crate) use explore_permissions::explore_name;
 use explore_permissions::opencode_allowed;
 
+/// Effective OpenCode discovery paths after saved provider and named-connection overrides.
+fn opencode_environment(command: &Command) -> crate::skill_manager::OpenCodeEnv {
+    opencode_environment_with(command, |name| std::env::var_os(name))
+}
+
+fn opencode_environment_with(
+    command: &Command,
+    inherited: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> crate::skill_manager::OpenCodeEnv {
+    crate::skill_manager::OpenCodeEnv::from_environment(|name| {
+        command
+            .as_std()
+            .get_envs()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value.map(std::ffi::OsStr::to_os_string))
+            .unwrap_or_else(|| inherited(name))
+    })
+}
+
 fn allow_opencode_tools(
     command: &mut Command,
     config: &RunConfig,
@@ -4167,7 +4190,8 @@ fn allow_opencode_tools(
     match agents {
         Some(agents) => acp::allow_tools_with_agents(command, &served, agents),
         None if !config.cwd.as_os_str().is_empty() => {
-            let agents = crate::skill_manager::opencode_all_agents_at(&config.cwd);
+            let env = opencode_environment(command);
+            let agents = crate::skill_manager::opencode_all_agents_with_env(Some(&config.cwd), &env);
             acp::allow_tools_with_agents(command, &served, &agents);
         }
         None => acp::allow_tools(command, &served),
@@ -4327,11 +4351,13 @@ async fn run_process_launch(
     // Known only now: a cloud run does not list explore, and a bind can fail. Either way the
     // allow rule must not cover a same-named tool on a user's own server.
     // Scan OpenCode agents off the runtime before `command.current_dir(&config.cwd)` is set.
-    let opencode_agents = if !opencode_allowed(&config.provider, mcp.is_some(), &mcp_tool_names).is_empty()
-        && !config.cwd.as_os_str().is_empty()
-    {
+    let opencode_agents = if !opencode_allowed(&config.provider, mcp.is_some(), &mcp_tool_names).is_empty() {
         let cwd = config.cwd.clone();
-        Some(crate::blocking(move || Ok(crate::skill_manager::opencode_all_agents_at(&cwd))).await?)
+        let env = opencode_environment(&command);
+        Some(crate::blocking(move || {
+            let cwd = (!cwd.as_os_str().is_empty()).then_some(cwd.as_path());
+            Ok(crate::skill_manager::opencode_all_agents_with_env(cwd, &env))
+        }).await?)
     } else {
         None
     };
@@ -5612,7 +5638,7 @@ pub(crate) mod tests {
         let mut command = Command::new("opencode");
         configure_command(&mut command, &cfg);
         assert!(command.as_std().get_current_dir().is_none());
-        let agents = crate::skill_manager::opencode_all_agents_at(&cfg.cwd);
+        let agents = crate::skill_manager::opencode_all_agents_with_env(Some(&cfg.cwd), &opencode_environment(&command));
         allow_opencode_tools(&mut command, &cfg, true, &names, Some(&agents));
         let value: Value =
             serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
@@ -5634,6 +5660,102 @@ pub(crate) mod tests {
         }
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn opencode_launch_environment_respects_overrides_removals_and_inheritance() {
+        use crate::skill_manager::OpenCodeEnv;
+        let inherited = || Some(std::ffi::OsString::from("inherited-path"));
+        assert_eq!(opencode_environment_with(&Command::new("unused"), |_| inherited()),
+            OpenCodeEnv::from_environment(|_| inherited()));
+        for key in ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "XDG_CONFIG_HOME"] {
+            let mut command = Command::new("unused");
+            command.env(key, "launch-path");
+            let effective = opencode_environment_with(&command, |name| {
+                assert_ne!(name, key, "an override must not read the inherited value");
+                inherited()
+            });
+            assert_eq!(effective, OpenCodeEnv::from_environment(|name| {
+                if name == key { Some("launch-path".into()) } else { inherited() }
+            }));
+            command.env_remove(key);
+            let effective = opencode_environment_with(&command, |name| {
+                assert_ne!(name, key, "an explicit removal must not restore the inherited value");
+                inherited()
+            });
+            assert_eq!(effective, OpenCodeEnv::from_environment(|name| {
+                if name == key { None } else { inherited() }
+            }));
+        }
+    }
+
+    #[test]
+    fn opencode_served_tools_discover_agents_from_launch_config_file() {
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-launch-env-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let file = root.join("connection.json");
+        let agent = format!("launch-reviewer-{}", uuid::Uuid::new_v4());
+        std::fs::write(&file, json!({"agent":{(agent.as_str()):{"permission":{"*":"deny"}}}}).to_string()).unwrap();
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let names = HashSet::from([EXPLORE_TOOL.into()]);
+        for path in [file, PathBuf::from("connection.json")] {
+            // The launch command alone names this file; no process environment is changed.
+            for prescanned in [false, true] {
+                let mut command = Command::new("opencode");
+                command.env("OPENCODE_CONFIG", &path);
+                command.env("OPENCODE_CONFIG_CONTENT", "{}");
+                assert!(command.as_std().get_current_dir().is_none());
+                let agents = prescanned.then(|| crate::skill_manager::opencode_all_agents_with_env(
+                    Some(&cfg.cwd), &opencode_environment(&command)));
+                allow_opencode_tools(&mut command, &cfg, true, &names, agents.as_ref());
+                let value: Value = serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+                for tool in ["pandacode_architect_pandacode_explore", "pandacode_architect_pandacode_explore *"] {
+                    assert_eq!(value["agent"][&agent]["permission"][tool], "allow", "{value}");
+                }
+            }
+            // Direct ACP callers use the command's cwd and effective environment too.
+            let mut command = Command::new("opencode");
+            command.current_dir(&root).env("OPENCODE_CONFIG", &path).env("OPENCODE_CONFIG_CONTENT", "{}");
+            acp::allow_tools(&mut command, &[EXPLORE_TOOL]);
+            let value: Value = serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+            assert_eq!(value["agent"][&agent]["permission"]["pandacode_architect_pandacode_explore"], "allow");
+            assert_eq!(value["agent"][&agent]["permission"]["pandacode_architect_pandacode_explore *"], "allow");
+        }
+        // No task directory is needed for an absolute launch config file.
+        cfg.cwd = PathBuf::new();
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG", root.join("connection.json")).env("OPENCODE_CONFIG_CONTENT", "{}");
+        allow_opencode_tools(&mut command, &cfg, true, &names, None);
+        let value: Value = serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        assert_eq!(value["agent"][&agent]["permission"]["pandacode_architect_pandacode_explore"], "allow");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opencode_served_tools_discover_launch_config_and_xdg_directories() {
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-launch-dirs-{}", uuid::Uuid::new_v4()));
+        let config_dir = root.join("connection-config");
+        let xdg = root.join("connection-xdg");
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::create_dir_all(config_dir.join("agent")).unwrap();
+        std::fs::create_dir_all(xdg.join("opencode/agents")).unwrap();
+        let directory_agent = format!("directory-reviewer-{}", uuid::Uuid::new_v4());
+        let xdg_agent = format!("xdg-reviewer-{}", uuid::Uuid::new_v4());
+        std::fs::write(config_dir.join("agent").join(format!("{directory_agent}.md")), "Review").unwrap();
+        std::fs::write(xdg.join("opencode/agents").join(format!("{xdg_agent}.md")), "Review").unwrap();
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG_DIR", config_dir).env("XDG_CONFIG_HOME", xdg).env("OPENCODE_CONFIG_CONTENT", "{}");
+        allow_opencode_tools(&mut command, &cfg, true, &HashSet::from([EXPLORE_TOOL.into()]), None);
+        let value: Value = serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+        for agent in [directory_agent, xdg_agent] {
+            for tool in ["pandacode_architect_pandacode_explore", "pandacode_architect_pandacode_explore *"] {
+                assert_eq!(value["agent"][&agent]["permission"][tool], "allow", "{agent}: {value}");
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -438,3 +438,25 @@ A new regression test in `runner.test.mjs` exercises both flat and nested `.fing
 
 G2-7 supersedes G2-6 to pin the changed `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins (`tasks-gui.json`, `tasks.json`, `tasks-edit-v2.json`, `gui.mjs`, `run.mjs`, `saver.mjs`) and all three analysis pins unchanged. The preceding 32 registration rows and every historical registered section remain byte-identical. No historical result, prepared launch text, metadata, snapshot, seed, treatment, budget or launch gate changes. G2-5's launch-text-drift restriction and the separate smoke/main approval gates still apply; this maintenance entry authorizes no model call or batch launch.
 <!-- /deviation:G2-7 -->
+
+### CI maintenance: build-dir execution fingerprints
+
+<!-- deviation:G2-8 -->
+**G2-8** (2026-11-22, maintenance only; no benchmark calls). G2-7's recursive scan covers nested directories beneath `debug/.fingerprint/`, but Cargo 1.99's `-Zbuild-dir-new-layout` actually writes execution fingerprints at `debug/build/<pkg>/<hash>/fingerprint/run-build-script-*`. Its cached execution metadata lives alongside them in `run/{stdout,stderr,root-output,invoked.timestamp}`. A missing generated file alone does not invalidate that successful execution. Local inspection and a dependency-free Cargo 1.99 reproduction confirmed that deleting the execution fingerprints forces regeneration while retaining those metadata files.
+
+`cloneTarget` now also finds `fingerprint/` directories beneath the disposable `debug/build/` and removes their `run-build-script-*` files. It skips `out/`, `run/` and directory symlinks, retaining generated artifacts, compiled build scripts, run metadata and `debug/deps`. The existing legacy `.fingerprint/` cleanup remains. The source cache is never repaired or rebuilt.
+
+The offline Cargo regression explicitly builds both flat and nested layouts, with the unstable-layout opt-in scoped to the dependency-free fixture, and checks missing-output regeneration, dependency identity and byte-identical source cache contents. Synthetic fixtures cover both legacy fingerprint layouts, the actual new build-dir fingerprint location, retained run markers and compiled artifacts, an output subtree containing fingerprint-like names, and a directory symlink back into the source cache. The portable Linux copy-flags regression remains in place.
+
+G2-8 supersedes G2-7 to pin the changed `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins and all three analysis pins unchanged. The preceding 33 registration rows and every historical registered section remain byte-identical. No historical result, prepared launch text, metadata, snapshot, seed, treatment, budget or launch gate changes. G2-5's launch-text-drift restriction and the separate smoke/main approval gates still apply; this maintenance entry authorizes no model call or batch launch.
+<!-- /deviation:G2-8 -->
+
+### CI maintenance: package names and earlier nested layouts
+
+<!-- deviation:G2-9 -->
+**G2-9** (2026-11-22, maintenance only; no benchmark calls). Follow-up verification of G2-8 found that Cargo 1.93's nested layout places generated files at `build/<pkg>/<hash>/build-script-execution/out/`, while Cargo 1.99 places them directly at `build/<pkg>/<hash>/out/`. Both put execution fingerprints at `build/<pkg>/<hash>/fingerprint/`. The offline regeneration test now accepts these two observed nested output paths explicitly, and its six focused layout and preservation cases pass under both installed toolchains.
+
+The build-dir scan now examines only package/unit/fingerprint directories, leaving output and execution-metadata subtrees unvisited. This also handles valid package names `out`, `run` and `fingerprint`, which G2-8's recursive traversal would either skip or confuse with a fingerprint directory. Regression fixtures cover all three names, retained older `build-script-execution` metadata and generated files, source-pointing symlinks, compiled artifacts, and dependency identity.
+
+G2-9 supersedes G2-8 to re-pin `lib.mjs` and `runner.test.mjs`, repeating its other six source/task pins and all three analysis pins unchanged. The preceding 34 registration rows, including G2-8, and all historical registered sections remain byte-identical. Historical evidence, launch texts, metadata, snapshots, seeds, treatments, budgets and gates are unchanged. G2-5's launch-text-drift restriction and separate smoke/main approval gates remain; no benchmark call or batch launch is authorized.
+<!-- /deviation:G2-9 -->

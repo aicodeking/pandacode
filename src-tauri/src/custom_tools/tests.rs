@@ -210,6 +210,56 @@ fn background_jobs_end_with_the_script() {
     assert!(!group_alive(leader));
 }
 
+#[cfg(windows)]
+#[test]
+fn stop_kills_an_immediate_detached_descendant() {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::time::{Duration, Instant};
+    use windows::Win32::{
+        Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
+        System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE},
+    };
+
+    let dir = temp();
+    let marker = dir.0.join("descendant");
+    let mut script = tool("immediate-job", r#"PANDACODE_WINDOWS_JOB_FIXTURE="$PC_MARKER" "$PC_TEST_EXE" --exact providers::windows_job::tests::descendant_fixture"#);
+    script.params = vec![param("marker", true), param("test_exe", true)];
+    let stopped = Arc::new(AtomicBool::new(false));
+    let flag = stopped.clone();
+    let setter = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let pid = loop {
+            if let Some(pid) = std::fs::read_to_string(&marker).ok()
+                .and_then(|text| text.strip_suffix('\n')?.parse::<u32>().ok())
+            {
+                break pid;
+            }
+            if Instant::now() >= deadline {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("Immediate detached descendant did not start");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        // Keep a process handle before stopping, so PID reuse cannot satisfy the check.
+        let descendant = unsafe {
+            OwnedHandle::from_raw_handle(OpenProcess(PROCESS_SYNCHRONIZE, false, pid).unwrap().0)
+        };
+        let alive = unsafe { WaitForSingleObject(HANDLE(descendant.as_raw_handle()), 0) };
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(alive, WAIT_TIMEOUT);
+        descendant
+    });
+    let args = json!({"marker": dir.0.join("descendant"), "test_exe": std::env::current_exe().unwrap()});
+    let outcome = run::execute(&dir.0, &script, &args, &stopped);
+    let descendant = setter.join().unwrap();
+    assert_eq!(outcome.reply.unwrap_err(), "Task has stopped.");
+    assert_eq!(
+        unsafe { WaitForSingleObject(HANDLE(descendant.as_raw_handle()), 5000) },
+        WAIT_OBJECT_0,
+        "the immediate detached descendant outlived Stop"
+    );
+}
+
 #[test]
 fn output_keeps_the_tail_of_each_stream_and_failures_carry_a_fix() {
     let dir = temp();

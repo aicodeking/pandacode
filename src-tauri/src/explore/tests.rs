@@ -706,3 +706,147 @@ fn a_walk_stopped_at_its_entry_cap_says_the_reply_is_incomplete() {
     super::index::WALK_CAP.with(|cap| cap.set(500_000));
     assert_eq!(reply["incomplete"], true, "{reply}");
 }
+
+/// Production-size repro: counting four million definitions must not retain four million.
+#[test]
+fn repeated_symbol_jobs_bound_retained_metadata_and_keep_exact_counts() {
+    let repo = Repo::new();
+    for at in 0..40 {
+        repo.write(&format!("src/hit{at:02}.rs"), "fn hit() {}\n".repeat(5_000));
+    }
+    let jobs: Vec<_> = (0..20).map(|_| Job {
+        pattern: plan::compile("hit", false).unwrap(),
+        kind: Kind::Definition { name: "hit".into(), qualifier: None, folded: false },
+    }).collect();
+    let mut replies = Vec::new();
+    for _ in 0..2 {
+        let limit = Limit::lasting(std::time::Duration::from_secs(20), Arc::default());
+        let snapshot = Snapshot::open(&repo.0, Policy::NeverIndex, false, &limit);
+        let outcome = grep::run_jobs(&repo.0, &snapshot, &jobs, &Scope { allows: &|_| true, named_large: vec![] }, &limit);
+        assert!(!limit.was_cut());
+        let retained: usize = outcome.jobs.iter().map(|job| job.files.iter().map(|file| file.definitions.len()).sum::<usize>()).sum();
+        assert!(retained <= 20 * 256, "retained {retained} definitions");
+        let mut items = Vec::new();
+        for job in outcome.jobs {
+            assert_eq!(job.total_definitions, 200_000);
+            assert_eq!(job.definition_files, 40);
+            assert!(job.files.iter().all(|file| file.definition_count == 5_000));
+            assert!(job.files.len() <= 512);
+            assert!(job.files.iter().all(|file| file.definitions.len() <= 64));
+            assert!(job.files.iter().map(|file| file.definitions.len()).sum::<usize>() <= 256);
+            items.push(symbols_item("hit", job));
+        }
+        let mut reply = Map::new();
+        shape::assemble(items, BUDGET - REPLY_FIELDS, &mut reply);
+        for item in reply["symbols"].as_array().unwrap() {
+            assert_eq!(item["definitions"], 200_000);
+            assert!(item["omitted_lines"].as_u64().unwrap() > 199_000);
+        }
+        replies.push(reply);
+    }
+    assert_eq!(replies[0], replies[1]);
+}
+
+#[test]
+fn search_metadata_caps_keep_late_definitions_and_exact_outside_totals() {
+    let repo = Repo::new();
+    for at in 0..600 {
+        repo.write(&format!("inside/a{at:03}.rs"), "hit();\nhit();\n");
+        repo.write(&format!("outside/a{at:03}.rs"), "hit();\nhit();\nhit();\n");
+    }
+    repo.write("inside/z.rs", "fn hit() {}\n");
+    let jobs = [Job { pattern: plan::compile("hit", false).unwrap(), kind: Kind::Search { context: 0 } }];
+    let mut replies = Vec::new();
+    for _ in 0..2 {
+        let limit = limit();
+        let snapshot = Snapshot::open(&repo.0, Policy::NeverIndex, false, &limit);
+        let mut outcome = grep::run_jobs(&repo.0, &snapshot, &jobs, &Scope { allows: &|path| path.starts_with("inside/"), named_large: vec![] }, &limit);
+        let result = outcome.jobs.pop().unwrap();
+        assert!(result.files.len() <= 512, "retained {} files", result.files.len());
+        assert!(result.outside.len() <= 64);
+        assert_eq!(result.total_files, 601);
+        assert_eq!(result.outside_files, 600);
+        assert_eq!(result.outside_matches, 1_800);
+        assert_eq!(&*result.files[0].path, "inside/z.rs");
+        assert_eq!(&*result.outside[0].path, "outside/a000.rs");
+        let item = search_item("hit", result, 0);
+        assert_eq!(item.head["files"], 601);
+        assert_eq!(item.head["matches"], 1_201);
+        assert_eq!(item.head["outside_glob"], json!({"files":600,"matches":1_800}));
+        assert_eq!(item.total_files, 601);
+        let mut reply = Map::new();
+        shape::assemble(vec![item], BUDGET, &mut reply);
+        let shown = &reply["search"][0];
+        let more = shown["more_files"].as_str().unwrap();
+        let (named, remaining) = if let Some((names, tail)) = more.rsplit_once(", and ") {
+            (names.matches("inside/").count(), tail.strip_suffix(" more").unwrap().parse::<usize>().unwrap())
+        } else {
+            (0, more.strip_suffix(" files").unwrap().parse::<usize>().unwrap())
+        };
+        assert_eq!(named + remaining, shown["omitted_files"].as_u64().unwrap() as usize, "{shown}");
+        replies.push(reply);
+    }
+    assert_eq!(replies[0], replies[1]);
+    let outside_only = repo.explore(json!({"search":"hit", "glob":"missing/**"}));
+    assert_eq!(outside_only["search"][0]["outside_glob"]["files"], 1_201);
+    assert_eq!(outside_only["search"][0]["outside_glob"]["matches"], 3_001);
+    assert!(outside_only["search"][0]["outside_glob"]["hits"][0].as_str().unwrap().starts_with("inside/a000.rs:"));
+}
+
+#[test]
+fn tests_for_metadata_caps_preserve_combined_ranking_and_exact_union_counts() {
+    let repo = Repo::new();
+    repo.write("src/billing.ts", "export const billing = 1;\n");
+    for at in 0..600 {
+        repo.write(&format!("tests/a{at:03}.ts"), "import billing from '../src/billing';\nbilling();\n");
+        // Named-only tests overlap the named-and-mentioned set only in the winner below.
+        repo.write(&format!("tests/n{at:03}.billing.test.ts"), "// unrelated\n");
+    }
+    repo.write("tests/z.billing.test.ts", "import billing from '../src/billing';\nbilling();\n");
+    // Lots of non-test mentions must never evict a test candidate.
+    for at in 0..600 {
+        repo.write(&format!("src/a{at:03}.ts"), "billing();\n");
+    }
+    let limit = limit();
+    let snapshot = Snapshot::open(&repo.0, Policy::NeverIndex, false, &limit);
+    let jobs = [Job {
+        pattern: plan::compile(&crate::workspace::whole_word_pattern("billing"), false).unwrap(),
+        kind: Kind::Mention { stem: "billing".into(), target: repo.0.join("src/billing.ts") },
+    }];
+    let outcome = grep::run_jobs(&repo.0, &snapshot, &jobs, &Scope { allows: &|_| true, named_large: vec![] }, &limit);
+    assert!(outcome.jobs[0].files.len() <= 512);
+    assert_eq!(outcome.jobs[0].test_files, 601);
+    assert_eq!(outcome.jobs[0].named_test_files, 1);
+    assert_eq!(outcome.jobs[0].importing_test_files, 600);
+    assert!(outcome.jobs[0].files.iter().all(|file| tests_for::is_test_path(&file.path)));
+    let args = json!({"tests_for":"src/billing.ts"});
+    let first = repo.explore(args.clone());
+    let item = &first["tests_for"][0];
+    assert_eq!(item["found"], 1_201, "{first}");
+    assert_eq!(item["omitted_tests"], 1_181, "{first}");
+    assert!(item["text"].as_str().unwrap().starts_with("tests/z.billing.test.ts (name, imports it, 2 mentions)"), "{first}");
+    assert_eq!(first, repo.explore(args));
+}
+
+#[test]
+fn symbol_metadata_caps_preserve_late_definitions_and_exact_empty_notes() {
+    let repo = Repo::new();
+    for at in 0..600 {
+        repo.write(&format!("a{at:03}.txt"), "hit\n");
+        repo.write(&format!("b{at:03}.rs"), "// hit\n");
+    }
+    let empty = repo.explore(json!({"symbols":"hit"}));
+    assert!(empty["symbols"][0]["note"].as_str().unwrap().starts_with("Mentioned in 600 files of types with no definition lookup"), "{empty}");
+    // A defining file must survive even if every earlier file merely mentions the name.
+    repo.write("z.rs", "fn hit() {}\n");
+    let defined = repo.explore(json!({"symbols":"hit"}));
+    assert_eq!(defined["symbols"][0]["definitions"], 1, "{defined}");
+    assert!(defined["symbols"][0]["text"].as_str().unwrap().starts_with("z.rs\n"), "{defined}");
+    // With only supported files, the mentioned count still includes files beyond the cap.
+    let supported = Repo::new();
+    for at in 0..600 {
+        supported.write(&format!("a{at:03}.rs"), "// hit\n");
+    }
+    let empty = supported.explore(json!({"symbols":"hit"}));
+    assert!(empty["symbols"][0]["note"].as_str().unwrap().starts_with("Mentioned in 600 files, but no definition"), "{empty}");
+}

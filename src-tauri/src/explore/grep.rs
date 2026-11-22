@@ -29,6 +29,13 @@ const KEEP_LINES: usize = 4_000;
 const MAX_RECORDED_LINES: usize = 2_000;
 /// Hit lines of one file given their text and symbol.
 const MAX_FILE_HITS: usize = 8;
+/// Metadata is only a sample for reply shaping; the counters below include every result.
+const MAX_FILE_DEFINITIONS: usize = 64;
+const MAX_JOB_DEFINITIONS: usize = 256;
+const MAX_JOB_FILES: usize = 512;
+const MAX_OUTSIDE_FILES: usize = 64;
+/// Bounds the parallel collector as well as the retained results between chunks.
+const WORK_CHUNK: usize = 32;
 const LIMIT_CHECK_LINES: usize = 1_024;
 const IMPORT_LOOKBACK: usize = 30;
 
@@ -56,7 +63,10 @@ pub(super) struct FileResult {
     pub(super) groups: Vec<Group>,
     pub(super) clipped_lines: usize,
     pub(super) definitions: Vec<Definition>,
+    pub(super) definition_count: usize,
     pub(super) imports: usize,
+    /// Full tests_for score, including its name, imports and capped mentions.
+    test_score: usize,
     /// For a search: the hit lines to show, definitions first, then the earliest, each with
     /// whether it defines what the pattern names.
     pub(super) lines: Vec<(usize, bool)>,
@@ -70,7 +80,19 @@ pub(super) struct FileResult {
 pub(super) struct JobResult {
     pub(super) files: Vec<FileResult>,
     pub(super) matched_lines: usize,
+    pub(super) total_files: usize,
+    pub(super) total_definitions: usize,
+    pub(super) definition_files: usize,
+    pub(super) unsupported_files: usize,
+    pub(super) mentioned_files: usize,
     pub(super) outside: Vec<FileResult>,
+    pub(super) outside_files: usize,
+    pub(super) outside_matches: usize,
+    /// Test files mentioning the stem, including those also named for it.
+    pub(super) test_files: usize,
+    pub(super) named_test_files: usize,
+    /// Importing test files not already counted among the named tests.
+    pub(super) importing_test_files: usize,
     /// Files where the pattern matches only by running across a newline.
     pub(super) crossing_files: usize,
 }
@@ -104,7 +126,9 @@ fn worklist(snapshot: &Snapshot, jobs: &[Job], scope: &Scope) -> Vec<Work> {
             scope.named_large.iter().for_each(|path| *masks.entry(path.clone()).or_default() |= 1 << bit);
         }
     }
-    masks.into_iter().map(|(path, mask)| Work { in_scope: (scope.allows)(&path), path, mask }).collect()
+    let mut work: Vec<_> = masks.into_iter().map(|(path, mask)| Work { in_scope: (scope.allows)(&path), path, mask }).collect();
+    work.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+    work
 }
 
 pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &Scope, limit: &Limit) -> Outcome {
@@ -115,25 +139,76 @@ pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &S
     let crossing: Vec<AtomicUsize> = jobs.iter().map(|_| AtomicUsize::new(0)).collect();
     let strict = snapshot.walk.strict;
     let shared = Shared { root, jobs, crossing: &crossing, binary: &binary, limit, strict };
-    let found = parallel(work.len(), |at| (!limit.expired()).then(|| search_file(&shared, &work[at])));
     let mut results: Vec<JobResult> = jobs.iter().map(|_| JobResult::default()).collect();
-    for (bit, file) in found.into_iter().flatten() {
-        let result = &mut results[bit];
-        if file.in_scope {
-            result.matched_lines += file.matched;
-            result.files.push(file);
-        } else {
-            result.outside.push(file);
+    for chunk in work.chunks(WORK_CHUNK) {
+        if limit.expired() {
+            break;
+        }
+        let found = parallel(chunk.len(), |at| (!limit.expired()).then(|| search_file(&shared, &chunk[at])));
+        for (bit, file) in found.into_iter().flatten() {
+            results[bit].add(file, &jobs[bit].kind);
+        }
+        // Parallel completion order is arbitrary. Sort before pruning so no later chunk or
+        // faster worker can displace an earlier result of the same rank.
+        for (result, job) in results.iter_mut().zip(jobs) {
+            result.prune(&job.kind);
         }
     }
     for (result, crossing) in results.iter_mut().zip(&crossing) {
         result.crossing_files = crossing.load(Ordering::Relaxed);
-        // Files that define the name first, before `KEEP_LINES` and the reply cut any.
-        result.files.sort_unstable_by(|a, b| b.defines.cmp(&a.defines).then_with(|| a.path.cmp(&b.path)));
-        result.outside.sort_unstable_by(|a, b| a.path.cmp(&b.path));
     }
     add_groups(root, jobs, &mut results, limit, strict);
     Outcome { jobs: results, binary: binary.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()) }
+}
+
+impl JobResult {
+    fn add(&mut self, file: FileResult, kind: &Kind) {
+        if !file.in_scope {
+            self.outside_files += 1;
+            self.outside_matches += file.matched;
+            self.outside.push(file);
+            return;
+        }
+        self.matched_lines += file.matched;
+        self.total_files += 1;
+        self.mentioned_files += 1;
+        self.total_definitions += file.definition_count;
+        self.definition_files += usize::from(file.definition_count > 0);
+        self.unsupported_files += usize::from(!symbols::supported(&file.path));
+        match kind {
+            Kind::Definition { .. } if file.definition_count == 0 => return,
+            Kind::Mention { stem, .. } => {
+                if file.test_score == 0 {
+                    return;
+                }
+                let named = super::tests_for::named_test(&file.path, stem);
+                self.test_files += 1;
+                self.named_test_files += usize::from(named);
+                self.importing_test_files += usize::from(!named && file.imports > 0);
+            }
+            _ => {}
+        }
+        self.files.push(file);
+    }
+
+    fn prune(&mut self, kind: &Kind) {
+        self.files.sort_unstable_by(|a, b| {
+            let rank = match kind {
+                Kind::Search { .. } => b.defines.cmp(&a.defines),
+                Kind::Definition { .. } => std::cmp::Ordering::Equal,
+                Kind::Mention { .. } => b.test_score.cmp(&a.test_score),
+            };
+            rank.then_with(|| a.path.cmp(&b.path))
+        });
+        self.files.truncate(MAX_JOB_FILES);
+        let mut left = MAX_JOB_DEFINITIONS;
+        for file in &mut self.files {
+            file.definitions.truncate(left);
+            left -= file.definitions.len();
+        }
+        self.outside.sort_unstable_by(|a, b| a.path.cmp(&b.path));
+        self.outside.truncate(MAX_OUTSIDE_FILES);
+    }
 }
 
 /// Gives each search's files their lines with context, in path order until `KEEP_LINES` are
@@ -332,7 +407,7 @@ impl<'a> FileView<'a> {
     }
 
     fn result(&self, path: &Arc<str>, matches: &Matches, job: &Job, in_scope: bool) -> FileResult {
-        let mut result = FileResult { path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), imports: 0, lines: Vec::new(), first_hit: None, defines: false };
+        let mut result = FileResult { path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), definition_count: 0, imports: 0, test_score: 0, lines: Vec::new(), first_hit: None, defines: false };
         if !in_scope {
             result.first_hit = matches.starts.first().map(|&start| {
                 let line = self.line_at(start);
@@ -348,8 +423,11 @@ impl<'a> FileView<'a> {
                 result.defines = flagged.iter().any(|&(_, defines)| defines);
                 result.lines = ranked(flagged, MAX_FILE_HITS);
             }
-            Kind::Definition { name, qualifier, folded } => result.definitions = self.definitions(name, qualifier.as_deref(), *folded),
-            Kind::Mention { .. } => result.imports = hits.iter().filter(|&&line| self.imports_at(line)).count(),
+            Kind::Definition { name, qualifier, folded } => (result.definitions, result.definition_count) = self.definitions(name, qualifier.as_deref(), *folded),
+            Kind::Mention { stem, .. } => {
+                result.imports = hits.iter().filter(|&&line| self.imports_at(line)).count();
+                result.test_score = super::tests_for::mention_score(path, stem, result.imports, result.matched);
+            }
         }
         result
     }
@@ -404,11 +482,22 @@ impl<'a> FileView<'a> {
         (groups, clipped)
     }
 
-    fn definitions(&self, name: &str, qualifier: Option<&str>, folded: bool) -> Vec<Definition> {
+    fn definitions(&self, name: &str, qualifier: Option<&str>, folded: bool) -> (Vec<Definition>, usize) {
         let same = |candidate: &str| if folded { candidate.eq_ignore_ascii_case(name) } else { candidate == name };
         let symbols = self.symbols();
-        let found = symbols.iter().filter(|symbol| same(&symbol.name) && qualifier.is_none_or(|q| symbols::qualified_by(symbols, symbol, q)));
-        found.map(|symbol| Definition { signature: self.line_text(symbol.line).trim().to_owned(), symbol: symbol.clone() }).collect()
+        let (mut found, mut count) = (Vec::new(), 0);
+        for (at, symbol) in symbols.iter().enumerate() {
+            if at.is_multiple_of(LIMIT_CHECK_LINES) && self.limit.expired() {
+                break;
+            }
+            if same(&symbol.name) && qualifier.is_none_or(|q| symbols::qualified_by(symbols, symbol, q)) {
+                count += 1;
+                if found.len() < MAX_FILE_DEFINITIONS {
+                    found.push(Definition { signature: self.line_text(symbol.line).trim().to_owned(), symbol: symbol.clone() });
+                }
+            }
+        }
+        (found, count)
     }
 
     /// An import line, or a line inside an import spread over several lines.

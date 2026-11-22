@@ -87,6 +87,19 @@ fn name_has_word(name: &str, word: &str) -> bool {
     })
 }
 
+pub(super) fn named_test(path: &str, stem: &str) -> bool {
+    is_test_path(path) && name_has_word(path.rsplit('/').next().unwrap_or(path), stem)
+}
+
+/// The collector and reply must rank mentions by the same combined score before either caps
+/// them. Ranking only by imports can discard a later test also named for the changed file.
+pub(super) fn mention_score(path: &str, stem: &str, imports: usize, matched: usize) -> usize {
+    if !is_test_path(path) {
+        return 0;
+    }
+    usize::from(named_test(path, stem)) * NAME_SCORE + usize::from(imports > 0) * IMPORT_SCORE + matched.min(MENTION_CAP)
+}
+
 pub(super) fn job(jobs: &mut Vec<Job>, ctx: &Ctx, path: &str) -> Slot {
     let (_, target) = resolve_named(ctx, path)?;
     let stem = stem_of(path)?;
@@ -109,27 +122,38 @@ impl Score {
 pub(super) fn item(ctx: &Ctx, path: &str, job: &Job, snapshot: &Snapshot, result: JobResult) -> Item {
     let Kind::Mention { stem, target } = &job.kind else { unreachable!("a tests_for job is a mention") };
     let mut scores: HashMap<String, Score> = HashMap::new();
-    for file in snapshot.walk.files.iter().filter(|file| is_test_path(&file.path)) {
-        if name_has_word(file.path.rsplit('/').next().unwrap_or(&file.path), stem) {
+    let mut named = 0;
+    // The snapshot is path-sorted. Only the first MAX_TESTS named-only candidates could be
+    // shown; a later named test with mentions is supplied by the ranked grep sample below.
+    for file in snapshot.walk.files.iter().filter(|file| named_test(&file.path, stem)) {
+        named += 1;
+        if scores.len() < MAX_TESTS {
             scores.entry(file.path.to_string()).or_default().add(NAME_SCORE, "name".into());
         }
     }
     for file in result.files.iter().filter(|file| is_test_path(&file.path)) {
-        let entry = scores.entry(file.path.to_string()).or_default();
+        let entry = scores.entry(file.path.to_string()).or_insert_with(|| {
+            let mut score = Score::default();
+            if named_test(&file.path, stem) {
+                score.add(NAME_SCORE, "name".into());
+            }
+            score
+        });
         if file.imports > 0 {
             entry.add(IMPORT_SCORE, "imports it".into());
         }
         entry.add(file.matched.min(MENTION_CAP), format!("{} mentions", file.matched));
     }
-    if has_inline_tests(ctx, path, target) {
+    let inline = has_inline_tests(ctx, path, target);
+    if inline {
         // Its own tests rank first and count as a strong result.
         scores.insert(path.to_owned(), Score { score: usize::MAX, why: vec!["inline tests".into()] });
     }
     let mut ranked: Vec<(String, Score)> = scores.into_iter().collect();
     ranked.sort_unstable_by(|a, b| b.1.score.cmp(&a.1.score).then_with(|| a.0.cmp(&b.0)));
-    let found = ranked.len();
+    let found = named + result.test_files - result.named_test_files + usize::from(inline);
     // Mentions alone score at most `MENTION_CAP`, so they come after every named or importing test.
-    let strong = ranked.iter().filter(|(_, score)| score.score > MENTION_CAP).count();
+    let strong = named + result.importing_test_files + usize::from(inline);
     let cap = if strong > 0 { (strong + MENTION_ONLY).min(MAX_TESTS) } else { MAX_TESTS };
     ranked.truncate(cap);
     let shown = ranked.len();

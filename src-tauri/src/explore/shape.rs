@@ -255,12 +255,13 @@ fn render_block(block: &Block, cap: usize) -> Option<(String, Rendered)> {
 }
 
 /// Fills `out` with the files that fit as one text, and names the rest.
-fn render_files(blocks: &[Block], cap: usize, out: &mut Map<String, Value>) -> Rendered {
+fn render_files(blocks: &[Block], total_files: usize, cap: usize, out: &mut Map<String, Value>) -> Rendered {
     let sizes: Vec<usize> = blocks.iter().map(block_size).collect();
+    let unretained = total_files.saturating_sub(blocks.len());
     // When not every file fits, room is kept to name the rest: in the benchmark a named file was
     // as good as a shown one for finding gold, at a tenth of the bytes.
-    let names: usize = blocks.iter().map(|block| json_len(&block.path) + 8).sum();
-    let reserve = if sizes.iter().sum::<usize>() > cap { names.min(cap * MORE_FILES_SHARE.0 / MORE_FILES_SHARE.1) } else { 0 };
+    let names: usize = blocks.iter().map(|block| json_len(&block.path) + 8).sum::<usize>() + if unretained > 0 { json_len(&format!("{total_files} files")) } else { 0 };
+    let reserve = if unretained > 0 || sizes.iter().sum::<usize>() > cap { names.min(cap * MORE_FILES_SHARE.0 / MORE_FILES_SHARE.1) } else { 0 };
     let shares = fair_caps(&sizes, cap - reserve);
     let mut left = cap - reserve;
     let mut total = Rendered::default();
@@ -281,8 +282,8 @@ fn render_files(blocks: &[Block], cap: usize, out: &mut Map<String, Value>) -> R
         out.insert("text".into(), json!(text));
     }
     left += reserve;
-    if !more.is_empty() {
-        let list = name_more(&more, left);
+    if !more.is_empty() || unretained > 0 {
+        let list = name_more(&more, left, unretained);
         left = left.saturating_sub(json_len(&list));
         out.insert("more_files".into(), json!(list));
     }
@@ -290,13 +291,15 @@ fn render_files(blocks: &[Block], cap: usize, out: &mut Map<String, Value>) -> R
     total
 }
 
-/// The files that did not fit, as many as `room` holds, then how many more.
-fn name_more(more: &[String], room: usize) -> String {
+/// The files that did not fit, as many as `room` holds, then how many more, including files
+/// whose metadata the collector did not retain.
+fn name_more(more: &[String], room: usize, unretained: usize) -> String {
+    let total = more.len() + unretained;
     let mut list = String::new();
     let mut named = 0;
     for (at, name) in more.iter().take(MORE_FILES_NAMED).enumerate() {
         // Room for `, and N more` unless this is the last name.
-        let tail = if at + 1 == more.len() { 0 } else { 24 };
+        let tail = if at + 1 == total { 0 } else { 24 };
         // A name inside the list costs its JSON length less the quotes around it.
         if json_len(&list) + 2 * usize::from(named > 0) + json_len(name) - 2 + tail > room {
             break;
@@ -307,7 +310,7 @@ fn name_more(more: &[String], room: usize) -> String {
         list.push_str(name);
         named += 1;
     }
-    match (named, more.len() - named) {
+    match (named, total - named) {
         (_, 0) => list,
         (0, 1) => "1 file".into(),
         (0, rest) => format!("{rest} files"),
@@ -315,7 +318,7 @@ fn name_more(more: &[String], room: usize) -> String {
     }
 }
 
-fn render_body(body: &Body, cap: usize, head: &mut Map<String, Value>) -> Rendered {
+fn render_body(body: &Body, total_files: usize, cap: usize, head: &mut Map<String, Value>) -> Rendered {
     match body {
         Body::Nothing => Rendered::default(),
         Body::Lines(lines) => {
@@ -325,7 +328,7 @@ fn render_body(body: &Body, cap: usize, head: &mut Map<String, Value>) -> Render
             }
             Rendered { used: taken.used, shown_lines: taken.shown_hits, shown_files: 0, clipped: taken.clipped }
         }
-        Body::Files(blocks) => render_files(blocks, cap, head),
+        Body::Files(blocks) => render_files(blocks, total_files, cap, head),
     }
 }
 
@@ -392,7 +395,7 @@ fn render(item: &Item, cap: usize) -> (Value, bool, bool) {
     let mut room = cap.saturating_sub(head_size(head) + CUT_FIELDS + BODY_KEYS);
     loop {
         let mut out = head.clone();
-        let done = render_body(body, room, &mut out);
+        let done = render_body(body, total_files, room, &mut out);
         let omitted_lines = total_lines.saturating_sub(done.shown_lines);
         let omitted_files = total_files.saturating_sub(done.shown_files);
         let clipped_lines = clipped_lines + done.clipped;
@@ -508,29 +511,44 @@ mod tests {
     fn files_that_do_not_fit_are_named() {
         let mut out = Map::new();
         let Body::Files(blocks) = search("needle").body else { unreachable!() };
-        render_files(&blocks, SEARCH_CAP, &mut out);
+        render_files(&blocks, blocks.len(), SEARCH_CAP, &mut out);
         let more = out["more_files"].as_str().unwrap();
         assert!(out["text"].is_string());
         // Two fifths of the room name files; with a third the replay lost a file it had named.
         assert!(more.matches("src/file_").count() >= 23, "{more}");
-        assert_eq!(name_more(&["a (1)".into(), "b (1)".into(), "c (1)".into()], 33), "a (1), and 2 more");
-        assert_eq!(name_more(&["a (1)".into(), "b (1)".into()], 0), "2 files");
+        assert_eq!(name_more(&["a (1)".into(), "b (1)".into(), "c (1)".into()], 33, 0), "a (1), and 2 more");
+        assert_eq!(name_more(&["a (1)".into(), "b (1)".into()], 0, 0), "2 files");
     }
 
     #[test]
     fn a_lone_file_that_does_not_fit_is_named_when_its_name_fits() {
-        assert_eq!(name_more(&["a (1)".into()], 10), "a (1)");
-        assert_eq!(name_more(&["a (1)".into()], 0), "1 file");
-        assert_eq!(name_more(&["a (1)".into(), "b (1)".into()], 9), "2 files");
+        assert_eq!(name_more(&["a (1)".into()], 10, 0), "a (1)");
+        assert_eq!(name_more(&["a (1)".into()], 0, 0), "1 file");
+        assert_eq!(name_more(&["a (1)".into(), "b (1)".into()], 9, 0), "2 files");
         // The `, ` before a last name counts too.
         let long = format!("{} (1)", "l".repeat(21));
-        assert_eq!(name_more(&["a (1)".into(), long.clone()], 33), "a (1), and 1 more");
-        assert_eq!(name_more(&["a (1)".into(), long.clone()], 34), format!("a (1), {long}"));
+        assert_eq!(name_more(&["a (1)".into(), long.clone()], 33, 0), "a (1), and 1 more");
+        assert_eq!(name_more(&["a (1)".into(), long.clone()], 34, 0), format!("a (1), {long}"));
         // A name is measured as it is written in JSON: each quote takes two bytes.
         let quoted = r#""""" (1)"#.to_owned();
-        assert_eq!(name_more(std::slice::from_ref(&quoted), 10), "1 file");
-        assert_eq!(name_more(std::slice::from_ref(&quoted), 14), quoted);
-        assert!(json_len(&name_more(std::slice::from_ref(&quoted), 13)) <= 13);
+        assert_eq!(name_more(std::slice::from_ref(&quoted), 10, 0), "1 file");
+        assert_eq!(name_more(std::slice::from_ref(&quoted), 14, 0), quoted);
+        assert!(json_len(&name_more(std::slice::from_ref(&quoted), 13, 0)) <= 13);
+    }
+
+    #[test]
+    fn unretained_files_are_counted_even_when_the_retained_blocks_fit() {
+        assert_eq!(name_more(&["a (1)".into()], 64, 89), "a (1), and 89 more");
+        assert_eq!(name_more(&[], 0, 89), "89 files");
+        assert_eq!(name_more(&[], 0, 1), "1 file");
+        let block = Block { path: "a.rs".into(), matched: 1, groups: vec![Group { symbol: None, lines: vec![line(1, "needle")] }] };
+        let mut out = Map::new();
+        let done = render_files(&[block], 601, 400, &mut out);
+        assert_eq!(done.shown_files, 1);
+        assert_eq!(out["more_files"], "600 files");
+        let mut out = Map::new();
+        render_files(&[], 601, 400, &mut out);
+        assert_eq!(out["more_files"], "601 files");
     }
 
     #[test]
@@ -551,7 +569,7 @@ mod tests {
     fn a_file_with_no_room_for_a_line_is_named_not_shown_bare() {
         let block = Block { path: "p".repeat(380), matched: 1, groups: vec![Group { symbol: None, lines: vec![line(1, &"x".repeat(50))] }] };
         let mut out = Map::new();
-        render_files(&[block], 400, &mut out);
+        render_files(&[block], 1, 400, &mut out);
         assert!(out.get("text").is_none(), "{out:?}");
         assert!(out["more_files"].is_string());
     }

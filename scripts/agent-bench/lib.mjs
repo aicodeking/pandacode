@@ -224,6 +224,22 @@ export async function cloneTarget(to, source = join(REPO, 'src-tauri', 'target',
   };
   const fingerprints = join(to, 'debug', '.fingerprint');
   if (existsSync(fingerprints)) await stripBuildScriptRuns(fingerprints);
+  // -Zbuild-dir-new-layout stores these in build/<pkg>/<hash>/fingerprint instead.
+  // Invalidate execution there too; keep run/{stdout,root-output,invoked.timestamp},
+  // compiled build scripts and out/ artifacts. Never traverse output trees or symlinks.
+  const build = join(to, 'debug', 'build');
+  if (existsSync(build)) for (const pkg of readdirSync(build, { withFileTypes: true })) {
+    if (!pkg.isDirectory()) continue;
+    const pkgPath = join(build, pkg.name);
+    for (const unit of readdirSync(pkgPath, { withFileTypes: true })) {
+      // Flat layouts have out/ here; package names themselves may be out, run or fingerprint.
+      if (!unit.isDirectory() || unit.name === 'out' || unit.name === 'run') continue;
+      const unitPath = join(pkgPath, unit.name);
+      for (const entry of readdirSync(unitPath, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name === 'fingerprint') await stripBuildScriptRuns(join(unitPath, entry.name));
+      }
+    }
+  }
 }
 /**
  * The old commit builds with today's dependencies, the ones already built in that target. Its own

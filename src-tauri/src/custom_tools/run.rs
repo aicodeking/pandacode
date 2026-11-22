@@ -144,18 +144,6 @@ struct Run {
     job: Option<crate::providers::windows_job::Job>,
 }
 
-impl Run {
-    fn new(child: Child) -> Self {
-        #[cfg(windows)]
-        let job = crate::providers::windows_job::Job::attach(child.id());
-        Self {
-            child,
-            #[cfg(windows)]
-            job,
-        }
-    }
-}
-
 /// Ends the script and everything it started, then reaps it: on unix its process group gets
 /// SIGTERM, then SIGKILL after `GRACE` (at once when the shell has already exited); on Windows
 /// its Job Object is closed (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) to end the entire process
@@ -218,10 +206,11 @@ fn start(mut command: Command) -> std::io::Result<Run> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
+        let (child, job) = crate::providers::windows_job::Job::spawn(&mut command)?;
+        Ok(Run { child, job })
     }
-    Ok(Run::new(command.spawn()?))
+    #[cfg(not(windows))]
+    Ok(Run { child: command.spawn()? })
 }
 
 fn spawn(root: &Path, tool: &Tool, env: Vec<(String, String)>) -> std::io::Result<Run> {
