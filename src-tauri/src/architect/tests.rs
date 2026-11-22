@@ -2604,6 +2604,50 @@ fn new_model_cards_staff_automatic_workers_on_their_launch_ids() {
     }
 }
 #[test]
+fn newer_models_supersede_predecessors_in_automatic_dispatch_and_route_models() {
+    for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.workers.clear();
+            team.config.catalog = vec![
+                profile("older-sol", "codex", "gpt-6.1-sol", "GPT-6.1 Sol"),
+                profile("newer-sol", "codex", "gpt-6.2-sol", "GPT-6.2 Sol"),
+            ];
+            save(&store, &mut team).unwrap();
+        }
+        let args = json!({"assignments":[auto_assignment("successor", json!({"profileId":"auto"}))]});
+        let result = routed_call_in(&state, &sid, args, true, mode).unwrap();
+        assert_eq!(result["workerIds"].as_array().unwrap().len(), 1);
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(team.workers.len(), 1);
+        for worker in &team.workers {
+            assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), ("codex", "gpt-6.2-sol", "auto"), "{mode:?}");
+            let session = store.session(&worker.session_id).unwrap();
+            assert_eq!((session.provider.as_str(), session.model.as_str()), ("codex", "gpt-6.2-sol"), "{mode:?}");
+        }
+        let args = json!({"tasks":[{"text":"Implement successor and verify its behavior.","files":3}]});
+        let (pool, jobs, _) = routing::route_request(&team.config, &[], args).unwrap();
+        let prefs = crate::panda_router::Preferences { mode, ..Default::default() };
+        let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &prefs, &pool, jobs).unwrap();
+        let summary = routing::route_summary(&team.config, &routes);
+        let task = &summary["tasks"][0];
+        assert_eq!(task["pick"]["provider"], "codex", "{mode:?}");
+        assert_eq!(task["pick"]["model"], "gpt-6.2-sol", "{mode:?}");
+        let alternatives = task["alternatives"].as_array().unwrap();
+        let ladder = task["ladder"].as_array().unwrap();
+        assert!(!ladder.is_empty(), "{mode:?}: {task}");
+        for row in std::iter::once(&task["pick"]).chain(alternatives).chain(ladder) {
+            assert_ne!(row["model"], "gpt-6.1-sol", "{mode:?}: {task}");
+        }
+        drop(store);
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        assert_eq!((run.config.provider.as_str(), run.config.model.as_str()), ("codex", "gpt-6.2-sol"), "{mode:?}");
+    }
+}
+#[test]
 fn auto_profile_staffs_the_routed_pick_and_says_so() {
     let (state, sid) = auto_state();
     with_catalog(&state, &sid);
