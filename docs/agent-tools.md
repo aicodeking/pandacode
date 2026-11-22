@@ -37,7 +37,9 @@ and `offset`. A steer that `pandacode_steer_task` could not deliver is an error 
 `pandacode_explore` answers many code questions in one call: `search` regexes
 matched per line (smart case unless `case_sensitive`; `\n` is refused, as in rg),
 with `glob` filters and `context` lines; `symbols` definition lookup (`Type::name`
-and `Type.name` look up `name`); `outline` of files; ranged `read`s (`path`,
+and `Type.name` narrow `name` to definitions inside or on `Type`, including Go receivers,
+C++ out-of-line methods, Kotlin receiver functions and Ruby singleton methods; if none
+match the qualifier, unqualified definitions are shown with a note); `outline` of files; ranged `read`s (`path`,
 `path:10-40`, `path:10-`, `path#symbol` in a file type it can outline (others say to
 read the file instead), or a location such as `path:42`,
 `path:42:13` from compiler output or grep's `path:42:text`, which reads lines 32–72);

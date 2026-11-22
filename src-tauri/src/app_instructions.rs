@@ -3,7 +3,7 @@
 //! each item.
 use crate::providers::{takes_system_instructions, RunConfig, ToolHost};
 use crate::storage::Store;
-use crate::{custom_tools, explore, look, look_read_only, run_script, session_titles, turn_changes, GENERATIVE_UI, REUSE, RICH_QUESTIONS, TURN_ENDS, VISUAL_PROGRESS};
+use crate::{custom_tools, explore, run_script, session_titles, turn_changes};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +16,41 @@ pub(crate) use catalog::{build_host, listing as catalog_listing, remember_listed
 pub(crate) use catalog::remember as remember_catalog;
 #[cfg(test)]
 pub(crate) use catalog::{fake, Layers};
+
+// Keep `const NAME: &str` and `fn look(` readable by scripts/agent-bench.
+/// Agent-made tools only get made and reused when agents are told when to.
+pub(crate) const REUSE: &str = "\n\nIf the Project tools note lists a tool that does a multi-step command sequence you need, run it; after doing the same sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
+
+/// PandaCode closes the harness when a turn ends, so background waits never come back.
+/// Claude Code's background agents are the exception: the run stays open until they hand back.
+const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Background Agent subagents in Claude Code are different: they do report back, because the run stays open until they finish. On any other harness, a subagent still running when you reply is stopped and its report is lost: wait for every subagent you started (Codex: its wait tool) before you reply. Wait for long-running commands in the foreground (or poll them) before you reply.";
+
+/// Each extra step re-reads the whole cached prompt, so lookups should take as few as they can.
+const LOOK: &str = "\n\nUse {explore} to locate code (search, symbols, outlines, ranged reads), with all your questions in one call. When a reply already names the files and symbols you need, answer; search again only for a named gap. ";
+
+/// The Claude-family edit text (claude, glm, mimo), read by name by scripts/agent-bench.
+const EDIT_CLAUDE: &str = "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows.";
+/// Edit text for harnesses that are not Claude Code.
+const EDIT_OTHER: &str = "Make each file's changes in as few edit calls as your tools allow.";
+
+/// `LOOK` for a worker that cannot edit: no edit sentence.
+fn look_read_only(explore: explore::RunExplore) -> String {
+    LOOK.replace("{explore}", explore.name).trim_end().to_owned()
+}
+
+fn look(explore: explore::RunExplore) -> String {
+    let edit = if explore.claude_code { EDIT_CLAUDE } else { EDIT_OTHER };
+    [&LOOK.replace("{explore}", explore.name), edit].concat()
+}
+
+/// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
+const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
+
+/// Replies may carry generative UI blocks that PandaCode draws in the thread.
+const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
+
+/// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
+const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
 
 /// What decides the app instructions' bytes (see `app_instructions` for each field).
 #[derive(Clone, Copy)]

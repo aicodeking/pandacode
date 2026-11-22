@@ -165,7 +165,7 @@ Checked on the test fixtures in `src-tauri/src/architect/tests.rs` (no paid run;
 ## Turn speed: cached instructions and warm spares
 
 - **App instructions** (`app_instructions()` in `src-tauri/src/app_instructions.rs`) assemble sidebar titles, `pandacode-run.sh`, change tracking and `LOOK`.
-  - `LOOK` and the other instruction constants stay in `src-tauri/src/lib.rs`, where the pinned benchmark scripts read them (`EDIT_CLAUDE` and `EDIT_OTHER` follow `LOOK`).
+  - `LOOK` and the other instruction constants live in `src-tauri/src/app_instructions.rs`, where the benchmark scripts read them (`EDIT_CLAUDE` and `EDIT_OTHER` follow `LOOK`).
   - Claude-family harnesses (Claude, GLM, MiMo, Alibaba Token Plan), Pi and Oh My Pi get them once as `--append-system-prompt` (`takes_system_instructions`), which caches with the prefix. Other harnesses get them in the message on a new conversation and every 8th turn.
   - Only a one-line current-title note rides each message. A change to the fixed instructions costs each resumed conversation one cache rewrite.
   - Sizes (local macOS Claude, explore on, agent-made tools off, `cargo test --lib app_instructions -- --nocapture`): lead 6,027 B and writer worker 1,329 B for every Claude-family model. `EDIT_CLAUDE` is 154 B and `EDIT_OTHER` 66 B.
@@ -195,6 +195,13 @@ Checked on the test fixtures in `src-tauri/src/architect/tests.rs` (no paid run;
     - Not covered by tests: a real 10 s exit stall, lead-spare adoption rates in real use.
 - **Warm spares** (`providers/warm.rs`): after a successful plain-Claude turn the next turn's process starts in the background (2 ordinary spares, 10 idle minutes; managed workers, cloud runs, GLM, MiMo and Alibaba Token Plan get none, see below). A follow-up adopts one only when model, mode, effort, Fast Mode (`fastMode`), folder, resume ID, instructions, tool catalog and worker trim all match (`warm::key_with`; the MCP server is rebound to the new turn at the same address), so it skips the CLI's startup; anything else starts cold. Launch numbers come from one app-wide counter (`NEXT_LAUNCH`), `warm::discard` also forgets the task's launch number (a spare still starting for the old launch is dropped), and every spare removal (a missed take, expiry, a refused registration, eviction, replacement by a newer spare for the same task, `warm::discard`, retiring spares whose worktree/folder is removed or recreated, and a launch that takes no spare) goes through one path (`warm::retire` → `exit::spawn_exit`): the process is killed outside the pool lock and its exit is registered under the task, so the next same-session launch (`await_exit`) waits for it, as it does for a finished turn's reaper. Outside a runtime nothing can wait; dropping still kills it.
 - **Maintenance turns** (`/compact`, `/status`, `/context`, `/usage`, `/cost`, `/mcp`, `/tasks`, `/help`; `Resolution::maintenance`) keep the bare command as their message but carry the cached instructions, which are part of the warm key, so they adopt the task's spare instead of killing it (`a_maintenance_turn_matches_the_good_spare_and_starts_no_empty_one`). They start no spare of their own (`lead_spare::starts_spare`), so the next real turn after one starts cold once: a spare started after `/compact` would hold the pre-compaction conversation. A compaction stays due across a maintenance turn, and the next real turn answers it.
+- **Warm spare switch (on by default).** Settings → Agents → **Warm Claude spares**
+  controls both pools. Off writes the empty `warm-spares-off` marker in app data;
+  an unreadable marker also means off. Turning it off immediately retires pooled
+  ordinary and lead spares and invalidates in-flight starts and pending renewals.
+  No spare is adopted, started or renewed while it is off. Spares hold idle Claude
+  Code processes (~180–210 MB each, up to 4) and run `SessionStart` hooks ahead of
+  the next turn; disable them to avoid that idle memory and early hook execution.
 - **Lead spares** (the pool, its constants and the renewal loop are in `providers/warm.rs`; `src-tauri/src/lead_spare.rs` decides whether to keep and renew):
   - A team lead whose turn ends with live workers keeps its spare in a separate pool (`LEAD_LIMIT` 2) that ordinary tasks never evict.
   - On expiry it is restarted at most `MAX_RENEWALS` (2) times; the check is asked once per expiry and holds only while every live worker still runs and none waits on the user, and never once the lead's wake has launched (a "no" ends the chain).
@@ -211,7 +218,7 @@ Checked on the test fixtures in `src-tauri/src/architect/tests.rs` (no paid run;
   - Claude Code runs the user's `SessionStart` hooks when the process starts, before any message arrives (checked on 2.1.322 with no prompt sent).
   - A renewal chain can therefore start up to three processes, and run those hooks three times, for one wake (`1 + MAX_RENEWALS`), and hook context can be up to 10 minutes old when the spare is adopted.
   - The saving is the CLI's startup, about 1.4 s (est.; one local measurement on plain Claude; no CLI version or method recorded).
-  - GLM, MiMo and Alibaba Token Plan get no spare because an idle relay spare is not free of network traffic. Probe 2026-11-17, Claude Code 2.1.325, a relay-style launch (`ANTHROPIC_BASE_URL` on a local listener, dummy token, stream-json, no prompt, stdin open): within 20 s the CLI sent `HEAD /api/hello` (a connectivity check, no key spent) to the relay endpoint. Spares could return if a later CLI stays silent while idle. This is the one home of the probe; AGENTS.md and the code point here.
+  - GLM, MiMo and Alibaba Token Plan get no spare because an idle relay spare is not free of network traffic. Probe 2026-11-17, Claude Code 2.1.325, a relay-style launch (`ANTHROPIC_BASE_URL` on a local listener, dummy token, stream-json, no prompt, stdin open): within 20 s the CLI sent `HEAD /api/hello` (a connectivity check, no key spent) to the relay endpoint. Spares could return if a later CLI stays silent while idle. This is the one home of the probe; `providers/warm.rs` points here.
   - With an API key the 5-minute message cache has likely expired before many review wakes, so the spare does not save the history's cache cost; PandaCode does not set `ENABLE_PROMPT_CACHING_1H`.
 
 ## Token saver packs: recommendation

@@ -157,7 +157,9 @@ fn real_home(home: PathBuf) -> PathBuf {
 }
 
 fn run_with(given: &Path, args: &Value, strict: bool, limit: Limit, policy: Policy) -> Result<Value, String> {
-    let ask = args::parse(args)?;
+    let mut args = args.clone();
+    crate::agent_tools::drop_nulls(&mut args);
+    let ask = args::parse(&args)?;
     let root = given.canonicalize().map_err(|_| "Project folder is unavailable.".to_owned())?;
     if let Some(reason) = crate::workspace::root_refusal(&root, home_folder().as_deref(), strict) {
         return Err(format!("Refused: this folder is {reason}. Open a project folder."));
@@ -260,12 +262,18 @@ fn lookups(ctx: &Ctx, ask: &Ask, out: &mut Map<String, Value>) -> Vec<Item> {
     let mut items = Vec::with_capacity(requests.len());
     for request in &requests {
         let result = request.slot.as_ref().map(|&at| (at, results[at].take().unwrap_or_default()));
-        items.push(match (request.category, result) {
+        let mut item = match (request.category, result) {
             (category, Err(error)) => Item::error(category, request.label, error.clone()),
             (Category::Search, Ok((_, result))) => search_item(request.label, result, ask.context),
             (Category::Symbols, Ok((_, result))) => symbols_item(request.label, result),
             (_, Ok((at, result))) => tests_for::item(ctx, request.label, &jobs[at], snapshot.as_ref().expect("a job means a snapshot"), result),
-        });
+        };
+        if ctx.limit.was_cut() && request.slot.is_ok() && matches!(request.category, Category::Search | Category::Symbols) {
+            let partial = "Partial: the call hit its time, memory, or entry limit; narrow the glob or retry.";
+            let note = item.head.get("note").and_then(Value::as_str).map_or_else(|| partial.to_owned(), |note| format!("{note} {partial}"));
+            item.head.insert("note".into(), json!(note));
+        }
+        items.push(item);
     }
     items
 }
@@ -384,7 +392,10 @@ fn symbols_item(name: &str, result: JobResult) -> Item {
         blocks.push(Block { path: file.path.to_string(), matched: file.definition_count, groups: vec![Group { symbol: None, lines }] });
     }
     let mut head = head(&[("name", json!(name)), ("definitions", json!(found))]);
-    if found == 0 && unsupported > 0 {
+    if result.unqualified_fallback && found > 0 {
+        let (qualifier, unqualified) = named::split_name(name);
+        head.insert("note".into(), json!(format!("No definition qualified by {}; showing unqualified {unqualified} definitions.", qualifier.unwrap_or_default())));
+    } else if found == 0 && unsupported > 0 {
         head.insert("note".into(), json!(format!("Mentioned in {unsupported} files of types with no definition lookup; search for it. Lookup covers {}.", symbols::SUPPORTED)));
     } else if found == 0 && mentioned > 0 {
         head.insert("note".into(), json!(format!("Mentioned in {mentioned} files, but no definition was recognised; search for it.")));

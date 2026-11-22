@@ -175,7 +175,7 @@ test('a failed first load offers Retry', async ({ page }) => {
 test('with no tools anywhere, it says tools are opt-in and how they appear', async ({ page }) => {
   await page.addInitScript(() => { (window as any).__customToolsEmpty = true; });
   await openTools(page);
-  await expect(settings(page).locator('.custom-tools-empty')).toHaveText('No tools yet. Agent-made tools are off unless the Agent-made tools switch is on; then agents can save repeated work here for other agents in the project to reuse.');
+  await expect(settings(page).locator('.custom-tools-empty')).toHaveText('No tools yet. Turn on Agent-made tools above so agents can save repeated work here for reuse.');
   await expect(settings(page).locator('.custom-tools-group')).toHaveCount(0);
   await expect(settings(page).getByRole('alert')).toHaveCount(0);
 });

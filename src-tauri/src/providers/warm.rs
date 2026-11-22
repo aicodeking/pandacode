@@ -6,6 +6,48 @@ use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
 use std::sync::LazyLock;
 
+/// Default-on switch shared by the desktop app and headless host.
+const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
+
+/// Unreadable settings fail closed: no idle CLI or ahead-of-turn SessionStart hooks.
+pub fn enabled(app: &tauri::AppHandle) -> bool {
+    !crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).unwrap_or(true)
+}
+
+#[cfg(test)]
+thread_local! {
+    static FORCE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Provider launch paths have no handle argument; both app entry points initialize this handle.
+/// Unreadable settings (or a missing handle in production) fail closed. Unit tests without an
+/// app handle default to enabled so warm-pool and adoption tests run directly, unless overridden.
+pub(super) fn enabled_now() -> bool {
+    #[cfg(test)]
+    if FORCE_DISABLED.with(std::cell::Cell::get) {
+        return false;
+    }
+    match crate::cloud_agents::app() {
+        Some(app) => enabled(app),
+        None => cfg!(test),
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn warm_spares_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    crate::blocking(move || Ok(!crate::app_marker::exists(&app, WARM_SPARES_OFF_FILE)?)).await
+}
+
+#[tauri::command]
+pub(crate) async fn set_warm_spares_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    crate::blocking(move || crate::app_marker::set(&app, WARM_SPARES_OFF_FILE, !enabled)).await?;
+    if !enabled {
+        // Keep retirement on the runtime so each killed process registers its pending exit.
+        discard_all();
+    }
+    Ok(())
+}
+
 /// A warm agent waits at most this long for its follow-up.
 const IDLE: Duration = Duration::from_secs(10 * 60);
 /// Each one holds an idle CLI process, so only the most recent tasks keep one.
@@ -75,6 +117,8 @@ pub(super) struct Spare {
 #[derive(Default)]
 struct Spares {
     spares: HashMap<String, Spare>,
+    /// Cancels whole renewal chains, including expired leads whose bounded `gone` note was cleared.
+    discard_epoch: u64,
     /// In-flight `spawn_spare` calls, keyed by a monotonic token, recording `(session_id, cwd)`
     /// so folder-scoped `discard_in` can advance their launch epochs before they spawn or register.
     starting: HashMap<u64, (String, PathBuf)>,
@@ -251,6 +295,11 @@ pub(crate) fn launched(session_id: &str) {
 }
 
 pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
+    // Re-read after the caller awaited its key: the user may have switched spares off meanwhile.
+    if !enabled_now() {
+        launched_without_spare(session_id);
+        return None;
+    }
     let (spare, note) = take_in(&SPARES, session_id, key);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every lead
     // spare's hit and miss is logged too, so the lead pool's speed-up can be measured.
@@ -474,6 +523,36 @@ pub fn discard(session_id: &str) {
     discard_from(&SPARES, session_id);
 }
 
+/// Retire both pools and invalidate starts and expiry checks already in flight. The gone
+/// entries include a lead between expiry and renewal; advancing its epoch cancels that chain
+/// even if the user switches spares back on before the check finishes.
+pub fn discard_all() {
+    discard_all_from(&SPARES);
+}
+
+fn discard_all_from(pool: &Pool) {
+    let removed = {
+        let mut pool = spares(pool);
+        pool.discard_epoch = pool.discard_epoch.wrapping_add(1);
+        let affected: HashSet<String> = pool.spares.keys().chain(pool.gone.keys())
+            .chain(pool.starting.values().map(|(id, _)| id)).cloned().collect();
+        {
+            // Same lock order as registration: pool, then launch epochs.
+            let mut launches = LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for id in affected {
+                advance_launch_if_present(&mut launches, &id);
+            }
+        }
+        pool.starting.clear();
+        let ids: Vec<_> = pool.spares.keys().cloned().collect();
+        ids.into_iter().filter_map(|id| pool.remove(&id, Gone::Discarded)
+            .map(|(spare, pending)| (id, spare, pending))).collect::<Vec<_>>()
+    };
+    for (id, spare, pending) in removed {
+        retire(&id, spare, pending);
+    }
+}
+
 /// Drop every pooled warm spare whose working directory lies in `folder`, and advance the launch
 /// epochs of those sessions and any in-flight spare spawns targeting `folder` so none can race
 /// back into the pool. Returns the affected session IDs.
@@ -636,7 +715,21 @@ fn take_expired(pool: &Pool, session_id: &str, born: std::time::Instant) -> Opti
 /// `Renew`: a "no" at an expiry ends the chain). `inputs` reads what the launch was built from
 /// outside `config` (`Inputs`); it is called only for a lead's spare.
 pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Renew>, inputs: impl Fn() -> String + Send + Sync + 'static) -> Result<(), String> {
-    start(claude(), config, tools, approval_tools, launch, renew.map(|renew| (renew, Arc::new(inputs) as Inputs)), 0).await
+    if !enabled_now() {
+        return Ok(());
+    }
+    start(claude(), config, tools, approval_tools, launch,
+        renew.map(|renew| (until_discarded(&SPARES, renew), Arc::new(inputs) as Inputs)), 0).await
+}
+
+/// A switch-off ends this chain permanently, even if spares are re-enabled before an expiry
+/// check finishes and its bounded `gone` note has already been evicted.
+fn until_discarded(pool: &'static Pool, renew: Renew) -> Renew {
+    let epoch = spares(pool).discard_epoch;
+    Arc::new(move || {
+        let current = spares(pool).discard_epoch == epoch;
+        current && renew()
+    })
 }
 
 /// Whether an expired spare starts again: only a lead's, while its team still waits, before
@@ -652,6 +745,9 @@ fn renews(renew: Option<&Renew>, launch: u64, epoch: u64, renewals: u32, current
 /// and so are the explorer switch and agent-made tools behind its instructions and catalog
 /// (`inputs`, compared with `spawned`, what it read at the spare's spawn).
 fn still_current(spare_key: &str, config: &RunConfig, tools: &[Value], spawned: &str, inputs: &Inputs) -> bool {
+    if !enabled_now() {
+        return false;
+    }
     let mut config = config.clone();
     config.cwd = external_path(&config.cwd);
     // The spawn keyed the config as a cold launch prepares it (skill reminder applied).
@@ -741,7 +837,7 @@ fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<St
 }
 
 async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
-    if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() {
+    if !enabled_now() || !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() {
         return Ok(None);
     }
     let connection = crate::connections::for_task(&config.session_id, &config.provider)
@@ -796,7 +892,7 @@ async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval
     command.process_group(0);
     // The turn it follows may still be exiting; resuming before then could read a half-flushed session.
     let exit = await_exit_patiently(&config.session_id);
-    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, exit, &mut command, quitting).await? else {
+    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, exit, &mut command, || quitting() || !enabled_now()).await? else {
         eprintln!("No warm Claude agent prepared: its launch changed or the previous turn did not exit.");
         return Ok(None);
     };
@@ -815,7 +911,7 @@ async fn spawn_when_current(
     launch: u64,
     exit: impl std::future::Future<Output = Result<(), String>>,
     command: &mut Command,
-    quitting: fn() -> bool,
+    quitting: impl Fn() -> bool,
 ) -> Result<Option<(tokio::process::Child, Pending)>, String> {
     if exit.await.is_err() {
         return Ok(None);
@@ -925,3 +1021,109 @@ pub(crate) fn process_gone_for_test(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Regression coverage for the warm-spare switch and retirement races.
+#[cfg(test)]
+mod switch_tests {
+    use super::*;
+
+    #[test]
+    fn off_marker_is_fail_closed_and_wired_to_every_spare_entry() {
+        // These entry points need a real AppHandle in production. Keep their marker and IPC
+        // contract checked without constructing a WebKit app (the marker IO is tested in app_marker).
+        let source = include_str!("warm.rs");
+        let enabled = &source[source.find("pub fn enabled(").unwrap()..];
+        let enabled = &enabled[..enabled.find("\n}").unwrap()];
+        assert!(enabled.contains("!crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).unwrap_or(true)"));
+        assert_eq!(WARM_SPARES_OFF_FILE, "warm-spares-off");
+        for entry in ["pub(super) fn take(", "pub async fn prewarm(", "fn still_current(", "async fn spawn_claude_process("] {
+            let body = &source[source.find(entry).unwrap()..];
+            let body = &body[..body.find("\n}").unwrap()];
+            assert!(body.contains("!enabled_now()"), "{entry} must fail closed");
+        }
+        let setter = &source[source.find("pub(crate) async fn set_warm_spares_enabled(").unwrap()..];
+        let setter = &setter[..setter.find("\n}").unwrap()];
+        assert!(setter.find("app_marker::set(").unwrap() < setter.find("discard_all()").unwrap());
+        assert!(setter.contains("if !enabled {"));
+        let lib = include_str!("../lib.rs");
+        assert!(lib.contains("providers::warm::warm_spares_enabled,") && lib.contains("providers::warm::set_warm_spares_enabled,"));
+    }
+
+    #[cfg(unix)]
+    fn spare(lead: bool) -> Spare {
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true);
+        let child = command.spawn().unwrap();
+        let group = ProcessGroup::register(child.id());
+        Spare { key: "switch-test".into(), child, group, server: None,
+            born: std::time::Instant::now(), idle: IDLE, lead, cwd: None }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewals() {
+        let pool: &'static Pool = Box::leak(Box::default());
+        let ids: Vec<_> = ["ordinary", "lead", "starting", "expired"].into_iter()
+            .map(|name| format!("warm-switch-{name}-{}", uuid::Uuid::new_v4())).collect();
+        for id in &ids { launched(id); }
+        let epochs: Vec<_> = ids.iter().map(|id| epoch(id)).collect();
+        let mut pids = Vec::new();
+        for (id, lead) in [(&ids[0], false), (&ids[1], true), (&ids[3], true)] {
+            let spare = spare(lead);
+            pids.push(spare.child.id().unwrap());
+            assert!(register(pool, id, epoch(id), spare));
+        }
+        // A renewal may be between removing its expired spare and checking its next launch.
+        let born = spares(pool).spares[&ids[3]].born;
+        let (expired, pending) = take_expired(pool, &ids[3], born).unwrap();
+        retire(&ids[3], expired, pending);
+        let inflight = InFlight::enter(pool, ids[2].clone(), std::env::temp_dir());
+        let chain = until_discarded(pool, Arc::new(|| true));
+        assert!(chain());
+        // Even losing a diagnostic note cannot let an expiry check restart after off → on.
+        spares(pool).gone.clear();
+        discard_all_from(pool);
+        assert!(!chain());
+        assert!(spares(pool).spares.is_empty());
+        assert!(spares(pool).starting.is_empty());
+        let waiting: Renew = Arc::new(|| true);
+        for (id, old) in ids.iter().zip(epochs) {
+            if id == &ids[3] {
+                assert!(!renews(Some(&chain), old, epoch(id), 0, true));
+                await_exit(id).await.unwrap();
+                continue;
+            }
+            assert!(epoch(id) > old, "{id}'s pending work was invalidated");
+            assert!(!renews(Some(&waiting), old, epoch(id), 0, true));
+            let mut command = Command::new("sleep");
+            command.arg("30").kill_on_drop(true);
+            assert!(spawn_when_current(id, old, async { Ok(()) }, &mut command, || false).await.unwrap().is_none());
+            assert!(!register(pool, id, old, spare(true)), "a late spawn must retire, never repool");
+            await_exit(id).await.unwrap();
+        }
+        for pid in pids { assert!(process_gone_for_test(pid)); }
+        drop(inflight);
+        discard_all_from(pool); // idempotent, including already-expired lead notes
+        for id in &ids { discard_from(pool, id); }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let session = format!("warm-switch-wait-{}", uuid::Uuid::new_v4());
+        launched(&session);
+        let off = Arc::new(AtomicBool::new(false));
+        let waiting = off.clone();
+        let mut command = Command::new("sleep");
+        command.arg("30").kill_on_drop(true);
+        // The same last-moment guard as production: read after the prior CLI's exit.
+        let previous_exit = async move { waiting.store(true, Ordering::SeqCst); Ok(()) };
+        let stopped = || off.load(Ordering::SeqCst);
+        assert!(!stopped());
+        let result = spawn_when_current(&session, epoch(&session), previous_exit, &mut command, stopped).await.unwrap();
+        assert!(off.load(Ordering::SeqCst));
+        assert!(result.is_none());
+        discard_from(&SPARES, &session);
+    }
+}

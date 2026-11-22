@@ -530,7 +530,7 @@ fn parse_metadata_is_bounded_and_released_after_each_extraction() {
 
 #[test]
 fn qualified_lookup_is_linear_and_honors_stopped_limits() {
-    let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), kind: "fn", line, end: line }).collect();
+    let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), qualifier: None, kind: "fn", line, end: line }).collect();
     let budget = limit();
     let mut count = 0;
     let started = Instant::now();
@@ -554,7 +554,7 @@ fn linear_qualifiers_match_the_reference_including_same_line_duplicates() {
                 state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
                 let name = ["Foo", "Bar", "impl Foo for Bar", "Food", "run"][(state >> 32) as usize % 5];
                 let end = line + (state as usize % 4);
-                let symbol = Symbol { name: name.into(), kind: "fn", line, end };
+                let symbol = Symbol { name: name.into(), qualifier: None, kind: "fn", line, end };
                 symbols.push(symbol.clone());
                 if state.is_multiple_of(3) {
                     symbols.push(symbol);
@@ -567,5 +567,30 @@ fn linear_qualifiers_match_the_reference_including_same_line_duplicates() {
             qualified_matches(&symbols, qualifier, |_| true, &limit(), |symbol| actual.push(symbol));
             assert_eq!(actual, expected, "{qualifier:?}");
         }
+    }
+}
+
+#[test]
+fn non_nested_receiver_methods_keep_their_qualifiers() {
+    for (path, text, qualifier, name) in [
+        ("a.go", "func (s *Server) Run() {}\n", "Server", "Run"),
+        ("a.go", "func (Server) Run() {}\n", "Server", "Run"),
+        ("a.cpp", "void A::method() {}\n", "A", "method"),
+        ("a.cpp", "std::string A::method() {}\n", "A", "method"),
+        ("a.cpp", "const Foo *A::method() {}\n", "A", "method"),
+        ("a.cpp", "void Foo::Bar::baz() {}\n", "Bar", "baz"),
+        ("a.cpp", "Foo::Bar::baz() {}\n", "Bar", "baz"),
+        ("a.kt", "fun Foo.bar() {}\n", "Foo", "bar"),
+        ("a.rb", "def Foo.bar\nend\n", "Foo", "bar"),
+    ] {
+        let found = symbols(path, text);
+        let symbol = found.iter().find(|symbol| symbol.name == name).unwrap();
+        assert!(qualified_by(&found, symbol, qualifier), "{path}: {found:?}");
+        let mut matched = Vec::new();
+        qualified_matches(&found, Some(qualifier), |symbol| symbol.name == name, &limit(), |symbol| matched.push(symbol));
+        assert_eq!(matched, [symbol]);
+        let mut wrong = Vec::new();
+        qualified_matches(&found, Some(&format!("{qualifier}Extra")), |_| true, &limit(), |symbol| wrong.push(symbol));
+        assert!(wrong.is_empty());
     }
 }

@@ -940,5 +940,60 @@ fn qualified_definition_searches_keep_exact_counts_and_retention_caps() {
     assert_eq!(result.jobs[0].total_definitions, 80_000);
     assert_eq!(result.jobs[0].files[0].definition_count, 80_000);
     assert_eq!(result.jobs[0].files[0].definitions.len(), 64);
-    assert_eq!(result.jobs[1].total_definitions, 0);
+    assert_eq!(result.jobs[1].total_definitions, 80_000);
+    assert!(result.jobs[1].unqualified_fallback);
+    assert_eq!(result.jobs[1].files[0].definitions.len(), 64);
+}
+
+#[test]
+fn optional_null_arguments_are_absent_but_invalid_types_still_fail() {
+    let repo = Repo::new();
+    repo.write("a.rs", "fn needle() {}\n");
+    let found = repo.explore(json!({"search":["needle"],"context":null,"glob":null,"case_sensitive":null,"outline":null,"read":null}));
+    assert_eq!(found["search"][0]["matches"], 1);
+    assert!(found.get("incomplete").is_none());
+    assert!(run(&repo.0, &json!({"search":["needle"],"context":"bad"})).is_err());
+}
+
+#[test]
+fn receiver_definitions_and_unqualified_fallback_are_actionable() {
+    for (path, text, qualified) in [
+        ("a.go", "func (s *Server) Run() {}\n", "Server.Run"),
+        ("a.cpp", "void A::method() {}\n", "A::method"),
+        ("a.kt", "fun Foo.bar() {}\n", "Foo.bar"),
+        ("a.rb", "def Foo.bar\nend\n", "Foo.bar"),
+    ] {
+        let repo = Repo::new();
+        repo.write(path, text);
+        let found = repo.explore(json!({"symbols":[qualified],"read":[format!("{path}#{qualified}")]}));
+        assert_eq!(found["symbols"][0]["definitions"], 1, "{found}");
+        assert!(found["symbols"][0].get("note").is_none(), "{found}");
+        assert!(found["read"][0]["text"].as_str().unwrap().contains(text.lines().next().unwrap()), "{found}");
+    }
+    let repo = Repo::new();
+    repo.write("a.rs", "fn run() {}\n");
+    let found = repo.explore(json!({"symbols":["Other.run"],"read":["a.rs#Other.run"]}));
+    assert_eq!(found["symbols"][0]["definitions"], 1, "{found}");
+    assert_eq!(found["symbols"][0]["note"], "No definition qualified by Other; showing unqualified run definitions.");
+    let error = found["read"][0]["error"].as_str().unwrap();
+    assert!(error.contains("No definition qualified by Other here; unqualified run"), "{error}");
+    assert!(error.contains("1-1"), "{error}");
+    // A qualified result anywhere suppresses fallback results from other files.
+    repo.write("b.rs", "impl Other {\n fn run() {}\n}\n");
+    let found = repo.explore(json!({"symbols":["Other.run"]}));
+    assert_eq!(found["symbols"][0]["definitions"], 1, "{found}");
+    assert_eq!(shown_paths(&found["symbols"][0]), ["b.rs"]);
+    assert!(found["symbols"][0].get("note").is_none());
+}
+
+#[test]
+fn cut_lookup_items_carry_partial_notes() {
+    let repo = Repo::new();
+    repo.write("a.rs", "fn needle() {}\n");
+    let found = run_with(&repo.0, &json!({"search":["needle"],"symbols":["needle"]}), false,
+        Limit::lasting(std::time::Duration::ZERO, Arc::default()), Policy::NeverIndex).unwrap();
+    assert_eq!(found["incomplete"], true);
+    for category in ["search", "symbols"] {
+        assert!(found[category][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
+    }
 }

@@ -87,19 +87,19 @@ export function rustFnString(text, name) {
 }
 
 const read = path => readFileSync(join(REPO, path), 'utf8');
-export const pandaSources = () => ({ lib: read('src-tauri/src/lib.rs'), titles: read('src-tauri/src/session_titles.rs'), run: read('src-tauri/src/run_script.rs'), changes: read('src-tauri/src/turn_changes/host.rs') });
+export const pandaSources = () => ({ appInstructions: read('src-tauri/src/app_instructions.rs'), titles: read('src-tauri/src/session_titles.rs'), run: read('src-tauri/src/run_script.rs'), changes: read('src-tauri/src/turn_changes/host.rs') });
 
 /**
- * `app_instructions` in lib.rs for Claude Code with explore on. A plain task (`worker` false, not a
- * chat, an empty agent-made tool store: `Some(true)`) gets titles, run script, change tracking,
- * TURN_ENDS, look(), SAVE and the three UI texts; a managed worker gets change tracking, TURN_ENDS, look().
+ * `app_instructions` in app_instructions.rs for Claude Code with explore on. A plain task (`worker`
+ * false, not a chat, agent-made tools enabled: `tools: true`) gets titles, run script, change tracking,
+ * TURN_ENDS, look(), REUSE and the three UI texts; a managed worker gets change tracking, TURN_ENDS, look().
  */
 export function pandaInstructions(src, { worker = false } = {}) {
-  const c = name => rustConst(src.lib, name);
+  const c = name => rustConst(src.appInstructions, name);
   const look = `${c('LOOK').replace('{explore}', 'pandacode_explore')}${c('EDIT_CLAUDE')}`;
   const changes = rustFnString(src.changes, 'instruction');
   if (worker) return [changes, c('TURN_ENDS'), look].join('');
-  return [rustConst(src.titles, 'GUIDANCE'), rustConst(src.run, 'INSTRUCTIONS'), changes, c('TURN_ENDS'), look, c('SAVE'), c('RICH_QUESTIONS'), c('GENERATIVE_UI'), c('VISUAL_PROGRESS')].join('');
+  return [rustConst(src.titles, 'GUIDANCE'), rustConst(src.run, 'INSTRUCTIONS'), changes, c('TURN_ENDS'), look, c('REUSE'), c('RICH_QUESTIONS'), c('GENERATIVE_UI'), c('VISUAL_PROGRESS')].join('');
 }
 
 /** Flags every arm shares: the house harness setup (no user settings, permissions skipped, a cap). */

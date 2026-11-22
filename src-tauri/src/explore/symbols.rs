@@ -21,6 +21,7 @@ pub(super) const LINE_METADATA_BYTES: usize = (size_of::<&str>() + 2 * size_of::
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Symbol {
     pub(super) name: String,
+    pub(super) qualifier: Option<String>,
     pub(super) kind: &'static str,
     pub(super) line: usize,
     pub(super) end: usize,
@@ -102,7 +103,7 @@ fn python_rules() -> Rules {
 
 fn go_rules() -> Rules {
     vec![
-        r("func", r"^func\s+(?:\([^)]*\)\s*)?(\w+)".into()),
+        r("func", r"^func\s+(?:\(\s*(?:\w+\s+)?\*?(?P<qualifier>[\w.]+)(?:\[[^]]*\])?\s*\)\s*)?(?P<name>\w+)".into()),
         r("type", r"^type\s+(\w+)".into()),
         r("const", r"^(?:const|var)\s+(\w+)".into()),
     ]
@@ -118,7 +119,7 @@ fn java_rules() -> Rules {
 fn kotlin_rules() -> Rules {
     vec![
         r("class", format!(r"^\s*{MODS_KOTLIN}(?:class|interface|object)\s+(\w+)")),
-        r("function", format!(r"^\s*{MODS_KOTLIN}fun\s+(?:<[^>]*>\s*)?(?:[\w.<>?]+\.)?(\w+)")),
+        r("function", format!(r"^\s*{MODS_KOTLIN}fun\s+(?:<[^>]*>\s*)?(?:(?P<qualifier>[\w.<>?]+)\.)?(?P<name>\w+)")),
         r("const", format!(r"^(?:{MODS_KOTLIN}|const\s+)*(?:val|var)\s+(\w+)")),
         r("type", format!(r"^\s*{MODS_KOTLIN}typealias\s+(\w+)")),
     ]
@@ -141,6 +142,7 @@ fn c_family_rules() -> Rules {
         r("macro", r"^\s*#\s*define\s+(\w+)".into()),
         r("type", r"^\s*typedef\b.*?(\w+)\s*;\s*$".into()),
         r("type", r"^\}\s*(\w+)\s*;\s*$".into()),
+        r("function", r"^\s*(?:[\w:*&<>,~]+\s+)*[*&]*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
         r("function", r"^[A-Za-z_][\w\s*:&<>,~]*?[\s*&:]~?(\w+)\s*\([^;]*$".into()),
         r("method", r"^\s+(?:(?:virtual|static|inline|explicit|constexpr|friend)\s+)*(?:[\w:*&<>,~]+\s+)*[*&]*(~?\w+)\s*\([^;{]*\)\s*(?:const\b|override\b|noexcept\b|final\b|\s)*(?::[^;{]*)?\{\s*$".into()),
     ]
@@ -148,7 +150,7 @@ fn c_family_rules() -> Rules {
 
 fn ruby_rules() -> Rules {
     vec![
-        r("method", r"^\s*def\s+(?:[\w:]+\.)?([^\s(;.]+)".into()),
+        r("method", r"^\s*def\s+(?:(?P<qualifier>[\w:]+)\.)?(?P<name>[^\s(;.]+)".into()),
         r("class", r"^\s*class\s+(\w+(?:::\w+)*)".into()),
         r("module", r"^\s*module\s+(\w+(?:::\w+)*)".into()),
     ]
@@ -223,30 +225,35 @@ const NOT_NAMES: &[&str] = &["if", "else", "for", "while", "switch", "catch", "r
 /// Definitions in file order, with 1-based inclusive line ranges. Span resolution takes
 /// O((lines + symbols) log symbols); a call out of time gets the definitions found so far.
 pub(super) fn extract(path: &str, text: &str, limit: &Limit) -> Vec<Symbol> {
-    let Some(language) = language_of(path) else { return Vec::new() };
+    extract_checked(path, text, limit).0
+}
+
+/// The boolean reports a cut in this extraction, independently of earlier call-wide cuts.
+pub(super) fn extract_checked(path: &str, text: &str, limit: &Limit) -> (Vec<Symbol>, bool) {
+    let Some(language) = language_of(path) else { return (Vec::new(), false) };
     if limit.expired() {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     let mut line_count = usize::from(!text.is_empty() && !text.ends_with('\n'));
     for chunk in text.as_bytes().chunks(LIMIT_CHECK_BYTES) {
         if limit.expired() {
-            return Vec::new();
+            return (Vec::new(), true);
         }
         line_count += chunk.iter().filter(|&&byte| byte == b'\n').count();
     }
     let Some(needed) = line_count.checked_mul(LINE_METADATA_BYTES) else {
         limit.cut();
-        return Vec::new();
+        return (Vec::new(), true);
     };
     let Some(_guard) = limit.reserve_parse_bytes(needed) else {
         limit.cut();
-        return Vec::new();
+        return (Vec::new(), true);
     };
     let mut lines = Vec::with_capacity(line_count);
     lines.extend(text.lines());
     let lex = Lexed::new(&lines, language, limit);
     if lex.inside_literal.len() < lines.len() {
-        return Vec::new();
+        return (Vec::new(), true);
     }
     let mut symbols = Vec::new();
     let mut go_group = None;
@@ -257,24 +264,26 @@ pub(super) fn extract(path: &str, text: &str, limit: &Limit) -> Vec<Symbol> {
         if lex.inside_literal[index] || line.len() > MAX_RULE_LINE {
             continue;
         }
-        let found = if language == Language::Go { go_definition(line, &mut go_group) } else { None };
-        if let Some((kind, name)) = found.or_else(|| definition(path, language, &lines, index)) {
-            symbols.push(Symbol { name, kind, line: index + 1, end: index + 1 });
+        let found = if language == Language::Go { go_definition(line, &mut go_group).map(|(kind, name)| (kind, name, None)) } else { None };
+        if let Some((kind, name, qualifier)) = found.or_else(|| definition(path, language, &lines, index)) {
+            symbols.push(Symbol { name, qualifier, kind, line: index + 1, end: index + 1 });
         }
     }
     if limit.expired() {
-        return symbols;
+        return (symbols, true);
     }
     set_ends(language, &lines, &lex, &mut symbols, limit);
-    symbols
+    (symbols, limit.expired())
 }
 
-fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> Option<(&'static str, String)> {
+fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> Option<(&'static str, String, Option<String>)> {
     let line = lines[index];
     let table = table(language);
     let rule = table.set.matches(line).iter().next()?;
     let (kind, regex) = &table.rules[rule];
-    let name = regex.captures(line)?.get(1)?.as_str();
+    let captures = regex.captures(line)?;
+    let name = captures.name("name").or_else(|| captures.get(1))?.as_str();
+    let qualifier = captures.name("qualifier").map(|value| value.as_str().to_owned());
     let guessed = matches!((language, *kind), (Language::Script | Language::Java, "method" | OPEN_METHOD) | (Language::CFamily, "function" | "method"));
     if guessed && (NOT_NAMES.contains(&name) || first_word_blocks(line)) {
         return None;
@@ -283,9 +292,9 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
         return None;
     }
     if *kind == OPEN_METHOD {
-        return closes_as_method(lines, index).then(|| ("method", name.to_owned()));
+        return closes_as_method(lines, index).then(|| ("method", name.to_owned(), qualifier));
     }
-    Some((kind, name.to_owned()))
+    Some((kind, name.to_owned(), qualifier))
 }
 
 /// `async run(` on its own line is a method only if a later `) {` or `): T {` closes it; a call
@@ -543,12 +552,16 @@ impl<'a> Enclosing<'a> {
     }
 }
 
-/// Whether `symbol` sits inside a definition whose name holds `qualifier` as a whole word
+fn has_word(text: &str, word: &str) -> bool {
+    text.split(|c: char| !c.is_alphanumeric() && c != '_').any(|part| part == word)
+}
+
+/// Whether `symbol` has a receiver or sits inside a definition holding `qualifier` as a whole word
 /// (`Foo` in `impl Display for Foo<'a>`).
 #[cfg(test)]
 pub(super) fn qualified_by(symbols: &[Symbol], symbol: &Symbol, qualifier: &str) -> bool {
-    symbols.iter().any(|outer| {
-        outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && outer.name.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == qualifier)
+    symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier)) || symbols.iter().any(|outer| {
+        outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && has_word(&outer.name, qualifier)
     })
 }
 
@@ -582,7 +595,7 @@ pub(super) fn qualified_matches<'a>(
                 return;
             }
             let symbol = &symbols[end];
-            if symbol.name.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == qualifier) && first != Some(symbol) && second != Some(symbol) {
+            if has_word(&symbol.name, qualifier) && first != Some(symbol) && second != Some(symbol) {
                 if first.is_none_or(|first| symbol.end > first.end) {
                     second = first;
                     first = Some(symbol);
@@ -597,7 +610,9 @@ pub(super) fn qualified_matches<'a>(
                 return;
             }
             let same_line_end = first.filter(|&outer| outer != symbol).or(second.filter(|&outer| outer != symbol)).map(|outer| outer.end);
-            if max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end) && matches_name(symbol) {
+            let qualified = max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end)
+                || symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier));
+            if qualified && matches_name(symbol) {
                 found(symbol);
             }
         }

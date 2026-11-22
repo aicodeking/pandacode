@@ -131,10 +131,10 @@ test('PANDA mirrors configure_command and app_instructions for a Full access pla
   assert.ok(p.argv.includes(`--disallowedTools=${rustConst(providers, 'CLAUDE_SESSION_BOUND_TOOLS')}`));
   assert.equal(valueOf(p.argv, '--permission-mode'), 'bypassPermissions');
   assert.equal(valueOf(p.argv, '--append-system-prompt'), texts.panda);
-  const lib = readFileSync(join(REPO, 'src-tauri/src/lib.rs'), 'utf8');
+  const instructions = readFileSync(join(REPO, 'src-tauri/src/app_instructions.rs'), 'utf8');
   assert.ok(texts.panda.startsWith('\n\nSidebar titles:'));
-  assert.ok(texts.panda.includes(exploreClause()) && texts.panda.includes(rustConst(lib, 'SAVE')) && !texts.panda.includes('Project tools note'));
-  assert.ok(texts.panda.endsWith(rustConst(lib, 'VISUAL_PROGRESS')));
+  assert.ok(texts.panda.includes(exploreClause()) && texts.panda.includes(rustConst(instructions, 'REUSE')));
+  assert.ok(texts.panda.endsWith(rustConst(instructions, 'VISUAL_PROGRESS')));
   assert.ok(texts.panda.includes('pandacode-run.sh') && texts.panda.includes('pandacode_track_files'));
 });
 

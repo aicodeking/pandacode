@@ -1,7 +1,8 @@
 //! Tests for the app instructions and launch notes (`app_instructions.rs`).
 use super::*;
 use crate::providers::{COMPACTED_OUTPUT, COMPACT_CONTEXT_TOOL};
-use crate::{EDIT_CLAUDE, EDIT_OTHER};
+// The empty-project sentence used before the fixed REUSE instruction.
+const OLD_SAVE: &str = "\n\nAfter running the same multi-step command sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
 
 const LEAD_CAP: usize = 6428;
 const WORKER_CAP: usize = 1668;
@@ -76,7 +77,7 @@ fn team_workers_get_only_change_tracking_and_turn_end() {
     assert!(!lead.contains("pandacode_tool_save") && !worker.contains("pandacode_tool_save"));
     assert_eq!(app_instructions(&InstructionOptions { role: Role::Worker, tools: true, ..BASE }), [turn_changes::instruction(), TURN_ENDS, REUSE].concat());
     // One fixed sentence: the old empty-project wording is never said.
-    assert!(!app_instructions(&InstructionOptions { tools: true, ..BASE }).contains(crate::SAVE));
+    assert!(!app_instructions(&InstructionOptions { tools: true, ..BASE }).contains(OLD_SAVE));
     // Managed team workers are never offered agent-made tools, so never hear REUSE.
     assert!(!custom_tools_offered(false, true) && !custom_tools_offered(true, false));
     assert_eq!(custom_tools_offered(false, false), custom_tools::offered(false));
@@ -315,7 +316,7 @@ fn a_first_saved_tool_or_last_removed_one_keeps_the_cached_instructions() {
             launch_instructions(&config, Role::Task, None, true)
         };
         assert_eq!(launch(None), launch(Some("resume")), "{provider}");
-        assert!(launch(None).contains(REUSE) && !launch(None).contains(crate::SAVE));
+        assert!(launch(None).contains(REUSE) && !launch(None).contains(OLD_SAVE));
     }
 }
 

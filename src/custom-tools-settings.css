@@ -1,5 +1,5 @@
 /* Settings → Tools & add-ons → Agent-made tools. Flat: tone, spacing and radius, no lines. */
-.custom-tools-group{margin-top:var(--space-3);border-radius:var(--radius-md);transition:background-color 150ms ease}
+.custom-tools-group{margin-top:var(--space-3);border-radius:var(--radius-md);transition:background-color 150ms var(--ds-ease-out)}
 .custom-tools-head{display:flex;align-items:baseline;gap:8px;padding:0 2px var(--space-1)}
 .custom-tools-head strong{font-size:var(--text-sm);font-weight:600}
 .custom-tools-head small{font-size:var(--text-xs);color:var(--muted)}

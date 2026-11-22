@@ -275,6 +275,8 @@ let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned:
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 /** Settings → Agents → Local code explorer; the app keeps it in app data. */
 let previewExploreEnabled = true;
+/** Settings → Agents → Warm Claude spares; default on (off is a marker in app data). */
+let previewWarmSpares = true;
 /** Its per-harness opt-ins (`explore-on-<provider>` markers); Claude Code is on by default. */
 const previewExploreHarnesses = new Set<string>();
 /** Settings → Agents → Workers can use skills; on by default (off is a marker in app data). */
@@ -2112,6 +2114,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       // `?worker-skills-fail`: the save is refused, so the switch goes back.
       if (new URLSearchParams(location.search).has('worker-skills-fail')) throw new Error('Could not save the setting.');
       previewWorkerSkills = Boolean(args.enabled); break;
+    case 'warm_spares_enabled':
+      // `?warm-spares-read-fail`: the saved switch cannot be read.
+      if (new URLSearchParams(location.search).has('warm-spares-read-fail')) throw new Error('Could not read the setting.');
+      result = previewWarmSpares; break;
+    case 'set_warm_spares_enabled':
+      // `?warm-spares-fail`: the save is refused, so the switch goes back.
+      if (new URLSearchParams(location.search).has('warm-spares-fail')) throw new Error('Could not save the setting.');
+      previewWarmSpares = Boolean(args.enabled); break;
     case 'worker_trim_enabled':
       // `?worker-trim-read-fail`: the saved switch cannot be read.
       if (new URLSearchParams(location.search).has('worker-trim-read-fail')) throw new Error('Could not read the setting.');

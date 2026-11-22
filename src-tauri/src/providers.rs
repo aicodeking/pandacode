@@ -32,7 +32,7 @@ mod test_launch;
 use test_launch::run_process_with_tools;
 #[cfg(all(test, unix))]
 use test_launch::run_process;
-mod warm;
+pub(crate) mod warm;
 mod cli_versions;
 
 pub(crate) use cli_versions::VersionReport;
@@ -104,6 +104,7 @@ pub(crate) use warm::launched as warm_launched;
 pub(crate) use warm::{
     has_spare_for_test, insert_spare_in_cwd_for_test, process_gone_for_test, spare_pool_test_lock,
 };
+pub(crate) use warm::enabled as warm_spares_on;
 pub use warm::{
     begin_quit as warm_begin_quit,
     discard as discard_warm_agent,
@@ -4315,7 +4316,7 @@ async fn run_process_launch(
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
-        Some(tools) if warm::supported(&config) => {
+        Some(tools) if warm::supported(&config) && warm::enabled_now() => {
             // The key reads the task's switches and saved settings: off the runtime.
             let (keyed, catalog) = (config.clone(), tools.tools.clone());
             let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;

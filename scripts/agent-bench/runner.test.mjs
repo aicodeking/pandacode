@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
-import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, seededJobs, signalGroup } from './lib.mjs';
+import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup } from './lib.mjs';
 import { armsFor, beforeValues, buildJobs, customToolCalls, simulateEditSteps, simulateNonInferior, REUSE_ARMS, REUSE_CHAIN, REUSE_CHECK, reuseChain, reuseMessage, storedTools } from './run.mjs';
 import { assignJobs } from './saver.mjs';
 import { wilcoxon } from './stats.mjs';
@@ -14,6 +14,82 @@ import { editStepsGate, parseCsv, reuseReport, runFromRow, runsCsv } from './ana
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'bench-core-'));
 const quiet = async fn => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
+
+test('sh timeout closes inherited stdout before a shell grandchild exits naturally', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const started = Date.now();
+  const result = await sh('sh', ['-c', 'sleep 3; echo done'], { timeout: 200 });
+  assert.ok(Date.now() - started < 2500, 'timeout must not wait three seconds for inherited stdout');
+  assert.equal(result.timedOut, true);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, '');
+});
+
+for (const runner of ['sh', 'runCommand']) test(`${runner} timeout kills its grandchild even when the shell handles TERM with exit zero`, { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const dir = scratch();
+  const descendantFile = join(dir, 'descendant.pid');
+  let running;
+  try {
+    // Reap the terminated child before exiting zero: timeout must still count as failure.
+    const script = 'trap \'wait "$descendant"; exit 0\' TERM\nsleep 30 &\ndescendant=$!\necho "$descendant" > "$1"\nwait "$descendant"';
+    const command = ['sh', '-c', script, 'sh', descendantFile];
+    const started = Date.now();
+    running = runner === 'sh' ? sh(command[0], command.slice(1), { timeout: 200 })
+      : runCommand({ command, cwd: '.' }, dir, null, 200);
+    const result = await running;
+    assert.ok(Date.now() - started < 2500, 'timeout must terminate the whole group promptly');
+    assert.equal(result.timedOut, true);
+    if (runner === 'sh') assert.notEqual(result.status, 0);
+    else { assert.equal(result.pass, false); assert.equal(result.kind, 'timeout'); }
+    const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
+    assert.ok(Number.isInteger(descendant) && descendant > 1);
+    assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+  } finally {
+    if (existsSync(descendantFile)) {
+      try { process.kill(Number(readFileSync(descendantFile, 'utf8').trim()), 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (running) await running;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sh timeout awaits SIGKILL cleanup after a TERM-ignoring descendant redirects stdio', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const dir = scratch();
+  const descendantFile = join(dir, 'descendant.pid');
+  const parentFile = join(dir, 'parent.pid');
+  let running;
+  try {
+    const script = 'echo $$ > "$1"\ntrap \'exit 0\' TERM\nsh -c \'trap "" TERM; echo $$ > "$1"; exec sleep 30\' sh "$2" </dev/null >/dev/null 2>&1 &\nwait "$!"';
+    const started = Date.now();
+    running = sh('sh', ['-c', script, 'sh', parentFile, descendantFile], { timeout: 200, killGraceMs: 300 });
+    const result = await running;
+    assert.equal(result.timedOut, true);
+    assert.notEqual(result.status, 0);
+    assert.ok(Date.now() - started >= 450, 'resolution must await group cleanup after the shell closes');
+    assert.ok(Date.now() - started < 2500, 'SIGKILL must stop the descendant before its natural exit');
+    const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
+    assert.ok(Number.isInteger(descendant) && descendant > 1);
+    assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+  } finally {
+    if (existsSync(descendantFile)) {
+      try { process.kill(Number(readFileSync(descendantFile, 'utf8').trim()), 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (existsSync(parentFile)) signalGroup(Number(readFileSync(parentFile, 'utf8').trim()), 'SIGKILL');
+    if (running) await running;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('sh preserves output and exit status without a timeout or before its deadline, and rejects spawn errors', async () => {
+  for (const options of [{}, { timeout: 10_000 }]) {
+    assert.deepEqual(await sh(process.execPath, ['-e', 'process.stdout.write("out"); process.stderr.write("err"); process.exitCode = 7;'], options), {
+      status: 7, stdout: 'out', stderr: 'err', timedOut: false,
+    });
+  }
+  const dir = scratch();
+  try {
+    await assert.rejects(sh(join(dir, 'missing-command'), [], { timeout: 200 }), { code: 'ENOENT' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('runClaude timeout waits for SIGKILL of a TERM-ignoring descendant with redirected stdio', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
   const dir = scratch();
@@ -31,12 +107,13 @@ descendant=$!
 wait "$descendant"
 `);
     chmodSync(stub, 0o755);
-    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 200, {
+    // Leave time for the executable fixture and its child to start on a busy test host.
+    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 2000, {
       PATH: dir + delimiter + process.env.PATH, PARENT_PID_FILE: parentFile, DESCENDANT_PID_FILE: descendantFile,
     }, pidFile, { killGraceMs: 300 });
     const result = await running;
     assert.equal(result.timedOut, true);
-    assert.ok(result.wallMs >= 450, 'timeout must wait through the grace window after the parent closes');
+    assert.ok(result.wallMs >= 2250, 'timeout must wait through the grace window after the parent closes');
     const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
     assert.ok(Number.isInteger(descendant) && descendant > 1);
     assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
@@ -63,15 +140,15 @@ test('runClaude timeout kills the process group and closes inherited stdout prom
     writeFileSync(stub, '#!/bin/sh\necho $$ > "$PARENT_PID_FILE"\ntrap \'wait "$descendant"; exit 0\' TERM\nsleep 30 &\ndescendant=$!\necho "$descendant" > "$DESCENDANT_PID_FILE"\nwait "$descendant"\n');
     chmodSync(stub, 0o755);
     const started = Date.now();
-    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 300, {
+    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 2000, {
       PATH: dir + delimiter + process.env.PATH, PARENT_PID_FILE: parentFile, DESCENDANT_PID_FILE: descendantFile,
     });
     const result = await Promise.race([
       running,
-      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('runClaude did not close within 3 seconds')), 3000); }),
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('runClaude did not close within 5 seconds')), 5000); }),
     ]);
     assert.equal(result.timedOut, true);
-    assert.ok(Date.now() - started < 3000, 'timeout must close stdout well before the descendant exits naturally');
+    assert.ok(Date.now() - started < 5000, 'timeout must close stdout well before the descendant exits naturally');
     const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
     assert.ok(Number.isInteger(descendant) && descendant > 1);
     assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });

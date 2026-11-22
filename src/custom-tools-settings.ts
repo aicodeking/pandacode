@@ -134,7 +134,7 @@ function draw(ctx: Ctx): void {
   }
   if (!data) { host.innerHTML = `${head}<p class="dialog-loading">Loading…</p>`; return; }
   if (!data.global.length && !data.projects.some(p => p.tools.length)) {
-    host.innerHTML = `${head}<p class="custom-tools-empty" tabindex="-1">No tools yet. Agent-made tools are off unless the Agent-made tools switch is on; then agents can save repeated work here for other agents in the project to reuse.</p>`;
+    host.innerHTML = `${head}<p class="custom-tools-empty" tabindex="-1">No tools yet. Turn on Agent-made tools above so agents can save repeated work here for reuse.</p>`;
     return;
   }
   host.innerHTML = head + listHtml('Global', 'Every project', data.global, null, view)

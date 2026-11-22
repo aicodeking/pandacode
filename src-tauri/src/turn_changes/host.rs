@@ -267,8 +267,140 @@ fn linked_worktree_main_root(root: &Path) -> std::result::Result<Option<PathBuf>
     if !common.is_dir() {
         return Err("invalid common gitdir");
     }
-    Ok((common.file_name() == Some(std::ffi::OsStr::new(".git")))
-        .then(|| common.parent().map(Path::to_path_buf)).flatten())
+    let (bare, worktree) = git_core_checkout(&read_git_metadata(&common.join("config"))?)?;
+    if bare && worktree.is_none() {
+        return Ok(None);
+    }
+    if common.file_name() == Some(std::ffi::OsStr::new(".git")) {
+        return common.parent().map(|parent| Some(parent.to_path_buf()))
+            .ok_or("missing main checkout parent");
+    }
+    let worktree = worktree.ok_or("unknown main checkout for common gitdir")?;
+    // Path handles native drive letters, separators and UNC prefixes on Windows. In
+    // particular, do not split paths on ':' or replace backslashes with Unix separators.
+    let worktree = Path::new(&worktree);
+    let worktree = if worktree.is_absolute() { worktree.to_path_buf() } else { common.join(worktree) };
+    let worktree = worktree.canonicalize().map_err(|_| "unreadable main checkout")?;
+    if !worktree.is_dir() || std::fs::read_dir(&worktree).is_err() {
+        return Err("invalid or unreadable main checkout");
+    }
+    Ok(Some(worktree))
+}
+
+/// Only an unsubsectioned [core] defines bare/worktree. Reject syntax we cannot safely
+/// interpret rather than treating an ambiguous common directory as having no checkout.
+fn git_core_checkout(config: &str) -> std::result::Result<(bool, Option<String>), &'static str> {
+    let (mut core, mut section, mut bare, mut worktree) = (false, false, false, None);
+    for line in config.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with(['#', ';']) {
+            continue;
+        }
+        if line.contains('\0') {
+            return Err("invalid git config character");
+        }
+        if let Some(header) = line.strip_prefix('[') {
+            let (header, tail) = header.split_once(']').ok_or("invalid git config section")?;
+            let tail = tail.trim();
+            if !tail.is_empty() && !tail.starts_with(['#', ';']) {
+                return Err("invalid git config section suffix");
+            }
+            let header = header.trim();
+            let name_end = header.find(char::is_whitespace).unwrap_or(header.len());
+            let (name, subsection) = header.split_at(name_end);
+            if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.')) {
+                return Err("invalid git config section name");
+            }
+            let subsection = subsection.trim();
+            if !subsection.is_empty() {
+                let inner = subsection.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+                    .ok_or("invalid git config subsection")?;
+                let mut escaped = false;
+                for c in inner.chars() {
+                    if escaped {
+                        if !matches!(c, '\\' | '"') {
+                            return Err("invalid git config subsection escape");
+                        }
+                        escaped = false;
+                    } else if c == '\\' {
+                        escaped = true;
+                    } else if c == '"' {
+                        return Err("invalid git config subsection quote");
+                    }
+                }
+                if escaped {
+                    return Err("unterminated git config subsection escape");
+                }
+            }
+            core = name.eq_ignore_ascii_case("core") && subsection.is_empty();
+            section = true;
+            continue;
+        }
+        let key_end = line.find(|c: char| c == '=' || c.is_whitespace() || matches!(c, '#' | ';'))
+            .unwrap_or(line.len());
+        let (key, tail) = line.split_at(key_end);
+        if !section || !key.starts_with(|c: char| c.is_ascii_alphabetic())
+            || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+        {
+            return Err("invalid git config key");
+        }
+        let tail = tail.trim_start();
+        let value = if let Some(value) = tail.strip_prefix('=') {
+            Some(git_config_value(value.trim_start())?)
+        } else if tail.is_empty() || tail.starts_with(['#', ';']) {
+            None // A key without '=' is Git's implicit boolean true.
+        } else {
+            return Err("invalid git config assignment");
+        };
+        if core && key.eq_ignore_ascii_case("bare") {
+            bare = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+                None | Some("true" | "yes" | "on" | "1") => true,
+                Some("" | "false" | "no" | "off" | "0") => false,
+                _ => return Err("invalid git core.bare"),
+            };
+        } else if core && key.eq_ignore_ascii_case("worktree") {
+            let value = value.filter(|value| !value.is_empty()).ok_or("empty git core.worktree")?;
+            worktree = Some(value);
+        }
+    }
+    Ok((bare, worktree))
+}
+
+/// Decode Git's quoted values and escapes, preserving quoted whitespace and comment bytes.
+/// Unsupported continuations/escapes fail closed; the entire config is already bounded.
+fn git_config_value(value: &str) -> std::result::Result<String, &'static str> {
+    let mut decoded = String::new();
+    let mut quoted = false;
+    let mut significant = 0;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '#' | ';' if !quoted => break,
+            '\\' => {
+                decoded.push(match chars.next() {
+                    Some('\\') => '\\',
+                    Some('"') => '"',
+                    Some('n') => '\n',
+                    Some('t') => '\t',
+                    Some('b') => '\u{8}',
+                    _ => return Err("invalid git config escape"),
+                });
+                significant = decoded.len();
+            }
+            _ => {
+                decoded.push(c);
+                if quoted || !c.is_whitespace() {
+                    significant = decoded.len();
+                }
+            }
+        }
+    }
+    if quoted {
+        return Err("unterminated git config quote");
+    }
+    decoded.truncate(significant);
+    Ok(decoded)
 }
 
 /// Git's small path-pointer files are bounded independently of JSON settings, even if they
@@ -893,6 +1025,7 @@ mod tests {
         let gitdir = common.join("worktrees/wt");
         let worktree = settings.base.join("wt");
         std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::write(common.join("config"), format!("[core]\n bare = {bare}\n")).unwrap();
         std::fs::create_dir_all(main.join(".claude")).unwrap();
         std::fs::create_dir_all(&worktree).unwrap();
         std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
@@ -936,6 +1069,156 @@ mod tests {
                 std::fs::write(settings.base.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
             }
             assert!(!read_deny_rules(&settings.base.join("config"), &worktree, None), "bare={bare}");
+        }
+    }
+
+    fn nonstandard_linked_checkout(settings: &Settings) -> (PathBuf, PathBuf, PathBuf) {
+        let main = settings.base.join("super/sub");
+        let common = settings.base.join("super/.git/modules/sub");
+        let gitdir = common.join("worktrees/wt");
+        let worktree = settings.base.join("wt");
+        std::fs::create_dir_all(main.join(".claude")).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        (main, worktree, common)
+    }
+
+    fn linked_reads_restricted(settings: &Settings, worktree: &Path) -> bool {
+        claude_restricts_reads_with("claude", worktree, || Ok(None), || false,
+            || Some(settings.base.join("config")), || None)
+    }
+
+    #[test]
+    fn nonstandard_common_gitdirs_resolve_main_checkout_read_rules() {
+        for value in ["../../../sub", "\"../../../sub\""] {
+            let settings = Settings::new();
+            let (main, worktree, common) = nonstandard_linked_checkout(&settings);
+            std::fs::write(common.join("config"), format!(
+                "# comment\n[CoRe] ; comment\n BaRe = false\n WoRkTrEe = {value} # main checkout\n[remote \"origin\"]\n worktree = ignored\n[core \"other\"]\n worktree = ignored\n bare = true\n"
+            )).unwrap();
+            assert_eq!(linked_worktree_main_root(&worktree).unwrap(), Some(main.canonicalize().unwrap()));
+            assert!(!linked_reads_restricted(&settings, &worktree), "clean main {value}");
+            for kind in ["deny", "ask"] {
+                std::fs::write(main.join(".claude/settings.local.json"),
+                    json!({"permissions":{kind:["Read"]}}).to_string()).unwrap();
+                assert!(linked_reads_restricted(&settings, &worktree), "{kind} {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn nonstandard_common_gitdirs_need_worktree_or_explicit_bare() {
+        let settings = Settings::new();
+        let (main, worktree, common) = nonstandard_linked_checkout(&settings);
+        for config in ["", "[core]\n bare = false\n", "[core \"subsection\"]\n bare = true\n",
+            "[remote \"core\"]\n bare = true\n", "[core]\n bare = true\n[core]\n bare = false\n"] {
+            std::fs::write(common.join("config"), config).unwrap();
+            assert!(linked_reads_restricted(&settings, &worktree), "{config:?}");
+        }
+        std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        std::fs::write(common.join("config"), "[core]\n bare = true ; no checkout\n").unwrap();
+        assert!(!linked_reads_restricted(&settings, &worktree));
+        // An explicit checkout takes precedence over bare, even for a nonstandard gitdir.
+        std::fs::write(common.join("config"), "[core]\n bare = true\n worktree = ../../../sub\n").unwrap();
+        assert!(linked_reads_restricted(&settings, &worktree));
+    }
+
+    #[test]
+    fn linked_worktree_config_errors_fail_closed_for_all_common_dir_names() {
+        for standard in [false, true] {
+            let settings = Settings::new();
+            let (worktree, common) = if standard {
+                let (main, worktree, _) = linked_checkout(&settings, false, false);
+                (worktree, main.join(".git"))
+            } else {
+                let (_, worktree, common) = nonstandard_linked_checkout(&settings);
+                (worktree, common)
+            };
+            let config = common.join("config");
+            for bytes in [b"[core\n bare = true".to_vec(), b"[core] garbage\n bare = true".to_vec(),
+                b"[core]\n bare = perhaps".to_vec(), b"[core]\n worktree = \"unfinished".to_vec(),
+                b"[core]\n bare = true\n worktree = \"\"".to_vec(), vec![0xff], vec![b' '; 16 * 1024 + 1]] {
+                std::fs::write(&config, &bytes).unwrap();
+                assert!(linked_reads_restricted(&settings, &worktree), "standard={standard} bytes={bytes:?}");
+            }
+            std::fs::remove_file(&config).unwrap();
+            assert!(linked_reads_restricted(&settings, &worktree), "missing config");
+            std::fs::create_dir(&config).unwrap();
+            assert!(linked_reads_restricted(&settings, &worktree), "config is directory");
+        }
+    }
+
+    #[test]
+    fn git_config_values_preserve_quoted_comments_and_native_windows_paths() {
+        for (value, expected) in [
+            (r#""../../../sub # ; space " ; comment"#, "../../../sub # ; space "),
+            (r#""C:\\repo\\main" # comment"#, r"C:\repo\main"),
+            (r#""\\\\server\\share\\main""#, r"\\server\share\main"),
+            (r"C:/repo/main", "C:/repo/main"),
+        ] {
+            let (_, worktree) = git_core_checkout(&format!("[core]\nworktree = {value}\n")).unwrap();
+            assert_eq!(worktree.as_deref(), Some(expected));
+            if cfg!(windows) && (expected.starts_with("C:") || expected.starts_with(r"\\")) {
+                assert!(Path::new(expected).is_absolute(), "{expected}");
+            }
+        }
+        for config in ["[core]\n bare\n", "[core]\n bare = YES # comment\n"] {
+            assert_eq!(git_core_checkout(config).unwrap(), (true, None));
+        }
+        for config in ["[core]\n worktree = missing\\", "[core]\n worktree = \\\n next",
+            "[core \"]", "[core \"bad\\\"]", "[core \"bad\\q\"]",
+            "[core]\n bare = true\n[core \"bad\" \"section\"]", "[core]\n worktree = a\0b"] {
+            assert!(git_core_checkout(config).is_err(), "{config:?}");
+        }
+    }
+
+    #[test]
+    fn dot_git_common_directory_bare_flag_requires_no_explicit_worktree() {
+        let settings = Settings::new();
+        let (main, worktree, _) = linked_checkout(&settings, false, false);
+        std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        std::fs::write(main.join(".git/config"), "[core]\n bare = true\n").unwrap();
+        assert!(!linked_reads_restricted(&settings, &worktree));
+        std::fs::write(main.join(".git/config"), "[core]\n bare = true\n worktree = ..\n").unwrap();
+        assert!(linked_reads_restricted(&settings, &worktree));
+    }
+
+    #[test]
+    fn nonstandard_common_gitdirs_reject_dangling_or_file_worktrees() {
+        let settings = Settings::new();
+        let (_, worktree, common) = nonstandard_linked_checkout(&settings);
+        for value in ["../../../absent", "config"] {
+            std::fs::write(common.join("config"), format!("[core]\n worktree = {value}\n")).unwrap();
+            assert!(linked_reads_restricted(&settings, &worktree), "{value}");
+        }
+    }
+
+    #[test]
+    fn nonstandard_common_gitdirs_accept_absolute_native_paths() {
+        let settings = Settings::new();
+        let (main, worktree, common) = nonstandard_linked_checkout(&settings);
+        let value = main.to_str().unwrap().replace('\\', "\\\\");
+        std::fs::write(common.join("config"), format!("[core]\n worktree = \"{value}\"\n")).unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree).unwrap(), Some(main.canonicalize().unwrap()));
+        assert!(!linked_reads_restricted(&settings, &worktree));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_common_gitdir_config_or_main_checkout_fails_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let settings = Settings::new();
+        let (main, worktree, common) = nonstandard_linked_checkout(&settings);
+        let config = common.join("config");
+        std::fs::write(&config, "[core]\n worktree = ../../../sub\n").unwrap();
+        for path in [&config, &main] {
+            let permissions = std::fs::metadata(path).unwrap().permissions();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let restricted = linked_reads_restricted(&settings, &worktree);
+            std::fs::set_permissions(path, permissions).unwrap();
+            assert!(restricted, "unreadable {}", path.display());
         }
     }
 

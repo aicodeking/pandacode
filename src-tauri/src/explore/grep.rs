@@ -56,6 +56,7 @@ pub(super) struct Definition {
     pub(super) signature: String,
 }
 
+#[derive(Default)]
 pub(super) struct FileResult {
     pub(super) path: Arc<str>,
     pub(super) matched: usize,
@@ -64,6 +65,8 @@ pub(super) struct FileResult {
     pub(super) clipped_lines: usize,
     pub(super) definitions: Vec<Definition>,
     pub(super) definition_count: usize,
+    /// Bounded candidates retained during this file read for a qualified lookup miss.
+    unqualified: Option<(Vec<Definition>, usize)>,
     pub(super) imports: usize,
     /// Full tests_for score, including its name, imports and capped mentions.
     test_score: usize,
@@ -83,6 +86,7 @@ pub(super) struct JobResult {
     pub(super) total_files: usize,
     pub(super) total_definitions: usize,
     pub(super) definition_files: usize,
+    pub(super) unqualified_fallback: bool,
     pub(super) unsupported_files: usize,
     pub(super) mentioned_files: usize,
     pub(super) outside: Vec<FileResult>,
@@ -140,18 +144,31 @@ pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &S
     let strict = snapshot.walk.strict;
     let shared = Shared { root, jobs, crossing: &crossing, binary: &binary, limit, strict };
     let mut results: Vec<JobResult> = jobs.iter().map(|_| JobResult::default()).collect();
+    let mut fallbacks: Vec<JobResult> = jobs.iter().map(|_| JobResult::default()).collect();
     for chunk in work.chunks(WORK_CHUNK) {
         if limit.expired() {
             break;
         }
         let found = parallel(chunk.len(), |at| (!limit.expired()).then(|| search_file(&shared, &chunk[at])));
-        for (bit, file) in found.into_iter().flatten() {
+        for (bit, mut file) in found.into_iter().flatten() {
+            if let Some((definitions, definition_count)) = file.unqualified.take() {
+                fallbacks[bit].add(FileResult { path: file.path.clone(), matched: file.matched, in_scope: file.in_scope, definitions, definition_count, ..FileResult::default() }, &jobs[bit].kind);
+            }
             results[bit].add(file, &jobs[bit].kind);
         }
         // Parallel completion order is arbitrary. Sort before pruning so no later chunk or
         // faster worker can displace an earlier result of the same rank.
-        for (result, job) in results.iter_mut().zip(jobs) {
+        for ((result, fallback), job) in results.iter_mut().zip(&mut fallbacks).zip(jobs) {
             result.prune(&job.kind);
+            fallback.prune(&job.kind);
+        }
+    }
+    for (result, fallback) in results.iter_mut().zip(fallbacks) {
+        if result.total_definitions == 0 && fallback.total_definitions > 0 {
+            result.files = fallback.files;
+            result.total_definitions = fallback.total_definitions;
+            result.definition_files = fallback.definition_files;
+            result.unqualified_fallback = true;
         }
     }
     for (result, crossing) in results.iter_mut().zip(&crossing) {
@@ -407,7 +424,7 @@ impl<'a> FileView<'a> {
     }
 
     fn result(&self, path: &Arc<str>, matches: &Matches, job: &Job, in_scope: bool) -> FileResult {
-        let mut result = FileResult { path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), definition_count: 0, imports: 0, test_score: 0, lines: Vec::new(), first_hit: None, defines: false };
+        let mut result = FileResult { path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), definition_count: 0, unqualified: None, imports: 0, test_score: 0, lines: Vec::new(), first_hit: None, defines: false };
         if !in_scope {
             result.first_hit = matches.starts.first().map(|&start| {
                 let line = self.line_at(start);
@@ -423,7 +440,12 @@ impl<'a> FileView<'a> {
                 result.defines = flagged.iter().any(|&(_, defines)| defines);
                 result.lines = ranked(flagged, MAX_FILE_HITS);
             }
-            Kind::Definition { name, qualifier, folded } => (result.definitions, result.definition_count) = self.definitions(name, qualifier.as_deref(), *folded),
+            Kind::Definition { name, qualifier, folded } => {
+                (result.definitions, result.definition_count) = self.definitions(name, qualifier.as_deref(), *folded);
+                if qualifier.is_some() && result.definition_count == 0 {
+                    result.unqualified = Some(self.definitions(name, None, *folded));
+                }
+            }
             Kind::Mention { stem, .. } => {
                 result.imports = hits.iter().filter(|&&line| self.imports_at(line)).count();
                 result.test_score = super::tests_for::mention_score(path, stem, result.imports, result.matched);

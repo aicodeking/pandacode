@@ -365,7 +365,7 @@ impl RunSink {
 /// `next` is this launch and the tools it listed; `launch` the task's launch count read at run end.
 pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, session_id: &str, team: Option<&architect::Admission>, launch: u64, next: (RunConfig, (Vec<serde_json::Value>, HashSet<String>))) {
     // Once quitting begins (`on_run_event`), no process may start that the quit would then wait for.
-    if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+    if !providers::warm_spares_on(app) || app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
         return;
     }
     let (next, (tools, approvals)) = next;
@@ -384,7 +384,10 @@ pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, ses
     let pool = lead_spare::pool(store, session_id, lead);
     let task = store.lock().ok().filter(|_| replied && pool.keeps()).and_then(|db| db.session(session_id).ok());
     if let Some(task) = task {
-        let renew = pool.renewal();
+        let renew = pool.renewal().map(|renew| {
+            let app = app.clone();
+            Arc::new(move || providers::warm_spares_on(&app) && renew()) as providers::WarmRenew
+        });
         let next = lead_spare::spare_config(next, task);
         let (inputs_app, inputs_session, inputs_provider, inputs_cwd) = (app.clone(), session_id.to_owned(), next.provider.clone(), next.cwd.clone());
         let inputs = move || launch_inputs(&inputs_app, &inputs_session, &inputs_provider, &inputs_cwd);

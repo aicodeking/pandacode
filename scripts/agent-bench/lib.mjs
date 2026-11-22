@@ -107,13 +107,44 @@ export function stopChildrenOnSignal() {
 
 // Anything slow must not block the event loop: other runs' stdout pipes and wall clocks live on it.
 export const sh = (command, argv, options = {}) => new Promise((resolve, reject) => {
-  const child = track(spawn(command, argv, { stdio: ['ignore', 'pipe', 'pipe'], detached: true, ...options }));
+  const { timeout, killGraceMs = 5000, ...spawnOptions } = options;
+  const windows = process.platform === 'win32';
+  const child = track(spawn(command, argv, {
+    stdio: ['ignore', 'pipe', 'pipe'], detached: !windows, ...spawnOptions,
+    ...(timeout > 0 && !windows ? { detached: true } : {}),
+  }), null, { autoUntrack: false });
   let stdout = '';
   let stderr = '';
+  let timedOut = false;
+  let cleanup = null;
+  const timer = timeout > 0 ? setTimeout(() => {
+    timedOut = true;
+    if (windows && child.pid) {
+      cleanup = new Promise(done => {
+        const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+        killer.on('error', () => { child.kill(); done(); });
+        killer.on('close', status => { if (status !== 0) child.kill(); done(); });
+      });
+    } else {
+      cleanup = child.pid ? terminateGroup(child.pid, killGraceMs) : (child.kill(), Promise.resolve());
+    }
+  }, timeout) : null;
+  timer?.unref();
   child.stdout.on('data', data => { stdout += data; });
   child.stderr.on('data', data => { stderr += data; });
-  child.on('error', reject);
-  child.on('close', status => resolve({ status, stdout, stderr }));
+  child.on('error', async error => {
+    clearTimeout(timer);
+    await cleanup;
+    child.untrack();
+    reject(error);
+  });
+  child.on('close', async status => {
+    clearTimeout(timer);
+    await cleanup;
+    child.untrack();
+    // A shell can handle TERM with exit zero; it still exceeded its deadline.
+    resolve({ status: timedOut ? null : status, stdout, stderr, timedOut });
+  });
 });
 export const must = async (command, argv, options) => {
   const result = await sh(command, argv, options);
@@ -208,7 +239,7 @@ export async function runCommand(test, dir, targetDir, timeoutMs = 20 * 60_000) 
     env: safeEnv(targetDir ? { CARGO_TARGET_DIR: targetDir, CARGO_INCREMENTAL: '0' } : {}),
   });
   const output = `${result.stdout}\n${result.stderr}`;
-  return { pass: result.status === 0, ms: Date.now() - started, kind: failureKind(output, result.status), failed: failedTests(output), tail: output.slice(-3000) };
+  return { pass: !result.timedOut && result.status === 0, ms: Date.now() - started, kind: result.timedOut ? 'timeout' : failureKind(output, result.status), failed: failedTests(output), tail: output.slice(-3000), timedOut: result.timedOut };
 }
 /** `pass`, `assertion` (the tests ran and failed) or `build` (they never ran). */
 export function failureKind(output, status) {
@@ -379,23 +410,23 @@ export async function gradeEdit(task, work, target, verified, gitDir = REPO) {
 }
 
 
-const rustConst = (libRs, name) => {
-  const match = libRs.match(new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`));
-  if (!match) throw new Error(`${name} not found in lib.rs`);
+const rustConst = (instructions, name) => {
+  const match = instructions.match(new RegExp(`const ${name}: &str = "((?:[^"\\\\]|\\\\.)*)";`));
+  if (!match) throw new Error(`${name} not found in app_instructions.rs`);
   return match[1].replace(/\\(["\\n])/g, (_, c) => (c === 'n' ? '\n' : c));
 };
 /**
- * The explore clause as `look()` in lib.rs builds it for Claude Code (`claude_code` true): `LOOK`
+ * The explore clause as `look()` in app_instructions.rs builds it for Claude Code (`claude_code` true): `LOOK`
  * with every `{explore}` replaced, then `EDIT_CLAUDE`; older trees had `LOOK` alone.
  */
-export function exploreClause(libRs = readFileSync(join(REPO, 'src-tauri/src/lib.rs'), 'utf8')) {
-  const look = rustConst(libRs, 'LOOK').replaceAll('{explore}', 'pandacode_explore');
-  const edit = /fn look\(/.test(libRs) ? rustConst(libRs, 'EDIT_CLAUDE') : '';
+export function exploreClause(instructions = readFileSync(join(REPO, 'src-tauri/src/app_instructions.rs'), 'utf8')) {
+  const look = rustConst(instructions, 'LOOK').replaceAll('{explore}', 'pandacode_explore');
+  const edit = /fn look\(/.test(instructions) ? rustConst(instructions, 'EDIT_CLAUDE') : '';
   return `${look}${edit}`.trim();
 }
 
-/** `REUSE` from lib.rs, the instruction that comes with agent-made tools (batch R1). */
-export const reuseClause = (libRs = readFileSync(join(REPO, 'src-tauri/src/lib.rs'), 'utf8')) => rustConst(libRs, 'REUSE').trim();
+/** `REUSE` from app_instructions.rs, the instruction that comes with agent-made tools (batch R1). */
+export const reuseClause = (instructions = readFileSync(join(REPO, 'src-tauri/src/app_instructions.rs'), 'utf8')) => rustConst(instructions, 'REUSE').trim();
 
 const SERVE_TEST = 'providers::mcp_host::tests::explore_mcp_serve';
 /** Batch R1: explore plus the agent-made tools (`PANDACODE_BENCH_TOOLS`, `_PROJECT`, `_SESSION`, `_NOTE` in `env`). */

@@ -100,6 +100,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Keeps idle Claude Code processes ready (~180–210 MB each, up to 4) and runs SessionStart hooks ahead of the next turn.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },

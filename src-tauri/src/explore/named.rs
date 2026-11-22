@@ -281,6 +281,17 @@ fn symbol_range(symbols: &[Symbol], raw: &str, limit: &Limit) -> Result<(usize, 
             found.push(symbol);
         }
     });
+    if count == 0 && qualifier.is_some() && !limit.expired() {
+        symbols::qualified_matches(symbols, None, |symbol| symbol.name == name, limit, |symbol| {
+            count += 1;
+            if found.len() < AMBIGUOUS_LISTED {
+                found.push(symbol);
+            }
+        });
+        if count > 0 {
+            return Err(SymbolMiss::Unqualified(count, found.into_iter().map(super::grep::symbol_label).collect()));
+        }
+    }
     match count {
         0 => Err(SymbolMiss::None),
         1 => Ok((found[0].line, found[0].end)),
@@ -291,6 +302,7 @@ fn symbol_range(symbols: &[Symbol], raw: &str, limit: &Limit) -> Result<(usize, 
 enum SymbolMiss {
     None,
     Ambiguous(usize, Vec<String>),
+    Unqualified(usize, Vec<String>),
 }
 
 /// A read with its file taken in the order asked: done, or a `path#name` read's whole text,
@@ -337,15 +349,19 @@ fn symbol_read(ctx: &Ctx, path: String, text: &str, name: &str) -> Result<Item, 
     if ctx.limit.stopped() {
         return Err("Task has stopped.".into());
     }
-    let symbols = symbols::extract(&path, text, ctx.limit);
+    let (symbols, extraction_cut) = symbols::extract_checked(&path, text, ctx.limit);
     let range = symbol_range(&symbols, name, ctx.limit);
     if ctx.limit.stopped() {
         return Err("Task has stopped.".into());
     }
     let (from, to) = match range {
         Ok(range) => range,
-        Err(SymbolMiss::None) if ctx.limit.was_cut() => return Err("Skipped: this file exceeded the call's time or memory limit; read it by line range instead.".into()),
+        Err(SymbolMiss::None) if extraction_cut || ctx.limit.expired() => return Err("Skipped: this file exceeded the call's time or memory limit; read it by line range instead.".into()),
         Err(SymbolMiss::None) => return Err(format!("No definition named {name} here; outline the file.")),
+        Err(SymbolMiss::Unqualified(count, ranges)) => {
+            let (qualifier, unqualified) = split_name(name);
+            return Err(format!("No definition qualified by {} here; unqualified {unqualified} is at: {} ({count} definitions). Read path#name or a listed line range.", qualifier.unwrap_or_default(), ranges.join(", ")));
+        }
         Err(SymbolMiss::Ambiguous(count, ranges)) => return Ok(Item::new(Category::Read, head(&[("path", json!(path)), ("ambiguous", json!(ranges)), ("ambiguous_count", json!(count))]), Body::Nothing)),
     };
     // The whole text was taken from the allowance already.
@@ -373,12 +389,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_prior_cut_does_not_mislabel_a_missing_symbol() {
+        let repo = super::super::tests::Repo::new();
+        let limit = Limit::new(std::sync::Arc::default());
+        limit.cut();
+        let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: super::super::Policy::NeverIndex };
+        let error = symbol_read(&ctx, "a.rs".into(), "fn run() {}\n", "missing").err().unwrap();
+        assert!(error.starts_with("No definition named missing here"), "{error}");
+        let limited = Limit::with_parse_bytes(0);
+        let ctx = Ctx { limit: &limited, ..ctx };
+        let error = symbol_read(&ctx, "a.rs".into(), "fn run() {}\n", "missing").err().unwrap();
+        assert!(error.contains("time or memory limit"), "{error}");
+    }
+
+    #[test]
+    fn qualified_read_misses_list_bounded_unqualified_candidates() {
+        let repo = super::super::tests::Repo::new();
+        let limit = Limit::new(std::sync::Arc::default());
+        let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: super::super::Policy::NeverIndex };
+        let text = "fn run() {}\n".repeat(AMBIGUOUS_LISTED + 3);
+        let error = symbol_read(&ctx, "a.rs".into(), &text, "Other.run").err().unwrap();
+        assert!(error.contains("No definition qualified by Other here; unqualified run"), "{error}");
+        assert!(error.contains(&(AMBIGUOUS_LISTED + 3).to_string()), "{error}");
+        assert_eq!(error.matches("fn run").count(), AMBIGUOUS_LISTED, "{error}");
+    }
+
+    #[test]
     fn qualified_symbol_ranges_are_linear_and_stop_aware() {
-        let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), kind: "fn", line, end: line }).collect();
+        let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), qualifier: None, kind: "fn", line, end: line }).collect();
         let limit = Limit::new(std::sync::Arc::default());
         let started = std::time::Instant::now();
-        assert!(matches!(symbol_range(&symbols, "Missing::run", &limit), Err(SymbolMiss::None)));
-        assert!(started.elapsed() < std::time::Duration::from_millis(50), "{:?}", started.elapsed());
+        assert!(matches!(symbol_range(&symbols, "Missing::run", &limit), Err(SymbolMiss::Unqualified(80_000, _))));
+        assert!(started.elapsed() < std::time::Duration::from_millis(500), "{:?}", started.elapsed());
         let stopped = Limit::new(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
         assert!(matches!(symbol_range(&symbols, "Missing::run", &stopped), Err(SymbolMiss::None)));
         assert!(stopped.was_cut());

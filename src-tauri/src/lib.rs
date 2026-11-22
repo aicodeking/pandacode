@@ -125,47 +125,9 @@ use storage::{ContextUsage, MessagePage, Project, Session, Store};
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-// The texts `app_instructions` assembles. They stay in this file because the pinned benchmark
-// scripts (`scripts/agent-bench`) read them from lib.rs as `const NAME: &str` and `fn look(`.
-
-/// Agent-made tools only get made and reused when agents are told when to.
-const REUSE: &str = "\n\nIf the Project tools note lists a tool that does a multi-step command sequence you need, run it; after doing the same sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
-/// The empty-project sentence the app said before the catalog's state moved to the Project
-/// tools note. No run hears it now (one fixed `REUSE` keeps the cached prefix stable); kept
-/// because the pinned GUI benchmark (`scripts/agent-bench/gui.mjs`) reads it from here.
+// Compatibility for existing lead-spare tests; the instruction lives with its assembler.
 #[cfg(test)]
-const SAVE: &str = "\n\nAfter running the same multi-step command sequence twice, or once when it will clearly recur, save it with pandacode_tool_save.";
-
-/// PandaCode closes the harness when a turn ends, so background waits never come back.
-/// Claude Code's background agents are the exception: the run stays open until they hand back.
-const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then closes this session's process: background commands, monitors and harness wakeups started in this turn never report back (pandacode_schedule_wakeup, when listed, does: it wakes this thread later). Background Agent subagents in Claude Code are different: they do report back, because the run stays open until they finish. On any other harness, a subagent still running when you reply is stopped and its report is lost: wait for every subagent you started (Codex: its wait tool) before you reply. Wait for long-running commands in the foreground (or poll them) before you reply.";
-
-/// Each extra step re-reads the whole cached prompt, so lookups should take as few as they can.
-const LOOK: &str = "\n\nUse {explore} to locate code (search, symbols, outlines, ranged reads), with all your questions in one call. When a reply already names the files and symbols you need, answer; search again only for a named gap. ";
-
-/// The Claude-family edit text (claude, glm, mimo), read by name by scripts/agent-bench.
-const EDIT_CLAUDE: &str = "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows.";
-/// Edit text for harnesses that are not Claude Code.
-const EDIT_OTHER: &str = "Make each file's changes in as few edit calls as your tools allow.";
-
-/// `LOOK` for a worker that cannot edit: no edit sentence.
-fn look_read_only(explore: explore::RunExplore) -> String {
-    LOOK.replace("{explore}", explore.name).trim_end().to_owned()
-}
-
-fn look(explore: explore::RunExplore) -> String {
-    let edit = if explore.claude_code { EDIT_CLAUDE } else { EDIT_OTHER };
-    [&LOOK.replace("{explore}", explore.name), edit].concat()
-}
-
-/// Questions to the user render rich Markdown in PandaCode; agents only use it if told.
-const RICH_QUESTIONS: &str = "\n\nQuestions you ask through the request_user_input tool, where available, render Markdown in PandaCode: use links, images by workspace path (![alt](relative/path.png)), ```chart blocks with JSON {\"type\":\"bar\"|\"line\"|\"pie\",\"title\",\"labels\":[…],\"series\":[{\"name\",\"values\":[…]}]}, ```svg drawings, or static ```html views when a visual helps the user decide. Remote images show as links; scripts never run.";
-
-/// Replies may carry generative UI blocks that PandaCode draws in the thread.
-const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a reply may include a ```ui block holding JSON {\"type\":…}; ```chart, ```svg and ```html work too. Types (fields): callout(tone info|success|warning|danger|note,title,body), card(title,body,footer,actions,children), stats(items[{label,value,delta,hint,spark[]}]), table(title,columns[],rows[[…]]), chart(chart bar|line|pie|area|sparkline,title,labels,series[{name,values}]), progress(label,value,max), plan|steps|timeline(title,summary,items[{title,detail,status done|active|pending|error|skipped,time}],actions), checklist(items[{text,done}]), tabs|accordion(items[{label,body,children}]), tree(paths[] or items[{name,status,children}]), diff(file,diff), code(file,language,code), terminal(command,output,exitCode), compare(items[{title,pros,cons,verdict}]), gallery(images[{path,caption}]), actions(buttons[{label,prompt,tone}]), chips|followups(options[{label,prompt}]), or inline :codex-followup[Label]{prompt=\"…\"}, form(title,fields[{name,label,type text|textarea|number|select|checkbox,options}],submit,prompt with {name}), stack|grid(columns,children), custom(html,css,state; data-ui-toggle=\"#id\", data-ui-tab/data-ui-panel, data-ui-set=\"k=v\", data-ui-bind=\"k\", data-ui-prompt). Bodies are Markdown. Buttons and forms only put a prompt in the user's composer; nothing runs, and remote URLs are not loaded. ```mermaid shows as labelled source. For a page that needs scripts, write an HTML file and open it with pandacode_preview_file.";
-
-/// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
-const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
+use app_instructions::REUSE;
 
 type Result<T> = std::result::Result<T, String>;
 struct RunningAgent {
@@ -2908,7 +2870,7 @@ async fn launch_operation_admitted(
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
-        let warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, maintenance).then(|| {
+        let warm_next = (providers::warm_spares_on(&app) && lead_spare::starts_spare(&config, managed_worker, cloud, maintenance)).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
@@ -4012,6 +3974,30 @@ async fn guard_idle(
     Ok(())
 }
 
+/// Refuse other activity before and after retiring this task's CLI. Recreation also retires
+/// every idle process in the old folder before its final check; removal does that after it has
+/// resolved its worktree paths. Merge keeps its await-only guard (it need not discard spares).
+async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>>(
+    state: &AppState,
+    session_id: &str,
+    message: &str,
+    refuse_busy: impl Fn() -> F,
+    folder: Option<&Path>,
+) -> Result<()> {
+    refuse_busy().await?;
+    guard_idle(
+        || lock_agents(&state.agents).map_or(true, |agents| agents.contains_key(session_id)),
+        providers::quiesce(session_id),
+        message,
+    )
+    .await?;
+    if let Some(folder) = folder {
+        providers::end_lingering_in(folder).await;
+        providers::quiesce_spares_in(folder).await?;
+    }
+    refuse_busy().await
+}
+
 #[tauri::command]
 async fn remove_worktree(
     state: State<'_, AppState>,
@@ -4023,19 +4009,14 @@ async fn remove_worktree(
 
 /// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
 pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
-    refuse_worktree_remove_busy(state, &session_id).await?;
-    // A clean Claude-family run ends at `result`, before its CLI has exited (up to
-    // `BACKGROUND_EXIT_WAIT + TERM_WAIT`, less once hurried); that process still has this
-    // checkout as its working directory, and so may its warm spare.
-    guard_idle(
-        || lock_agents(&state.agents).map_or(true, |agents| agents.contains_key(&session_id)),
-        providers::quiesce(&session_id),
+    quiesce_worktree(
+        state,
+        &session_id,
         "Stop the agent before removing its worktree.",
+        || refuse_worktree_remove_busy(state, &session_id),
+        None,
     )
     .await?;
-    // Re-check after quiescing `session_id`: a forked task or worker sharing `&path` may have
-    // started or entered background reaping meanwhile.
-    refuse_worktree_remove_busy(state, &session_id).await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // A lingering agent or pooled warm spare (from a forked/sibling session) holding `&path`
     // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
@@ -4053,24 +4034,22 @@ pub(crate) async fn recreate_task_worktree(state: &AppState, session_id: String)
         return Err(BUSY.into());
     }
     let (_, path, _) = worktree_paths(&state.store, &session_id)?;
-    if any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await? {
-        return Err(BUSY.into());
-    }
-    // Quiesce this task and any pooled/lingering process still holding the deleted folder's old
-    // inode, so the recreated checkout cannot adopt a warm spare pinned to an unlinked directory.
-    guard_idle(
-        || lock_agents(&state.agents).map_or(true, |agents| agents.contains_key(&session_id)),
-        providers::quiesce(&session_id),
+    // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
+    quiesce_worktree(
+        state,
+        &session_id,
         BUSY,
+        || async {
+            if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id)
+                || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
+            {
+                return Err(BUSY.into());
+            }
+            Ok(())
+        },
+        Some(&path),
     )
     .await?;
-    providers::end_lingering_in(&path).await;
-    providers::quiesce_spares_in(&path).await?;
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id)
-        || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
-    {
-        return Err(BUSY.into());
-    }
     let store = state.store.clone();
     blocking(move || {
         let (main, path, branch) = worktree_paths(&store, &session_id)?;
@@ -5715,6 +5694,8 @@ pub fn run() {
                 get_terminal_activity,
                 read_terminal_output,
                 get_terminal_preferences,
+                providers::warm::warm_spares_enabled,
+                providers::warm::set_warm_spares_enabled,
                 explore::explore_enabled,
                 explore::set_explore_enabled,
                 explore::explore_harness_enabled,
