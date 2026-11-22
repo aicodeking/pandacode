@@ -137,6 +137,55 @@ fn a_glob_says_what_it_filtered_out() {
 }
 
 #[test]
+fn duplicate_large_file_globs_count_once() {
+    let repo = Repo::new();
+    let size = usize::try_from(crate::workspace::MAX_READ_BYTES).unwrap() + 1;
+    repo.write("large.txt", vec![b'x'; size]);
+    repo.write("other.txt", vec![b'x'; size]);
+    let limit = limit::Limit::new(Arc::default());
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: index::Policy::NeverIndex };
+    let snapshot = index::Snapshot::open(&repo.0, ctx.policy, false, &limit);
+    assert!(snapshot.walk.files.is_empty());
+    let globs = glob::Globs::new(&ctx, &["large.txt".into(), "large.txt".into()]);
+    assert_eq!(globs.named_large.len(), 1);
+    assert_eq!(globs.files_in_scope(&snapshot), 1);
+    assert!(globs.warnings(&snapshot).is_empty());
+    let ordered = glob::Globs::new(&ctx, &["other.txt".into(), "large.txt".into(), "other.txt".into()]);
+    assert_eq!(ordered.named_large.iter().map(|path| &**path).collect::<Vec<_>>(), ["other.txt", "large.txt"]);
+    assert_eq!(ordered.files_in_scope(&snapshot), 2);
+}
+
+#[test]
+fn an_excluded_large_file_does_not_count_in_scope_or_warn() {
+    let repo = Repo::new();
+    let size = usize::try_from(crate::workspace::MAX_READ_BYTES).unwrap() + 1;
+    repo.write("large.txt", vec![b'x'; size]);
+    let limit = limit::Limit::new(Arc::default());
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: index::Policy::NeverIndex };
+    let snapshot = index::Snapshot::open(&repo.0, ctx.policy, false, &limit);
+    let globs = glob::Globs::new(&ctx, &["large.txt".into(), "!large.txt".into()]);
+    assert!(!globs.allows("large.txt"));
+    assert_eq!(globs.named_large.len(), 1, "keep excluded paths for the positive glob's warning check");
+    assert_eq!(globs.files_in_scope(&snapshot), 0);
+    assert!(globs.warnings(&snapshot).is_empty());
+}
+
+#[test]
+fn a_file_that_grows_after_the_walk_is_counted_once() {
+    let repo = Repo::new();
+    repo.write("large.txt", "small\n");
+    let limit = limit::Limit::new(Arc::default());
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: index::Policy::NeverIndex };
+    let snapshot = index::Snapshot::open(&repo.0, ctx.policy, false, &limit);
+    assert_eq!(snapshot.walk.files.len(), 1);
+    let size = usize::try_from(crate::workspace::MAX_READ_BYTES).unwrap() + 1;
+    repo.write("large.txt", vec![b'x'; size]);
+    let globs = glob::Globs::new(&ctx, &["large.txt".into(), "large.txt".into()]);
+    assert_eq!(globs.named_large.len(), 1);
+    assert_eq!(globs.files_in_scope(&snapshot), 1);
+}
+
+#[test]
 fn windows_backslash_globs_match_normalized_paths() {
     let repo = Repo::new();
     repo.write("src/a.rs", "needle\n");

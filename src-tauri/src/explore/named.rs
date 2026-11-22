@@ -17,6 +17,10 @@ pub(super) const MAX_NAMED_BYTES: u64 = if cfg!(test) { 6 } else { 16 } * 1024 *
 const READ_LINE_CHARS: usize = 2_000;
 /// Lines formatted for one read; the reply holds far fewer, and `next` covers the rest.
 const MAX_READ_LINES: usize = 4_000;
+/// Deep source nesting must not turn short symbol names into quadratic outline text.
+pub(super) const MAX_OUTLINE_DEPTH: usize = 16;
+/// More than the reply can show; later symbols count as omitted without being formatted.
+pub(super) const MAX_OUTLINE_BYTES: usize = 64 * 1024;
 const REFUSED_SECRET: &str = "Refused: this path may hold credentials.";
 const UNREADABLE: &str = "Refused: a file that could not be read.";
 const BINARY: &str = "Binary file.";
@@ -183,14 +187,23 @@ pub(super) fn outline_item(ctx: &Ctx, raw: &str, read: Result<(String, String), 
     };
     let symbols = symbols::extract(&path, &text, ctx.limit);
     let mut open: Vec<usize> = Vec::new();
-    let lines = symbols.iter().map(|symbol| {
+    let mut retained_bytes = 0;
+    let lines = plain_lines(symbols.iter().enumerate().map_while(|(at, symbol)| {
+        if retained_bytes >= MAX_OUTLINE_BYTES || (at.is_multiple_of(1_024) && ctx.limit.expired()) {
+            return None;
+        }
         open.retain(|&end| end >= symbol.end);
-        let line = format!("{}{}", "  ".repeat(open.len()), super::grep::symbol_label(symbol));
+        let line = format!("{}{}", "  ".repeat(open.len().min(MAX_OUTLINE_DEPTH)), super::grep::symbol_label(symbol));
+        if line.len() > MAX_OUTLINE_BYTES - retained_bytes {
+            return None;
+        }
+        retained_bytes += line.len();
         open.push(symbol.end);
-        line
-    });
-    let lines = plain_lines(lines.collect::<Vec<_>>());
-    Item::new(Category::Outline, head(&[("path", json!(path)), ("total_lines", json!(text.lines().count()))]), Body::Lines(lines))
+        Some(line)
+    }));
+    let mut item = Item::new(Category::Outline, head(&[("path", json!(path)), ("total_lines", json!(text.lines().count()))]), Body::Lines(lines));
+    item.total_lines = symbols.len();
+    item
 }
 
 #[derive(Debug, PartialEq)]

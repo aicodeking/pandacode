@@ -65,11 +65,13 @@ same name. Names are `[a-z0-9][a-z0-9-]{1,47}`. Nothing here touches the network
   environment, in a process group of its own. It is cut at `timeoutSecs` (at most 50 s),
   because the host and the harnesses end a tool call at about 60 s; the timeout error says
   which limit was hit and suggests splitting the work or running it directly. When the
-  task stops, or at the timeout, the whole group gets SIGTERM and then SIGKILL 500 ms later,
-  so the script's background jobs end too. On Windows only the shell is killed (`stop` in
-  `custom_tools/run.rs`): a background job it started can outlive the stop or the timeout.
-  Background jobs also end when the script exits (on Unix): a tool is one-shot. A process that leaves the group
-  (`setsid`) can keep an output pipe open; the run then waits at most 1 s more for its
+  task stops, or at the timeout, the whole group gets SIGTERM and then SIGKILL 500 ms later
+  on Unix, so the script's background jobs end too. On Windows the shell is spawned suspended
+  and assigned to a `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` Job Object before it runs
+  (`providers/windows_job.rs`). Stopping, timing out or exiting closes the job and ends the
+  process tree (`stop` in `custom_tools/run.rs`), falling back to `kill_group` if job attachment
+  fails. Background jobs also end when the script exits on Unix: a tool is one-shot. On Unix,
+  a process that leaves the group (`setsid`) can keep an output pipe open; the run then waits at most 1 s more for its
   output and returns what it read. The reply keeps the last 16 KiB
   of each stream, where errors are; `truncated` says that more was produced. A script ended
   by a signal reports `exit` -1. A failed run

@@ -126,6 +126,22 @@ fn unknown_and_missing_params_are_refused_together() {
 }
 
 #[test]
+fn a_stopped_task_never_spawns_the_script() {
+    let dir = temp();
+    let marker = dir.0.join("spawned");
+    let absent = dir.0.join("absent");
+    let mut found = tool("write-marker", ": > \"$PC_MARKER\"");
+    found.params = vec![param("marker", true)];
+    let stopped = AtomicBool::new(true);
+    for root in [&dir.0, &absent] {
+        let outcome = run::execute(root, &found, &json!({"marker": marker.to_str().unwrap()}), &stopped);
+        assert_eq!(outcome.reply.unwrap_err(), "Task has stopped.");
+        assert!(outcome.exit.is_none() && !outcome.timed_out);
+        assert!(!marker.exists(), "a stopped task ran its script");
+    }
+}
+
+#[test]
 fn a_slow_script_is_stopped_at_its_timeout() {
     let dir = temp();
     let mut slow = tool("sleepy", "sleep 30");

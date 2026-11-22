@@ -360,6 +360,45 @@ fn symbols_outline_and_ranges() {
 }
 
 #[test]
+fn deeply_nested_outlines_bound_retained_text_and_keep_exact_omissions() {
+    let repo = Repo::new();
+    let total_symbols = 8_000;
+    let mut source: String = (0..total_symbols).map(|at| format!("fn f{at}() {{\n")).collect();
+    source.push_str(&"}\n".repeat(total_symbols));
+    let total_source_lines = source.lines().count();
+    repo.write("nested.rs", &source);
+
+    let limit = limit();
+    let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: Policy::NeverIndex };
+    let item = named::outline_item(&ctx, "nested.rs", named::outline_text(&ctx, "nested.rs"));
+    assert!(!limit.was_cut());
+    assert_eq!(item.total_lines, total_symbols);
+    assert_eq!(item.head["total_lines"], total_source_lines);
+    let shape::Body::Lines(lines) = &item.body else { panic!("expected outline lines") };
+    let retained = lines.len();
+    let retained_bytes: usize = lines.iter().map(|line| line.text.len()).sum();
+    assert!(retained > named::MAX_OUTLINE_DEPTH && retained < total_symbols, "retained {retained} lines");
+    assert!(retained_bytes <= named::MAX_OUTLINE_BYTES, "retained {retained_bytes} bytes");
+    assert!(lines.iter().all(|line| line.text.bytes().take_while(|&byte| byte == b' ').count() <= 2 * named::MAX_OUTLINE_DEPTH));
+
+    // Even when all retained lines fit, construction's dropped lines must be reported.
+    let mut roomy = Map::new();
+    assert!(shape::assemble(vec![item], 2 * named::MAX_OUTLINE_BYTES, &mut roomy));
+    let outline = &roomy["outline"][0];
+    assert_eq!(outline["text"].as_str().unwrap().lines().count(), retained);
+    assert_eq!(outline["truncated"], true);
+    assert_eq!(outline["omitted_lines"], total_symbols - retained);
+
+    let reply = repo.explore(json!({"outline":"nested.rs"}));
+    let outline = &reply["outline"][0];
+    let shown = outline["text"].as_str().unwrap().lines().count();
+    assert!(shown > 0 && shown < retained);
+    assert_eq!(outline["truncated"], true);
+    assert_eq!(shown + outline["omitted_lines"].as_u64().unwrap() as usize, total_symbols);
+    assert!(reply.to_string().len() <= BUDGET);
+}
+
+#[test]
 fn an_ambiguous_name_lists_its_ranges() {
     let repo = Repo::new();
     repo.write("a.rs", "impl A {\n    fn run() {}\n}\nimpl B {\n    fn run() {}\n}\n");

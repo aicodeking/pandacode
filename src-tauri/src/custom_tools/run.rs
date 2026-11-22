@@ -244,6 +244,9 @@ pub(super) fn execute(root: &Path, tool: &Tool, args: &Value, stopped: &AtomicBo
     };
     let seconds = tool.timeout_secs.min(HOST_LIMIT_SECS);
     let started = Instant::now();
+    if stopped.load(Ordering::SeqCst) {
+        return failed("Task has stopped.".into());
+    }
     let mut run = match spawn(root, tool, env) {
         Ok(run) => run,
         Err(error) => return failed(format!("Could not start {}: {error}", tool.name)),

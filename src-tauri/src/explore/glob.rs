@@ -186,7 +186,11 @@ impl Globs {
                 continue;
             }
             valid += 1;
-            named.extend(named_large(ctx, &clean, &mut errors));
+            if let Some(path) = named_large(ctx, &clean, &mut errors) {
+                if !named.contains(&path) {
+                    named.push(path);
+                }
+            }
             if !clean.starts_with('!') {
                 positive.push((glob.to_owned(), clean));
             }
@@ -224,7 +228,13 @@ impl Globs {
     }
 
     pub(super) fn files_in_scope(&self, snapshot: &Snapshot) -> usize {
-        snapshot.walk.files.iter().filter(|file| self.allows(&file.path)).count() + self.named_large.len()
+        let mut named: HashSet<&str> = self.named_large.iter().map(|path| &**path).filter(|path| self.allows(path)).collect();
+        let walked = snapshot.walk.files.iter().filter(|file| {
+            // A file may have grown past the walk's size limit since the snapshot was taken.
+            named.remove(&*file.path);
+            self.allows(&file.path)
+        }).count();
+        walked + named.len()
     }
 
     pub(super) fn warnings(&self, snapshot: &Snapshot) -> Vec<String> {
