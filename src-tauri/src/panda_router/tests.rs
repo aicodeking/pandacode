@@ -319,6 +319,7 @@ fn onnx_matches_python() {
     assert!(router.is_onnx());
     assert!(success::HEAD.covers("openrouter-gpt-6.1-sol"));
     check_newer_models_supersede_predecessors(&router);
+    check_gemini_4_neon_prioritized_over_sol(&router);
     let onnx = router.onnx.as_ref().unwrap();
     let fx = fixture();
     for (n, task) in fx.tasks.iter().enumerate() {
@@ -506,6 +507,71 @@ fn check_newer_models_supersede_predecessors(router: &Router) {
 #[test]
 fn newer_models_supersede_predecessors_when_available() {
     check_newer_models_supersede_predecessors(&Router::heuristic());
+}
+
+fn check_gemini_4_neon_prioritized_over_sol(router: &Router) {
+    let context = TaskContext { requires_tools: true, files_in_scope: Some(3), ..TaskContext::default() };
+    // Put Sol cards first so pool order cannot accidentally favor Neon.
+    let with_neon: Vec<PoolModel> = ["codex-gpt-6.2-sol", "openrouter-gpt-6.1-sol", "gemini-4-neon"]
+        .into_iter()
+        .map(card_model)
+        .collect();
+    let both_s = tiered(&[("gemini-4-neon", Tier::S), ("codex-gpt-6.2-sol", Tier::S)]);
+    for mode in [Mode::Balanced, Mode::Quality, Mode::Cheapest] {
+        let prefs = Preferences { mode, min_p: 0.5 };
+        let route = router.route(MID_TASK, &context, &with_neon, &prefs, &[], &Tiers::new()).unwrap();
+        assert!(route.unrated.is_empty(), "{mode:?}");
+        assert_eq!(route.pick.as_ref().unwrap().card_id, "gemini-4-neon", "{mode:?}");
+        if mode == Mode::Balanced {
+            assert_eq!(route.ladder.first().map(|r| r.card_id.as_str()), Some("gemini-4-neon"), "{mode:?}");
+        }
+        for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived in {mode:?}");
+        }
+
+        // Equal 70% Tier::S blending compresses Δp just under EQUAL_P_MARGIN (0.05) and lets both
+        // clear min_p = 0.5 in heuristic Cheapest, so equal_p_cheaper / Cheapest may pick cheaper
+        // Sol; Quality pick, higher p_success, and Balanced ladder[0] still stay on gemini-4-neon.
+        let tiered_route = router.route(MID_TASK, &context, &with_neon, &prefs, &[], &both_s).unwrap();
+        assert!(tiered_route.unrated.is_empty(), "{mode:?} both-S");
+        assert!(
+            find(&tiered_route.ranking, "gemini-4-neon").unwrap().p_success
+                > find(&tiered_route.ranking, "codex-gpt-6.2-sol").unwrap().p_success,
+            "{mode:?} both-S"
+        );
+        if mode == Mode::Quality {
+            assert_eq!(tiered_route.pick.as_ref().unwrap().card_id, "gemini-4-neon", "{mode:?} both-S");
+        }
+        if mode == Mode::Balanced {
+            assert_eq!(
+                tiered_route.ladder.first().map(|r| r.card_id.as_str()),
+                Some("gemini-4-neon"),
+                "{mode:?} both-S"
+            );
+        }
+        for row in tiered_route.pick.iter().chain(&tiered_route.ladder).chain(&tiered_route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived in {mode:?} both-S");
+        }
+    }
+    // When Neon is absent, GPT-6.2 Sol still wins across all modes and supersedes 6.1 Sol.
+    let without_neon: Vec<PoolModel> = ["codex-gpt-6.2-sol", "openrouter-gpt-6.1-sol"]
+        .into_iter()
+        .map(card_model)
+        .collect();
+    for mode in [Mode::Balanced, Mode::Quality, Mode::Cheapest] {
+        let prefs = Preferences { mode, min_p: 0.5 };
+        let route = router.route(MID_TASK, &context, &without_neon, &prefs, &[], &Tiers::new()).unwrap();
+        assert!(route.unrated.is_empty(), "{mode:?}");
+        assert_eq!(route.pick.as_ref().unwrap().card_id, "codex-gpt-6.2-sol", "{mode:?}");
+        for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived without Neon in {mode:?}");
+        }
+    }
+}
+
+#[test]
+fn gemini_4_neon_is_prioritized_over_sol_when_available() {
+    check_gemini_4_neon_prioritized_over_sol(&Router::heuristic());
 }
 
 const WEAK: &str = "openrouter-qwen3.8-flash";
