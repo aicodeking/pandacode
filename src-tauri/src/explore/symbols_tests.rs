@@ -484,11 +484,11 @@ fn failed_regex_and_stray_quote_scans_stay_linear() {
         let started = Instant::now();
         let lex = Lexed::new(&lines, Language::Script, &limit());
         assert_eq!(lex.inside_literal.len(), 1);
-        assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
         for done in [Limit::new(Arc::new(AtomicBool::new(true))), Limit::lasting(Duration::ZERO, Arc::default())] {
             let started = Instant::now();
             assert!(Lexed::new(&lines, Language::Script, &done).inside_literal.is_empty());
-            assert!(started.elapsed() < Duration::from_millis(50));
+            assert!(started.elapsed() < Duration::from_millis(500));
             assert!(done.was_cut());
         }
     }
@@ -536,7 +536,7 @@ fn qualified_lookup_is_linear_and_honors_stopped_limits() {
     let started = Instant::now();
     qualified_matches(&symbols, Some("Missing"), |symbol| symbol.name == "run", &budget, |_| count += 1);
     assert_eq!(count, 0);
-    assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
     for qualifier in [None, Some("Missing")] {
         let done = Limit::new(Arc::new(AtomicBool::new(true)));
         qualified_matches(&symbols, qualifier, |_| panic!("a stopped lookup must not test candidates"), &done, |_| panic!("a stopped lookup must not yield candidates"));

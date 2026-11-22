@@ -51,20 +51,16 @@ impl Limit {
 
     /// Reserves scratch space until its buffers have been dropped, including on early return.
     pub(super) fn reserve_parse_bytes(&self, bytes: usize) -> Option<ParseBytesGuard<'_>> {
-        self.parse_bytes_left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(bytes)).ok()?;
-        Some(ParseBytesGuard { limit: self, bytes })
+        if take_from(&self.parse_bytes_left, bytes) {
+            Some(ParseBytesGuard { limit: self, bytes })
+        } else {
+            None
+        }
     }
 
     /// Takes `bytes` of the call's allowance; false, taking nothing, when too few are left.
     pub(super) fn take_bytes(&self, bytes: usize) -> bool {
-        let mut left = self.bytes_left.load(Ordering::Relaxed);
-        while let Some(remaining) = left.checked_sub(bytes) {
-            match self.bytes_left.compare_exchange_weak(left, remaining, Ordering::Relaxed, Ordering::Relaxed) {
-                Ok(_) => return true,
-                Err(current) => left = current,
-            }
-        }
-        false
+        take_from(&self.bytes_left, bytes)
     }
 
     /// True once the call must stop; remembers it, so the reply can say it was cut short.
@@ -88,6 +84,17 @@ impl Limit {
     pub(super) fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Relaxed)
     }
+}
+
+fn take_from(counter: &AtomicUsize, bytes: usize) -> bool {
+    let mut left = counter.load(Ordering::Relaxed);
+    while let Some(remaining) = left.checked_sub(bytes) {
+        match counter.compare_exchange_weak(left, remaining, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return true,
+            Err(current) => left = current,
+        }
+    }
+    false
 }
 
 pub(super) struct ParseBytesGuard<'a> {

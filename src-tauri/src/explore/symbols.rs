@@ -597,7 +597,7 @@ pub(super) fn qualified_matches<'a>(
                 return;
             }
             let same_line_end = first.filter(|&outer| outer != symbol).or(second.filter(|&outer| outer != symbol)).map(|outer| outer.end);
-            if matches_name(symbol) && max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end) {
+            if max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end) && matches_name(symbol) {
                 found(symbol);
             }
         }
