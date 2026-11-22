@@ -98,11 +98,33 @@ export function stopRecorded(pidFile) {
   }
   return stopped;
 }
-export function stopChildrenOnSignal() {
-  process.on('SIGTERM', () => {
-    for (const child of children.keys()) if (child.pid) signalGroup(child.pid);
-    process.exit(143);
+/** taskkill covers descendants on Windows; bound its own lifetime as well. */
+function terminateWindowsTree(child) {
+  return new Promise(resolve => {
+    const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+      stdio: 'ignore', windowsHide: true, timeout: 2000, killSignal: 'SIGKILL',
+    });
+    killer.on('error', () => { child.kill(); resolve(); });
+    killer.on('close', status => { if (status !== 0) child.kill(); resolve(); });
   });
+}
+export function stopChildrenOnSignal({ graceMs = 2000 } = {}) {
+  let stopping = false;
+  const stop = async signal => {
+    if (stopping) return;
+    stopping = true;
+    // Capture ownership before close handlers can untrack a leader with live descendants.
+    const live = [...children].map(([child, { pid }]) => ({ child, pid, untrack: child.untrack }));
+    await Promise.allSettled(live.map(async ({ child, pid, untrack }) => {
+      try {
+        if (!pid) child.kill();
+        else if (process.platform === 'win32') await terminateWindowsTree(child);
+        else await terminateGroup(pid, graceMs);
+      } finally { untrack(); }
+    }));
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  };
+  for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { void stop(signal); });
 }
 
 // Anything slow must not block the event loop: other runs' stdout pipes and wall clocks live on it.
@@ -120,11 +142,7 @@ export const sh = (command, argv, options = {}) => new Promise((resolve, reject)
   const timer = timeout > 0 ? setTimeout(() => {
     timedOut = true;
     if (windows && child.pid) {
-      cleanup = new Promise(done => {
-        const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
-        killer.on('error', () => { child.kill(); done(); });
-        killer.on('close', status => { if (status !== 0) child.kill(); done(); });
-      });
+      cleanup = terminateWindowsTree(child);
     } else {
       cleanup = child.pid ? terminateGroup(child.pid, killGraceMs) : (child.kill(), Promise.resolve());
     }

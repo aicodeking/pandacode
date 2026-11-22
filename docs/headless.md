@@ -33,6 +33,15 @@ file in the app data directory (on Linux `~/.local/share/ai.pandacode.desktop/` 
 service user, e.g. `touch ~/.local/share/ai.pandacode.desktop/explore-off`); delete it
 to turn the tool back on. Each run start reads it, so no restart is needed.
 
+Warm Claude spares are on by default, as in Settings → Agents → **Warm Claude
+spares** on desktop. To disable them for `pandacode serve`, create an empty
+`warm-spares-off` file in the service user's app data directory (on Linux, for
+example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-off`); delete it
+to enable them again. An unreadable marker means off. Adoption, process starts
+and renewal checks read it without a restart. Disabling spares avoids idle Claude
+processes and ahead-of-turn `SessionStart` hooks; cost estimates and caveats are
+in [worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
+
 Agent-made tools follow the same `custom-tools-on` switch as the desktop. With no window,
 a `pandacode_tool_run` approval (any task not in Full access) goes to whatever can answer
 it: subscribed PandaCode Connect devices, and the channel of a bot conversation. Nothing

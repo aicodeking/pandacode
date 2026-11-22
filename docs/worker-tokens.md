@@ -200,8 +200,10 @@ Checked on the test fixtures in `src-tauri/src/architect/tests.rs` (no paid run;
   an unreadable marker also means off. Turning it off immediately retires pooled
   ordinary and lead spares and invalidates in-flight starts and pending renewals.
   No spare is adopted, started or renewed while it is off. Spares hold idle Claude
-  Code processes (~180–210 MB each, up to 4) and run `SessionStart` hooks ahead of
-  the next turn; disable them to avoid that idle memory and early hook execution.
+  Code processes (~180–210 MB (est.) each, up to 4; minimal config on one machine,
+  no CLI version recorded) and run `SessionStart` hooks ahead of the next turn;
+  disable them to avoid that idle memory and early hook execution. Plugins and
+  MCP servers may change the memory cost.
 - **Lead spares** (the pool, its constants and the renewal loop are in `providers/warm.rs`; `src-tauri/src/lead_spare.rs` decides whether to keep and renew):
   - A team lead whose turn ends with live workers keeps its spare in a separate pool (`LEAD_LIMIT` 2) that ordinary tasks never evict.
   - On expiry it is restarted at most `MAX_RENEWALS` (2) times; the check is asked once per expiry and holds only while every live worker still runs and none waits on the user, and never once the lead's wake has launched (a "no" ends the chain).
@@ -214,7 +216,7 @@ Checked on the test fixtures in `src-tauri/src/architect/tests.rs` (no paid run;
   - Each of those lead lines ends with running totals since launch, `Lead spares since launch: <n> adopted, <m> not used.` (in-memory counters in the pool, `lead_decision` in `providers/warm.rs`; reset on restart, never saved or sent anywhere). To read them, take the last such line from the app's stderr (`pandacode serve` prints it to the terminal; the desktop app's stderr when started from a terminal); the per-line reasons above say why each miss started cold. The "not renewed" line at an expiry is not counted: the wake that follows counts it as `it expired`. How often lead spares are adopted in real use has not been measured yet.
   - A changed reasoning effort is a warm-key field, so it discards the lead's spare (`changed: effort`) and the next wake starts cold.
 - **What a spare costs and saves.**
-  - Each spare holds an idle CLI process, at most 4 in all: about 178 MB RSS in one measurement and 208 MB in another, both on a minimal config on one machine, so a config with plugins or MCP servers may differ.
+  - Each spare holds an idle CLI process, at most 4 in all: ~180–210 MB (est.), from about 178 MB RSS in one measurement and 208 MB in another, both on a minimal config on one machine with no CLI version recorded. A config with plugins or MCP servers may differ.
   - Claude Code runs the user's `SessionStart` hooks when the process starts, before any message arrives (checked on 2.1.322 with no prompt sent).
   - A renewal chain can therefore start up to three processes, and run those hooks three times, for one wake (`1 + MAX_RENEWALS`), and hook context can be up to 10 minutes old when the spare is adopted.
   - The saving is the CLI's startup, about 1.4 s (est.; one local measurement on plain Claude; no CLI version or method recorded).

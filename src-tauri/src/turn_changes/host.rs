@@ -268,23 +268,25 @@ fn linked_worktree_main_root(root: &Path) -> std::result::Result<Option<PathBuf>
         return Err("invalid common gitdir");
     }
     let (bare, worktree) = git_core_checkout(&read_git_metadata(&common.join("config"))?)?;
-    if bare && worktree.is_none() {
+    if let Some(worktree) = worktree {
+        // Path handles native drive letters, separators and UNC prefixes on Windows. In
+        // particular, do not split paths on ':' or replace backslashes with Unix separators.
+        let worktree = Path::new(&worktree);
+        let worktree = if worktree.is_absolute() { worktree.to_path_buf() } else { common.join(worktree) };
+        let worktree = worktree.canonicalize().map_err(|_| "unreadable main checkout")?;
+        if !worktree.is_dir() || std::fs::read_dir(&worktree).is_err() {
+            return Err("invalid or unreadable main checkout");
+        }
+        return Ok(Some(worktree));
+    }
+    if bare {
         return Ok(None);
     }
     if common.file_name() == Some(std::ffi::OsStr::new(".git")) {
         return common.parent().map(|parent| Some(parent.to_path_buf()))
             .ok_or("missing main checkout parent");
     }
-    let worktree = worktree.ok_or("unknown main checkout for common gitdir")?;
-    // Path handles native drive letters, separators and UNC prefixes on Windows. In
-    // particular, do not split paths on ':' or replace backslashes with Unix separators.
-    let worktree = Path::new(&worktree);
-    let worktree = if worktree.is_absolute() { worktree.to_path_buf() } else { common.join(worktree) };
-    let worktree = worktree.canonicalize().map_err(|_| "unreadable main checkout")?;
-    if !worktree.is_dir() || std::fs::read_dir(&worktree).is_err() {
-        return Err("invalid or unreadable main checkout");
-    }
-    Ok(Some(worktree))
+    Err("unknown main checkout for common gitdir")
 }
 
 /// Only an unsubsectioned [core] defines bare/worktree. Reject syntax we cannot safely
@@ -310,6 +312,9 @@ fn git_core_checkout(config: &str) -> std::result::Result<(bool, Option<String>)
             let (name, subsection) = header.split_at(name_end);
             if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.')) {
                 return Err("invalid git config section name");
+            }
+            if name.eq_ignore_ascii_case("include") || name.eq_ignore_ascii_case("includeif") {
+                return Err("unsupported git config include");
             }
             let subsection = subsection.trim();
             if !subsection.is_empty() {
@@ -1183,6 +1188,62 @@ mod tests {
         assert!(!linked_reads_restricted(&settings, &worktree));
         std::fs::write(main.join(".git/config"), "[core]\n bare = true\n worktree = ..\n").unwrap();
         assert!(linked_reads_restricted(&settings, &worktree));
+    }
+
+    fn dot_git_separate_checkout(settings: &Settings, bare: bool, relative: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let main = settings.base.join("actual");
+        let common = settings.base.join("metadata/.git");
+        let gitdir = common.join("worktrees/linked");
+        let worktree = settings.base.join("linked");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        let value = if relative { "../../actual".to_owned() } else {
+            main.to_str().unwrap().replace('\\', "\\\\")
+        };
+        std::fs::write(common.join("config"), format!("[core]\n bare = {bare}\n worktree = \"{value}\"\n")).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        assert!(!common.parent().unwrap().join(".claude").exists());
+        (main, worktree, common)
+    }
+
+    #[test]
+    fn dot_git_separate_gitdir_inherits_explicit_main_checkout_read_deny() {
+        for bare in [false, true] {
+            for relative in [false, true] {
+                let settings = Settings::new();
+                let (main, worktree, _) = dot_git_separate_checkout(&settings, bare, relative);
+                std::fs::create_dir(main.join(".claude")).unwrap();
+                std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+                assert!(linked_reads_restricted(&settings, &worktree), "bare={bare} relative={relative}");
+            }
+        }
+    }
+
+    #[test]
+    fn dot_git_separate_gitdir_clean_explicit_main_checkout_allows_explore() {
+        for relative in [false, true] {
+            let settings = Settings::new();
+            let (main, worktree, _) = dot_git_separate_checkout(&settings, false, relative);
+            assert_eq!(linked_worktree_main_root(&worktree).unwrap(), Some(main.canonicalize().unwrap()));
+            assert!(!linked_reads_restricted(&settings, &worktree), "relative={relative}");
+        }
+    }
+
+    #[test]
+    fn linked_worktree_git_config_includes_fail_closed() {
+        for header in ["include", "InClUdE", "includeIf \"gitdir:../actual/\"", "InClUdEiF \"gitdir:../actual/\""] {
+            for bare in [false, true] {
+                let settings = Settings::new();
+                let (main, worktree, _) = linked_checkout(&settings, bare, false);
+                let common = if bare { settings.base.join("repo.git") } else { main.join(".git") };
+                let config = format!("[core]\n bare = {bare}\n[{header}]\n path = checkout.config\n");
+                std::fs::write(common.join("config"), &config).unwrap();
+                assert_eq!(git_core_checkout(&config), Err("unsupported git config include"));
+                assert!(linked_reads_restricted(&settings, &worktree), "{header} bare={bare}");
+            }
+        }
     }
 
     #[test]

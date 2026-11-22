@@ -5,18 +5,30 @@
 use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
 use std::sync::LazyLock;
+use tauri::Manager;
+
+static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub(crate) fn init(app: &tauri::AppHandle) {
+    let _ = APP.set(app.clone());
+}
 
 /// Default-on switch shared by the desktop app and headless host.
 const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
 
 /// Unreadable settings fail closed: no idle CLI or ahead-of-turn SessionStart hooks.
 pub fn enabled(app: &tauri::AppHandle) -> bool {
-    !crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).unwrap_or(true)
+    enabled_in(app.path().app_data_dir().map_err(|error| error.to_string()))
+}
+
+fn enabled_in(dir: Result<PathBuf, String>) -> bool {
+    dir.and_then(|dir| dir.join(WARM_SPARES_OFF_FILE).try_exists().map_err(|error| error.to_string()))
+        .is_ok_and(|present| !present)
 }
 
 #[cfg(test)]
 thread_local! {
-    static FORCE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
 /// Provider launch paths have no handle argument; both app entry points initialize this handle.
@@ -24,10 +36,10 @@ thread_local! {
 /// app handle default to enabled so warm-pool and adoption tests run directly, unless overridden.
 pub(super) fn enabled_now() -> bool {
     #[cfg(test)]
-    if FORCE_DISABLED.with(std::cell::Cell::get) {
-        return false;
+    if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
+        return enabled;
     }
-    match crate::cloud_agents::app() {
+    match APP.get() {
         Some(app) => enabled(app),
         None => cfg!(test),
     }
@@ -1027,26 +1039,79 @@ mod tests;
 mod switch_tests {
     use super::*;
 
-    #[test]
-    fn off_marker_is_fail_closed_and_wired_to_every_spare_entry() {
-        // These entry points need a real AppHandle in production. Keep their marker and IPC
-        // contract checked without constructing a WebKit app (the marker IO is tested in app_marker).
-        let source = include_str!("warm.rs");
-        let enabled = &source[source.find("pub fn enabled(").unwrap()..];
-        let enabled = &enabled[..enabled.find("\n}").unwrap()];
-        assert!(enabled.contains("!crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).unwrap_or(true)"));
-        assert_eq!(WARM_SPARES_OFF_FILE, "warm-spares-off");
-        for entry in ["pub(super) fn take(", "pub async fn prewarm(", "fn still_current(", "async fn spawn_claude_process("] {
-            let body = &source[source.find(entry).unwrap()..];
-            let body = &body[..body.find("\n}").unwrap()];
-            assert!(body.contains("!enabled_now()"), "{entry} must fail closed");
+    struct EnabledOverride(Option<bool>);
+
+    impl EnabledOverride {
+        fn new(enabled: bool) -> Self {
+            Self(ENABLED_OVERRIDE.with(|value| value.replace(Some(enabled))))
         }
-        let setter = &source[source.find("pub(crate) async fn set_warm_spares_enabled(").unwrap()..];
-        let setter = &setter[..setter.find("\n}").unwrap()];
-        assert!(setter.find("app_marker::set(").unwrap() < setter.find("discard_all()").unwrap());
-        assert!(setter.contains("if !enabled {"));
-        let lib = include_str!("../lib.rs");
-        assert!(lib.contains("providers::warm::warm_spares_enabled,") && lib.contains("providers::warm::set_warm_spares_enabled,"));
+    }
+
+    impl Drop for EnabledOverride {
+        fn drop(&mut self) {
+            ENABLED_OVERRIDE.with(|value| value.set(self.0));
+        }
+    }
+
+    #[test]
+    fn off_marker_is_default_on_and_fail_closed_on_read_errors() {
+        let dir = std::env::temp_dir().join(format!("warm-switch-marker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(enabled_in(Ok(dir.clone())), "an absent marker enables spares");
+        let marker = dir.join(WARM_SPARES_OFF_FILE);
+        std::fs::write(&marker, "").unwrap();
+        assert!(!enabled_in(Ok(dir.clone())), "a present marker disables spares");
+        // A regular file cannot contain the marker: checking it must fail closed.
+        assert!(!enabled_in(Ok(marker)));
+        assert!(!enabled_in(Err("app data is unavailable".into())));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
+        // Thread-local overrides cannot affect concurrent tests; this runtime keeps the
+        // guard on the same thread across awaits, and Drop restores it even on a panic.
+        let _enabled = EnabledOverride::new(true);
+        let session = format!("warm-switch-off-{}", uuid::Uuid::new_v4());
+        let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+        let mut prepared_config = config.clone();
+        prepared_config.cwd = external_path(&config.cwd);
+        let disabled = crate::skill_manager::disabled_for(&session);
+        let spare_key = key(&prepared(prepared_config, &disabled), &[]);
+        let inputs: Inputs = Arc::new(|| "unchanged".into());
+        assert!(still_current(&spare_key, &config, &[], "unchanged", &inputs));
+        assert!(supported(&config));
+        launched(&session);
+        let launch = epoch(&session);
+        assert_ne!(launch, 0);
+        {
+            let _off = EnabledOverride::new(false);
+            assert!(!enabled_now());
+            assert!(!still_current(&spare_key, &config, &[], "unchanged", &inputs));
+            prewarm(config.clone(), Vec::new(), HashSet::new(), launch, None, || "unchanged".into()).await.unwrap();
+            assert!(!waiting(&session), "disabled prewarm must leave no spare waiting");
+            assert!(spawn_claude_process(config, Vec::new(), HashSet::new(), launch).await.unwrap().is_none(),
+                "disabled spares must return before looking up or spawning a CLI");
+        }
+        assert!(enabled_now(), "the guard restores the previous setting");
+        discard(&session);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn off_switch_retires_a_matching_pooled_spare_instead_of_adopting_it() {
+        let _serial = spare_pool_test_lock().lock().await;
+        let session = format!("warm-switch-take-{}", uuid::Uuid::new_v4());
+        let pid = insert_spare_in_cwd_for_test(&session, std::env::temp_dir(), false);
+        let launch = epoch(&session);
+        assert!(waiting(&session));
+        let _off = EnabledOverride::new(false);
+        assert!(take(&session, "test-spare").is_none());
+        assert!(!waiting(&session), "the disabled take must retire its matching spare");
+        assert!(epoch(&session) > launch, "pending starts for the old launch are invalidated");
+        await_exit(&session).await.unwrap();
+        assert!(process_gone_for_test(pid), "retirement must reap the pooled process");
+        discard(&session);
     }
 
     #[cfg(unix)]

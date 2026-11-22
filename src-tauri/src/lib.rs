@@ -125,10 +125,6 @@ use storage::{ContextUsage, MessagePage, Project, Session, Store};
 use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
-// Compatibility for existing lead-spare tests; the instruction lives with its assembler.
-#[cfg(test)]
-use app_instructions::REUSE;
-
 type Result<T> = std::result::Result<T, String>;
 struct RunningAgent {
     input: UnboundedSender<RunInput>,
@@ -4974,6 +4970,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         shutdown: AtomicU8::new(0),
     });
     cloud_agents::init(app.handle());
+    providers::warm::init(app.handle());
     remote::setup(app.handle(), &dir);
     app.manage(browser::BrowserState::default());
     app.manage(simulator::Simulators::default());

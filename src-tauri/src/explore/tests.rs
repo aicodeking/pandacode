@@ -61,7 +61,7 @@ pub(super) fn hits(root: &Path, pattern: &str, policy: Policy) -> BTreeSet<(Stri
         }
         let view = FileView::new(&paths[at], &bytes, &limit);
         let matches = matching_lines_recording(&compiled, &bytes, &limit, usize::MAX);
-        Some(matches.starts.into_iter().map(|start| (paths[at].to_string(), view.line_at(start))).collect::<Vec<_>>())
+        Some(matches.starts.into_iter().map(|start| (paths[at].to_string(), view.line_at(start).unwrap())).collect::<Vec<_>>())
     });
     found.into_iter().flatten().collect()
 }
@@ -996,4 +996,25 @@ fn cut_lookup_items_carry_partial_notes() {
     for category in ["search", "symbols"] {
         assert!(found[category][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
     }
+}
+
+#[test]
+fn partial_lookup_notes_only_mark_the_job_that_hit_a_parser_limit() {
+    let repo = Repo::new();
+    repo.write("small.txt", "needle\n");
+    repo.write("dense.rs", format!("{}fn run() {{}}\n", "\n".repeat(500_000)));
+    let found = repo.explore(json!({"search":["needle"],"symbols":["run"]}));
+    assert_eq!(found["incomplete"], true, "{found}");
+    assert!(found["symbols"][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
+    assert_eq!(found["search"][0]["matches"], 1, "{found}");
+    assert!(!found["search"][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
+}
+
+#[test]
+fn dense_line_tables_produce_partial_searches_without_panicking() {
+    let repo = Repo::new();
+    repo.write("dense.txt", format!("{}needle\n", "\n".repeat(4 * 1024 * 1024)));
+    let found = repo.explore(json!({"search":["needle"],"glob":["dense.txt"]}));
+    assert_eq!(found["incomplete"], true, "{found}");
+    assert!(found["search"][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
 }

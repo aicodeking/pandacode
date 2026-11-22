@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
 import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup } from './lib.mjs';
 import { armsFor, beforeValues, buildJobs, customToolCalls, simulateEditSteps, simulateNonInferior, REUSE_ARMS, REUSE_CHAIN, REUSE_CHECK, reuseChain, reuseMessage, storedTools } from './run.mjs';
@@ -14,6 +14,63 @@ import { editStepsGate, parseCsv, reuseReport, runFromRow, runsCsv } from './ana
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'bench-core-'));
 const quiet = async fn => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
+
+for (const runner of ['track', 'sh', 'runCommand']) for (const signal of ['SIGINT', 'SIGTERM']) {
+  test(`${runner} ${signal} awaits owned process-group cleanup before runner exit`, { skip: process.platform === 'win32', timeout: 15_000 }, async () => {
+    const dir = scratch();
+    const sleeperFile = join(dir, 'sleeper.pid');
+    const pidFile = join(dir, 'pids.json');
+    const ignoresTerm = signal === 'SIGTERM' || runner !== 'track';
+    const script = `${ignoresTerm ? "trap '' TERM\n" : ''}echo $$ > "$1"\nexec sleep 30`;
+    const command = ['sh', '-c', script, 'sh', sleeperFile];
+    const source = `
+      import { spawn } from 'node:child_process';
+      import { track, sh, runCommand, stopChildrenOnSignal } from ${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)};
+      stopChildrenOnSignal({ graceMs: 300 });
+      const command = ${JSON.stringify(command)};
+      if (${JSON.stringify(runner)} === 'track') {
+        track(spawn(command[0], command.slice(1), { detached: true, stdio: 'ignore' }), ${JSON.stringify(pidFile)});
+      } else if (${JSON.stringify(runner)} === 'sh') {
+        await sh(command[0], command.slice(1), { timeout: 30_000 });
+      } else {
+        await runCommand({ command, cwd: '.' }, ${JSON.stringify(dir)}, null, 30_000);
+      }
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '-e', source], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', data => { stderr += data; });
+    const exited = new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', (code, signal) => resolve({ code, signal })); });
+    let deadline;
+    try {
+      const startupDeadline = Date.now() + 5000;
+      while (!existsSync(sleeperFile) || !readFileSync(sleeperFile, 'utf8').trim() || (runner === 'track' && !existsSync(pidFile))) {
+        assert.ok(Date.now() < startupDeadline, `fixture did not start: ${stderr}`);
+        assert.equal(child.exitCode, null, `fixture exited early: ${stderr}`);
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const sleeper = Number(readFileSync(sleeperFile, 'utf8').trim());
+      assert.ok(Number.isInteger(sleeper) && sleeper > 1);
+      if (runner === 'track') assert.equal(JSON.parse(readFileSync(pidFile, 'utf8'))[0].pid, sleeper);
+      const started = Date.now();
+      child.kill(signal);
+      const result = await Promise.race([
+        exited,
+        new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error(`signal cleanup exceeded four seconds: ${stderr}`)), 4000); }),
+      ]);
+      assert.deepEqual(result, { code: signal === 'SIGINT' ? 130 : 143, signal: null });
+      assert.ok(Date.now() - started < 4000, 'runner exit must be bounded');
+      if (ignoresTerm) assert.ok(Date.now() - started >= 250, 'runner must await the TERM grace period before KILL');
+      assert.throws(() => process.kill(sleeper, 0), { code: 'ESRCH' });
+      if (runner === 'track') assert.deepEqual(JSON.parse(readFileSync(pidFile, 'utf8')), []);
+    } finally {
+      clearTimeout(deadline);
+      if (existsSync(sleeperFile)) signalGroup(Number(readFileSync(sleeperFile, 'utf8').trim()), 'SIGKILL');
+      child.kill('SIGKILL');
+      await exited;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
 
 test('sh timeout closes inherited stdout before a shell grandchild exits naturally', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
   const started = Date.now();

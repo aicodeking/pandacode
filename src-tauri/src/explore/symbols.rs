@@ -142,7 +142,8 @@ fn c_family_rules() -> Rules {
         r("macro", r"^\s*#\s*define\s+(\w+)".into()),
         r("type", r"^\s*typedef\b.*?(\w+)\s*;\s*$".into()),
         r("type", r"^\}\s*(\w+)\s*;\s*$".into()),
-        r("function", r"^\s*(?:[\w:*&<>,~]+\s+)*[*&]*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
+        r("function", r"^\s*(?P<return_type>(?:[\w:<>,~]+(?:\s+|[*&]+\s*))+)[*&]*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
+        r("constructor", r"^\s*(?:(?:inline|constexpr|explicit)\s+)*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
         r("function", r"^[A-Za-z_][\w\s*:&<>,~]*?[\s*&:]~?(\w+)\s*\([^;]*$".into()),
         r("method", r"^\s+(?:(?:virtual|static|inline|explicit|constexpr|friend)\s+)*(?:[\w:*&<>,~]+\s+)*[*&]*(~?\w+)\s*\([^;{]*\)\s*(?:const\b|override\b|noexcept\b|final\b|\s)*(?::[^;{]*)?\{\s*$".into()),
     ]
@@ -273,7 +274,39 @@ pub(super) fn extract_checked(path: &str, text: &str, limit: &Limit) -> (Vec<Sym
         return (symbols, true);
     }
     set_ends(language, &lines, &lex, &mut symbols, limit);
+    if language == Language::CFamily {
+        retain_cpp_definitions(&lex, &mut symbols, limit);
+    }
     (symbols, limit.expired())
+}
+
+/// Qualified definitions can live in namespaces/classes, but never in a function or an
+/// arbitrary block. Resolved spans let this sweep distinguish their braces without treating
+/// indentation as syntax. Rejected calls must not become enclosing functions themselves.
+fn retain_cpp_definitions(lex: &Lexed, symbols: &mut Vec<Symbol>, limit: &Limit) {
+    let mut containers: Vec<(usize, i32)> = Vec::new();
+    let mut function_end = 0;
+    let mut seen = 0usize;
+    symbols.retain(|symbol| {
+        seen += 1;
+        if seen.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return false;
+        }
+        while containers.last().is_some_and(|&(end, _)| end < symbol.line) {
+            containers.pop();
+        }
+        let depth = lex.depth_before[symbol.line - 1];
+        let allowed_depth = containers.last().map_or(0, |&(_, depth)| depth);
+        if symbol.qualifier.is_some() && (symbol.line <= function_end || depth != allowed_depth) {
+            return false;
+        }
+        match symbol.kind {
+            "class" => containers.push((symbol.end, depth + 1)),
+            "function" | "method" => function_end = function_end.max(symbol.end),
+            _ => {}
+        }
+        true
+    });
 }
 
 fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> Option<(&'static str, String, Option<String>)> {
@@ -284,6 +317,20 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     let captures = regex.captures(line)?;
     let name = captures.name("name").or_else(|| captures.get(1))?.as_str();
     let qualifier = captures.name("qualifier").map(|value| value.as_str().to_owned());
+    if language == Language::CFamily && qualifier.is_some() {
+        let constructor = qualifier.as_deref().is_some_and(|q| q.rsplit("::").next() == Some(name));
+        let has_type = captures.name("return_type").is_some_and(|lead| {
+            lead.as_str().split(|c: char| c.is_whitespace() || matches!(c, '*' | '&')).any(|word| {
+                !word.is_empty() && !["inline", "static", "constexpr", "consteval", "constinit", "virtual", "explicit", "friend", "const", "volatile"].contains(&word)
+            })
+        });
+        if !has_type && !constructor {
+            return None;
+        }
+        if *kind == "constructor" {
+            return Some(("function", name.to_owned(), qualifier));
+        }
+    }
     let guessed = matches!((language, *kind), (Language::Script | Language::Java, "method" | OPEN_METHOD) | (Language::CFamily, "function" | "method"));
     if guessed && (NOT_NAMES.contains(&name) || first_word_blocks(line)) {
         return None;

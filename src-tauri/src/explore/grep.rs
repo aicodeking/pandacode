@@ -2,7 +2,8 @@
 //! only the jobs that may match it look at its bytes. Line semantics follow ripgrep.
 use super::{
     index::{parallel, SkipList, Snapshot},
-    limit::Limit,
+    lex::LIMIT_CHECK_BYTES,
+    limit::{Limit, ParseBytesGuard},
     named::MAX_NAMED_BYTES,
     plan::{Pattern, Scan},
     shape::{Group, Line},
@@ -10,7 +11,7 @@ use super::{
 };
 use regex::bytes::Regex;
 use std::{
-    cell::OnceCell,
+    cell::{Cell, OnceCell},
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::{
@@ -58,6 +59,8 @@ pub(super) struct Definition {
 
 #[derive(Default)]
 pub(super) struct FileResult {
+    /// This file's matching, parsing or line rendering missed work.
+    pub(super) cut: bool,
     pub(super) path: Arc<str>,
     pub(super) matched: usize,
     pub(super) in_scope: bool,
@@ -81,6 +84,8 @@ pub(super) struct FileResult {
 
 #[derive(Default)]
 pub(super) struct JobResult {
+    /// The shared walk or this job's own file processing missed work.
+    pub(super) cut: bool,
     pub(super) files: Vec<FileResult>,
     pub(super) matched_lines: usize,
     pub(super) total_files: usize,
@@ -143,10 +148,12 @@ pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &S
     let crossing: Vec<AtomicUsize> = jobs.iter().map(|_| AtomicUsize::new(0)).collect();
     let strict = snapshot.walk.strict;
     let shared = Shared { root, jobs, crossing: &crossing, binary: &binary, limit, strict };
-    let mut results: Vec<JobResult> = jobs.iter().map(|_| JobResult::default()).collect();
+    let walk_cut = snapshot.walk.incomplete || limit.expired();
+    let mut results: Vec<JobResult> = jobs.iter().map(|_| JobResult { cut: walk_cut, ..JobResult::default() }).collect();
     let mut fallbacks: Vec<JobResult> = jobs.iter().map(|_| JobResult::default()).collect();
     for chunk in work.chunks(WORK_CHUNK) {
         if limit.expired() {
+            results.iter_mut().for_each(|result| result.cut = true);
             break;
         }
         let found = parallel(chunk.len(), |at| (!limit.expired()).then(|| search_file(&shared, &chunk[at])));
@@ -155,6 +162,9 @@ pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &S
                 fallbacks[bit].add(FileResult { path: file.path.clone(), matched: file.matched, in_scope: file.in_scope, definitions, definition_count, ..FileResult::default() }, &jobs[bit].kind);
             }
             results[bit].add(file, &jobs[bit].kind);
+        }
+        if limit.expired() {
+            results.iter_mut().for_each(|result| result.cut = true);
         }
         // Parallel completion order is arbitrary. Sort before pruning so no later chunk or
         // faster worker can displace an earlier result of the same rank.
@@ -180,6 +190,10 @@ pub(super) fn run_jobs(root: &Path, snapshot: &Snapshot, jobs: &[Job], scope: &S
 
 impl JobResult {
     fn add(&mut self, file: FileResult, kind: &Kind) {
+        self.cut |= file.cut;
+        if file.matched == 0 {
+            return;
+        }
         if !file.in_scope {
             self.outside_files += 1;
             self.outside_matches += file.matched;
@@ -247,15 +261,20 @@ fn add_groups(root: &Path, jobs: &[Job], results: &mut [JobResult], limit: &Limi
     let shared: &[JobResult] = results;
     let grouped = parallel(wanted.len(), |at| {
         let (path, slots) = &wanted[at];
-        let bytes = (!limit.expired()).then(|| super::read_file(root, &root.join(&**path), MAX_NAMED_BYTES, strict)).flatten()?;
+        let bytes = (!limit.expired()).then(|| super::read_file(root, &root.join(&**path), MAX_NAMED_BYTES, strict)).flatten();
+        let Some(bytes) = bytes else {
+            return Some(slots.iter().map(|&(bit, file)| (bit, file, (Vec::new(), 0), limit.expired())).collect::<Vec<_>>());
+        };
         let view = FileView::new(path, &bytes, limit);
         let groups = slots.iter().map(|&(bit, file)| {
             let Kind::Search { context } = jobs[bit].kind else { unreachable!("only searches are grouped") };
-            (bit, file, view.groups(&shared[bit].files[file].lines, context, &jobs[bit].pattern.regex))
+            let groups = view.groups(&shared[bit].files[file].lines, context, &jobs[bit].pattern.regex);
+            (bit, file, groups, view.cut.get() || limit.expired())
         });
         Some(groups.collect::<Vec<_>>())
     });
-    for (bit, file, (groups, clipped)) in grouped.into_iter().flatten() {
+    for (bit, file, (groups, clipped), cut) in grouped.into_iter().flatten() {
+        results[bit].cut |= cut;
         (results[bit].files[file].groups, results[bit].files[file].clipped_lines) = (groups, clipped);
     }
 }
@@ -281,8 +300,11 @@ fn search_file(shared: &Shared, work: &Work) -> Vec<(usize, FileResult)> {
         if work.mask & 1 << bit == 0 {
             continue;
         }
-        let matches = matching_lines(&job.pattern, &bytes, shared.limit);
+        let matches = if shared.limit.expired() { Matches::default() } else { matching_lines(&job.pattern, &bytes, shared.limit) };
         if matches.count == 0 {
+            if shared.limit.expired() {
+                found.push((bit, FileResult { cut: true, ..FileResult::default() }));
+            }
             shared.crossing[bit].fetch_add(usize::from(matches.crossed && work.in_scope), Ordering::Relaxed);
             continue;
         }
@@ -387,30 +409,70 @@ pub(super) struct FileView<'a> {
     path: &'a str,
     bytes: &'a [u8],
     limit: &'a Limit,
-    starts: OnceCell<Vec<usize>>,
-    symbols: OnceCell<Vec<Symbol>>,
+    starts: OnceCell<Option<(Vec<usize>, ParseBytesGuard<'a>)>>,
+    symbols: OnceCell<(Vec<Symbol>, bool)>,
+    cut: Cell<bool>,
 }
 
 impl<'a> FileView<'a> {
     pub(super) fn new(path: &'a str, bytes: &'a [u8], limit: &'a Limit) -> Self {
-        Self { path, bytes, limit, starts: OnceCell::new(), symbols: OnceCell::new() }
+        Self { path, bytes, limit, starts: OnceCell::new(), symbols: OnceCell::new(), cut: Cell::new(false) }
     }
 
-    fn starts(&self) -> &[usize] {
-        self.starts.get_or_init(|| {
-            let lines = self.bytes.iter().enumerate().filter(|(_, &b)| b == b'\n').map(|(at, _)| at + 1);
-            std::iter::once(0).chain(lines.filter(|&at| at < self.bytes.len())).collect()
-        })
+    fn starts(&self) -> Option<&[usize]> {
+        let table = self.starts.get_or_init(|| {
+            let mut line_count = 0usize;
+            for chunk in self.bytes.chunks(LIMIT_CHECK_BYTES) {
+                if self.limit.expired() {
+                    return None;
+                }
+                line_count += chunk.iter().filter(|&&byte| byte == b'\n').count();
+            }
+            if self.limit.expired() {
+                return None;
+            }
+            let Some(capacity) = line_count.checked_add(1) else {
+                self.limit.cut();
+                return None;
+            };
+            let Some(needed) = capacity.checked_mul(size_of::<usize>()) else {
+                self.limit.cut();
+                return None;
+            };
+            let Some(guard) = self.limit.reserve_parse_bytes(needed) else {
+                self.limit.cut();
+                return None;
+            };
+            let mut starts = Vec::with_capacity(capacity);
+            starts.push(0);
+            for (chunk, bytes) in self.bytes.chunks(LIMIT_CHECK_BYTES).enumerate() {
+                if self.limit.expired() {
+                    return None;
+                }
+                for (at, &byte) in bytes.iter().enumerate() {
+                    let next = chunk * LIMIT_CHECK_BYTES + at + 1;
+                    if byte == b'\n' && next < self.bytes.len() {
+                        starts.push(next);
+                    }
+                }
+            }
+            Some((starts, guard))
+        });
+        if table.is_none() {
+            self.cut.set(true);
+        }
+        table.as_ref().map(|(starts, _guard)| starts.as_slice())
     }
 
-    pub(super) fn line_at(&self, offset: usize) -> usize {
-        self.starts().partition_point(|&start| start <= offset)
+    pub(super) fn line_at(&self, offset: usize) -> Option<usize> {
+        Some(self.starts()?.partition_point(|&start| start <= offset))
     }
 
     fn line_bytes(&self, line: usize) -> &[u8] {
-        let starts = self.starts();
+        let Some(starts) = self.starts() else { return &[] };
+        let Some(&start) = line.checked_sub(1).and_then(|at| starts.get(at)) else { return &[] };
         let end = starts.get(line).map_or(self.bytes.len(), |&next| next - 1);
-        let bytes = &self.bytes[starts[line - 1]..end];
+        let bytes = &self.bytes[start..end];
         let bytes = bytes.strip_suffix(b"\n").unwrap_or(bytes);
         bytes.strip_suffix(b"\r").unwrap_or(bytes)
     }
@@ -420,19 +482,26 @@ impl<'a> FileView<'a> {
     }
 
     fn symbols(&self) -> &[Symbol] {
-        self.symbols.get_or_init(|| symbols::extract(self.path, &String::from_utf8_lossy(self.bytes), self.limit))
+        let (symbols, cut) = self.symbols.get_or_init(|| symbols::extract_checked(self.path, &String::from_utf8_lossy(self.bytes), self.limit));
+        self.cut.set(self.cut.get() || *cut);
+        symbols
     }
 
     fn result(&self, path: &Arc<str>, matches: &Matches, job: &Job, in_scope: bool) -> FileResult {
-        let mut result = FileResult { path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), definition_count: 0, unqualified: None, imports: 0, test_score: 0, lines: Vec::new(), first_hit: None, defines: false };
-        if !in_scope {
-            result.first_hit = matches.starts.first().map(|&start| {
-                let line = self.line_at(start);
-                format!("{line}:{}", window_around_match(self.line_bytes(line), &job.pattern.regex).0)
-            });
+        let mut result = FileResult { cut: false, path: path.clone(), matched: matches.count, in_scope, groups: Vec::new(), clipped_lines: 0, definitions: Vec::new(), definition_count: 0, unqualified: None, imports: 0, test_score: 0, lines: Vec::new(), first_hit: None, defines: false };
+        if self.starts().is_none() || self.limit.expired() {
+            result.cut = true;
             return result;
         }
-        let hits: Vec<usize> = matches.starts.iter().map(|&start| self.line_at(start)).collect();
+        if !in_scope {
+            result.first_hit = matches.starts.first().and_then(|&start| {
+                let line = self.line_at(start)?;
+                Some(format!("{line}:{}", window_around_match(self.line_bytes(line), &job.pattern.regex).0))
+            });
+            result.cut = self.cut.get() || self.limit.expired();
+            return result;
+        }
+        let hits: Vec<usize> = matches.starts.iter().filter_map(|&start| self.line_at(start)).collect();
         match &job.kind {
             Kind::Search { .. } => {
                 let defines = self.defining_lines(&job.pattern.regex);
@@ -451,6 +520,7 @@ impl<'a> FileView<'a> {
                 result.test_score = super::tests_for::mention_score(path, stem, result.imports, result.matched);
             }
         }
+        result.cut = self.cut.get() || self.limit.expired();
         result
     }
 
@@ -474,7 +544,8 @@ impl<'a> FileView<'a> {
     /// Hit lines with their context, split by the enclosing symbol, and how many were clipped.
     /// `hits` carry whether each defines what the pattern names, found by the search.
     fn groups(&self, hits: &[(usize, bool)], context: usize, regex: &Regex) -> (Vec<Group>, usize) {
-        let last_line = self.starts().len();
+        let Some(starts) = self.starts() else { return (Vec::new(), 0) };
+        let last_line = starts.len();
         // The file may have changed since it was searched.
         let hits: Vec<(usize, bool)> = hits.iter().copied().filter(|&(hit, _)| hit <= last_line).collect();
         let mut wanted: BTreeMap<usize, bool> = BTreeMap::new();
@@ -488,7 +559,11 @@ impl<'a> FileView<'a> {
         let spans: Vec<Symbol> = self.symbols().iter().filter(|symbol| symbol.end > symbol.line).cloned().collect();
         let mut enclosing = Enclosing::new(&spans);
         let (mut groups, mut clipped): (Vec<Group>, usize) = (Vec::new(), 0);
-        for (line, hit) in wanted {
+        for (seen, (line, hit)) in wanted.into_iter().enumerate() {
+            if seen.is_multiple_of(LIMIT_CHECK_LINES) && self.limit.expired() {
+                self.cut.set(true);
+                break;
+            }
             let symbol = enclosing.at(line).map(|symbol| format!("{} {}-{}", symbol.name, symbol.line, symbol.end));
             let (shown, cut, at) = if hit { window_around_match(self.line_bytes(line), regex) } else { (self.line_text(line).trim_start().to_owned(), false, 0) };
             clipped += usize::from(cut);
@@ -514,6 +589,7 @@ impl<'a> FileView<'a> {
                 found.push(Definition { signature: self.line_text(symbol.line).trim().to_owned(), symbol: symbol.clone() });
             }
         });
+        self.cut.set(self.cut.get() || self.limit.expired());
         (found, count)
     }
 
@@ -592,7 +668,7 @@ mod tests {
     fn lines_of(pattern: &str, text: &str) -> Vec<usize> {
         let limit = limit();
         let view = FileView::new("a.txt", text.as_bytes(), &limit);
-        matching_lines(&compile(pattern, false).unwrap(), text.as_bytes(), &limit).starts.into_iter().map(|start| view.line_at(start)).collect()
+        matching_lines(&compile(pattern, false).unwrap(), text.as_bytes(), &limit).starts.into_iter().map(|start| view.line_at(start).unwrap()).collect()
     }
 
     #[test]
@@ -606,6 +682,52 @@ mod tests {
         assert_eq!(lines_of(r"\bx", "x\n"), [1]);
         assert_eq!(lines_of(r"\Afoo", "foo\nfoo\nx foo\n"), [1, 2]);
         assert_eq!(lines_of(r"foo\z", "foo\nx foo\nfoo x\n"), [1, 2]);
+    }
+
+    #[test]
+    fn line_tables_refuse_dense_files_without_spending_scratch_bytes() {
+        let bytes = vec![b'\n'; 4 * 1024 * 1024];
+        let budget = limit();
+        let view = FileView::new("dense.txt", &bytes, &budget);
+        assert_eq!(view.line_at(0), None);
+        assert!(view.starts().is_none());
+        assert!(view.line_bytes(0).is_empty());
+        assert!(view.line_bytes(1).is_empty());
+        let job = Job { pattern: compile("^$", true).unwrap(), kind: Kind::Search { context: 0 } };
+        let matches = Matches { starts: vec![0], count: 1, crossed: false };
+        let file = view.result(&Arc::from("dense.txt"), &matches, &job, true);
+        assert!(file.cut && file.lines.is_empty());
+        assert!(view.groups(&[(1, false)], 0, &job.pattern.regex).0.is_empty());
+        assert!(budget.was_cut());
+        // Refusal must happen before allocating or reserving any part of the table.
+        assert!(budget.reserve_parse_bytes(super::super::limit::MAX_PARSE_BYTES).is_some());
+    }
+
+    #[test]
+    fn line_tables_stop_before_building_for_cancelled_or_expired_calls() {
+        let bytes = vec![b'\n'; 4 * 1024 * 1024];
+        for budget in [Limit::lasting(Duration::ZERO, Arc::default()), Limit::new(Arc::new(std::sync::atomic::AtomicBool::new(true)))] {
+            let view = FileView::new("dense.txt", &bytes, &budget);
+            assert_eq!(view.line_at(0), None);
+            assert!(view.starts().is_none());
+            assert!(budget.was_cut());
+            assert!(budget.reserve_parse_bytes(super::super::limit::MAX_PARSE_BYTES).is_some());
+        }
+    }
+
+    #[test]
+    fn line_table_reservations_live_until_the_file_view_drops() {
+        let bytes = b"a\nb\n";
+        let needed = 3 * size_of::<usize>();
+        let budget = Limit::with_parse_bytes(needed);
+        for _ in 0..3 {
+            let view = FileView::new("small.txt", bytes, &budget);
+            assert_eq!(view.line_at(2), Some(2));
+            assert!(budget.reserve_parse_bytes(1).is_none());
+            drop(view);
+            assert!(budget.reserve_parse_bytes(needed).is_some());
+        }
+        assert!(!budget.was_cut());
     }
 
     /// CPU time this thread has used (wall time where there is no such clock).

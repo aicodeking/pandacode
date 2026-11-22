@@ -355,7 +355,7 @@ mod tests {
             // The launch really carries what the parity is about.
             assert_eq!(wake.instructions.contains("pandacode_explore"), explore_on, "{explore_on}");
             assert_eq!(names(&wake_tools).contains(&"pandacode_explore"), explore_on, "{explore_on}");
-            assert!(wake.instructions.contains(crate::REUSE));
+            assert!(wake.instructions.contains(crate::app_instructions::REUSE));
             assert!(names(&wake_tools).contains(&crate::custom_tools::TOOL_RUN));
         }
     }

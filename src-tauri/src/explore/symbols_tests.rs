@@ -579,7 +579,7 @@ fn non_nested_receiver_methods_keep_their_qualifiers() {
         ("a.cpp", "std::string A::method() {}\n", "A", "method"),
         ("a.cpp", "const Foo *A::method() {}\n", "A", "method"),
         ("a.cpp", "void Foo::Bar::baz() {}\n", "Bar", "baz"),
-        ("a.cpp", "Foo::Bar::baz() {}\n", "Bar", "baz"),
+        ("a.cpp", "Foo::Bar::Bar() {}\n", "Bar", "Bar"),
         ("a.kt", "fun Foo.bar() {}\n", "Foo", "bar"),
         ("a.rb", "def Foo.bar\nend\n", "Foo", "bar"),
     ] {
@@ -592,5 +592,46 @@ fn non_nested_receiver_methods_keep_their_qualifiers() {
         let mut wrong = Vec::new();
         qualified_matches(&found, Some(&format!("{qualifier}Extra")), |_| true, &limit(), |symbol| wrong.push(symbol));
         assert!(wrong.is_empty());
+    }
+}
+
+#[test]
+fn cpp_qualified_calls_are_not_definitions() {
+    for text in [
+        "    std::for_each(v.begin(), v.end(), [](int x) {\n",
+        "    QObject::connect(btn, &QPushButton::clicked, this, [this] {\n",
+        "    spdlog::info(\"x {}\",\n",
+        "Foo::Bar::baz() {}\n",
+        "inline A::method() {}\n",
+        "constexpr A::method() {}\n",
+        "namespace foo {\n    {\n        A::A()\n    }\n}\n",
+        "class C {\n    void f() {\n        A::A()\n    }\n};\n",
+        "void f() {\n    A::A()\n}\n",
+        "void f() {\nA::A()\n}\n",
+        "void f() {\n    void A::method() {\n    }\n}\n",
+        "void f() {\n    std::for_each(v.begin(), v.end(), [](int x) {\n    });\n    QObject::connect(btn, &QPushButton::clicked, this, [this] {\n    });\n    spdlog::info(\"x {}\",\n        1);\n    A::A();\n}\n",
+    ] {
+        let found = symbols("a.cpp", text);
+        assert!(found.iter().all(|symbol| symbol.qualifier.is_none()), "{text}: {found:?}");
+        assert!(found.iter().all(|symbol| !["for_each", "connect", "info", "baz", "A", "method"].contains(&symbol.name.as_str())), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn cpp_qualified_definitions_accept_types_and_constructors_in_namespaces() {
+    for (declaration, qualifier, name) in [
+        ("void A::method() {}", "A", "method"),
+        ("std::string ns::A::method() {}", "ns::A", "method"),
+        ("Foo* A::make() {}", "A", "make"),
+        ("Foo&A::get() {}", "A", "get"),
+        ("A::A() {}", "A", "A"),
+        ("A::~A() {}", "A", "A"),
+        ("inline A::A() {}", "A", "A"),
+        ("inline void A::method() {}", "A", "method"),
+    ] {
+        for text in [format!("{declaration}\n"), format!("namespace foo {{\n    {declaration}\n}}\n"), format!("namespace foo\n{{\n    {declaration}\n}}\n")] {
+            let found = symbols("a.cpp", &text);
+            assert!(found.iter().any(|symbol| symbol.name == name && symbol.qualifier.as_deref() == Some(qualifier)), "{text}: {found:?}");
+        }
     }
 }
