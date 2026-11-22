@@ -154,16 +154,31 @@ fn walk_cap() -> usize {
 pub(super) fn walk(root: &Path, strict: bool, limit: &Limit) -> Walk {
     let (secret, excluded) = (Arc::new(Mutex::new(SkipList::default())), Arc::new(Mutex::new(SkipList::default())));
     let large = Mutex::new(SkipList::default());
-    let (entries, stopped) = (AtomicUsize::new(0), AtomicBool::new(false));
+    let (entries, stopped) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicBool::new(false)));
     let (filter_root, filter_secret, filter_excluded) = (root.to_owned(), secret.clone(), excluded.clone());
-    let walker = crate::workspace::project_walker(root).threads(worker_count()).filter_entry(move |entry| admit(&filter_root, entry, strict, &filter_secret, &filter_excluded)).build_parallel();
-    let (sender, receiver) = mpsc::channel();
+    let (filter_entries, filter_stopped, expired) = (entries.clone(), stopped.clone(), limit.expiration_check());
     let cap = walk_cap();
+    let walker = crate::workspace::project_walker(root).threads(worker_count()).filter_entry(move |entry| {
+        let seen = filter_entries.fetch_add(1, Ordering::Relaxed);
+        if filter_stopped.load(Ordering::Relaxed) || seen >= cap || (seen.is_multiple_of(WALK_LIMIT_CHECK) && expired()) {
+            filter_stopped.store(true, Ordering::Relaxed);
+            // False would keep scanning read_dir. Pass this entry to the visitor to Quit.
+            return true;
+        }
+        admit(&filter_root, entry, strict, &filter_secret, &filter_excluded)
+    }).build_parallel();
+    let (sender, receiver) = mpsc::channel();
     walker.run(|| {
         let (sender, entries, large, stopped) = (sender.clone(), &entries, &large, &stopped);
         Box::new(move |entry| {
             use ignore::WalkState;
-            let seen = entries.fetch_add(1, Ordering::Relaxed);
+            if stopped.load(Ordering::Relaxed) {
+                limit.cut();
+                return WalkState::Quit;
+            }
+            // Root and errors bypass filter_entry; successful children were counted there.
+            let unfiltered = !entry.as_ref().is_ok_and(|entry| entry.depth() > 0);
+            let seen = if unfiltered { entries.fetch_add(1, Ordering::Relaxed) } else { entries.load(Ordering::Relaxed).saturating_sub(1) };
             if seen >= cap || (seen.is_multiple_of(WALK_LIMIT_CHECK) && limit.expired()) {
                 limit.cut();
                 stopped.store(true, Ordering::Relaxed);
@@ -182,6 +197,9 @@ pub(super) fn walk(root: &Path, strict: bool, limit: &Limit) -> Walk {
             WalkState::Continue
         })
     });
+    if stopped.load(Ordering::Relaxed) {
+        limit.cut();
+    }
     drop(sender);
     let mut files: Vec<WalkedFile> = receiver.into_iter().filter_map(|(path, fingerprint)| Some(WalkedFile { path: relative(root, &path)?.into(), fingerprint })).collect();
     files.sort_unstable_by(|a, b| a.path.cmp(&b.path));

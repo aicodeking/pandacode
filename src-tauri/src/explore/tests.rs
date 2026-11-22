@@ -734,15 +734,59 @@ fn a_line_and_column_from_compiler_output_reads_around_that_line() {
     assert_eq!((reply["read"][0]["from"].as_u64(), reply["read"][0]["to"].as_u64()), (Some(32), Some(50)), "{reply}");
 }
 
+/// Restore the calling test thread's cap even when an assertion panics.
+struct WalkCapGuard(usize);
+
+impl WalkCapGuard {
+    fn set(value: usize) -> Self {
+        Self(super::index::WALK_CAP.with(|cap| cap.replace(value)))
+    }
+}
+
+impl Drop for WalkCapGuard {
+    fn drop(&mut self) {
+        super::index::WALK_CAP.with(|cap| cap.set(self.0));
+    }
+}
+
+#[test]
+fn refused_entries_count_toward_the_walk_cap_and_quit_early() {
+    let repo = Repo::new();
+    for at in 0..200 {
+        repo.write(&format!("secret{at}.pem"), "secret");
+    }
+    repo.write("valid.rs", "fn valid() {}\n");
+    let _cap = WalkCapGuard::set(4);
+    let budget = limit();
+    let walk = super::index::walk(&repo.0, false, &budget);
+    assert!(walk.incomplete && budget.was_cut());
+    assert!(walk.secret.count < 200, "the filter must pass a cut entry to the quitting visitor");
+    assert!(walk.files.iter().all(|file| file.path.ends_with(".rs")));
+}
+
+#[test]
+fn expired_or_stopped_walks_quit_before_recording_refused_entries() {
+    let repo = Repo::new();
+    for at in 0..2_500 {
+        repo.write(&format!("secret{at}.pem"), "secret");
+    }
+    repo.write("valid.rs", "fn valid() {}\n");
+    for budget in [Limit::lasting(std::time::Duration::ZERO, Arc::default()), Limit::new(Arc::new(AtomicBool::new(true)))] {
+        let walk = super::index::walk(&repo.0, false, &budget);
+        assert!(walk.incomplete && budget.was_cut());
+        assert_eq!(walk.secret.count, 0);
+        assert!(walk.files.is_empty());
+    }
+}
+
 #[test]
 fn a_walk_stopped_at_its_entry_cap_says_the_reply_is_incomplete() {
     let repo = Repo::new();
     for at in 0..10 {
         repo.write(&format!("f{at}.rs"), "needle\n");
     }
-    super::index::WALK_CAP.with(|cap| cap.set(3));
+    let _cap = WalkCapGuard::set(3);
     let reply = repo.explore(json!({"search":["needle"]}));
-    super::index::WALK_CAP.with(|cap| cap.set(500_000));
     assert_eq!(reply["incomplete"], true, "{reply}");
 }
 

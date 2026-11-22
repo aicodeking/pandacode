@@ -635,3 +635,46 @@ fn cpp_qualified_definitions_accept_types_and_constructors_in_namespaces() {
         }
     }
 }
+
+#[test]
+fn cpp_namespace_and_linkage_blocks_keep_qualified_definitions_and_reject_calls() {
+    for header in [
+        "namespace {", "namespace /* anon */ {", "namespace { // internal",
+        "namespace\n{", "namespace /* anon */\n{",
+        "inline namespace v1 {", "inline namespace v1::v2 {",
+        "namespace a::b {", "namespace a::inline b {",
+        "namespace foo { // helpers", "namespace foo { /* helpers */",
+        "namespace foo // helpers\n{", "namespace foo /* helpers */\n{",
+        "namespace outer {\nnamespace {", "namespace outer {\ninline namespace inner {",
+        "extern \"C\" {", "extern \"C\"\n{", "extern \"C++\" { // linkage",
+    ] {
+        let closes = "}\n".repeat(header.matches('{').count());
+        let text = format!("{header}\nvoid Foo::bar() {{\n    std::for_each(v.begin(), v.end(), [](int x) {{\n    }});\n    QObject::connect(btn, signal, this, [this] {{\n    }});\n    spdlog::info(\"value\",\n        1);\n    Widget::helper();\n    Widget::Widget()\n    void Widget::bogus() {{}}\n}}\nFoo::Foo() {{}}\n{closes}void After::done() {{}}\n");
+        let found = symbols("a.cpp", &text);
+        for (qualifier, name) in [("Foo", "bar"), ("Foo", "Foo"), ("After", "done")] {
+            assert!(found.iter().any(|symbol| symbol.name == name && symbol.qualifier.as_deref() == Some(qualifier)), "{header}: {found:?}");
+        }
+        assert!(found.iter().all(|symbol| !symbol.name.is_empty()), "{header}: {found:?}");
+        assert!(found.iter().all(|symbol| !["for_each", "connect", "info", "helper", "Widget", "bogus"].contains(&symbol.name.as_str())), "{header}: {found:?}");
+    }
+}
+
+#[test]
+fn cpp_commented_named_containers_keep_clean_names_and_spans() {
+    for (header, name) in [
+        ("inline namespace v1 { // version", "v1"),
+        ("namespace a::b { /* nested */", "a::b"),
+        ("namespace a::inline b {", "a::b"),
+        ("namespace foo // helpers\n{", "foo"),
+        ("class Foo { // implementation", "Foo"),
+        ("struct Foo { /* implementation */", "Foo"),
+        ("union Foo // implementation\n{", "Foo"),
+        ("enum class Foo { // implementation", "Foo"),
+    ] {
+        let text = format!("{header}\n    void Widget::method() {{}}\n}};\n");
+        let found = symbols("a.cpp", &text);
+        let container = found.iter().find(|symbol| symbol.name == name && symbol.kind == "class").unwrap_or_else(|| panic!("{header}: {found:?}"));
+        assert_eq!((container.line, container.end), (1, text.lines().count()), "{header}: {found:?}");
+        assert!(found.iter().any(|symbol| symbol.name == "method" && symbol.qualifier.as_deref() == Some("Widget")), "{header}: {found:?}");
+    }
+}

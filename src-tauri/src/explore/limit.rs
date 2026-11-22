@@ -72,6 +72,12 @@ impl Limit {
         over
     }
 
+    /// An owned deadline/Stop check for a walk's static filter. Its caller propagates cuts.
+    pub(super) fn expiration_check(&self) -> impl Fn() -> bool + Send + Sync + 'static {
+        let (deadline, stopped) = (self.deadline, self.stopped.clone());
+        move || stopped.load(Ordering::Relaxed) || Instant::now() >= deadline
+    }
+
     /// The call missed something for another reason, such as the walk's entry cap.
     pub(super) fn cut(&self) {
         self.cut.store(true, Ordering::Relaxed);

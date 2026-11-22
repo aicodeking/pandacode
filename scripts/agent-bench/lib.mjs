@@ -158,7 +158,8 @@ export const sh = (command, argv, options = {}) => new Promise((resolve, reject)
   });
   child.on('close', async status => {
     clearTimeout(timer);
-    await cleanup;
+    if (timedOut) await cleanup;
+    else if (!windows && child.pid && groupAlive(child.pid)) await terminateGroup(child.pid, killGraceMs);
     child.untrack();
     // A shell can handle TERM with exit zero; it still exceeded its deadline.
     resolve({ status: timedOut ? null : status, stdout, stderr, timedOut });
@@ -367,6 +368,7 @@ export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidF
     const started = Date.now();
     const child = track(spawn('claude', ['-p', '--input-format', 'stream-json', ...argv], { cwd, env: safeEnv(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], detached: true }), pidFile, { autoUntrack: false });
     const out = createWriteStream(stream);
+    out.on('error', () => {}); // a failed output stream must not crash the batch
     const queue = [...messages];
     const send = () => {
       const content = queue.shift();
@@ -385,19 +387,31 @@ export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidF
     });
     child.stderr.on('data', data => { stderr += data; });
     child.stdin.on('error', () => {}); // a harness that died early is reported by its exit code
-    send();
+    let settled = false;
     let timedOut = false;
     let cleanup = null;
     const timer = setTimeout(() => {
       timedOut = true;
       cleanup = child.pid ? terminateGroup(child.pid, killGraceMs) : (child.kill('SIGTERM'), Promise.resolve());
     }, timeoutMs);
-    child.on('close', async code => {
+    child.once('error', async error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      await cleanup;
+      child.untrack();
+      out.end(() => resolve({ code: null, timedOut: false, spawnError: error.code ?? error.message, wallMs: Date.now() - started, stderr: (stderr || error.message || String(error)).slice(-2000) }));
+    });
+    child.once('close', async code => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       if (timedOut) await cleanup;
+      else if (child.pid && groupAlive(child.pid)) await terminateGroup(child.pid, killGraceMs);
       child.untrack();
       out.end(() => resolve({ code, timedOut, wallMs: Date.now() - started, stderr: stderr.slice(-2000) }));
     });
+    send();
   });
 }
 
@@ -421,10 +435,11 @@ export async function gradeEdit(task, work, target, verified, gitDir = REPO) {
   const suite = task.suite ? await runCommand(task.suite, work, target) : null;
   const baseline = new Set(verified[task.id]?.suiteBaselineFailed ?? []);
   const newFailures = (suite?.failed ?? []).filter(name => !baseline.has(name));
+  const suiteOk = !suite || suite.pass || (suite.kind === 'assertion' && suite.failed.length > 0 && !newFailures.length);
   const status = (await sh('git', ['-C', work, 'status', '--porcelain'])).stdout.split('\n').filter(Boolean);
   const overlaid = new Set(task.overlay.map(o => o.path));
   const changed = status.map(line => line.slice(3)).filter(path => !overlaid.has(path) && path !== 'src-tauri/Cargo.lock' && path !== 'src-tauri/Cargo.toml');
-  return { pass: test.pass && !newFailures.length, testPass: test.pass, testKind: test.kind, testFailed: test.failed, newSuiteFailures: newFailures, suiteKind: suite?.kind ?? null, testMs: test.ms, tail: test.tail.slice(-1000), changed };
+  return { pass: test.pass && suiteOk, testPass: test.pass, testKind: test.kind, testFailed: test.failed, newSuiteFailures: newFailures, suiteKind: suite?.kind ?? null, testMs: test.ms, tail: test.tail.slice(-1000), changed };
 }
 
 

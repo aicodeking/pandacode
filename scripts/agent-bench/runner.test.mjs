@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
-import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup } from './lib.mjs';
+import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, gradeEdit, groupAlive, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup } from './lib.mjs';
 import { armsFor, beforeValues, buildJobs, customToolCalls, simulateEditSteps, simulateNonInferior, REUSE_ARMS, REUSE_CHAIN, REUSE_CHECK, reuseChain, reuseMessage, storedTools } from './run.mjs';
 import { assignJobs } from './saver.mjs';
 import { wilcoxon } from './stats.mjs';
@@ -145,6 +145,137 @@ test('sh preserves output and exit status without a timeout or before its deadli
   const dir = scratch();
   try {
     await assert.rejects(sh(join(dir, 'missing-command'), [], { timeout: 200 }), { code: 'ENOENT' });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const { spawnError, brokenOutput = false } of [{ spawnError: 'ENOENT' }, { spawnError: 'EACCES' }, { spawnError: 'ENOENT', brokenOutput: true }]) test(`runClaude spawn failure ${spawnError}${brokenOutput ? ' with output stream error' : ''} resolves and clears PID tracking`, { skip: spawnError === 'EACCES' && process.platform === 'win32', timeout: 15_000 }, () => {
+  const dir = scratch();
+  const pidFile = join(dir, 'pids.json');
+  try {
+    if (spawnError === 'EACCES') {
+      writeFileSync(join(dir, 'claude'), '#!/bin/sh\nexit 0\n');
+      chmodSync(join(dir, 'claude'), 0o644);
+    }
+    // Isolate the missing error listener's unhandled-event crash from the test runner.
+    const source = `
+      import { runClaude } from ${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)};
+      const result = await runClaude(['hello'], ${JSON.stringify(dir)}, ${JSON.stringify(brokenOutput ? dir : join(dir, 'stream.jsonl'))}, [], 5000,
+        { PATH: ${JSON.stringify(dir)} }, ${JSON.stringify(pidFile)});
+      console.log(JSON.stringify(result));
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8', timeout: 10_000 });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout.trim());
+    assert.equal(result.code, null);
+    assert.equal(result.timedOut, false);
+    assert.equal(result.spawnError, spawnError);
+    assert.match(result.stderr, new RegExp(spawnError));
+    assert.ok(result.wallMs < 5000, 'spawn failure must clear its deadline');
+    assert.deepEqual(JSON.parse(readFileSync(pidFile, 'utf8')), []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+for (const runner of ['runClaude', 'sh', 'runCommand']) for (const ignoresTerm of [false, true]) {
+  test(`${runner} normal exit cleans redirected-stdio descendants${ignoresTerm ? ' ignoring TERM' : ''}`, { skip: process.platform === 'win32', timeout: 15_000 }, async () => {
+    const dir = scratch();
+    const descendantFile = join(dir, 'descendant.pid');
+    const parentFile = join(dir, 'parent.pid');
+    const pidFile = join(dir, 'pids.json');
+    let running;
+    try {
+      const stub = join(dir, 'claude');
+      writeFileSync(stub, `#!/bin/sh
+ echo $$ > "$PARENT_PID_FILE"
+ sh -c '${ignoresTerm ? 'trap "" TERM; ' : ''}echo $$ > "$DESCENDANT_PID_FILE"; exec sleep 30' </dev/null >/dev/null 2>&1 &
+ # Do not exit until the child has installed its signal handler and written its PID.
+ attempts=0
+ while [ ! -s "$DESCENDANT_PID_FILE" ]; do
+   attempts=$((attempts + 1))
+   [ "$attempts" -lt 500 ] || exit 99
+   sleep 0.01
+ done
+ exit 0
+`);
+      chmodSync(stub, 0o755);
+      const env = { PATH: dir + delimiter + process.env.PATH, PARENT_PID_FILE: parentFile, DESCENDANT_PID_FILE: descendantFile };
+      if (runner === 'runClaude') {
+        running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 10_000, env, pidFile, { killGraceMs: 300 });
+      } else if (runner === 'sh') {
+        // Also cover commands without deadlines, which own detached groups too.
+        running = sh(stub, [], { env: { ...process.env, ...env }, killGraceMs: 300 });
+      } else {
+        running = runCommand({ command: ['sh', '-c', 'export PARENT_PID_FILE="$1" DESCENDANT_PID_FILE="$2"; exec "$3"', 'sh', parentFile, descendantFile, stub], cwd: '.' }, dir, null, 10_000);
+      }
+      const result = await running;
+      assert.equal(result.timedOut, false);
+      if (runner === 'runClaude') assert.equal(result.code, 0);
+      else if (runner === 'sh') assert.equal(result.status, 0);
+      else { assert.equal(result.pass, true); assert.equal(result.kind, 'pass'); }
+      const parent = Number(readFileSync(parentFile, 'utf8').trim());
+      const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
+      assert.ok(Number.isInteger(descendant) && descendant > 1);
+      assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+      assert.equal(groupAlive(parent), false, 'cleanup must finish before resolution');
+      if (runner === 'runClaude') assert.deepEqual(JSON.parse(readFileSync(pidFile, 'utf8')), []);
+    } finally {
+      if (existsSync(descendantFile)) {
+        try { process.kill(Number(readFileSync(descendantFile, 'utf8').trim()), 'SIGKILL'); } catch { /* already gone */ }
+      }
+      if (existsSync(parentFile)) signalGroup(Number(readFileSync(parentFile, 'utf8').trim()), 'SIGKILL');
+      if (running) await running;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const fixture of [
+  { name: 'build error', output: 'error: could not compile fixture', kind: 'build', pass: false },
+  { name: 'unparsed nonzero failure', output: 'process crashed', kind: 'build', pass: false },
+  { name: 'assertion without parsed names', output: 'test result: FAILED', kind: 'assertion', pass: false },
+  { name: 'only baseline assertions', output: 'test known_failure ... FAILED\ntest result: FAILED', kind: 'assertion', pass: true },
+  { name: 'new assertion', output: 'test new_failure ... FAILED\ntest result: FAILED', kind: 'assertion', pass: false },
+  { name: 'passing suite', output: '', kind: 'pass', pass: true, status: 0 },
+  { name: 'no suite', kind: null, pass: true },
+]) test(`gradeEdit checks suite outcome: ${fixture.name}`, async () => {
+  const dir = scratch();
+  try {
+    const initialized = spawnSync('git', ['init', '-q', dir], { encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const task = {
+      id: 'suite-fixture', overlay: [],
+      test: { command: [process.execPath, '-e', 'process.exit(0)'], cwd: '.' },
+      ...(fixture.kind ? { suite: { command: [process.execPath, '-e', `console.log(${JSON.stringify(fixture.output)}); process.exit(${fixture.status ?? 1})`], cwd: '.' } } : {}),
+    };
+    const result = await gradeEdit(task, dir, null, { [task.id]: { suiteBaselineFailed: ['known_failure'] } });
+    assert.equal(result.testPass, true);
+    assert.equal(result.suiteKind, fixture.kind);
+    assert.equal(result.pass, fixture.pass);
+    assert.deepEqual(result.newSuiteFailures, fixture.name === 'new assertion' ? ['new_failure'] : []);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('gradeEdit rejects a suite timeout after the focused test passes', { timeout: 15_000 }, () => {
+  const dir = scratch();
+  try {
+    const initialized = spawnSync('git', ['init', '-q', dir], { encoding: 'utf8' });
+    assert.equal(initialized.status, 0, initialized.stderr);
+    const source = `
+      import { gradeEdit } from ${JSON.stringify(new URL('./lib.mjs', import.meta.url).href)};
+      // Shorten only runCommand's 20-minute default; exercise its real timer and group cleanup.
+      const schedule = globalThis.setTimeout;
+      globalThis.setTimeout = (fn, ms, ...args) => schedule(fn, ms === 20 * 60_000 ? 500 : ms, ...args);
+      const task = { id: 'timeout', overlay: [],
+        test: { command: [process.execPath, '-e', 'process.exit(0)'], cwd: '.' },
+        suite: { command: [process.execPath, '-e', 'setInterval(() => {}, 1000)'], cwd: '.' } };
+      console.log(JSON.stringify(await gradeEdit(task, ${JSON.stringify(dir)}, null, {})));
+    `;
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', source], { encoding: 'utf8', timeout: 10_000 });
+    assert.equal(child.status, 0, child.stderr);
+    const result = JSON.parse(child.stdout.trim());
+    assert.equal(result.testPass, true);
+    assert.equal(result.suiteKind, 'timeout');
+    assert.deepEqual(result.newSuiteFailures, []);
+    assert.equal(result.pass, false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

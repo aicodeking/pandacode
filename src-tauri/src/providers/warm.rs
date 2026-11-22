@@ -131,7 +131,7 @@ struct Spares {
     spares: HashMap<String, Spare>,
     /// Cancels whole renewal chains, including expired leads whose bounded `gone` note was cleared.
     discard_epoch: u64,
-    /// In-flight `spawn_spare` calls, keyed by a monotonic token, recording `(session_id, cwd)`
+    /// In-flight starts and expiry renewal checks, keyed by a token, recording `(session_id, cwd)`
     /// so folder-scoped `discard_in` can advance their launch epochs before they spawn or register.
     starting: HashMap<u64, (String, PathBuf)>,
     gone: HashMap<String, Gone>,
@@ -201,9 +201,14 @@ struct InFlight {
 }
 
 impl InFlight {
+    #[cfg(all(test, unix))]
     fn enter(pool: &'static Pool, session_id: String, cwd: PathBuf) -> Self {
+        Self::enter_locked(pool, &mut spares(pool), session_id, cwd)
+    }
+
+    fn enter_locked(pool: &'static Pool, locked: &mut Spares, session_id: String, cwd: PathBuf) -> Self {
         let token = NEXT_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        spares(pool).starting.insert(token, (session_id, cwd));
+        locked.starting.insert(token, (session_id, cwd));
         Self { pool, token }
     }
 }
@@ -711,13 +716,31 @@ async fn quiesce_spares_in_with(
         .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())?
 }
 
-fn take_expired(pool: &Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
-    let mut pool = spares(pool);
-    if pool.spares.get(session_id).is_some_and(|spare| spare.born == born) {
-        pool.remove(session_id, Gone::Expired)
+/// Keep the renewal visible to folder discard from the moment its expired spare leaves the
+/// pool. Both the exit and the renewal token are registered before releasing the pool lock.
+fn take_expired_for_renewal(
+    pool: &'static Pool,
+    session_id: &str,
+    born: std::time::Instant,
+    renewing: bool,
+) -> Option<(Spare, Pending, Option<InFlight>)> {
+    let mut locked = spares(pool);
+    if locked.spares.get(session_id).is_none_or(|spare| spare.born != born) {
+        return None;
+    }
+    let (spare, pending) = locked.remove(session_id, Gone::Expired)?;
+    let inflight = if renewing {
+        spare.cwd.clone().map(|cwd| InFlight::enter_locked(pool, &mut locked, session_id.to_owned(), cwd))
     } else {
         None
-    }
+    };
+    Some((spare, pending, inflight))
+}
+
+/// Non-renewing expiry used by the process-retirement tests.
+#[cfg(all(test, unix))]
+fn take_expired(pool: &'static Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
+    take_expired_for_renewal(pool, session_id, born, false).map(|(spare, pending, _)| (spare, pending))
 }
 
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
@@ -796,7 +819,15 @@ fn failure_note(renewals: u32, error: &str) -> String {
 async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, renewals: u32) -> Result<(), String> {
     let session_id = config.session_id.clone();
     let cwd_path = external_path(&config.cwd);
-    let inflight = InFlight::enter(life.pool, session_id.clone(), cwd_path.clone());
+    let inflight = {
+        let mut pool = spares(life.pool);
+        // SPARES -> LAUNCHES, matching folder discard: a cancelled renewal cannot insert
+        // a stale token after quiescence, read inputs or invoke the spawn callback.
+        if launch == 0 || epoch(&session_id) != launch {
+            return Ok(());
+        }
+        InFlight::enter_locked(life.pool, &mut pool, session_id.clone(), cwd_path.clone())
+    };
     // What a renewal starts again with, unchanged: no turn launched in between.
     // `inputs` reads files, so on a blocking thread.
     let renewal = match renew {
@@ -807,6 +838,9 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         }
         None => None,
     };
+    if launch == 0 || epoch(&session_id) != launch {
+        return Ok(());
+    }
     let cwd = Some(cwd_path);
     let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch).await? else { return Ok(()) };
     let spare_key = key.clone();
@@ -821,7 +855,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
     tokio::spawn(async move {
         tokio::time::sleep(life.idle).await;
         // Retired outside the lock: killed, and same-session launches wait for its exit.
-        let Some((expired, pending)) = take_expired(life.pool, &session_id, born) else { return };
+        let Some((expired, pending, renewing)) = take_expired_for_renewal(life.pool, &session_id, born, renewal.is_some()) else { return };
         retire(&session_id, expired, pending);
         let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else { return };
         // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
@@ -835,9 +869,14 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
             again.then_some((renew, inputs, config, tools, approvals))
         });
         if let Ok(Some((renew, inputs, config, tools, approvals))) = check.await {
+            if launch == 0 || epoch(&config.session_id) != launch {
+                return;
+            }
             // `start` logs a failure with the renewal's number.
             let _ = start(life, config, tools, approvals, launch, Some((renew, inputs)), renewals + 1).await;
         }
+        // The old token overlaps `start`'s own guard through its entire handoff.
+        drop(renewing);
     });
     Ok(())
 }
@@ -1134,13 +1173,14 @@ mod switch_tests {
         let epochs: Vec<_> = ids.iter().map(|id| epoch(id)).collect();
         let mut pids = Vec::new();
         for (id, lead) in [(&ids[0], false), (&ids[1], true), (&ids[3], true)] {
-            let spare = spare(lead);
+            let mut spare = spare(lead);
+            spare.cwd = Some(std::env::temp_dir());
             pids.push(spare.child.id().unwrap());
             assert!(register(pool, id, epoch(id), spare));
         }
         // A renewal may be between removing its expired spare and checking its next launch.
         let born = spares(pool).spares[&ids[3]].born;
-        let (expired, pending) = take_expired(pool, &ids[3], born).unwrap();
+        let (expired, pending, renewing) = take_expired_for_renewal(pool, &ids[3], born, true).unwrap();
         retire(&ids[3], expired, pending);
         let inflight = InFlight::enter(pool, ids[2].clone(), std::env::temp_dir());
         let chain = until_discarded(pool, Arc::new(|| true));
@@ -1153,11 +1193,6 @@ mod switch_tests {
         assert!(spares(pool).starting.is_empty());
         let waiting: Renew = Arc::new(|| true);
         for (id, old) in ids.iter().zip(epochs) {
-            if id == &ids[3] {
-                assert!(!renews(Some(&chain), old, epoch(id), 0, true));
-                await_exit(id).await.unwrap();
-                continue;
-            }
             assert!(epoch(id) > old, "{id}'s pending work was invalidated");
             assert!(!renews(Some(&waiting), old, epoch(id), 0, true));
             let mut command = Command::new("sleep");
@@ -1168,8 +1203,96 @@ mod switch_tests {
         }
         for pid in pids { assert!(process_gone_for_test(pid)); }
         drop(inflight);
+        drop(renewing);
         discard_all_from(pool); // idempotent, including already-expired lead notes
         for id in &ids { discard_from(pool, id); }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn folder_quiescence_cancels_a_lead_blocked_in_its_expiry_renewal() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static STARTS: AtomicUsize = AtomicUsize::new(0);
+        fn counted_spawn(_: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> Spawning {
+            Box::pin(async {
+                STARTS.fetch_add(1, Ordering::SeqCst);
+                let Spare { key, child, group, server, .. } = spare(true);
+                Ok(Some(Spawned { key, child, group, server, starting: Pending::none() }))
+            })
+        }
+
+        let pool: &'static Pool = Box::leak(Box::default());
+        let session = format!("warm-folder-renewal-{}", uuid::Uuid::new_v4());
+        let folder = std::env::temp_dir().join(&session);
+        let config = RunConfig { session_id: session.clone(), cwd: folder.clone(),
+            ..crate::providers::tests::config("claude") };
+        let life = Lifecycle { idle: Duration::from_millis(20), spawn: counted_spawn,
+            current: |_, _, _, _, _| true, pool };
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let entered = Mutex::new(Some(entered_tx));
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let release = Mutex::new(release_rx);
+        let renew: Renew = Arc::new(move || {
+            let Some(entered) = entered.lock().unwrap().take() else { return false };
+            let _ = entered.send(());
+            release.lock().unwrap().recv_timeout(Duration::from_secs(10)).is_ok()
+        });
+        let reads = Arc::new(AtomicUsize::new(0));
+        let inputs: Inputs = {
+            let reads = reads.clone();
+            Arc::new(move || { reads.fetch_add(1, Ordering::SeqCst); String::new() })
+        };
+        launched(&session);
+        let launch = epoch(&session);
+        start(life, config, Vec::new(), HashSet::new(), launch, Some((renew.clone(), inputs)), 0).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), entered_rx).await.unwrap().unwrap();
+        assert!(!waiting_in(pool, &session), "the expired spare already left the pool");
+        let tracked = has_spare_in(pool, &folder);
+        // This must complete while the callback is blocked: discard removes its token and
+        // awaits the expired process, rather than spinning on the renewal guard.
+        let quiesced = tokio::time::timeout(Duration::from_secs(5), quiesce_pool_spares_in(pool, &folder)).await;
+        let invalidated = epoch(&session) != launch;
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while Arc::strong_count(&renew) != 1 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        let starts = STARTS.load(Ordering::SeqCst);
+        let input_reads = reads.load(Ordering::SeqCst);
+        let empty = {
+            let pool = spares(pool);
+            pool.spares.is_empty() && pool.starting.is_empty()
+        };
+        discard_from(pool, &session);
+        await_exit(&session).await.unwrap();
+        quiesced.unwrap().unwrap();
+        assert!(tracked, "expiry must retain the folder's in-flight renewal");
+        assert!(invalidated, "folder quiescence must advance the renewal's epoch");
+        assert_eq!(starts, 1, "a cancelled renewal must never spawn another process");
+        assert_eq!(input_reads, 1, "a cancelled renewal must never read launch inputs again");
+        assert!(empty, "the settled renewal must leave no spare or in-flight token");
+    }
+
+    #[tokio::test]
+    async fn stale_launches_never_enter_the_pool_or_read_launch_inputs() {
+        let pool: &'static Pool = Box::leak(Box::default());
+        let session = format!("warm-stale-start-{}", uuid::Uuid::new_v4());
+        let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+        let life = Lifecycle { idle: IDLE, spawn: |_, _, _, _| panic!("stale launch spawned"),
+            current: |_, _, _, _, _| true, pool };
+        launched(&session);
+        let stale = epoch(&session);
+        invalidate_from(pool, &session);
+        for launch in [0, stale] {
+            let inputs: Inputs = Arc::new(|| panic!("stale launch read its inputs"));
+            start(life, config.clone(), Vec::new(), HashSet::new(), launch,
+                Some((Arc::new(|| true), inputs)), 1).await.unwrap();
+        }
+        assert!(spares(pool).starting.is_empty());
+        assert!(spares(pool).spares.is_empty());
+        discard_from(pool, &session);
     }
 
     #[cfg(unix)]

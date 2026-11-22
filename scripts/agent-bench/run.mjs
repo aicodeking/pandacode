@@ -338,10 +338,11 @@ async function sanity(selected) {
     const suite = task.suite ? await runCommand(task.suite, dir, target, 40 * 60_000) : null;
     const noStubNeeded = !task.stub?.length && before.kind === 'assertion';
     const mutationCaught = noStubNeeded || stubbed?.kind === 'assertion';
-    const verdict = before.kind !== 'pass' && mutationCaught && fixed.pass ? 'ok' : 'EXCLUDE';
+    const suiteOk = !suite || suite.pass || (suite.kind === 'assertion' && suite.failed.length > 0);
+    const verdict = before.kind !== 'pass' && mutationCaught && fixed.pass && suiteOk ? 'ok' : 'EXCLUDE';
     report[task.id] = {
       verdict, parent: before.kind, parentFailed: before.failed, stub: stubbed?.kind ?? (noStubNeeded ? 'not needed' : 'missing'), stubFailed: stubbed?.failed ?? [],
-      fix: fixed.kind, suiteBaselineFailed: suite?.failed ?? [], suiteMs: suite?.ms ?? 0,
+      fix: fixed.kind, suiteKind: suite?.kind ?? null, suiteBaselineFailed: suite?.failed ?? [], suiteMs: suite?.ms ?? 0,
     };
     console.log(task.id, verdict, JSON.stringify({ parent: before.kind, stub: report[task.id].stub, fix: fixed.kind, suiteFailed: suite?.failed.length }));
     writeAtomic(file, JSON.stringify(report, null, 2));

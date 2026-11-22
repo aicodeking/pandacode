@@ -136,9 +136,13 @@ fn swift_rules() -> Rules {
 }
 
 
+/// Comments after a container header or between an anonymous namespace and its brace.
+const CPP_COMMENTS: &str = r"(?:(?://.*)|(?:/\*.*?\*/\s*))*";
+
 fn c_family_rules() -> Rules {
     vec![
-        r("class", r"^\s*(?:template\s*<.*>\s*)?(?:typedef\s+)?(?:class|struct|union|enum(?:\s+class)?|namespace)\s+(\w+)\s*(?::[^;]*)?\{?\s*$".into()),
+        r("class", format!(r"^\s*(?:inline\s+)?namespace\s+(\w+(?:::(?:inline\s+)?\w+)*)\s*\{{?\s*{CPP_COMMENTS}$")),
+        r("class", format!(r"^\s*(?:template\s*<.*>\s*)?(?:typedef\s+)?(?:class|struct|union|enum(?:\s+class)?)\s+(\w+)\s*(?::[^;]*)?\{{?\s*{CPP_COMMENTS}$")),
         r("macro", r"^\s*#\s*define\s+(\w+)".into()),
         r("type", r"^\s*typedef\b.*?(\w+)\s*;\s*$".into()),
         r("type", r"^\}\s*(\w+)\s*;\s*$".into()),
@@ -275,7 +279,7 @@ pub(super) fn extract_checked(path: &str, text: &str, limit: &Limit) -> (Vec<Sym
     }
     set_ends(language, &lines, &lex, &mut symbols, limit);
     if language == Language::CFamily {
-        retain_cpp_definitions(&lex, &mut symbols, limit);
+        retain_cpp_definitions(&lines, &lex, &mut symbols, limit);
     }
     (symbols, limit.expired())
 }
@@ -283,8 +287,13 @@ pub(super) fn extract_checked(path: &str, text: &str, limit: &Limit) -> (Vec<Sym
 /// Qualified definitions can live in namespaces/classes, but never in a function or an
 /// arbitrary block. Resolved spans let this sweep distinguish their braces without treating
 /// indentation as syntax. Rejected calls must not become enclosing functions themselves.
-fn retain_cpp_definitions(lex: &Lexed, symbols: &mut Vec<Symbol>, limit: &Limit) {
-    let mut containers: Vec<(usize, i32)> = Vec::new();
+fn retain_cpp_definitions(lines: &[&str], lex: &Lexed, symbols: &mut Vec<Symbol>, limit: &Limit) {
+    static UNNAMED: OnceLock<Regex> = OnceLock::new();
+    let unnamed = UNNAMED.get_or_init(|| Regex::new(&format!(r#"^\s*(?:(?:inline\s+)?namespace\s*(?:/\*.*?\*/\s*)*|extern\s+"C(?:\+\+)?"\s*)\{{?\s*{CPP_COMMENTS}$"#)).expect("C++ container rule compiles"));
+    let classes: Vec<_> = table(Language::CFamily).rules.iter().filter(|(kind, _)| *kind == "class").map(|(_, rule)| rule).collect();
+    let mut containers: Vec<i32> = Vec::new();
+    let mut pending = None;
+    let mut cursor = 0;
     let mut function_end = 0;
     let mut seen = 0usize;
     symbols.retain(|symbol| {
@@ -292,18 +301,38 @@ fn retain_cpp_definitions(lex: &Lexed, symbols: &mut Vec<Symbol>, limit: &Limit)
         if seen.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
             return false;
         }
-        while containers.last().is_some_and(|&(end, _)| end < symbol.line) {
-            containers.pop();
+        // Sweep the lexer, so unnamed/linkage blocks need no synthetic outline symbols.
+        // A frame closes on the exact line whose depth_after returns to its base.
+        while cursor + 1 < symbol.line {
+            if cursor.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return false;
+            }
+            let line = lines[cursor];
+            if !lex.inside_literal[cursor] && line.len() <= MAX_RULE_LINE && (unnamed.is_match(line) || classes.iter().any(|rule| rule.is_match(line))) {
+                pending = Some((cursor, lex.depth_before[cursor]));
+            }
+            if let Some((start, base)) = pending {
+                if lex.peak[cursor] > base {
+                    if lex.depth_after[cursor] > base {
+                        containers.push(base);
+                    }
+                    pending = None;
+                } else if cursor >= start + SIGNATURE_LOOKAHEAD || lex.has_semicolon[cursor] || !signature_continues(lines, cursor) {
+                    pending = None;
+                }
+            }
+            while containers.last().is_some_and(|&base| lex.depth_after[cursor] <= base) {
+                containers.pop();
+            }
+            cursor += 1;
         }
         let depth = lex.depth_before[symbol.line - 1];
-        let allowed_depth = containers.last().map_or(0, |&(_, depth)| depth);
+        let allowed_depth = containers.last().map_or(0, |&base| base + 1);
         if symbol.qualifier.is_some() && (symbol.line <= function_end || depth != allowed_depth) {
             return false;
         }
-        match symbol.kind {
-            "class" => containers.push((symbol.end, depth + 1)),
-            "function" | "method" => function_end = function_end.max(symbol.end),
-            _ => {}
+        if matches!(symbol.kind, "function" | "method") {
+            function_end = function_end.max(symbol.end);
         }
         true
     });
@@ -341,7 +370,13 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     if *kind == OPEN_METHOD {
         return closes_as_method(lines, index).then(|| ("method", name.to_owned(), qualifier));
     }
-    Some((kind, name.to_owned(), qualifier))
+    // `inline` is syntax in a nested namespace, not part of its lookup name.
+    let name = if language == Language::CFamily && *kind == "class" && name.contains("::") {
+        name.split("::").map(|part| part.split_whitespace().last().unwrap_or(part)).collect::<Vec<_>>().join("::")
+    } else {
+        name.to_owned()
+    };
+    Some((kind, name, qualifier))
 }
 
 /// `async run(` on its own line is a method only if a later `) {` or `): T {` closes it; a call
