@@ -15,6 +15,42 @@ import { editStepsGate, parseCsv, reuseReport, runFromRow, runsCsv } from './ana
 const scratch = () => mkdtempSync(join(tmpdir(), 'bench-core-'));
 const quiet = async fn => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
 
+test('runClaude timeout waits for SIGKILL of a TERM-ignoring descendant with redirected stdio', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const dir = scratch();
+  const descendantFile = join(dir, 'descendant.pid');
+  const parentFile = join(dir, 'parent.pid');
+  const pidFile = join(dir, 'pids.json');
+  let running;
+  try {
+    const stub = join(dir, 'claude');
+    writeFileSync(stub, `#!/bin/sh
+echo $$ > "$PARENT_PID_FILE"
+trap 'exit 0' TERM
+sh -c 'trap "" TERM; echo $$ > "$DESCENDANT_PID_FILE"; exec sleep 30' </dev/null >/dev/null 2>&1 &
+descendant=$!
+wait "$descendant"
+`);
+    chmodSync(stub, 0o755);
+    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 200, {
+      PATH: dir + delimiter + process.env.PATH, PARENT_PID_FILE: parentFile, DESCENDANT_PID_FILE: descendantFile,
+    }, pidFile, { killGraceMs: 300 });
+    const result = await running;
+    assert.equal(result.timedOut, true);
+    assert.ok(result.wallMs >= 450, 'timeout must wait through the grace window after the parent closes');
+    const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
+    assert.ok(Number.isInteger(descendant) && descendant > 1);
+    assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+    assert.deepEqual(JSON.parse(readFileSync(pidFile, 'utf8')), []);
+  } finally {
+    if (existsSync(descendantFile)) {
+      try { process.kill(Number(readFileSync(descendantFile, 'utf8').trim()), 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (existsSync(parentFile)) signalGroup(Number(readFileSync(parentFile, 'utf8').trim()), 'SIGKILL');
+    if (running) await running;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runClaude timeout kills the process group and closes inherited stdout promptly', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
   const dir = scratch();
   const descendantFile = join(dir, 'descendant.pid');

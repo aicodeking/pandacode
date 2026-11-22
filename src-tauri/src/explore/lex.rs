@@ -20,6 +20,9 @@ pub(super) enum Language {
 
 pub(super) const SIGNATURE_LOOKAHEAD: usize = 12;
 pub(super) const LIMIT_CHECK_LINES: usize = 4_096;
+pub(super) const LIMIT_CHECK_BYTES: usize = 65_536;
+const MAX_REGEX_LITERAL: usize = 2_048;
+const MAX_FAILED_REGEX_SCAN: usize = 4_096;
 /// A string left open this many lines, then a line that starts a definition at column 0, was
 /// mis-read. Shorter multi-line templates may well hold code at column 0.
 const RESYNC_AFTER: usize = 30;
@@ -80,6 +83,57 @@ struct Scanner {
     template_stack: Vec<i32>,
 }
 
+/// Lazily cached quote positions and the total failed regex lookahead on this line.
+struct LineScan<'a> {
+    limit: &'a Limit,
+    failed_regex_bytes: usize,
+    quote_ends: Option<QuoteEnds>,
+}
+
+#[derive(Default)]
+struct QuoteEnds {
+    apostrophe: Option<usize>,
+    backtick: Option<usize>,
+    non_space: Option<usize>,
+}
+
+impl LineScan<'_> {
+    /// JSX text such as `It`s` or `Can't`: a quote after a word with no later partner.
+    /// A `'` between letters is always text. Cache the ends so quote checks and trailing
+    /// whitespace checks take constant time after one cancellable pass over the line.
+    fn stray_quote(&mut self, line: &[u8], at: usize) -> Option<bool> {
+        if at == 0 || !line[at - 1].is_ascii_alphanumeric() {
+            return Some(false);
+        }
+        if line[at] == b'\'' && line.get(at + 1).is_some_and(u8::is_ascii_alphabetic) {
+            return Some(true);
+        }
+        if self.quote_ends.is_none() {
+            let mut ends = QuoteEnds::default();
+            for (chunk_index, chunk) in line.chunks(LIMIT_CHECK_BYTES).enumerate() {
+                if self.limit.expired() {
+                    return None;
+                }
+                for (offset, &byte) in chunk.iter().enumerate() {
+                    let index = chunk_index * LIMIT_CHECK_BYTES + offset;
+                    match byte {
+                        b'\'' => ends.apostrophe = Some(index),
+                        b'`' => ends.backtick = Some(index),
+                        _ => {}
+                    }
+                    if !byte.is_ascii_whitespace() {
+                        ends.non_space = Some(index);
+                    }
+                }
+            }
+            self.quote_ends = Some(ends);
+        }
+        let ends = self.quote_ends.as_ref().expect("quote positions cached");
+        let last = if line[at] == b'\'' { ends.apostrophe } else { ends.backtick };
+        Some(ends.non_space > Some(at) && last <= Some(at))
+    }
+}
+
 impl Scanner {
     fn close_brace(&mut self, mode: &mut Mode) {
         if self.template_stack.last() == Some(&self.depth) {
@@ -102,8 +156,8 @@ impl Scanner {
         }
     }
 
-    /// One byte of code. False when the rest of the line is a comment.
-    fn code_byte(&mut self, line: &[u8], at: &mut usize, previous: Option<u8>, mode: &mut Mode, syntax: &Syntax) -> bool {
+    /// One byte of code. False when the line is a comment or the scan has expired.
+    fn code_byte(&mut self, line: &[u8], at: &mut usize, previous: Option<u8>, mode: &mut Mode, syntax: &Syntax, scan: &mut LineScan<'_>) -> bool {
         let (c, next) = (line[*at - 1], line.get(*at).copied());
         match c {
             b'/' if syntax.slash_comments && next == Some(b'/') && !(syntax.templates && after_url_scheme(line, *at - 1)) => return false,
@@ -112,8 +166,13 @@ impl Scanner {
                 *mode = Mode::Block;
                 *at += 1;
             }
-            b'/' if syntax.regex_literals && regex_may_follow(line, *at - 1, previous) => {
-                *at = regex_literal_end(line, *at - 1).unwrap_or(*at);
+            b'/' if syntax.regex_literals && scan.failed_regex_bytes < MAX_FAILED_REGEX_SCAN && regex_may_follow(line, *at - 1, previous) => {
+                let bytes = (MAX_FAILED_REGEX_SCAN - scan.failed_regex_bytes).min(MAX_REGEX_LITERAL).min(line.len() - (*at - 1));
+                if let Some(end) = regex_literal_end(line, *at - 1, bytes) {
+                    *at = end;
+                } else {
+                    scan.failed_regex_bytes += bytes;
+                }
             }
             b'r' if syntax.raw_strings && raw_string_opens(line, *at - 1).is_some() => {
                 let hashes = raw_string_opens(line, *at - 1).unwrap_or(0);
@@ -124,7 +183,12 @@ impl Scanner {
                 *mode = Mode::Triple(c);
                 *at += 2;
             }
-            b'`' | b'\'' if syntax.templates && stray_quote(line, *at - 1) => {}
+            b'`' | b'\'' if syntax.templates => {
+                let Some(stray) = scan.stray_quote(line, *at - 1) else { return false };
+                if !stray {
+                    *mode = Mode::Str(c);
+                }
+            }
             b'"' | b'`' => *mode = Mode::Str(c),
             b'\'' if syntax.char_literals => *at += char_literal_len(&line[*at..]).unwrap_or(0),
             b'\'' => *mode = Mode::Str(c),
@@ -141,15 +205,22 @@ impl Scanner {
         true
     }
 
-    fn scan_line(&mut self, line: &[u8], mode: &mut Mode, syntax: &Syntax) {
-        let (mut at, mut previous) = (0, None);
+    fn scan_line(&mut self, line: &[u8], mode: &mut Mode, syntax: &Syntax, limit: &Limit) -> bool {
+        let mut scan = LineScan { limit, failed_regex_bytes: 0, quote_ends: None };
+        let (mut at, mut previous, mut next_check) = (0, None, 0);
         while at < line.len() {
+            if at >= next_check {
+                if limit.expired() {
+                    return false;
+                }
+                next_check = at + LIMIT_CHECK_BYTES;
+            }
             let c = line[at];
             at += 1;
             match *mode {
                 Mode::Code => {
-                    if !self.code_byte(line, &mut at, previous, mode, syntax) {
-                        return;
+                    if !self.code_byte(line, &mut at, previous, mode, syntax, &mut scan) {
+                        return !limit.expired();
                     }
                 }
                 Mode::Block if c == b'*' && line.get(at) == Some(&b'/') => {
@@ -173,17 +244,8 @@ impl Scanner {
                 previous = Some(c);
             }
         }
+        true
     }
-}
-
-/// JSX text such as `It`s` or `Can't`: a quote right after a word, with text after it and no
-/// partner on the line. A tagged template either closes on its line or ends the line. A `'`
-/// between two letters is always text: no string starts right after a name.
-fn stray_quote(line: &[u8], at: usize) -> bool {
-    let after_word = at > 0 && line[at - 1].is_ascii_alphanumeric();
-    let rest = &line[at + 1..];
-    let inside_word = line[at] == b'\'' && rest.first().is_some_and(u8::is_ascii_alphabetic);
-    after_word && (inside_word || (!rest.trim_ascii().is_empty() && !rest.contains(&line[at])))
 }
 
 /// `https://host` in JSX text is not a comment: a scheme of letters right before the slashes,
@@ -209,9 +271,10 @@ fn raw_string_opens(line: &[u8], at: usize) -> Option<usize> {
 }
 
 /// Where a JS regex literal starting at `/` ends on this line, if it does.
-fn regex_literal_end(line: &[u8], open: usize) -> Option<usize> {
+fn regex_literal_end(line: &[u8], open: usize, bytes: usize) -> Option<usize> {
     let (mut at, mut in_class) = (open + 1, false);
-    while at < line.len() {
+    let end = line.len().min(open + bytes.min(MAX_REGEX_LITERAL));
+    while at < end {
         match line[at] {
             b'\\' => at += 1,
             b'[' => in_class = true,
@@ -277,7 +340,19 @@ impl Lexed {
         let syntax = syntax_of(language);
         let mut mode = Mode::Code;
         let mut scanner = Scanner::default();
-        let mut lexed = Self::default();
+        if limit.expired() {
+            return Self::default();
+        }
+        // Exact capacities keep the scratch reservation valid as each vector fills.
+        let mut lexed = Self {
+            inside_literal: Vec::with_capacity(lines.len()),
+            depth_before: Vec::with_capacity(lines.len()),
+            depth_after: Vec::with_capacity(lines.len()),
+            peak: Vec::with_capacity(lines.len()),
+            parens_before: Vec::with_capacity(lines.len()),
+            parens_after: Vec::with_capacity(lines.len()),
+            has_semicolon: Vec::with_capacity(lines.len()),
+        };
         let (mut open_for, mut heredoc): (usize, Option<String>) = (0, None);
         for (index, line) in lines.iter().enumerate() {
             if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
@@ -296,12 +371,15 @@ impl Lexed {
                 mode = Mode::Code;
                 scanner.template_stack.clear();
             }
-            lexed.inside_literal.push(mode != Mode::Code);
-            lexed.depth_before.push(scanner.depth);
-            lexed.parens_before.push(scanner.parens);
+            let (inside_literal, depth_before, parens_before) = (mode != Mode::Code, scanner.depth, scanner.parens);
             scanner.peak = scanner.depth;
             scanner.semicolon = false;
-            scanner.scan_line(line.as_bytes(), &mut mode, &syntax);
+            if !scanner.scan_line(line.as_bytes(), &mut mode, &syntax, limit) {
+                break;
+            }
+            lexed.inside_literal.push(inside_literal);
+            lexed.depth_before.push(depth_before);
+            lexed.parens_before.push(parens_before);
             if matches!(mode, Mode::Str(b'"' | b'\'')) && !syntax.spanning {
                 mode = Mode::Code;
             }

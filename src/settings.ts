@@ -102,7 +102,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 const NATIVE_SWITCHES = [
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
-  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code; turn on other harnesses below. Deny rules don’t bind it.' },
+  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
 ] as const;
 /** The explorer's harnesses (`providers::explore_name`): Claude Code is on by default, each other
  * one opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */

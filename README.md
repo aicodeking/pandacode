@@ -313,8 +313,11 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   and can't take sessions started remotely on this computer.
 - **The local code explorer reads without asking.** `pandacode_explore` is a
   read-only search, outline and read tool agents call with no approval prompt;
-  it refuses secret files, but your harness's own deny rules (such as Claude
-  Code's `Read(...)` patterns) do not bind it. It is on by default only for
+  it refuses secret files. For Claude Code, PandaCode honors user, project,
+  worktree-inherited main-checkout local, and enterprise managed `Read`, `Grep`,
+  `Glob` and explore `deny` and `ask` rules (including tool-name wildcards) by
+  withholding the explorer when present. Opt-in non-Claude harnesses rely on the
+  secret-file rules; their harness deny rules are not parsed. It is on by default only for
   Claude Code, the one harness it was measured on; other harnesses (GLM, MiMo and
   Alibaba Token Plan included) get it only after you turn on their own switch listed under
   Settings → Agents → **Local code explorer (pandacode_explore)** (stored as an

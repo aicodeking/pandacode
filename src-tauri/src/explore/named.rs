@@ -1,6 +1,7 @@
 //! Requests that name a file: `read` and `outline`.
 use super::{
     grep::clip,
+    limit::Limit,
     shape::{head, plain_lines, Body, Item, ReadSpan},
     symbols::{self, Symbol},
     Category, Ctx,
@@ -271,13 +272,19 @@ pub(super) fn split_name(raw: &str) -> (Option<&str>, &str) {
 }
 
 /// The one definition `raw` names, or the ranges to choose from.
-fn symbol_range(symbols: &[Symbol], raw: &str) -> Result<(usize, usize), SymbolMiss> {
+fn symbol_range(symbols: &[Symbol], raw: &str, limit: &Limit) -> Result<(usize, usize), SymbolMiss> {
     let (qualifier, name) = split_name(raw);
-    let found: Vec<&Symbol> = symbols.iter().filter(|symbol| symbol.name == name && qualifier.is_none_or(|q| symbols::qualified_by(symbols, symbol, q))).collect();
-    match found.as_slice() {
-        [] => Err(SymbolMiss::None),
-        [one] => Ok((one.line, one.end)),
-        many => Err(SymbolMiss::Ambiguous(many.len(), many.iter().take(AMBIGUOUS_LISTED).map(|symbol| super::grep::symbol_label(symbol)).collect())),
+    let (mut found, mut count) = (Vec::new(), 0);
+    symbols::qualified_matches(symbols, qualifier, |symbol| symbol.name == name, limit, |symbol| {
+        count += 1;
+        if found.len() < AMBIGUOUS_LISTED {
+            found.push(symbol);
+        }
+    });
+    match count {
+        0 => Err(SymbolMiss::None),
+        1 => Ok((found[0].line, found[0].end)),
+        _ => Err(SymbolMiss::Ambiguous(count, found.into_iter().map(super::grep::symbol_label).collect())),
     }
 }
 
@@ -327,8 +334,17 @@ fn read_span(ctx: &Ctx, raw: &str) -> Result<ReadStep, String> {
 }
 
 fn symbol_read(ctx: &Ctx, path: String, text: &str, name: &str) -> Result<Item, String> {
-    let (from, to) = match symbol_range(&symbols::extract(&path, text, ctx.limit), name) {
+    if ctx.limit.stopped() {
+        return Err("Task has stopped.".into());
+    }
+    let symbols = symbols::extract(&path, text, ctx.limit);
+    let range = symbol_range(&symbols, name, ctx.limit);
+    if ctx.limit.stopped() {
+        return Err("Task has stopped.".into());
+    }
+    let (from, to) = match range {
         Ok(range) => range,
+        Err(SymbolMiss::None) if ctx.limit.was_cut() => return Err("Skipped: this file exceeded the call's time or memory limit; read it by line range instead.".into()),
         Err(SymbolMiss::None) => return Err(format!("No definition named {name} here; outline the file.")),
         Err(SymbolMiss::Ambiguous(count, ranges)) => return Ok(Item::new(Category::Read, head(&[("path", json!(path)), ("ambiguous", json!(ranges)), ("ambiguous_count", json!(count))]), Body::Nothing)),
     };
@@ -355,6 +371,18 @@ fn read_item_of(path: String, streamed: Streamed, (first, from, to): (usize, usi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn qualified_symbol_ranges_are_linear_and_stop_aware() {
+        let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), kind: "fn", line, end: line }).collect();
+        let limit = Limit::new(std::sync::Arc::default());
+        let started = std::time::Instant::now();
+        assert!(matches!(symbol_range(&symbols, "Missing::run", &limit), Err(SymbolMiss::None)));
+        assert!(started.elapsed() < std::time::Duration::from_millis(50), "{:?}", started.elapsed());
+        let stopped = Limit::new(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)));
+        assert!(matches!(symbol_range(&symbols, "Missing::run", &stopped), Err(SymbolMiss::None)));
+        assert!(stopped.was_cut());
+    }
 
     #[test]
     fn read_requests_parse() {

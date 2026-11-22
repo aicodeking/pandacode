@@ -16,7 +16,7 @@ test('the local code explorer switch is on by default, names its harnesses and t
   await openAgents(page);
   await expect(toggle(page)).toBeChecked();
   // The switch is not per harness: its hint (behind the title's mark) says on means Claude Code.
-  await expect(settings(page).locator(`.info-mark[data-tip="Next run. On for Claude Code; turn on other harnesses below. Deny rules don’t bind it."]`)).toHaveCount(1);
+  await expect(settings(page).locator(`.info-mark[data-tip="Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules."]`)).toHaveCount(1);
 
   await toggle(page).click();
   await expect(toggle(page)).not.toBeChecked();

@@ -18,12 +18,15 @@ const WAIT_SLICE: Duration = Duration::from_millis(100);
 /// File text one call may hold at once (outlines, `path#name` reads, read lines kept), so 4
 /// calls of 20 requests each cannot fill memory with 16 MiB files.
 pub(super) const MAX_CALL_BYTES: usize = 64 * 1024 * 1024;
+/// Temporary line/lexer metadata shared by all parsers in one call.
+pub(super) const MAX_PARSE_BYTES: usize = 16 * 1024 * 1024;
 
 pub(super) struct Limit {
     deadline: Instant,
     stopped: Arc<AtomicBool>,
     cut: AtomicBool,
     bytes_left: AtomicUsize,
+    parse_bytes_left: AtomicUsize,
 }
 
 impl Limit {
@@ -32,13 +35,24 @@ impl Limit {
     }
 
     pub(super) fn lasting(time: Duration, stopped: Arc<AtomicBool>) -> Self {
-        Self { deadline: Instant::now() + time, stopped, cut: AtomicBool::new(false), bytes_left: AtomicUsize::new(MAX_CALL_BYTES) }
+        Self { deadline: Instant::now() + time, stopped, cut: AtomicBool::new(false), bytes_left: AtomicUsize::new(MAX_CALL_BYTES), parse_bytes_left: AtomicUsize::new(MAX_PARSE_BYTES) }
     }
 
     /// A limit holding at most `bytes` of file text, so a test need not fill 64 MiB.
     #[cfg(test)]
     pub(super) fn with_bytes(bytes: usize) -> Self {
         Self { bytes_left: AtomicUsize::new(bytes), ..Self::new(Arc::default()) }
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_parse_bytes(bytes: usize) -> Self {
+        Self { parse_bytes_left: AtomicUsize::new(bytes), ..Self::new(Arc::default()) }
+    }
+
+    /// Reserves scratch space until its buffers have been dropped, including on early return.
+    pub(super) fn reserve_parse_bytes(&self, bytes: usize) -> Option<ParseBytesGuard<'_>> {
+        self.parse_bytes_left.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(bytes)).ok()?;
+        Some(ParseBytesGuard { limit: self, bytes })
     }
 
     /// Takes `bytes` of the call's allowance; false, taking nothing, when too few are left.
@@ -73,6 +87,17 @@ impl Limit {
 
     pub(super) fn stopped(&self) -> bool {
         self.stopped.load(Ordering::Relaxed)
+    }
+}
+
+pub(super) struct ParseBytesGuard<'a> {
+    limit: &'a Limit,
+    bytes: usize,
+}
+
+impl Drop for ParseBytesGuard<'_> {
+    fn drop(&mut self) {
+        self.limit.parse_bytes_left.fetch_add(self.bytes, Ordering::Relaxed);
     }
 }
 
@@ -134,6 +159,21 @@ impl Drop for Permit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_reservations_share_a_pool_and_restore_it_on_drop() {
+        let limit = Limit::with_parse_bytes(100);
+        let first = limit.reserve_parse_bytes(60).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(limit.reserve_parse_bytes(41).is_none());
+                assert!(limit.reserve_parse_bytes(40).is_some());
+                assert!(limit.reserve_parse_bytes(usize::MAX).is_none());
+            }).join().unwrap();
+        });
+        drop(first);
+        assert!(limit.reserve_parse_bytes(100).is_some());
+    }
 
     #[test]
     fn a_full_gate_turns_late_calls_away_and_frees_slots() {

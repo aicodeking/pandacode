@@ -889,3 +889,56 @@ fn symbol_metadata_caps_preserve_late_definitions_and_exact_empty_notes() {
     let empty = supported.explore(json!({"symbols":"hit"}));
     assert!(empty["symbols"][0]["note"].as_str().unwrap().starts_with("Mentioned in 600 files, but no definition"), "{empty}");
 }
+
+#[test]
+fn symbol_reads_include_object_defaults_and_inline_parameter_types() {
+    let repo = Repo::new();
+    for (path, text, end) in [
+        ("default.js", "export const loadUser = (options = {}) =>\n  validate(options);\n", 2),
+        ("typed.ts", "export function loadUser(input: {id: string}):\nUser {\n  return validate(input);\n}\n", 4),
+    ] {
+        repo.write(path, text);
+        let reply = repo.explore(json!({"read":format!("{path}#loadUser")}));
+        let read = &reply["read"][0];
+        assert_eq!(read["from"], 1, "{reply}");
+        assert_eq!(read["to"], end, "{reply}");
+        assert!(read["text"].as_str().unwrap().contains("validate"), "{reply}");
+    }
+}
+
+#[test]
+fn symbol_reads_report_parser_limits_and_stops_honestly() {
+    let repo = Repo::new();
+    for (limit, expected) in [
+        (Limit::with_parse_bytes(1), "time or memory limit"),
+        (Limit::lasting(std::time::Duration::ZERO, Arc::default()), "time or memory limit"),
+        (Limit::new(Arc::new(AtomicBool::new(true))), "Task has stopped."),
+    ] {
+        let ctx = Ctx { root: &repo.0, given: &repo.0, strict: false, limit: &limit, policy: Policy::NeverIndex };
+        let step = named::ReadStep::Symbol { path: "a.rs".into(), text: "fn run() {}\n".into(), name: "run".into() };
+        let item = named::read_item(&ctx, "a.rs#run", step);
+        assert!(item.head["error"].as_str().unwrap().contains(expected), "{:?}", item.head);
+    }
+    repo.write("blank.js", "\n".repeat(1_048_576));
+    let reply = repo.explore(json!({"read":"blank.js#run"}));
+    assert_eq!(reply["incomplete"], true, "{reply}");
+    assert!(reply["read"][0]["error"].as_str().unwrap().contains("time or memory limit"), "{reply}");
+}
+
+#[test]
+fn qualified_definition_searches_keep_exact_counts_and_retention_caps() {
+    let repo = Repo::new();
+    repo.write("runs.rs", format!("impl Runner {{\n{}}}\n", "fn run() {}\n".repeat(80_000)));
+    let limit = limit();
+    let snapshot = Snapshot::open(&repo.0, Policy::NeverIndex, false, &limit);
+    let jobs: Vec<_> = ["Runner", "Missing"].into_iter().map(|qualifier| Job {
+        pattern: plan::compile("run", false).unwrap(),
+        kind: Kind::Definition { name: "run".into(), qualifier: Some(qualifier.into()), folded: false },
+    }).collect();
+    let result = grep::run_jobs(&repo.0, &snapshot, &jobs, &Scope { allows: &|_| true, named_large: vec![] }, &limit);
+    assert!(!limit.was_cut());
+    assert_eq!(result.jobs[0].total_definitions, 80_000);
+    assert_eq!(result.jobs[0].files[0].definition_count, 80_000);
+    assert_eq!(result.jobs[0].files[0].definitions.len(), 64);
+    assert_eq!(result.jobs[1].total_definitions, 0);
+}

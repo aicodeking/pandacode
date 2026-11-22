@@ -51,16 +51,40 @@ export const safeEnv = extra => ({
 const children = new Map();
 /** When a process started, which tells a recorded PID from a later process that reused the number. */
 export const startTime = pid => spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
-export function track(child, pidFile) {
+export function track(child, pidFile, { autoUntrack = true } = {}) {
   children.set(child, { pid: child.pid, started: child.pid ? startTime(child.pid) : '' });
   const save = () => { if (pidFile) writeAtomic(pidFile, JSON.stringify([...children.values()].filter(Boolean))); };
   save();
-  child.on('close', () => { children.delete(child); save(); });
+  child.untrack = () => { children.delete(child); save(); };
+  if (autoUntrack) child.on('close', child.untrack);
   return child;
 }
 /** Children lead their own process group, so stopping one also stops what it started (cargo's rustc). */
 export function signalGroup(pid, signal = 'SIGTERM') {
   try { process.kill(-pid, signal); } catch { try { process.kill(pid, signal); } catch { /* already gone */ } }
+}
+/** A closed group leader does not imply its redirected-stdio descendants have exited. */
+export function groupAlive(pid) {
+  if (process.platform === 'win32') return false;
+  try { process.kill(-pid, 0); return true; } catch (error) { return error?.code === 'EPERM'; }
+}
+/** Keep ownership until TERM succeeds or KILL has had a bounded window to finish. */
+export async function terminateGroup(pid, graceMs = 5000, pollMs = 50) {
+  signalGroup(pid, 'SIGTERM');
+  if (process.platform === 'win32') return;
+  const waitForExit = async durationMs => {
+    const deadline = Date.now() + durationMs;
+    while (groupAlive(pid)) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise(resolve => setTimeout(resolve, Math.min(pollMs, remaining)));
+    }
+    return true;
+  };
+  if (!await waitForExit(graceMs)) {
+    signalGroup(pid, 'SIGKILL');
+    await waitForExit(1000);
+  }
 }
 /** After a crash: signals only recorded PIDs that are still the same process, and says how many. */
 export function stopRecorded(pidFile) {
@@ -289,10 +313,10 @@ export function assertBuild(build) {
 export const isRust = task => task.test?.command[0] === 'cargo';
 
 /** Sends the messages one at a time over stream-json, the way the app does, each after the last result. */
-export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidFile) {
+export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidFile, { killGraceMs = 5000 } = {}) {
   return new Promise(resolve => {
     const started = Date.now();
-    const child = track(spawn('claude', ['-p', '--input-format', 'stream-json', ...argv], { cwd, env: safeEnv(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], detached: true }), pidFile);
+    const child = track(spawn('claude', ['-p', '--input-format', 'stream-json', ...argv], { cwd, env: safeEnv(extraEnv), stdio: ['pipe', 'pipe', 'pipe'], detached: true }), pidFile, { autoUntrack: false });
     const out = createWriteStream(stream);
     const queue = [...messages];
     const send = () => {
@@ -314,18 +338,15 @@ export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidF
     child.stdin.on('error', () => {}); // a harness that died early is reported by its exit code
     send();
     let timedOut = false;
-    let killTimer;
+    let cleanup = null;
     const timer = setTimeout(() => {
       timedOut = true;
-      if (child.pid) signalGroup(child.pid, 'SIGTERM'); else child.kill('SIGTERM');
-      killTimer = setTimeout(() => {
-        if (child.pid) signalGroup(child.pid, 'SIGKILL'); else child.kill('SIGKILL');
-      }, 5000);
-      killTimer.unref();
+      cleanup = child.pid ? terminateGroup(child.pid, killGraceMs) : (child.kill('SIGTERM'), Promise.resolve());
     }, timeoutMs);
-    child.on('close', code => {
+    child.on('close', async code => {
       clearTimeout(timer);
-      clearTimeout(killTimer);
+      if (timedOut) await cleanup;
+      child.untrack();
       out.end(() => resolve({ code, timedOut, wallMs: Date.now() - started, stderr: stderr.slice(-2000) }));
     });
   });

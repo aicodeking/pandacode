@@ -226,10 +226,13 @@ resolves only `pandacode_architect__pandacode_explore`, so its instructions use 
 name; a bare `pandacode_explore` still asks, then fails in the harness.
 
 For Claude Code, PandaCode checks `permissions.deny` and `permissions.ask` in user,
-project and local settings (including ancestors up to the nearest Git root), plus
+project and local settings (including ancestors up to the nearest Git root and a
+linked worktree's inherited main-checkout `.claude/settings.local.json`), plus
 enterprise managed settings and `managed-settings.d` JSON drop-ins. Any `Read`,
-`Grep`, `Glob`, wildcard `*`, or PandaCode explore rule withholds the explorer for
-that launch in every permission mode. Managed settings also apply to Claude-family
+`Grep`, `Glob`, or PandaCode explore rule withholds the explorer for that launch in
+every permission mode. This includes tool-name wildcards such as `Read*`, `R*`,
+`Gr*`, `Gl*`, `mcp__*`, `mcp__pandacode_architect__pandacode_*`, and the bare MCP
+server name `mcp__pandacode_architect`. Managed settings also apply to Claude-family
 relays (GLM, MiMo and Alibaba Token Plan), which otherwise disable user/project
 settings. Unreadable, oversized or malformed settings fail closed, as do custom
 connection `--settings`, `--setting-sources` or disallowed-tool flags, an unknown

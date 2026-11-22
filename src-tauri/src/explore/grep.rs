@@ -486,17 +486,12 @@ impl<'a> FileView<'a> {
         let same = |candidate: &str| if folded { candidate.eq_ignore_ascii_case(name) } else { candidate == name };
         let symbols = self.symbols();
         let (mut found, mut count) = (Vec::new(), 0);
-        for (at, symbol) in symbols.iter().enumerate() {
-            if at.is_multiple_of(LIMIT_CHECK_LINES) && self.limit.expired() {
-                break;
+        symbols::qualified_matches(symbols, qualifier, |symbol| same(&symbol.name), self.limit, |symbol| {
+            count += 1;
+            if found.len() < MAX_FILE_DEFINITIONS {
+                found.push(Definition { signature: self.line_text(symbol.line).trim().to_owned(), symbol: symbol.clone() });
             }
-            if same(&symbol.name) && qualifier.is_none_or(|q| symbols::qualified_by(symbols, symbol, q)) {
-                count += 1;
-                if found.len() < MAX_FILE_DEFINITIONS {
-                    found.push(Definition { signature: self.line_text(symbol.line).trim().to_owned(), symbol: symbol.clone() });
-                }
-            }
-        }
+        });
         (found, count)
     }
 

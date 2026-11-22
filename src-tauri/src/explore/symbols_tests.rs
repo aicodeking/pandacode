@@ -1,7 +1,7 @@
 use super::{
     lex::{indent_of, Language, Lexed},
     limit::Limit,
-    symbols::{extract, qualified_by, Enclosing, Symbol},
+    symbols::{extract, qualified_by, qualified_matches, Enclosing, Symbol, LINE_METADATA_BYTES},
 };
 use std::{
     sync::{atomic::AtomicBool, Arc},
@@ -459,4 +459,113 @@ fn jsx_apostrophes_and_a_label_before_a_comment_keep_block_ends() {
     has(&found, "E", "function", 7, 9);
     let found = names("u.tsx", "function U() {\n  return <a>https://example.com</a>;\n}\n");
     has(&found, "U", "function", 1, 3);
+}
+
+#[test]
+fn inline_object_defaults_and_types_keep_the_whole_script_signature() {
+    for (text, end) in [
+        ("export const loadUser = (options = {}) =>\n  validate(options);\n", 2),
+        ("export function loadUser(input: {id: string}):\nUser {\n  return validate(input);\n}\n", 4),
+        ("export const loadUser = (\n  options = {},\n) =>\n  validate(\n    options\n  );\n", 6),
+    ] {
+        let found = names("user.ts", text);
+        has(&found, "loadUser", "function", 1, end);
+    }
+    let found = names("one.rs", "fn a() {}\npub struct Foo<'a> { x: &'a str }\nimpl Foo for Bar { fn x(&self) {} }\n");
+    for (index, symbol) in found.iter().enumerate() {
+        assert_eq!((symbol.2, symbol.3), (index + 1, index + 1));
+    }
+}
+
+#[test]
+fn failed_regex_and_stray_quote_scans_stay_linear() {
+    for text in ["/[".repeat(40_000), "a'".repeat(40_000), "a` ".repeat(27_000), "a' ".repeat(20_000) + &" ".repeat(20_000)] {
+        let lines = [text.as_str()];
+        let started = Instant::now();
+        let lex = Lexed::new(&lines, Language::Script, &limit());
+        assert_eq!(lex.inside_literal.len(), 1);
+        assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
+        for done in [Limit::new(Arc::new(AtomicBool::new(true))), Limit::lasting(Duration::ZERO, Arc::default())] {
+            let started = Instant::now();
+            assert!(Lexed::new(&lines, Language::Script, &done).inside_literal.is_empty());
+            assert!(started.elapsed() < Duration::from_millis(50));
+            assert!(done.was_cut());
+        }
+    }
+}
+
+#[test]
+fn a_single_long_line_can_expire_during_lexing() {
+    for prefix in ["", "\"", "/*", "a` "] {
+        let text = format!("{prefix}{}", "x".repeat(16 * 1024 * 1024));
+        let done = Limit::lasting(Duration::from_millis(2), Arc::default());
+        let started = Instant::now();
+        let lex = Lexed::new(&[text.as_str()], Language::Script, &done);
+        assert!(lex.inside_literal.is_empty(), "{prefix:?}: the interrupted line must not be recorded");
+        assert!(done.was_cut());
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+}
+
+#[test]
+fn parse_metadata_is_bounded_and_released_after_each_extraction() {
+    let text = "\n".repeat(1_048_576);
+    let budget = limit();
+    assert!(extract("blank.js", &text, &budget).is_empty());
+    assert!(budget.was_cut());
+    // The refused parse took no scratch bytes, and reservations return their full allowance.
+    assert!(budget.reserve_parse_bytes(super::limit::MAX_PARSE_BYTES).is_some());
+    let budget = Limit::with_parse_bytes(LINE_METADATA_BYTES);
+    for _ in 0..3 {
+        let found = extract("a.rs", "fn a() {}\n", &budget);
+        assert_eq!(found.len(), 1);
+        assert!(!budget.was_cut());
+    }
+    let held = budget.reserve_parse_bytes(1).unwrap();
+    assert!(extract("a.rs", "fn a() {}\n", &budget).is_empty());
+    assert!(budget.was_cut());
+    drop(held);
+    assert_eq!(extract("a.rs", "fn a() {}\n", &budget).len(), 1);
+}
+
+#[test]
+fn qualified_lookup_is_linear_and_honors_stopped_limits() {
+    let symbols: Vec<_> = (1..=80_000).map(|line| Symbol { name: "run".into(), kind: "fn", line, end: line }).collect();
+    let budget = limit();
+    let mut count = 0;
+    let started = Instant::now();
+    qualified_matches(&symbols, Some("Missing"), |symbol| symbol.name == "run", &budget, |_| count += 1);
+    assert_eq!(count, 0);
+    assert!(started.elapsed() < Duration::from_millis(50), "{:?}", started.elapsed());
+    for qualifier in [None, Some("Missing")] {
+        let done = Limit::new(Arc::new(AtomicBool::new(true)));
+        qualified_matches(&symbols, qualifier, |_| panic!("a stopped lookup must not test candidates"), &done, |_| panic!("a stopped lookup must not yield candidates"));
+        assert!(done.was_cut());
+    }
+}
+
+#[test]
+fn linear_qualifiers_match_the_reference_including_same_line_duplicates() {
+    let mut state = 37u64;
+    for _ in 0..100 {
+        let mut symbols = Vec::new();
+        for line in 1..=12 {
+            for _ in 0..5 {
+                state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+                let name = ["Foo", "Bar", "impl Foo for Bar", "Food", "run"][(state >> 32) as usize % 5];
+                let end = line + (state as usize % 4);
+                let symbol = Symbol { name: name.into(), kind: "fn", line, end };
+                symbols.push(symbol.clone());
+                if state.is_multiple_of(3) {
+                    symbols.push(symbol);
+                }
+            }
+        }
+        for qualifier in [None, Some("Foo"), Some("Bar"), Some("run"), Some("Missing")] {
+            let expected: Vec<_> = symbols.iter().filter(|symbol| qualifier.is_none_or(|q| qualified_by(&symbols, symbol, q))).collect();
+            let mut actual = Vec::new();
+            qualified_matches(&symbols, qualifier, |_| true, &limit(), |symbol| actual.push(symbol));
+            assert_eq!(actual, expected, "{qualifier:?}");
+        }
+    }
 }

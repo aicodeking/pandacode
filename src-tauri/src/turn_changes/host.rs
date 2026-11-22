@@ -211,7 +211,82 @@ fn read_deny_rules(config_dir: &Path, cwd: &Path, home_settings: Option<&Path>) 
             break;
         }
     }
-    false
+    let main_root = match linked_worktree_main_root(root) {
+        Ok(Some(main_root)) => main_root,
+        Ok(None) => return false,
+        Err(reason) => return read_settings_warning(reason),
+    };
+    let project = main_root.join(".claude");
+    let checked = |dir: &Path| same_settings_directory(&project, dir);
+    if checked(config_dir) || home_settings.is_some_and(checked)
+        || cwd.ancestors().take_while(|ancestor| ancestor.starts_with(root))
+            .any(|ancestor| checked(&ancestor.join(".claude")))
+    {
+        return false;
+    }
+    file_restricts_reads(&project.join("settings.local.json"))
+}
+
+fn same_settings_directory(left: &Path, right: &Path) -> bool {
+    left == right || left.canonicalize().ok().zip(right.canonicalize().ok())
+        .is_some_and(|(left, right)| left == right)
+}
+
+/// Linked worktrees inherit the main checkout's local settings. Ordinary gitfiles (including
+/// submodules) have no commondir, and bare common repositories have no main checkout.
+fn linked_worktree_main_root(root: &Path) -> std::result::Result<Option<PathBuf>, &'static str> {
+    let gitfile = root.join(".git");
+    match std::fs::symlink_metadata(&gitfile) {
+        Ok(_) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(&gitfile) => return Ok(None),
+        Err(_) => return Err("unreadable gitfile"),
+    }
+    let metadata = std::fs::metadata(&gitfile).map_err(|_| "unreadable gitfile")?;
+    if metadata.is_dir() {
+        return Ok(None);
+    }
+    let pointer = read_git_metadata(&gitfile)?;
+    let gitdir = pointer.trim().strip_prefix("gitdir:").map(str::trim)
+        .filter(|path| !path.is_empty()).ok_or("invalid gitfile")?;
+    let gitdir = root.join(gitdir);
+    if !std::fs::metadata(&gitdir).map_err(|_| "unreadable gitdir")?.is_dir() {
+        return Err("invalid gitdir");
+    }
+    let commondir = gitdir.join("commondir");
+    match std::fs::symlink_metadata(&commondir) {
+        Ok(_) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(&commondir) => return Ok(None),
+        Err(_) => return Err("unreadable commondir"),
+    }
+    let common = read_git_metadata(&commondir)?;
+    let common = common.trim();
+    if common.is_empty() {
+        return Err("empty commondir");
+    }
+    let common = gitdir.join(common).canonicalize().map_err(|_| "unreadable common gitdir")?;
+    if !common.is_dir() {
+        return Err("invalid common gitdir");
+    }
+    Ok((common.file_name() == Some(std::ffi::OsStr::new(".git")))
+        .then(|| common.parent().map(Path::to_path_buf)).flatten())
+}
+
+/// Git's small path-pointer files are bounded independently of JSON settings, even if they
+/// grow after stat. Symlinks must resolve to readable regular files.
+fn read_git_metadata(path: &Path) -> std::result::Result<String, &'static str> {
+    use std::io::Read;
+    const LIMIT: u64 = 16 * 1024;
+    let metadata = std::fs::metadata(path).map_err(|_| "unreadable worktree metadata")?;
+    if !metadata.is_file() || metadata.len() > LIMIT {
+        return Err("invalid worktree metadata file");
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path).and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
+        .map_err(|_| "unreadable worktree metadata")?;
+    if bytes.len() as u64 > LIMIT {
+        return Err("oversized worktree metadata");
+    }
+    String::from_utf8(bytes).map_err(|_| "invalid worktree metadata encoding")
 }
 
 fn read_settings_warning(reason: &str) -> bool {
@@ -234,11 +309,37 @@ fn settings_restrict_reads(settings: &Value) -> bool {
     ["deny", "ask"].into_iter().any(|kind| match permissions.get(kind) {
         None => false,
         Some(Value::Array(rules)) => rules.iter().any(|rule| rule.as_str().is_none_or(|rule| {
-            matches!(rule.split('(').next().unwrap_or_default().trim(),
-                "*" | "Read" | "Grep" | "Glob" | "mcp__pandacode_architect__pandacode_explore" | "mcp__pandacode_architect__*")
+            let tool = rule.split('(').next().unwrap_or_default().trim();
+            ["Read", "Grep", "Glob", "mcp__pandacode_architect__pandacode_explore", "mcp__pandacode_architect"]
+                .into_iter().any(|name| wildcard_matches(tool, name))
         })),
         Some(_) => true,
     })
+}
+
+/// Match Claude's tool-name `*` globs without recursion or regex backtracking. Only the most
+/// recent star can absorb more bytes; target names are fixed, short ASCII tool identifiers.
+fn wildcard_matches(pattern: &str, text: &str) -> bool {
+    let (pattern, text) = (pattern.as_bytes(), text.as_bytes());
+    let (mut p, mut t) = (0, 0);
+    let (mut star, mut absorbed) = (None, 0);
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            absorbed = t;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some(last_star) = star {
+            absorbed += 1;
+            t = absorbed;
+            p = last_star + 1;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|byte| *byte == b'*')
 }
 
 /// A policy's presence (including an unreadable path or registry key) is enough to require
@@ -737,7 +838,9 @@ mod tests {
         for kind in ["deny", "ask"] {
             for rule in ["Read(restricted/customer.csv)", "Grep(restricted/**)", "Glob(src/**)",
                 "Read", "*", "mcp__pandacode_architect__pandacode_explore",
-                "mcp__pandacode_architect__pandacode_explore(src/**)", "mcp__pandacode_architect__*", "  Read (file)  "] {
+                "mcp__pandacode_architect__pandacode_explore(src/**)", "mcp__pandacode_architect__*", "  Read (file)  ",
+                "Read*", "R*", "*Read*", "Gr*", "Gl*", "mcp__*", "mcp__pandacode_architect",
+                "mcp__pandacode_architect*", "mcp__pandacode_architect__pandacode_*"] {
                 for file in SETTINGS_FILES {
                     for user in [true, false] {
                         let settings = Settings::new();
@@ -760,6 +863,124 @@ mod tests {
             settings.user("settings.json", value.to_string());
             assert!(!restricts_reads(&settings, "claude", None), "{value}");
         }
+    }
+
+    #[test]
+    fn tool_name_globs_are_anchored_and_handle_empty_and_repeated_stars() {
+        for (pattern, text, expected) in [
+            ("", "", true), ("", "Read", false), ("*", "", true), ("**", "Read", true),
+            ("Read", "Read", true), ("Read", "ReadMore", false), ("Read*", "ReadMore", true),
+            ("*Read*", "BeforeReadAfter", true), ("R**d", "Read", true), ("*e*ad", "Read", true),
+            ("*ead", "ReadMore", false), ("Re*ad", "ReXadYad", true), ("*Read", "ReadRead", true),
+            ("*ReadX", "ReadRead", false), ("Read?", "Read", false), ("read*", "Read", false),
+        ] {
+            assert_eq!(wildcard_matches(pattern, text), expected, "{pattern:?} {text:?}");
+        }
+    }
+
+    #[test]
+    fn unrelated_tool_name_wildcards_leave_explore_available() {
+        for kind in ["deny", "ask"] {
+            for rule in ["Bash*", "Edit*", "Write*", "WebFetch", "mcp__other", "mcp__other__*", "NotebookEdit"] {
+                assert!(!settings_restrict_reads(&json!({"permissions":{kind:[rule]}})), "{kind} {rule}");
+            }
+        }
+    }
+
+    fn linked_checkout(settings: &Settings, bare: bool, relative: bool) -> (PathBuf, PathBuf, PathBuf) {
+        let main = settings.base.join("main");
+        let common = if bare { settings.base.join("repo.git") } else { main.join(".git") };
+        let gitdir = common.join("worktrees/wt");
+        let worktree = settings.base.join("wt");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(main.join(".claude")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        let pointer = if relative {
+            if bare { "../repo.git/worktrees/wt".into() } else { "../main/.git/worktrees/wt".into() }
+        } else { gitdir.to_str().unwrap().to_owned() };
+        std::fs::write(worktree.join(".git"), format!("gitdir: {pointer}\n")).unwrap();
+        (main, worktree, gitdir)
+    }
+
+    #[test]
+    fn linked_worktrees_inherit_main_checkout_local_read_rules() {
+        for relative in [false, true] {
+            let settings = Settings::new();
+            let (main, worktree, _) = linked_checkout(&settings, false, relative);
+            let config = settings.base.join("config");
+            assert!(!read_deny_rules(&config, &main, None));
+            assert!(!read_deny_rules(&config, &worktree, None));
+            std::fs::write(main.join(".claude/settings.local.json"),
+                r#"{"permissions":{"deny":["Read(restricted/customer.csv)"]}}"#).unwrap();
+            assert!(read_deny_rules(&config, &main, None));
+            assert!(read_deny_rules(&config, &worktree, None), "relative={relative}");
+            let nested = worktree.join("src/nested");
+            std::fs::create_dir_all(&nested).unwrap();
+            assert!(read_deny_rules(&config, &nested, None), "nested relative={relative}");
+            assert!(!read_deny_rules(&config, &worktree, Some(&main.join(".claude"))), "overridden home");
+            assert!(read_deny_rules(&main.join(".claude"), &worktree, Some(&main.join(".claude"))), "active config");
+        }
+    }
+
+    #[test]
+    fn linked_worktrees_inherit_only_local_settings_and_bare_repos_have_no_main_checkout() {
+        for bare in [false, true] {
+            let settings = Settings::new();
+            let (main, worktree, _) = linked_checkout(&settings, bare, false);
+            // A shared settings.json is not inherited from an unrelated main checkout.
+            std::fs::write(main.join(".claude/settings.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+            if bare {
+                // Do not treat the bare repo's parent as a checkout.
+                std::fs::create_dir_all(settings.base.join(".claude")).unwrap();
+                std::fs::write(settings.base.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+            }
+            assert!(!read_deny_rules(&settings.base.join("config"), &worktree, None), "bare={bare}");
+        }
+    }
+
+    #[test]
+    fn malformed_linked_worktree_metadata_fails_closed() {
+        for name in ["gitfile", "commondir"] {
+            for bytes in [b"".to_vec(), b"invalid".to_vec(), b"gitdir: ".to_vec(), vec![0xff], vec![b'x'; 16 * 1024 + 1]] {
+                let settings = Settings::new();
+                let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
+                let path = if name == "gitfile" { worktree.join(".git") } else { gitdir.join("commondir") };
+                std::fs::write(path, &bytes).unwrap();
+                assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "{name} length={}", bytes.len());
+            }
+        }
+        let settings = Settings::new();
+        let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
+        std::fs::remove_file(gitdir.join("commondir")).unwrap();
+        assert!(!read_deny_rules(&settings.base.join("config"), &worktree, None), "ordinary gitfile/submodule");
+        std::fs::create_dir(gitdir.join("commondir")).unwrap();
+        assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "commondir is not a file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_and_dangling_worktree_metadata_fails_closed() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        for name in ["gitfile", "commondir"] {
+            let settings = Settings::new();
+            let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
+            let path = if name == "gitfile" { worktree.join(".git") } else { gitdir.join("commondir") };
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let restricted = read_deny_rules(&settings.base.join("config"), &worktree, None);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            assert!(restricted, "unreadable {name}");
+            std::fs::remove_file(&path).unwrap();
+            symlink(settings.base.join("absent"), &path).unwrap();
+            assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "dangling {name}");
+        }
+        let settings = Settings::new();
+        let (main, worktree, _) = linked_checkout(&settings, false, false);
+        std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        let pointer = worktree.join("pointer");
+        std::fs::rename(worktree.join(".git"), &pointer).unwrap();
+        symlink(&pointer, worktree.join(".git")).unwrap();
+        assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "symlink to gitfile");
     }
 
     #[test]
@@ -927,6 +1148,7 @@ mod tests {
         let nested = project.join("src/nested");
         std::fs::create_dir_all(&nested).unwrap();
         // Worktrees use a .git file, ordinary repositories use a directory.
+        std::fs::create_dir(project.join("elsewhere")).unwrap();
         std::fs::write(project.join(".git"), "gitdir: elsewhere").unwrap();
         settings.project("settings.local.json", r#"{"permissions":{"deny":["Read"]}}"#);
         assert!(read_deny_rules(&settings.base.join("config"), &nested, None));

@@ -2,7 +2,7 @@
 //! lexer (braces, indentation) or a matching `end`. Good enough to label a hit and to outline a
 //! file; a macro or an odd layout can produce a wrong or missing entry.
 use super::{
-    lex::{indent_of, signature_continues, Language, Lexed, LIMIT_CHECK_LINES, SIGNATURE_LOOKAHEAD},
+    lex::{indent_of, signature_continues, Language, Lexed, LIMIT_CHECK_BYTES, LIMIT_CHECK_LINES, SIGNATURE_LOOKAHEAD},
     limit::Limit,
 };
 use regex::{Regex, RegexSet};
@@ -15,6 +15,8 @@ use std::{
 const SIGNATURE_LINES: usize = 12;
 /// A longer line is minified or data, never a definition worth finding.
 const MAX_RULE_LINE: usize = 2_000;
+/// One line slice, two flags and five depths, rounded up for allocation alignment.
+pub(super) const LINE_METADATA_BYTES: usize = (size_of::<&str>() + 2 * size_of::<bool>() + 5 * size_of::<i32>()).next_multiple_of(8);
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Symbol {
@@ -225,7 +227,23 @@ pub(super) fn extract(path: &str, text: &str, limit: &Limit) -> Vec<Symbol> {
     if limit.expired() {
         return Vec::new();
     }
-    let lines: Vec<&str> = text.lines().collect();
+    let mut line_count = usize::from(!text.is_empty() && !text.ends_with('\n'));
+    for chunk in text.as_bytes().chunks(LIMIT_CHECK_BYTES) {
+        if limit.expired() {
+            return Vec::new();
+        }
+        line_count += chunk.iter().filter(|&&byte| byte == b'\n').count();
+    }
+    let Some(needed) = line_count.checked_mul(LINE_METADATA_BYTES) else {
+        limit.cut();
+        return Vec::new();
+    };
+    let Some(_guard) = limit.reserve_parse_bytes(needed) else {
+        limit.cut();
+        return Vec::new();
+    };
+    let mut lines = Vec::with_capacity(line_count);
+    lines.extend(text.lines());
     let lex = Lexed::new(&lines, language, limit);
     if lex.inside_literal.len() < lines.len() {
         return Vec::new();
@@ -322,15 +340,17 @@ fn block_ends(lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit
         let base = lex.depth_before[start];
         symbol.end = (start + SIGNATURE_LOOKAHEAD + 1).min(lines.len());
         for index in start..lines.len().min(start + SIGNATURE_LOOKAHEAD + 1) {
-            if lex.peak[index] > base {
-                if lex.depth_after[index] <= base {
-                    symbol.end = index + 1;
-                } else {
-                    openings.push((index, base, sym_idx));
-                }
-                break;
-            }
             let in_parens = lex.parens_after[index] > lex.parens_before[start];
+            if lex.peak[index] > base {
+                if lex.depth_after[index] > base {
+                    openings.push((index, base, sym_idx));
+                    break;
+                }
+                // An inline parameter type or default is not the function's body.
+                if !lex.has_semicolon[index] && (in_parens || signature_continues(lines, index)) {
+                    continue;
+                }
+            }
             if lex.has_semicolon[index] || !(in_parens || signature_continues(lines, index)) {
                 symbol.end = index + 1;
                 break;
@@ -525,8 +545,63 @@ impl<'a> Enclosing<'a> {
 
 /// Whether `symbol` sits inside a definition whose name holds `qualifier` as a whole word
 /// (`Foo` in `impl Display for Foo<'a>`).
+#[cfg(test)]
 pub(super) fn qualified_by(symbols: &[Symbol], symbol: &Symbol, qualifier: &str) -> bool {
     symbols.iter().any(|outer| {
         outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && outer.name.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == qualifier)
     })
+}
+
+/// Streams matching definitions in O(symbols), retaining only two same-line qualifier
+/// candidates. Earlier-line qualifiers need only their maximum end. The two same-line
+/// candidates have distinct values because `qualified_by` excludes value-equal symbols.
+pub(super) fn qualified_matches<'a>(
+    symbols: &'a [Symbol],
+    qualifier: Option<&str>,
+    matches_name: impl Fn(&Symbol) -> bool,
+    limit: &Limit,
+    mut found: impl FnMut(&'a Symbol),
+) {
+    let Some(qualifier) = qualifier else {
+        for (index, symbol) in symbols.iter().enumerate() {
+            if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return;
+            }
+            if matches_name(symbol) {
+                found(symbol);
+            }
+        }
+        return;
+    };
+    let (mut start, mut max_prev_end) = (0, None);
+    while start < symbols.len() {
+        let mut end = start;
+        let (mut first, mut second): (Option<&Symbol>, Option<&Symbol>) = (None, None);
+        while end < symbols.len() && symbols[end].line == symbols[start].line {
+            if end.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return;
+            }
+            let symbol = &symbols[end];
+            if symbol.name.split(|c: char| !c.is_alphanumeric() && c != '_').any(|word| word == qualifier) && first != Some(symbol) && second != Some(symbol) {
+                if first.is_none_or(|first| symbol.end > first.end) {
+                    second = first;
+                    first = Some(symbol);
+                } else if second.is_none_or(|second| symbol.end > second.end) {
+                    second = Some(symbol);
+                }
+            }
+            end += 1;
+        }
+        for (offset, symbol) in symbols[start..end].iter().enumerate() {
+            if (start + offset).is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return;
+            }
+            let same_line_end = first.filter(|&outer| outer != symbol).or(second.filter(|&outer| outer != symbol)).map(|outer| outer.end);
+            if matches_name(symbol) && max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end) {
+                found(symbol);
+            }
+        }
+        max_prev_end = max_prev_end.max(first.map(|outer| outer.end));
+        start = end;
+    }
 }
