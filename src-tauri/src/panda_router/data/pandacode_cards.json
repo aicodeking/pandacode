@@ -8852,44 +8852,44 @@
     "description": "Gemini 4 Neon is Google's mid-tier frontier model for complex coding, debugging, review, analytical reasoning, and fast multi-step agentic workflows.",
     "skills": {
       "coding": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.3,
+        "se": 0.9
       },
       "debugging": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.2,
+        "se": 0.9
       },
       "reasoning": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.2,
+        "se": 0.9
       },
       "math": {
-        "theta": 8.8,
-        "se": 1.3
+        "theta": 9.1,
+        "se": 0.9
       },
       "writing": {
-        "theta": 8.6,
-        "se": 1.3
+        "theta": 8.9,
+        "se": 0.9
       },
       "research": {
-        "theta": 8.8,
-        "se": 1.3
+        "theta": 9.1,
+        "se": 0.9
       },
       "review": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.2,
+        "se": 0.9
       },
       "planning": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.3,
+        "se": 0.9
       },
       "ui_frontend": {
-        "theta": 8.9,
-        "se": 1.3
+        "theta": 9.2,
+        "se": 0.9
       },
       "data_analysis": {
-        "theta": 8.8,
-        "se": 1.3
+        "theta": 9.2,
+        "se": 0.9
       }
     },
     "discrimination": 1.2,
@@ -8926,10 +8926,10 @@
       "harness:antigravity",
       "added:pandacode-model-refresh"
     ],
-    "card_version": "2026-11-18",
-    "provenance": "estimated",
+    "card_version": "2026-11-22",
+    "provenance": "benchmark-informed",
     "field_provenance": {
-      "skills": "estimated",
+      "skills": "benchmark-informed",
       "latency": "estimated",
       "cost": "verified",
       "limits": "verified"
@@ -8941,9 +8941,10 @@
       "https://aistudio.google.com/docs/pricing#gemini-4-neon (standard input $3, output $15, implicit cached input $0.15 per MTok, consulted 2026-11-18)",
       "https://antigravity.google/docs/models (Antigravity availability, 512K Antigravity context window, xhigh thinking level, consulted 2026-11-18)",
       "https://openrouter.ai/api/v1/models (google/gemini-4-neon slug, pricing, modalities, fetched 2026-11-18)",
+      "https://openrouter.ai/api/v1/models (benchmarks.artificial_analysis for google/gemini-4-neon, fetched 2026-11-22: intelligence_index 61.4, engineering_index 66.8, strategy_and_ops_index 63.8)",
       "Antigravity agy models read-only discovery 2026-11-18: gemini-4-neon-low, gemini-4-neon-medium, gemini-4-neon-high, gemini-4-neon-xhigh",
       "OpenCode opencode models read-only discovery 2026-11-18: openrouter/google/gemini-4-neon"
     ],
-    "notes": "Skills are conservative routing estimates placed between gemini-4-hydrogen and gemini-4-carbon, reflecting Google's positioning for strong coding, debugging, review, planning, steerability, and multi-step agentic work while keeping Carbon slightly higher for deepest long-horizon planning, reasoning, and research and Hydrogen faster/cheaper. These are not measured or fitted router scores: every axis has se 1.3. Latency is estimated between Hydrogen and Carbon for Neon's moderate speed tier and default high thinking level, not observed timings. Costs use verified standard Gemini API / OpenRouter rates ($3/$15, implicit cached $0.15 per MTok) as proxies for Antigravity quota, not subscription charges. Limits are Gemini API specifications: input, thinking, and output share one 1,048,576-token window (Antigravity caps context at 512K); max output records the 65,536-token synchronous limit, with longer decode up to 1M tokens possible via long decode / background execution. Bare and effort-suffixed Antigravity mappings identify one model family."
+    "notes": "Skills are benchmark-informed calibrations from Artificial Analysis via OpenRouter (2026-11-22: Intelligence Index 61.4, Engineering 66.8, Strategy & Ops 63.8, Finance & Accounting 65.1, Legal 63.8, Economics 61.9, Healthcare 60.1), placing Neon ahead of GPT-6.2 Sol (II 57.3, Eng 61.2, Strat 59.4), Claude Opus 5.5 (II 59.1, Eng 65.3, Strat 61.4), and Gemini 4 Carbon (II 60.0, Eng 65.3, Strat 60.9) and near GPT-6.2 Astra (II 62.1, Eng 66.6, Strat 63.3) with se 0.9 on all axes. Latency remains estimated for Neon's moderate speed tier and default high thinking level, not observed timings. Costs use verified standard Gemini API / OpenRouter rates ($3/$15, implicit cached $0.15 per MTok) as proxies for Antigravity quota, not subscription charges. Limits are Gemini API specifications: input, thinking, and output share one 1,048,576-token window (Antigravity caps context at 512K); max output records the 65,536-token synchronous limit, with longer decode up to 1M tokens possible via long decode / background execution. Bare and effort-suffixed Antigravity mappings identify one model family."
   }
 ]
