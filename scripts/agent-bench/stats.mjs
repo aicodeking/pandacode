@@ -84,16 +84,22 @@ export function bootstrapCi(values, rounds = 20_000, seed = 0x2545f491) {
 }
 
 const tStat = (values, sign) => {
-  let sum = 0;
-  let squares = 0;
-  for (let i = 0; i < values.length; i++) {
-    const x = values[i] * sign(i);
-    sum += x;
-    squares += x * x;
-  }
   const n = values.length;
-  const variance = (squares - sum * sum / n) / (n - 1);
-  return variance > 0 ? Math.abs(sum / n) / Math.sqrt(variance / n) : 0;
+  if (n < 2) return 0;
+  const first = values[0] * sign(0);
+  let constant = true;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const x = values[i] * sign(i);
+    if (x !== first) constant = false;
+    sum += x;
+  }
+  if (constant) return first === 0 ? 0 : Infinity;
+  const avg = sum / n;
+  let sse = 0;
+  for (let i = 0; i < n; i++) sse += (values[i] * sign(i) - avg) ** 2;
+  const variance = sse / (n - 1);
+  return variance > 0 ? Math.abs(avg) / Math.sqrt(variance / n) : (avg === 0 ? 0 : Infinity);
 };
 
 /**

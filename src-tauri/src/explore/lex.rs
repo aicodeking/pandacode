@@ -1,6 +1,7 @@
 //! One pass over a source file: which lines start inside a string or comment, and the brace and
 //! paren depth around each line. Strings and comments must not count, and one mistaken literal
 //! must not poison the rest of the file.
+use super::limit::Limit;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum Language {
@@ -17,7 +18,8 @@ pub(super) enum Language {
     Shell,
 }
 
-const SIGNATURE_LOOKAHEAD: usize = 12;
+pub(super) const SIGNATURE_LOOKAHEAD: usize = 12;
+pub(super) const LIMIT_CHECK_LINES: usize = 4_096;
 /// A string left open this many lines, then a line that starts a definition at column 0, was
 /// mis-read. Shorter multi-line templates may well hold code at column 0.
 const RESYNC_AFTER: usize = 30;
@@ -262,24 +264,25 @@ fn heredoc_word(line: &str) -> Option<String> {
 #[derive(Default)]
 pub(super) struct Lexed {
     pub(super) inside_literal: Vec<bool>,
-    depth_before: Vec<i32>,
-    depth_after: Vec<i32>,
-    peak: Vec<i32>,
-    parens_before: Vec<i32>,
-    parens_after: Vec<i32>,
-    has_semicolon: Vec<bool>,
-    /// For each line, the next line whose depth is lower, which makes finding a block's end linear.
-    next_lower: Vec<u32>,
+    pub(super) depth_before: Vec<i32>,
+    pub(super) depth_after: Vec<i32>,
+    pub(super) peak: Vec<i32>,
+    pub(super) parens_before: Vec<i32>,
+    pub(super) parens_after: Vec<i32>,
+    pub(super) has_semicolon: Vec<bool>,
 }
 
 impl Lexed {
-    pub(super) fn new(lines: &[&str], language: Language) -> Self {
+    pub(super) fn new(lines: &[&str], language: Language, limit: &Limit) -> Self {
         let syntax = syntax_of(language);
         let mut mode = Mode::Code;
         let mut scanner = Scanner::default();
         let mut lexed = Self::default();
         let (mut open_for, mut heredoc): (usize, Option<String>) = (0, None);
-        for line in lines {
+        for (index, line) in lines.iter().enumerate() {
+            if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                break;
+            }
             if let Some(word) = &heredoc {
                 let closes = line.trim() == word;
                 lexed.record_literal_line(&scanner);
@@ -310,7 +313,6 @@ impl Lexed {
                 heredoc = heredoc_word(line);
             }
         }
-        lexed.next_lower = next_lower(&lexed.depth_after);
         lexed
     }
 
@@ -323,75 +325,10 @@ impl Lexed {
         self.parens_after.push(scanner.parens);
         self.has_semicolon.push(false);
     }
-
-    /// The line closing the block this definition opens, or the line ending a declaration
-    /// that has no body. Only the signature is looked through line by line.
-    pub(super) fn block_end(&self, lines: &[&str], start: usize) -> usize {
-        let base = self.depth_before[start];
-        for index in start..lines.len().min(start + SIGNATURE_LOOKAHEAD + 1) {
-            if self.peak[index] > base {
-                return self.closing_line(index, base);
-            }
-            let in_parens = self.parens_after[index] > self.parens_before[start];
-            if self.has_semicolon[index] || !(in_parens || signature_continues(lines, index)) {
-                return index;
-            }
-        }
-        (start + SIGNATURE_LOOKAHEAD).min(lines.len().saturating_sub(1))
-    }
-
-    fn closing_line(&self, mut index: usize, base: i32) -> usize {
-        while self.depth_after[index] > base {
-            match self.next_lower[index] as usize {
-                next if next < self.depth_after.len() => index = next,
-                _ => return self.depth_after.len() - 1,
-            }
-        }
-        index
-    }
-
-    /// Python: the last code line before indentation returns to the definition's level. A line
-    /// inside a string or a bracket, or a comment, never ends a block.
-    pub(super) fn indent_end(&self, lines: &[&str], start: usize) -> usize {
-        let indent = indent_of(lines[start]);
-        let mut end = start;
-        for (offset, line) in lines[start..].iter().enumerate() {
-            let index = start + offset;
-            let trimmed = line.trim();
-            if self.inside_literal[index] && offset > 0 {
-                end = index;
-                continue;
-            }
-            if trimmed.is_empty() || (offset > 0 && trimmed.starts_with('#')) {
-                continue;
-            }
-            let in_brackets = self.parens_before[index] > self.parens_before[start];
-            if offset > 0 && !in_brackets && indent_of(line) <= indent {
-                break;
-            }
-            end = index;
-        }
-        end
-    }
-}
-
-fn next_lower(depths: &[i32]) -> Vec<u32> {
-    let mut next = vec![u32::MAX; depths.len()];
-    let mut stack: Vec<usize> = Vec::new();
-    for at in (0..depths.len()).rev() {
-        while stack.last().is_some_and(|&later| depths[later] >= depths[at]) {
-            stack.pop();
-        }
-        if let Some(&later) = stack.last() {
-            next[at] = later as u32;
-        }
-        stack.push(at);
-    }
-    next
 }
 
 /// Whether a declaration with no `{` yet carries on past this line.
-fn signature_continues(lines: &[&str], index: usize) -> bool {
+pub(super) fn signature_continues(lines: &[&str], index: usize) -> bool {
     let current = lines[index].trim_end();
     let next = lines.get(index + 1).map_or("", |line| line.trim_start());
     ["(", ",", "=", "->", "=>", ":", "|", "&", "where"].iter().any(|tail| current.ends_with(tail))

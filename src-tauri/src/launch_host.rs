@@ -23,12 +23,12 @@ use tauri::Manager;
 /// has a catalog here at all. Whether that catalog is empty is left out: it rides only the
 /// message note, never the instructions or the tool list. A lead's warm spare is renewed only
 /// while this is unchanged (`warm::still_current`).
-pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: &str) -> String {
-    // One store lookup and a few marker-file stats (the explorer's `explore-off`/
+pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: &str, cwd: &Path) -> String {
+    // One store lookup, bounded Claude settings reads, and marker-file stats (`explore-off`/
     // `explore-on-<provider>`, the tools switch); `warm.rs` calls it on a blocking thread, once
     // per spare start and lead-spare renewal (at most `warm::MAX_RENEWALS`).
     let catalog = custom_tools::has_catalog(app, session_id);
-    format!("explore:{} custom:{} catalog:{catalog}", explore::enabled_for(app, provider), custom_tools::ipc::enabled_for(app))
+    format!("explore:{} custom:{} catalog:{catalog}", explore::enabled_for_run(app, session_id, provider, cwd), custom_tools::ipc::enabled_for(app))
 }
 /// What a run's tool host is built for, besides its `HostPlan`.
 pub(crate) struct HostInputs<'a> {
@@ -386,8 +386,8 @@ pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, ses
     if let Some(task) = task {
         let renew = pool.renewal();
         let next = lead_spare::spare_config(next, task);
-        let (inputs_app, inputs_session, inputs_provider) = (app.clone(), session_id.to_owned(), next.provider.clone());
-        let inputs = move || launch_inputs(&inputs_app, &inputs_session, &inputs_provider);
+        let (inputs_app, inputs_session, inputs_provider, inputs_cwd) = (app.clone(), session_id.to_owned(), next.provider.clone(), next.cwd.clone());
+        let inputs = move || launch_inputs(&inputs_app, &inputs_session, &inputs_provider, &inputs_cwd);
         tauri::async_runtime::spawn(async move {
             let _ = providers::prewarm_agent(next, tools, approvals, launch, renew, inputs).await;
         });

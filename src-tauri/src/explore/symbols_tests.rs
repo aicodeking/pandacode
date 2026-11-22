@@ -1,9 +1,10 @@
 use super::{
+    lex::{indent_of, Language, Lexed},
     limit::Limit,
     symbols::{extract, qualified_by, Enclosing, Symbol},
 };
 use std::{
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
     time::{Duration, Instant},
 };
 
@@ -326,6 +327,115 @@ fn an_expired_limit_ends_extraction() {
     let done = Limit::lasting(Duration::ZERO, Arc::default());
     assert!(extract("a.rs", &"fn a() {}\n".repeat(10), &done).is_empty());
     assert!(done.was_cut());
+}
+
+#[test]
+fn deeply_nested_multi_brace_spans_are_exact_and_bounded() {
+    let count = 8_000;
+    let mut text = (0..count).map(|index| format!("fn f{index}() {{ {{\n")).collect::<String>();
+    text.push_str(&"}\n}\n".repeat(count));
+    let budget = Limit::lasting(Duration::from_secs(10), Arc::default());
+    let started = Instant::now();
+    let found = extract("nested.rs", &text, &budget);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(!budget.was_cut(), "nested brace resolution exhausted its budget");
+    assert_eq!(found.len(), count);
+    for (index, symbol) in found.iter().enumerate() {
+        assert_eq!((symbol.name.as_str(), symbol.line, symbol.end), (format!("f{index}").as_str(), index + 1, 3 * count - 2 * index));
+    }
+    let stopped = Limit::new(Arc::new(AtomicBool::new(true)));
+    let started = Instant::now();
+    assert!(extract("nested.rs", &text, &stopped).is_empty());
+    assert!(stopped.was_cut());
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn deeply_nested_python_spans_keep_literal_and_bracket_lines() {
+    // Stay below the definition rule's 2,000-byte line cap, even at the deepest indent.
+    let count = 1_800;
+    let mut text = (0..count).map(|index| format!("{}def f{index}():\n", " ".repeat(index))).collect::<String>();
+    text.push_str(&format!("{}value = [\n", " ".repeat(count)));
+    text.push_str(&"0,\n".repeat(8_000));
+    text.push_str("]\n\n# low comment\n");
+    text.push_str(&format!("{}doc = \"\"\"\n", " ".repeat(count)));
+    text.push_str("\n# literal comment\ndef fake():\n\"\"\"\n\n# trailing comment\n");
+    let end = text.lines().count() - 2;
+    let budget = Limit::lasting(Duration::from_secs(10), Arc::default());
+    let started = Instant::now();
+    let found = extract("nested.py", &text, &budget);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(!budget.was_cut(), "nested indentation resolution exhausted its budget");
+    assert_eq!(found.len(), count);
+    for (index, symbol) in found.iter().enumerate() {
+        assert_eq!((symbol.line, symbol.end), (index + 1, end));
+    }
+    let stopped = Limit::new(Arc::new(AtomicBool::new(true)));
+    let started = Instant::now();
+    assert!(extract("nested.py", &text, &stopped).is_empty());
+    assert!(stopped.was_cut());
+    assert!(started.elapsed() < Duration::from_secs(1));
+}
+
+#[test]
+fn block_openings_declarations_and_reordered_signatures_keep_spans() {
+    let found = names("spans.rs", "fn outer(\nfn inner() {\n) {\n}\n}\nfn declared();\nfn double() { {\n}\n}\nmod unclosed {\n");
+    has(&found, "outer", "fn", 1, 5);
+    has(&found, "inner", "fn", 2, 5);
+    has(&found, "declared", "fn", 6, 6);
+    has(&found, "double", "fn", 7, 9);
+    has(&found, "unclosed", "mod", 10, 10);
+    // A malformed signature can find its opening after a later definition's opening.
+    let found = names("reordered.rs", "mod container {\nfn outer(\n} ->\nfn inner() {\n{\n}\n}\n");
+    has(&found, "container", "mod", 1, 3);
+    has(&found, "outer", "fn", 2, 6);
+    has(&found, "inner", "fn", 4, 7);
+}
+
+#[test]
+fn lexing_checks_stop_and_deadline_before_recording_lines() {
+    let lines = vec!["fn f() { {"; 8_000];
+    for done in [Limit::new(Arc::new(AtomicBool::new(true))), Limit::lasting(Duration::ZERO, Arc::default())] {
+        let lex = Lexed::new(&lines, Language::Rust, &done);
+        assert!(lex.inside_literal.is_empty());
+        assert!(done.was_cut());
+    }
+}
+
+#[test]
+fn python_spans_match_the_line_scan_at_mixed_bracket_and_indent_depths() {
+    // Include incomplete expressions and strings: the outline is intentionally tolerant of
+    // malformed code, so a stack that assumes valid nesting would change existing spans.
+    let fragments = ["def f():", "class C:", "value = [", "]", "return (", ")", "pass", "", "# comment", "\"\"\"", "literal text"];
+    let mut state = 37u64;
+    for _ in 0..100 {
+        let mut text = String::new();
+        for _ in 0..100 {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let fragment = fragments[(state >> 32) as usize % fragments.len()];
+            let indent = (state >> 16) as usize % 8;
+            text.push_str(&format!("{}{fragment}\n", " ".repeat(indent)));
+        }
+        let lines = text.lines().collect::<Vec<_>>();
+        let lex = Lexed::new(&lines, Language::Python, &limit());
+        for symbol in symbols("mixed.py", &text) {
+            let start = symbol.line - 1;
+            let mut end = start;
+            for index in start..lines.len() {
+                let trimmed = lines[index].trim();
+                if index > start && lex.inside_literal[index] {
+                    end = index;
+                } else if trimmed.is_empty() || (index > start && trimmed.starts_with('#')) {
+                    continue;
+                } else if index > start && lex.parens_before[index] <= lex.parens_before[start] && indent_of(lines[index]) <= indent_of(lines[start]) {
+                    break;
+                } else {
+                    end = index;
+                }
+            }
+            assert_eq!(symbol.end, end + 1, "{symbol:?} in {text}");
+        }
+    }
 }
 
 #[test]

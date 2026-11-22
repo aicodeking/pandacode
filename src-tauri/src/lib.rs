@@ -2834,7 +2834,7 @@ async fn launch_operation_admitted(
         }
     }
     // Whether this run lists explore, and the name its instructions use for it.
-    let explore_on = explore::enabled_for(&app, &config.provider);
+    let explore_on = explore::enabled_for_run(&app, &session_id, &config.provider, &config.cwd);
     let explore = explore::run_name(cloud, explore_on, &config.provider);
     let explore_offered = explore::run_name(cloud, true, &config.provider).is_some();
     let host_plan = HostPlan::of(&config, team.is_some(), role, cloud, explore_offered, explore_on).custom_tools(custom_offered);

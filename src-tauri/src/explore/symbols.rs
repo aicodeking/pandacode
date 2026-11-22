@@ -2,17 +2,19 @@
 //! lexer (braces, indentation) or a matching `end`. Good enough to label a hit and to outline a
 //! file; a macro or an odd layout can produce a wrong or missing entry.
 use super::{
-    lex::{indent_of, Language, Lexed},
+    lex::{indent_of, signature_continues, Language, Lexed, LIMIT_CHECK_LINES, SIGNATURE_LOOKAHEAD},
     limit::Limit,
 };
 use regex::{Regex, RegexSet};
-use std::{collections::HashMap, sync::OnceLock};
+use std::{
+    collections::{BinaryHeap, HashMap},
+    sync::OnceLock,
+};
 
 /// How far ahead a multi-line method's `) {` may be.
 const SIGNATURE_LINES: usize = 12;
 /// A longer line is minified or data, never a definition worth finding.
 const MAX_RULE_LINE: usize = 2_000;
-const LIMIT_CHECK_LINES: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Symbol {
@@ -216,12 +218,18 @@ pub(super) fn supported(path: &str) -> bool {
 /// In rules with no keyword before the name: words that look like one in `word(...) {`.
 const NOT_NAMES: &[&str] = &["if", "else", "for", "while", "switch", "catch", "return", "function", "do", "try", "new", "throw", "with", "await", "yield", "typeof", "delete", "case", "sizeof", "super", "this", "assert", "synchronized", "foreach", "elif", "match", "loop", "defined"];
 
-/// Definitions in file order, with 1-based inclusive line ranges. Linear in the file's size;
-/// a call out of time gets the definitions found so far.
+/// Definitions in file order, with 1-based inclusive line ranges. Span resolution takes
+/// O((lines + symbols) log symbols); a call out of time gets the definitions found so far.
 pub(super) fn extract(path: &str, text: &str, limit: &Limit) -> Vec<Symbol> {
     let Some(language) = language_of(path) else { return Vec::new() };
+    if limit.expired() {
+        return Vec::new();
+    }
     let lines: Vec<&str> = text.lines().collect();
-    let lex = Lexed::new(&lines, language);
+    let lex = Lexed::new(&lines, language, limit);
+    if lex.inside_literal.len() < lines.len() {
+        return Vec::new();
+    }
     let mut symbols = Vec::new();
     let mut go_group = None;
     for (index, line) in lines.iter().enumerate() {
@@ -236,7 +244,10 @@ pub(super) fn extract(path: &str, text: &str, limit: &Limit) -> Vec<Symbol> {
             symbols.push(Symbol { name, kind, line: index + 1, end: index + 1 });
         }
     }
-    set_ends(language, &lines, &lex, &mut symbols);
+    if limit.expired() {
+        return symbols;
+    }
+    set_ends(language, &lines, &lex, &mut symbols, limit);
     symbols
 }
 
@@ -291,20 +302,176 @@ fn first_word_blocks(line: &str) -> bool {
     matches!(word, "return" | "new" | "else" | "throw" | "await" | "yield" | "goto" | "case")
 }
 
-fn set_ends(language: Language, lines: &[&str], lex: &Lexed, symbols: &mut [Symbol]) {
+fn set_ends(language: Language, lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit) {
     match language {
-        Language::Ruby => ruby_ends(lines, symbols),
-        Language::Python => symbols.iter_mut().for_each(|symbol| symbol.end = lex.indent_end(lines, symbol.line - 1) + 1),
-        _ => symbols.iter_mut().for_each(|symbol| symbol.end = lex.block_end(lines, symbol.line - 1) + 1),
+        Language::Ruby => ruby_ends(lines, symbols, limit),
+        Language::Python => indent_ends(lines, lex, symbols, limit),
+        _ => block_ends(lines, lex, symbols, limit),
+    }
+}
+
+/// Find each opening in bounded signature lookahead, then close all eligible definitions
+/// together. Multiple braces on an opening line must close back to its original depth.
+fn block_ends(lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit) {
+    let mut openings = Vec::new();
+    for (sym_idx, symbol) in symbols.iter_mut().enumerate() {
+        if sym_idx.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        let start = symbol.line - 1;
+        let base = lex.depth_before[start];
+        symbol.end = (start + SIGNATURE_LOOKAHEAD + 1).min(lines.len());
+        for index in start..lines.len().min(start + SIGNATURE_LOOKAHEAD + 1) {
+            if lex.peak[index] > base {
+                if lex.depth_after[index] <= base {
+                    symbol.end = index + 1;
+                } else {
+                    openings.push((index, base, sym_idx));
+                }
+                break;
+            }
+            let in_parens = lex.parens_after[index] > lex.parens_before[start];
+            if lex.has_semicolon[index] || !(in_parens || signature_continues(lines, index)) {
+                symbol.end = index + 1;
+                break;
+            }
+        }
+    }
+    openings.sort_unstable_by_key(|&(line, _, _)| line);
+    let mut openings = openings.into_iter().peekable();
+    let mut open = BinaryHeap::new();
+    let mut closed = 0usize;
+    for index in 0..lines.len() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        while openings.peek().is_some_and(|&(line, _, _)| line == index) {
+            let (_, base, sym_idx) = openings.next().expect("opening exists");
+            open.push((base, sym_idx));
+        }
+        while open.peek().is_some_and(|&(base, _)| lex.depth_after[index] <= base) {
+            if closed.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return;
+            }
+            let (_, sym_idx) = open.pop().expect("open definition exists");
+            symbols[sym_idx].end = index + 1;
+            closed += 1;
+        }
+    }
+    for (index, (_, sym_idx)) in open.into_iter().enumerate() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        symbols[sym_idx].end = lines.len();
+    }
+}
+
+/// Open Python definitions grouped by bracket depth. Each heap orders indentation; a range
+/// maximum tree finds a qualifying heap without rescanning definitions protected by brackets.
+/// This also bounds work for malformed files whose bracket and indentation levels disagree.
+struct IndentBlocks {
+    parens: Vec<i32>,
+    heaps: Vec<BinaryHeap<(usize, usize)>>,
+    maxima: Vec<Option<usize>>,
+    size: usize,
+}
+
+impl IndentBlocks {
+    fn new(mut parens: Vec<i32>) -> Self {
+        parens.sort_unstable();
+        parens.dedup();
+        let size = parens.len().next_power_of_two();
+        Self { heaps: vec![BinaryHeap::new(); parens.len()], parens, maxima: vec![None; 2 * size], size }
+    }
+
+    fn update(&mut self, group: usize) {
+        let mut node = self.size + group;
+        self.maxima[node] = self.heaps[group].peek().map(|&(indent, _)| indent);
+        while node > 1 {
+            node /= 2;
+            self.maxima[node] = self.maxima[node * 2].max(self.maxima[node * 2 + 1]);
+        }
+    }
+
+    fn push(&mut self, parens: i32, indent: usize, sym_idx: usize) {
+        let group = self.parens.binary_search(&parens).expect("definition bracket depth is indexed");
+        self.heaps[group].push((indent, sym_idx));
+        self.update(group);
+    }
+
+    /// First heap at or after `first` containing an indent >= the current line's indent.
+    fn qualifying(&self, node: usize, left: usize, right: usize, first: usize, indent: usize) -> Option<usize> {
+        if right <= first || self.maxima[node] < Some(indent) {
+            return None;
+        }
+        if right - left == 1 {
+            return Some(left);
+        }
+        let middle = (left + right) / 2;
+        self.qualifying(node * 2, left, middle, first, indent).or_else(|| self.qualifying(node * 2 + 1, middle, right, first, indent))
+    }
+}
+
+/// A nonliteral, noncomment code line closes definitions only when BOTH its indentation
+/// and bracket depth have returned to their starting levels. All still-open definitions
+/// share the last code line, including literal lines but excluding blank/comment lines.
+fn indent_ends(lines: &[&str], lex: &Lexed, symbols: &mut [Symbol], limit: &Limit) {
+    let mut parens = Vec::with_capacity(symbols.len());
+    for (index, symbol) in symbols.iter().enumerate() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        parens.push(lex.parens_before[symbol.line - 1]);
+    }
+    let mut open = IndentBlocks::new(parens);
+    let (mut next, mut last_code, mut closed) = (0, 0, 0usize);
+    for (index, line) in lines.iter().enumerate() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        if lex.inside_literal[index] {
+            last_code = index + 1;
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = indent_of(line);
+        let parens = lex.parens_before[index];
+        let first = open.parens.partition_point(|&depth| depth < parens);
+        while let Some(group) = open.qualifying(1, 0, open.size, first, indent) {
+            if closed.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+                return;
+            }
+            let (_, sym_idx) = open.heaps[group].pop().expect("qualifying definition exists");
+            symbols[sym_idx].end = last_code;
+            open.update(group);
+            closed += 1;
+        }
+        last_code = index + 1;
+        while next < symbols.len() && symbols[next].line == index + 1 {
+            open.push(parens, indent, next);
+            next += 1;
+        }
+    }
+    for (index, (_, sym_idx)) in open.heaps.into_iter().flatten().enumerate() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
+        symbols[sym_idx].end = last_code;
     }
 }
 
 /// Ruby: an `end` at a definition's own indentation closes it. One pass with a stack of open
 /// definitions; one-liners and `def a = 1` never open.
-fn ruby_ends(lines: &[&str], symbols: &mut [Symbol]) {
+fn ruby_ends(lines: &[&str], symbols: &mut [Symbol], limit: &Limit) {
     let mut open: Vec<usize> = Vec::new();
     let mut next = 0;
     for (index, line) in lines.iter().enumerate() {
+        if index.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+            return;
+        }
         let indent = indent_of(line);
         let trimmed = line.trim_start();
         let closes = trimmed.strip_prefix("end").is_some_and(|rest| !rest.starts_with(|c: char| c.is_alphanumeric() || c == '_'));

@@ -59,8 +59,8 @@ export function track(child, pidFile) {
   return child;
 }
 /** Children lead their own process group, so stopping one also stops what it started (cargo's rustc). */
-export function signalGroup(pid) {
-  try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ } }
+export function signalGroup(pid, signal = 'SIGTERM') {
+  try { process.kill(-pid, signal); } catch { try { process.kill(pid, signal); } catch { /* already gone */ } }
 }
 /** After a crash: signals only recorded PIDs that are still the same process, and says how many. */
 export function stopRecorded(pidFile) {
@@ -314,9 +314,18 @@ export function runClaude(messages, cwd, stream, argv, timeoutMs, extraEnv, pidF
     child.stdin.on('error', () => {}); // a harness that died early is reported by its exit code
     send();
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); setTimeout(() => child.kill('SIGKILL'), 5000); }, timeoutMs);
+    let killTimer;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (child.pid) signalGroup(child.pid, 'SIGTERM'); else child.kill('SIGTERM');
+      killTimer = setTimeout(() => {
+        if (child.pid) signalGroup(child.pid, 'SIGKILL'); else child.kill('SIGKILL');
+      }, 5000);
+      killTimer.unref();
+    }, timeoutMs);
     child.on('close', code => {
       clearTimeout(timer);
+      clearTimeout(killTimer);
       out.end(() => resolve({ code, timedOut, wallMs: Date.now() - started, stderr: stderr.slice(-2000) }));
     });
   });
@@ -567,7 +576,7 @@ export async function measuredRun({ runDir, ledger, workRoot, batch, id, capUsd,
   } catch (error) {
     Object.assign(record, { success: false, failure: String(error), wallMs: record.wallMs ?? null, billedUsd: record.billedUsd ?? 0 });
   } finally {
-    held.server?.kill('SIGKILL');
+    if (held.server?.pid) signalGroup(held.server.pid, 'SIGKILL'); else held.server?.kill('SIGKILL');
     // A tool the agent left running can still be writing into the checkout.
     await rm(dirname(work), { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }).catch(error => { record.cleanupError = String(error).slice(0, 200); });
     rmSync(join(runDir, 'mcp.json'), { force: true });

@@ -225,13 +225,21 @@ Antigravity do not get it until a frame recorded from them can be matched. Grok
 resolves only `pandacode_architect__pandacode_explore`, so its instructions use that
 name; a bare `pandacode_explore` still asks, then fails in the harness.
 
-The auto-allow is PandaCode's own, so a harness's deny rules for its Read or Grep
-tools (such as Claude Code's `permissions.deny` `Read(...)` patterns) do not bind
-this tool; only the secret rules above do. Honouring those rules would mean parsing
-each harness's settings files and pattern syntax and filtering every search result
-inside the engine, so it is not done yet. In Claude Code, a `permissions.deny` entry
-`mcp__pandacode_architect__pandacode_explore` blocks the tool itself (checked with a
-Haiku turn on 2.1.319).
+For Claude Code, PandaCode checks `permissions.deny` and `permissions.ask` in user,
+project and local settings (including ancestors up to the nearest Git root), plus
+enterprise managed settings and `managed-settings.d` JSON drop-ins. Any `Read`,
+`Grep`, `Glob`, wildcard `*`, or PandaCode explore rule withholds the explorer for
+that launch in every permission mode. Managed settings also apply to Claude-family
+relays (GLM, MiMo and Alibaba Token Plan), which otherwise disable user/project
+settings. Unreadable, oversized or malformed settings fail closed, as do custom
+connection `--settings`, `--setting-sources` or disallowed-tool flags, an unknown
+config folder, and Windows registry policies. A connection's `CLAUDE_CONFIG_DIR`
+is checked; a connection that only changes the API endpoint or key stays eligible.
+New conversations omit the tool and its `LOOK` instruction; resumed conversations
+that already listed it refuse its calls. Changed restrictions invalidate warm spares.
+
+Opt-in non-Claude harnesses (Codex, OpenCode, Kimi, Grok, Pi and omp) do not yet
+parse their own read-deny settings; the secret rules above still apply to them.
 
 **Instruction.** Runs with the tool get one line in the app instructions (`LOOK` in
 `src-tauri/src/lib.rs`): use it to locate code with all questions in one call, and answer

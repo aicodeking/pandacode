@@ -41,6 +41,26 @@ test('max-T corrects across correlated metrics and tasks', () => {
   assert.deepEqual(maxT({}), {});
 });
 
+test('max-T treats constant nonzero effects as infinite statistics', () => {
+  assert.deepEqual(maxT({ saved: Array(8).fill(-1) }), { saved: 2 / 256 });
+  assert.deepEqual(maxT({ saved: Array(8).fill(-0.1) }), { saved: 2 / 256 });
+  assert.deepEqual(maxT({ saved: Array(8).fill(0) }), { saved: 1 });
+  assert.deepEqual(maxT({ empty: [] }), { empty: 1 });
+  assert.deepEqual(maxT({ single: [-1] }), { single: 1 });
+});
+
+test('max-T shares sign flips across constant and variable effects', () => {
+  // Two all-equal assignments hit saved; two further assignments make alternating infinite.
+  // Only these four assignments give either metric an infinite statistic.
+  assert.deepEqual(maxT({ saved: [-1, -1, -1, -1], alternating: [-1, 1, -1, 1] }), {
+    saved: 4 / 16, alternating: 1,
+  });
+  // The largest absolute mean of 1..8 occurs only at the two all-equal sign assignments.
+  assert.deepEqual(maxT({ saved: Array(8).fill(-0.1), variable: [1, 2, 3, 4, 5, 6, 7, 8], zero: Array(8).fill(0) }), {
+    saved: 2 / 256, variable: 2 / 256, zero: 1,
+  });
+});
+
 test('a run with two results adds per-segment values and keeps the cumulative cost', () => {
   // Shapes recorded from Claude Code 2.1.317: duration_api_ms and total_cost_usd run on, the rest is per segment.
   const events = [result({ num_turns: 9, duration_ms: 100, duration_api_ms: 80, total_cost_usd: 0.14, usage: { cache_read_input_tokens: 10, output_tokens: 1 } }), result({ num_turns: 5, duration_ms: 50, duration_api_ms: 120, total_cost_usd: 0.18, usage: { cache_read_input_tokens: 20, output_tokens: 2 } })];

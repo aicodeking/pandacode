@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
-import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, seededJobs } from './lib.mjs';
+import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, seededJobs, signalGroup } from './lib.mjs';
 import { armsFor, beforeValues, buildJobs, customToolCalls, simulateEditSteps, simulateNonInferior, REUSE_ARMS, REUSE_CHAIN, REUSE_CHECK, reuseChain, reuseMessage, storedTools } from './run.mjs';
 import { assignJobs } from './saver.mjs';
 import { wilcoxon } from './stats.mjs';
@@ -14,6 +14,41 @@ import { editStepsGate, parseCsv, reuseReport, runFromRow, runsCsv } from './ana
 
 const scratch = () => mkdtempSync(join(tmpdir(), 'bench-core-'));
 const quiet = async fn => { const log = console.log; console.log = () => {}; try { return await fn(); } finally { console.log = log; } };
+
+test('runClaude timeout kills the process group and closes inherited stdout promptly', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
+  const dir = scratch();
+  const descendantFile = join(dir, 'descendant.pid');
+  const parentFile = join(dir, 'parent.pid');
+  let deadline;
+  let running;
+  try {
+    const stub = join(dir, 'claude');
+    // The shell reaps its child on TERM, avoiding a zombie even on hosts with a slow init reaper.
+    writeFileSync(stub, '#!/bin/sh\necho $$ > "$PARENT_PID_FILE"\ntrap \'wait "$descendant"; exit 0\' TERM\nsleep 30 &\ndescendant=$!\necho "$descendant" > "$DESCENDANT_PID_FILE"\nwait "$descendant"\n');
+    chmodSync(stub, 0o755);
+    const started = Date.now();
+    running = runClaude(['hello'], dir, join(dir, 'stream.jsonl'), [], 300, {
+      PATH: dir + delimiter + process.env.PATH, PARENT_PID_FILE: parentFile, DESCENDANT_PID_FILE: descendantFile,
+    });
+    const result = await Promise.race([
+      running,
+      new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('runClaude did not close within 3 seconds')), 3000); }),
+    ]);
+    assert.equal(result.timedOut, true);
+    assert.ok(Date.now() - started < 3000, 'timeout must close stdout well before the descendant exits naturally');
+    const descendant = Number(readFileSync(descendantFile, 'utf8').trim());
+    assert.ok(Number.isInteger(descendant) && descendant > 1);
+    assert.throws(() => process.kill(descendant, 0), { code: 'ESRCH' });
+  } finally {
+    clearTimeout(deadline);
+    if (existsSync(descendantFile)) {
+      try { process.kill(Number(readFileSync(descendantFile, 'utf8').trim()), 'SIGKILL'); } catch { /* already gone */ }
+    }
+    if (existsSync(parentFile)) signalGroup(Number(readFileSync(parentFile, 'utf8').trim()));
+    if (running) await running;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('Linux cache cloning uses portable cp flags and preserves independent files, metadata and symlinks', () => {
   const dir = scratch();

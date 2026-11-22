@@ -195,8 +195,7 @@ pub(crate) fn opencode_configuration_at(
     opencode_enforcement_with(text, disabled, &opencode_agents_at(disabled, cwd))
 }
 
-/// The agents one OpenCode launch's denies must reach: scanned once (`opencode_agents_at`) and
-/// passed to every configuration that launch writes.
+/// The agents an OpenCode launch's denies must reach, rescanned when connection paths change.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct OpenCodeAgents {
     names: BTreeSet<String>,
@@ -207,13 +206,6 @@ fn deniable(disabled: &BTreeSet<String>) -> bool {
     disabled
         .iter()
         .any(|name| claude_rule_name(name) || name == "*")
-}
-
-/// Lists every OpenCode agent configured for `cwd` (built-ins plus user/project configs and
-/// agent Markdown files), regardless of whether any skill is switched off.
-pub(crate) fn opencode_all_agents_at(cwd: &Path) -> OpenCodeAgents {
-    let env = OpenCodeEnv::from_environment(|name| std::env::var_os(name));
-    opencode_all_agents_with_env(Some(cwd), &env)
 }
 
 /// Lists user/project agents using the effective launch paths, retaining every configured home.
@@ -232,13 +224,26 @@ pub(crate) fn opencode_all_agents_with_env(cwd: Option<&Path>, env: &OpenCodeEnv
 
 /// Lists the agents for `cwd`, only when some switched-off name can be denied.
 pub(crate) fn opencode_agents_at(disabled: &BTreeSet<String>, cwd: &Path) -> OpenCodeAgents {
+    opencode_agents_at_with_env(
+        disabled,
+        cwd,
+        &OpenCodeEnv::from_environment(|name| std::env::var_os(name)),
+    )
+}
+
+/// Lists deniable skills' agents using the same effective launch paths as tool grants.
+pub(crate) fn opencode_agents_at_with_env(
+    disabled: &BTreeSet<String>,
+    cwd: &Path,
+    env: &OpenCodeEnv,
+) -> OpenCodeAgents {
     if !deniable(disabled) {
         return OpenCodeAgents {
             names: BTreeSet::new(),
             complete: true,
         };
     }
-    let agents = opencode_all_agents_at(cwd);
+    let agents = opencode_all_agents_with_env(Some(cwd), env);
     if !agents.complete {
         eprintln!(
             "Warning: OpenCode skill denies may not reach every agent for {} (too many agents or an unusable agent name); switched-off skills are asked, not blocked, for this launch.",

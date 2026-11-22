@@ -71,6 +71,176 @@ fn claude_allows_edits_with(
     }
 }
 
+/// Explore must not bypass Claude's native read permissions, in any permission mode.
+pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Path) -> bool {
+    claude_restricts_reads_with(
+        provider,
+        cwd,
+        || crate::connections::for_task(session_id, provider)
+            .map(|connection| crate::connections::launch(&connection)).transpose(),
+        host_managed_settings_restrict_reads,
+        crate::agent_usage::claude_config_dir,
+        dirs::home_dir,
+    )
+}
+
+fn claude_restricts_reads_with(
+    provider: &str,
+    cwd: &Path,
+    connection: impl FnOnce() -> std::result::Result<Option<crate::connections::Launch>, String>,
+    managed_settings: impl FnOnce() -> bool,
+    config_dir: impl FnOnce() -> Option<PathBuf>,
+    home_dir: impl FnOnce() -> Option<PathBuf>,
+) -> bool {
+    if !crate::providers::claude_family(provider) {
+        return false;
+    }
+    if managed_settings() {
+        return true;
+    }
+    let connection = match connection() {
+        Ok(connection) => connection,
+        Err(_) => return true,
+    };
+    let mut overridden = None;
+    if let Some(connection) = connection {
+        if connection.args.iter().any(|arg| {
+            let flag = arg.split('=').next().unwrap_or_default();
+            matches!(flag, "--settings" | "--setting-sources" | "--disallowedTools" | "--disallowed-tools")
+        }) {
+            return true;
+        }
+        // Launch::apply uses the last value when a variable occurs more than once.
+        for (name, value) in connection.env {
+            if name == "CLAUDE_CONFIG_DIR" || (cfg!(windows) && name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")) {
+                if value.is_empty() {
+                    return true;
+                }
+                overridden = Some(cwd.join(value));
+            }
+        }
+    }
+    // Relays disable user/project sources, but still obey managed policy and connection flags.
+    if provider != "claude" {
+        return false;
+    }
+    let Some(config_dir) = overridden.or_else(config_dir) else { return true };
+    let home_settings = home_dir().map(|home| home.join(".claude"));
+    read_deny_rules(&config_dir, cwd, home_settings.as_deref())
+}
+
+fn host_managed_settings_restrict_reads() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        managed_settings_restrict_reads(Some(Path::new(
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+        )))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        managed_settings_restrict_reads(Some(Path::new("/etc/claude-code/managed-settings.json")))
+    }
+    #[cfg(windows)]
+    {
+        windows_managed_settings_may_allow_with(
+            std::env::var_os("PROGRAMDATA"),
+            |path| if path.extension().is_some_and(|ext| ext == "d") {
+                settings_drop_ins_restrict_reads(path)
+            } else {
+                file_restricts_reads(path)
+            },
+            windows_registry_policy_status,
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        true
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn managed_settings_restrict_reads(path: Option<&Path>) -> bool {
+    path.is_none_or(|path| {
+        file_restricts_reads(path) || settings_drop_ins_restrict_reads(&path.with_extension("d"))
+    })
+}
+
+fn settings_drop_ins_restrict_reads(path: &Path) -> bool {
+    let entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(path) => return false,
+        Err(_) => return read_settings_warning("unreadable managed settings directory"),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => return read_settings_warning("unreadable managed settings entry"),
+        };
+        if entry.path().extension().is_some_and(|ext| ext == "json")
+            && file_restricts_reads(&entry.path())
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// User settings plus project/local settings from cwd through the nearest repository root.
+/// Without a repository, only cwd is a project. An overridden user folder must not accidentally
+/// load the original $HOME/.claude again while walking a repository rooted at home.
+fn read_deny_rules(config_dir: &Path, cwd: &Path, home_settings: Option<&Path>) -> bool {
+    if SETTINGS_FILES.iter().any(|name| file_restricts_reads(&config_dir.join(name))) {
+        return true;
+    }
+    let mut root = cwd;
+    for ancestor in cwd.ancestors() {
+        match std::fs::symlink_metadata(ancestor.join(".git")) {
+            Ok(_) => { root = ancestor; break; }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return read_settings_warning("unreadable project root"),
+        }
+    }
+    for ancestor in cwd.ancestors() {
+        let project = ancestor.join(".claude");
+        if project != config_dir && home_settings != Some(project.as_path())
+            && SETTINGS_FILES.iter().any(|name| file_restricts_reads(&project.join(name)))
+        {
+            return true;
+        }
+        if ancestor == root {
+            break;
+        }
+    }
+    false
+}
+
+fn read_settings_warning(reason: &str) -> bool {
+    eprintln!("PandaCode: Claude Code settings could not be checked for read restrictions ({reason}); the local code explorer is withheld.");
+    true
+}
+
+fn file_restricts_reads(path: &Path) -> bool {
+    match read_settings(path) {
+        Ok(None) => false,
+        Ok(Some(settings)) => settings_restrict_reads(&settings),
+        Err(reason) => read_settings_warning(reason),
+    }
+}
+
+fn settings_restrict_reads(settings: &Value) -> bool {
+    let Some(settings) = settings.as_object() else { return true };
+    let Some(permissions) = settings.get("permissions") else { return false };
+    let Some(permissions) = permissions.as_object() else { return true };
+    ["deny", "ask"].into_iter().any(|kind| match permissions.get(kind) {
+        None => false,
+        Some(Value::Array(rules)) => rules.iter().any(|rule| rule.as_str().is_none_or(|rule| {
+            matches!(rule.split('(').next().unwrap_or_default().trim(),
+                "*" | "Read" | "Grep" | "Glob" | "mcp__pandacode_architect__pandacode_explore" | "mcp__pandacode_architect__*")
+        })),
+        Some(_) => true,
+    })
+}
+
 /// A policy's presence (including an unreadable path or registry key) is enough to require
 /// tracking. Policy contents need not be read, and unknown platforms never assume absence.
 fn host_managed_settings_may_allow() -> bool {
@@ -217,12 +387,17 @@ fn file_allows_edits(path: &std::path::Path) -> bool {
     }
 }
 
+/// A dangling symlink is an unreadable policy, not proof that no settings exist.
+fn settings_path_absent(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+}
+
 /// The parsed file, `None` when it does not exist, or why it could not be read.
 fn read_settings(path: &std::path::Path) -> std::result::Result<Option<Value>, &'static str> {
     use std::io::Read;
     let meta = match std::fs::metadata(path) {
         Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(path) => return Ok(None),
         Err(_) => return Err("unreadable"),
     };
     if !meta.is_file() {
@@ -540,6 +715,237 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    // Read-restriction tests use injected launch inputs, never the machine's own settings.
+    fn read_launch(args: &[&str], env: &[(&str, &str)]) -> crate::connections::Launch {
+        crate::connections::Launch {
+            executable: None,
+            args: args.iter().map(|arg| (*arg).into()).collect(),
+            env: env.iter().map(|(key, value)| ((*key).into(), (*value).into())).collect(),
+            secrets: vec![],
+        }
+    }
+
+    fn restricts_reads(settings: &Settings, provider: &str, connection: Option<crate::connections::Launch>) -> bool {
+        claude_restricts_reads_with(provider, &settings.base.join("project"), || Ok(connection),
+            || false, || Some(settings.base.join("config")), || None)
+    }
+
+    #[test]
+    fn claude_read_and_explore_denials_and_ask_rules_withhold_explore() {
+        for kind in ["deny", "ask"] {
+            for rule in ["Read(restricted/customer.csv)", "Grep(restricted/**)", "Glob(src/**)",
+                "Read", "*", "mcp__pandacode_architect__pandacode_explore",
+                "mcp__pandacode_architect__pandacode_explore(src/**)", "mcp__pandacode_architect__*", "  Read (file)  "] {
+                for file in SETTINGS_FILES {
+                    for user in [true, false] {
+                        let settings = Settings::new();
+                        let text = json!({"permissions":{kind:[rule]}}).to_string();
+                        if user { settings.user(file, text); } else { settings.project(file, text); }
+                        assert!(restricts_reads(&settings, "claude", None), "{kind} {rule} {file} user={user}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unrelated_permissions_and_absent_settings_leave_explore_available() {
+        let settings = Settings::new();
+        assert!(!restricts_reads(&settings, "claude", None));
+        for value in [json!({}), json!({"permissions":{}}), json!({"permissions":{"deny":[],"ask":[]}}),
+            json!({"permissions":{"deny":["Bash(rm *)","Write(.env)","Edit(src/**)","WebFetch"],
+                "ask":["Bash","mcp__other__*"],"allow":["Read"],"defaultMode":"bypassPermissions"}})] {
+            settings.user("settings.json", value.to_string());
+            assert!(!restricts_reads(&settings, "claude", None), "{value}");
+        }
+    }
+
+    #[test]
+    fn malformed_read_permissions_fail_closed() {
+        let settings = Settings::new();
+        for value in [json!(null), json!([]), json!({"permissions":null}), json!({"permissions":[]}),
+            json!({"permissions":{"deny":"Read"}}), json!({"permissions":{"ask":{}}}),
+            json!({"permissions":{"deny":[false]}}), json!({"permissions":{"ask":[null]}})] {
+            settings.user("settings.json", value.to_string());
+            assert!(restricts_reads(&settings, "claude", None), "{value}");
+        }
+        settings.user("settings.json", "not JSON");
+        assert!(restricts_reads(&settings, "claude", None));
+        settings.user("settings.json", vec![b' '; SETTINGS_LIMIT as usize + 1]);
+        assert!(restricts_reads(&settings, "claude", None));
+        std::fs::remove_file(settings.base.join("config/settings.json")).unwrap();
+        std::fs::create_dir(settings.base.join("config/settings.json")).unwrap();
+        assert!(restricts_reads(&settings, "claude", None), "not a regular file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_read_settings_and_managed_drop_ins_fail_closed() {
+        use std::os::unix::fs::PermissionsExt;
+        let settings = Settings::new();
+        let file = settings.base.join("config/settings.json");
+        settings.user("settings.json", "{}");
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let restricted = restricts_reads(&settings, "claude", None);
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(restricted);
+        let drop_ins = settings.base.join("managed-settings.d");
+        std::fs::create_dir(&drop_ins).unwrap();
+        std::fs::set_permissions(&drop_ins, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let restricted = managed_settings_restrict_reads(Some(&settings.base.join("managed-settings.json")));
+        std::fs::set_permissions(&drop_ins, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(restricted);
+    }
+
+    #[test]
+    fn managed_read_rules_and_json_drop_ins_are_checked() {
+        let settings = Settings::new();
+        let managed = settings.base.join("managed-settings.json");
+        assert!(managed_settings_restrict_reads(None), "unknown path");
+        assert!(!managed_settings_restrict_reads(Some(&managed)), "absent policy");
+        std::fs::write(&managed, r#"{"permissions":{"deny":["Write"]}}"#).unwrap();
+        assert!(!managed_settings_restrict_reads(Some(&managed)), "unrelated policy");
+        std::fs::write(&managed, r#"{"permissions":{"deny":["Read(secret)"]}}"#).unwrap();
+        assert!(managed_settings_restrict_reads(Some(&managed)));
+        std::fs::write(&managed, "{}").unwrap();
+        let drop_ins = managed.with_extension("d");
+        std::fs::create_dir(&drop_ins).unwrap();
+        std::fs::write(drop_ins.join("ignored.txt"), "not json").unwrap();
+        assert!(!managed_settings_restrict_reads(Some(&managed)));
+        std::fs::write(drop_ins.join("reads.json"), r#"{"permissions":{"ask":["Read(file)"]}}"#).unwrap();
+        assert!(managed_settings_restrict_reads(Some(&managed)));
+        std::fs::write(drop_ins.join("reads.json"), "invalid JSON").unwrap();
+        assert!(managed_settings_restrict_reads(Some(&managed)));
+        std::fs::remove_file(drop_ins.join("reads.json")).unwrap();
+        std::fs::create_dir(drop_ins.join("directory.json")).unwrap();
+        assert!(managed_settings_restrict_reads(Some(&managed)), "JSON entry must be a file");
+        std::fs::remove_dir_all(&drop_ins).unwrap();
+        std::fs::write(&drop_ins, "not a directory").unwrap();
+        assert!(managed_settings_restrict_reads(Some(&managed)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_claude_settings_and_managed_directory_links_fail_closed() {
+        use std::os::unix::fs::symlink;
+        let settings = Settings::new();
+        symlink(settings.base.join("absent"), settings.base.join("config/settings.json")).unwrap();
+        assert!(restricts_reads(&settings, "claude", None));
+        symlink(settings.base.join("absent"), settings.base.join("managed-settings.d")).unwrap();
+        assert!(managed_settings_restrict_reads(Some(&settings.base.join("managed-settings.json"))));
+    }
+
+    #[test]
+    fn windows_managed_read_paths_and_registry_errors_fail_closed() {
+        let settings = Settings::new();
+        let program_data = settings.base.as_os_str().to_owned();
+        let mut paths = Vec::new();
+        let mut keys = Vec::new();
+        assert!(!windows_managed_settings_may_allow_with(Some(program_data.clone()),
+            |path| { paths.push(path.to_owned()); false },
+            |root, path| { keys.push((root, path.to_owned())); 2 }));
+        assert_eq!(paths, vec![settings.base.join("ClaudeCode/managed-settings.json"),
+            settings.base.join("ClaudeCode/managed-settings.d"), PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json")]);
+        assert_eq!(keys, vec![(0x8000_0002, r"SOFTWARE\Policies\ClaudeCode".into()),
+            (0x8000_0001, r"SOFTWARE\Policies\ClaudeCode".into())]);
+        for key in [0x8000_0002, 0x8000_0001] {
+            for status in [0, 5, 3, -1] {
+                assert!(windows_managed_settings_may_allow_with(Some(program_data.clone()), |_| false,
+                    |root, _| if root == key { status } else { 2 }));
+            }
+        }
+        for program_data in [None, Some(std::ffi::OsString::new())] {
+            assert!(windows_managed_settings_may_allow_with(program_data, |_| panic!("no policy root"), |_, _| panic!("no policy root")));
+        }
+        let managed_dir = settings.base.join("ClaudeCode");
+        std::fs::create_dir(&managed_dir).unwrap();
+        let probe = |path: &Path| {
+            // The Program Files fallback is outside this fixture; never inspect host policy.
+            if !path.starts_with(&settings.base) { return false; }
+            if path.extension().is_some_and(|ext| ext == "d") {
+                settings_drop_ins_restrict_reads(path)
+            } else { file_restricts_reads(path) }
+        };
+        std::fs::write(managed_dir.join("managed-settings.json"), "{}").unwrap();
+        assert!(!windows_managed_settings_may_allow_with(Some(program_data.clone()), probe, |_, _| 2));
+        std::fs::create_dir(managed_dir.join("managed-settings.d")).unwrap();
+        std::fs::write(managed_dir.join("managed-settings.d/read.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        assert!(windows_managed_settings_may_allow_with(Some(program_data), probe, |_, _| 2));
+    }
+
+    #[test]
+    fn relay_reads_ignore_user_and_project_rules_but_honor_managed_policy() {
+        let settings = Settings::new();
+        settings.user("settings.json", r#"{"permissions":{"deny":["Read"]}}"#)
+            .project("settings.local.json", r#"{"permissions":{"ask":["Grep"]}}"#);
+        for provider in ["glm", "mimo", "alibaba"] {
+            assert!(!restricts_reads(&settings, provider, None), "{provider}");
+            assert!(claude_restricts_reads_with(provider, &settings.base, || panic!("managed restriction"),
+                || true, || panic!("relay config"), || panic!("relay home")));
+            assert!(restricts_reads(&settings, provider, Some(read_launch(&["--settings=custom.json"], &[]))));
+        }
+    }
+
+    #[test]
+    fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
+        let settings = Settings::new();
+        assert!(!restricts_reads(&settings, "claude", Some(read_launch(&[], &[("ANTHROPIC_BASE_URL", "https://example.invalid")]))));
+        for provider in ["claude", "glm", "mimo", "alibaba"] {
+            for flag in ["--settings", "--setting-sources", "--disallowedTools", "--disallowed-tools"] {
+                for arg in [flag.to_owned(), format!("{flag}=value")] {
+                    assert!(restricts_reads(&settings, provider, Some(read_launch(&[&arg], &[]))), "{provider} {arg}");
+                }
+            }
+            assert!(restricts_reads(&settings, provider, Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "")]))));
+            assert!(claude_restricts_reads_with(provider, &settings.base, || Err("missing saved key".into()),
+                || false, || panic!("bad connection"), || None));
+        }
+        let custom = settings.base.join("custom");
+        std::fs::create_dir(&custom).unwrap();
+        std::fs::write(custom.join("settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        let connection = || Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", custom.to_str().unwrap())]));
+        assert!(restricts_reads(&settings, "claude", connection()));
+        std::fs::create_dir(settings.base.join("project/relative-config")).unwrap();
+        std::fs::write(settings.base.join("project/relative-config/settings.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
+        assert!(restricts_reads(&settings, "claude", Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "relative-config")]))));
+        #[cfg(windows)]
+        assert!(restricts_reads(&settings, "claude", Some(read_launch(&[], &[("claude_config_dir", custom.to_str().unwrap())]))));
+        assert!(!restricts_reads(&settings, "glm", connection()));
+        settings.user("settings.json", r#"{"permissions":{"deny":["Read"]}}"#);
+        std::fs::write(custom.join("settings.local.json"), "{}").unwrap();
+        assert!(!claude_restricts_reads_with("claude", &settings.base.join("project"), || Ok(connection()),
+            || false, || panic!("override wins"), || None));
+        assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, || None, || None));
+    }
+
+    #[test]
+    fn project_read_rules_stop_at_nearest_git_root_and_skip_overridden_home() {
+        let settings = Settings::new();
+        let project = settings.base.join("project");
+        let nested = project.join("src/nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        // Worktrees use a .git file, ordinary repositories use a directory.
+        std::fs::write(project.join(".git"), "gitdir: elsewhere").unwrap();
+        settings.project("settings.local.json", r#"{"permissions":{"deny":["Read"]}}"#);
+        assert!(read_deny_rules(&settings.base.join("config"), &nested, None));
+        std::fs::create_dir(nested.join(".git")).unwrap();
+        assert!(!read_deny_rules(&settings.base.join("config"), &nested, None), "nearest root");
+        std::fs::remove_dir(nested.join(".git")).unwrap();
+        assert!(!read_deny_rules(&settings.base.join("config"), &nested, Some(&project.join(".claude"))), "overridden home config");
+        assert!(read_deny_rules(&project.join(".claude"), &nested, Some(&project.join(".claude"))), "active home config");
+        std::fs::remove_file(project.join(".git")).unwrap();
+        assert!(!read_deny_rules(&settings.base.join("config"), &nested, None), "no repo: only cwd");
+    }
+
+    #[test]
+    fn non_claude_harnesses_never_probe_claude_read_settings() {
+        for provider in ["codex", "opencode", "kimi"] {
+            assert!(!claude_restricts_reads_with(provider, Path::new("unused"),
+                || panic!("non-Claude connection"), || panic!("non-Claude policy"),
+                || panic!("non-Claude config"), || panic!("non-Claude home")));
+        }
     }
 
     fn native(id: &str, status: &str, paths: &[&str]) -> ToolActivity {

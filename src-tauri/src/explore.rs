@@ -422,6 +422,11 @@ pub(crate) fn enabled_for(app: &tauri::AppHandle, provider: &str) -> bool {
     effective(provider, crate::app_marker::exists(app, EXPLORE_OFF_FILE), opted_in)
 }
 
+/// Respect native Claude read boundaries even when the explorer switch is on.
+pub(crate) fn enabled_for_run(app: &tauri::AppHandle, session_id: &str, provider: &str, cwd: &Path) -> bool {
+    enabled_for(app, provider) && !crate::turn_changes::claude_restricts_reads(session_id, provider, cwd)
+}
+
 /// A harness's opt-in marker: `None` for a harness on by default, an error for one that cannot
 /// take explore, so a command never writes a marker named by arbitrary input.
 fn harness_marker(provider: &str) -> Result<Option<String>, String> {

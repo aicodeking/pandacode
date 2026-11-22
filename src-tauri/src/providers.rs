@@ -3829,7 +3829,7 @@ fn configure_command(command: &mut Command, config: &RunConfig) {
     configure_command_with_skills(command, config, &Default::default());
 }
 
-/// Lists OpenCode's agents for this launch itself; `run_inner` passes its one scan instead.
+/// Lists OpenCode's agents for this launch itself; `run_inner` passes its initial scan instead.
 fn configure_command_with_skills(
     command: &mut Command,
     config: &RunConfig,
@@ -3947,7 +3947,23 @@ fn configure_command_with_agents(
     }
 }
 
-/// The connection may have replaced the inline configuration: deny again for the same agents.
+/// Rescans after provider and connection overrides, using the same launch paths as tool grants.
+/// Call off the async runtime: the agent scan reads configuration and Markdown files.
+fn enforce_opencode_after_connection_with_env(
+    command: &mut Command,
+    config: &mut RunConfig,
+    disabled: &std::collections::BTreeSet<String>,
+) {
+    let env = opencode_environment(command);
+    let agents = crate::skill_manager::opencode_agents_at_with_env(disabled, &config.cwd, &env);
+    if !agents.complete {
+        // The initial scan may already have added this reminder; it is deduplicated.
+        crate::skill_manager::remind_unenforced(config, disabled);
+    }
+    enforce_opencode_after_connection(command, config, disabled, &agents);
+}
+
+/// The connection may have replaced the inline configuration: deny again for the supplied agents.
 /// The denies also always go through `OPENCODE_PERMISSION` (kept rules, merged last by OpenCode).
 /// Text that can't be read stays untouched and the launch also asks, as for names OpenCode can't deny.
 fn enforce_opencode_after_connection(
@@ -4030,7 +4046,7 @@ async fn run_inner(
         );
         // Refuses a typed switched-off skill before anything is sent, then adds reminders.
         crate::skill_manager::prepare_turn(&mut config, &disabled)?;
-        // OpenCode's agents are listed once and reused by every configuration below.
+        // Initial roster for configuration; local launches rescan after connection overrides.
         let agents = if config.provider == "opencode" {
             crate::skill_manager::opencode_agents_at(&disabled, &config.cwd)
         } else {
@@ -4093,7 +4109,12 @@ async fn run_inner(
         }
     }
     if config.provider == "opencode" && !disabled.is_empty() {
-        enforce_opencode_after_connection(&mut command, &mut config, &disabled, &opencode_agents);
+        let disabled = disabled.clone();
+        (command, config) = crate::blocking(move || {
+            enforce_opencode_after_connection_with_env(&mut command, &mut config, &disabled);
+            Ok((command, config))
+        })
+        .await?;
     }
     if config.provider == "kilo" {
         let inline = kilo::configure_environment(&mut command, &config);
@@ -5523,6 +5544,88 @@ pub(crate) mod tests {
         assert!(value["mcp"]["x"].is_object());
         assert_eq!(value["permission"]["skill"]["review"], "deny");
         assert!(!format!("{}{}", cfg.prompt, cfg.instructions).contains("review"));
+    }
+
+    #[test]
+    fn opencode_connection_config_agents_keep_skill_denies_after_tool_grants() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-connection-skill-denies-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let file = root.join("launch.json");
+        std::fs::write(
+            &file,
+            r#"{"agent":{"external-reviewer":{"permission":{"skill":{"review":"allow"}}}}}"#,
+        )
+        .unwrap();
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        // Both absolute and cwd-relative connection paths use the launch environment.
+        for path in [file, PathBuf::from("launch.json")] {
+            let mut command = Command::new("opencode");
+            configure_command_with_skills(&mut command, &cfg, &disabled);
+            command.env("OPENCODE_CONFIG", path);
+            enforce_opencode_after_connection_with_env(&mut command, &mut cfg, &disabled);
+            let value: Value =
+                serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+            assert_eq!(value["permission"]["skill"]["review"], "deny");
+            assert_eq!(
+                value["agent"]["external-reviewer"]["permission"]["skill"]["review"],
+                "deny"
+            );
+            let permission: Value =
+                serde_json::from_str(&env_of(&command, "OPENCODE_PERMISSION")).unwrap();
+            assert_eq!(permission["skill"]["review"], "deny");
+
+            allow_opencode_tools(
+                &mut command,
+                &cfg,
+                true,
+                &HashSet::from([EXPLORE_TOOL.into()]),
+                None,
+            );
+            let value: Value =
+                serde_json::from_str(&env_of(&command, "OPENCODE_CONFIG_CONTENT")).unwrap();
+            assert_eq!(value["permission"]["skill"]["review"], "deny");
+            let agent = &value["agent"]["external-reviewer"]["permission"];
+            assert_eq!(agent["skill"]["review"], "deny");
+            assert_eq!(agent["pandacode_architect_pandacode_explore"], "allow");
+            assert_eq!(agent["pandacode_architect_pandacode_explore *"], "allow");
+            let permission: Value =
+                serde_json::from_str(&env_of(&command, "OPENCODE_PERMISSION")).unwrap();
+            assert_eq!(permission["skill"]["review"], "deny");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opencode_connection_incomplete_agents_add_one_skill_reminder() {
+        let root = std::env::temp_dir().join(format!(
+            "pandacode-opencode-connection-incomplete-agents-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        let file = root.join("launch.json");
+        // An unusable agent name makes this connection's roster incomplete.
+        std::fs::write(&file, r#"{"agent":{"":{"permission":{"skill":"allow"}}}}"#).unwrap();
+        let mut cfg = config("opencode");
+        cfg.cwd = root.clone();
+        let disabled = std::collections::BTreeSet::from(["review".into()]);
+        let mut command = Command::new("opencode");
+        command.env("OPENCODE_CONFIG", file);
+        command.env("OPENCODE_CONFIG_CONTENT", "{}");
+        for _ in 0..2 {
+            enforce_opencode_after_connection_with_env(&mut command, &mut cfg, &disabled);
+            assert_eq!(
+                format!("{}{}", cfg.prompt, cfg.instructions)
+                    .matches("Do not use these skills in this session: review.")
+                    .count(),
+                1
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
