@@ -8458,7 +8458,8 @@
       "https://www.anthropic.com/claude-fable-and-mythos-5-2 (provider-reported capability comparisons and speed, consulted 2026-11-18)",
       "Claude Code initialize.models read-only discovery 2026-11-18: fable resolves to claude-fable-5-2"
     ],
-    "notes": "Skills are conservative routing estimates anchored to claude-fable-5.1 and claude-opus-5.5, with small coding/debugging/vision-related uplifts for the provider-reported improvements. They are not measured or fitted router scores; every axis has se 1.3. Latency is estimated from the 5.1 peer, allowing a modest throughput improvement rather than assuming the advertised maximum. Prices are standard API list rates, not Claude Code subscription charges or fast-mode rates. The pinned 5.1 model retains its own card and identity."
+    "notes": "Skills are conservative routing estimates anchored to claude-fable-5.1 and claude-opus-5.5, with small coding/debugging/vision-related uplifts for the provider-reported improvements. They are not measured or fitted router scores; every axis has se 1.3. Latency is estimated from the 5.1 peer, allowing a modest throughput improvement rather than assuming the advertised maximum. Prices are standard API list rates, not Claude Code subscription charges or fast-mode rates. The pinned 5.1 model retains its own card and identity.",
+    "supersedes": ["claude-fable-5.1", "claude-fable-5"]
   },
   {
     "id": "codex-gpt-6.2-sol",
@@ -8552,7 +8553,8 @@
       "https://developers.openai.com/api/docs/models/gpt-6.2-sol (limits, modalities, pricing tiers, consulted 2026-11-18)",
       "Codex app-server model/list read-only discovery 2026-11-18: gpt-6.2-sol"
     ],
-    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6.1-sol and openrouter-gpt-6-astra; coding/planning/data analysis stay near the 6.1 Sol anchors while broader axes get modest uplifts. They are not measured or fitted router scores, and do not inherit the predecessor's calibration: every axis has se 1.3. Latency copies the 6.1 Sol estimate; no speed measurement was made. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded. Modalities use the documented API subset; the local Codex catalog additionally advertises audio input."
+    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6.1-sol and openrouter-gpt-6-astra; coding/planning/data analysis stay near the 6.1 Sol anchors while broader axes get modest uplifts. They are not measured or fitted router scores, and do not inherit the predecessor's calibration: every axis has se 1.3. Latency copies the 6.1 Sol estimate; no speed measurement was made. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded. Modalities use the documented API subset; the local Codex catalog additionally advertises audio input.",
+    "supersedes": ["openrouter-gpt-6.1-sol", "openrouter-gpt-6-sol"]
   },
   {
     "id": "codex-gpt-6.2-astra",
@@ -8646,7 +8648,8 @@
       "https://developers.openai.com/api/docs/models/gpt-6.2-astra (limits, modalities, pricing tiers, consulted 2026-11-18)",
       "Codex app-server model/list read-only discovery 2026-11-18: gpt-6.2-astra"
     ],
-    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6-astra, codex-gpt-6.2-sol, and claude-fable-5.1, reflecting provider-reported gains in coding, professional outputs, visual work, and scientific reasoning. They are not measured or fitted router scores: every axis has se 1.3. Coding stays close to Sol because the launch report describes a narrow coding gap. Latency retains the GPT-6 Astra peer estimate; token-efficiency claims are not treated as latency measurements. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded."
+    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6-astra, codex-gpt-6.2-sol, and claude-fable-5.1, reflecting provider-reported gains in coding, professional outputs, visual work, and scientific reasoning. They are not measured or fitted router scores: every axis has se 1.3. Coding stays close to Sol because the launch report describes a narrow coding gap. Latency retains the GPT-6 Astra peer estimate; token-efficiency claims are not treated as latency measurements. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded.",
+    "supersedes": ["openrouter-gpt-6-astra"]
   },
   {
     "id": "gemini-4-carbon",

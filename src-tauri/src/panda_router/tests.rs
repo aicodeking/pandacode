@@ -226,6 +226,7 @@ fn resolves_pandacode_models() {
         (("claude", "default", "Default"), None),
         (("codex", "gpt-6-luna", "GPT-6 Luna"), Some("codex-gpt-6-luna")),
         (("codex", "gpt-6.2-sol", "GPT-6.2 Sol"), Some("codex-gpt-6.2-sol")),
+        (("opencode", "openrouter/openai/gpt-6.2-sol", "GPT-6.2 Sol"), Some("codex-gpt-6.2-sol")),
         (("codex", "gpt-6.2-astra", "GPT-6.2 Astra"), Some("codex-gpt-6.2-astra")),
         (("codex", "gpt-5.6-terra", "GPT-5.6 Terra"), Some("codex-gpt-5.6-terra")),
         (("codex", "gpt-5.6-luna", "GPT-5.6 Luna"), Some("codex-gpt-5.6-luna")),
@@ -316,6 +317,8 @@ fn onnx_matches_python() {
     let Some(dir) = assets() else { return };
     let router = Router::load(&dir).unwrap();
     assert!(router.is_onnx());
+    assert!(success::HEAD.covers("openrouter-gpt-6.1-sol"));
+    check_newer_models_supersede_predecessors(&router);
     let onnx = router.onnx.as_ref().unwrap();
     let fx = fixture();
     for (n, task) in fx.tasks.iter().enumerate() {
@@ -464,6 +467,45 @@ fn new_model_cards_are_rated_and_pickable_for_tool_tasks() {
             assert_eq!(route.profiler, "heuristic");
         }
     }
+}
+
+fn check_newer_models_supersede_predecessors(router: &Router) {
+    let families: [(&str, &[&str]); 3] = [
+        ("codex-gpt-6.2-sol", &["openrouter-gpt-6.1-sol", "openrouter-gpt-6-sol"]),
+        ("codex-gpt-6.2-astra", &["openrouter-gpt-6-astra"]),
+        ("claude-fable-5.2", &["claude-fable-5.1", "claude-fable-5"]),
+    ];
+    let context = TaskContext { requires_tools: true, files_in_scope: Some(3), ..TaskContext::default() };
+    for (newer, predecessors) in families {
+        // Put predecessors first so pool order cannot accidentally prefer the successor.
+        let pool: Vec<_> = predecessors.iter().copied().chain([newer]).map(card_model).collect();
+        for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+            let prefs = Preferences { mode, min_p: 0.5 };
+            for tiers in [Tiers::new(), tiered(&[(predecessors[0], Tier::S)])] {
+                let route = router.route(MID_TASK, &context, &pool, &prefs, &[], &tiers).unwrap();
+                assert!(route.unrated.is_empty(), "{newer} {mode:?}");
+                assert_eq!(route.pick.as_ref().unwrap().card_id, newer, "{mode:?} {tiers:?}");
+                for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+                    assert!(!predecessors.contains(&row.card_id.as_str()), "{} survived {newer} in {mode:?} {tiers:?}", row.card_id);
+                }
+                assert_eq!(route.ranking.len(), 1, "{newer} {mode:?}");
+                assert_eq!(route.ladder.len(), 1, "{newer} {mode:?}");
+            }
+            // Superseding is conditional on availability, not a retirement of the old card.
+            for predecessor in predecessors {
+                let route = router.route(MID_TASK, &context, &[card_model(predecessor)], &prefs, &[], &Tiers::new()).unwrap();
+                assert!(route.unrated.is_empty(), "{predecessor} {mode:?}");
+                assert_eq!(route.pick.as_ref().unwrap().card_id, *predecessor, "{mode:?}");
+                assert_eq!(route.ranking.len(), 1, "{predecessor} {mode:?}");
+                assert_eq!(route.ranking[0].card_id, *predecessor, "{mode:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn newer_models_supersede_predecessors_when_available() {
+    check_newer_models_supersede_predecessors(&Router::heuristic());
 }
 
 const WEAK: &str = "openrouter-qwen3.8-flash";
