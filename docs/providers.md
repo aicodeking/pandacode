@@ -1069,6 +1069,12 @@ kind `tool_call`. In `turn.completed`, `usage.inputTokens` already includes
 `cacheReadTokens`, so context used is `inputTokens`. A busy session queues a
 second message server-side, so steering holds for the next turn.
 
+**Subagents and checkpoints.** `subagent.lifecycle` (spawned/stopped) is shown
+in the existing subagent panel via the Agent-tool observer. `checkpoint.created`
+is a status line with the checkpoint id. Compaction is the discovered `/compact`
+command (see slash-command discovery). Extra folders (`additionalDirectories` on
+create) wait on a task having extra roots to pass; this checkout has none yet.
+
 **Not yet.** Screenshots are refused (the composer offers documents and folders
 with a note); interactive questions (`interaction/requestUserInput`) decline with a
 note so the turn continues; slash-command discovery and the harness console are not
