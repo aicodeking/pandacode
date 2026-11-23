@@ -4637,6 +4637,29 @@ fn app_context() -> tauri::Context<tauri::Wry> {
     context
 }
 
+/// The workspace window's own setup: native appearance, the close listeners that hide it instead of
+/// destroying it, and dictation's stop. `tray::show` runs it again for a window it builds back.
+pub(crate) fn install_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    if let Err(error) = appearance::setup(window) {
+        eprintln!("Native appearance setup failed: {error}");
+    }
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        // A close that only hides the window (macOS, Windows with a menu bar item)
+        // stops recording and keeps downloads. A close that quits (tray::hide_on_close)
+        // cancels everything at once: transcribing would upload audio only for the
+        // exit to throw the result away.
+        let Some(voice) = handle.try_state::<voice::Voice>() else { return };
+        match event {
+            tauri::WindowEvent::CloseRequested { .. } if tray::main_close_quits(&handle) => voice.shutdown(),
+            tauri::WindowEvent::CloseRequested { .. } => voice.stop_recording(&handle),
+            tauri::WindowEvent::Destroyed => voice.shutdown(),
+            _ => {}
+        }
+    });
+    tray::hide_on_close(window);
+}
+
 pub fn run() {
     // The npx installer signs the fresh bundle this way, before any window exists.
     if std::env::args().skip(1).any(|arg| arg == "--local-sign") {
@@ -4686,24 +4709,7 @@ pub fn run() {
                 eprintln!("Menu bar item is unavailable: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = appearance::setup(&window) {
-                    eprintln!("Native appearance setup failed: {error}");
-                }
-                let handle = app.handle().clone();
-                window.on_window_event(move |event| {
-                    // A close that only hides the window (macOS, Windows with a menu bar item)
-                    // stops recording and keeps downloads. A close that quits (tray::hide_on_close)
-                    // cancels everything at once: transcribing would upload audio only for the
-                    // exit to throw the result away.
-                    let Some(voice) = handle.try_state::<voice::Voice>() else { return };
-                    match event {
-                        tauri::WindowEvent::CloseRequested { .. } if tray::main_close_quits(&handle) => voice.shutdown(),
-                        tauri::WindowEvent::CloseRequested { .. } => voice.stop_recording(&handle),
-                        tauri::WindowEvent::Destroyed => voice.shutdown(),
-                        _ => {}
-                    }
-                });
-                tray::hide_on_close(&window);
+                install_main_window(app.handle(), &window);
             }
             Ok(())
         })
