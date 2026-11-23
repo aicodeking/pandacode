@@ -22,7 +22,7 @@ mod exit;
 mod goals;
 mod launch_input;
 mod host_inputs;
-mod host_tools;
+pub(crate) mod host_tools;
 mod mcp_host;
 mod redact;
 mod relay;
@@ -849,11 +849,15 @@ pub(crate) fn clear_worker_run(session_id: &str, run_id: &str) {
     worker_runs().retain(|(session, run)| !(session == session_id && run == run_id));
 }
 
+/// Whether this session's current run is a managed team worker's.
+pub(crate) fn is_worker_run(session_id: &str) -> bool {
+    worker_runs().iter().any(|(session, _)| session == session_id)
+}
+
 /// The refusal a tool host returns when a team worker calls an always-ask tool.
 pub(crate) fn worker_tool_refusal(session_id: &str, tool: &str) -> Option<String> {
     let tool = crate::cloud::deploy::ALWAYS_ASK.iter().find(|name| **name == tool)?;
-    worker_runs().iter().any(|(session, _)| session == session_id)
-        .then(|| crate::worker_approvals::ask_lead_reason(tool))
+    is_worker_run(session_id).then(|| crate::worker_approvals::ask_lead_reason(tool))
 }
 
 /// The text a declined approval returns: PandaCode's own reason, else the user's decline.
@@ -1802,6 +1806,8 @@ struct Protocol {
     inputs: HashMap<String, Value>,
     host: Option<host_tools::HostTools>,
     mcp_server: Option<Value>,
+    /// Extra stdio servers (Colab's MCP) sent beside `mcp_server` in ACP sessions.
+    extra_mcp_servers: Vec<Value>,
     mcp_required: bool,
     codex_mcp_servers: Option<Value>,
     mcp_tool_names: HashSet<String>,
@@ -1971,6 +1977,7 @@ impl Protocol {
             inputs: HashMap::new(),
             host: None,
             mcp_server: None,
+            extra_mcp_servers: Vec::new(),
             codex_mcp_servers: None,
             mcp_required: true,
             mcp_tool_names: HashSet::new(),
@@ -2911,7 +2918,7 @@ impl Protocol {
                         }
                         self.mcp_server = None;
                     }
-                    let mut params = json!({"cwd":self.config.cwd,"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
+                    let mut params = json!({"cwd":self.config.cwd,"mcpServers":self.acp_mcp_servers()});
                     let method = if self.remote_id.is_empty() {
                         "session/new"
                     } else {
@@ -4493,7 +4500,7 @@ pub(crate) const EXPLORE_TOOL: &str = "pandacode_explore";
 pub(crate) use explore_permissions::explore_name;
 use explore_permissions::opencode_allowed;
 
-// Preview, simulator, VM, design, cloud deploy, Jev, and bot tools are optional
+// Preview, simulator, VM, Colab, design, cloud deploy, Jev, and bot tools are optional
 // transport capabilities, but retain their normal approval requirements and transcript
 // activity. They are not metadata tools.
 fn optional_transport_tool(name: &str) -> bool {
@@ -4504,6 +4511,7 @@ fn optional_transport_tool(name: &str) -> bool {
         )
         || name.starts_with("pandacode_simulator_")
         || name.starts_with("pandacode_vm_")
+        || name.starts_with("pandacode_colab_")
         || name.starts_with("pandacode_design_")
         || name.starts_with("pandacode_jev_")
         || name.starts_with("pandacode_bot_")
@@ -4514,8 +4522,11 @@ fn optional_transport_tool(name: &str) -> bool {
 fn custom_tool(name: &str) -> bool {
     matches!(name, crate::custom_tools::TOOL_LIST | crate::custom_tools::TOOL_SAVE | crate::custom_tools::TOOL_RUN)
 }
+/// Tools Codex gets from its per-run MCP server rather than as dynamic tools: that server's
+/// override rides `thread/resume` too, while dynamic tools reach only `thread/start`.
 fn per_run_mcp_tool(name: &str) -> bool {
     name.starts_with("pandacode_jev_")
+        || name.starts_with("pandacode_colab_")
         || optional_metadata_tool(name)
         || matches!(name, "pandacode_run_project" | "pandacode_preview_file" | EXPLORE_TOOL)
         || custom_tool(name)
@@ -4548,6 +4559,20 @@ fn split_jev_host(host: Option<ToolHost>) -> (Option<ToolHost>, Option<ToolHost>
         handler: host.handler.clone(),
     };
     ((!host.tools.is_empty()).then_some(host), Some(jev))
+}
+
+/// The extra stdio servers (Colab's MCP) a run sends in its session request. Claude-family
+/// CLIs and Codex take them on their command line and thread config, and Cline from its
+/// settings file when that was written (else from `session/new`, as the bridge falls back).
+/// Pi and OMP speak their own RPC with no stdio MCP. ZCode's entries carry its session
+/// isolation and always-load; every other ACP agent takes plain stdio entries.
+fn extra_mcp_servers(provider: &str, cline_settings: bool, stdio: &[mcp_host::Stdio]) -> Vec<Value> {
+    match provider {
+        "claude" | "glm" | "mimo" | "alibaba" | "codex" | "pi" | "omp" => Vec::new(),
+        "cline" if cline_settings => Vec::new(),
+        "zcode" => mcp_host::zcode_mcp_servers(stdio),
+        _ => mcp_host::acp_mcp_servers(stdio),
+    }
 }
 
 /// Whether a clean run's process may exit in the background. A managed team worker finishes
@@ -4669,19 +4694,26 @@ async fn run_process_launch(
         &mcp_tool_names,
         opencode_agents.as_ref(),
     );
+    // Colab's MCP for local runs when the user turned it on; empty otherwise.
+    let stdio = {
+        let session_id = config.session_id.clone();
+        crate::blocking(move || Ok(mcp_host::stdio_servers(&session_id))).await?
+    };
     let _pi_bridge = if matches!(config.provider.as_str(), "pi" | "omp") {
         Some(pi::Bridge::configure(&mut command, &config.mode, mcp.as_ref())?)
     } else { None };
     let mut early = VecDeque::new();
-    let cline_settings = match &mcp {
-        Some(server) if config.provider == "cline" && !crate::cloud_agents::transport::is_cloud(&config.session_id) => {
-            match cline::mcp_settings(&mut command, &server.kimi_config()) {
-                Ok(folder) => Some(folder),
-                Err(error) if server.required() => return Err(error),
-                Err(_) => None,
-            }
+    let cline_settings = if config.provider == "cline"
+        && (mcp.is_some() || !stdio.is_empty())
+        && !crate::cloud_agents::transport::is_cloud(&config.session_id)
+    {
+        match cline::mcp_settings(&mut command, mcp.as_ref().map(mcp_host::Server::kimi_config).as_ref(), &stdio) {
+            Ok(folder) => Some(folder),
+            Err(error) if mcp.as_ref().is_some_and(mcp_host::Server::required) => return Err(error),
+            Err(_) => None,
         }
-        _ => None,
+    } else {
+        None
     };
     let local = !crate::cloud_agents::transport::is_cloud(&config.session_id);
     let lingers = config.provider == "antigravity" && local;
@@ -4750,8 +4782,8 @@ async fn run_process_launch(
             }
         }
         if claude_family(&config.provider) {
-            if let Some(server) = &mcp {
-                command.args(["--mcp-config", &server.claude_config().to_string()]);
+            if let Some(servers) = mcp_host::claude_mcp_config(mcp.as_ref().map(mcp_host::Server::claude_config), &stdio) {
+                command.args(["--mcp-config", &servers.to_string()]);
             }
         }
         command
@@ -4818,11 +4850,13 @@ async fn run_process_launch(
             server.kimi_config()
         }
     });
+    protocol.extra_mcp_servers = extra_mcp_servers(&protocol.config.provider, cline_settings.is_some(), &stdio);
     protocol.mcp_required = mcp.as_ref().is_some_and(mcp_host::Server::required);
-    protocol.codex_mcp_servers = mcp
-        .as_ref()
-        .filter(|_| protocol.config.provider == "codex")
-        .map(mcp_host::Server::codex_config);
+    protocol.codex_mcp_servers = if protocol.config.provider == "codex" {
+        mcp_host::codex_mcp_servers(mcp.as_ref().map(mcp_host::Server::codex_config), &stdio)
+    } else {
+        None
+    };
     // An optional bridge can fail to bind. In that case no local MCP tool is
     // registered, so a same-named user server must retain normal approvals.
     protocol.mcp_tool_names = if mcp.is_some() { mcp_tool_names } else { HashSet::new() };
@@ -5420,6 +5454,61 @@ pub(crate) mod tests {
         host_tools::HostTools::new(mcp).unwrap();
     }
 
+    /// Dynamic tools reach only `thread/start`; the per-run MCP override rides `thread/resume`
+    /// too, so a resumed Codex thread keeps the Colab tools.
+    #[test]
+    fn colab_tools_ride_codexs_per_run_mcp_so_resumed_threads_get_them() {
+        let colab = crate::design::listed(crate::cloud::colab_tools::catalog());
+        let names: Vec<String> = colab.iter().map(|tool| tool["name"].as_str().unwrap().to_string()).collect();
+        let mut tools = crate::agent_tools::catalog();
+        tools.extend(colab);
+        let host = ToolHost {
+            tools,
+            approval_tools: ["pandacode_colab_manage".into(), "pandacode_colab_exec".into(), "pandacode_open_browser".into()].into(),
+            handler: Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+        };
+        let (dynamic, mcp) = split_jev_host(Some(host));
+        let (dynamic, mcp) = (dynamic.unwrap(), mcp.expect("Colab tools go to the per-run MCP server"));
+        assert!(dynamic.tools.iter().all(|tool| !tool["name"].as_str().unwrap().starts_with("pandacode_colab_")));
+        let served: Vec<&str> = mcp.tools.iter().filter_map(|tool| tool["name"].as_str()).collect();
+        assert_eq!(served, names.iter().map(String::as_str).collect::<Vec<_>>());
+        assert_eq!(mcp.approval_tools, ["pandacode_colab_manage".into(), "pandacode_colab_exec".into()].into());
+        assert!(dynamic.approval_tools.contains("pandacode_open_browser"));
+        // Codex registers them as its per-run server's tools for approval routing.
+        assert!(names.iter().all(|name| per_run_mcp_tool(name) && optional_transport_tool(name)));
+        host_tools::HostTools::new(mcp).unwrap();
+    }
+
+    #[test]
+    fn extra_stdio_servers_go_where_each_harness_reads_them() {
+        let stdio = [mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec!["colab-mcp".into()])];
+        let plain = json!({"name":"colab-mcp","command":"/bin/uvx","args":["colab-mcp"],"env":[]});
+        for provider in ["claude", "glm", "mimo", "alibaba", "codex", "pi", "omp"] {
+            assert!(extra_mcp_servers(provider, false, &stdio).is_empty(), "{provider}");
+        }
+        assert!(extra_mcp_servers("cline", true, &stdio).is_empty(), "Cline's settings file has it");
+        assert_eq!(extra_mcp_servers("cline", false, &stdio), vec![plain.clone()], "a failed settings file falls back to session/new");
+        for provider in ["kimi", "opencode", "antigravity", "grok", "kilo", "hermes", "muse"] {
+            assert_eq!(extra_mcp_servers(provider, false, &stdio), vec![plain.clone()], "{provider}");
+        }
+        let zcode = extra_mcp_servers("zcode", false, &stdio);
+        assert_eq!(zcode[0]["isolation"], "session");
+        assert_eq!(zcode[0]["alwaysLoad"], true);
+        assert_eq!(zcode[0]["command"], "/bin/uvx");
+        assert!(extra_mcp_servers("kimi", false, &[]).is_empty());
+    }
+
+    #[test]
+    fn team_workers_get_no_extra_stdio_servers() {
+        let session = format!("worker-stdio-{}", uuid::Uuid::new_v4());
+        assert!(!is_worker_run(&session));
+        mark_worker_run(&session, "run", true);
+        assert!(is_worker_run(&session));
+        assert!(mcp_host::stdio_servers(&session).is_empty());
+        clear_worker_run(&session, "run");
+        assert!(!is_worker_run(&session));
+    }
+
     #[test]
     fn preview_tools_do_not_block_normal_acp_turns_when_http_mcp_is_unavailable() {
         for provider in ["kimi", "opencode", "antigravity", "grok", "cline"] {
@@ -5446,6 +5535,7 @@ pub(crate) mod tests {
             "pandacode_cloud_cli",
             "pandacode_simulator_tap",
             "pandacode_vm_exec",
+            "pandacode_colab_run_python",
             "pandacode_design_artboard",
             "pandacode_jev_test",
             "pandacode_bot_recall",

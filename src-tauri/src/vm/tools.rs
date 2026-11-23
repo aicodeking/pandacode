@@ -13,6 +13,7 @@ use std::{
 use tauri::{Emitter, Manager};
 
 use super::{screen, tart, Vms};
+use crate::cloud::colab::activity as colab_activity;
 use crate::cloud::commands as cloud;
 use crate::agent_tools::{spec, validate_spec};
 use crate::providers::ToolHost;
@@ -38,9 +39,9 @@ pub fn catalog() -> Vec<Value> {
             "command":{"type":"string","maxLength":8192},
             "timeoutSeconds":{"type":"integer","description":"≤1800, default 120"},
             "name":name}), &["command"]),
-        spec("vm_manage", "create (local image: first download ~5 GB Linux, ~30 GB macOS; Linux desktop installs in background, commands work now), start, stop, suspend (local macOS), delete, show in PandaCode, install_desktop (local Linux). Idle local VMs stop after 10 min. Cloud costs money: confirm with the user before create/start.", json!({
+        spec("vm_manage", "create (local image: first download ~5 GB Linux, ~30 GB macOS; Linux desktop installs in background, commands work now), start, stop, suspend (local macOS), delete, show in PandaCode, install_desktop (local Linux). Idle local VMs stop after 10 min. Cloud costs money: confirm before create/start.", json!({
             "action":{"type":"string","enum":["create","start","stop","suspend","delete","show","install_desktop"]},
-            "provider":{"type":"string","enum":["local","daytona","cloudflare","aws-linux","aws-windows","agentcore"],"description":"create; default local. cloudflare, agentcore (1 h): commands only. aws-windows takes ~10 min."},
+            "provider":{"type":"string","enum":["local","daytona","cloudflare","aws-linux","aws-windows","agentcore","colab"],"description":"create; default local. cloudflare, agentcore (1 h), colab: commands only. aws-windows takes ~10 min."},
             "image":{"type":"string","enum":super::IMAGES.iter().map(|i| i.id).collect::<Vec<_>>()},
             "shareProject":{"type":"boolean","description":"start: share the checkout read-only."},
             "name":name}), &["action"]),
@@ -57,7 +58,7 @@ fn tart_has_vms() -> bool {
 }
 
 /// Providers whose machines the tools can create or drive.
-const SANDBOX_PROVIDERS: [&str; 4] = ["daytona", "cloudflare", "aws", "agentcore"];
+const SANDBOX_PROVIDERS: [&str; 5] = ["daytona", "cloudflare", "aws", "agentcore", "colab"];
 
 /// The full set matters once the user has a machine: one shown, a local VM, or a connected sandbox provider.
 fn has_machines(local: bool, vms: &Vms) -> bool {
@@ -102,11 +103,21 @@ pub fn install_desktop(vms: &Vms, name: &str) -> Result<String, String> {
     super::desktop::install(vms, name)
 }
 
-fn exec(vms: &Vms, name: &str, args: &Value) -> Result<Value, String> {
+/// The endpoint of a `colab:*` machine ID.
+fn colab_endpoint(id: &str) -> Option<&str> {
+    crate::cloud::split(id).filter(|(provider, _)| *provider == crate::cloud::colab::PROVIDER).map(|(_, native)| native)
+}
+
+fn exec(app: &tauri::AppHandle, session_id: &str, vms: &Vms, name: &str, args: &Value) -> Result<Value, String> {
     let command = string(args, "command").ok_or("Missing argument: command")?;
     let timeout = args["timeoutSeconds"].as_u64().unwrap_or(120).clamp(1, 1800);
     if crate::cloud::split(name).is_some() {
-        let (code, output) = cloud::exec(name, &command, Duration::from_secs(timeout))?;
+        let busy = colab_endpoint(name).map(|endpoint| colab_activity::begin_busy(app, session_id, endpoint, "busy", "Running shell command"));
+        let result = cloud::exec(name, &command, Duration::from_secs(timeout));
+        if let Some(busy) = busy {
+            busy.finish(&result);
+        }
+        let (code, output) = result?;
         return Ok(json!({"exitCode": code, "output": output}));
     }
     let macos = vms.is_macos(name)?;
@@ -124,13 +135,41 @@ fn checkout(app: &tauri::AppHandle, session_id: &str) -> Option<std::path::PathB
     task.worktree_path.map(Into::into).or_else(|| store.project(&task.project_id).ok().map(|project| project.path.into()))
 }
 
+/// Powers a cloud machine; a Colab runtime being stopped or deleted shows as releasing on
+/// the thread, then leaves every thread once it is gone.
+fn power(app: &tauri::AppHandle, session_id: &str, id: &str, action: &str) -> Result<(), String> {
+    let Some(endpoint) = colab_endpoint(id).filter(|_| matches!(action, "stop" | "delete")) else {
+        return cloud::power(id, action);
+    };
+    crate::cloud_agents::tasks::ensure_colab_runtime_free(app, endpoint)?;
+    let stopping = colab_activity::begin_busy(app, session_id, endpoint, "stopping", "Releasing runtime…");
+    match cloud::power(id, action) {
+        Ok(()) => {
+            stopping.released();
+            Ok(())
+        }
+        Err(error) => {
+            stopping.finish::<()>(&Err(error.clone()));
+            Err(error)
+        }
+    }
+}
+
 fn manage(app: &tauri::AppHandle, session_id: &str, vms: &Vms, args: &Value) -> Result<Value, String> {
     let action = string(args, "action").unwrap_or_default();
     let provider = string(args, "provider").unwrap_or_else(|| "local".into());
     let report = match action.as_str() {
         "create" if provider != "local" => {
             let name = string(args, "name").unwrap_or_else(|| format!("pandacode-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]));
-            let machine = cloud::create(&provider, &name)?;
+            let machine = if provider == crate::cloud::colab::PROVIDER {
+                let (accelerator, high_mem) = crate::cloud::colab::default_hardware();
+                let creating = colab_activity::begin_create(app, session_id, &name, &accelerator, high_mem);
+                let created = cloud::create(&provider, &name);
+                creating.finish(created.as_ref().map(|machine| machine.id.as_str()).map_err(String::as_str));
+                created?
+            } else {
+                cloud::create(&provider, &name)?
+            };
             vms.show(Some(machine.id.clone()));
             format!("Created {} ({}). It may take a minute to start; check with vm_list.", machine.id, machine.detail)
         }
@@ -148,8 +187,8 @@ fn manage(app: &tauri::AppHandle, session_id: &str, vms: &Vms, args: &Value) -> 
             let id = string(args, "name").unwrap_or_default();
             match action.as_str() {
                 "show" => { vms.show(Some(id.clone())); format!("Showing {id} in PandaCode's VM panel.") }
-                "start" | "stop" | "delete" => { cloud::power(&id, &action)?; format!("{id}: {action} requested.") }
-                "suspend" => { cloud::power(&id, "stop")?; format!("{id} is stopping; cloud sandboxes stop rather than suspend.") }
+                "start" | "stop" | "delete" => { power(app, session_id, &id, &action)?; format!("{id}: {action} requested.") }
+                "suspend" => { power(app, session_id, &id, "stop")?; format!("{id} is stopping; cloud sandboxes stop rather than suspend.") }
                 _ => return Err("That action is for local VMs.".into()),
             }
         }
@@ -205,7 +244,7 @@ async fn dispatch(app: tauri::AppHandle, session_id: String, name: String, args:
                 std::thread::sleep(SETTLE);
                 look(&vms, &vm, &format!("{report} Now: "))
             }
-            "pandacode_vm_exec" => exec(&vms, &target()?, &args),
+            "pandacode_vm_exec" => exec(&app, &session_id, &vms, &target()?, &args),
             "pandacode_vm_manage" => manage(&app, &session_id, &vms, &args),
             _ => Err("Unknown PandaCode tool.".into()),
         }

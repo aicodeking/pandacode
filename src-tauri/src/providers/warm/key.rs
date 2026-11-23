@@ -11,7 +11,7 @@ pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> String {
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
 pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled)
+    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id))
 }
 
 /// Whether this launch passes `--settings {"fastMode":true}` (`configure_command_with_agents`).
@@ -28,6 +28,7 @@ pub(super) fn key_with_disabled(
     tools: &[Value],
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
+    stdio: &[mcp_host::Stdio],
 ) -> String {
     json!({
         "namedConnection": connection,
@@ -52,6 +53,8 @@ pub(super) fn key_with_disabled(
         "executable": executable_stamp(&config.provider),
         // Config files Claude reads only at startup: an edit while a spare idles starts cold.
         "claudeConfig": claude_config_fingerprint(config),
+        // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
+        "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
     })
     .to_string()
 }

@@ -1,6 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 mod approvals;
+mod stdio;
 fn host() -> ToolHost {
     ToolHost {
         tools: vec![

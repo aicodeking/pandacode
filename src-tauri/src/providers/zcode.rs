@@ -615,12 +615,20 @@ impl Protocol {
             "persistence": "deferred",
             "titleGenerationEnabled": false,
         }});
-        // A fresh session takes its tools server inline; a resumed one cannot
-        // (its schema has no mcpServers) and gets `mcp/list` instead.
-        if let Some(server) = &self.mcp_server {
-            request["params"]["mcpServers"] = json!([server]);
+        // A fresh session takes its tools server (and any extra stdio servers,
+        // such as Colab's) inline; a resumed one cannot (its schema has no
+        // mcpServers) and gets `mcp/list` instead.
+        let servers = self.zcode_mcp_servers();
+        if !servers.is_empty() {
+            request["params"]["mcpServers"] = json!(servers);
         }
         request
+    }
+
+    /// ZCode's `mcpServers`: the bridge, then any extra stdio servers, each scoped to
+    /// this session and loaded up front so their tools reach the model.
+    fn zcode_mcp_servers(&self) -> Vec<Value> {
+        self.acp_mcp_servers().into_iter().map(super::mcp_host::zcode_scoped).collect()
     }
 
     pub(super) fn zcode(&mut self, value: Value) -> Result<Step, String> {
@@ -994,12 +1002,21 @@ impl Protocol {
         // confirms the inline server the same way: an unreachable one does not
         // fail `session/create`, and the prompt waits until this check settles.
         // An optional fresh bridge (title suggestions) stays inline only.
-        if let Some(server) = self.mcp_server.clone().filter(|_| self.config.resume_id.is_some() || self.mcp_required) {
-            self.zcode.bridge_pending = true;
+        // A resume also reconnects the extra stdio servers there, since nothing
+        // else can carry them; a fresh session already has them inline.
+        // Colab alone on a resume still reconnects, without holding the prompt.
+        let resumed = self.config.resume_id.is_some();
+        let bridge = self.mcp_server.clone().filter(|_| resumed || self.mcp_required);
+        if bridge.is_some() || (resumed && !self.extra_mcp_servers.is_empty()) {
+            self.zcode.bridge_pending = bridge.is_some();
+            let servers = match bridge {
+                Some(server) if !resumed => vec![server],
+                _ => self.zcode_mcp_servers(),
+            };
             step.write.push(json!({
                 "id": ID_MCP, "method": "mcp/list",
                 "params": {"workspace": workspace_of(&self.config.cwd),
-                           "mode": "connect", "mcpServers": [server]},
+                           "mode": "connect", "mcpServers": servers},
             }));
         }
         step.write.push(json!({
@@ -1232,6 +1249,65 @@ mod tests {
         let mut plain = Protocol::new(super::super::tests::config("zcode"));
         plain.config.cwd = PathBuf::from("/tmp");
         assert!(plain.initial()["params"].get("mcpServers").is_none());
+    }
+
+    fn stdio() -> [super::super::mcp_host::Stdio; 1] {
+        [super::super::mcp_host::Stdio::new(super::super::mcp_host::COLAB_MCP, "/bin/uvx".into(), vec!["colab-mcp".into()])]
+    }
+    /// What `run_process_with_tools` hands ZCode.
+    fn colab() -> Vec<Value> {
+        super::super::mcp_host::zcode_mcp_servers(&stdio())
+    }
+
+    fn assert_zcode_colab(entry: &Value) {
+        assert_eq!(entry["name"], "colab-mcp");
+        assert_eq!(entry["command"], "/bin/uvx");
+        assert_eq!(entry["args"], json!(["colab-mcp"]));
+        assert_eq!(entry["env"], json!([]));
+        assert_eq!(entry["isolation"], "session");
+        assert_eq!(entry["alwaysLoad"], true);
+    }
+
+    #[test]
+    fn colab_mcp_rides_beside_the_bridge_in_create_and_resume() {
+        let mut p = bridged(false);
+        p.extra_mcp_servers = colab();
+        let servers = &p.initial()["params"]["mcpServers"];
+        assert_eq!(servers.as_array().unwrap().len(), 2);
+        assert_eq!(servers[0], bridge());
+        assert_zcode_colab(&servers[1]);
+        // Plain ACP entries are scoped the same way.
+        p.extra_mcp_servers = super::super::mcp_host::acp_mcp_servers(&stdio());
+        assert_zcode_colab(&p.initial()["params"]["mcpServers"][1]);
+        // Colab alone still attaches the field.
+        let mut alone = Protocol::new(super::super::tests::config("zcode"));
+        alone.config.cwd = PathBuf::from("/tmp");
+        alone.extra_mcp_servers = colab();
+        assert_eq!(alone.initial()["params"]["mcpServers"], json!(colab()));
+        // A resume reconnects Colab with the bridge through `mcp/list`.
+        let mut p = bridged(true);
+        p.extra_mcp_servers = colab();
+        let step = p.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect = step.write.iter().find(|write| write["method"] == "mcp/list").unwrap();
+        assert_eq!(connect["params"]["mcpServers"][0], bridge());
+        assert_zcode_colab(&connect["params"]["mcpServers"][1]);
+        assert!(p.zcode.bridge_pending);
+        // Colab alone on a resume reconnects too, without holding the prompt.
+        let mut alone = Protocol::new(super::super::tests::config("zcode"));
+        alone.config.cwd = PathBuf::from("/tmp");
+        alone.config.resume_id = Some("sess_saved".into());
+        alone.extra_mcp_servers = colab();
+        let step = alone.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect = step.write.iter().find(|write| write["method"] == "mcp/list").expect("Colab reconnects");
+        assert_eq!(connect["params"]["mcpServers"].as_array().unwrap().len(), 1);
+        assert_zcode_colab(&connect["params"]["mcpServers"][0]);
+        assert!(!alone.zcode.bridge_pending);
+        // Off by default: the create carries exactly the bridge, a resume no extra server.
+        assert_eq!(bridged(false).initial()["params"]["mcpServers"], json!([bridge()]));
+        let mut plain = bridged(true);
+        let step = plain.receive(json!({"id": ID_CREATE, "result": snapshot()})).unwrap();
+        let connect = step.write.iter().find(|write| write["method"] == "mcp/list").unwrap();
+        assert_eq!(connect["params"]["mcpServers"], json!([bridge()]));
     }
 
     #[test]

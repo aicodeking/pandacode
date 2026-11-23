@@ -261,6 +261,8 @@ let simulatorPanel: ReturnType<typeof import('./simulator').mountSimulator> | un
 let vmPanel: ReturnType<typeof import('./vm-panel').mountVmPanel> | undefined, vmLoading: Promise<void> | undefined;
 let designPanel: ReturnType<typeof import('./design-canvas').mountDesignCanvas> | undefined, designLoading: Promise<void> | undefined;
 let progressPip: import('./progress-pip').ProgressPip | undefined, progressPipLoading: Promise<void> | undefined;
+/** The thread's Colab runtimes pip (colab-pip.ts). `colabInUse`: Colab is connected or a `colab-runtime` event arrived. */
+let colabPip: import('./colab-pip').ColabPip | undefined, colabPipLoading: Promise<void> | undefined, colabInUse = false;
 let browserLifecycle = Promise.resolve();
 let browserOwner = '', browserRevision = 0, inspectorSuppressed = false;
 /** The user's last explicit inspector show or hide, kept across launches. Visibility is global across tasks, while each
@@ -685,7 +687,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   </aside>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('toggle-files', 'Toggle file explorer', 'folder', '', 'id="files-toggle" aria-controls="inspector" aria-pressed="false"')}${button('toggle-file-editor', 'Toggle editor', 'edit', '', 'id="file-editor-toggle" aria-controls="file-panel" aria-expanded="false" hidden')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
-    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
+    <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><aside id="colab-pip" class="colab-pip" aria-label="Google Colab runtimes" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
     <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="maximize" aria-label="Maximize terminal" title="Maximize terminal">${icon('maximize')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
@@ -1239,9 +1241,18 @@ const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScro
 // missed the pip's own descendants because it judged the record's target alone. A named list cannot drift that way.
 const composerArea = $('#composer-area');
 const progressPipHost = $('#progress-pip');
-const rePinsTranscript = (target: Node): boolean =>
-  !transcriptScroller.contains(target) && !composerArea.contains(target) && !progressPipHost.contains(target);
-new MutationObserver(records => { if (records.some(record => rePinsTranscript(record.target))) followTranscript(); })
+// The Colab pip (#colab-pip) floats the same way: absolute in the pane, and its clock rewrites text every second.
+const colabPipHost = $('#colab-pip');
+// So does the shell its last surface fades out in (.cp-ghost), a sibling of the pip, coming and going.
+const isColabGhost = (node: Node): boolean => node instanceof Element && Boolean(node.closest('.cp-ghost'));
+const onlyColabGhosts = (record: MutationRecord): boolean => record.type === 'childList'
+  && record.addedNodes.length + record.removedNodes.length > 0 && [...record.addedNodes, ...record.removedNodes].every(isColabGhost);
+const rePinsTranscript = (record: MutationRecord): boolean => {
+  const target = record.target;
+  return !transcriptScroller.contains(target) && !composerArea.contains(target) && !progressPipHost.contains(target) && !colabPipHost.contains(target)
+    && !isColabGhost(target) && !onlyColabGhosts(record);
+};
+new MutationObserver(records => { if (records.some(rePinsTranscript)) followTranscript(); })
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
   const top = transcriptScroller.scrollTop;
@@ -2162,6 +2173,7 @@ function responseAge(timestamp: number, now: number): string {
 function renderHeader(): void {
   renderBoardView();
   syncProgressPip();
+  syncColabPip();
   const p = project();
   terminalPanel.select(p ? workspaceContext() : undefined, p?.name ?? '');
   projectRunner.paint();
@@ -3904,6 +3916,7 @@ document.fonts?.addEventListener('loadingdone', forgetPromptMetrics);
 function renderComposer(): void {
   refreshTeamProgress();
   syncProgressPip();
+  syncColabPip();
   retryRouting(session());
   architectView?.setTask(state.sessionId, teams.get(state.sessionId) ?? null, state.providers);
   goalBanner.update(session()?.goalState ?? null);
@@ -6323,6 +6336,29 @@ function syncProgressPip(): void {
     syncProgressPip();
   }).catch(error => { progressPipLoading = undefined; report(error); });
 }
+/** The thread's Colab runtimes pip, shown where the progress PiP is. Its module loads only once Colab is in use:
+ * a `colab-runtime` event arrived, Colab is connected, or the thread is a Colab cloud task. */
+function syncColabPip(): void {
+  const id = state.sessionId, allowed = Boolean(id) && state.view === 'conversation' && !newTaskView();
+  if (colabPip) { colabPip.update(id, allowed); return; }
+  if (!id || !(colabInUse || session()?.cloud?.provider === 'colab')) return;
+  colabPipLoading ??= import('./colab-pip').then(({ mountColabPip }) => {
+    colabPip = mountColabPip($('#colab-pip'), { call, notifyError, announce });
+    syncColabPip();
+  }).catch(error => { colabPipLoading = undefined; report(error); });
+}
+function onColabRuntime(event: { sessionId?: string; runtimes?: unknown } | null): void {
+  if (!event?.sessionId) return;
+  const fresh = !colabInUse;
+  colabInUse = true;
+  if (colabPip) { colabPip.set(event.sessionId, event.runtimes); return; }
+  // Not mounted yet: mounting loads the open thread's list without reading it out, so the change that mounted it
+  // is handed over once the pip is up. The first event since launch is a handoff, announced whole: until now
+  // Colab was not in use, so its runtimes are all news. A later one waits on the first list like any other.
+  const { sessionId, runtimes } = event;
+  syncColabPip();
+  void colabPipLoading?.then(() => colabPip?.set(sessionId, runtimes, fresh));
+}
 /** The design canvas stays mounted once opened; hidden, it makes no calls. */
 function syncDesignPanel(): void {
   const wanted = state.inspector && state.inspectorTab === 'design' && !inspectorSuppressed;
@@ -7541,7 +7577,7 @@ async function showSettings(section?: import('./settings').SettingsSection, inte
       turnChecks: turnChecksEnabled(),
       github: target => github.mountSettings(target, project()?.id ?? state.projects[0]?.id ?? ''),
       teams: { loadModels, call },
-      cloud: { call, listen: (name, callback) => subscribe(name, callback) },
+      cloud: { call, listen: (name, callback) => (subscribe as (name: string, callback: (event: any) => void) => Promise<() => void>)(name, callback) },
       skills: { call, projects: () => userProjects().map(p => ({ id: p.id, name: p.name })), activeProject: () => project()?.id ?? '' },
       remote: remoteHost,
       schedules: { intent, openThread: id => { closeSettings(); run(selectSession(id, true)); } },
@@ -8019,6 +8055,7 @@ async function refreshCloudTargets(): Promise<void> {
   cloudTargets = await call<CloudTarget[]>('cloud_agent_targets').catch(() => cloudTargets);
   const chosen = cloudProvider(remoteChoice);
   if (chosen && !cloudTargets.some(target => target.ready && target.provider === chosen)) remoteChoice = LOCAL;
+  colabInUse ||= cloudTargets.some(target => target.ready && target.provider === 'colab');
   renderHeader();
 }
 /** Redraws the strip in place, so progress never re-renders the prompt someone is typing in. */
@@ -9006,6 +9043,7 @@ async function boot(): Promise<void> {
     await selectSession(sessionId, true);
   })())).then(() => undefined));
   run((subscribe as (name: string, callback: (event: { sessionId?: string } | null) => void) => Promise<() => void>)('progress-changed', event => progressPip?.refresh(event?.sessionId)).then(() => undefined));
+  run((subscribe as (name: string, callback: typeof onColabRuntime) => Promise<() => void>)('colab-runtime', onColabRuntime).then(() => undefined));
   run(subscribe('simulator-changed', event => { if (event?.show) openSimulator(); void simulatorPanel?.refresh(); }).then(() => undefined));
   run(subscribe('bots-changed', () => run((async () => { botProjectsLoad = reloadBotProjects(); await botProjectsLoad; botsView?.refresh(); })())).then(() => undefined));
   run(subscribe('bot-shared-channel-changed', event => { run(reloadBotProjects(false)); if (state.sharedChannelId && (!event?.channelId || event.channelId === state.sharedChannelId)) void refreshSharedChannel(); }).then(() => undefined));

@@ -52,7 +52,8 @@ pub(super) fn still_current(spare_key: &str, config: &RunConfig, tools: &[Value]
     // The spawn keyed the config as a cold launch prepares it (skill reminder applied).
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     let config = prepared(config, &disabled);
-    key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled) == spare_key && inputs() == spawned
+    let stdio = mcp_host::stdio_servers(&config.session_id);
+    key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled, &stdio) == spare_key && inputs() == spawned
 }
 
 /// A lead's renewal check with the inputs its spare was started on.
@@ -166,16 +167,18 @@ pub(super) async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value
     config.cwd = external_path(&config.cwd);
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();
-    let (config, key, disabled) = crate::blocking(move || {
+    let (config, key, disabled, stdio) = crate::blocking(move || {
         let disabled = crate::skill_manager::disabled_for(&config.session_id);
         let config = prepared(config, &disabled);
+        let stdio = mcp_host::stdio_servers(&config.session_id);
         let key = key_with_disabled(
             &config,
             &catalog,
             &crate::connections::warm_key(&config.session_id, &config.provider),
             &disabled,
+            &stdio,
         );
-        Ok((config, key, disabled))
+        Ok((config, key, disabled, stdio))
     })
     .await?;
     let mut command = command(&path)?;
@@ -194,9 +197,12 @@ pub(super) async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value
         };
         let sink: Sink = Arc::new(|_| {});
         let server = mcp_host::Server::start_with_approvals(placeholder, config.session_id.clone(), sink, &config.mode).await?;
-        command.args(["--mcp-config", &server.claude_config().to_string()]);
         Some(server)
     };
+    // The same `--mcp-config` a cold launch builds, Colab's MCP included.
+    if let Some(servers) = mcp_host::claude_mcp_config(server.as_ref().map(mcp_host::Server::claude_config), &stdio) {
+        command.args(["--mcp-config", &servers.to_string()]);
+    }
     command
         .current_dir(&config.cwd)
         .stdin(Stdio::piped())

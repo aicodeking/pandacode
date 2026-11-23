@@ -258,5 +258,44 @@ async fn a_team_workers_always_ask_tool_is_refused_at_the_host_before_any_prompt
     assert!(crate::providers::worker_tool_refusal(&session, "pandacode_schedule_message").is_none());
     crate::providers::mark_worker_run(&session, "run", true);
     assert!(crate::providers::worker_tool_refusal(&session, "pandacode_delegate").is_none());
+    // A Python run that may create a paid Colab runtime counts as managing one.
+    let refused = server.current().authorize("pandacode_colab_run_python", json!({"code":"1","autoCreate":true})).await;
+    assert!(refused.unwrap_err().contains("pandacode_colab_manage"));
+    assert!(server.current().authorize("pandacode_colab_run_python", json!({"code":"1"})).await.is_ok());
     crate::providers::clear_worker_run(&session, "run");
+    assert!(events.try_recv().is_err(), "no approval was asked");
+}
+#[tokio::test]
+async fn colab_autocreate_asks_even_in_full_mode() {
+    let name = "pandacode_colab_run_python";
+    let protected = ToolHost {
+        tools: vec![json!({"type":"function","name":name,"description":"Run","inputSchema":{"type":"object"}})],
+        approval_tools: [name.into()].into(),
+        handler: Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+    };
+    let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+    let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "full").await.unwrap();
+    // On an existing runtime full access runs it unasked.
+    assert!(server.current().authorize(name, json!({"code":"1"})).await.is_ok());
+    assert!(events.try_recv().is_err());
+    let context = server.current();
+    let asking = context.authorize(name, json!({"code":"1","autoCreate":true}));
+    let answer = async {
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
+        assert_eq!(event.kind, "approval");
+        assert!(event.text.starts_with("Allow pandacode_colab_run_python?"));
+        assert!(server.approve(event.request_id.as_ref().unwrap(), false));
+    };
+    let (result, ()) = tokio::join!(asking, answer);
+    assert!(result.is_err());
+}
+#[test]
+fn colab_calls_outlast_the_usual_host_limit() {
+    use crate::providers::host_tools;
+    assert_eq!(host_tools::tool_timeout("pandacode_delegate", &json!({})), host_tools::HOST_TOOL_TIMEOUT);
+    assert_eq!(host_tools::tool_timeout("pandacode_colab_status", &json!({})), host_tools::HOST_TOOL_TIMEOUT);
+    assert!(host_tools::tool_timeout("pandacode_colab_run_python", &json!({"timeoutSeconds":250})) > Duration::from_secs(250));
+    assert!(host_tools::tool_timeout("pandacode_colab_manage", &json!({"action":"create"})) > Duration::from_secs(180));
+    // Never past Codex's per-run `tool_timeout_sec` (360).
+    assert!(host_tools::tool_timeout("pandacode_colab_run_python", &json!({"timeoutSeconds":1800,"autoCreate":true})) < Duration::from_secs(360));
 }

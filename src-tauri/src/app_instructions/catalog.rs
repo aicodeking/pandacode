@@ -233,7 +233,7 @@ pub(crate) trait HostLayers {
     /// tools failed to start.
     fn base(&mut self, plan: &super::HostPlan) -> (Option<ToolHost>, bool);
     fn schedules(&mut self, host: Option<ToolHost>) -> Option<ToolHost>;
-    /// Simulator, VM, machine and design tools: listed for every role (design writes are
+    /// Simulator, VM, Colab (local runs only), machine and design tools: listed for every role (design writes are
     /// trimmed afterwards).
     fn devices(&mut self, host: Option<ToolHost>, plan: &super::HostPlan) -> Option<ToolHost>;
     fn progress(&mut self, host: Option<ToolHost>) -> Option<ToolHost>;

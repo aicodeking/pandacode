@@ -1,6 +1,7 @@
 //! Cloud sandboxes for agents, beside the local VMs: Daytona (desktop sandboxes with
 //! computer use), Cloudflare (container sandboxes behind a Worker in your account), and
-//! AWS (EC2 desktops for Linux and Windows, and AgentCore code interpreters).
+//! AWS (EC2 desktops for Linux and Windows, and AgentCore code interpreters), Google Colab
+//! (GPU/TPU notebook runtimes) and the rest.
 //!
 //! Every machine has an ID `provider:native-id`, so the VM tools and panel address local
 //! and cloud machines the same way. Keys live in the OS secure store; settings that are
@@ -12,6 +13,8 @@ pub mod blaxel;
 pub mod boat;
 pub mod cloudflare;
 pub mod codesandbox;
+pub mod colab;
+pub mod colab_tools;
 pub mod commands;
 pub mod daytona;
 pub mod deploy;
@@ -38,7 +41,7 @@ use serde::{Deserialize, Serialize};
 use crate::secret_store;
 
 const SERVICE: &str = "app.pandacode.cloud";
-pub const PROVIDERS: [&str; 21] = ["daytona", "docker", "digitalocean", "vultr", "hetzner", "runpod", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat", "instabox"];
+pub const PROVIDERS: [&str; 22] = ["daytona", "docker", "digitalocean", "vultr", "hetzner", "runpod", "cloudflare", "aws", "agentcore", "gcloud", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "railway", "boat", "instabox", "colab"];
 
 /// A cloud machine as the panel and tools see it.
 #[derive(Clone, Debug, Serialize, PartialEq)]

@@ -19,6 +19,25 @@ const BACKOFF_MAX: Duration = Duration::from_secs(30);
 const READ_MAX: usize = 128 * 1024;
 /// How often the run's progress is written while nothing else changes.
 const PROGRESS_EVERY: Duration = Duration::from_secs(5);
+/// How often a long run tells the provider the machine is still in use (Colab ends a
+/// runtime after about 90 minutes without a client).
+#[cfg(not(test))]
+const KEEP_ALIVE_EVERY: Duration = Duration::from_secs(5 * 60);
+#[cfg(test)]
+const KEEP_ALIVE_EVERY: Duration = Duration::from_millis(300);
+/// What the bridge reports when the machine itself has ended.
+const MACHINE_ENDED: &str = "The cloud machine ended, so this run stopped";
+
+/// The message of an error that says the machine is gone for good (no retry can help).
+pub(crate) fn machine_gone(error: &str) -> Option<&str> {
+    error.strip_prefix(crate::cloud::colab::MACHINE_GONE)
+}
+
+/// Says the machine ended, once, and returns the exit code the run ends with.
+fn ended(stderr: &mut dyn Write, error: &str) -> i32 {
+    let _ = writeln!(stderr, "{MACHINE_ENDED}: {}", machine_gone(error).unwrap_or(error));
+    1
+}
 
 /// What one bridge runs. Written 0600 by the app and deleted by the bridge once read, since
 /// `env` can hold credentials.
@@ -107,18 +126,34 @@ fn start(sandbox: &dyn Sandbox, spec: &Spec, dir: &str) -> crate::Result<()> {
 /// Kills a run's process group, confirms it is gone, and records it as stopped (143) unless
 /// it already ended. Safe to repeat; an error means the run may still be alive.
 pub(crate) fn kill(sandbox: &dyn Sandbox, native: &str, run_id: &str) -> crate::Result<()> {
-    let dir = run_dir(&home(sandbox, native)?, run_id);
+    let home = match home(sandbox, native) {
+        // A machine that ended took the run with it.
+        Err(error) if machine_gone(&error).is_some() => return Ok(()),
+        home => home?,
+    };
+    let dir = run_dir(&home, run_id);
     let command = format!(
         "d={}; [ -d \"$d\" ] || exit 0; if [ -f \"$d/pid\" ]; then p=$(cat \"$d/pid\"); kill -TERM -\"$p\" 2>/dev/null; i=0; while kill -0 -\"$p\" 2>/dev/null && [ $i -lt 5 ]; do sleep 1; i=$((i+1)); done; kill -KILL -\"$p\" 2>/dev/null; i=0; while kill -0 -\"$p\" 2>/dev/null; do [ $i -ge 5 ] && {{ echo 'The cloud run did not stop.'; exit 1; }}; sleep 1; i=$((i+1)); done; fi; [ -f \"$d/exit\" ] || {{ echo 143 > \"$d/exit.tmp\" && mv \"$d/exit.tmp\" \"$d/exit\"; }}",
         shell_quote(&dir)
     );
-    crate::cloud::sandbox::checked(sandbox.exec(native, &command, Duration::from_secs(60))?)
+    match sandbox.exec(native, &command, Duration::from_secs(60)) {
+        Err(error) if machine_gone(&error).is_some() => Ok(()),
+        result => crate::cloud::sandbox::checked(result?),
+    }
 }
 
-/// Waits for a run to end and returns its exit code (None when its folder is gone). After
-/// `grace` the process group is killed and its death confirmed. An error (the machine
-/// can't be reached, or the run would not die) means it may still be running.
+/// Waits for a run to end and returns its exit code (None when its folder, or the whole
+/// machine, is gone, so the task can move on). After `grace` the process group is killed
+/// and its death confirmed. An error (the machine can't be reached, or the run would not
+/// die) means it may still be running.
 pub(crate) fn finish(sandbox: &dyn Sandbox, native: &str, run_id: &str, grace: Duration) -> crate::Result<Option<i32>> {
+    match finish_on(sandbox, native, run_id, grace) {
+        Err(error) if machine_gone(&error).is_some() => Ok(None),
+        other => other,
+    }
+}
+
+fn finish_on(sandbox: &dyn Sandbox, native: &str, run_id: &str, grace: Duration) -> crate::Result<Option<i32>> {
     let dir = shell_quote(&run_dir(&home(sandbox, native)?, run_id));
     let command = format!("d={dir}; if [ -f \"$d/exit\" ]; then cat \"$d/exit\"; elif [ -d \"$d\" ]; then echo running; else echo gone; fi");
     let (started, mut killed) = (Instant::now(), false);
@@ -206,7 +241,9 @@ impl Poller {
 
 /// Runs the bridge until the remote run's `exit` appears (stdin closing only ends the
 /// harness's input); returns its exit code. `status` receives progress. Network errors never
-/// end it: it backs off (up to 30 s) and keeps trying, so only the run's end or a signal stops it.
+/// end it: it backs off (up to 30 s) and keeps trying, so only the run's end, a signal, or
+/// the machine itself ending (a `machine-gone` error) stops it. Every few minutes it keeps
+/// the machine alive, so providers that end idle machines keep this one while it works.
 pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 'static, stdout: &mut dyn Write, stderr: &mut dyn Write, status: &mut dyn FnMut(&Status)) -> i32 {
     let native = spec.native.as_str();
     let mut poller = Poller { failures: 0 };
@@ -234,6 +271,10 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
         });
         match prepared {
             Ok(ready) => break ready,
+            Err(error) if machine_gone(&error).is_some() => {
+                status(&report);
+                return ended(stderr, &error);
+            }
             Err(error) if !spec.attach || error.starts_with("This cloud run") => {
                 let _ = writeln!(stderr, "{error}");
                 return 1;
@@ -256,7 +297,8 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
     let mut partial: Vec<u8> = Vec::new();
     let (mut eof, mut eof_sent, mut err_offset, mut wait) = (false, false, 0u64, FAST);
     let mut exit_code: Option<i32> = None;
-    let mut reported = Instant::now();
+    let (mut reported, mut kept) = (Instant::now(), Instant::now());
+    let keep_minutes = sandbox.info().max_unattended_minutes;
     loop {
         // Gather what PandaCode wrote, waking at once when it writes.
         let mut first = match input.recv_timeout(if pending.is_empty() { wait } else { Duration::ZERO }) {
@@ -340,6 +382,10 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
                 status(&report);
                 return 1;
             }
+            Err(error) if machine_gone(&error).is_some() => {
+                status(&report);
+                return ended(stderr, &error);
+            }
             Err(error) => {
                 reconnecting(&mut report, status, &error);
                 wait = poller.backoff();
@@ -348,6 +394,11 @@ pub(crate) fn run(sandbox: &dyn Sandbox, spec: &Spec, stdin: impl Read + Send + 
         if reported.elapsed() >= PROGRESS_EVERY {
             status(&report);
             reported = Instant::now();
+        }
+        // Best effort: a missed keep-alive only shortens the provider's idle window.
+        if kept.elapsed() >= KEEP_ALIVE_EVERY {
+            let _ = sandbox.keep_alive(native, keep_minutes);
+            kept = Instant::now();
         }
     }
 }
@@ -628,6 +679,90 @@ pub(crate) mod tests {
         release.store(true, Ordering::SeqCst);
         assert_eq!((code, String::from_utf8(out).unwrap()), (0, expected));
         assert_eq!(std::fs::read(format!("{dir}/inbox")).unwrap().len(), input.len());
+    }
+
+    /// The local sandbox until `gone` is set, then a machine that ended: every call fails
+    /// with a `machine-gone` error. Counts keep-alives.
+    struct Vanishing {
+        local: Local,
+        gone: Arc<AtomicBool>,
+        keep_alives: Arc<std::sync::Mutex<Vec<u32>>>,
+    }
+    impl Vanishing {
+        fn new() -> Self {
+            Self { local: Local::new(), gone: Arc::default(), keep_alives: Arc::default() }
+        }
+        fn check(&self) -> crate::Result<()> {
+            if self.gone.load(Ordering::SeqCst) {
+                return Err(format!("{}That Colab runtime no longer exists. Create a new one.", crate::cloud::colab::MACHINE_GONE));
+            }
+            Ok(())
+        }
+    }
+    impl Sandbox for Vanishing {
+        fn info(&self) -> crate::cloud::sandbox::Info {
+            crate::cloud::sandbox::Info { persistent: false, max_unattended_minutes: 90 }
+        }
+        fn list(&self) -> crate::Result<Vec<Machine>> {
+            self.local.list()
+        }
+        fn create(&self, name: &str) -> crate::Result<Machine> {
+            self.local.create(name)
+        }
+        fn power(&self, native: &str, action: &str) -> crate::Result<()> {
+            self.local.power(native, action)
+        }
+        fn exec(&self, native: &str, command: &str, timeout: Duration) -> crate::Result<(Option<i32>, String)> {
+            self.check()?;
+            self.local.exec(native, command, timeout)
+        }
+        fn keep_alive(&self, _native: &str, minutes: u32) -> crate::Result<()> {
+            self.keep_alives.lock().unwrap().push(minutes);
+            self.check()
+        }
+        fn spawn(&self, native: &str, command: &str) -> crate::Result<()> {
+            self.check()?;
+            self.local.spawn(native, command)
+        }
+    }
+
+    #[test]
+    fn a_machine_that_ends_mid_run_stops_the_bridge_and_leaves_nothing_to_finish() {
+        let vanishing = Arc::new(Vanishing::new());
+        let spec = spec(&vanishing.local, "r5");
+        let release = Arc::new(AtomicBool::new(false));
+        let (worker, held) = (vanishing.clone(), Held(b"1\n", release.clone()));
+        let thread = std::thread::spawn(move || {
+            let (mut out, mut err, mut statuses) = (Vec::new(), Vec::new(), Vec::new());
+            let code = run(&*worker, &spec, held, &mut out, &mut err, &mut |s: &Status| statuses.push(s.stage.clone()));
+            (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap(), statuses)
+        });
+        // Long enough for the run to start and a keep-alive to go out, then the machine ends.
+        std::thread::sleep(Duration::from_millis(1200));
+        vanishing.gone.store(true, Ordering::SeqCst);
+        let started = Instant::now();
+        let (code, out, err, statuses) = thread.join().unwrap();
+        release.store(true, Ordering::SeqCst);
+        assert!(started.elapsed() < Duration::from_secs(10), "no endless reconnecting");
+        assert_eq!(code, 1);
+        assert!(out.contains("{\"got\":1}"), "{out}");
+        assert!(err.contains("The cloud machine ended") && err.contains("no longer exists") && !err.contains("machine-gone:"), "{err}");
+        assert!(!statuses.contains(&"reconnecting".to_string()), "{statuses:?}");
+        let keep_alives = vanishing.keep_alives.lock().unwrap().clone();
+        assert!(!keep_alives.is_empty() && keep_alives.iter().all(|minutes| *minutes == 90), "{keep_alives:?}");
+        // After the run: nothing to wait for or kill, so the task's run ID can be cleared.
+        assert_eq!(finish(&*vanishing, "m", "r5", Duration::ZERO).unwrap(), None);
+        kill(&*vanishing, "m", "r5").unwrap();
+        // Re-attaching to a run on a machine that ended gives up at once too.
+        let attach = Spec { attach: true, ..spec_with(&vanishing.local, "r5", String::new()) };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(run(&*vanishing, &attach, &b""[..], &mut out, &mut err, &mut |_: &Status| {}), 1);
+        assert!(String::from_utf8(err).unwrap().contains("The cloud machine ended"));
+        assert_eq!(machine_gone("machine-gone: x"), Some("x"));
+        assert_eq!(machine_gone("offline"), None);
+        // The stand-in machine is this computer: stop the harness it left running.
+        vanishing.gone.store(false, Ordering::SeqCst);
+        kill(&*vanishing, "m", "r5").unwrap();
     }
 
     #[test]

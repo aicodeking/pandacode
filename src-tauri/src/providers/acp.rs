@@ -603,6 +603,12 @@ fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result
 }
 
 impl Protocol {
+    /// `mcpServers` for `session/new`, `session/load` and `session/resume`: the
+    /// bridge's HTTP entry (when the agent takes HTTP MCP) and any extra stdio
+    /// servers, which every ACP agent accepts without a capability.
+    pub(super) fn acp_mcp_servers(&self) -> Vec<Value> {
+        self.mcp_server.iter().chain(&self.extra_mcp_servers).cloned().collect()
+    }
     pub(super) fn acp(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
         let grok = self.config.provider == "grok";
@@ -806,7 +812,7 @@ impl Protocol {
                         self.mcp_server = None;
                         self.mcp_tool_names.clear();
                     }
-                    let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
+                    let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.acp_mcp_servers()});
                     let method = if self.remote_id.is_empty() {
                         "session/new"
                     } else {
@@ -3327,6 +3333,52 @@ mod tests {
                 .contains("resume"));
         }
     }
+    #[test]
+    fn colab_mcp_rides_beside_the_bridge_on_new_load_and_resume() {
+        let colab = super::mcp_host::acp_mcp_servers(&[super::mcp_host::Stdio::new(
+            super::mcp_host::COLAB_MCP,
+            "/bin/uvx".into(),
+            vec!["colab-mcp".into()],
+        )]);
+        assert_eq!(colab, vec![json!({"name":"colab-mcp","command":"/bin/uvx","args":["colab-mcp"],"env":[]})]);
+        let bridge = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:1/mcp","headers":[]});
+        for (provider, saved, resume, method) in [
+            ("antigravity", false, false, "session/new"),
+            ("opencode", true, false, "session/load"),
+            ("kilo", true, true, "session/resume"),
+            ("hermes", false, false, "session/new"),
+        ] {
+            let mut cfg = config(provider);
+            cfg.resume_id = saved.then(|| "saved".into());
+            let mut p = Protocol::new(cfg);
+            p.mcp_server = Some(bridge.clone());
+            p.extra_mcp_servers = colab.clone();
+            let mut cap = capabilities();
+            if resume {
+                cap["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume":{}});
+            }
+            let step = p.receive(cap).unwrap();
+            let session = &step.write[0];
+            assert_eq!(session["method"], method, "{provider}");
+            assert_eq!(session["params"]["mcpServers"], json!([bridge, colab[0]]), "{provider}");
+        }
+        // Without HTTP MCP the optional bridge drops out but stdio Colab still goes.
+        let mut p = Protocol::new(config("antigravity"));
+        p.mcp_server = Some(bridge.clone());
+        p.mcp_required = false;
+        p.extra_mcp_servers = colab.clone();
+        let mut cap = capabilities();
+        cap["result"]["agentCapabilities"]["mcpCapabilities"] = json!({});
+        let step = p.receive(cap).unwrap();
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!(colab));
+        // Off by default: the session carries exactly what it did before.
+        let mut p = Protocol::new(config("antigravity"));
+        p.mcp_server = Some(bridge.clone());
+        assert!(p.extra_mcp_servers.is_empty());
+        let step = p.receive(capabilities()).unwrap();
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!([bridge]));
+    }
+
     #[test]
     fn unsupported_images_mcp_or_effort_fail_before_any_prompt() {
         let mut p = Protocol::new(config("antigravity"));

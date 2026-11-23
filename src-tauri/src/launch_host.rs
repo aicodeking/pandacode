@@ -76,6 +76,8 @@ impl<F: FnOnce(Option<ToolHost>) -> ToolHost> app_instructions::HostLayers for A
         let (app, sid, stopped) = (self.at.app, self.at.session_id, self.at.stopped);
         let host = simulator::tools::with_simulator_for(host, app.clone(), sid.to_owned(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), sid.to_owned(), stopped.clone());
+        // A cloud agent already runs on its machine; Colab tools are for local agents.
+        let host = if plan.cloud { host } else { cloud::colab_tools::with_colab(host, app.clone(), sid.to_owned(), stopped.clone()) };
         let host = remote::orchestrate::with_machines(host, app.clone(), sid.to_owned(), stopped.clone(), plan.team);
         design::with_design(host, app.clone(), sid.to_owned(), stopped.clone())
     }

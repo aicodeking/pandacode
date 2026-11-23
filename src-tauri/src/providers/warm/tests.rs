@@ -505,11 +505,24 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
     let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "fastMode", "worker", "disallowedTools"].map(String::from).to_vec();
     config_fields.extend(["namedConnection", "connection", "environment", "telemetryOff"].map(String::from));
     // Read from the session, provider and cwd, which a lead's spare and its wake share.
-    config_fields.extend(["disabledSkills", "executable", "claudeConfig"].map(String::from));
+    config_fields.extend(["disabledSkills", "executable", "claudeConfig", "stdioMcp"].map(String::from));
     let (mut a, mut b) = (field_names, config_fields);
     a.sort();
     b.sort();
     assert_eq!(a, b, "a new key field must be added to the lead wake test too");
+}
+
+#[test]
+fn toggling_colab_mcp_starts_the_next_turn_cold() {
+    let config = crate::providers::tests::config("claude");
+    let none = std::collections::BTreeSet::new();
+    let colab = |args: &str| vec![mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec![args.into()])];
+    let off = key_with_disabled(&config, &[], "", &none, &[]);
+    let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"));
+    assert_ne!(off, on);
+    assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")));
+    assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other")));
+    assert_eq!(miss(true, &off, &on, Duration::from_secs(1), IDLE).as_deref(), Some("changed: stdioMcp"));
 }
 
 #[test]
@@ -746,7 +759,7 @@ fn skill_manager_disabled_skills_invalidate_a_warm_launch() {
     let config = crate::providers::tests::config("claude");
     let none = std::collections::BTreeSet::new();
     let disabled = std::collections::BTreeSet::from(["alpha".into()]);
-    assert_ne!(key_with_disabled(&config, &[], "", &none), key_with_disabled(&config, &[], "", &disabled));
+    assert_ne!(key_with_disabled(&config, &[], "", &none, &[]), key_with_disabled(&config, &[], "", &disabled, &[]));
 }
 
 #[test]
@@ -756,7 +769,7 @@ fn claude_config_file_edits_invalidate_a_warm_launch() {
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
     let none = std::collections::BTreeSet::new();
-    let key = || key_with_disabled(&config, &[], "", &none);
+    let key = || key_with_disabled(&config, &[], "", &none, &[]);
     let mut previous = key();
     assert_eq!(previous, key(), "unchanged config files keep the key");
     // Every write changes the byte length, so coarse mtime granularity cannot hide it.
@@ -792,7 +805,7 @@ fn claude_local_memory_rules_agents_and_commands_edits_invalidate_a_warm_launch(
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
     let none = std::collections::BTreeSet::new();
-    let key = || key_with_disabled(&config, &[], "", &none);
+    let key = || key_with_disabled(&config, &[], "", &none, &[]);
     let mut previous = key();
     // Every write changes the byte length, so coarse mtime granularity cannot hide it.
     for name in ["CLAUDE.local.md", ".claude/rules/common/style.md", ".claude/agents/reviewer.md", ".claude/commands/check.md"] {
@@ -1004,7 +1017,7 @@ fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch
     crate::skill_manager::apply_instructions(&mut cold, &disabled);
     let spare = prepared(base.clone(), &disabled);
     assert!(spare.instructions.contains("Friendly skill"));
-    assert_eq!(key_with_disabled(&spare, &[], "", &disabled), key_with_disabled(&cold, &[], "", &disabled));
+    assert_eq!(key_with_disabled(&spare, &[], "", &disabled, &[]), key_with_disabled(&cold, &[], "", &disabled, &[]));
     // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
     assert_eq!(prepared(spare.clone(), &disabled).instructions, spare.instructions);
     let mut command = Command::new("claude");

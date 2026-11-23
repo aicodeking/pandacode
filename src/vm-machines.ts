@@ -23,6 +23,8 @@ export type Machine = {
 };
 export type CreateOption = { id: string; label: string; description: string; cloud: boolean };
 
+/** Cloud machines that end for good when stopped (an AgentCore session, a released Colab runtime): no Start. */
+const ONE_SHOT: ReadonlySet<string> = new Set(['agentcore', 'colab']);
 const osName = (os: string) => os === 'darwin' ? 'macOS' : os === 'windows' ? 'Windows' : 'Linux';
 const memory = (mb: number) => mb >= 1024 ? `${Math.round(mb / 1024)} GB` : `${mb} MB`;
 
@@ -35,7 +37,7 @@ export function machines(status: VmStatus | undefined, cloud: CloudMachine[]): M
   const remote = cloud.map((machine): Machine => ({
     key: machine.id, name: machine.name, os: machine.os, cloud: true, running: machine.state === 'running', live: machine.state === 'running' && machine.desktop,
     desktop: machine.desktop, detail: `${machine.detail} · ${machine.state[0].toUpperCase()}${machine.state.slice(1)}`, elsewhere: false,
-    canStart: machine.provider !== 'agentcore',
+    canStart: !ONE_SHOT.has(machine.provider),
   }));
   return [...local, ...remote];
 }
@@ -52,6 +54,7 @@ export function createOptions(status: VmStatus | undefined, connections: CloudCo
       { id: 'cloud:aws-windows', label: 'AWS Windows desktop', description: 'Windows Server on EC2 · about 10 min to set up', cloud: true },
       { id: 'cloud:agentcore', label: 'AWS AgentCore session', description: 'Commands only · ends after an hour', cloud: true },
     ] : []),
+    ...(on('colab') ? [{ id: 'cloud:colab', label: 'Google Colab runtime', description: 'Commands only · uses Colab compute units · released when stopped', cloud: true }] : []),
   ];
   return [...local, ...cloud];
 }

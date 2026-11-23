@@ -580,6 +580,9 @@ async fn delete_session_with_attachment_cleanup(
 ) -> Result<task_deletion::DeletedSessions> {
     // `task_deletion` forgets the tasks' per-conversation state for every deletion path.
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
+    for sid in &deleted.deleted_session_ids {
+        cloud::colab::activity::forget_session(sid);
+    }
     match app.path().app_data_dir() {
         Ok(data_dir) => {
             let sessions = deleted.deleted_session_ids.clone();
@@ -674,7 +677,7 @@ async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<(
         providers::end_lingering_in(&path).await;
         providers::quiesce_spares_in(&path).await?;
     }
-    let removed = {
+    let (removed, final_ids) = {
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let mut final_ids = project_removal_sessions(&agents, &store, project_id)?;
@@ -689,8 +692,12 @@ async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<(
             architect::coordination::forget(&final_ids);
             custom_tools::forget(&final_ids);
         }
-        removed
+        (removed, final_ids)
     };
+    if removed.is_ok() {
+        // Outside the store lock: frees the removed threads' Colab runtime claims (a file lock).
+        cloud::colab::activity::forget_sessions(&final_ids);
+    }
     skill_manager::projects_changed();
     removed
 }
@@ -2866,6 +2873,7 @@ fn list_app_tools() -> serde_json::Value {
     serde_json::json!(agent_tools::catalog()
         .into_iter()
         .chain(agent_tools::enabled_jev_catalog())
+        .chain(cloud::colab_tools::enabled_catalog())
         .map(|t| serde_json::json!({"name":t["name"],"description":t["description"]}))
         .collect::<Vec<_>>())
 }
@@ -4883,6 +4891,15 @@ pub fn run() {
                 cloud::commands::cloud_instabox_set_image,
                 cloud::commands::cloud_digitalocean_catalog,
                 cloud::commands::cloud_digitalocean_set_options,
+                cloud::commands::cloud_colab_sign_in_start,
+                cloud::commands::cloud_colab_sign_in_cancel,
+                cloud::commands::cloud_colab_sign_in_status,
+                cloud::commands::cloud_colab_config,
+                cloud::commands::cloud_colab_usage,
+                cloud::commands::cloud_colab_set_config,
+                cloud::commands::cloud_colab_install_cli,
+                cloud::commands::cloud_colab_thread_runtimes,
+                cloud::commands::cloud_colab_runtime_action,
                 cloud::commands::cloud_machines,
                 cloud::commands::cloud_create,
                 cloud::commands::cloud_power,
