@@ -6,12 +6,21 @@ use tauri::Manager;
 
 type Result<T> = std::result::Result<T, String>;
 
+fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+    app.path().app_data_dir().map_err(|e| e.to_string())
+}
+
 fn path(app: &tauri::AppHandle, name: &str) -> Result<PathBuf> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join(name))
+    Ok(data_dir(app)?.join(name))
 }
 
 pub(crate) fn exists(app: &tauri::AppHandle, name: &str) -> Result<bool> {
-    exists_at(path(app, name))
+    exists_in(data_dir(app), name)
+}
+
+/// Whether marker `name` is present in `dir`; an unavailable `dir` is an `Err`.
+pub(crate) fn exists_in(dir: Result<PathBuf>, name: &str) -> Result<bool> {
+    exists_at(dir.map(|dir| dir.join(name)))
 }
 
 pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<()> {

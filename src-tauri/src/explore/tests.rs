@@ -1082,7 +1082,7 @@ fn assert_lookups(repo: &Repo, path: &str, lookups: &[(&str, &str)]) -> Value {
 fn nested_cpp_namespaces_answer_outline_symbols_and_reads() {
     let repo = Repo::new();
     repo.write("a.cpp", "namespace a::b {\nvoid run() {}\n}\nnamespace a::inline b::c {\nint go() { return 1; }\n}\n");
-    let reply = assert_lookups(&repo, "a.cpp", &[("a::b", "namespace a::b {"), ("a::b::c", "namespace a::inline b::c {"), ("b::run", "void run() {}"), ("a::run", "void run() {}"), ("c::go", "int go() { return 1; }")]);
+    let reply = assert_lookups(&repo, "a.cpp", &[("a::b", "namespace a::b {"), ("a::b::c", "namespace a::inline b::c {"), ("b::run", "void run() {}"), ("a::b::run", "void run() {}"), ("c::go", "int go() { return 1; }"), ("a::b::c::go", "int go() { return 1; }")]);
     let outline = reply["outline"][0]["text"].as_str().unwrap();
     for entry in ["class a::b 1-3", "function run 2-2", "class a::b::c 4-6", "function go 5-5"] {
         assert!(outline.contains(entry), "{entry}: {outline}");
@@ -1174,7 +1174,7 @@ fn cpp_and_java_one_liners_with_trailing_comments_answer_outline_and_symbols() {
 fn ruby_nested_classes_and_modules_answer_outline_symbols_reads_and_hits() {
     let repo = Repo::new();
     repo.write("x.rb", "class Foo::Bar\n  def run\n    needle\n  end\nend\nmodule A::B::C\n  def self.go\n    needle\n  end\nend\n");
-    let reply = assert_lookups(&repo, "x.rb", &[("Foo::Bar", "class Foo::Bar"), ("A::B::C", "module A::B::C"), ("Bar.run", "def run"), ("Foo.run", "def run"), ("C.go", "def self.go"), ("A::go", "def self.go")]);
+    let reply = assert_lookups(&repo, "x.rb", &[("Foo::Bar", "class Foo::Bar"), ("A::B::C", "module A::B::C"), ("Bar.run", "def run"), ("Foo::Bar.run", "def run"), ("Foo::Bar#run", "def run"), ("C.go", "def self.go"), ("A::B::C.go", "def self.go")]);
     assert_eq!(reply["outline"][0]["text"], "class Foo::Bar 1-5\n  method run 2-4\nmodule A::B::C 6-10\n  method go 7-9\n");
     assert_eq!((&reply["read"][0]["from"], &reply["read"][0]["to"]), (&json!(1), &json!(5)), "{reply}");
     assert_eq!((&reply["read"][1]["from"], &reply["read"][1]["to"]), (&json!(6), &json!(10)), "{reply}");
@@ -1188,6 +1188,20 @@ fn ruby_nested_classes_and_modules_answer_outline_symbols_reads_and_hits() {
     let text = found["search"][0]["text"].as_str().unwrap();
     assert!(text.contains("@ Foo::Bar 1-3\n"), "{text}");
     assert!(text.contains("@ A::B::C 4-6\n"), "{text}");
+}
+
+#[test]
+fn an_outer_name_never_reaches_into_a_nested_container() {
+    let repo = Repo::new();
+    repo.write("x.rb", "class Foo\n  def run\n    :outer\n  end\nend\nclass Foo::Bar\n  def run\n    :inner\n  end\nend\n");
+    let lookups = [("Foo.run", 2), ("Foo#run", 2), ("Foo::Bar.run", 7), ("Foo::Bar#run", 7), ("Bar#run", 7)];
+    let reply = assert_lookups(&repo, "x.rb", &lookups.map(|(name, _)| (name, "def run")));
+    for (at, (name, line)) in lookups.into_iter().enumerate() {
+        assert!(reply["symbols"][at]["text"].as_str().unwrap().contains(&format!("{line}-{} method def run", line + 2)), "{name}: {reply}");
+        assert_eq!((&reply["read"][at]["from"], &reply["read"][at]["to"]), (&json!(line), &json!(line + 2)), "x.rb#{name}: {reply}");
+    }
+    repo.write("a.cpp", "namespace a {\nvoid run() { outer(); }\n}\nnamespace a::b {\nvoid run() { inner(); }\n}\n");
+    assert_lookups(&repo, "a.cpp", &[("a::run", "outer();"), ("a::b::run", "inner();"), ("b::run", "inner();")]);
 }
 
 #[test]

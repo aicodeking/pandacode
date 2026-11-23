@@ -1,8 +1,8 @@
 //! Whether a checkout is busy, and how worktree merge, removal and recreation quiesce it: which
 //! sessions (running, or exiting in the background) hold a checkout, the refusals that keep a
 //! worktree operation or a checks run from racing an agent, and the shared idle guard.
-use crate::storage::{Session, Store};
-use crate::{blocking, lock_agents, providers, skill_manager, workspace, worktree_paths, AppState, Result};
+use crate::storage::Store;
+use crate::{blocking, lock_agents, providers, worktree_paths, AppState, Result};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
@@ -245,36 +245,4 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
         providers::quiesce_spares_in(folder).await?;
     }
     refuse_busy().await
-}
-
-pub(crate) async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
-    const BUSY: &str = "Stop the agent before recreating its worktree.";
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
-        return Err(BUSY.into());
-    }
-    let (_, path, _) = worktree_paths(&state.store, &session_id)?;
-    // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
-    quiesce_worktree(
-        state,
-        &session_id,
-        BUSY,
-        || async {
-            if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id)
-                || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
-            {
-                return Err(BUSY.into());
-            }
-            Ok(())
-        },
-        Some(&path),
-    )
-    .await?;
-    let store = state.store.clone();
-    blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
-        workspace::recreate_worktree(&main, &path, branch.as_deref())?;
-        skill_manager::projects_changed();
-        store.lock().map_err(|e| e.to_string())?.session(&session_id)
-    })
-    .await
 }

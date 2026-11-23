@@ -7,16 +7,17 @@ Does giving an agent `pandacode_explore` shorten its loop without making its res
 - [Round 3 (batch C, run as batch D)](agent-loop-benchmark-history.md#round-3-batch-c-pre-registration) re-runs the comparison on the new engine with an optimized server. Batch D replaces C, which never ran; [its results](agent-loop-benchmark-history.md#batch-d-results-round-4-engine-optimized-server) follow the pre-registration.
 - [Round 1 (v1), corrected](agent-loop-benchmark-history.md#round-1-v1-corrected) replaces the earlier report of this benchmark.
 - [Batch E: pre-registration](#batch-e-pre-registration) was written before any E run; [its results](#batch-e-results-shipped-engine) follow its deviations, with the E2 extension and pooled E+E2 as secondary.
-- [Batch F: pre-registration](#batch-f-pre-registration) measures the engine after round 15 (stop rule, edit rule, smaller replies, glob fixes), with a new edit task set. F never ran; [Batch Fv2](#batch-fv2-pre-registration) superseded it, and [its results](#batch-fv2-results) follow its deviations.
+- [Batch F: pre-registration](#batch-f-pre-registration) measures the engine with its stop rule, edit rule, smaller replies and glob fixes, with a new edit task set. F never ran; [Batch Fv2](#batch-fv2-pre-registration) superseded it, and [its results](#batch-fv2-results) follow its deviations.
 - [Batch R1 (pilot)](#batch-r1-pilot-pre-registration) is a descriptive pilot of agent-made tools; [its results](#batch-r1-results-descriptive) follow its deviation.
 - Deviations from now on sit between `<!-- deviation:<batch>-<n> -->` markers, and each is appended to `scripts/agent-bench/results/preregistrations.jsonl` with its sha256 and time as soon as it is written (`run.mjs --register <batch>-<n> --marker deviation:<batch>-<n>`).
 - **How much the timing evidence is worth.** Registrations are local: `preregistrations.jsonl` is hash-chained (each entry holds the sha256 of the one before it) and timestamped by this machine's clock only. Nothing anchors them in git or any outside service, so the chain shows that no entry was edited after the next one was written, not when an entry was written.
-- Sections marked **POST-HOC** were written after the results they discuss were known (round 17: [Fv2 post-hoc](#post-hoc-round-17-gate-calibration-edit-failures-and-relabelling), deviation Fv2-2). They never change a registered verdict.
+- Sections marked **POST-HOC** were written after the results they discuss were known (for example [Fv2 post-hoc](#post-hoc-gate-calibration-edit-failures-and-relabelling), deviation Fv2-2). They never change a registered verdict.
 
 > **What is measured**
 >
-> - **Engine.** The newest measured engine is batch Fv2's snapshot `bin-f` (binary `34c3de07`, sources `e92e0a7e`, deviation Fv2-1), built on 2026-11-07 from the round 16 tree. Engine changes after that are unmeasured.
->   - *Replay check, 2026-11-11 (no model calls):* `replay.mjs --runs v2/runs/Fv2` replayed Fv2's 164 recorded AFTER explore calls through `bin-f` and then through a debug test binary of the round 17 tree. Reply bytes went from 605,623 to 605,784 (+161 B, +0.03%), with 0 errors and no gold lost (earned gold 180/180 in both). Call times are not comparable, because the binary profiles differ.
+> - **Engine.** The newest measured engine is batch Fv2's snapshot `bin-f` (binary `34c3de07`, sources `e92e0a7e`, deviation Fv2-1), built on 2026-11-07. Engine changes after that are unmeasured.
+>   - *Replay check, 2026-11-11 (no model calls):* `replay.mjs --runs v2/runs/Fv2` replayed Fv2's 164 recorded AFTER explore calls through `bin-f` and then through a debug test binary of the post-Fv2 tree. Reply bytes went from 605,623 to 605,784 (+161 B, +0.03%), with 0 errors and no gold lost (earned gold 180/180 in both). Call times are not comparable, because the binary profiles differ.
+>   - *Replay check, 2026-11-23 (no model calls):* `replay.mjs --runs v2/runs/Fv2 --compare r23-Fv2-binf.json` replayed the same 164 recorded AFTER explore calls through a debug test binary of the current `explore` engine against the saved `bin-f` replay. Reply bytes went from 605,623 to 605,568 (-55 B, -0.01%), with 0 errors, no gold lost (`earned` 180/180 in both), and 10/23 empty-glob searches answered outside the glob. Call times are not comparable, because the binary profiles differ.
 > - **Agent.** Sonnet (`claude-sonnet-5-5`) in Claude Code 2.1.317 (`claude -p`), and nothing else. Other models and harnesses that get the tool (GLM and MiMo through Claude Code, Codex, OpenCode, Pi, Grok and more) are not tested, so explore is on by default only in Claude Code; the rest opt in (`explore::on_by_default`).
 > - **Baseline.** BEFORE is Claude Code with no extra tool. This harness has no Grep or Glob tools (they aren't in `init.tools`), so BEFORE searches with Bash (`rg`, `grep`, `find`) and Read. A harness with good built-in search tools could gain less.
 > - **Tasks.** 20 localization tasks (13 PandaCode, 6 Outline, 1 VS Code), 6 PandaCode edit tasks and, from Fv2, 14 edit tasks v2 (8 Hono, 6 PandaCode). The engine was tuned between batches on these same 20 tasks, so their results can flatter it. 8 held-out tasks (`tasks-heldout.json`, 4 from Hono) exist from batch E onward and are reported apart.
@@ -26,7 +27,7 @@ Does giving an agent `pandacode_explore` shorten its loop without making its res
 
 ## Bottom line (latest: batch Fv2)
 
-Batch Fv2 measured `bin-f` (the round 16 engine and `LOOK`) on seeds 11 and 12 in Claude Code 2.1.317 with Sonnet, with no budget caps. Everything registered ran: 240 runs, none stopped or excluded. It is judged on Fv2 alone, as registered. Batch E's bottom line follows below.
+Batch Fv2 measured `bin-f` (the engine and `LOOK` text it was built from) on seeds 11 and 12 in Claude Code 2.1.317 with Sonnet, with no budget caps. Everything registered ran: 240 runs, none stopped or excluded. It is judged on Fv2 alone, as registered. Batch E's bottom line follows below.
 
 - **Steps: lower.** On the 20 tuned localization tasks AFTER took **12% fewer steps** (4.92 → 4.20, CI -19% to -5%, Wilcoxon p = 0.003, Holm p = 0.005; 12 tasks better, 1 worse).
 - **Cost: not shown to be lower.** -3% ($0.173 → $0.163, CI -8% to +1%, Holm p = 0.017). The p clears 0.05 but the CI reaches zero, so by the registered rule it is not shown.
@@ -36,7 +37,7 @@ Batch Fv2 measured `bin-f` (the round 16 engine and `LOOK`) on seeds 11 and 12 i
 - **AFTER-E (E's `LOOK` on the same engine; descriptive).** The new text against E's: edit steps -5% (CI -16% to +5%) on the 6 edits and +2% (CI -5% to +9%) on edit2; passes 9/12 → 12/12 and 27/28 → 27/28. Nothing separates the two texts.
 - **Held-out (descriptive):** steps -21% (CI -33% to -10%, Wilcoxon p = 0.016, 7 better, 0 worse); recall and precision both clear the -0.05 margin (precision 0.703 → 0.702, CI -0.041 to +0.034), unlike E.
 - **Long context** (8 of 8 valid, 1 seed): steps -23%, cost -22%; every p ≥ 0.125, so none is shown.
-- **Reading the failed gates (POST-HOC, round 17).** A simulation from BEFORE's own runs in E, E2 and Fv2 (deviation Fv2-2) shows that with Fv2's design tuned precision passes only 70% of batches with no effect at all, and the edit-steps test 11%. So the precision and edit-steps failures are what a tool with no effect would often produce: they are "not shown", never evidence of harm. Both gates also pass 0% of batches with a true loss of 0.10 (10% more steps), so their passes elsewhere do rule such a loss out. Details under [the post-hoc section](#post-hoc-round-17-gate-calibration-edit-failures-and-relabelling).
+- **Reading the failed gates (POST-HOC).** A simulation from BEFORE's own runs in E, E2 and Fv2 (deviation Fv2-2) shows that with Fv2's design tuned precision passes only 70% of batches with no effect at all, and the edit-steps test 11%. So the precision and edit-steps failures are what a tool with no effect would often produce: they are "not shown", never evidence of harm. Both gates also pass 0% of batches with a true loss of 0.10 (10% more steps), so their passes elsewhere do rule such a loss out. Details under [the post-hoc section](#post-hoc-gate-calibration-edit-failures-and-relabelling).
 - **Edit failures:** all 9 failed Fv2 edit runs are agent failures; none was a build or infrastructure failure (POST-HOC classification, Fv2-2).
 - **R1 (agent-made tools pilot, descriptive):** in 12 runs no agent saved or ran a tool, so reuse was never tested; details under [Batch R1 results](#batch-r1-results-descriptive).
 
@@ -51,7 +52,7 @@ Batch E measured the shipped engine (`bin-e`) on seeds 7 and 8, with no budget c
 - **Precision fails outside E's tuned gate.**
   - **E2's tuned precision fails** (0.543 → 0.535, CI -0.055 to +0.040: the lower bound is 0.005 past the margin), so D's precision loss did not go away; E's pass was not replicated. Pooled E+E2 tuned precision passes (CI -0.036 to +0.041).
   - **Held-out precision fails** in E (0.764 → 0.672, CI -0.222 to +0.008), in E2 (0.765 → 0.718, CI -0.133 to +0.033) and pooled (0.764 → 0.695, CI -0.166 to +0.002). These gates are descriptive, but they point the same way: on tasks it was never tuned on, AFTER names extra files.
-- **Edits: steps and output not shown to be higher.** E: steps 6.08 → 7.08 (+20%, CI +5% to +39%), output tokens +28% (CI +11% to +45%), cost +7%. Pooled E+E2: steps +18% (CI -3% to +40%), output tokens +20% (CI +5% to +32%). No edit p-value reaches 0.05 (E steps: 2 tasks tied, leaving 4, so the smallest possible p is 0.125), so by the registered rule none is read as a change. Every point estimate is an increase, which is why Fv2 tested edit steps directly. (Wording corrected in round 17, deviation Fv2-2: it read "more steps and more output", which the rule does not allow for results that are not significant.)
+- **Edits: steps and output not shown to be higher.** E: steps 6.08 → 7.08 (+20%, CI +5% to +39%), output tokens +28% (CI +11% to +45%), cost +7%. Pooled E+E2: steps +18% (CI -3% to +40%), output tokens +20% (CI +5% to +32%). No edit p-value reaches 0.05 (E steps: 2 tasks tied, leaving 4, so the smallest possible p is 0.125), so by the registered rule none is read as a change. Every point estimate is an increase, which is why Fv2 tested edit steps directly. (Wording corrected post-hoc, deviation Fv2-2: it read "more steps and more output", which the rule does not allow for results that are not significant.)
 - **Long context:** 8 of 8 ran; steps 4.0 → 3.5 and duration -31%, all CIs span zero (1 seed).
 
 ## Round 2: pre-registration
@@ -235,7 +236,7 @@ The ledger already holds $78.16, so E needs `--total-budget-usd 120`: $78 spent,
 
 ### Batch E deviations
 
-1. **Engine notes, recorded before any E run.** Since the pre-registration was written, the engine changed in two ways that council round 4 had proposed. None changes a gate, arm, task or metric, because E measures whatever engine ships, and its snapshot hash records which one that is.
+1. **Engine notes, recorded before any E run.** Since the pre-registration was written, the engine changed in two ways. None changes a gate, arm, task or metric, because E measures whatever engine ships, and its snapshot hash records which one that is.
    - **I1 is in the shipped engine.** `outside_glob` now lists hits outside the glob only when nothing matched inside it. It still reports the counts.
    - **I2 was reverted.** `tests_for` is not capped at 2 candidates per path.
 2. **Checkouts moved out of `~/Library`.** The shipped engine refuses project roots under `~/Library`, `~/.config`, `~/.local` and `~/AppData`. So every tree a run, the sanity check, the smoke probe or `replay.mjs` makes is now created under the system temporary folder (`WORK_ROOT` in `lib.mjs`, overridable with `PANDACODE_BENCH_WORK`). `assertExplorable` refuses to start if a tree would land under a refused folder. Recorded data stays in `~/Library/Caches/pandacode-bench`. Only the location of the checkout changes; its contents do not. After the move, the replay against `r6b.json` reported 0 errors and no gold lost.
@@ -576,7 +577,7 @@ The largest step savings were `loc-team-stop` (7.0 → 4.0), `loc-opencode-effor
 | 14 edit2 | Output tokens | 2,114 | 2,009 | -0% | -13% to +14% | 0.194 | 9 / 5 |
 | 14 edit2 | Cost $ | 0.127 | 0.121 | -3% | -11% to +5% | 0.153 | 9 / 5 |
 
-(Round 17, Fv2-2: an earlier version of this table had a Holm p column. Holm belongs to the tuned localization pair only, so it was dropped here; no other number changed.)
+(Post-hoc, deviation Fv2-2: an earlier version of this table had a Holm p column. Holm belongs to the tuned localization pair only, so it was dropped here; no other number changed.)
 
 On the 6 edits one task tied on steps, leaving 5, so the smallest two-sided p was 0.0625; no edit p-value reaches 0.05 and none is read as a change. Edit2 wall time fell 16% (CI -37% to +6%), within noise.
 
@@ -607,15 +608,17 @@ BEFORE → AFTER-E: 6 edits steps +11% (CI -7% to +28%, p = 0.44), cost +4% (CI 
 | Recall | 0.880 | 0.885 | +0.005 | -0.031 to +0.047 | – | descriptive (CI clears -0.05) |
 | Precision | 0.703 | 0.702 | -0.001 | -0.041 to +0.034 | – | descriptive (CI clears -0.05) |
 
-7 tasks took fewer steps and none more. Held-out precision, which failed its margin in E, E2 and pooled, clears it here. (Round 18: every held-out read is "descriptive", as the section title says; the table used to say "lower" and "gate: pass". No number changed.) (Round 17, Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
+7 tasks took fewer steps and none more. Held-out precision, which failed its margin in E, E2 and pooled, clears it here. (Post-hoc correction: every held-out read is "descriptive", as the section title says; the table used to say "lower" and "gate: pass". No number changed.) (Post-hoc, deviation Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
 
 ### Long context (8 of 8 valid, 4 tasks × 1 seed; descriptive)
 
 Steps 4.75 → 3.50 (-23%, CI -37% to -8%, Wilcoxon p = 0.25), cost after the filler turn $0.16 → $0.12 (-22%, CI -30% to -15%, p = 0.125), duration -30%, output tokens -19%. Recall: `loc-cloud-credentials` 0.67 → 1.00, `loc-model-picker-errors` 0.50 → 1.00, the other two equal. With 4 tasks the smallest possible p is 0.125, so nothing is shown.
 
-### POST-HOC (round 17): gate calibration, edit failures and relabelling
+<a id="post-hoc-round-17-gate-calibration-edit-failures-and-relabelling"></a>
 
-**POST-HOC: written on 2026-11-07, after Fv2's results were known (council round 14), as deviation Fv2-2.** Nothing here changes a registered verdict: precision and edit steps still fail as registered.
+### POST-HOC: gate calibration, edit failures and relabelling
+
+**POST-HOC: written on 2026-11-07, after Fv2's results were known, as deviation Fv2-2.** Nothing here changes a registered verdict: precision and edit steps still fail as registered.
 
 **Gate calibration.** `run.mjs --simulate` (it replaces the old `_pow.mjs`; summary `scripts/agent-bench/results/v6-Fv2-gate-calibration.json`) simulates each Fv2 gate with Fv2's design (2 seeds per arm, the registered margins, the gates' own bootstrap at 2000 rounds) from BEFORE's own runs in E, E2 and Fv2 (tuned localization: 120 runs; 6 edits: 36; edit2: Fv2 only, 28; edit steps: 64). Recall and precision resample each task's runs; pass rates are Bernoulli at each task's shrunk rate (passes + 0.5) / (runs + 1), and the observed rates are shown beside them; edit steps use each task's mean times per-run noise, as the registration's own power note did. 1000 simulated batches per cell (400 for edit steps).
 
@@ -630,7 +633,7 @@ Steps 4.75 → 3.50 (-23%, CI -37% to -8%, Wilcoxon p = 0.25), cost after the fi
 **Reading rule for Fv2's failures.** A gate that a no-effect tool passes less than about 80% of the time cannot tell "no effect" from "harm" by failing. So:
 - **Tuned precision** fails 30% of no-effect batches. Its failure (CI −0.066 to +0.040) is read as "not shown non-inferior", consistent with no effect, not as evidence of a loss. It would almost never pass with a true loss of 0.10.
 - **Edit steps** passes only 11% of no-effect batches; it is built to pass only when edits got shorter. Its failure (+2%, CI −10% to +14%) says nothing beyond "not shown to be no longer".
-- **The edit pass gates** are weaker still (0.26 and 0.10 with shrinkage; edit2's 13 of 14 tasks never failed, so with observed rates it passes 0.68). Their passes in Fv2 are weak evidence: a gate that passes 26% (6 edits) or 10% (edit2) of no-effect batches, and 9% and 1% with a true loss of 0.10, says little either way. (Round 18: this line used to call the 6-edit pass "real evidence against a large loss".) Failures in a later batch would mostly be noise.
+- **The edit pass gates** are weaker still (0.26 and 0.10 with shrinkage; edit2's 13 of 14 tasks never failed, so with observed rates it passes 0.68). Their passes in Fv2 are weak evidence: a gate that passes 26% (6 edits) or 10% (edit2) of no-effect batches, and 9% and 1% with a true loss of 0.10, says little either way. (Post-hoc correction: this line used to call the 6-edit pass "real evidence against a large loss".) Failures in a later batch would mostly be noise.
 - A later batch should size its gates from this simulation before it registers, as S1v3 did.
 
 **Edit failures: build or infrastructure, or agent.** All 9 failed runs (from each run's `run.json` grade and transcript) exited 0 with a `success` result, no timeout and no harness error:

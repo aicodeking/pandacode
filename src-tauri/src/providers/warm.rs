@@ -5,7 +5,6 @@
 use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
 use std::sync::LazyLock;
-use tauri::Manager;
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -18,12 +17,12 @@ const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
 
 /// Unreadable settings fail closed: no idle CLI or ahead-of-turn SessionStart hooks.
 pub fn enabled(app: &tauri::AppHandle) -> bool {
-    enabled_in(app.path().app_data_dir().map_err(|error| error.to_string()))
+    crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).is_ok_and(|present| !present)
 }
 
+#[cfg(test)]
 fn enabled_in(dir: Result<PathBuf, String>) -> bool {
-    dir.and_then(|dir| dir.join(WARM_SPARES_OFF_FILE).try_exists().map_err(|error| error.to_string()))
-        .is_ok_and(|present| !present)
+    crate::app_marker::exists_in(dir, WARM_SPARES_OFF_FILE).is_ok_and(|present| !present)
 }
 
 #[cfg(test)]

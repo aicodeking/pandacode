@@ -30,6 +30,9 @@ pub(super) struct Symbol {
 pub(super) const SUPPORTED: &str = "Rust, TypeScript/JavaScript, Python, Go, Java, Kotlin, Swift, C/C++, Ruby, PHP and shell";
 /// A rule whose line must be confirmed by a later `) {`, then named `method`.
 const OPEN_METHOD: &str = "method-open";
+/// A TS/JS rule whose `(…)` must close on its line before a return type and body (checked by
+/// `script_method_signature`), then named `method`.
+const SCRIPT_METHOD: &str = "method-script";
 
 const MODS_TS: &str = r"(?:(?:public|private|protected|static|async|readonly|override|abstract|declare|get|set)\s+)*";
 const MODS_JAVA: &str = r"(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp|sealed|non-sealed)\s+)*";
@@ -48,11 +51,31 @@ macro_rules! trailing_comments {
 const PARAMS_THEN_BODY: &str = concat!(r"\((?:[^;]*|[^;{]*\)[^;{]*\{.*\}\s*;?\s*", trailing_comments!(), r")$");
 /// After a signature: a brace ending the line, or a whole one-line body.
 const OPEN_OR_BODY: &str = concat!(r"\{(?:\s*|.*\}\s*;?\s*)", trailing_comments!(), "$");
+/// A whole inline object type, `{ id: string }`, with no nested braces.
+macro_rules! ts_object_type {
+    () => {
+        r"\{[^{}]*\}"
+    };
+}
+/// One piece of a TS return type: any character but `{` or `;`, or a whole object type.
+macro_rules! ts_return_piece {
+    () => {
+        concat!(r"(?:[^{;]|", ts_object_type!(), ")")
+    };
+}
+/// The last piece of a TS return type: a character that cannot continue a type (not `&`, `|`,
+/// `=`, `(`, `<`, `,`, `?`, `:` or a lone `>` as in `=>`), a whole object type, or a generic's
+/// closing `>` after one of those (`Promise<void>`, `Map<K, { v: V }>`).
+macro_rules! ts_return_end {
+    () => {
+        concat!(r"(?:[^{;\s&|=(<,?:>]|", ts_object_type!(), r"|(?:[^{;\s=]|", ts_object_type!(), ")>)")
+    };
+}
 /// TS return type before a method's `{`: whole `{ … }` object types may sit inside it, but no
 /// `;`, and it never ends in `&`, `|`, `=>`, `=`, `(`, `<`, `,`, `?` or `:`, so the object type
 /// closing a declaration (`render(): Props & { id: string };`, `count(): { n: number };`) is no
 /// body, while `shape(): Props & { id: string } { … }` keeps its own.
-const TS_RETURN: &str = r"(?::\s*(?:[^{;]|\{[^{}]*\})*?(?:[^{;\s&|=(<,?:>]|\{[^{}]*\}|(?:[^{;\s=]|\{[^{}]*\})>)\s*)?";
+const TS_RETURN: &str = concat!(r"(?::\s*", ts_return_piece!(), "*?", ts_return_end!(), r"\s*)?");
 /// Attributes on the same line, then visibility.
 const RUST_LEAD: &str = r"^\s*(?:#!?\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?";
 
@@ -103,7 +126,7 @@ fn script_rules() -> Rules {
         r("namespace", r"^\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+(\w+)".into()),
         r("function", r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:function\b|(?:<[^>]*>\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>|\(\s*$)".into()),
         r("const", r"^(?:export\s+)?(?:const|let|var)\s+(\w+)".into()),
-        r("method", format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(.*\)\s*{TS_RETURN}{OPEN_OR_BODY}")),
+        r(SCRIPT_METHOD, format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(.*\)\s*{TS_RETURN}{OPEN_OR_BODY}")),
         r("method", r"^\s+(\w+)\s*:\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|\w+)\s*=>)".into()),
         r("method", format!(r"^\s+{MODS_TS}#?(\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>")),
         r(OPEN_METHOD, format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(\s*$")),
@@ -379,7 +402,7 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
             return Some(("function", name.to_owned(), qualifier));
         }
     }
-    let guessed = matches!((language, *kind), (Language::Script | Language::Java, "method" | OPEN_METHOD) | (Language::CFamily, "function" | "method"));
+    let guessed = matches!((language, *kind), (Language::Script | Language::Java, "method" | OPEN_METHOD | SCRIPT_METHOD) | (Language::CFamily, "function" | "method"));
     if guessed && (NOT_NAMES.contains(&name) || first_word_blocks(line)) {
         return None;
     }
@@ -388,6 +411,10 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     }
     if *kind == OPEN_METHOD {
         return closes_as_method(lines, index).then(|| ("method", name.to_owned(), qualifier));
+    }
+    if *kind == SCRIPT_METHOD {
+        let name_end = captures.get(1)?.end();
+        return script_method_signature(line, name_end).then(|| ("method", name.to_owned(), qualifier));
     }
     // `namespace a::b`, Ruby `class Foo::Bar` / `module A::B::C`: the enclosing path qualifies
     // the last name, so `path#Foo::Bar` (qualifier `Foo`, name `Bar`) and `path#Bar` both find it.
@@ -434,6 +461,54 @@ fn without_template_args(qualifier: &str) -> String {
 /// spread over lines ends in `);`.
 fn closes_as_method(lines: &[&str], index: usize) -> bool {
     lines[index + 1..].iter().take(SIGNATURE_LINES).find(|line| line.trim_start().starts_with(')')).is_some_and(|line| line.trim_end().ends_with('{'))
+}
+
+/// `run(x = f(1), s = ")"): T { … }`: the parameter list after the name (and any `<T>`) closes
+/// on this line, so neither a call taking a callback (`it("works", function () {`) nor a
+/// declaration with a commented `{ }` (`size(): number; // f() { }`) passes for a method.
+fn script_method_signature(line: &str, name_end: usize) -> bool {
+    static AFTER_PARAMS: OnceLock<Regex> = OnceLock::new();
+    let after_params = AFTER_PARAMS.get_or_init(|| Regex::new(&format!(r"^\s*{TS_RETURN}{OPEN_OR_BODY}")).expect("script method rule compiles"));
+    let skip_space = |at: usize| at + (line[at..].len() - line[at..].trim_start().len());
+    let mut at = skip_space(name_end);
+    if line[at..].starts_with('<') {
+        let Some(close) = line[at..].find('>') else { return false };
+        at = skip_space(at + close + 1);
+    }
+    line[at..].starts_with('(') && closing_paren(line, at).is_some_and(|close| after_params.is_match(&line[close + 1..]))
+}
+
+/// The `)` matching the `(` at `open`, skipping `'…'`, `"…"` and `` `…` `` with `\` escapes;
+/// `None` if the line ends or a `;` outside `{ … }` inline object types comes first.
+fn closing_paren(line: &str, open: usize) -> Option<usize> {
+    let (mut depth, mut braces, mut quote, mut escaped) = (0usize, 0usize, None, false);
+    for (at, byte) in line.bytes().enumerate().skip(open) {
+        if let Some(open_quote) = quote {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == open_quote {
+                quote = None;
+            }
+            continue;
+        }
+        match byte {
+            b'\'' | b'"' | b'`' => quote = Some(byte),
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            b';' if braces == 0 => return None,
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Members of `type (`, `const (` and `var (` groups, which the column-0 rules cannot see.
@@ -689,11 +764,12 @@ fn has_word(text: &str, word: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric() && c != '_').any(|part| part == word)
 }
 
-/// Whether definitions inside `outer` count as qualified by `qualifier`: its name, or for a
-/// container such as `namespace a::b` or Ruby `module A::B` (name `b`, qualifier `a`) its
-/// enclosing path too.
+/// Whether definitions inside `outer` count as qualified by `qualifier`: its own name only. The
+/// enclosing path of `namespace a::b` or Ruby `class Foo::Bar` does not scope their members, so
+/// `a::run` and `Foo.run` never reach into them; `a::b::run` and `Foo::Bar#run` still do, through
+/// the last qualifier (`b`, `Bar`).
 fn scopes(outer: &Symbol, qualifier: &str) -> bool {
-    has_word(&outer.name, qualifier) || (matches!(outer.kind, "class" | "module") && outer.qualifier.as_deref().is_some_and(|path| has_word(path, qualifier)))
+    has_word(&outer.name, qualifier)
 }
 
 /// Whether `symbol` has a receiver or sits inside a definition holding `qualifier` as a whole word

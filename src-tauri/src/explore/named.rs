@@ -253,12 +253,17 @@ fn parse_read<'a>(raw: &'a str, whole_file: impl Fn(&str) -> bool) -> Result<(&'
         }
         return Ok((&raw[..at], span));
     }
-    if let Some((path, symbol)) = raw.rsplit_once('#') {
-        if !symbol.is_empty() && !symbol.contains('/') {
-            return Ok((path, Span::Symbol(symbol)));
-        }
-    }
-    Ok((raw, Span::Whole))
+    Ok(symbol_split(raw, whole_file).map_or((raw, Span::Whole), |at| (&raw[..at], Span::Symbol(&raw[at + 1..]))))
+}
+
+/// The `#` ending the path in `path#symbol`. Only a `#` after the last `/` or `\` counts, so
+/// Ruby's `app/foo.rb#Foo#bar` reads `bar` in `Foo` and `dir#1/foo.rb#run` keeps its folder.
+/// The first such `#` whose prefix is a file wins (`a#1.rb#Foo#bar`); failing that, the first.
+fn symbol_split(raw: &str, whole_file: impl Fn(&str) -> bool) -> Option<usize> {
+    let tail = raw.rfind(['/', '\\']).map_or(0, |at| at + 1);
+    let mut hashes = raw[tail..].match_indices('#').map(|(at, _)| tail + at).filter(|&at| at + 1 < raw.len());
+    let first = hashes.next()?;
+    std::iter::once(first).chain(hashes).find(|&at| whole_file(&raw[..at])).or(Some(first))
 }
 
 /// `run()`, `run(_:)`, `Foo::run`, `Foo.run`, `Foo#run`: the name and its last qualifier.
@@ -451,6 +456,26 @@ mod tests {
             assert!(parse_read(raw, |_| false).is_err(), "{raw}");
         }
         assert_eq!(parse_read("a.rs:3", |raw| raw == "a.rs:3").unwrap(), ("a.rs:3", Span::Whole), "a file with that very name wins");
+    }
+
+    #[test]
+    fn ruby_instance_method_reads_split_at_the_first_hash_of_the_file_name() {
+        for (raw, path, symbol) in [
+            ("app/foo.rb#Foo#bar", "app/foo.rb", "Foo#bar"),
+            ("foo.rb#Foo#bar", "foo.rb", "Foo#bar"),
+            ("dir#1/foo.rb#Foo#bar", "dir#1/foo.rb", "Foo#bar"),
+            ("dir\\foo.rb#Foo#bar", "dir\\foo.rb", "Foo#bar"),
+            ("dir/a#1.rb#Foo#bar", "dir/a", "1.rb#Foo#bar"),
+        ] {
+            assert_eq!(parse_read(raw, |_| false).unwrap(), (path, Span::Symbol(symbol)), "{raw}");
+        }
+        let exists = |raw: &str| matches!(raw, "dir/a#1.rb" | "app/foo.rb");
+        assert_eq!(parse_read("dir/a#1.rb#Foo#bar", exists).unwrap(), ("dir/a#1.rb", Span::Symbol("Foo#bar")), "a file with # in its name wins");
+        assert_eq!(parse_read("dir/a#1.rb", exists).unwrap(), ("dir/a#1.rb", Span::Whole));
+        assert_eq!(parse_read("app/foo.rb#Foo#bar", exists).unwrap(), ("app/foo.rb", Span::Symbol("Foo#bar")));
+        for raw in ["dir#1/foo.rb", "a.rb#", "dir/#"] {
+            assert_eq!(parse_read(raw, |_| false).unwrap(), (raw, Span::Whole), "{raw}");
+        }
     }
 
     #[test]

@@ -165,7 +165,7 @@ Arm order and run order come from batch C's own recorded seed. If the budget all
 
   Resume, once free space is above 6 GiB, with `node scripts/agent-bench/run.mjs --batch C --snapshot bin-c --set loc,edit --arm before,after --seeds 5,6 --total-budget-usd 80`, then `--batch C --snapshot bin-c --set long --total-budget-usd 80`.
 
-4. **Batch D replaces batch C, which never ran.** The architect held C at about 16:40 EST because council round 2 found engine changes (secret rules, hit trimming, a lexer case, an unbounded `ambiguous` list, and the bench server's argument path, which now calls `run_checked` like the app). Round 4 changed hit ranking, the budget, secret rules and the lexer again; replay bytes are -4.7% against round 3 with no gold lost.
+4. **Batch D replaces batch C, which never ran.** The engine changed before C could run: secret rules, hit trimming, a lexer case, a bounded `ambiguous` list, and the bench server's argument path, which now calls `run_checked` like the app. Hit ranking, the budget, secret rules and the lexer then changed again; replay bytes are -4.7% against round 3 with no gold lost.
    - Batch D runs on a new optimized snapshot, `bin-d` (`fast-release`, built from the round 4 tree), under **this pre-registration unchanged**. Everything said above about C applies to D.
    - `bin-c` was never used for a measured run; its BEFORE/AFTER smoke runs are kept separate in `runs/smoke-bin-c`.
    - The RAM disk used for `bin-c` couldn't be made this time (the DiskManagement framework was unavailable), so `bin-d` was built in this benchmark's own directory and its build was deleted afterwards. That was done while 23 GiB were free.

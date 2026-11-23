@@ -701,13 +701,14 @@ fn nested_cpp_namespaces_are_found_by_their_qualified_names() {
     assert_eq!(lookup(&found, None, "b"), [b]);
     assert_eq!(lookup(&found, Some("b"), "c"), [c]);
     assert!(lookup(&found, Some("x"), "b").is_empty());
-    // What a nested namespace holds is qualified by every part of its path.
+    // What a nested namespace holds is qualified by its own name, never its enclosing path.
     let run = found.iter().find(|symbol| symbol.name == "run" && symbol.line == 2).unwrap();
-    assert_eq!(lookup(&found, Some("a"), "run"), [run]);
     assert_eq!(lookup(&found, Some("b"), "run"), [run]);
+    assert!(lookup(&found, Some("a"), "run").is_empty());
     assert_eq!(lookup(&found, Some("x"), "run").len(), 1);
     assert_eq!(lookup(&found, Some("c"), "go").len(), 1);
-    assert_eq!(lookup(&found, Some("a"), "go").len(), 1);
+    assert!(lookup(&found, Some("a"), "go").is_empty());
+    assert!(lookup(&found, Some("b"), "go").is_empty());
 }
 
 #[test]
@@ -868,10 +869,37 @@ fn ruby_nested_classes_and_modules_are_found_by_their_paths() {
     assert!(lookup(&found, Some("Bar"), "C").is_empty());
     let run = found.iter().find(|symbol| symbol.name == "run").unwrap();
     assert_eq!(lookup(&found, Some("Bar"), "run"), [run]);
-    assert_eq!(lookup(&found, Some("Foo"), "run"), [run]);
+    assert!(lookup(&found, Some("Foo"), "run").is_empty(), "Foo.run means a method of Foo, not of Foo::Bar");
     let go = found.iter().find(|symbol| symbol.name == "go").unwrap();
-    for qualifier in ["A", "B", "C"] {
-        assert_eq!(lookup(&found, Some(qualifier), "go"), [go], "{qualifier}");
+    assert_eq!(lookup(&found, Some("C"), "go"), [go]);
+    for qualifier in ["A", "B", "Foo"] {
+        assert!(lookup(&found, Some(qualifier), "go").is_empty(), "{qualifier}");
     }
-    assert!(lookup(&found, Some("Foo"), "go").is_empty());
+}
+
+#[test]
+fn script_calls_with_callbacks_and_commented_declarations_are_not_methods() {
+    for line in [
+        "size(): number; // calls f() { }",
+        "it(\"works\", function () {",
+        "setTimeout(function () {",
+        "test(\"a\", async function () {",
+        "foo(\")\", function () {",
+        "describe('a', () => { it('b', () => {}) })",
+        "run(`)`, function () {",
+    ] {
+        let text = format!("class C {{\n  m() {{\n    {line}\n  }}\n}}\ninterface I {{\n  {line}\n}}\n");
+        let found = names("a.ts", &text);
+        let methods: Vec<_> = found.iter().filter(|s| s.1 == "method").map(|s| s.0.as_str()).collect();
+        assert_eq!(methods, ["m"], "{line}: {found:?}");
+    }
+}
+
+#[test]
+fn script_methods_with_nested_parens_and_quoted_defaults_are_still_methods() {
+    let text = "class C {\n  run(x = foo(1), cb = () => 2): number { return x; }\n  shape(): Props & { id: string } { return s; }\n  get items(): string[] { return []; }\n  open(s = \")\", t = '(', u = `)`) {\n    return s;\n  }\n  pick<T>(opts = {}): T { return opts as T; }\n  *gen(a = [1, (2)]) { yield a; }\n  esc(s = \"\\\")\") { return s; }\n  apply(opts: { a: number; b: string }): void { return; }\n  join(sep = `;`) { return sep; }\n}\n";
+    let found = names("a.ts", text);
+    for (name, line, end) in [("run", 2, 2), ("shape", 3, 3), ("items", 4, 4), ("open", 5, 7), ("pick", 8, 8), ("gen", 9, 9), ("esc", 10, 10), ("apply", 11, 11), ("join", 12, 12)] {
+        has(&found, name, "method", line, end);
+    }
 }
