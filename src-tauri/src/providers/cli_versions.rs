@@ -629,9 +629,14 @@ fn probe_limited<T: Sync>(items: &[T], limit: usize, probe: impl Fn(&T) -> Optio
 }
 
 /// What `path --version` printed (first `VERSION_CHARS` characters); None when it failed,
-/// printed nothing or ran past `timeout`.
-fn version(path: &Path, timeout: Duration) -> Option<String> {
-    capture(launch::std_command(path).ok()?, &["--version"], timeout)
+/// printed nothing or ran past `timeout`. The Antigravity `agy` CLI is told not to update itself
+/// while it answers.
+pub(super) fn version(path: &Path, timeout: Duration) -> Option<String> {
+    let mut command = launch::std_command(path).ok()?;
+    if super::acp::is_agy_cli(path) {
+        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    }
+    capture(command, &["--version"], timeout)
         .filter(|text| !text.is_empty())
         .map(|text| text.chars().take(VERSION_CHARS).collect())
 }

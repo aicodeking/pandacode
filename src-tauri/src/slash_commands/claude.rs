@@ -281,6 +281,11 @@ pub(crate) struct Pipe {
     deadline: Instant,
     bytes: usize,
     frames: usize,
+    // Incomplete stdout line. A `read` timeout must keep this prefix: the
+    // remainder stays in `stdout`, and the next read appends to it.
+    frame: Vec<u8>,
+    // Non-JSON lines skipped since the last valid frame. Timeouts must not reset it.
+    stray_lines: usize,
     stderr_task: tokio::task::JoinHandle<String>,
     diagnostic: String,
 }
@@ -322,6 +327,8 @@ impl Pipe {
             deadline: Instant::now() + timeout,
             bytes: 0,
             frames: 0,
+            frame: Vec::new(),
+            stray_lines: 0,
             stderr_task,
             diagnostic: String::new(),
         })
@@ -356,7 +363,7 @@ impl Pipe {
     }
 
     async fn read_frame(&mut self) -> Result<Value, ()> {
-        let mut frame = Vec::new();
+        const MAX_STRAY_LINES: usize = 32;
         loop {
             let available = self.stdout.fill_buf().await.map_err(|_| ())?;
             if available.is_empty() {
@@ -365,23 +372,45 @@ impl Pipe {
             let end = available.iter().position(|byte| *byte == b'\n');
             let consumed = end.map_or(available.len(), |index| index + 1);
             self.bytes += consumed;
-            if self.bytes > 8 * 1024 * 1024 || frame.len() + consumed > 4 * 1024 * 1024 {
+            if self.bytes > 8 * 1024 * 1024 || self.frame.len() + consumed > 4 * 1024 * 1024 {
+                self.frame.clear();
                 return Err(());
             }
-            frame.extend_from_slice(&available[..consumed]);
+            self.frame.extend_from_slice(&available[..consumed]);
             self.stdout.consume(consumed);
             if end.is_none() {
                 continue;
             }
             self.frames += 1;
             if self.frames > 512 {
+                self.frame.clear();
                 return Err(());
             }
-            if frame.iter().all(u8::is_ascii_whitespace) {
-                frame.clear();
+            if self.frame.iter().all(u8::is_ascii_whitespace) {
+                self.frame.clear();
                 continue;
             }
-            return serde_json::from_slice(&frame).map_err(|_| ());
+            // Skip bounded non-JSON stdout banners/warnings printed before a JSON frame.
+            let first = self
+                .frame
+                .iter()
+                .copied()
+                .find(|byte| !byte.is_ascii_whitespace());
+            if first != Some(b'{') {
+                self.stray_lines += 1;
+                self.frame.clear();
+                if self.stray_lines > MAX_STRAY_LINES {
+                    return Err(());
+                }
+                continue;
+            }
+            let value = serde_json::from_slice(&self.frame).map_err(|_| ());
+            // The line is consumed either way. Only a parsed frame resets the stray count.
+            self.frame.clear();
+            if value.is_ok() {
+                self.stray_lines = 0;
+            }
+            return value;
         }
     }
 
@@ -653,5 +682,82 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(error, DISCOVERY_FAILED);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stray_stdout_lines_are_skipped_within_bounds_while_bad_json_still_fails() {
+        let _serial = crate::providers::concurrent_process_tests::process_test_lock()
+            .lock()
+            .await;
+
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            r#"
+            printf '%s\n' 'Update available: agy 1.6.0'
+            printf '%s\n' '  warning: checking environment'
+            printf '%s\n' '{"ok":true}'
+            "#,
+        ]);
+        let mut pipe =
+            Pipe::spawn(command, &std::env::temp_dir(), Duration::from_secs(2)).unwrap();
+        assert_eq!(pipe.read().await.unwrap(), json!({"ok": true}));
+        pipe.finish().await;
+
+        let mut bad_json = Command::new("/bin/sh");
+        bad_json.args(["-c", "printf '%s\\n' '{not valid json'"]);
+        let mut pipe =
+            Pipe::spawn(bad_json, &std::env::temp_dir(), Duration::from_secs(2)).unwrap();
+        assert!(pipe.read().await.is_err());
+        pipe.finish().await;
+
+        let mut too_many = Command::new("/bin/sh");
+        too_many.args([
+            "-c",
+            r#"
+            i=0
+            while [ "$i" -lt 33 ]; do
+                printf 'banner line %s\n' "$i"
+                i=$((i + 1))
+            done
+            printf '%s\n' '{"ok":true}'
+            "#,
+        ]);
+        let mut pipe =
+            Pipe::spawn(too_many, &std::env::temp_dir(), Duration::from_secs(2)).unwrap();
+        assert!(pipe.read().await.is_err());
+        pipe.finish().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn partial_json_frame_survives_read_timeout() {
+        let _serial = crate::providers::concurrent_process_tests::process_test_lock()
+            .lock()
+            .await;
+        // One atomic write: the ready line and a JSON prefix with no trailing newline.
+        // The short read consumes that prefix, then times out waiting for the rest.
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            r#"perl -e 'syswrite STDOUT, "{\"ready\":true}\n{\"id\":9,\"result\":"; sysread STDIN, my $b, 1; syswrite STDOUT, "{\"closed\":true}}\n"; sysread STDIN, $b, 1;'"#,
+        ]);
+        let mut pipe = Pipe::spawn(command, &std::env::temp_dir(), Duration::from_secs(2)).unwrap();
+        assert_eq!(pipe.read().await.unwrap(), json!({"ready": true}));
+        pipe.set_deadline_after(Duration::from_millis(100));
+        assert!(pipe.read().await.is_err());
+        assert!(pipe.timed_out());
+        assert_eq!(pipe.frame.as_slice(), br#"{"id":9,"result":"# as &[u8]);
+        pipe.set_deadline_after(Duration::from_secs(2));
+        pipe.send(&json!({"continue": true})).await.unwrap();
+        let value = pipe
+            .read()
+            .await
+            .unwrap_or_else(|_| panic!("resumed frame: {}", String::from_utf8_lossy(&pipe.frame)));
+        assert_eq!(value, json!({"id": 9, "result": {"closed": true}}));
+        assert!(pipe.frame.is_empty());
+        assert_eq!(pipe.stray_lines, 0);
+        pipe.finish().await;
     }
 }

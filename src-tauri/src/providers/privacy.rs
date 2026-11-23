@@ -1,7 +1,8 @@
 //! Settings → Agents → "Turn off agent telemetry". While on, every harness process PandaCode
-//! starts (runs, warm spares, consoles, model and command discovery, cloud agents) carries each
-//! vendor's own per-process opt-out. Nothing is written to the harnesses' config files, so
-//! turning the switch off restores their own settings on the next launch.
+//! starts (runs, warm spares, consoles, model and command discovery, cloud agents) gets the
+//! environment below, and a vendor's own switch goes only where one could be verified (`COVERAGE`
+//! says which). Nothing is written to the harnesses' config files, but an agent may save the
+//! choice with its account (agy may).
 //!
 //! Switch names were read from the installed CLIs (Claude Code 2.1.311, Codex 0.162.1, Kimi
 //! Code, Grok 1.0.62, dsh, Command Code 1.88, OpenCode, Cline 3.0.52, Muse 1.4.14, Pi 0.84), not guessed.
@@ -32,14 +33,16 @@ const ENVIRONMENT: &[(&str, &str)] = &[
 /// renamed key would fail loudly rather than be ignored.
 const CODEX_ARGUMENTS: &[&str] = &["-c", "analytics.enabled=false", "-c", "feedback.enabled=false"];
 const MUSE_ARGUMENTS: &[&str] = &["-c", "telemetry.enabled=false"];
+const ANTIGRAVITY_ARGUMENTS: &[&str] = &["--disable-telemetry"];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Coverage {
     provider: &'static str,
     name: &'static str,
-    /// `off`: PandaCode turns it off. `manual`: only the harness's own settings can.
-    /// `unknown`: no switch could be verified.
+    /// `off`: PandaCode turns it off. `partial`: only for some of what PandaCode launches (the
+    /// detail says which). `manual`: only the harness's own settings can. `unknown`: no switch
+    /// could be verified.
     status: &'static str,
     detail: &'static str,
 }
@@ -60,7 +63,10 @@ const COVERAGE: &[Coverage] = &[
     Coverage { provider: "cline", name: "Cline", status: "manual", detail: "No per-launch switch. Opt out in Cline’s settings." },
     Coverage { provider: "omp", name: "Oh My Pi", status: "unknown", detail: "No verified switch." },
     Coverage { provider: "github-copilot", name: "GitHub Copilot CLI", status: "unknown", detail: "No verified switch." },
-    Coverage { provider: "antigravity", name: "Antigravity", status: "unknown", detail: "No verified switch." },
+    // Only `agy acp` takes the flag (acp.rs `antigravity_base_args`). The agy console, the usage
+    // probe (`agy -p /usage`) and the standalone `agy_acp_server` binary launch without one, so
+    // this row must not say `off`.
+    Coverage { provider: "antigravity", name: "Antigravity", status: "partial", detail: "Task sessions through the agy CLI only; agy may save the choice with your Google account. Its console, usage checks and standalone ACP server have no verified switch." },
 ];
 
 #[cfg(test)]
@@ -110,6 +116,15 @@ fn muse_arguments_when(off: bool) -> &'static [&'static str] {
     if off { MUSE_ARGUMENTS } else { &[] }
 }
 
+/// Antigravity's `agy` CLI takes `--disable-telemetry` after its `acp` subcommand.
+pub(crate) fn antigravity_arguments() -> &'static [&'static str] {
+    antigravity_arguments_when(off())
+}
+
+fn antigravity_arguments_when(off: bool) -> &'static [&'static str] {
+    if off { ANTIGRAVITY_ARGUMENTS } else { &[] }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Privacy {
@@ -142,7 +157,10 @@ mod tests {
         for id in ["claude", "codex", "kimi", "opencode", "glm", "antigravity", "grok", "mimo", "alibaba", "pi", "deepseek", "commandcode", "cline", "omp", "github-copilot", "muse"] {
             assert!(seen.contains(&id), "{id} has no privacy entry");
         }
-        assert!(COVERAGE.iter().all(|c| ["off", "manual", "unknown"].contains(&c.status)));
+        assert!(COVERAGE.iter().all(|c| ["off", "partial", "manual", "unknown"].contains(&c.status)));
+        // `off` would claim the server binary and the console too, which still launch without a switch.
+        let antigravity = COVERAGE.iter().find(|c| c.provider == "antigravity").expect("antigravity row");
+        assert_eq!(antigravity.status, "partial");
     }
 
     #[test]
@@ -154,6 +172,7 @@ mod tests {
         for arguments in [CODEX_ARGUMENTS, MUSE_ARGUMENTS] {
             assert!(arguments.chunks(2).all(|pair| pair[0] == "-c" && pair[1].ends_with(".enabled=false")));
         }
+        assert!(ANTIGRAVITY_ARGUMENTS.iter().all(|arg| arg.starts_with("--disable-")));
     }
 
     #[test]
@@ -165,6 +184,8 @@ mod tests {
         // Only Codex takes `-c` at launch; others would reject it (Muse takes it after `serve`).
         assert_eq!(muse_arguments_when(true), MUSE_ARGUMENTS);
         assert!(muse_arguments_when(false).is_empty());
+        assert_eq!(antigravity_arguments_when(true), ANTIGRAVITY_ARGUMENTS);
+        assert!(antigravity_arguments_when(false).is_empty());
         for program in ["claude", "kimi", "muse", "opencode", "grok", "pi", "dsh", "codex-code-mode-host"] {
             assert!(arguments_when(true, program).is_empty(), "{program}");
         }

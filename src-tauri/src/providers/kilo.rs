@@ -65,7 +65,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     command.arg("acp").env("KILO_DISABLE_AUTOUPDATE", "true");
     let (metadata, _) = acp::inspect(command, &std::env::temp_dir(), false).await?;
     acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    Ok(acp::parse_models_for("kilo", &metadata))
 }
 
 #[cfg(test)]
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn recorded_models_scope_efforts_to_the_current_model_only() {
-        let models = acp::parse_models(&session());
+        let models = acp::parse_models_for("kilo", &session());
         assert_eq!(models.len(), 3);
         assert_eq!(models[0].id, "default");
         assert_eq!(models[1].name, "Kilo Gateway/Stealth: Claude Sonnet 4.6 (20% off)");

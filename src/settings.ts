@@ -319,7 +319,10 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       row.querySelector('strong')!.textContent = provider.name;
       row.querySelector('summary')!.setAttribute('aria-label', `${provider.name} details, ${provider.installed ? 'Installed' : 'Not installed'}`);
       row.querySelector('.provider-availability')!.classList.toggle('available', provider.installed);
-      row.querySelector('.settings-installed')!.textContent = provider.installed ? (provider.id === 'antigravity' ? 'ACP installed' : 'Installed') : 'Not installed';
+      // `providers.rs` reports "ACP" only for the standalone server binary; an `agy` CLI that
+      // answers no version reports "", so it reads as any other installed agent.
+      const antigravityAcpOnly = provider.id === 'antigravity' && provider.version.trim() === 'ACP';
+      row.querySelector('.settings-installed')!.textContent = provider.installed ? (antigravityAcpOnly ? 'ACP installed' : 'Installed') : 'Not installed';
       // The last launch's installed harness, before the real list answers: pending, never "Install the agent".
       const listing = provider.installed && !provider.path && Boolean(options.listPending?.());
       const version = row.querySelector('.settings-provider-version')!;

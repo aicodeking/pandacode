@@ -4,16 +4,19 @@ import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
 import type { ProviderId } from './types';
 
-type Status = 'off' | 'manual' | 'unknown';
+type Status = 'off' | 'partial' | 'manual' | 'unknown';
 interface Harness { provider: ProviderId; name: string; status: Status; detail: string }
 interface Privacy { off: boolean; harnesses: Harness[] }
 
 const TITLE = 'Turn off agent telemetry';
-const ABOUT = 'Agents started by PandaCode get each vendor’s own opt-outs for usage analytics, error reports and feedback uploads, plus DO_NOT_TRACK=1, which tools the agents run may also honor. Your agent config files are not changed, and agents already running keep their setting until they restart.';
+const ABOUT = 'Agents started by PandaCode get each vendor’s own opt-outs for usage analytics, error reports and feedback uploads, plus DO_NOT_TRACK=1, which tools the agents run may also honor. Your agent config files are not changed, though an agent may save the choice with its account (agy can), and agents already running keep their setting until they restart.';
 
 /** What the switch does for one harness right now. */
 function stateLabel(h: Harness, off: boolean): string {
   if (h.status === 'off') return off ? 'Turned off' : 'Vendor default';
+  // `partial`: the opt-out reaches only some of what PandaCode launches; the detail says which.
+  // The label doesn't wrap, so it stays short enough for a 460 px window at 160% text.
+  if (h.status === 'partial') return off ? 'Off for task sessions' : 'Vendor default';
   return h.status === 'manual' ? `Turn off in ${h.name}` : 'No verified switch';
 }
 

@@ -165,6 +165,17 @@ fn leave_account(route: &Mutex<Route>, config: &RunConfig, sink: &Sink) {
     });
 }
 
+/// A rotated account resumes mid-turn. The rewritten prompt must not fall through to a fresh session.
+pub(super) fn continue_on_rotated_account(config: &mut RunConfig, resume: Option<String>) {
+    if resume.is_some() {
+        config.resume_id = resume;
+        config.prompt = "Continue where you left off.".into();
+        config.images.clear();
+        config.skill = None;
+        config.no_fresh_resume_fallback = true;
+    }
+}
+
 pub(super) async fn run(mut config: RunConfig, sink: Sink, mut input: UnboundedReceiver<RunInput>, host: Option<ToolHost>) -> Result<(), String> {
     // Between accounts until the first one starts.
     let switching_mark = SwitchingMark::new(&config.session_id);
@@ -235,12 +246,7 @@ pub(super) async fn run(mut config: RunConfig, sink: Sink, mut input: UnboundedR
         claimed = Some(switch.claim);
         // With a session to resume the new account picks up mid-turn; without one, the turn
         // never started anywhere, so the same request goes again.
-        if resume.is_some() {
-            config.resume_id = resume;
-            config.prompt = "Continue where you left off.".into();
-            config.images.clear();
-            config.skill = None;
-        }
+        continue_on_rotated_account(&mut config, resume);
     }
     relay.abort();
     // Wait for the relay to stop, so a steer it was queuing is in `pending` below.
@@ -328,5 +334,22 @@ mod tests {
         assert!(matches!(next.try_recv(), Ok(RunInput::Stop)));
         assert!(matches!(next.try_recv(), Ok(RunInput::Stop)));
         assert!(route.pending.is_empty());
+    }
+
+    #[test]
+    fn a_rotated_account_blocks_a_fresh_session_for_the_resume_prompt() {
+        let mut config = super::super::tests::config("antigravity");
+        config.images.push(std::path::PathBuf::from("shot.png"));
+        config.skill = Some(("review".into(), std::path::PathBuf::from("/skills/review")));
+        super::continue_on_rotated_account(&mut config, Some("saved".into()));
+        assert_eq!(config.resume_id.as_deref(), Some("saved"));
+        assert_eq!(config.prompt, "Continue where you left off.");
+        assert!(config.images.is_empty());
+        assert!(config.skill.is_none());
+        assert!(config.no_fresh_resume_fallback);
+        let mut fresh = super::super::tests::config("antigravity");
+        super::continue_on_rotated_account(&mut fresh, None);
+        assert!(!fresh.no_fresh_resume_fallback);
+        assert_eq!(fresh.prompt, "Explain this project");
     }
 }

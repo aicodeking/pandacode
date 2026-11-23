@@ -385,7 +385,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
                     }
                 })?;
             acp_catalog::store(discovery, &metadata);
-            acp::parse_models(&metadata)
+            acp::parse_models_for("cline", &metadata)
         }
     };
     Ok(with_efforts(models))
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn recorded_catalog_lists_models_with_thinking_levels() {
-        let models = with_efforts(acp::parse_models(&session()));
+        let models = with_efforts(acp::parse_models_for("cline", &session()));
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5"]);
         assert_eq!(models[2].reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), EFFORTS);
         for effort in EFFORTS {

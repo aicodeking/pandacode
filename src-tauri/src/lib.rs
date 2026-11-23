@@ -1859,6 +1859,7 @@ fn prepare_task_run_in_project(
         codex_settings: session.codex_settings,
         worker,
         disallowed_tools: None,
+        no_fresh_resume_fallback: false,
     };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
     let team_worker = worker_launch(&store, admission.team.as_ref(), &session_id).map_err(restore)?;
@@ -1924,6 +1925,7 @@ fn prepare_cloud_attach(
         codex_settings: session.codex_settings,
         worker: None,
         disallowed_tools: None,
+        no_fresh_resume_fallback: false,
     };
     let mut agent = RunningAgent::new(tx, stopped);
     // A re-attached run has no team admission: whether it is a worker's comes from the store.

@@ -705,6 +705,9 @@ pub(super) async fn start_harness_terminal(
         // the console's own `--resume`. Never wait with the agents map locked.
         providers::quiesce(&session_id).await?;
     }
+    // Stop any lingering ACP process (e.g. `agy acp`) before opening an interactive console so
+    // the resumed CLI does not contend on the harness's SQLite/conversation store.
+    crate::providers::end_lingering(&session_id).await;
     blocking(move || {
         let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {

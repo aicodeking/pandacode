@@ -633,7 +633,11 @@ fn antigravity_command(
     timeout: Duration,
 ) -> Result<Vec<u8>, ()> {
     let mut command = crate::providers::provider_command("antigravity", path).map_err(|_|())?.into_std();
-    command.args(args).current_dir(cwd);
+    // Prevent agy auto-update notices from corrupting --version or /usage JSON on stdout.
+    command
+        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
+        .args(args)
+        .current_dir(cwd);
     let output = crate::workspace::run_process(command, "Antigravity usage", limit, timeout)
         .map_err(|_| ())?;
     if !output.status.success() || output.stdout.truncated {
@@ -691,13 +695,56 @@ fn antigravity_report(path: &Path, cwd: &Path, timeout: Duration) -> Usage {
     }
 }
 
+fn is_agy_cli(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+}
+
+fn has_explicit_antigravity_credentials(
+    process_env: bool,
+    provider_env: &[(String, String)],
+) -> bool {
+    process_env
+        || provider_env
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("ANTIGRAVITY_OAUTH_CREDENTIALS_JSON"))
+}
+
+/// `agy -p /usage` has no `--gemini-dir` flag and ignores `GEMINI_DIR`/`ANTIGRAVITY_GEMINI_DIR`,
+/// so a provider setting that moves the directory would report the default account's limits.
+fn has_custom_antigravity_gemini_dir(provider_env: &[(String, String)]) -> bool {
+    provider_env.iter().any(|(key, value)| {
+        !value.trim().is_empty()
+            && (key.eq_ignore_ascii_case("GEMINI_DIR")
+                || key.eq_ignore_ascii_case("ANTIGRAVITY_GEMINI_DIR"))
+    })
+}
+
+fn select_antigravity_cli(
+    antigravity_executable: Option<PathBuf>,
+    fallback: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    // Prefer the resolved Antigravity executable only when it is the agy CLI.
+    // The ACP server executable (e.g. agy_acp_server) must never be invoked in print mode.
+    antigravity_executable
+        .filter(|path| is_agy_cli(path))
+        .or_else(fallback)
+}
+
 async fn fetch_antigravity() -> Usage {
-    if std::env::var_os("ANTIGRAVITY_OAUTH_CREDENTIALS_JSON").is_some() {
+    let provider_env = crate::provider_settings::environment("antigravity");
+    if has_explicit_antigravity_credentials(
+        std::env::var_os("ANTIGRAVITY_OAUTH_CREDENTIALS_JSON").is_some(),
+        &provider_env,
+    ) {
         return Usage::empty("antigravity", "unavailable", "This Antigravity connection uses explicit credentials that the CLI usage report cannot identify safely.");
     }
-    // Resolve the standalone CLI independently. The ACP server executable and
-    // its saved override must never be replaced or invoked in print mode.
-    let Some(path) = crate::providers::executable("agy") else {
+    if has_custom_antigravity_gemini_dir(&provider_env) {
+        return Usage::empty("antigravity", "unavailable", "Antigravity provider settings specify a custom GEMINI_DIR that the agy CLI usage report cannot target safely.");
+    }
+    let Some(path) = select_antigravity_cli(crate::providers::executable("antigravity"), || {
+        crate::providers::executable("agy")
+    }) else {
         return Usage::empty(
             "antigravity",
             "unsupported",
@@ -1499,6 +1546,70 @@ key = "oauth/kimi-code"
     }
 
     #[test]
+    fn antigravity_usage_refuses_custom_provider_gemini_dir() {
+        let env = |name: &str, value: &str| vec![(name.to_string(), value.to_string())];
+        assert!(has_custom_antigravity_gemini_dir(&env("GEMINI_DIR", "/custom")));
+        assert!(has_custom_antigravity_gemini_dir(&env("gemini_dir", "/custom")));
+        assert!(has_custom_antigravity_gemini_dir(&env("Antigravity_Gemini_Dir", "/custom")));
+        assert!(!has_custom_antigravity_gemini_dir(&env("GEMINI_DIR", "  ")));
+        assert!(!has_custom_antigravity_gemini_dir(&env("ANTIGRAVITY_GEMINI_DIR", "")));
+        assert!(!has_custom_antigravity_gemini_dir(&env("HTTP_PROXY", "http://localhost:8080")));
+        assert!(!has_custom_antigravity_gemini_dir(&[]));
+    }
+
+    #[test]
+    fn antigravity_usage_guards_provider_settings_credentials_and_prefers_agy_only() {
+        assert!(!has_explicit_antigravity_credentials(false, &[]));
+        assert!(has_explicit_antigravity_credentials(true, &[]));
+        assert!(has_explicit_antigravity_credentials(
+            false,
+            &[(
+                "ANTIGRAVITY_OAUTH_CREDENTIALS_JSON".into(),
+                "{}".into()
+            )]
+        ));
+        assert!(!has_explicit_antigravity_credentials(
+            false,
+            &[("HTTP_PROXY".into(), "http://localhost:8080".into())]
+        ));
+
+        let custom_agy = PathBuf::from("/opt/custom/agy");
+        let fallback_agy = PathBuf::from("/usr/local/bin/agy");
+        let acp_server = PathBuf::from("/opt/antigravity/agy_acp_server.par");
+        let windows_agy = PathBuf::from(if cfg!(windows) {
+            r"C:\Tools\AGY.EXE"
+        } else {
+            "/tools/AGY.EXE"
+        });
+        let windows_acp = PathBuf::from(if cfg!(windows) {
+            r"C:\Tools\agy_acp_server.exe"
+        } else {
+            "/tools/agy_acp_server.exe"
+        });
+
+        assert_eq!(
+            select_antigravity_cli(Some(custom_agy.clone()), || Some(fallback_agy.clone())),
+            Some(custom_agy)
+        );
+        assert_eq!(
+            select_antigravity_cli(Some(windows_agy.clone()), || Some(fallback_agy.clone())),
+            Some(windows_agy)
+        );
+        assert_eq!(
+            select_antigravity_cli(Some(acp_server), || Some(fallback_agy.clone())),
+            Some(fallback_agy.clone())
+        );
+        assert_eq!(
+            select_antigravity_cli(Some(windows_acp), || None),
+            None
+        );
+        assert_eq!(
+            select_antigravity_cli(None, || Some(fallback_agy.clone())),
+            Some(fallback_agy)
+        );
+    }
+
+    #[test]
     fn antigravity_version_gate_rejects_older_and_ambiguous_versions() {
         for version in ["1.1.11", "1.2.2", "2.0.0", "1.1.11\n"] {
             assert!(
@@ -1554,7 +1665,7 @@ key = "oauth/kimi-code"
     fn agy_script(directory: &Path, version: &str, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = directory.join("agy");
-        std::fs::write(&path, format!("#!/bin/sh\nif [ \"$1\" = '--version' ]; then printf '%s' '{version}'; exit 0; fi\n{body}\n")).unwrap();
+        std::fs::write(&path, format!("#!/bin/sh\n[ \"${{AGY_CLI_DISABLE_AUTO_UPDATE:-}}\" = 'true' ] || exit 9\nif [ \"$1\" = '--version' ]; then printf '%s' '{version}'; exit 0; fi\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         path
     }

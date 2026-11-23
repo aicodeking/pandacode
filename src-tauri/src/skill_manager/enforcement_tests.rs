@@ -326,6 +326,7 @@ mod behavior_tests {
                 images: Vec::new(),
                 disallowed_tools: None,
                 worker: None,
+                no_fresh_resume_fallback: false,
             };
             apply_instructions(&mut config, &BTreeSet::from(["review".into()]));
             assert_eq!(config.prompt, "User text");

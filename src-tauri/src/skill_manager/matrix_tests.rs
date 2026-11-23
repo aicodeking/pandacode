@@ -18,6 +18,7 @@ fn config(provider: &str, prompt: &str) -> crate::providers::RunConfig {
         images: Vec::new(),
         disallowed_tools: None,
         worker: None,
+        no_fresh_resume_fallback: false,
     }
 }
 

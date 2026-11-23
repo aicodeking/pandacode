@@ -517,6 +517,40 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
   });
 }
 
+// `providers.rs` reports "ACP" only for the standalone server binary; an `agy` CLI that answers no
+// version reports "", so its row reads as any other installed agent.
+for (const { path, version, installed, reported } of [
+  { path: '/sample/bin/agy', version: '', installed: 'Installed', reported: 'Not reported' },
+  { path: '/sample/bin/agy_acp_server.par', version: 'ACP', installed: 'ACP installed', reported: 'ACP' },
+]) {
+  test(`settings organization lists Antigravity at ${path} as "${installed}"`, async ({ page }) => {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const marker = /switch\s*\(command\)\s*\{/;
+      expect(source).toMatch(marker);
+      // Swap the sample entry rather than answering `list_providers` here, so the preview's version
+      // probe still reports it and the row stops showing "Checking…".
+      await route.fulfill({ response, body: source.replace(marker, `
+        if (command === 'list_providers') {
+          const index = providers.findIndex(provider => provider.id === 'antigravity');
+          providers[index] = {...providers[index], installed:true, path:${JSON.stringify(path)}, version:${JSON.stringify(version)}};
+        }
+        switch (command) {
+      `) });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await tab(page, 'Agents').click();
+    const row = dialog(page).locator('.provider-diagnostic[data-provider="antigravity"]');
+    await expect(row.locator('.settings-installed')).toHaveText(installed);
+    await expect(row.locator('summary')).toHaveAttribute('aria-label', 'Antigravity details, Installed');
+    await row.locator('summary').click();
+    await expect(row.locator('.settings-provider-version')).toHaveText(reported);
+    await expect(row.locator('code')).toHaveText(path);
+  });
+}
+
 test('Antigravity installation and connection readiness are distinct with explicit retry', async ({ page }) => {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();

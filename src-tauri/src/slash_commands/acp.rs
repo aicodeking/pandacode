@@ -52,8 +52,16 @@ pub(super) async fn discover(provider: &str, cwd: &Path) -> Result<Catalog, Stri
             command.arg("--uid=");
         }
     }
+    let _temp = (provider == "antigravity")
+        .then(|| crate::providers::AgentTemp::redirect(&mut command))
+        .flatten();
     let discovery = crate::providers::acp_catalog::begin(provider, &path);
-    let (metadata, frame) = crate::providers::acp::inspect_with(command, cwd, true, provider == "grok").await?;
+    // Antigravity answers -32000 for a quota or a 429 as well as for sign-in.
+    let (metadata, frame) = if provider == "antigravity" {
+        crate::providers::acp::inspect_antigravity(command, cwd, true).await?
+    } else {
+        crate::providers::acp::inspect_with(command, cwd, true, provider == "grok").await?
+    };
     // Model choices can be reused by the model picker, even when this session
     // never advertises commands. Commands themselves remain scoped to cwd.
     crate::providers::acp_catalog::store(discovery, &metadata);

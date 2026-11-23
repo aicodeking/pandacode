@@ -131,6 +131,13 @@ const STARTUP_LIMIT: Duration = Duration::from_secs(300);
 const FINISH_GRACE: Duration = Duration::from_millis(1000);
 /// Antigravity ignores EOF and writes context checkpoints in the background (40-80 s each).
 const ANTIGRAVITY_GRACE: Duration = Duration::from_secs(120);
+/// After a lingering agent was asked to close its session, how long one that never answers has
+/// before it is signalled. With the close frame's 500 ms and the 2 s signal wait, `end_lingering`
+/// stays under 5 s.
+const ANTIGRAVITY_CLOSE_WAIT: Duration = Duration::from_secs(2);
+/// Longest stdout frame looked at for the close answer, which is small: a chatty agent must not
+/// cost CPU here.
+const CLOSE_ANSWER_LIMIT: usize = 64 * 1024;
 /// Under the app data dir: per-run `TEMP` folders of Antigravity on Windows.
 const AGENT_TEMP_DIR: &str = "agent-temp";
 const AGENT_TEMP_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
@@ -305,6 +312,11 @@ pub struct RunConfig {
     /// conversation's history (`claude_disallowed_tools`) so the launch, the catalog record and
     /// the warm key agree; `None` derives it at spawn.
     pub disallowed_tools: Option<String>,
+    /// Set when an account-pool rotation rewrites the prompt into a resume.
+    /// A missing saved session must fail instead of opening an empty `session/new`.
+    /// Runtime-only: `RunConfig` is not serialized (`GoalRequest` has no `Serialize`),
+    /// so a `serde` skip attribute cannot be attached here.
+    pub(crate) no_fresh_resume_fallback: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -1085,6 +1097,22 @@ pub(crate) fn set_version_announcer(announce: impl Fn(VersionReport) + Send + Sy
     cli_versions::shared().set_announcer(Arc::new(announce));
 }
 
+/// Version string recorded by `discover`. `"ACP"` is only the placeholder for the non-`agy` server
+/// binary, which the Settings UI reads as "ACP installed": an installed `agy` CLI that does not
+/// answer `--version` is blank instead, so a slow CLI is not mistaken for the server alone.
+/// `probed` is what the shared version cache knows for this binary ("" when unknown or failed).
+fn discovered_version(id: &str, path: Option<&Path>, probed: String) -> String {
+    if id == "antigravity" {
+        match path {
+            None => String::new(),
+            Some(path) if acp::is_agy_cli(path) => probed,
+            Some(_) => "ACP".into(),
+        }
+    } else {
+        probed
+    }
+}
+
 /// Whether this Claude CLI takes `--include-hook-events` (absent in 2.1.0, present by 2.1.100):
 /// an unknown flag ends the CLI at launch. Answered once per binary, so an update asks again. A
 /// cloud harness's placeholder program answers no: its machine's CLI is unknown, and a
@@ -1194,13 +1222,21 @@ fn installed_paths() -> Vec<Option<PathBuf>> {
     PROVIDERS.iter().map(|(id, _)| executable(id)).collect()
 }
 
-/// The binaries asked for a version. Antigravity's ACP server is not asked; it reports "ACP".
+/// The binaries asked for a version. Antigravity's ACP server is not asked (it reports "ACP");
+/// the `agy` CLI is.
 fn version_targets(paths: &[Option<PathBuf>]) -> Vec<VersionTarget> {
     PROVIDERS
         .iter()
         .zip(paths)
-        .map(|((id, _), path)| ((*id).to_owned(), if *id == "antigravity" { None } else { path.clone() }))
+        .map(|((id, _), path)| ((*id).to_owned(), version_target(id, path.as_deref())))
         .collect()
+}
+
+fn version_target(id: &str, path: Option<&Path>) -> Option<PathBuf> {
+    match path {
+        Some(path) if id == "antigravity" && !acp::is_agy_cli(path) => None,
+        path => path.map(Path::to_path_buf),
+    }
 }
 
 /// Blocking discovery: joins the background version round (starting one if none runs) and waits
@@ -1238,7 +1274,7 @@ fn provider_infos(paths: Vec<Option<PathBuf>>, versions: Vec<String>) -> Vec<Pro
             id: id.into(),
             name: name.into(),
             installed: path.is_some(),
-            version: if id == "antigravity" { "ACP".into() } else { version },
+            version: discovered_version(id, path.as_deref(), version),
             path: path.map(|p| p.to_string_lossy().into_owned()),
             models: if id == "glm" {
                 glm::models()
@@ -1849,6 +1885,7 @@ struct Protocol {
     early_kimi_commands: Option<Vec<u8>>,
     tools: HashMap<String, ToolActivity>,
     file_write_tools: HashSet<String>,
+    non_mcp_tools: HashSet<String>,
     tool_order: VecDeque<String>,
     partial_tools: HashMap<(String, u64), PartialTool>,
     image_blocks: Vec<Value>,
@@ -1857,6 +1894,19 @@ struct Protocol {
     acp_config: Value,
     // Grok Build authenticates before session calls; the session request waits here.
     acp_pending_session: Option<Value>,
+    acp_can_load: bool,
+    acp_resuming: bool,
+    acp_load_fallback_tried: bool,
+    acp_fresh_fallback_tried: bool,
+    acp_resume_params: Option<Value>,
+    acp_turn_text: String,
+    acp_context_window: Option<u64>,
+    /// `usage_update` seen before `session/prompt` (phase 0). Emitted once the session opens.
+    acp_pending_phase0_usage: Option<(u64, Option<u64>)>,
+    /// `initialize` advertised `sessionCapabilities.close` (or the capability object).
+    acp_can_close: bool,
+    acp_saw_any_usage_update: bool,
+    acp_saw_usage_update: bool,
     grok_context_used: u64,
     grok_reasoning: bool,
     /// A plan task whose harness advertises no plan mode: PandaCode keeps it
@@ -1999,12 +2049,24 @@ impl Protocol {
             early_kimi_commands: None,
             tools: HashMap::new(),
             file_write_tools: HashSet::new(),
+            non_mcp_tools: HashSet::new(),
             tool_order: VecDeque::new(),
             partial_tools: HashMap::new(),
             image_blocks: Vec::new(),
             kimi_thinking_values: Vec::new(),
             acp_config: Value::Null,
             acp_pending_session: None,
+            acp_can_load: false,
+            acp_resuming: false,
+            acp_load_fallback_tried: false,
+            acp_fresh_fallback_tried: false,
+            acp_resume_params: None,
+            acp_turn_text: String::new(),
+            acp_context_window: None,
+            acp_pending_phase0_usage: None,
+            acp_can_close: false,
+            acp_saw_any_usage_update: false,
+            acp_saw_usage_update: false,
             grok_context_used: 0,
             grok_reasoning: false,
             plan_fallback: false,
@@ -2024,6 +2086,24 @@ impl Protocol {
         let mut event = self.event("usage", "", None);
         event.data = Some(json!({"usedTokens":used,"contextWindow":window}));
         step.events.push(event);
+    }
+    fn flush_pending_phase0_usage(&mut self, step: &mut Step) {
+        if let Some((used, window)) = self.acp_pending_phase0_usage.take() {
+            self.usage(used, window, step);
+        }
+    }
+    /// A stopped ACP turn is settled by the prompt reply or by any live-steer reply still in flight.
+    fn acp_stop_settled(&self, value: &Value) -> bool {
+        if !acp::is_acp_provider(&self.config.provider) {
+            return false;
+        }
+        if value.get("result").is_none() && value.get("error").is_none() {
+            return false;
+        }
+        let Some(id) = value["id"].as_u64() else {
+            return false;
+        };
+        id == 3 || self.acp_steers.has_live(id)
     }
     fn claude_usage(&mut self, usage: &Value, fresh: bool, step: &mut Step) {
         if fresh {
@@ -2148,6 +2228,19 @@ impl Protocol {
         output: Option<String>,
         step: &mut Step,
     ) {
+        self.tool_update_with_kind(id, name, status, input, output, None, step);
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn tool_update_with_kind(
+        &mut self,
+        id: &str,
+        name: Option<&str>,
+        status: Option<&str>,
+        input: Option<String>,
+        output: Option<String>,
+        kind: Option<&str>,
+        step: &mut Step,
+    ) {
         if id.is_empty() {
             return;
         }
@@ -2157,9 +2250,13 @@ impl Protocol {
                 if let Some(oldest) = self.tool_order.pop_front() {
                     self.tools.remove(&oldest);
                     self.file_write_tools.remove(&oldest);
+                    self.non_mcp_tools.remove(&oldest);
                 }
             }
             self.tool_order.push_back(id.clone());
+        }
+        if kind.is_some_and(|k| !matches!(k, "" | "other")) {
+            self.non_mcp_tools.insert(id.clone());
         }
         let previous = self.tools.get(&id);
         // Claude may replay its complete tool_use after the corresponding result.
@@ -2192,12 +2289,18 @@ impl Protocol {
         if previous == Some(&tool) {
             return;
         }
+        let non_mcp_kind = self.non_mcp_tools.contains(&id);
         self.tools.insert(id, tool.clone());
         // The authenticated bridge emits these calls itself. Provider tool
         // frames are retained for joining sparse results, but not shown twice.
-        if self.mcp_tool_names.contains(&tool.name)
-            || (self.config.provider == "cline" && cline::host_tool(&tool.name).is_some_and(|name| self.mcp_tool_names.contains(name)))
-        {
+        // Never suppress calls with a non-MCP kind (e.g. `execute`/`edit`),
+        // even if their title starts with an MCP namespace prefix.
+        let explicit_mcp = strip_mcp_architect_prefix(&tool.name)
+            .is_some_and(|name| self.mcp_tool_names.contains(name))
+            || (self.config.provider == "cline"
+                && cline::host_tool(&tool.name)
+                    .is_some_and(|name| self.mcp_tool_names.contains(name)));
+        if !non_mcp_kind && (explicit_mcp || self.mcp_tool_names.contains(&tool.name)) {
             return;
         }
         let mut event = self.event("tool", format!("{} · {}", tool.name, tool.status), None);
@@ -2426,15 +2529,17 @@ impl Protocol {
             && update["rawOutput"].is_null();
         let mut buffered = Step::default();
         let target = if buffer_only { &mut buffered } else { step };
-        self.tool_update(
+        self.tool_update_with_kind(
             field(update, "toolCallId"),
             update["title"].as_str(),
             status,
             input,
             output,
+            update["kind"].as_str(),
             target,
         );
         self.file_write_tools.retain(|id| self.tools.contains_key(id));
+        self.non_mcp_tools.retain(|id| self.tools.contains_key(id));
         let paths = if writes {
             let mut paths: Vec<String> = update["locations"].as_array().into_iter().flatten().take(201)
                 .filter_map(|location| location["path"].as_str()).filter(|p| p.len() <= 4096).map(str::to_owned).collect();
@@ -2901,6 +3006,7 @@ impl Protocol {
                     }
                     step.events
                         .push(self.event("session", self.remote_id.clone(), None));
+                    self.flush_pending_phase0_usage(&mut step);
                     let modes = value["result"]["modes"]["availableModes"].as_array();
                     // Kimi ACP's mode descriptions may be stale: the actual
                     // engine uses yolo for routine auto-approval and auto for
@@ -2943,19 +3049,46 @@ impl Protocol {
                     }
                     return Ok(step);
                 }
-                if params["sessionId"].as_str().is_some_and(|id| id != self.remote_id) {return Ok(step);}
                 let update=&params["update"];
+                let kind = update["sessionUpdate"].as_str().unwrap_or("");
+                if matches!(kind, "usage_update" | "available_commands_update" | "config_option_update") {
+                    let owned = !self.remote_id.is_empty()
+                        && params["sessionId"].as_str() == Some(self.remote_id.as_str());
+                    if !owned {
+                        return Ok(step);
+                    }
+                }
+                if params["sessionId"].as_str().is_some_and(|id| id != self.remote_id) {return Ok(step);}
                 if update["sessionUpdate"] == "available_commands_update" { self.commands_changed(&value, &mut step); }
                 if update["sessionUpdate"] == "config_option_update" { self.kimi_config_options(update); }
+                if update["sessionUpdate"] == "usage_update" {
+                    let valid_size = update["size"]
+                        .as_u64()
+                        .filter(|&v| v > 0 && v <= 1_000_000_000);
+                    if let Some(valid_size) = valid_size {
+                        self.acp_context_window = Some(valid_size);
+                    }
+                    if let Some(used) = update["used"].as_u64().filter(|&v| v <= 1_000_000_000) {
+                        self.acp_saw_any_usage_update = true;
+                        let window = valid_size.or(self.acp_context_window);
+                        if self.phase == 0 {
+                            self.acp_pending_phase0_usage = Some((used, window));
+                        } else {
+                            self.acp_saw_usage_update = true;
+                            self.usage(used, window, &mut step);
+                        }
+                    }
+                    return Ok(step);
+                }
                 // session/load can replay history before its response; UI already owns that history.
                 if self.phase==0{return Ok(step);}
                 match string(update,"sessionUpdate").as_str() {
-                    "usage_update"=>{if let Some(used)=update["used"].as_u64() {self.usage(used,update["size"].as_u64(),&mut step);}},
                     "agent_message_chunk"=>{
                         let content=&update["content"];
                         if content["type"]=="text" || content["type"].is_null() {
                             let text=field(content,"text");
                             if !text.is_empty() {
+                                self.record_acp_turn_text(text);
                                 if let Some(id)=update["messageId"].as_str().filter(|id| !id.is_empty()) {
                                     self.kimi_message_id=limited(id,256);
                                 } else if self.kimi_message_id.is_empty() {
@@ -2968,13 +3101,20 @@ impl Protocol {
                     },
                     "agent_thought_chunk"=>{
                         self.kimi_message_id.clear();
-                        if update["content"]["type"]=="text" {self.thinking(field(&update["content"],"text"),&mut step);}
+                        self.acp_turn_text.clear();
+                        let content=&update["content"];
+                        if content["type"]=="text" || content["type"].is_null() {
+                            self.thinking(field(content,"text"),&mut step);
+                        }
                     },
                     "tool_call"|"tool_call_update"=>{
                         // Late snapshots of a known tool must not split a later
                         // assistant response. Only a new call closes the segment.
                         let id=field(update,"toolCallId");
-                        if !id.is_empty() && !self.tools.contains_key(id) {self.kimi_message_id.clear();}
+                        if !id.is_empty() && !self.tools.contains_key(id) {
+                            self.kimi_message_id.clear();
+                            self.acp_turn_text.clear();
+                        }
                         self.kimi_tool(update,&mut step);
                     },
                     "plan"=>step.events.push(self.event("status","Plan updated",Some(update))),
@@ -3020,11 +3160,47 @@ impl Protocol {
         }
         Ok(())
     }
+    fn record_acp_turn_text(&mut self, text: &str) {
+        const ACP_TURN_TEXT_LIMIT: usize = 4096;
+        if text.is_empty() {
+            return;
+        }
+        if text.len() >= ACP_TURN_TEXT_LIMIT {
+            self.acp_turn_text.clear();
+            let mut start = text.len() - ACP_TURN_TEXT_LIMIT;
+            while start < text.len() && !text.is_char_boundary(start) {
+                start += 1;
+            }
+            if let Some(nl) = text[start..].find('\n') {
+                if start + nl + 1 < text.len() {
+                    start += nl + 1;
+                }
+            }
+            self.acp_turn_text.push_str(&text[start..]);
+            return;
+        }
+        self.acp_turn_text.push_str(text);
+        if self.acp_turn_text.len() > ACP_TURN_TEXT_LIMIT {
+            let mut cut = self.acp_turn_text.len() - ACP_TURN_TEXT_LIMIT;
+            while cut < self.acp_turn_text.len() && !self.acp_turn_text.is_char_boundary(cut) {
+                cut += 1;
+            }
+            if let Some(nl) = self.acp_turn_text[cut..].find('\n') {
+                if cut + nl + 1 < self.acp_turn_text.len() {
+                    cut += nl + 1;
+                }
+            }
+            self.acp_turn_text.drain(..cut);
+        }
+    }
     fn kimi_prompt(&mut self, step: &mut Step) {
+        self.acp_turn_text.clear();
+        self.acp_saw_usage_update = false;
         let mut request = json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":self.remote_id}});
         request["params"]["prompt"] = Value::Array(self.prompt_content());
         step.write.push(request);
         self.phase = 1;
+        self.flush_pending_phase0_usage(step);
     }
     fn claude(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
@@ -3513,14 +3689,8 @@ pub(crate) const TERM_WAIT: Duration = Duration::from_millis(500);
 /// Fail a relaunch rather than overlap processes if shutdown is unexpectedly delayed.
 pub(crate) const EXIT_HARD_CAP: Duration = Duration::from_secs(10);
 
-async fn finish_child(child: &mut Child, stdin: ChildStdin, group: &mut ProcessGroup, grace: Duration) {
-    drop(stdin);
-    wait_child(child, group, grace).await;
-}
-
-/// `finish_child` after stdin is closed: wait for the exit with the same escalation and return
-/// the status when the process was reaped.
-/// The flag is true when PandaCode itself escalated (SIGTERM or SIGKILL), so the status says
+/// Waits for a child whose stdin is closed, escalating through SIGTERM then SIGKILL, and returns
+/// the status when reaped. The flag is true when PandaCode itself escalated, so the status says
 /// nothing about the CLI's own health.
 async fn wait_child(child: &mut Child, group: &mut ProcessGroup, wait: Duration) -> (Option<std::process::ExitStatus>, bool) {
     let mut status = None;
@@ -3543,15 +3713,47 @@ async fn wait_child(child: &mut Child, group: &mut ProcessGroup, wait: Duration)
             }
         }
     }
-    // Also clean up provider-created background processes, including orphaned children.
+    release_group(group);
+    (status, escalated)
+}
+
+/// Signals the process group, waits for `child.wait()`, then escalates to `SIGKILL` and reaps.
+/// `stdin` is the caller's: dropping it is an EOF, which Antigravity ignores, so linger closes
+/// the session before it calls this.
+async fn finish_child(child: &mut Child, group: &mut ProcessGroup, term_wait: Option<Duration>) {
+    if let Some(wait) = term_wait {
+        #[cfg(unix)]
+        if let Some(pid) = group.0 {
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGTERM);
+            }
+        }
+        if tokio::time::timeout(wait, child.wait()).await.is_err() {
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+        }
+    }
+    release_group(group);
+}
+
+/// Lets a reaped child's group go: kills what is left of it (provider-created background processes,
+/// including orphaned children), forgets it and tells the crash guard. Runs after the reap, so
+/// `ProcessGroup::drop` does not SIGKILL a child we have not waited for.
+fn release_group(group: &mut ProcessGroup) {
     let cleanup = ProcessGroup(group.0.take());
     drop(cleanup);
-    (status, escalated)
 }
 
 /// Antigravity's Windows build unpacks 150-250 MB into `%TEMP%\\_MEI*` and removes it only on a
 /// clean exit, which a forced kill skips. So it gets its own `TEMP`, deleted when this drops.
 pub(crate) struct AgentTemp(PathBuf);
+/// Sweeps run in this process; a test checks the once-per-process rule.
+#[cfg(test)]
+static SWEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) fn agent_temp_sweeps() -> usize {
+    SWEEPS.load(std::sync::atomic::Ordering::Relaxed)
+}
 impl AgentTemp {
     /// None off Windows, or if the folder cannot be made: the agent then uses the system `TEMP`.
     pub(crate) fn redirect(command: &mut Command) -> Option<Self> {
@@ -3559,14 +3761,27 @@ impl AgentTemp {
             return None;
         }
         let root = crate::secret_store::dir()?.join(AGENT_TEMP_DIR);
-        static SWEPT: std::sync::Once = std::sync::Once::new();
-        SWEPT.call_once(|| Self::sweep(&root));
+        Self::sweep_once(&root);
         let temp = Self::create_in(&root)?;
         command.env("TEMP", &temp.0).env("TMP", &temp.0);
         Some(temp)
     }
+    /// Sweeps once per process, whoever asks first (a redirect or ACP discovery): a
+    /// running agent keeps its unpacked runtime in this folder for the life of the
+    /// process, so only the first caller cleans up old entries.
+    pub(crate) fn sweep_once(root: &Path) {
+        static SWEPT: std::sync::Once = std::sync::Once::new();
+        SWEPT.call_once(|| {
+            #[cfg(test)]
+            SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // An unpacked `_MEI*` runtime is hundreds of MB: deleting it must not hold an async
+            // worker. Only old folders go, so the caller's new one is safe from this thread.
+            let root = root.to_path_buf();
+            std::thread::spawn(move || Self::sweep(&root));
+        });
+    }
     /// Folders left by a crash or a quit. Only old ones: `pandacode serve` has no single-instance
-    /// guard, so another process's agent can be using a recent one.
+    /// guard, so another process's agent can be using a recent one. Synchronous.
     fn sweep(root: &Path) {
         for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
             let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
@@ -3602,9 +3817,41 @@ impl Drop for AgentTemp {
 }
 
 struct Lingering {
+    /// Tells this entry from a newer one for the same task, so a finishing linger task removes
+    /// only its own.
+    id: u64,
     /// Canonical, for `end_lingering_in`.
     cwd: PathBuf,
-    agent: tokio::task::JoinHandle<()>,
+    /// Wakes the linger task so it can close the session and reap the child. Taken by the first
+    /// `end_lingering`. Dropping the sender is the same signal: a replaced entry must not leave
+    /// the agent up.
+    shutdown: Option<tokio::sync::oneshot::Sender<()>>,
+    /// True once the child is closed and reaped (or the task ended any other way).
+    done: tokio::sync::watch::Receiver<bool>,
+}
+
+fn next_lingering_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Held by a linger task: when it ends, however it ends, waiters are told and its own entry,
+/// never a newer one for the same task, leaves the map.
+struct LingerDone {
+    session_id: String,
+    id: u64,
+    done: tokio::sync::watch::Sender<bool>,
+}
+
+impl Drop for LingerDone {
+    fn drop(&mut self) {
+        let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
+        if agents.get(&self.session_id).is_some_and(|entry| entry.id == self.id) {
+            agents.remove(&self.session_id);
+        }
+        drop(agents);
+        let _ = self.done.send(true);
+    }
 }
 
 /// Agents past their turn, still finishing background work, by task.
@@ -3613,47 +3860,201 @@ fn lingering() -> &'static Mutex<HashMap<String, Lingering>> {
     AGENTS.get_or_init(Default::default)
 }
 
+/// What ended the wait for an agent asked to close its session.
+#[derive(Debug, PartialEq)]
+enum CloseOutcome {
+    Answered,
+    Exited,
+    /// No answer: it ran out the clock, or its exit could not be confirmed.
+    TimedOut,
+}
+
+/// Whether `frame` answers `session/close`: the reply to request 9, a result or an error with no
+/// method, as the close loop in `inspect_state` reads it. Bytes, so whatever else the agent prints
+/// merely fails to parse.
+fn answers_close(frame: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(frame).is_ok_and(|value| {
+        value["id"] == 9
+            && value.get("method").is_none()
+            && (value.get("result").is_some() || value.get("error").is_some())
+    })
+}
+
+/// Drains a lingering agent's stdout to EOF and signals its answer to `session/close`. It reads
+/// bytes and keeps reading after the answer: the pipe stays open for as long as the agent may write.
+async fn drain_stdout(mut stdout: tokio::process::ChildStdout, answered: Arc<tokio::sync::Notify>) {
+    let (mut line, mut skipped, mut buf) = (Vec::new(), false, [0u8; 8192]);
+    loop {
+        let count = match stdout.read(&mut buf).await {
+            Ok(0) | Err(_) => return,
+            Ok(count) => count,
+        };
+        for part in buf[..count].split_inclusive(|byte| *byte == b'\n') {
+            let complete = part.last() == Some(&b'\n');
+            if !skipped {
+                line.extend_from_slice(&part[..part.len() - usize::from(complete)]);
+                if line.len() > CLOSE_ANSWER_LIMIT {
+                    // Too long to be the answer: dropped, while the pipe stays read.
+                    line.clear();
+                    skipped = true;
+                }
+            }
+            if complete {
+                if !skipped && answers_close(&line) {
+                    answered.notify_one();
+                }
+                line.clear();
+                skipped = false;
+            }
+        }
+    }
+}
+
+/// An ACP server answers `session/close` and keeps running until it is signalled, so the wait ends
+/// on that answer rather than on an exit that never comes. An agent that leaves by itself is reaped
+/// at once; one that never answers runs out the clock.
+async fn wait_for_close(answer: impl std::future::Future<Output = ()>, child: &mut Child) -> CloseOutcome {
+    tokio::select! {
+        () = answer => CloseOutcome::Answered,
+        status = child.wait() => {
+            if status.is_ok() { CloseOutcome::Exited } else { CloseOutcome::TimedOut }
+        }
+        () = tokio::time::sleep(ANTIGRAVITY_CLOSE_WAIT) => CloseOutcome::TimedOut,
+    }
+}
+
 /// Gives a finished agent `ANTIGRAVITY_GRACE` to exit by itself, without holding the turn open.
-/// Its group stays in the process registry, so app quit still kills it, and its pipes stay read,
-/// because an agent that writes to a closed pipe would die on the spot.
+/// Its group stays in the process registry, so app quit still kills it, and its pipes stay read
+/// until it is gone, because an agent that writes to a closed pipe would die on the spot. An agent
+/// that exits by itself inside the grace is reaped at once.
 #[allow(clippy::too_many_arguments)]
 fn linger_agent(
     session_id: String,
     cwd: &Path,
     mut child: Child,
-    stdin: ChildStdin,
-    mut stdout: tokio::process::ChildStdout,
+    mut stdin: ChildStdin,
+    stdout: tokio::process::ChildStdout,
     stderr: StderrReader,
     mut group: ProcessGroup,
     temp: Option<AgentTemp>,
+    close: Option<(bool, String)>,
 ) {
-    let agent = tokio::spawn(async move {
-        let (_stderr, _temp) = (stderr, temp);
-        // In this task, so an abort stops the drain too. It never ends the select: an agent can
-        // close stdout and keep working.
-        let drain = async move {
-            let _ = tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await;
-            std::future::pending::<()>().await
-        };
-        tokio::select! {
-            () = finish_child(&mut child, stdin, &mut group, ANTIGRAVITY_GRACE) => {}
-            () = drain => {}
-        }
-    });
+    let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+    let (done_tx, done) = tokio::sync::watch::channel(false);
+    let id = next_lingering_id();
+    let guard = LingerDone { session_id: session_id.clone(), id, done: done_tx };
     let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_owned());
-    let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
-    agents.retain(|_, lingering| !lingering.agent.is_finished());
-    agents.insert(session_id, Lingering { cwd, agent });
+    // Inserted before the task starts, so a task that finishes at once still removes its entry.
+    {
+        let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
+        agents.retain(|_, lingering| !*lingering.done.borrow());
+        agents.insert(session_id, Lingering { id, cwd, shutdown: Some(shutdown), done });
+    }
+    tokio::spawn(async move {
+        // Declared first, so it drops last: after the child is reaped and the temp folder let go.
+        let _guard = guard;
+        let (_stderr, _temp) = (stderr, temp);
+        // Its own task, so it outlives the selects below and keeps reading while the close frame is
+        // written and the child is waited for: an agent that answers the close with output must not
+        // hit a closed pipe. A full pipe must not stall the agent either.
+        let answered = Arc::new(tokio::sync::Notify::new());
+        let drain = tokio::spawn(drain_stdout(stdout, answered.clone()));
+        // Shutdown is the oneshot or the grace timer, never abort. An agent that exits by itself
+        // is reaped here at once, so its group leaves the registry now rather than at the end of
+        // the grace, a quit or the next turn.
+        let mut exited = tokio::select! {
+            () = tokio::time::sleep(ANTIGRAVITY_GRACE) => false,
+            _ = shutdown_rx => false,
+            status = child.wait() => status.is_ok(),
+        };
+        let (can_close, remote_id) = close.unwrap_or((false, String::new()));
+        let mut close_outcome = None;
+        if !exited && can_close && !remote_id.is_empty() {
+            let mut line = br#"{"jsonrpc":"2.0","id":9,"method":"session/close","params":{"sessionId":"#.to_vec();
+            line.extend_from_slice(&serde_json::to_vec(&remote_id).unwrap_or_else(|_| b"\"\"".to_vec()));
+            line.extend_from_slice(b"}}\n");
+            let _ = tokio::time::timeout(Duration::from_millis(500), async {
+                stdin.write_all(&line).await?;
+                stdin.flush().await
+            })
+            .await;
+            close_outcome = Some(wait_for_close(answered.notified(), &mut child).await);
+            exited = close_outcome == Some(CloseOutcome::Exited);
+        }
+        if exited {
+            release_group(&mut group);
+        } else {
+            drop(stdin);
+            // Windows has no SIGTERM: once the server acknowledged `session/close`, a long
+            // grace only stalls before the forced kill.
+            let grace = if close_outcome == Some(CloseOutcome::Answered) && !cfg!(unix) {
+                Duration::from_millis(150)
+            } else {
+                Duration::from_secs(2)
+            };
+            finish_child(&mut child, &mut group, Some(grace)).await;
+        }
+        // Nothing legitimate can still write: the drain ends here rather than with a descendant
+        // that kept the pipe.
+        drain.abort();
+    });
 }
 
-/// Ends the task's lingering agent. Its next turn must not share the conversation store with it.
-/// Dropping the aborted task kills the group and removes its temp folder.
+/// Ends the task's lingering agent. Returns only after the child is closed and reaped, for every
+/// concurrent caller. The shutdown is sent before the first await, so a caller dropped mid-wait
+/// (a Stop) still leaves the agent closing and reaping in its own task.
 pub(crate) async fn end_lingering(session_id: &str) {
-    let lingering = lingering().lock().unwrap_or_else(|p| p.into_inner()).remove(session_id);
-    if let Some(Lingering { agent, .. }) = lingering {
-        agent.abort();
-        let _ = agent.await;
+    lingering_ended(signal_lingering(session_id)).await;
+}
+
+/// Tells the task's lingering agent to close, at once and without awaiting, and returns what
+/// says it is gone. The entry stays until its task ends, so every caller can wait on it.
+fn signal_lingering(session_id: &str) -> Option<tokio::sync::watch::Receiver<bool>> {
+    let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
+    agents.get_mut(session_id).map(|entry| {
+        if let Some(shutdown) = entry.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        entry.done.clone()
+    })
+}
+
+/// Waits until a signalled lingering agent is closed and reaped.
+async fn lingering_ended(done: Option<tokio::sync::watch::Receiver<bool>>) {
+    if let Some(mut done) = done {
+        let _ = done.wait_for(|&finished| finished).await;
     }
+}
+
+/// Ends every lingering agent. App quit still uses `shutdown_all`, which SIGKILLs the registry.
+#[cfg(test)]
+pub(crate) async fn end_all_lingering() {
+    let ids: Vec<String> = lingering()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .keys()
+        .cloned()
+        .collect();
+    for id in ids {
+        end_lingering(&id).await;
+    }
+}
+
+/// Spaces simultaneous local Antigravity process spawns so parallel Architect
+/// workers do not collide on `~/.gemini/antigravity-cli/mcp/*.json.tmp` renames.
+async fn antigravity_spawn_gate() {
+    static LAST_SPAWN: OnceLock<tokio::sync::Mutex<Option<tokio::time::Instant>>> = OnceLock::new();
+    let mutex = LAST_SPAWN.get_or_init(|| tokio::sync::Mutex::new(None));
+    let mut last = mutex.lock().await;
+    let spacing = Duration::from_millis(350);
+    if let Some(prev) = *last {
+        let target = prev + spacing;
+        let now = tokio::time::Instant::now();
+        if target > now {
+            tokio::time::sleep_until(target).await;
+        }
+    }
+    *last = Some(tokio::time::Instant::now());
 }
 
 /// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
@@ -4089,11 +4490,16 @@ async fn run_inner(
     config.cwd = external_path(&config.cwd);
     let image_blocks = attachments::load(&config.provider, &config.images).await?;
     let mut command = provider_command(&config.provider, &path)?;
+    let defer_antigravity_gemini_dir = config.provider == "antigravity" && connection.is_some();
     let mut command = {
         let (config, disabled, agents) =
             (config.clone(), disabled.clone(), opencode_agents.clone());
         crate::blocking(move || {
-            configure_command_with_agents(&mut command, &config, &disabled, &agents);
+            if defer_antigravity_gemini_dir {
+                acp::configure_antigravity_base(&mut command, &config);
+            } else {
+                configure_command_with_agents(&mut command, &config, &disabled, &agents);
+            }
             Ok(command)
         })
         .await?
@@ -4108,6 +4514,12 @@ async fn run_inner(
                 &disabled,
             ));
         }
+    }
+    if defer_antigravity_gemini_dir {
+        let (env, args): (&[(String, String)], &[String]) = connection
+            .as_ref()
+            .map_or((&[], &[]), |connection| (&connection.env, &connection.args));
+        acp::antigravity_gemini_dir_isolated(&mut command, env, args)?;
     }
     if config.provider == "opencode" && !disabled.is_empty() {
         let disabled = disabled.clone();
@@ -4165,6 +4577,22 @@ fn redact_launch_error(error: &str, keys: &[Option<&str>], connection: Option<&c
         Some(connection) => connection.redact(&error),
         None => error,
     }
+}
+
+/// Strips PandaCode's MCP server namespace prefixes that ACP harnesses prepend
+/// to host tool names so deduplication and self-scoped auto-approval match cleanly.
+pub(super) fn strip_mcp_architect_prefix(name: &str) -> Option<&str> {
+    for prefix in [
+        "mcp__pandacode_architect__",
+        "mcp_pandacode_architect_",
+        "pandacode_architect__",
+        "pandacode_architect:",
+    ] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            return Some(rest);
+        }
+    }
+    None
 }
 
 /// Host tools that need no permission prompt once registered for the run.
@@ -4404,16 +4832,71 @@ async fn run_process_launch(
         }
         _ => None,
     };
-    reached_harness();
-    let lingers = config.provider == "antigravity" && !crate::cloud_agents::transport::is_cloud(&config.session_id);
+    let local = !crate::cloud_agents::transport::is_cloud(&config.session_id);
+    let lingers = config.provider == "antigravity" && local;
+    if local {
+        // Signalled before the wait, so a Stop drops only the wait: the old agent still closes
+        // and its own task reaps it.
+        let end = lingering_ended(signal_lingering(&config.session_id));
+        tokio::pin!(end);
+        loop {
+            tokio::select! {
+                biased;
+                action = input.recv() => match action {
+                    Some(RunInput::Stop) | None => {
+                        if let Some(server) = &mcp {
+                            server.stop();
+                        }
+                        stop_taken();
+                        sink(AgentEvent {
+                            session_id: config.session_id.clone(),
+                            kind: "status".into(),
+                            text: STOPPING_STATUS.into(),
+                            request_id: None,
+                            data: None,
+                            tool: None,
+                        });
+                        return Ok(());
+                    }
+                    Some(other) => early.push_back(other),
+                },
+                () = &mut end => break,
+            }
+        }
+    }
     let mut agent_temp = None;
     let (mut child, mut group) = if let Some(spare) = spare {
         reached_harness();
         spare.into_parts()
     } else {
         if lingers {
-            end_lingering(&config.session_id).await;
             agent_temp = AgentTemp::redirect(&mut command);
+            let gate = antigravity_spawn_gate();
+            tokio::pin!(gate);
+            loop {
+                tokio::select! {
+                    biased;
+                    action = input.recv() => match action {
+                        Some(RunInput::Stop) | None => {
+                            if let Some(server) = &mcp {
+                                server.stop();
+                            }
+                            stop_taken();
+                            sink(AgentEvent {
+                                session_id: config.session_id.clone(),
+                                kind: "status".into(),
+                                text: STOPPING_STATUS.into(),
+                                request_id: None,
+                                data: None,
+                                tool: None,
+                            });
+                            return Ok(());
+                        }
+                        Some(other) => early.push_back(other),
+                    },
+                    () = &mut gate => break,
+                }
+            }
         }
         if claude_family(&config.provider) {
             if let Some(server) = &mcp {
@@ -4503,6 +4986,8 @@ async fn run_process_launch(
     let step_limit = startup_step();
     let mut deadline = startup_deadline(started, started, step_limit);
     let mut answered = false;
+    let mut stray_stdout: usize = 0;
+    let mut stray_notes: Vec<String> = Vec::new();
     let result=async {
         write_json(&mut stdin,&protocol.initial()).await?;
         if protocol.config.provider == "antigravity" {
@@ -4537,7 +5022,12 @@ async fn run_process_launch(
                             jobs.abort_all(); queued.clear();
                             let step=protocol.cancel_requests();
                             let _=tokio::time::timeout(Duration::from_millis(500),apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued)).await;
-                            let _=tokio::time::timeout(Duration::from_millis(500),write_json(&mut stdin,&protocol.cancel())).await;deadline=tokio::time::Instant::now()+Duration::from_secs(3);
+                            let _=tokio::time::timeout(Duration::from_millis(500),write_json(&mut stdin,&protocol.cancel())).await;
+                            // No session/prompt is in flight, so an id==3 reply will never arrive.
+                            if protocol.phase == 0 && acp::is_acp_provider(&protocol.config.provider) {
+                                return Ok(());
+                            }
+                            deadline=tokio::time::Instant::now()+Duration::from_secs(3);
                         },
                     }
                 },
@@ -4577,6 +5067,12 @@ async fn run_process_launch(
                             apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await?;
                             break Ok(());
                         }
+                        if stray_stdout > 0 {
+                            break Err(format!(
+                                "Invalid provider JSON: {}",
+                                stray_notes.first().map_or("unexpected non-JSON stdout", String::as_str)
+                            ));
+                        }
                         break Err("Agent exited before completing its response".into());
                     }
                     // Retained bytes contain no newline: only scan this read.
@@ -4591,12 +5087,42 @@ async fn run_process_launch(
                         let line=&bytes[consumed..end];consumed=end+1;
                         if line.len()>MAX_FRAME{return Err("Provider sent an oversized JSON message".into());}
                         if line.iter().all(u8::is_ascii_whitespace){continue;}
-                        let value:Value=serde_json::from_slice(line).map_err(|e|format!("Invalid provider JSON: {e}"))?;
+                        let trimmed = line.iter().position(|b| !b.is_ascii_whitespace()).map_or(&[][..], |i| &line[i..]);
+                        if !trimmed.starts_with(b"{") {
+                            if stopped {
+                                continue;
+                            }
+                            stray_stdout += 1;
+                            let note = limited(String::from_utf8_lossy(trimmed).trim(), 256);
+                            if stray_stdout <= 64 {
+                                eprintln!("PandaCode: ignored non-JSON stdout line {stray_stdout} from {}", protocol.config.provider);
+                                if stray_notes.len() < 8 {
+                                    stray_notes.push(note);
+                                }
+                                continue;
+                            }
+                            return Err("Invalid provider JSON: provider emitted too many non-JSON stdout lines".into());
+                        }
+                        let value = match serde_json::from_slice::<Value>(line) {
+                            Ok(value) => value,
+                            Err(error) => {
+                                if stopped {
+                                    continue;
+                                }
+                                return Err(format!("Invalid provider JSON: {error}"));
+                            }
+                        };
                         if stopped {
-                            if pi::stop_settled(&protocol.config.provider, &value) {return Ok(());}
+                            if pi::stop_settled(&protocol.config.provider, &value)
+                                || protocol.acp_stop_settled(&value)
+                            {
+                                return Ok(());
+                            }
                             continue;
                         }
                         answered=true;
+                        stray_stdout=0;
+                        stray_notes.clear();
                         if protocol.phase==0 {deadline=startup_deadline(started,tokio::time::Instant::now(),step_limit);}
                         let step=protocol.receive(value)?;
                         if apply_step(&mut protocol,step,&sink,&mut stdin,&mut jobs,&mut queued).await? {return Ok(());}
@@ -4645,15 +5171,25 @@ async fn run_process_launch(
         return Ok(());
     }
     if lingers && result.is_ok() && !stopped {
-        linger_agent(protocol.config.session_id.clone(), &protocol.config.cwd, child, stdin, stdout, stderr_task, group, agent_temp);
+        let close = Some((protocol.acp_can_close, protocol.remote_id.clone()));
+        linger_agent(protocol.config.session_id.clone(), &protocol.config.cwd, child, stdin, stdout, stderr_task, group, agent_temp, close);
         return Ok(());
     }
-    finish_child(&mut child, stdin, &mut group, FINISH_GRACE).await;
-    let diagnostic = tokio::time::timeout(Duration::from_millis(500), &mut stderr_task.0)
+    drop(stdin);
+    if tokio::time::timeout(FINISH_GRACE, child.wait()).await.is_err() {
+        finish_child(&mut child, &mut group, Some(Duration::from_millis(500))).await;
+    } else {
+        let cleanup = ProcessGroup(group.0.take());
+        drop(cleanup);
+    }
+    let mut diagnostic = tokio::time::timeout(Duration::from_millis(500), &mut stderr_task.0)
         .await
         .ok()
         .and_then(Result::ok)
         .unwrap_or_default();
+    if !stray_notes.is_empty() && diagnostic.is_empty() {
+        diagnostic = stray_notes.join("\n");
+    }
     let diagnostic = mcp
         .as_ref()
         .map(|server| server.redact(&diagnostic))
@@ -4911,6 +5447,7 @@ pub(crate) mod tests {
             images: Vec::new(),
             worker: None,
             disallowed_tools: None,
+            no_fresh_resume_fallback: false,
         }
     }
 
@@ -6078,12 +6615,17 @@ pub(crate) mod tests {
         );
         let mut p = Protocol::new(config("kimi"));
         p.phase = 1;
-        let step=p.receive(json!({"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":4096,"size":262144}}})).unwrap();
+        p.remote_id = "remote".into();
+        let step=p.receive(json!({"method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"usage_update","used":4096,"size":262144}}})).unwrap();
         assert_eq!(
             step.events[0].data,
             json!({"usedTokens":4096,"contextWindow":262144}).into()
         );
-        let step=p.receive(json!({"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":-1,"size":262144}}})).unwrap();
+        let missing = p.receive(json!({"method":"session/update","params":{"update":{"sessionUpdate":"usage_update","used":1,"size":262144}}})).unwrap();
+        assert!(missing.events.iter().all(|event| event.kind != "usage"));
+        let mismatch = p.receive(json!({"method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"usage_update","used":1,"size":262144}}})).unwrap();
+        assert!(mismatch.events.iter().all(|event| event.kind != "usage"));
+        let step=p.receive(json!({"method":"session/update","params":{"sessionId":"remote","update":{"sessionUpdate":"usage_update","used":-1,"size":262144}}})).unwrap();
         assert!(step.events.is_empty());
     }
 
@@ -6960,7 +7502,11 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
     /// then leaves the marker. It ignores stdin's EOF, as Antigravity does.
     #[cfg(unix)]
     fn lingering_agent() -> String {
-        acp_agent("0", r#"sleep 2; echo '{}'; echo note >&2; echo done > "$1"; exec sleep 30"#)
+        r#"read -r a; echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+read -r a; echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+read -r a; echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+sleep 2; echo '{}'; echo note >&2; echo done > "$1"; exec sleep 30"#
+            .into()
     }
 
     #[cfg(unix)]
@@ -6995,6 +7541,167 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         let _ = std::fs::remove_file(marker);
     }
 
+    /// Whether the session's linger task ended on its own within `wait`.
+    #[cfg(unix)]
+    async fn linger_finished_within(id: &str, wait: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + wait;
+        while tokio::time::Instant::now() < deadline {
+            if lingering().lock().unwrap().get(id).is_none_or(|agent| *agent.done.borrow()) {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Advertises `session/close` and, once asked, runs `reply` and then `after`.
+    #[cfg(unix)]
+    fn closing_agent(reply: &str, after: &str) -> String {
+        format!(
+            r#"read -r a; echo '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"sessionCapabilities":{{"close":{{}}}}}}}}}}'
+read -r a; echo '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"s","configOptions":[{{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{{"value":"default"}}]}}]}}}}'
+read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}'
+while read -r a; do case "$a" in *session/close*) break;; esac; done
+{reply}
+{after}"#
+        )
+    }
+
+    /// Whether the agent whose pid `marker` holds is gone.
+    #[cfg(unix)]
+    fn agent_gone(marker: &Path) -> bool {
+        std::fs::read_to_string(marker)
+            .ok()
+            .and_then(|pid| pid.trim().parse::<i32>().ok())
+            .is_some_and(|pid| unsafe { libc::kill(pid, 0) } == -1)
+    }
+
+    /// Asked to close, the agent writes 4 MiB (more than any pipe buffer holds) before it leaves
+    /// the marker and exits by itself: stdout stays read until it is gone, and the close waits for
+    /// neither a signal nor the clock. The marker is the close frame, so it proves the agent was
+    /// asked, not just left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lingering_agent_can_answer_its_close_with_a_full_stdout() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        let bulk = r#"dd if=/dev/zero bs=65536 count=64 2>/dev/null | tr '\000' 'x'; echo"#;
+        let script = closing_agent(bulk, r#"printf '%s' "$a" > "$1""#);
+        assert_eq!(run_script("antigravity", "linger-close", &script, &marker).await, Ok(()));
+        let started = std::time::Instant::now();
+        end_lingering("linger-close").await;
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_secs(4), "end_lingering took {elapsed:?}");
+        let closed = std::fs::read_to_string(&marker).unwrap_or_default();
+        assert!(closed.contains(r#""method":"session/close""#), "the agent could not finish answering its close: {closed:?}");
+        let _ = std::fs::remove_file(marker);
+    }
+
+    /// An agent that answers its close and, as an ACP server does, keeps running is signalled as
+    /// soon as it has answered and is gone when `end_lingering` returns; one that never answers
+    /// runs out the clock first. Timing is the evidence here, with a margin under that clock: which
+    /// event ends the wait is pinned by `wait_for_close_ends_on_the_answer_not_on_an_exit_that_never_comes`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_lingering_agent_that_answers_its_close_is_signalled_at_once() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let result = r#"printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{}}'"#;
+        let error = r#"printf '%s\n' '{"jsonrpc":"2.0","id":9,"error":{"code":-32601,"message":"Method not found"}}'"#;
+        for (task, answer) in [("linger-answer", result), ("linger-error", error), ("linger-silent", "")] {
+            let marker = marker_path();
+            // Its pid first: the signal may follow the answer within milliseconds.
+            let script = closing_agent(&format!(r#"echo "$$" > "$1"; {answer}"#), "exec sleep 30");
+            assert_eq!(run_script("antigravity", task, &script, &marker).await, Ok(()));
+            let started = std::time::Instant::now();
+            end_lingering(task).await;
+            let elapsed = started.elapsed();
+            if answer.is_empty() {
+                assert!(elapsed >= ANTIGRAVITY_CLOSE_WAIT && elapsed < Duration::from_secs(5), "{task}: {elapsed:?}");
+            } else {
+                assert!(elapsed < Duration::from_millis(1500), "{task}: end_lingering waited for the clock: {elapsed:?}");
+            }
+            assert!(agent_gone(&marker), "{task}: the agent outlived end_lingering");
+            let _ = std::fs::remove_file(marker);
+        }
+    }
+
+    /// Runs `script` as an agent, asks it to close and waits as linger does: what ended the wait,
+    /// and whether the agent was still running then.
+    #[cfg(unix)]
+    async fn close_wait(script: &str) -> (CloseOutcome, bool) {
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let answered = Arc::new(tokio::sync::Notify::new());
+        let drain = tokio::spawn(drain_stdout(child.stdout.take().unwrap(), answered.clone()));
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"session/close\",\"params\":{\"sessionId\":\"s\"}}\n")
+            .await
+            .unwrap();
+        let outcome = wait_for_close(answered.notified(), &mut child).await;
+        let running = child.try_wait().unwrap().is_none();
+        drop(child.stdin.take());
+        finish_child(&mut child, &mut ProcessGroup(None), Some(Duration::from_secs(2))).await;
+        drain.abort();
+        (outcome, running)
+    }
+
+    /// Reads the close frame, then runs `reply` and `after`.
+    #[cfg(unix)]
+    fn answering_agent(reply: &str, after: &str) -> String {
+        format!("read -r a\n{reply}\n{after}")
+    }
+
+    /// The wait ends on the agent's answer, a result or an error, wherever it is in the output. A
+    /// request numbered 9, a reply to another request or silence run out the clock; an agent that
+    /// leaves is reaped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn wait_for_close_ends_on_the_answer_not_on_an_exit_that_never_comes() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let result = r#"printf '%s\n' '{"jsonrpc":"2.0","id":9,"result":{}}'"#;
+        let error = r#"printf '%s\n' '{"jsonrpc":"2.0","id":9,"error":{"code":-32601,"message":"Method not found"}}'"#;
+        for reply in [result, error] {
+            assert_eq!(close_wait(&answering_agent(reply, "exec sleep 30")).await, (CloseOutcome::Answered, true));
+        }
+        // After bytes that are not UTF-8 and a frame too long to be the answer, and split over two writes.
+        let scattered = r#"printf '\377\376\n'; head -c 70000 /dev/zero | tr '\000' x; echo; printf '%s' '{"jsonrpc":"2.0","id":9,"res'; sleep 0.2; printf '%s\n' 'ult":{}}'"#;
+        assert_eq!(close_wait(&answering_agent(scattered, "exec sleep 30")).await, (CloseOutcome::Answered, true));
+        let other = r#"printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{}}' '{"jsonrpc":"2.0","id":3,"result":{}}'"#;
+        assert_eq!(close_wait(&answering_agent(other, "exec sleep 30")).await, (CloseOutcome::TimedOut, true));
+        assert_eq!(close_wait(&answering_agent("", "exec sleep 30")).await, (CloseOutcome::TimedOut, true));
+        assert_eq!(close_wait(&answering_agent("", "exit 0")).await, (CloseOutcome::Exited, false));
+    }
+
+    /// An agent that leaves by itself inside the grace is reaped at once and its group let go:
+    /// nothing of it waits for the grace, a quit or the next turn.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_agent_that_exits_inside_the_grace_is_reaped_at_once() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        let script = r#"read -r a; echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+read -r a; echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+read -r a; echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}'
+sleep 0.3; echo "$$" > "$1"; exit 0"#;
+        assert_eq!(run_script("antigravity", "linger-exit", script, &marker).await, Ok(()));
+        assert!(wait_for(&marker).await, "the agent did not leave by itself");
+        assert!(linger_finished_within("linger-exit", Duration::from_secs(5)).await, "the linger task outlived its agent");
+        let pid: i32 = std::fs::read_to_string(&marker).unwrap().trim().parse().unwrap();
+        assert!(!process_registry().lock().unwrap().contains(&(pid as u32)), "the exited agent kept its group in the registry");
+        assert_eq!(unsafe { libc::kill(pid, 0) }, -1, "the exited agent was not reaped");
+        end_lingering("linger-exit").await;
+        assert!(!lingering().lock().unwrap().contains_key("linger-exit"));
+        let _ = std::fs::remove_file(marker);
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn the_next_turn_and_app_quit_end_a_lingering_agent() {
@@ -7017,6 +7724,98 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         end_lingering("linger-quit").await;
     }
 
+    /// A stand-in linger task that takes `exit` to finish once told to shut down.
+    fn fake_lingering(task: &str, cwd: &Path, exit: Duration) {
+        let (shutdown, rx) = tokio::sync::oneshot::channel();
+        let (done_tx, done) = tokio::sync::watch::channel(false);
+        let id = next_lingering_id();
+        let guard = LingerDone { session_id: task.into(), id, done: done_tx };
+        let entry = Lingering { id, cwd: cwd.canonicalize().unwrap(), shutdown: Some(shutdown), done };
+        lingering().lock().unwrap().insert(task.into(), entry);
+        tokio::spawn(async move {
+            let _guard = guard;
+            let _ = rx.await;
+            tokio::time::sleep(exit).await;
+        });
+    }
+
+    /// The agent's pid goes to the marker at once; asked to close, it takes 0.3 s to leave.
+    #[cfg(unix)]
+    fn slow_closing_agent() -> String {
+        format!(r#"echo "$$" > "$1"
+{}"#, closing_agent("", "sleep 0.3; exit 0"))
+    }
+
+    /// Two callers at once: neither returns before the agent is closed and reaped. The second used
+    /// to find the entry already taken and return while the agent was still up.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linger_every_concurrent_caller_waits_for_the_agent_to_be_gone() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        assert_eq!(run_script("antigravity", "linger-both", &slow_closing_agent(), &marker).await, Ok(()));
+        let started = std::time::Instant::now();
+        let caller = || async {
+            end_lingering("linger-both").await;
+            (agent_gone(&marker), started.elapsed())
+        };
+        let ((first, first_at), (second, second_at)) = tokio::join!(caller(), caller());
+        assert!(first && second, "a caller returned while the agent was up: {first} {second}");
+        assert!(first_at >= Duration::from_millis(250) && second_at >= Duration::from_millis(250), "{first_at:?} {second_at:?}");
+        assert!(!lingering().lock().unwrap().contains_key("linger-both"));
+        let _ = std::fs::remove_file(marker);
+    }
+
+    /// A waiter dropped mid-wait, as a Stop drops it, still leaves the agent closing: it is gone
+    /// shortly after, and a later caller still finds it ending rather than a stale entry.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linger_a_cancelled_waiter_still_ends_the_agent() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        assert_eq!(run_script("antigravity", "linger-cancel", &slow_closing_agent(), &marker).await, Ok(()));
+        let cancelled = tokio::time::timeout(Duration::from_millis(50), end_lingering("linger-cancel")).await;
+        assert!(cancelled.is_err(), "the agent left before the waiter was dropped");
+        assert!(!agent_gone(&marker), "the agent left before the waiter was dropped");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !agent_gone(&marker) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(agent_gone(&marker), "dropping the waiter left the agent running");
+        end_lingering("linger-cancel").await;
+        assert!(!lingering().lock().unwrap().contains_key("linger-cancel"));
+        let _ = std::fs::remove_file(marker);
+    }
+
+    /// A Stop while the next run waits for the old agent returns at once, and the old agent still
+    /// closes and is reaped.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn linger_a_stop_while_the_next_run_waits_still_ends_the_old_agent() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let marker = marker_path();
+        assert_eq!(run_script("antigravity", "linger-stop", &slow_closing_agent(), &marker).await, Ok(()));
+        let mut config = config("antigravity");
+        config.session_id = "linger-stop".into();
+        let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
+        input.send(RunInput::Stop).unwrap();
+        let sink: Sink = Arc::new(|_| {});
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "exit 7"]);
+        let started = std::time::Instant::now();
+        assert_eq!(run_process(config, sink, receiver, command, Vec::new()).await, Ok(()));
+        assert!(started.elapsed() < Duration::from_millis(250), "the Stop waited for the old agent");
+        assert!(!agent_gone(&marker), "the Stop waited for the old agent");
+        // No second caller: only the run's own signal can end it before the 120 s grace.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        while !agent_gone(&marker) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(agent_gone(&marker), "the old agent outlived the Stop");
+        end_lingering("linger-stop").await;
+        let _ = std::fs::remove_file(marker);
+    }
+
     #[tokio::test]
     async fn removing_a_folder_ends_only_the_agents_working_in_it() {
         let root = std::env::temp_dir().join(format!("pandacode-linger-in-{}", uuid::Uuid::new_v4()));
@@ -7024,13 +7823,13 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         std::fs::create_dir_all(&inside).unwrap();
         std::fs::create_dir_all(&other).unwrap();
         for (task, cwd) in [("linger-in-gone", &inside), ("linger-in-kept", &other)] {
-            let lingering_agent = Lingering { cwd: cwd.canonicalize().unwrap(), agent: tokio::spawn(std::future::pending()) };
-            lingering().lock().unwrap().insert(task.into(), lingering_agent);
+            fake_lingering(task, cwd, Duration::ZERO);
         }
         end_lingering_in(&root.join("gone")).await;
         assert!(!lingering().lock().unwrap().contains_key("linger-in-gone"));
         assert!(lingering().lock().unwrap().contains_key("linger-in-kept"));
-        end_lingering("linger-in-kept").await;
+        end_all_lingering().await;
+        assert!(!lingering().lock().unwrap().contains_key("linger-in-kept"));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -7042,6 +7841,201 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
         let error = run.await.unwrap_err();
         assert!(error.contains("boom"), "{error}");
         assert!(!lingering().lock().unwrap().contains_key("linger-failed"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stray_stdout_does_not_mask_mid_turn_eof_after_valid_json() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        // Benign startup banner followed by valid JSON, then mid-turn EOF -> reports ordinary exit,
+        // NOT "Invalid provider JSON: Starting banner...".
+        let mid_turn_crash = r#"
+            echo 'Starting banner...'
+            read -r init
+            echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+            read -r sess
+            exit 1
+        "#;
+        let err = run_script("opencode", "stray-after-json", mid_turn_crash, Path::new("/dev/null"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Agent exited before completing its response"), "{err}");
+        assert!(!err.contains("Invalid provider JSON"), "{err}");
+        assert!(!err.contains("Starting banner"), "{err}");
+
+        // Non-JSON stdout with NO valid JSON frame before EOF still reports Invalid provider JSON.
+        let non_json_only = "echo 'fatal: unknown flag'; exit 1";
+        let err = run_script("opencode", "stray-before-json", non_json_only, Path::new("/dev/null"))
+            .await
+            .unwrap_err();
+        assert!(err.contains("Invalid provider JSON"), "{err}");
+        assert!(err.contains("fatal: unknown flag"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_run_ignores_more_than_64_non_json_stdout_lines() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        // Start an ACP session, reach prompt phase, receive Stop -> emit 100 non-JSON
+        // shutdown lines followed by the settled id:3 reply -> must return Ok(()).
+        let script = r#"
+            read -r init
+            echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+            read -r sess
+            echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-stop-noise","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+            read -r prompt
+            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-stop-noise","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'
+            read -r cancel
+            i=1
+            while [ "$i" -le 100 ]; do
+                echo "shutdown noise line $i"
+                i=$((i + 1))
+            done
+            echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}'
+        "#;
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        let mut cfg = config("antigravity");
+        cfg.session_id = "stop-noise-session".into();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_stop = tx.clone();
+        let sink: Sink = Arc::new(move |event| {
+            if event.kind == "text" {
+                let _ = tx_stop.send(RunInput::Stop);
+            }
+        });
+        let result = run_process(cfg, sink, rx, command, Vec::new()).await;
+        assert_eq!(result, Ok(()));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_run_ignores_malformed_json_and_phase_zero_returns_immediately() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        let broken_then_settled = r#"
+            read -r init
+            echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+            read -r sess
+            echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-broken","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+            read -r prompt
+            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-broken","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'
+            read -r cancel
+            echo '{broken'
+            echo '{"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}}'
+        "#;
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", broken_then_settled]);
+        let mut cfg = config("antigravity");
+        cfg.session_id = "stop-broken-json".into();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_stop = tx.clone();
+        let sink: Sink = Arc::new(move |event| {
+            if event.kind == "text" {
+                let _ = tx_stop.send(RunInput::Stop);
+            }
+        });
+        assert_eq!(run_process(cfg, sink, rx, command, Vec::new()).await, Ok(()));
+
+        let only_broken = r#"
+            read -r init
+            echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}'
+            read -r sess
+            echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s-only","configOptions":[{"id":"mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"}]}]}}'
+            read -r prompt
+            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-only","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"working"}}}}'
+            read -r cancel
+            echo '{not-json'
+            exit 0
+        "#;
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", only_broken]);
+        let mut cfg = config("antigravity");
+        cfg.session_id = "stop-broken-eof".into();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_stop = tx.clone();
+        let sink: Sink = Arc::new(move |event| {
+            if event.kind == "text" {
+                let _ = tx_stop.send(RunInput::Stop);
+            }
+        });
+        let err_or_ok = run_process(cfg, sink, rx, command, Vec::new()).await;
+        assert_eq!(err_or_ok, Ok(()), "{err_or_ok:?}");
+
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 30"]);
+        let mut cfg = config("antigravity");
+        cfg.session_id = "stop-phase-zero".into();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let tx_stop = tx.clone();
+        let sink: Sink = Arc::new(move |event| {
+            if event.text == "Waiting for Antigravity startup" {
+                let _ = tx_stop.send(RunInput::Stop);
+            }
+        });
+        let started = std::time::Instant::now();
+        let result = run_process(cfg, sink, rx, command, Vec::new()).await;
+        assert_eq!(result, Ok(()));
+        assert!(
+            started.elapsed() < Duration::from_millis(2500),
+            "phase 0 stop waited for a prompt reply: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn version_disables_auto_update_only_for_agy_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-agy-version-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let agy = root.join("agy");
+        let other = root.join("other-cli");
+        for bin in [&agy, &other] {
+            std::fs::write(bin, "#!/bin/sh\nprintf 'disable=%s\\n' \"$AGY_CLI_DISABLE_AUTO_UPDATE\"\n").unwrap();
+            std::fs::set_permissions(bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let probe = |bin: &Path| cli_versions::version(bin, Duration::from_secs(5));
+        assert_eq!(probe(&agy).as_deref(), Some("disable=true"));
+        assert_eq!(probe(&other).as_deref(), Some("disable="));
+        // Only the `agy` CLI is asked for a version; the ACP server binary is not.
+        assert_eq!(version_target("antigravity", Some(agy.as_path())), Some(agy.clone()));
+        assert_eq!(version_target("antigravity", Some(other.as_path())), None);
+        assert_eq!(version_target("codex", Some(other.as_path())), Some(other.clone()));
+        assert_eq!(discovered_version("antigravity", None, String::new()), "");
+        assert_eq!(discovered_version("antigravity", Some(other.as_path()), String::new()), "ACP");
+        assert_eq!(discovered_version("antigravity", Some(agy.as_path()), "disable=true".into()), "disable=true");
+        // An `agy` that fails or prints nothing is still an installed CLI: blank, not the server's "ACP".
+        for (name, body) in [("failing", "exit 1"), ("silent", "exit 0")] {
+            let bin = root.join(name).join("agy");
+            std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            std::fs::write(&bin, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let probed = probe(&bin).unwrap_or_default();
+            assert_eq!(discovered_version("antigravity", Some(bin.as_path()), probed), "");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_interrupts_antigravity_spawn_gate_without_spawning() {
+        let _serial = concurrent_process_tests::process_test_lock().lock().await;
+        // Prime the spawn gate so the next antigravity run must wait ~350 ms before spawning.
+        antigravity_spawn_gate().await;
+        let marker = marker_path();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", r#"echo spawned > "$1""#, "sh", marker.to_str().unwrap()]);
+        let mut cfg = config("antigravity");
+        cfg.session_id = "stop-before-spawn".into();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let _ = tx.send(RunInput::Stop);
+        let sink: Sink = Arc::new(|_| {});
+        let started = std::time::Instant::now();
+        let result = run_process(cfg, sink, rx, command, Vec::new()).await;
+        assert_eq!(result, Ok(()));
+        assert!(started.elapsed() < Duration::from_millis(250), "Stop should cancel before the 350ms spawn gate finishes");
+        assert!(!marker.exists(), "Stopped worker must not spawn child process");
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]
@@ -7214,6 +8208,7 @@ read -r a; echo '{{"jsonrpc":"2.0","id":3,"result":{{"stopReason":"end_turn"}}}}
                 images: Vec::new(),
                 worker: None,
                 disallowed_tools: None,
+                no_fresh_resume_fallback: false,
             };
             let mut task = tokio::spawn(run(cfg, sink, receiver));
             let outcome = match tokio::time::timeout(Duration::from_secs(90), &mut task).await {

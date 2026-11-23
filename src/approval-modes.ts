@@ -37,9 +37,11 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? 'ZCode’s build mode: it works in this project and asks you when an action needs permission.'
     : provider === 'hermes'
     ? 'Hermes works in this project. Asks you before terminal commands or dangerous actions.'
+    : provider === 'antigravity'
+    ? 'Antigravity’s Default mode: works in this project and asks you before edits, commands and other actions that need permission.'
     : 'Use the harness’s normal rules. Ask you when approval is needed.' };
   const full: ApprovalMode = { id: 'full', label: 'Full access', icon: 'unlock', description: provider === 'antigravity'
-    ? 'Automatically approve permission requests. Server restrictions still apply.'
+    ? 'Antigravity’s Auto mode (when offered) with every permission request approved: runs tools without asking. Server restrictions still apply.'
     : provider === 'codex'
     ? 'Skip approval prompts and sandbox limits. Allow file and network access.'
     : provider === 'grok'
@@ -89,6 +91,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     : provider === 'kimi'
     ? { id: 'auto', label: 'Ask when needed', icon: 'spark', description: 'Allow routine tools automatically. Ask you about sensitive actions.' }
     : provider === 'codex' ? { id: 'auto', label: 'Approve for me', icon: 'spark', description: 'Let Codex review approval requests. Keep the workspace sandbox.' }
+    : provider === 'antigravity'
+    ? { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Antigravity’s Accept edits mode: file edits apply automatically; commands and other actions still ask you.' }
     : { id: 'auto', label: 'Accept edits', icon: 'edit', description: 'Automatically approve edit requests offered by the server.' },
   ...review,
   provider === 'codex'
@@ -115,6 +119,8 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Explore and plan: reads and web lookups run, even outside this project; edits wait for implementation and commands ask you.' }
     : provider === 'opencode'
     ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Explore and plan: reads and web lookups run; reading outside this project asks you; edits and commands are declined.' }
+    : provider === 'antigravity'
+    ? { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Antigravity’s Plan mode: investigates and proposes a plan; edits and state-changing commands wait for implementation.' }
     : { id: 'plan', label: 'Plan mode', icon: 'plan', description: 'Explore and plan changes before implementation.' }, full];
 }
 

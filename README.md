@@ -308,9 +308,12 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   own opt-outs (Claude Code, Codex, Kimi, Grok, DeepSeek, Command Code, Pi,
   Muse, and OpenCode sharing) plus `DO_NOT_TRACK=1`. Your agent config files
   are not changed. Each agent's row shows what the switch covers. Cline has no
-  per-launch switch, so turn it off in Cline's own settings. With the switch on,
-  Claude Code also stops fetching remote feature flags (it uses its defaults)
-  and can't take sessions started remotely on this computer.
+  per-launch switch, so turn it off in Cline's own settings. Antigravity's
+  opt-out reaches its task sessions through the agy CLI only; its console,
+  usage checks and standalone ACP server have none, and agy may save the
+  choice with your Google account. With the switch on, Claude Code also stops
+  fetching remote feature flags (it uses its defaults) and can't take sessions
+  started remotely on this computer.
 - **Warm Claude spares (on by default).** Settings → Agents → **Warm Claude spares**
   keeps idle Claude Code processes ready after successful turns, about 180–210 MB
   each, up to 4 in total. They run your `SessionStart` hooks ahead of the next

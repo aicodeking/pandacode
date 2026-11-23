@@ -159,7 +159,8 @@ const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
   { provider: 'claude', name: 'Claude Code', status: 'off', detail: 'Usage telemetry, error reports and surveys. Remote feature flags and remotely started sessions stop.' },
   { provider: 'codex', name: 'Codex', status: 'off', detail: 'Analytics and feedback uploads.' },
   { provider: 'cline', name: 'Cline', status: 'manual', detail: 'No per-launch switch. Opt out in Cline’s settings.' },
-  { provider: 'antigravity', name: 'Antigravity', status: 'unknown', detail: 'No verified switch.' },
+  { provider: 'antigravity', name: 'Antigravity', status: 'partial', detail: 'Task sessions through the agy CLI only; agy may save the choice with your Google account. Its console, usage checks and standalone ACP server have no verified switch.' },
+  { provider: 'github-copilot', name: 'GitHub Copilot CLI', status: 'unknown', detail: 'No verified switch.' },
 ] });
 // Provider environment in the preview lives in memory so the Settings UI can be tested in a browser.
 const previewEnvState = { global: [] as [string, string][], providers: {} as Record<string, [string, string][]>, useGlobal: {} as Record<string, boolean> };
