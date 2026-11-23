@@ -454,7 +454,7 @@ mod tests {
             let transaction = store.db.unchecked_transaction().unwrap();
             assert!(take_all_ready(&transaction, &task, |_| true).unwrap().is_empty());
             transaction.commit().unwrap();
-            assert_eq!(list(&store, Some(&task)).unwrap(), [queued.clone()]);
+            assert_eq!(list(&store, Some(&task)).unwrap(), std::slice::from_ref(&queued));
         }
         store.set_limited(&task, Some(crate::storage::now() - 1)).unwrap();
         let transaction = store.db.unchecked_transaction().unwrap();
