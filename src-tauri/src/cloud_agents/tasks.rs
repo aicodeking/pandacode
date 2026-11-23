@@ -1,6 +1,7 @@
 //! Cloud tasks: the rows, the machine behind each, and what happens before and after every
 //! run (docs/cloud-agents.md → How it works, IPC).
-use super::{bridge, credentials, setup, stage, sync, update, State};
+use super::{bridge, credentials, setup, sync, State};
+use crate::cloud::colab::activity as colab_activity;
 use crate::cloud::sandbox::{self, Sandbox, AGENT_PROVIDERS};
 use crate::{storage::Session, storage::Store, workspace, AppState, Result};
 use serde_json::{json, Value};
@@ -20,6 +21,137 @@ const NO_AGENTS: [&str; 2] = ["agentcore", "railway"];
 
 pub(crate) fn harness_refusal(harness: &str) -> String {
     format!("{harness} can't run on a cloud machine. Choose Claude Code, GLM, MiMo, Codex or OpenCode, or run this task on this computer.")
+}
+
+/// Sets the stage shown on the task; a Colab task's runtime indicator follows.
+/// Only a change to what the indicator shows is sent: a repeated stage re-reads nothing.
+fn stage(app: &tauri::AppHandle, sid: &str, stage: &str, detail: Option<&str>) {
+    let before = app.try_state::<AppState>().and_then(|state| super::load(&*state.store.lock().ok()?, sid).ok().flatten());
+    super::stage(app, sid, stage, detail);
+    if before.is_some_and(|before| before.provider == crate::cloud::colab::PROVIDER && (before.stage.as_str(), before.detail.as_deref()) != (stage, detail)) {
+        colab_activity::emit(app, sid);
+    }
+}
+
+/// What a Colab task's runtime indicator shows of its state.
+fn visible(state: &State) -> (&str, Option<&str>, Option<&str>) {
+    (&state.stage, state.detail.as_deref(), state.machine.as_deref())
+}
+
+/// Changes the task's cloud state; a Colab task's runtime indicator follows, only when
+/// what it shows (stage, detail, machine) changed.
+fn update(app: &tauri::AppHandle, sid: &str, change: impl FnOnce(&mut State)) -> Result<State> {
+    let mut before = None;
+    let state = super::update(app, sid, |state| {
+        before = Some(state.clone());
+        change(state);
+    })?;
+    let shown_changed = before.as_ref().is_some_and(|before| visible(before) != visible(&state));
+    if shown_changed && state.provider == crate::cloud::colab::PROVIDER {
+        colab_activity::emit(app, sid);
+    }
+    Ok(state)
+}
+
+/// A Colab runtime that was released leaves every thread's indicator.
+fn colab_released(app: Option<&tauri::AppHandle>, provider: &str, native: &str) {
+    if provider == crate::cloud::colab::PROVIDER {
+        if let Some(app) = app {
+            colab_activity::released(app, native);
+        }
+    }
+}
+
+/// Stages in which a Cloud Agent is working on its machine.
+const BUSY_STAGES: [&str; 7] = ["creating", "installing", "credentials", "uploading", "running", "syncing", "reconnecting"];
+pub(crate) const COLAB_IN_USE: &str = "That Colab runtime is in use by a running cloud agent. Stop the agent first.";
+
+/// Whether this task's Colab Cloud Agent is using runtime `endpoint`: its run is
+/// registered (`running`), not finalized, or in a busy stage.
+pub(crate) fn holds_colab_runtime(state: &State, endpoint: &str, running: bool) -> bool {
+    state.provider == crate::cloud::colab::PROVIDER && state.native() == Some(endpoint) && (running || state.active() || BUSY_STAGES.contains(&state.stage.as_str()))
+}
+
+/// The task whose Colab Cloud Agent is using runtime `endpoint`, from every stored task.
+fn colab_holder(store: &Store, endpoint: &str, running: impl Fn(&str) -> bool) -> Result<Option<String>> {
+    let mut statement = store.db.prepare("SELECT id,cloud FROM sessions WHERE cloud IS NOT NULL").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+    let holder = rows
+        .filter_map(std::result::Result::ok)
+        .find(|(id, json)| serde_json::from_str::<State>(json).is_ok_and(|state| holds_colab_runtime(&state, endpoint, running(id))))
+        .map(|(id, _)| id);
+    Ok(holder)
+}
+
+/// The task whose running Cloud Agent uses Colab runtime `endpoint`, if any. When the
+/// store can't be read the runtime counts as in use, so it is never stopped blindly.
+pub(crate) fn colab_runtime_in_use(app: &tauri::AppHandle, endpoint: &str) -> Option<String> {
+    let state = app.try_state::<AppState>()?;
+    let running: std::collections::HashSet<String> = crate::run_requests::lock_agents(&state.agents).map(|agents| agents.keys().cloned().collect()).unwrap_or_default();
+    let store = match state.store.lock() {
+        Ok(store) => store,
+        Err(_) => return Some(String::new()),
+    };
+    colab_holder(&store, endpoint, |id| running.contains(id)).unwrap_or_else(|_| Some(String::new()))
+}
+
+/// What an idle Colab task says once its runtime was released.
+pub(crate) const COLAB_RELEASED: &str = "Your next message creates a new runtime.";
+
+/// The stored tasks whose Colab Cloud Agent sits idle on runtime `endpoint` (not stopped
+/// yet, not working on it), so releasing the runtime should read as stopped on them.
+fn idle_colab_tasks(store: &Store, endpoint: &str, running: impl Fn(&str) -> bool) -> Result<Vec<String>> {
+    let mut statement = store.db.prepare("SELECT id,cloud FROM sessions WHERE cloud IS NOT NULL").map_err(|e| e.to_string())?;
+    let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+    let idle = rows
+        .filter_map(std::result::Result::ok)
+        .filter(|(id, json)| {
+            serde_json::from_str::<State>(json).is_ok_and(|state| {
+                state.provider == crate::cloud::colab::PROVIDER && state.native() == Some(endpoint) && state.stage != "stopped" && !holds_colab_runtime(&state, endpoint, running(id))
+            })
+        })
+        .map(|(id, _)| id)
+        .collect();
+    Ok(idle)
+}
+
+/// Whether any stored Colab Cloud Agent task has runtime `endpoint` as its machine.
+pub(crate) fn colab_agent_runtime(app: &tauri::AppHandle, endpoint: &str) -> bool {
+    let Some(state) = app.try_state::<AppState>() else { return false };
+    let Ok(store) = state.store.lock() else { return true };
+    colab_holder(&store, endpoint, |_| true).ok().flatten().is_some()
+}
+
+/// Colab runtime `endpoint` was released (from a thread, the VM panel, Settings or a tool):
+/// every idle Colab task on it reads as stopped, so its runtime does not come back as
+/// ready. Answers the tasks it changed; each sent `cloud-agent://progress`.
+pub(crate) fn colab_runtime_released(app: &tauri::AppHandle, endpoint: &str) -> Vec<String> {
+    let idle = {
+        let Some(state) = app.try_state::<AppState>() else { return Vec::new() };
+        let running: std::collections::HashSet<String> = crate::run_requests::lock_agents(&state.agents).map(|agents| agents.keys().cloned().collect()).unwrap_or_default();
+        let Ok(store) = state.store.lock() else { return Vec::new() };
+        idle_colab_tasks(&store, endpoint, |id| running.contains(id)).unwrap_or_default()
+    };
+    idle.into_iter()
+        .filter(|sid| {
+            let result = super::update(app, sid, |state| {
+                // Checked again under the lock: the task may have moved on meanwhile.
+                if state.native() == Some(endpoint) && state.stage != "stopped" && !holds_colab_runtime(state, endpoint, false) {
+                    state.stage = "stopped".into();
+                    state.detail = Some(COLAB_RELEASED.into());
+                }
+            });
+            result.inspect_err(|error| eprintln!("Cloud agents: could not mark a released Colab runtime stopped: {error}")).is_ok()
+        })
+        .collect()
+}
+
+/// Refuses to release a Colab runtime that a running Cloud Agent uses.
+pub(crate) fn ensure_colab_runtime_free(app: &tauri::AppHandle, endpoint: &str) -> Result<()> {
+    match colab_runtime_in_use(app, endpoint) {
+        Some(_) => Err(COLAB_IN_USE.into()),
+        None => Ok(()),
+    }
 }
 
 fn with_store<T>(app: &tauri::AppHandle, f: impl FnOnce(&Store) -> Result<T>) -> Result<T> {
@@ -76,7 +208,9 @@ fn ensure_machine(app: &tauri::AppHandle, sid: &str, sandbox: &dyn Sandbox, stat
                 return Ok((native.to_owned(), false));
             }
             Ok(_) => {
-                let _ = sandbox.power(native, "delete");
+                if sandbox.power(native, "delete").is_ok() {
+                    colab_released(Some(app), &state.provider, native);
+                }
             }
             Err(_) => {}
         }
@@ -214,7 +348,7 @@ fn pull(app: &tauri::AppHandle, sid: &str) -> Result<()> {
     })();
     let (next, detail) = match &result {
         Ok(pulled) => ("ready", pulled.note.clone()),
-        Err(error) => ("error", Some(format!("Could not bring the changes back: {error}"))),
+        Err(error) => ("error", Some(format!("Could not bring the changes back: {}", bridge::machine_gone(error).unwrap_or(error)))),
     };
     update(app, sid, |state| {
         state.run_id = None;
@@ -243,8 +377,9 @@ pub(crate) fn forget_machine(state: Option<State>) {
     let Some(state) = state else { return };
     let Some(native) = state.native().map(str::to_owned) else { return };
     std::thread::spawn(move || {
-        if let Err(error) = sandbox::connected(&state.provider).and_then(|sandbox| sandbox.power(&native, "delete")) {
-            eprintln!("Cloud agents: could not delete a task's machine: {error}");
+        match sandbox::connected(&state.provider).and_then(|sandbox| sandbox.power(&native, "delete")) {
+            Ok(()) => colab_released(super::app(), &state.provider, &native),
+            Err(error) => eprintln!("Cloud agents: could not delete a task's machine: {error}"),
         }
     });
 }
@@ -426,7 +561,9 @@ pub(crate) async fn cloud_agent_action(app: tauri::AppHandle, session_id: String
             let worker = app.clone();
             let provider = state.provider.clone();
             let power = action.clone();
+            let released = native.clone();
             crate::blocking(move || sandbox::connected(&provider)?.power(&native, &power)).await?;
+            colab_released(Some(&worker), &state.provider, &released);
             update(&worker, &session_id, |state| {
                 state.stage = "stopped".into();
                 if action == "delete" {
@@ -468,6 +605,22 @@ mod tests {
     }
 
     #[test]
+    fn only_a_visible_change_refreshes_the_colab_indicator() {
+        let base = State { provider: "colab".into(), machine: Some("colab:ep".into()), stage: "running".into(), detail: Some("Agent running".into()), pending_prompt: Some("hi".into()), ..State::default() };
+        let changed = |change: fn(&mut State)| {
+            let mut next = base.clone();
+            change(&mut next);
+            visible(&base) != visible(&next)
+        };
+        assert!(!changed(|_| {}), "a no-op update");
+        assert!(!changed(|s| s.pending_prompt = None), "clearing the retry prompt");
+        assert!(!changed(|s| s.offset = 42), "reading more output");
+        assert!(changed(|s| s.stage = "syncing".into()));
+        assert!(changed(|s| s.detail = None));
+        assert!(changed(|s| s.machine = None));
+    }
+
+    #[test]
     fn the_mirror_worktree_carries_uncommitted_changes_without_touching_the_index() {
         let root = repo();
         assert_eq!(snapshot(&root).unwrap(), None);
@@ -492,6 +645,51 @@ mod tests {
         assert!(!ids.contains(&"railway") && !ids.contains(&"agentcore"));
         assert!(ids.contains(&"daytona") && ids.contains(&"boat"));
         assert_eq!(list.iter().filter(|t| t["ready"] == true).count(), 1);
+    }
+
+    #[test]
+    fn a_colab_runtime_is_in_use_only_while_its_agent_works() {
+        let colab = |stage: &str, run: Option<&str>| State { provider: "colab".into(), machine: Some("colab:ep".into()), stage: stage.into(), run_id: run.map(str::to_string), ..State::default() };
+        for stage in BUSY_STAGES {
+            assert!(holds_colab_runtime(&colab(stage, None), "ep", false), "{stage}");
+        }
+        assert!(!holds_colab_runtime(&colab("ready", None), "ep", false));
+        assert!(!holds_colab_runtime(&colab("stopped", None), "ep", false));
+        assert!(holds_colab_runtime(&colab("ready", None), "ep", true), "a registered run");
+        assert!(holds_colab_runtime(&colab("error", Some("r1")), "ep", false), "a run not yet finalized");
+        assert!(!holds_colab_runtime(&colab("running", None), "other", true), "another runtime");
+        let e2b = State { provider: "e2b".into(), machine: Some("e2b:ep".into()), stage: "running".into(), ..State::default() };
+        assert!(!holds_colab_runtime(&e2b, "ep", true));
+
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let idle = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        let busy = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        super::super::save(&store, &idle.id, Some(&colab("ready", None))).unwrap();
+        assert_eq!(colab_holder(&store, "ep", |_| false).unwrap(), None);
+        assert_eq!(colab_holder(&store, "ep", |id| id == idle.id).unwrap(), Some(idle.id.clone()));
+        super::super::save(&store, &busy.id, Some(&colab("uploading", None))).unwrap();
+        assert_eq!(colab_holder(&store, "ep", |_| false).unwrap(), Some(busy.id.clone()));
+        assert_eq!(colab_holder(&store, "elsewhere", |_| true).unwrap(), None);
+    }
+
+    #[test]
+    fn releasing_a_colab_runtime_stops_only_its_idle_tasks() {
+        let colab = |machine: &str, stage: &str| State { provider: "colab".into(), machine: Some(machine.into()), stage: stage.into(), ..State::default() };
+        let store = Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let mut ids = Vec::new();
+        for state in [colab("colab:ep", "ready"), colab("colab:ep", "error"), colab("colab:ep", "stopped"), colab("colab:ep", "running"), colab("colab:other", "ready"), State { provider: "e2b".into(), machine: Some("e2b:ep".into()), stage: "ready".into(), ..State::default() }, colab("colab:ep", "ready")] {
+            let task = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+            super::super::save(&store, &task.id, Some(&state)).unwrap();
+            ids.push(task.id);
+        }
+        let registered = ids[6].clone();
+        let mut idle = idle_colab_tasks(&store, "ep", |id| id == registered).unwrap();
+        idle.sort();
+        let mut expected = vec![ids[0].clone(), ids[1].clone()];
+        expected.sort();
+        assert_eq!(idle, expected, "idle and failed tasks on that runtime; not stopped, working, registered or other runtimes");
     }
 
     #[test]

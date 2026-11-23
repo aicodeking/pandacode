@@ -157,6 +157,106 @@ impl Server {
     pub(super) fn redact(&self, text: &str) -> String {
         text.replace(&self.token, "[redacted]")
     }
+}
+
+/// Name of Google's browser-notebook MCP server in every harness's server list.
+pub(super) const COLAB_MCP: &str = "colab-mcp";
+/// How long Codex waits for a stdio server to start: a first `uvx` run fetches and builds it.
+const STDIO_STARTUP_SECS: u64 = 90;
+
+/// An extra stdio MCP server one run launches beside `pandacode_architect`.
+/// Only ever passed on the harness's command line or in a private temp file,
+/// never written into the user's own configuration.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Stdio {
+    pub(super) name: String,
+    pub(super) command: String,
+    pub(super) args: Vec<String>,
+}
+
+impl Stdio {
+    pub(super) fn new(name: &str, command: String, args: Vec<String>) -> Self {
+        Self { name: name.into(), command, args }
+    }
+    fn claude_entry(&self) -> Value {
+        json!({"command": self.command, "args": self.args})
+    }
+    fn codex_entry(&self) -> Value {
+        json!({"command": self.command, "args": self.args, "enabled": true, "required": false,
+            "startup_timeout_sec": STDIO_STARTUP_SECS, "tool_timeout_sec": 300})
+    }
+    /// ACP `McpServerStdio`: stdio is the baseline transport, so it needs no capability.
+    fn acp_entry(&self) -> Value {
+        json!({"name": self.name, "command": self.command, "args": self.args, "env": []})
+    }
+    /// ZCode's entry: the ACP one scoped to this session and loaded up front, like the bridge
+    /// (`Server::zcode_config`), so its tools reach the model.
+    pub(super) fn zcode_entry(&self) -> Value {
+        zcode_scoped(self.acp_entry())
+    }
+    pub(super) fn cline_entry(&self) -> Value {
+        json!({"command": self.command, "args": self.args, "disabled": false})
+    }
+}
+
+/// Marks an `mcpServers` entry for ZCode: session isolation and always-load.
+pub(super) fn zcode_scoped(mut entry: Value) -> Value {
+    if entry.is_object() {
+        entry["isolation"] = json!("session");
+        entry["alwaysLoad"] = json!(true);
+    }
+    entry
+}
+
+/// This run's extra stdio servers: Colab's MCP when the user turned it on, for local runs
+/// of the user's own tasks only. A cloud run's harness lives on another machine, and a
+/// managed team worker keeps to the tools its lead gave it.
+pub(super) fn stdio_servers(session_id: &str) -> Vec<Stdio> {
+    if crate::cloud_agents::transport::is_cloud(session_id) || crate::providers::is_worker_run(session_id) {
+        return Vec::new();
+    }
+    crate::cloud::colab::colab_mcp_command()
+        .map(|(command, args)| Stdio::new(COLAB_MCP, command, args))
+        .into_iter()
+        .collect()
+}
+
+/// `--mcp-config` for Claude-family CLIs: the bridge's config with the stdio servers
+/// added to `mcpServers`. Without extras the bridge's config is returned untouched.
+pub(super) fn claude_mcp_config(bridge: Option<Value>, extra: &[Stdio]) -> Option<Value> {
+    if extra.is_empty() {
+        return bridge;
+    }
+    let mut config = bridge.filter(|config| config["mcpServers"].is_object()).unwrap_or_else(|| json!({"mcpServers":{}}));
+    for server in extra {
+        config["mcpServers"][&server.name] = server.claude_entry();
+    }
+    Some(config)
+}
+
+/// Codex `mcp_servers.<name>` overrides: the bridge's plus the stdio servers.
+pub(super) fn codex_mcp_servers(bridge: Option<Value>, extra: &[Stdio]) -> Option<Value> {
+    if extra.is_empty() {
+        return bridge;
+    }
+    let mut servers = bridge.filter(Value::is_object).unwrap_or_else(|| json!({}));
+    for server in extra {
+        servers[&server.name] = server.codex_entry();
+    }
+    Some(servers)
+}
+
+/// ACP `mcpServers` entries that ride beside the bridge's HTTP entry.
+pub(super) fn acp_mcp_servers(extra: &[Stdio]) -> Vec<Value> {
+    extra.iter().map(Stdio::acp_entry).collect()
+}
+
+/// ZCode `mcpServers` entries that ride beside the bridge's (`Stdio::zcode_entry`).
+pub(super) fn zcode_mcp_servers(extra: &[Stdio]) -> Vec<Value> {
+    extra.iter().map(Stdio::zcode_entry).collect()
+}
+
+impl Server {
     pub(super) fn stop(&self) {
         self.task.abort();
     }
@@ -487,7 +587,8 @@ impl Context {
                         let Ok(Ok(_permit)) = tokio::time::timeout(SLOT_WAIT, self.calls.acquire()).await else {
                             return Err("Too many PandaCode tools are running at once; retry this call in a moment.".to_string());
                         };
-                        tokio::time::timeout(Duration::from_secs(60),(self.host.handler)(name.into(),args)).await
+                        let limit = host_tools::tool_timeout(name, &args);
+                        tokio::time::timeout(limit,(self.host.handler)(name.into(),args)).await
                             .unwrap_or_else(|_|Err("PandaCode tool timed out".into()))
                     } => result,
                     _ = cancel.notified() => Err("Architect tool canceled".into()),
@@ -534,7 +635,9 @@ impl Context {
     }
     async fn authorize(&self, name: &str, args: &Value) -> Result<(), String> {
         // A team worker never gets an always-ask tool, however the harness words the prompt.
-        if let Some(reason) = crate::providers::worker_tool_refusal(&self.session_id, name) {
+        // A Python run that may create a paid Colab runtime counts as managing one.
+        let always_ask = crate::cloud::deploy::always_ask_as(name, args);
+        if let Some(reason) = crate::providers::worker_tool_refusal(&self.session_id, always_ask.unwrap_or(name)) {
             return Err(reason);
         }
         if !self.host.approval_tools.contains(name) {
@@ -543,7 +646,7 @@ impl Context {
         if self.mode == "plan" {
             return Err("This host action is unavailable in Plan mode".into());
         }
-        if self.mode == "full" && !crate::cloud::deploy::ALWAYS_ASK.contains(&name) {
+        if self.mode == "full" && always_ask.is_none() {
             return Ok(());
         }
         let id = format!("mcp-approval:{}", uuid::Uuid::new_v4());
@@ -1132,7 +1235,46 @@ mod tests {
         assert!(crate::providers::worker_tool_refusal(&session, "pandacode_schedule_message").is_none());
         crate::providers::mark_worker_run(&session, "run", true);
         assert!(crate::providers::worker_tool_refusal(&session, "pandacode_delegate").is_none());
+        // A Python run that may create a paid Colab runtime counts as managing one.
+        let refused = server.current().authorize("pandacode_colab_run_python", &json!({"code":"1","autoCreate":true})).await;
+        assert!(refused.unwrap_err().contains("pandacode_colab_manage"));
+        assert!(server.current().authorize("pandacode_colab_run_python", &json!({"code":"1"})).await.is_ok());
         crate::providers::clear_worker_run(&session, "run");
+        assert!(events.try_recv().is_err(), "no approval was asked");
+    }
+    #[tokio::test]
+    async fn colab_autocreate_asks_even_in_full_mode() {
+        let name = "pandacode_colab_run_python";
+        let protected = ToolHost {
+            tools: vec![json!({"type":"function","name":name,"description":"Run","inputSchema":{"type":"object"}})],
+            approval_tools: [name.into()].into(),
+            handler: Arc::new(|_, _| Box::pin(async { Ok(json!({})) })),
+        };
+        let (sender, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let server = Server::start_with_approvals(protected, "task".into(), Arc::new(move |event| { let _ = sender.send(event); }), "full").await.unwrap();
+        // On an existing runtime full access runs it unasked.
+        assert!(server.current().authorize(name, &json!({"code":"1"})).await.is_ok());
+        assert!(events.try_recv().is_err());
+        let context = server.current();
+        let args = json!({"code":"1","autoCreate":true});
+        let asking = context.authorize(name, &args);
+        let answer = async {
+            let event = tokio::time::timeout(Duration::from_secs(2), events.recv()).await.unwrap().unwrap();
+            assert_eq!(event.kind, "approval");
+            assert!(event.text.starts_with("Allow pandacode_colab_run_python?"));
+            assert!(server.approve(event.request_id.as_ref().unwrap(), false));
+        };
+        let (result, ()) = tokio::join!(asking, answer);
+        assert!(result.is_err());
+    }
+    #[test]
+    fn colab_calls_outlast_the_usual_host_limit() {
+        assert_eq!(host_tools::tool_timeout("pandacode_delegate", &json!({})), host_tools::HOST_TOOL_TIMEOUT);
+        assert_eq!(host_tools::tool_timeout("pandacode_colab_status", &json!({})), host_tools::HOST_TOOL_TIMEOUT);
+        assert!(host_tools::tool_timeout("pandacode_colab_run_python", &json!({"timeoutSeconds":250})) > Duration::from_secs(250));
+        assert!(host_tools::tool_timeout("pandacode_colab_manage", &json!({"action":"create"})) > Duration::from_secs(180));
+        // Never past Codex's per-run `tool_timeout_sec` (360).
+        assert!(host_tools::tool_timeout("pandacode_colab_run_python", &json!({"timeoutSeconds":1800,"autoCreate":true})) < Duration::from_secs(360));
     }
     #[tokio::test]
     async fn cancelling_pending_mcp_approval_revokes_it_without_calling_handler() {
@@ -1425,6 +1567,67 @@ mod tests {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+
+    fn colab() -> Vec<Stdio> {
+        vec![Stdio::new(COLAB_MCP, "/bin/uvx".into(), vec!["colab-mcp".into()])]
+    }
+
+    #[test]
+    fn disabled_extra_servers_leave_every_config_untouched() {
+        let claude = json!({"mcpServers":{SERVER_NAME:{"type":"http","url":"http://127.0.0.1:1/mcp","headers":{"Authorization":"Bearer t"}}}});
+        let codex = json!({SERVER_NAME:{"url":"http://127.0.0.1:1/mcp","enabled":true,"required":false}});
+        assert_eq!(claude_mcp_config(Some(claude.clone()), &[]).unwrap().to_string(), claude.to_string());
+        assert_eq!(codex_mcp_servers(Some(codex.clone()), &[]).unwrap().to_string(), codex.to_string());
+        assert_eq!(claude_mcp_config(None, &[]), None);
+        assert_eq!(codex_mcp_servers(None, &[]), None);
+        assert!(acp_mcp_servers(&[]).is_empty());
+    }
+
+    #[test]
+    fn colab_mcp_joins_claude_and_codex_beside_the_bridge_or_alone() {
+        let claude = json!({"mcpServers":{SERVER_NAME:{"type":"http","url":"http://127.0.0.1:1/mcp"}}});
+        let merged = claude_mcp_config(Some(claude.clone()), &colab()).unwrap();
+        assert_eq!(merged["mcpServers"][SERVER_NAME], claude["mcpServers"][SERVER_NAME]);
+        assert_eq!(merged["mcpServers"]["colab-mcp"], json!({"command":"/bin/uvx","args":["colab-mcp"]}));
+        assert_eq!(
+            claude_mcp_config(None, &colab()).unwrap(),
+            json!({"mcpServers":{"colab-mcp":{"command":"/bin/uvx","args":["colab-mcp"]}}})
+        );
+        let codex_entry = json!({"command":"/bin/uvx","args":["colab-mcp"],"enabled":true,"required":false,"startup_timeout_sec":90,"tool_timeout_sec":300});
+        let codex = json!({SERVER_NAME:{"url":"http://127.0.0.1:1/mcp"}});
+        let merged = codex_mcp_servers(Some(codex.clone()), &colab()).unwrap();
+        assert_eq!(merged[SERVER_NAME], codex[SERVER_NAME]);
+        assert_eq!(merged["colab-mcp"], codex_entry);
+        assert_eq!(codex_mcp_servers(None, &colab()).unwrap(), json!({"colab-mcp":codex_entry}));
+        // Codex applies each one as a dotted override, so the user's servers stay.
+        let mut protocol = Protocol::new(super::super::tests::config("codex"));
+        protocol.codex_mcp_servers = codex_mcp_servers(None, &colab());
+        let step = protocol.receive(json!({"id":1,"result":{}})).unwrap();
+        let thread = step.write.iter().find(|frame| frame["id"] == 2).expect("thread/start");
+        assert_eq!(thread["method"], "thread/start");
+        assert_eq!(thread["params"]["config"]["mcp_servers.colab-mcp"], codex_entry);
+    }
+
+    #[test]
+    fn colab_mcp_reaches_kimi_even_without_http_mcp() {
+        let mut protocol = Protocol::new(super::super::tests::config("kimi"));
+        protocol.mcp_server = Some(json!({"type":"http","name":SERVER_NAME,"url":"http://127.0.0.1:1/mcp","headers":[]}));
+        protocol.extra_mcp_servers = acp_mcp_servers(&colab());
+        let step = protocol
+            .receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{"mcpCapabilities":{"http":true}}}}))
+            .unwrap();
+        let servers = &step.write[0]["params"]["mcpServers"];
+        assert_eq!(servers[0]["name"], SERVER_NAME);
+        assert_eq!(servers[1], json!({"name":"colab-mcp","command":"/bin/uvx","args":["colab-mcp"],"env":[]}));
+        let mut protocol = Protocol::new(super::super::tests::config("kimi"));
+        protocol.mcp_server = Some(json!({"type":"http","name":SERVER_NAME}));
+        protocol.mcp_required = false;
+        protocol.extra_mcp_servers = acp_mcp_servers(&colab());
+        let step = protocol
+            .receive(json!({"id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}))
+            .unwrap();
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!(acp_mcp_servers(&colab())));
+    }
     #[test]
     fn kimi_requires_http_capability_and_injects_on_new_load_and_resume() {
         for (saved, resume, method) in [

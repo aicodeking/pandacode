@@ -541,7 +541,7 @@ const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
 const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
-const previewCloud = createPreviewCloud();
+const previewCloud = createPreviewCloud((name, event) => emit(name, event));
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
 function cloudStage(s: Session, stage: NonNullable<Session['cloud']>['stage'], detail: string | null = null): void {
@@ -656,6 +656,8 @@ function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn =>
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+// Tests: a thread's Google Colab runtimes (colab-pip.ts); stores them and sends `colab-runtime`.
+(window as any).__previewColabRuntime = (sessionId: string, runtimes: unknown[]) => previewCloud.setColabRuntimes(sessionId, runtimes);
 // tests: `window.__previewInterrupted = ['session-2']` (set before load) starts those tasks Interrupted;
 // `__previewSetStatus(id, status)` changes one and announces it, as the native app does.
 for (const id of (window as any).__previewInterrupted ?? []) sessions = sessions.map(task => task.id === id ? { ...task, status: 'interrupted' } : task);
@@ -2422,6 +2424,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_disconnect': result = previewCloud.disconnect(args.provider); emit('vm-changed', {}); break;
     case 'cloud_set_inherit_environment': result = previewCloud.setInheritEnvironment(args.provider, args.inherit); break;
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
+    case 'cloud_colab_sign_in_start': result = previewCloud.colabSignInStart(args.authMode, args.oauthConfigPath); break;
+    case 'cloud_colab_sign_in_status': result = previewCloud.colabSignInStatus(); break;
+    case 'cloud_colab_usage': result = previewCloud.colabUsage(); break;
+    case 'cloud_colab_sign_in_cancel': result = previewCloud.colabSignInCancel(); break;
+    case 'cloud_colab_config': result = previewCloud.colabConfig(); break;
+    case 'cloud_colab_set_config': result = await previewCloud.colabSetConfig(args); break;
+    case 'cloud_colab_install_cli': result = previewCloud.colabInstallCli(); break;
+    case 'cloud_colab_thread_runtimes': result = previewCloud.colabThreadRuntimes(args.sessionId, args.refresh); break;
+    case 'cloud_colab_runtime_action': result = await previewCloud.colabRuntimeAction(args.sessionId, args.endpoint, args.action); break;
     case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
     case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
     case 'cloud_digitalocean_catalog': result = previewCloud.digitalOceanCatalog(); break;

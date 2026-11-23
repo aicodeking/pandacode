@@ -896,6 +896,9 @@ async fn delete_session_with_attachment_cleanup(
     session_id: String,
 ) -> Result<task_deletion::DeletedSessions> {
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
+    for sid in &deleted.deleted_session_ids {
+        cloud::colab::activity::forget_session(sid);
+    }
     match app.path().app_data_dir() {
         Ok(data_dir) => {
             let sessions = deleted.deleted_session_ids.clone();
@@ -947,9 +950,20 @@ async fn remove_project(state: State<'_, AppState>, project_id: String) -> Resul
     if active_team {
         return Err("Stop this project's architect teams first.".into());
     }
+    // Read before the project (and its threads) go, so their Colab runtime claims can be freed.
+    let session_ids = project_session_ids(&store, &project_id)?;
     let removed = store.remove_project(&project_id);
+    drop(store);
+    if removed.is_ok() {
+        cloud::colab::activity::forget_sessions(&session_ids);
+    }
     skill_manager::projects_changed();
     removed
+}
+fn project_session_ids(store: &storage::Store, project_id: &str) -> Result<Vec<String>> {
+    let mut stmt = store.db.prepare("SELECT id FROM sessions WHERE project_id=?1").map_err(|e| e.to_string())?;
+    let ids = stmt.query_map([project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    ids.collect::<rusqlite::Result<Vec<String>>>().map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
@@ -2688,6 +2702,8 @@ async fn launch_operation_admitted(
         let host = schedules::tools::with_schedules(host, app.clone(), session_id.clone(), stopped.clone());
         let host = simulator::tools::with_simulator_for(host, app.clone(), session_id.clone(), stopped.clone());
         let host = vm::tools::with_vm(host, app.clone(), session_id.clone(), stopped.clone());
+        // A cloud agent already runs on its machine; Colab tools are for local agents.
+        let host = if cloud { host } else { cloud::colab_tools::with_colab(host, app.clone(), session_id.clone(), stopped.clone()) };
         let host = remote::orchestrate::with_machines(host, app.clone(), session_id.clone(), stopped.clone(), team.is_some());
         let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
         // A cloud agent's checkout is on its machine, where screenshots cannot be read.
@@ -3212,6 +3228,7 @@ fn list_app_tools() -> serde_json::Value {
     serde_json::json!(agent_tools::catalog()
         .into_iter()
         .chain(agent_tools::enabled_jev_catalog())
+        .chain(cloud::colab_tools::enabled_catalog())
         .map(|t| serde_json::json!({"name":t["name"],"description":t["description"]}))
         .collect::<Vec<_>>())
 }
@@ -5116,6 +5133,15 @@ pub fn run() {
                 cloud::commands::cloud_instabox_set_image,
                 cloud::commands::cloud_digitalocean_catalog,
                 cloud::commands::cloud_digitalocean_set_options,
+                cloud::commands::cloud_colab_sign_in_start,
+                cloud::commands::cloud_colab_sign_in_cancel,
+                cloud::commands::cloud_colab_sign_in_status,
+                cloud::commands::cloud_colab_config,
+                cloud::commands::cloud_colab_usage,
+                cloud::commands::cloud_colab_set_config,
+                cloud::commands::cloud_colab_install_cli,
+                cloud::commands::cloud_colab_thread_runtimes,
+                cloud::commands::cloud_colab_runtime_action,
                 cloud::commands::cloud_machines,
                 cloud::commands::cloud_create,
                 cloud::commands::cloud_power,

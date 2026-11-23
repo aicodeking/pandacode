@@ -45,7 +45,7 @@ pub(super) fn key(config: &RunConfig, tools: &[Value]) -> String {
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
 fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled)
+    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id))
 }
 
 fn key_with_disabled(
@@ -53,6 +53,7 @@ fn key_with_disabled(
     tools: &[Value],
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
+    stdio: &[mcp_host::Stdio],
 ) -> String {
     json!({
         "namedConnection": connection,
@@ -68,6 +69,8 @@ fn key_with_disabled(
         "telemetryOff": super::privacy::telemetry_off(),
         // So does a saved executable location.
         "executable": crate::provider_settings::executable_override(&config.provider),
+        // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
+        "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
     })
     .to_string()
 }
@@ -148,16 +151,18 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     config.cwd = external_path(&config.cwd);
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();
-    let (config, key, disabled) = crate::blocking(move || {
+    let (config, key, disabled, stdio) = crate::blocking(move || {
         let disabled = crate::skill_manager::disabled_for(&config.session_id);
         let config = prepared(config, &disabled);
+        let stdio = mcp_host::stdio_servers(&config.session_id);
         let key = key_with_disabled(
             &config,
             &catalog,
             &crate::connections::warm_key(&config.session_id, &config.provider),
             &disabled,
+            &stdio,
         );
-        Ok((config, key, disabled))
+        Ok((config, key, disabled, stdio))
     })
     .await?;
     let mut command = command(&path)?;
@@ -176,9 +181,12 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
         };
         let sink: Sink = Arc::new(|_| {});
         let server = mcp_host::Server::start_with_approvals(placeholder, config.session_id.clone(), sink, &config.mode).await?;
-        command.args(["--mcp-config", &server.claude_config().to_string()]);
         Some(server)
     };
+    // The same `--mcp-config` a cold launch builds, Colab's MCP included.
+    if let Some(servers) = mcp_host::claude_mcp_config(server.as_ref().map(mcp_host::Server::claude_config), &stdio) {
+        command.args(["--mcp-config", &servers.to_string()]);
+    }
     command
         .current_dir(&config.cwd)
         .stdin(Stdio::piped())
@@ -230,8 +238,8 @@ mod tests {
         let none = std::collections::BTreeSet::new();
         let disabled = std::collections::BTreeSet::from(["alpha".into()]);
         assert_ne!(
-            key_with_disabled(&config, &[], "", &none),
-            key_with_disabled(&config, &[], "", &disabled)
+            key_with_disabled(&config, &[], "", &none, &[]),
+            key_with_disabled(&config, &[], "", &disabled, &[])
         );
     }
 
@@ -245,8 +253,8 @@ mod tests {
         let spare = prepared(base.clone(), &disabled);
         assert!(spare.instructions.contains("Friendly skill"));
         assert_eq!(
-            key_with_disabled(&spare, &[], "", &disabled),
-            key_with_disabled(&cold, &[], "", &disabled)
+            key_with_disabled(&spare, &[], "", &disabled, &[]),
+            key_with_disabled(&cold, &[], "", &disabled, &[])
         );
         // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
         assert_eq!(
@@ -295,6 +303,19 @@ mod tests {
         assert!(supported(&base));
         assert!(!supported(&crate::providers::tests::config("glm")));
         assert!(!supported(&RunConfig { skill: Some(("review".into(), PathBuf::from("/skills/review"))), ..base.clone() }));
+    }
+
+    #[test]
+    fn toggling_colab_mcp_starts_the_next_turn_cold() {
+        let config = crate::providers::tests::config("claude");
+        let none = std::collections::BTreeSet::new();
+        let colab = |args: &str| vec![mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec![args.into()])];
+        let off = key_with_disabled(&config, &[], "", &none, &[]);
+        let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"));
+        assert_ne!(off, on);
+        assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")));
+        assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other")));
+        assert_eq!(miss(true, &off, &on, Duration::from_secs(1)).as_deref(), Some("changed: stdioMcp"));
     }
 
     #[test]

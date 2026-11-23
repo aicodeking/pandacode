@@ -180,15 +180,21 @@ fn watch(app: tauri::AppHandle, session_id: String, path: PathBuf) {
             let running = crate::run_requests::lock_agents(&app.state::<crate::AppState>().agents).is_ok_and(|agents| agents.contains_key(&session_id));
             let status = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<Status>(&bytes).ok());
             if let Some(status) = status.filter(|status| last.as_ref() != Some(status)) {
-                let _ = super::update(&app, &session_id, |state| {
+                let mut staged = false;
+                let updated = super::update(&app, &session_id, |state| {
                     // A run that was finalized meanwhile keeps its final stage.
                     if state.active() && matches!(state.stage.as_str(), "running" | "reconnecting") {
+                        staged = state.stage != status.stage || state.detail != status.detail;
                         state.stage = status.stage.clone();
                         state.detail = status.detail.clone();
                     }
                     state.offset = status.offset;
                     state.inbox_lines = status.inbox_lines;
                 });
+                // A Colab task's runtime indicator follows the stage, not every output offset.
+                if staged && updated.is_ok() {
+                    crate::cloud::colab::activity::cloud_agent_changed(&app, &session_id);
+                }
                 last = Some(status);
             }
             if !running && ticks > 1 {
