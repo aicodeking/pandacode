@@ -132,8 +132,11 @@ fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>
 }
 
 /// Metadata only (never contents) of startup configuration, memory and rules. `user_dir` is
-/// `None` when `CLAUDE_CONFIG_DIR` is set but empty: Claude Code then reads `~/.claude`
-/// (`account_config.rs`), so `home_claude` gets the full user stamps, marked apart from unset.
+/// `None` when `CLAUDE_CONFIG_DIR` is set but empty. Claude Code resolves its config folder with
+/// `??`, so an empty value stays `""` and user settings, memory, rules, agents, commands and
+/// skills are read relative to `cwd`, while credentials and legacy paths fall back to home
+/// (`account_config.rs`). Both `cwd` and `home_claude` then get the full user stamps, and the
+/// leading flag keeps the key apart from an unset variable.
 pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
     user_dir: Option<&Path>,
@@ -152,6 +155,12 @@ pub(super) fn claude_config_fingerprint_with(
     const MAIN_LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
     let unresolved = user_dir.is_none();
+    let user_roots: Vec<&Path> = match user_dir {
+        Some(user) => vec![user],
+        None => std::iter::once(cwd)
+            .chain(home_claude.filter(|home| *home != cwd))
+            .collect(),
+    };
     let user_dir = user_dir.or(home_claude);
     let roots = crate::turn_changes::project_config_roots(cwd);
     let above_project = roots
@@ -193,7 +202,7 @@ pub(super) fn claude_config_fingerprint_with(
     if let Some(main) = roots.main_worktree.filter(|main| user_dir != Some(main.join(".claude").as_path())) {
         stamps.push(json!([main.to_string_lossy(), config_file_stamp(&main.join(MAIN_LOCAL_SETTINGS))]));
     }
-    if let Some(user) = user_dir {
+    for user in user_roots {
         stamps.extend(
             USER_CLAUDE_FILES
                 .iter()

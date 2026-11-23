@@ -157,12 +157,13 @@ fn restricts_reads(settings: &Settings, provider: &str, connection: Option<crate
     restricts_reads_over(settings, provider, provider_env, connection)
 }
 
-// The real merge: the saved provider environment first, then the connection's.
+// The real merge: the saved provider environment first, then the connection's. PandaCode's
+// own CLAUDE_CONFIG_DIR (set in every agent session) is injected as absent.
 fn restricts_reads_over(settings: &Settings, provider: &str, provider_env: Vec<(String, String)>,
     connection: Option<crate::connections::Launch>) -> bool {
     let cwd = settings.base.join("project");
     claude_restricts_reads_with(provider, &cwd, || Ok(connection), || false,
-        |env| launch_config_dir(provider_env, env, &cwd))
+        |env| launch_config_dir_with(provider_env, env, None, &cwd))
 }
 
 #[test]
@@ -739,13 +740,11 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
 }
 
 // A named connection's HOME (USERPROFILE on Windows) picks `<home>/.claude` when no
-// CLAUDE_CONFIG_DIR is set, over the saved provider environment's home.
+// CLAUDE_CONFIG_DIR is set, over the saved provider environment's home. PandaCode's own
+// CLAUDE_CONFIG_DIR is injected, so the test runs the same inside an agent session.
 #[test]
 fn a_connection_home_selects_its_own_claude_config() {
-    // PandaCode's own CLAUDE_CONFIG_DIR outranks any home; env is process-wide, so skip there.
-    if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
-        return;
-    }
+    use std::ffi::OsStr;
     let settings = Settings::new();
     let (host_home, conn_home) = (settings.base.join("host-home"), settings.base.join("conn-home"));
     for home in [&host_home, &conn_home] {
@@ -756,7 +755,18 @@ fn a_connection_home_selects_its_own_claude_config() {
     let provider_env = || vec![(home_var.to_owned(), host_home.display().to_string())];
     let connection = || Some(read_launch(&[], &[(home_var, conn_home.to_str().unwrap())]));
     let cwd = settings.base.join("project");
-    assert_eq!(launch_config_dir(provider_env(), &connection().unwrap().env, &cwd), Some(conn_home.join(".claude")));
+    let conn_env = connection().unwrap().env;
+    assert_eq!(launch_config_dir_with(provider_env(), &conn_env, None, &cwd), Some(conn_home.join(".claude")));
+    // PandaCode's own CLAUDE_CONFIG_DIR outranks any home; an empty one is unknown.
+    let inherited = settings.base.join("inherited");
+    assert_eq!(launch_config_dir_with(provider_env(), &conn_env, Some(inherited.as_os_str()), &cwd), Some(inherited.clone()));
+    assert_eq!(launch_config_dir_with(provider_env(), &[], Some(inherited.as_os_str()), &cwd), Some(inherited.clone()));
+    assert_eq!(launch_config_dir_with(provider_env(), &conn_env, Some(OsStr::new("")), &cwd), None, "fails closed");
+    assert_eq!(launch_config_dir_with(provider_env(), &[], Some(OsStr::new("relative")), &cwd), Some(cwd.join("relative")));
+    let named = settings.base.join("named");
+    let named_env = [("CLAUDE_CONFIG_DIR".to_owned(), named.display().to_string())];
+    assert_eq!(launch_config_dir_with(provider_env(), &named_env, Some(OsStr::new("")), &cwd), Some(named),
+        "a launch's own CLAUDE_CONFIG_DIR outranks the inherited one");
     assert!(!restricts_reads_over(&settings, "claude", provider_env(), connection()));
     std::fs::write(conn_home.join(".claude/settings.json"), r#"{"permissions":{"deny":["Read(secrets/**)"]}}"#).unwrap();
     assert!(restricts_reads_over(&settings, "claude", provider_env(), connection()), "the connection's home denies");

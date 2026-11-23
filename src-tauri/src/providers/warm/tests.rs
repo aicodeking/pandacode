@@ -1472,17 +1472,31 @@ fn a_named_connections_own_executable_is_stamped_instead_of_the_global_one() {
 }
 
 #[test]
-fn an_empty_claude_config_dir_fingerprints_the_home_claude_folder() {
+fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-empty-config-{}", uuid::Uuid::new_v4().simple()));
     let (cwd, home) = (root.join("project"), root.join("home/.claude"));
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::create_dir_all(&home).unwrap();
-    // `CLAUDE_CONFIG_DIR=""` resolves to no user folder; unset resolves to `~/.claude`.
+    // `CLAUDE_CONFIG_DIR=""` makes Claude Code read user config relative to `cwd`, with legacy
+    // paths under `~/.claude`; unset resolves to `~/.claude`.
     let empty = || claude_config_fingerprint_with(&cwd, None, Some(&home), &[]);
     let unset = || claude_config_fingerprint_with(&cwd, Some(&home), Some(&home), &[]);
     let mut previous = empty();
     assert_eq!(previous, empty(), "unchanged config files keep the key");
     assert_ne!(previous, unset(), "an empty CLAUDE_CONFIG_DIR never shares a spare with an unset one");
+    for (name, contents) in [
+        ("settings.json", "{}"),
+        ("settings.local.json", "{}"),
+        ("skills/a/SKILL.md", "a"),
+        ("agents/a.md", "a"),
+        ("commands/a.md", "a"),
+        ("rules/a.md", "a"),
+    ] {
+        write_config(&cwd, name, contents);
+        let next = empty();
+        assert_ne!(next, previous, "writing <cwd>/{name} with an empty CLAUDE_CONFIG_DIR must start the next turn cold");
+        previous = next;
+    }
     for (name, contents) in [
         ("settings.json", "{}"),
         ("settings.local.json", "{}"),

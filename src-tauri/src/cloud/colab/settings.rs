@@ -137,22 +137,33 @@ pub(crate) fn apply_options(current: &BTreeMap<String, String>, changes: &Value)
     Ok(next)
 }
 
+/// Whether a Colab option change alters what a Claude launch gets (`nativeTools` or `colabMcp`).
+pub(crate) fn affects_warm_spares(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> bool {
+    flag(before, "nativeTools", true) != flag(after, "nativeTools", true)
+        || flag(before, "colabMcp", false) != flag(after, "colabMcp", false)
+}
+
 /// Save option changes. Refused once disconnected, checked under the save lock, so a save
 /// that raced Disconnect never recreates the Colab options.
 pub fn update_config(changes: &Value) -> Result<ColabConfig> {
-    {
+    let discard = {
         let _saving = saving();
         if !is_connected() {
             return Err(SIGN_IN_FIRST.into());
         }
         let mut settings = super::super::settings();
-        let next = apply_options(&options(), changes)?;
+        let before = options();
+        let next = apply_options(&before, changes)?;
+        let discard = affects_warm_spares(&before, &next);
         settings.providers.insert(PROVIDER.into(), next);
         super::super::save_settings(&settings)?;
+        discard
+    };
+    // Colab's tools and MCP server shape every launch, the accelerator and High-RAM choice
+    // none; outside the save lock, so the two locks never nest.
+    if discard {
+        crate::providers::warm::discard_all();
     }
-    // Colab's tools and MCP server shape every launch; outside the save lock, so the two
-    // locks never nest.
-    crate::providers::warm::discard_all();
     Ok(config())
 }
 

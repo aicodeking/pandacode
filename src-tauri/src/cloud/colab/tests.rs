@@ -336,3 +336,22 @@ fn live_lists_runtimes_and_compute_units() {
     let usage = usage_summary().unwrap();
     assert!(usage.ccu_balance.is_none_or(|balance| balance >= 0.0));
 }
+
+#[test]
+fn only_tool_and_mcp_changes_discard_warm_spares() {
+    let options = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<BTreeMap<_, _>>();
+    let base = options(&[("nativeTools", "true"), ("colabMcp", "false"), ("accelerator", "NONE"), ("highMem", "false")]);
+    let changed = |key: &str, value: &str| {
+        let mut next = base.clone();
+        next.insert(key.into(), value.into());
+        next
+    };
+    assert!(!settings::affects_warm_spares(&base, &base), "no change keeps spares");
+    assert!(!settings::affects_warm_spares(&base, &changed("accelerator", "T4")));
+    assert!(!settings::affects_warm_spares(&base, &changed("highMem", "true")));
+    assert!(!settings::affects_warm_spares(&options(&[]), &base), "saved defaults match missing keys");
+    assert!(settings::affects_warm_spares(&base, &changed("nativeTools", "false")));
+    assert!(settings::affects_warm_spares(&changed("nativeTools", "false"), &base));
+    assert!(settings::affects_warm_spares(&base, &changed("colabMcp", "true")));
+    assert!(settings::affects_warm_spares(&changed("colabMcp", "true"), &base));
+}

@@ -29,11 +29,17 @@ pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: 
     // per spare start and lead-spare renewal (at most `warm::MAX_RENEWALS`).
     let catalog = custom_tools::has_catalog(app, session_id);
     let colab = cloud::colab::is_connected() && cloud::colab::native_tools_enabled();
-    format!(
-        "explore:{} custom:{} catalog:{catalog} colab:{colab}",
+    launch_inputs_key(
         explore::enabled_for_run(app, session_id, provider, cwd),
-        custom_tools::ipc::enabled_for(app)
+        custom_tools::ipc::enabled_for(app),
+        catalog,
+        colab,
     )
+}
+
+/// The `launch_inputs` key for these switches.
+fn launch_inputs_key(explore: bool, custom: bool, catalog: bool, colab: bool) -> String {
+    format!("explore:{explore} custom:{custom} catalog:{catalog} colab:{colab}")
 }
 /// What a run's tool host is built for, besides its `HostPlan`.
 pub(crate) struct HostInputs<'a> {
@@ -401,5 +407,25 @@ pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, ses
         tauri::async_runtime::spawn(async move {
             let _ = providers::prewarm_agent(next, tools, approvals, launch, renew, inputs).await;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::launch_inputs_key;
+
+    #[test]
+    fn every_launch_input_switch_changes_the_key() {
+        let base = launch_inputs_key(false, false, false, false);
+        for key in [
+            launch_inputs_key(true, false, false, false),
+            launch_inputs_key(false, true, false, false),
+            launch_inputs_key(false, false, true, false),
+            launch_inputs_key(false, false, false, true),
+        ] {
+            assert_ne!(key, base);
+        }
+        assert_ne!(launch_inputs_key(false, false, false, true), launch_inputs_key(true, false, false, false));
+        assert_eq!(launch_inputs_key(true, true, true, true), launch_inputs_key(true, true, true, true));
     }
 }
