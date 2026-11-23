@@ -1439,6 +1439,66 @@ fn an_upgraded_claude_binary_changes_the_executable_stamp() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+#[test]
+fn a_named_connections_own_executable_is_stamped_instead_of_the_global_one() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-conn-binary-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let (own, global) = (root.join("claude-work"), root.join("claude"));
+    std::fs::write(&own, "v1").unwrap();
+    std::fs::write(&global, "global").unwrap();
+    let connection = crate::connections::Connection {
+        id: "work".into(),
+        provider: "claude".into(),
+        name: "Work".into(),
+        executable: Some(own.to_string_lossy().into_owned()),
+        ..Default::default()
+    };
+    let stamp = |connection: Option<&crate::connections::Connection>| {
+        let (saved, resolved) = executable_for(connection, None, || Some(global.clone()));
+        executable_stamp_for(saved, resolved)
+    };
+    assert_eq!(executable_for(Some(&connection), None, || Some(global.clone())), (Some(own.clone()), Some(own.clone())));
+    let without = crate::connections::Connection { executable: None, ..connection.clone() };
+    assert_eq!(executable_for(Some(&without), None, || Some(global.clone())), (None, Some(global.clone())), "no own executable uses the global one");
+    let before = stamp(Some(&connection));
+    assert_eq!(before, stamp(Some(&connection)), "an unchanged binary keeps the key");
+    assert_ne!(before, stamp(None), "the connection's binary is not the global one");
+    let global_before = stamp(None);
+    // A different length, so coarse mtime granularity cannot hide the upgrade.
+    std::fs::write(&own, "v2.0").unwrap();
+    assert_ne!(stamp(Some(&connection)), before, "upgrading the connection's binary in place must start the next turn cold");
+    assert_eq!(stamp(None), global_before, "the global binary is unchanged");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_empty_claude_config_dir_fingerprints_the_home_claude_folder() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-empty-config-{}", uuid::Uuid::new_v4().simple()));
+    let (cwd, home) = (root.join("project"), root.join("home/.claude"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::create_dir_all(&home).unwrap();
+    // `CLAUDE_CONFIG_DIR=""` resolves to no user folder; unset resolves to `~/.claude`.
+    let empty = || claude_config_fingerprint_with(&cwd, None, Some(&home), &[]);
+    let unset = || claude_config_fingerprint_with(&cwd, Some(&home), Some(&home), &[]);
+    let mut previous = empty();
+    assert_eq!(previous, empty(), "unchanged config files keep the key");
+    assert_ne!(previous, unset(), "an empty CLAUDE_CONFIG_DIR never shares a spare with an unset one");
+    for (name, contents) in [
+        ("settings.json", "{}"),
+        ("settings.local.json", "{}"),
+        ("skills/a/SKILL.md", "a"),
+        ("agents/a.md", "a"),
+        ("commands/a.md", "a"),
+    ] {
+        write_config(&home, name, contents);
+        let next = empty();
+        assert_ne!(next, previous, "writing ~/.claude/{name} with an empty CLAUDE_CONFIG_DIR must start the next turn cold");
+        previous = next;
+    }
+    assert!(!claude_config_fingerprint_with(&cwd, None, None, &[]).is_empty(), "no folders at all still fingerprints");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {

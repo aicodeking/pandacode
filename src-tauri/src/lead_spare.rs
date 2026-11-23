@@ -1,7 +1,7 @@
 //! A team lead's warm spare: after the lead's dispatch turn its next process starts in the
 //! background (in the lead pool, `providers/warm.rs`), so the review wake skips the CLI's own
-//! startup. Moved out of `lib.rs`; `launch_operation_admitted` calls `renewal` and
-//! `spare_config` when a turn ends.
+//! startup. Moved out of `lib.rs`; `launch_host::start_spare` calls `pool` and `spare_config`
+//! when a turn ends (`renewal` is test-only).
 use crate::providers::{self, RunConfig, WarmRenew};
 use crate::storage::{Session, Store};
 use crate::architect;

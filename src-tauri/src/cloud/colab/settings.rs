@@ -150,6 +150,9 @@ pub fn update_config(changes: &Value) -> Result<ColabConfig> {
         settings.providers.insert(PROVIDER.into(), next);
         super::super::save_settings(&settings)?;
     }
+    // Colab's tools and MCP server shape every launch; outside the save lock, so the two
+    // locks never nest.
+    crate::providers::warm::discard_all();
     Ok(config())
 }
 
@@ -173,6 +176,8 @@ pub(crate) fn persist(email: &str, mode: &str, secret: &OAuthSecret) -> Result<S
     let line = next.get("detail").cloned().unwrap_or_default();
     settings.providers.insert(PROVIDER.into(), next);
     super::super::save_settings(&settings)?;
+    drop(_saving);
+    crate::providers::warm::discard_all();
     Ok(line)
 }
 
@@ -217,6 +222,8 @@ pub fn disconnect() -> Result<()> {
     if let Ok(path) = store::path() {
         let _ = std::fs::remove_file(path);
     }
+    drop(_saving);
+    crate::providers::warm::discard_all();
     Ok(())
 }
 

@@ -19,8 +19,8 @@ use std::sync::{
 use tauri::Manager;
 
 /// What a task's next launch builds its instructions and tool catalog from besides its
-/// `RunConfig`: the explorer for its harness, the agent-made tools switch and whether the task
-/// has a catalog here at all. Whether that catalog is empty is left out: it rides only the
+/// `RunConfig`: the explorer for its harness, the agent-made tools switch, Colab's native tools
+/// (`cloud::colab_tools::with_colab`) and whether the task has a catalog here at all. Whether that catalog is empty is left out: it rides only the
 /// message note, never the instructions or the tool list. A lead's warm spare is renewed only
 /// while this is unchanged (`warm::still_current`).
 pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: &str, cwd: &Path) -> String {
@@ -28,7 +28,12 @@ pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: 
     // `explore-on-<provider>`, the tools switch); `warm.rs` calls it on a blocking thread, once
     // per spare start and lead-spare renewal (at most `warm::MAX_RENEWALS`).
     let catalog = custom_tools::has_catalog(app, session_id);
-    format!("explore:{} custom:{} catalog:{catalog}", explore::enabled_for_run(app, session_id, provider, cwd), custom_tools::ipc::enabled_for(app))
+    let colab = cloud::colab::is_connected() && cloud::colab::native_tools_enabled();
+    format!(
+        "explore:{} custom:{} catalog:{catalog} colab:{colab}",
+        explore::enabled_for_run(app, session_id, provider, cwd),
+        custom_tools::ipc::enabled_for(app)
+    )
 }
 /// What a run's tool host is built for, besides its `HostPlan`.
 pub(crate) struct HostInputs<'a> {

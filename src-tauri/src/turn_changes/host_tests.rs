@@ -153,8 +153,16 @@ fn read_launch(args: &[&str], env: &[(&str, &str)]) -> crate::connections::Launc
 }
 
 fn restricts_reads(settings: &Settings, provider: &str, connection: Option<crate::connections::Launch>) -> bool {
-    claude_restricts_reads_with(provider, &settings.base.join("project"), || Ok(connection),
-        || false, || Some(settings.base.join("config")))
+    let provider_env = vec![("CLAUDE_CONFIG_DIR".to_owned(), settings.base.join("config").display().to_string())];
+    restricts_reads_over(settings, provider, provider_env, connection)
+}
+
+// The real merge: the saved provider environment first, then the connection's.
+fn restricts_reads_over(settings: &Settings, provider: &str, provider_env: Vec<(String, String)>,
+    connection: Option<crate::connections::Launch>) -> bool {
+    let cwd = settings.base.join("project");
+    claude_restricts_reads_with(provider, &cwd, || Ok(connection), || false,
+        |env| launch_config_dir(provider_env, env, &cwd))
 }
 
 #[test]
@@ -279,7 +287,7 @@ fn nonstandard_linked_checkout(settings: &Settings) -> (PathBuf, PathBuf, PathBu
 
 fn linked_reads_restricted(settings: &Settings, worktree: &Path) -> bool {
     claude_restricts_reads_with("claude", worktree, || Ok(None), || false,
-        || Some(settings.base.join("config")))
+        |_| Some(settings.base.join("config")))
 }
 
 #[test]
@@ -682,7 +690,7 @@ fn relay_reads_ignore_user_and_project_rules_but_honor_managed_policy() {
     for provider in ["glm", "mimo", "alibaba"] {
         assert!(!restricts_reads(&settings, provider, None), "{provider}");
         assert!(claude_restricts_reads_with(provider, &settings.base, || panic!("managed restriction"),
-            || true, || panic!("relay config")));
+            || true, |_| panic!("relay config")));
         assert!(restricts_reads(&settings, provider, Some(read_launch(&["--settings=custom.json"], &[]))));
     }
 }
@@ -699,7 +707,7 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
         }
         assert!(restricts_reads(&settings, provider, Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "")]))));
         assert!(claude_restricts_reads_with(provider, &settings.base, || Err("missing saved key".into()),
-            || false, || panic!("bad connection")));
+            || false, |_| panic!("bad connection")));
     }
     let custom = settings.base.join("custom");
     std::fs::create_dir(&custom).unwrap();
@@ -726,9 +734,41 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
     assert!(!restricts_reads(&settings, "glm", connection()));
     settings.user("settings.json", r#"{"permissions":{"deny":["Read"]}}"#);
     std::fs::write(custom.join("settings.local.json"), "{}").unwrap();
-    assert!(!claude_restricts_reads_with("claude", &settings.base.join("project"), || Ok(connection()),
-        || false, || panic!("override wins")));
-    assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, || None));
+    assert!(!restricts_reads(&settings, "claude", connection()), "the connection's folder wins");
+    assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, |_| None));
+}
+
+// A named connection's HOME (USERPROFILE on Windows) picks `<home>/.claude` when no
+// CLAUDE_CONFIG_DIR is set, over the saved provider environment's home.
+#[test]
+fn a_connection_home_selects_its_own_claude_config() {
+    // PandaCode's own CLAUDE_CONFIG_DIR outranks any home; env is process-wide, so skip there.
+    if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+        return;
+    }
+    let settings = Settings::new();
+    let (host_home, conn_home) = (settings.base.join("host-home"), settings.base.join("conn-home"));
+    for home in [&host_home, &conn_home] {
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
+    }
+    let home_var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    let provider_env = || vec![(home_var.to_owned(), host_home.display().to_string())];
+    let connection = || Some(read_launch(&[], &[(home_var, conn_home.to_str().unwrap())]));
+    let cwd = settings.base.join("project");
+    assert_eq!(launch_config_dir(provider_env(), &connection().unwrap().env, &cwd), Some(conn_home.join(".claude")));
+    assert!(!restricts_reads_over(&settings, "claude", provider_env(), connection()));
+    std::fs::write(conn_home.join(".claude/settings.json"), r#"{"permissions":{"deny":["Read(secrets/**)"]}}"#).unwrap();
+    assert!(restricts_reads_over(&settings, "claude", provider_env(), connection()), "the connection's home denies");
+    assert!(!restricts_reads_over(&settings, "claude", provider_env(), None), "the host home allows");
+    std::fs::write(conn_home.join(".claude/settings.json"), "{}").unwrap();
+    std::fs::write(host_home.join(".claude/settings.json"), r#"{"permissions":{"deny":["Read(secrets/**)"]}}"#).unwrap();
+    assert!(!restricts_reads_over(&settings, "claude", provider_env(), connection()), "the host home is not read");
+    assert!(restricts_reads_over(&settings, "claude", provider_env(), None));
+    let empty = || Some(read_launch(&[], &[(home_var, conn_home.to_str().unwrap()), ("CLAUDE_CONFIG_DIR", "")]));
+    assert!(restricts_reads_over(&settings, "claude", provider_env(), empty()), "empty folder fails closed");
+    assert!(restricts_reads_over(&settings, "glm", provider_env(), empty()), "relays too");
+    assert!(!restricts_reads_over(&settings, "glm", provider_env(), connection()));
 }
 
 #[test]
@@ -758,7 +798,7 @@ fn non_claude_harnesses_never_probe_claude_read_settings() {
     for provider in ["codex", "opencode", "kimi"] {
         assert!(!claude_restricts_reads_with(provider, Path::new("unused"),
             || panic!("non-Claude connection"), || panic!("non-Claude policy"),
-            || panic!("non-Claude config")));
+            |_| panic!("non-Claude config")));
     }
 }
 
@@ -1328,7 +1368,7 @@ fn an_empty_claude_config_dir_is_unknown_and_fails_closed() {
     assert!(allows(&config));
     assert!(!edits_wait_for_run_using(&config, allows));
     assert!(claude_restricts_reads_with("claude", &cwd, || Ok(None), || false,
-        || resolve_claude_config_dir_env(&empty, &cwd, false)));
+        |_| resolve_claude_config_dir_env(&empty, &cwd, false)));
 }
 
 #[test]

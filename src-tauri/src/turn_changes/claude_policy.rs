@@ -75,23 +75,33 @@ pub(super) fn claude_allows_edits_with(
 
 /// Explore must not bypass Claude's native read permissions, in any permission mode.
 pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Path) -> bool {
-    let env = crate::provider_settings::environment(provider);
     claude_restricts_reads_with(
         provider,
         cwd,
         || crate::connections::for_task(session_id, provider)
             .map(|connection| crate::connections::launch(&connection)).transpose(),
         host_managed_settings_restrict_reads,
-        || resolve_claude_config_dir_env(&env, cwd, cfg!(windows)),
+        |env| launch_config_dir(crate::provider_settings::environment(provider), env, cwd),
     )
 }
 
+/// The Claude config folder of a launch whose environment is `provider_env` then
+/// `connection_env`, in `Launch::apply` order (a connection's `HOME`, `USERPROFILE` or
+/// `CLAUDE_CONFIG_DIR` overrides the saved provider environment).
+pub(super) fn launch_config_dir(
+    provider_env: Vec<(String, String)>, connection_env: &[(String, String)], cwd: &Path,
+) -> Option<PathBuf> {
+    let env: Vec<_> = provider_env.into_iter().chain(connection_env.iter().cloned()).collect();
+    resolve_claude_config_dir_env(&env, cwd, cfg!(windows))
+}
+
+/// `config_dir` maps the connection's env (empty without one) to `launch_config_dir`.
 pub(super) fn claude_restricts_reads_with(
     provider: &str,
     cwd: &Path,
     connection: impl FnOnce() -> std::result::Result<Option<crate::connections::Launch>, String>,
     managed_settings: impl FnOnce() -> bool,
-    config_dir: impl FnOnce() -> Option<PathBuf>,
+    config_dir: impl FnOnce(&[(String, String)]) -> Option<PathBuf>,
 ) -> bool {
     if !crate::providers::claude_family(provider) {
         return false;
@@ -99,31 +109,28 @@ pub(super) fn claude_restricts_reads_with(
     if managed_settings() {
         return true;
     }
-    let connection = match connection() {
-        Ok(connection) => connection,
-        Err(_) => return true,
-    };
-    let mut overridden = None;
-    if let Some(connection) = connection {
-        if connection.args.iter().any(|arg| {
-            let flag = arg.split('=').next().unwrap_or_default();
-            matches!(flag, "--settings" | "--setting-sources" | "--disallowedTools" | "--disallowed-tools")
-        }) {
-            return true;
-        }
-        // Launch::apply uses the last value when a variable occurs more than once.
-        if let Some(value) = claude_config_dir_value(&connection.env, cfg!(windows)) {
-            overridden = join_claude_config_dir(cwd, value);
-            if overridden.is_none() {
+    let connection_env = match connection() {
+        Ok(Some(connection)) => {
+            if connection.args.iter().any(|arg| {
+                let flag = arg.split('=').next().unwrap_or_default();
+                matches!(flag, "--settings" | "--setting-sources" | "--disallowedTools" | "--disallowed-tools")
+            }) {
                 return true;
             }
+            connection.env
         }
+        Ok(None) => Vec::new(),
+        Err(_) => return true,
+    };
+    // A connection's empty CLAUDE_CONFIG_DIR is an unknown folder: fail closed, relays too.
+    if claude_config_dir_value(&connection_env, cfg!(windows)).is_some_and(str::is_empty) {
+        return true;
     }
     // Relays disable user/project sources, but still obey managed policy and connection flags.
     if provider != "claude" {
         return false;
     }
-    let Some(config_dir) = overridden.or_else(config_dir) else { return true };
+    let Some(config_dir) = config_dir(&connection_env) else { return true };
     read_deny_rules(&config_dir, cwd)
 }
 

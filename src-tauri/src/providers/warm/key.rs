@@ -30,6 +30,7 @@ pub(super) fn key_with_disabled(
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
 ) -> String {
+    let named = crate::connections::for_task(&config.session_id, &config.provider);
     json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
@@ -49,10 +50,11 @@ pub(super) fn key_with_disabled(
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::super::privacy::telemetry_off(),
-        // So does a saved executable location, or a CLI upgraded in place (in the app or not).
-        "executable": executable_stamp(&config.provider),
+        // So does a saved executable location (the connection's own first, as at launch), or a
+        // CLI upgraded in place (in the app or not).
+        "executable": executable_stamp(&config.provider, named.as_ref()),
         // Config files Claude reads only at startup: an edit while a spare idles starts cold.
-        "claudeConfig": claude_config_fingerprint(config),
+        "claudeConfig": claude_config_fingerprint(config, named.as_ref()),
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
     })
@@ -61,11 +63,26 @@ pub(super) fn key_with_disabled(
 
 /// The saved executable location, the binary a launch would run, and that binary's metadata
 /// (following symlinks), so an upgraded CLI starts the next turn cold.
-fn executable_stamp(provider: &str) -> Value {
-    executable_stamp_for(
+fn executable_stamp(provider: &str, connection: Option<&Connection>) -> Value {
+    let (saved, resolved) = executable_for(
+        connection,
         crate::provider_settings::executable_override(provider),
-        crate::providers::executable(provider),
-    )
+        || crate::providers::executable(provider),
+    );
+    executable_stamp_for(saved, resolved)
+}
+
+/// The saved location and the binary a launch runs: a named connection's own executable first,
+/// exactly as `spawn_claude_process` and `connections::launch` pick it, else the global setup.
+pub(super) fn executable_for(
+    connection: Option<&Connection>,
+    saved: Option<PathBuf>,
+    resolved: impl FnOnce() -> Option<PathBuf>,
+) -> (Option<PathBuf>, Option<PathBuf>) {
+    match connection.and_then(|connection| connection.executable.as_deref()).map(PathBuf::from) {
+        Some(own) => (Some(own.clone()), Some(own)),
+        None => (saved, resolved()),
+    }
 }
 
 pub(super) fn executable_stamp_for(saved: Option<PathBuf>, resolved: Option<PathBuf>) -> Value {
@@ -100,12 +117,8 @@ const CONFIG_WALK_ENTRIES: usize = 128;
 const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// Metadata of the Claude config files and folders this launch's process would read.
-fn claude_config_fingerprint(config: &RunConfig) -> Vec<Value> {
-    let connection = crate::connections::for_task(&config.session_id, &config.provider);
-    let env = claude_launch_env(
-        crate::provider_settings::environment("claude"),
-        connection.as_ref(),
-    );
+fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Vec<Value> {
+    let env = claude_launch_env(crate::provider_settings::environment("claude"), connection);
     let user_dir =
         crate::turn_changes::resolve_claude_config_dir_env(&env, &config.cwd, cfg!(windows));
     let home_claude = crate::account_config::home(&env).map(|home| home.join(".claude"));
@@ -118,7 +131,9 @@ fn claude_config_fingerprint(config: &RunConfig) -> Vec<Value> {
     )
 }
 
-/// Metadata only (never contents) of startup configuration, memory and rules.
+/// Metadata only (never contents) of startup configuration, memory and rules. `user_dir` is
+/// `None` when `CLAUDE_CONFIG_DIR` is set but empty: Claude Code then reads `~/.claude`
+/// (`account_config.rs`), so `home_claude` gets the full user stamps, marked apart from unset.
 pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
     user_dir: Option<&Path>,
@@ -136,6 +151,8 @@ pub(super) fn claude_config_fingerprint_with(
     // `claude_policy.rs`.
     const MAIN_LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
+    let unresolved = user_dir.is_none();
+    let user_dir = user_dir.or(home_claude);
     let roots = crate::turn_changes::project_config_roots(cwd);
     let above_project = roots
         .ancestors
@@ -162,7 +179,7 @@ pub(super) fn claude_config_fingerprint_with(
         Value::Array(stamp)
     };
 
-    let mut stamps = Vec::new();
+    let mut stamps = vec![json!(unresolved)];
     for root in &roots.ancestors {
         stamps.push(stamp_project(
             root,

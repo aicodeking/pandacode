@@ -237,7 +237,9 @@ project and local settings (including ancestors up to the nearest Git root and a
 linked worktree's inherited main-checkout `.claude/settings.local.json`), plus
 enterprise managed settings and `managed-settings.d` JSON drop-ins. Any `Read`,
 `Grep`, `Glob`, or PandaCode explore rule withholds the explorer for that launch in
-every permission mode. This includes tool-name wildcards such as `Read*`, `R*`,
+every permission mode, path-scoped ones such as `Read(./.env)` included: PandaCode
+withholds the tool by design rather than re-implementing Claude Code's path matching.
+This includes tool-name wildcards such as `Read*`, `R*`,
 `Gr*`, `Gl*`, `mcp__*`, `mcp__pandacode_architect__pandacode_*`, and the bare MCP
 server name `mcp__pandacode_architect`. Managed settings also apply to Claude-family
 relays (GLM, MiMo and Alibaba Token Plan), which otherwise disable user/project
