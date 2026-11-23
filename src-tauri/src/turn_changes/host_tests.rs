@@ -595,13 +595,33 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
     let program_data = settings.base.as_os_str().to_owned();
     let mut paths = Vec::new();
     let mut keys = Vec::new();
-    assert!(!windows_managed_settings_may_allow_with(Some(program_data.clone()),
-        |path| { paths.push(path.to_owned()); false },
-        |root, path| { keys.push((root, path.to_owned())); 2 }));
-    assert_eq!(paths, vec![settings.base.join("ClaudeCode/managed-settings.json"),
-        settings.base.join("ClaudeCode/managed-settings.d"), PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json")]);
-    assert_eq!(keys, vec![(0x8000_0002, r"SOFTWARE\Policies\ClaudeCode".into()),
-        (0x8000_0001, r"SOFTWARE\Policies\ClaudeCode".into())]);
+    assert!(!windows_managed_settings_may_allow_with(
+        Some(program_data.clone()),
+        |path| {
+            paths.push(path.to_owned());
+            false
+        },
+        |root, path| {
+            keys.push((root, path.to_owned()));
+            2
+        }
+    ));
+    assert_eq!(
+        paths,
+        [
+            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
+            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.d"),
+            settings.base.join("ClaudeCode/managed-settings.json"),
+            settings.base.join("ClaudeCode/managed-settings.d"),
+        ]
+    );
+    assert_eq!(
+        keys,
+        vec![
+            (0x8000_0002, r"SOFTWARE\Policies\ClaudeCode".into()),
+            (0x8000_0001, r"SOFTWARE\Policies\ClaudeCode".into())
+        ]
+    );
     for key in [0x8000_0002, 0x8000_0001] {
         for status in [0, 5, 3, -1] {
             assert!(windows_managed_settings_may_allow_with(Some(program_data.clone()), |_| false,
@@ -616,15 +636,40 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
     let probe = |path: &Path| {
         // The Program Files fallback is outside this fixture; never inspect host policy.
         if !path.starts_with(&settings.base) { return false; }
-        if path.extension().is_some_and(|ext| ext == "d") {
-            settings_drop_ins_restrict_reads(path)
-        } else { file_restricts_reads(path) }
+        managed_entry_restricts_reads(path)
     };
     std::fs::write(managed_dir.join("managed-settings.json"), "{}").unwrap();
     assert!(!windows_managed_settings_may_allow_with(Some(program_data.clone()), probe, |_, _| 2));
     std::fs::create_dir(managed_dir.join("managed-settings.d")).unwrap();
     std::fs::write(managed_dir.join("managed-settings.d/read.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
     assert!(windows_managed_settings_may_allow_with(Some(program_data), probe, |_, _| 2));
+}
+
+#[test]
+fn windows_program_files_drop_ins_affect_edit_approval_and_read_restrictions() {
+    let settings = Settings::new();
+    let program_data = settings.base.as_os_str().to_owned();
+    let program_files_drop_ins = Path::new(r"C:\Program Files\ClaudeCode\managed-settings.d");
+    let fixture = settings.base.join("managed-settings.d");
+    let probe = |check: fn(&Path) -> bool| {
+        windows_managed_settings_may_allow_with(
+            Some(program_data.clone()),
+            |path| path == program_files_drop_ins && check(&fixture),
+            |_, _| 2,
+        )
+    };
+    assert!(!probe(managed_path_may_allow));
+    assert!(!probe(managed_entry_restricts_reads));
+    std::fs::create_dir(&fixture).unwrap();
+    std::fs::write(fixture.join("policy.json"), "{}").unwrap();
+    assert!(probe(managed_path_may_allow));
+    assert!(!probe(managed_entry_restricts_reads));
+    std::fs::write(
+        fixture.join("policy.json"),
+        r#"{"permissions":{"deny":["Read"]}}"#,
+    )
+    .unwrap();
+    assert!(probe(managed_entry_restricts_reads));
 }
 
 #[test]
@@ -662,6 +707,18 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
     std::fs::create_dir(settings.base.join("project/relative-config")).unwrap();
     std::fs::write(settings.base.join("project/relative-config/settings.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
     assert!(restricts_reads(&settings, "claude", Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "relative-config")]))));
+    let literal_tilde = settings.base.join("project/~/x");
+    std::fs::create_dir_all(&literal_tilde).unwrap();
+    std::fs::write(
+        literal_tilde.join("settings.json"),
+        r#"{"permissions":{"deny":["Read"]}}"#,
+    )
+    .unwrap();
+    assert!(restricts_reads(
+        &settings,
+        "claude",
+        Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "~/x")]))
+    ));
     #[cfg(windows)]
     assert!(restricts_reads(&settings, "claude", Some(read_launch(&[], &[("claude_config_dir", custom.to_str().unwrap())]))));
     assert!(!restricts_reads(&settings, "glm", connection()));
@@ -884,9 +941,10 @@ fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state
     assert_eq!(
         paths,
         [
+            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
+            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.d"),
             root.join("managed-settings.json"),
             root.join("managed-settings.d"),
-            std::path::PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
         ]
     );
     assert_eq!(

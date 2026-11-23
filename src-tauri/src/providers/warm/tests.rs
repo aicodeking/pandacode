@@ -837,7 +837,7 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
     assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&relative), &cwd), Some(cwd.join("connection-config")));
 
     let user = claude_config_dir_from(provider_env, Some(&folder), &cwd).unwrap();
-    let stamp = || claude_config_fingerprint_in(&cwd, Some(user.as_path()));
+    let stamp = || claude_config_fingerprint_with(&cwd, Some(&user), None, &[]);
     let mut previous = stamp();
     write_config(&global, "settings.json", "{}");
     write_config(&global, "rules/common/rule.md", "a");
@@ -890,7 +890,8 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(&nested).unwrap();
     let user = root.join("user");
-    let stamp = |cwd: &Path| claude_config_fingerprint_in(cwd, Some(user.as_path()));
+    let home = root.join("home/.claude");
+    let stamp = |cwd: &Path| claude_config_fingerprint_with(cwd, Some(&user), Some(&home), &[]);
     let mut previous = stamp(&nested);
     for (name, contents) in [("AGENTS.md", "a"), ("AGENTS.md", "ab"), (".claude/settings.json", "{}"), ("CLAUDE.md", "a")] {
         write_config(&repo, name, contents);
@@ -901,7 +902,23 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     write_config(&nested, "AGENTS.md", "a");
     assert_ne!(stamp(&nested), previous, "writing AGENTS.md in the working folder must start the next turn cold");
 
-    // A linked worktree inherits its main checkout's local settings, memory and rules.
+    for (parent, name) in [
+        (&root, "CLAUDE.md"),
+        (&root, ".claude/rules/common/rule.md"),
+        (&home, "CLAUDE.md"),
+        (&home, "rules/common/rule.md"),
+    ] {
+        write_config(parent, name, "a");
+        let before = stamp(&nested);
+        write_config(parent, name, "ab");
+        assert_ne!(
+            stamp(&nested),
+            before,
+            "writing {parent:?}/{name} must start the next turn cold"
+        );
+    }
+
+    // A linked worktree inherits configuration from its main checkout.
     let main = root.join("main");
     let gitdir = main.join(".git/worktrees/wt");
     let worktree = root.join("wt");
@@ -911,13 +928,48 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
     std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
     let mut previous = stamp(&worktree);
-    for (name, contents) in [(".claude/settings.local.json", "{}"), (".claude/settings.local.json", "{ }"), ("AGENTS.md", "a"), (".claude/rules/rule.md", "a")] {
+    for (name, contents) in [
+        (".claude/settings.local.json", "{}"),
+        (".claude/settings.local.json", "{ }"),
+        (".claude/rules/rule.md", "a"),
+        (".claude/rules/rule.md", "ab"),
+    ] {
         write_config(&main, name, contents);
         let next = stamp(&worktree);
         assert_ne!(next, previous, "writing the main checkout's {name} must start a worktree launch cold");
         previous = next;
     }
+    for name in [
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        ".claude/CLAUDE.md",
+        ".mcp.json",
+    ] {
+        write_config(&main, name, "a");
+        assert_eq!(
+            stamp(&worktree),
+            previous,
+            "writing the main checkout's {name} must preserve the warm key"
+        );
+    }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn claude_config_paths_match_the_permission_policy_resolver() {
+    let cwd = std::env::temp_dir().join("pandacode-warm-config-cwd");
+    let absolute = cwd.join("absolute");
+    for (value, expected) in [
+        (absolute.to_string_lossy().into_owned(), absolute),
+        ("relative".into(), cwd.join("relative")),
+        ("~/x".into(), cwd.join("~").join("x")),
+    ] {
+        let env = vec![("CLAUDE_CONFIG_DIR".into(), value)];
+        let policy = crate::turn_changes::resolve_claude_config_dir_env(&env, &cwd, cfg!(windows));
+        assert_eq!(policy, Some(expected));
+        assert_eq!(claude_config_dir_from(env, None, &cwd), policy);
+    }
 }
 
 #[test]

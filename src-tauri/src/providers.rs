@@ -190,11 +190,17 @@ pub(crate) const PROVIDERS: [(&str, &str); 21] = [
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
-/// Claude Code tools a team worker's brief already forbids (pinned by `scripts/agent-bench/s2.mjs`).
+/// Claude Code tools a team worker's brief already forbids: native subagents and workflows,
+/// other sessions, worktrees and cloud routines. Their definitions and listings ride every
+/// request of every step (see `docs/worker-tokens.md`). `TaskStop` stays because it also stops
+/// background Bash. `scripts/agent-bench/s2.mjs` reads this constant from `providers.rs`.
 pub(crate) const CLAUDE_WORKER_DENIED_TOOLS: &str = "Agent,Task,Workflow,ListAgents,SendMessage,RemoteTrigger,CronDelete,CronList,EnterWorktree,ExitWorktree";
 /// The edit tools a read-only worker is told not to use (pinned by `scripts/agent-bench/s2.mjs`).
 pub(crate) const CLAUDE_READ_ONLY_DENIED_TOOLS: &str = "Edit,Write,NotebookEdit";
-/// Denied to team workers when Settings → Agents → Workers can use skills is off (pinned by `scripts/agent-bench/s3.mjs`).
+/// Denied to team workers only while Settings → Agents → Workers can use skills is off.
+/// The setting is on by default, so user rules naming a skill keep working. Turning it off
+/// saves the skill listing, about 8k cache-write tokens per worker with a real skills library.
+/// `scripts/agent-bench/s3.mjs` reads this constant from `providers.rs`.
 pub(crate) const CLAUDE_SKILL_TOOL: &str = "Skill";
 
 /// Never runs an agent-reviewed task under some other policy.

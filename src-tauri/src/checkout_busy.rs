@@ -102,8 +102,8 @@ pub(crate) async fn active_agent_in_state(state: &AppState, root: &Path) -> Resu
     .await
 }
 
-/// Session IDs in `providers::pending_exits()` whose recorded `cwd` or persisted workspace root
-/// matches `root`, literally or canonically.
+/// Distinct session IDs in `providers::pending_exits()` whose recorded `cwd` or persisted workspace
+/// root matches `root`, literally or canonically, in the order of the first matching exit.
 pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path) -> Result<Vec<String>> {
     let exiting = providers::pending_exits();
     if exiting.is_empty() {
@@ -128,9 +128,12 @@ pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path
                 })
                 .collect()
         };
+        let mut seen = std::collections::HashSet::new();
         Ok(resolved
             .into_iter()
-            .filter_map(|(session_id, paths)| any_same_checkout(&root, &paths).then_some(session_id))
+            .filter_map(|(session_id, paths)| {
+                (any_same_checkout(&root, &paths) && seen.insert(session_id.clone())).then_some(session_id)
+            })
             .collect())
     })
     .await

@@ -81,68 +81,114 @@ const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// Metadata of the Claude config files and folders this launch's process would read.
 fn claude_config_fingerprint(config: &RunConfig) -> Vec<Value> {
-    let user_dir = effective_claude_config_dir(&config.session_id, &config.provider, &config.cwd);
-    claude_config_fingerprint_in(&config.cwd, user_dir.as_deref())
+    let connection = crate::connections::for_task(&config.session_id, &config.provider);
+    let env = claude_launch_env(
+        crate::provider_settings::environment("claude"),
+        connection.as_ref(),
+    );
+    let user_dir =
+        crate::turn_changes::resolve_claude_config_dir_env(&env, &config.cwd, cfg!(windows));
+    let home_claude = crate::account_config::home(&env).map(|home| home.join(".claude"));
+    let managed = crate::turn_changes::host_managed_settings_paths();
+    claude_config_fingerprint_with(
+        &config.cwd,
+        user_dir.as_deref(),
+        home_claude.as_deref(),
+        managed.as_deref().unwrap_or_default(),
+    )
 }
 
-/// Metadata only (never contents) of the Claude config files and folders for a launch in `cwd`
-/// (every folder up to the repository root, a linked worktree's main checkout, `user_dir` and
-/// the host's managed settings), so a spare started before one was created, edited or removed
-/// is never adopted.
-pub(super) fn claude_config_fingerprint_in(cwd: &Path, user_dir: Option<&Path>) -> Vec<Value> {
-    let home_claude = dirs::home_dir().map(|home| home.join(".claude"));
-    let managed = crate::turn_changes::host_managed_settings_path();
-    claude_config_fingerprint_with(cwd, user_dir, home_claude.as_deref(), managed.as_deref())
-}
-
-/// `claude_config_fingerprint_in` with the home `.claude` folder and managed settings given.
-fn claude_config_fingerprint_with(
+/// Metadata only (never contents) of startup configuration, memory and rules.
+pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
     user_dir: Option<&Path>,
     home_claude: Option<&Path>,
-    managed: Option<&Path>,
+    managed_paths: &[PathBuf],
 ) -> Vec<Value> {
+    const MEMORY_FILES: [&str; 4] = [
+        "CLAUDE.md",
+        "CLAUDE.local.md",
+        "AGENTS.md",
+        ".claude/CLAUDE.md",
+    ];
+    const MAIN_SETTINGS: [&str; 2] = [".claude/settings.json", ".claude/settings.local.json"];
+
     let roots = crate::turn_changes::project_config_roots(cwd);
-    // A project's `.claude` that is the user folder (a repository rooted at home) is stamped as
-    // the user folder only, as `read_deny_rules` does, even when CLAUDE_CONFIG_DIR moved it.
-    let project = |root: &Path| {
+    let above_project = roots
+        .ancestors
+        .last()
+        .and_then(|root| root.parent())
+        .into_iter()
+        .flat_map(Path::ancestors);
+    let mut home_memory_stamped = false;
+    let mut stamp_project = |root: &Path, files: &[&str], dirs: &[&str]| {
         let claude = root.join(".claude");
-        let skip_claude = user_dir == Some(claude.as_path()) || home_claude == Some(claude.as_path());
-        let files = PROJECT_CLAUDE_FILES
+        // The effective user folder is stamped below.
+        let skip_claude = user_dir == Some(claude.as_path());
+        home_memory_stamped |= !skip_claude && home_claude == Some(claude.as_path());
+        let files = files
             .iter()
-            .map(|name| if skip_claude && name.starts_with(".claude/") { Value::Null } else { config_file_stamp(&root.join(name)) });
-        let dirs = PROJECT_CLAUDE_DIRS
+            .filter(|name| !skip_claude || !name.starts_with(".claude/"))
+            .map(|name| config_file_stamp(&root.join(name)));
+        let dirs = dirs
             .iter()
-            .map(|name| if skip_claude { Value::Null } else { config_dir_stamp(&root.join(name)) });
+            .filter(|_| !skip_claude)
+            .map(|name| config_dir_stamp(&root.join(name)));
         let mut stamp = vec![json!(root.to_string_lossy())];
         stamp.extend(files.chain(dirs));
         Value::Array(stamp)
     };
-    let projects = roots.ancestors.iter().chain(roots.main_worktree.as_ref()).map(|root| project(root.as_path()));
-    let user_files = USER_CLAUDE_FILES
-        .iter()
-        .map(|name| user_dir.map_or(Value::Null, |dir| config_file_stamp(&dir.join(name))));
-    let user_dirs = USER_CLAUDE_DIRS
-        .iter()
-        .map(|name| user_dir.map_or(Value::Null, |dir| config_dir_stamp(&dir.join(name))));
-    let managed = [
-        managed.map_or(Value::Null, config_file_stamp),
-        managed.map_or(Value::Null, |path| config_dir_stamp(&path.with_extension("d"))),
-    ];
-    let error = json!(roots.error);
-    projects.chain(user_files).chain(user_dirs).chain(managed).chain([error]).collect()
+
+    let mut stamps = Vec::new();
+    for root in &roots.ancestors {
+        stamps.push(stamp_project(
+            root,
+            &PROJECT_CLAUDE_FILES,
+            &PROJECT_CLAUDE_DIRS,
+        ));
+    }
+    for root in above_project {
+        stamps.push(stamp_project(root, &MEMORY_FILES, &[".claude/rules"]));
+    }
+    if let Some(main) = roots.main_worktree {
+        let mut stamp = vec![json!(main.to_string_lossy())];
+        stamp.extend(
+            MAIN_SETTINGS
+                .iter()
+                .map(|name| config_file_stamp(&main.join(name))),
+        );
+        stamp.extend(
+            PROJECT_CLAUDE_DIRS
+                .iter()
+                .map(|name| config_dir_stamp(&main.join(name))),
+        );
+        stamps.push(Value::Array(stamp));
+    }
+    if let Some(user) = user_dir {
+        stamps.extend(
+            USER_CLAUDE_FILES
+                .iter()
+                .map(|name| config_file_stamp(&user.join(name))),
+        );
+        stamps.extend(
+            USER_CLAUDE_DIRS
+                .iter()
+                .map(|name| config_dir_stamp(&user.join(name))),
+        );
+    }
+    if let Some(home) = home_claude.filter(|home| !home_memory_stamped && Some(*home) != user_dir) {
+        stamps.push(config_file_stamp(&home.join("CLAUDE.md")));
+        stamps.push(config_dir_stamp(&home.join("rules")));
+    }
+    for path in managed_paths {
+        stamps.push(config_file_stamp(path));
+        stamps.push(config_dir_stamp(&path.with_extension("d")));
+    }
+    stamps.push(json!(roots.error));
+    stamps
 }
 
-/// The Claude config folder this task's process starts with: the saved environment, then the
-/// task's named connection (its variables, then its own folder, as `connections::launch` orders
-/// them). Secrets are never read; a relative folder resolves against the working folder the
-/// process starts in.
-pub(super) fn effective_claude_config_dir(session_id: &str, provider: &str, cwd: &Path) -> Option<PathBuf> {
-    let connection = crate::connections::for_task(session_id, provider);
-    claude_config_dir_from(crate::provider_settings::environment("claude"), connection.as_ref(), cwd)
-}
-
-/// `effective_claude_config_dir` over a given saved environment and connection.
+#[cfg(test)]
 pub(super) fn claude_config_dir_from(
     provider_env: Vec<(String, String)>,
     connection: Option<&Connection>,
@@ -151,15 +197,23 @@ pub(super) fn claude_config_dir_from(
     claude_config_dir_from_with(provider_env, connection, cwd, cfg!(windows))
 }
 
-/// `claude_config_dir_from`, matching variable names case-insensitively when `ignore_case`
-/// (Windows environment names are).
+#[cfg(test)]
 pub(super) fn claude_config_dir_from_with(
     provider_env: Vec<(String, String)>,
     connection: Option<&Connection>,
     cwd: &Path,
     ignore_case: bool,
 ) -> Option<PathBuf> {
-    let mut env = provider_env;
+    let env = claude_launch_env(provider_env, connection);
+    crate::turn_changes::resolve_claude_config_dir_env(&env, cwd, ignore_case)
+}
+
+/// The saved environment, then the connection's variables and its own config folder, in the
+/// order used by `connections::launch`. Secrets are never read.
+fn claude_launch_env(
+    mut env: Vec<(String, String)>,
+    connection: Option<&Connection>,
+) -> Vec<(String, String)> {
     if let Some(connection) = connection {
         env.extend(connection.env.iter().map(|(name, value)| (name.clone(), value.clone())));
         if let Some(dir) = connection
@@ -170,31 +224,7 @@ pub(super) fn claude_config_dir_from_with(
             env.push((CLAUDE_CONFIG_DIR.into(), dir.clone()));
         }
     }
-    claude_config_dir_in(&env, cwd, ignore_case)
-}
-
-/// The config folder `env` (then this process's environment) selects. A leading `~` expands to
-/// the home folder and a relative folder resolves against `cwd`.
-fn claude_config_dir_in(env: &[(String, String)], cwd: &Path, ignore_case: bool) -> Option<PathBuf> {
-    let value = env_lookup(env, CLAUDE_CONFIG_DIR, ignore_case).or_else(|| std::env::var(CLAUDE_CONFIG_DIR).ok());
-    let Some(value) = value.filter(|value| !value.is_empty()) else {
-        return crate::account_config::home(env).map(|home| home.join(".claude"));
-    };
-    let tilde = value.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/') || (cfg!(windows) && rest.starts_with('\\')));
-    let dir = match tilde {
-        Some(rest) => crate::account_config::home(env)?.join(rest.trim_start_matches(['/', '\\'])),
-        None => PathBuf::from(&value),
-    };
-    Some(if dir.is_relative() { cwd.join(dir) } else { dir })
-}
-
-/// The last value of `name` in `env`, as `account_config::var` reads it (without the process
-/// fallback), comparing names case-insensitively when `ignore_case`.
-fn env_lookup(env: &[(String, String)], name: &str, ignore_case: bool) -> Option<String> {
-    env.iter()
-        .rev()
-        .find(|(key, _)| if ignore_case { key.eq_ignore_ascii_case(name) } else { key == name })
-        .map(|(_, value)| value.clone())
+    env
 }
 
 fn metadata_stamp(meta: &std::fs::Metadata) -> Value {

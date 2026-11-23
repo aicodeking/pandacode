@@ -71,14 +71,15 @@ pub(super) fn claude_allows_edits_with(
 
 /// Explore must not bypass Claude's native read permissions, in any permission mode.
 pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Path) -> bool {
+    let env = crate::provider_settings::environment(provider);
     claude_restricts_reads_with(
         provider,
         cwd,
         || crate::connections::for_task(session_id, provider)
             .map(|connection| crate::connections::launch(&connection)).transpose(),
         host_managed_settings_restrict_reads,
-        crate::agent_usage::claude_config_dir,
-        dirs::home_dir,
+        || resolve_claude_config_dir_env(&env, cwd, cfg!(windows)),
+        || crate::account_config::home(&env),
     )
 }
 
@@ -109,12 +110,10 @@ pub(super) fn claude_restricts_reads_with(
             return true;
         }
         // Launch::apply uses the last value when a variable occurs more than once.
-        for (name, value) in connection.env {
-            if name == "CLAUDE_CONFIG_DIR" || (cfg!(windows) && name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")) {
-                if value.is_empty() {
-                    return true;
-                }
-                overridden = Some(cwd.join(value));
+        if let Some(value) = claude_config_dir_value(&connection.env, cfg!(windows)) {
+            overridden = join_claude_config_dir(cwd, value);
+            if overridden.is_none() {
+                return true;
             }
         }
     }
@@ -127,33 +126,56 @@ pub(super) fn claude_restricts_reads_with(
     read_deny_rules(&config_dir, cwd, home_settings.as_deref())
 }
 
+fn claude_config_dir_value(env: &[(String, String)], ignore_case: bool) -> Option<&str> {
+    env.iter().rev().find_map(|(name, value)| {
+        let matches = if ignore_case {
+            name.eq_ignore_ascii_case("CLAUDE_CONFIG_DIR")
+        } else {
+            name == "CLAUDE_CONFIG_DIR"
+        };
+        matches.then_some(value.as_str())
+    })
+}
+
+// Claude receives the raw value without shell expansion.
+fn join_claude_config_dir(cwd: &Path, value: &str) -> Option<PathBuf> {
+    (!value.is_empty()).then(|| cwd.join(value))
+}
+
+pub(crate) fn resolve_claude_config_dir_env(
+    env: &[(String, String)],
+    cwd: &Path,
+    ignore_case: bool,
+) -> Option<PathBuf> {
+    let inherited;
+    let value = match claude_config_dir_value(env, ignore_case) {
+        Some(value) => Some(value),
+        None => {
+            inherited = std::env::var("CLAUDE_CONFIG_DIR").ok();
+            inherited.as_deref()
+        }
+    };
+    value
+        .and_then(|value| join_claude_config_dir(cwd, value))
+        .or_else(|| crate::account_config::home(env).map(|home| home.join(".claude")))
+}
+
 pub(super) fn host_managed_settings_restrict_reads() -> bool {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        managed_settings_restrict_reads(host_managed_settings_path().as_deref())
-    }
-    #[cfg(windows)]
-    {
-        windows_managed_settings_may_allow_with(
-            std::env::var_os("PROGRAMDATA"),
-            |path| if path.extension().is_some_and(|ext| ext == "d") {
-                settings_drop_ins_restrict_reads(path)
-            } else {
-                file_restricts_reads(path)
-            },
-            windows_registry_policy_status,
-        )
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-    {
-        true
+    host_managed_settings_match(managed_entry_restricts_reads)
+}
+
+pub(super) fn managed_entry_restricts_reads(path: &Path) -> bool {
+    if path.extension().is_some_and(|ext| ext == "d") {
+        settings_drop_ins_restrict_reads(path)
+    } else {
+        file_restricts_reads(path)
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(test)]
 pub(super) fn managed_settings_restrict_reads(path: Option<&Path>) -> bool {
     path.is_none_or(|path| {
-        file_restricts_reads(path) || settings_drop_ins_restrict_reads(&path.with_extension("d"))
+        managed_entries_match(std::iter::once(path), managed_entry_restricts_reads)
     })
 }
 
@@ -247,27 +269,54 @@ pub(crate) fn project_config_roots(cwd: &Path) -> ProjectConfigRoots {
     ProjectConfigRoots { ancestors, main_worktree, error }
 }
 
-/// Where this host keeps Claude Code's enterprise `managed-settings.json` (its drop-in folder is
-/// the sibling `managed-settings.d`), or `None` when unknown.
-pub(crate) fn host_managed_settings_path() -> Option<PathBuf> {
+/// Where this host keeps Claude Code's enterprise settings files, or `None` when unknown.
+pub(crate) fn host_managed_settings_paths() -> Option<Vec<PathBuf>> {
     #[cfg(target_os = "macos")]
     {
-        Some(PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"))
+        Some(vec![PathBuf::from(
+            "/Library/Application Support/ClaudeCode/managed-settings.json",
+        )])
     }
     #[cfg(target_os = "linux")]
     {
-        Some(PathBuf::from("/etc/claude-code/managed-settings.json"))
+        Some(vec![PathBuf::from(
+            "/etc/claude-code/managed-settings.json",
+        )])
     }
     #[cfg(windows)]
     {
-        std::env::var_os("PROGRAMDATA")
-            .filter(|value| !value.is_empty())
-            .map(|value| PathBuf::from(value).join("ClaudeCode").join("managed-settings.json"))
+        Some(windows_managed_settings_paths(
+            std::env::var_os("ProgramFiles"),
+            std::env::var_os("PROGRAMDATA"),
+        ))
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         None
     }
+}
+
+#[cfg(any(windows, test))]
+fn windows_managed_settings_paths(
+    program_files: Option<std::ffi::OsString>,
+    program_data: Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    let mut paths = vec![PathBuf::from(
+        r"C:\Program Files\ClaudeCode\managed-settings.json",
+    )];
+    for root in [program_files, program_data]
+        .into_iter()
+        .flatten()
+        .filter(|root| !root.is_empty())
+    {
+        let path = PathBuf::from(root)
+            .join("ClaudeCode")
+            .join("managed-settings.json");
+        if !paths.contains(&path) {
+            paths.push(path);
+        }
+    }
+    paths
 }
 
 pub(super) fn same_settings_directory(left: &Path, right: &Path) -> bool {
@@ -525,38 +574,43 @@ pub(super) fn wildcard_matches(pattern: &str, text: &str) -> bool {
 /// A policy's presence (including an unreadable path or registry key) is enough to require
 /// tracking. Policy contents need not be read, and unknown platforms never assume absence.
 pub(super) fn host_managed_settings_may_allow() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        managed_settings_may_allow(Some(std::path::Path::new(
-            "/Library/Application Support/ClaudeCode/managed-settings.json",
-        )))
+    host_managed_settings_match(managed_path_may_allow)
+}
+
+fn host_managed_settings_match(path_matches: impl FnMut(&Path) -> bool) -> bool {
+    let paths = host_managed_settings_paths();
+    #[cfg(windows)]
+    if std::env::var_os("PROGRAMDATA").is_none_or(|value| value.is_empty()) {
+        // Unknown legacy policy location.
+        return true;
     }
-    #[cfg(target_os = "linux")]
+    if paths
+        .as_ref()
+        .is_none_or(|paths| managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches))
     {
-        managed_settings_may_allow(Some(std::path::Path::new(
-            "/etc/claude-code/managed-settings.json",
-        )))
+        return true;
     }
     #[cfg(windows)]
     {
-        windows_managed_settings_may_allow_with(
-            std::env::var_os("PROGRAMDATA"),
-            managed_path_may_allow,
-            windows_registry_policy_status,
-        )
+        windows_registry_policy_present(windows_registry_policy_status)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    #[cfg(not(windows))]
     {
-        managed_settings_may_allow(None)
+        false
     }
 }
 
-/// macOS/Linux policy file and its sibling drop-in directory. An unknown location fails closed.
-#[cfg(any(not(windows), test))]
-pub(super) fn managed_settings_may_allow(path: Option<&std::path::Path>) -> bool {
-    path.is_none_or(|path| {
-        managed_path_may_allow(path) || managed_path_may_allow(&path.with_extension("d"))
-    })
+fn managed_entries_match<'a>(
+    mut paths: impl Iterator<Item = &'a Path>,
+    mut path_matches: impl FnMut(&Path) -> bool,
+) -> bool {
+    paths.any(|path| path_matches(path) || path_matches(&path.with_extension("d")))
+}
+
+/// A policy file and its sibling drop-in directory. An unknown location fails closed.
+#[cfg(test)]
+pub(super) fn managed_settings_may_allow(path: Option<&Path>) -> bool {
+    path.is_none_or(|path| managed_entries_match(std::iter::once(path), managed_path_may_allow))
 }
 
 pub(super) fn managed_path_may_allow(path: &std::path::Path) -> bool {
@@ -571,24 +625,22 @@ pub(super) fn managed_path_may_allow_with(stat: impl FnOnce() -> std::io::Result
 }
 
 /// Inject both probes so every platform can test Windows policy paths and registry failures.
-#[cfg(any(windows, test))]
+#[cfg(test)]
 pub(super) fn windows_managed_settings_may_allow_with(
     program_data: Option<std::ffi::OsString>,
-    mut path_may_allow: impl FnMut(&std::path::Path) -> bool,
-    mut registry_status: impl FnMut(u32, &str) -> i32,
+    path_matches: impl FnMut(&Path) -> bool,
+    registry_status: impl FnMut(u32, &str) -> i32,
 ) -> bool {
-    let Some(program_data) = program_data.filter(|value| !value.is_empty()) else {
-        return true;
-    };
-    let root = std::path::PathBuf::from(program_data).join("ClaudeCode");
-    let paths = [
-        root.join("managed-settings.json"),
-        root.join("managed-settings.d"),
-        std::path::PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
-    ];
-    if paths.iter().any(|path| path_may_allow(path)) {
+    if program_data.as_ref().is_none_or(|value| value.is_empty()) {
         return true;
     }
+    let paths = windows_managed_settings_paths(None, program_data);
+    managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches)
+        || windows_registry_policy_present(registry_status)
+}
+
+#[cfg(any(windows, test))]
+fn windows_registry_policy_present(mut registry_status: impl FnMut(u32, &str) -> i32) -> bool {
     // ERROR_FILE_NOT_FOUND alone proves absence. Success or any other error (including
     // access denied) requires the handshake.
     const HKEY_LOCAL_MACHINE: u32 = 0x8000_0002;
