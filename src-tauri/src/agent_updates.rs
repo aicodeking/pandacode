@@ -427,7 +427,24 @@ async fn inspect(installation: Installation) -> Checked {
         };
     }
     if family(&installation.provider) == "antigravity" {
-        row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        if installation
+            .path
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+        {
+            row.message = Some(
+                "PandaCode starts agy with auto-updates paused. Run `agy update` in a terminal outside PandaCode, or use its official installer.".into(),
+            );
+            let local = installation.clone();
+            if let Ok(Ok(version)) =
+                tokio::task::spawn_blocking(move || install::version(&local.path, "antigravity"))
+                    .await
+            {
+                row.installed_version = Some(version.text);
+            }
+        } else {
+            row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        }
         return Checked {
             install: installation,
             row,
@@ -853,6 +870,62 @@ mod tests {
             );
             assert!(row.message.is_some() && !row.can_update);
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_update_check_reads_agy_cli_version_but_leaves_acp_server_manual() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "pandacode-update-antigravity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let agy_path = dir.join("agy");
+        std::fs::write(&agy_path, "#!/bin/sh\necho '1.5.13'\n").unwrap();
+        std::fs::set_permissions(&agy_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let acp_marker = dir.join("acp-ran");
+        let acp_path = dir.join("agy_acp_server.par");
+        std::fs::write(
+            &acp_path,
+            format!("#!/bin/sh\ntouch '{}'\necho '9.9.9'\n", acp_marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&acp_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let agy_group = group_installations(vec![(
+            "antigravity".into(),
+            "Antigravity".into(),
+            agy_path,
+        )])
+        .pop()
+        .unwrap();
+        let agy_row = inspect(agy_group).await.row;
+        assert_eq!(agy_row.status, "unsupported");
+        assert!(!agy_row.can_update);
+        assert_eq!(agy_row.installed_version.as_deref(), Some("1.5.13"));
+        assert_eq!(
+            agy_row.message.as_deref(),
+            Some("PandaCode starts agy with auto-updates paused. Run `agy update` in a terminal outside PandaCode, or use its official installer.")
+        );
+
+        let acp_group = group_installations(vec![(
+            "antigravity".into(),
+            "Antigravity".into(),
+            acp_path,
+        )])
+        .pop()
+        .unwrap();
+        let acp_row = inspect(acp_group).await.row;
+        assert_eq!(acp_row.status, "unsupported");
+        assert!(!acp_row.can_update);
+        assert!(acp_row.installed_version.is_none());
+        assert!(acp_row.message.as_deref().unwrap().contains("ACP server"));
+        assert!(!acp_marker.exists());
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 

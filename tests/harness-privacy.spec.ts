@@ -32,19 +32,25 @@ test('the telemetry switch saves, keeps focus and every agent row shows what it 
   await expect(toggle(page)).toHaveAccessibleDescription(/Your agent config files are not changed/);
   await expect(row(page, 'claude').locator('em')).toHaveText('Vendor default');
   await expect(row(page, 'cline').locator('em')).toHaveText('Turn off in Cline');
-  await expect(row(page, 'antigravity').locator('em')).toHaveText('No verified switch');
+  await expect(row(page, 'antigravity').locator('em')).toHaveText('Vendor default');
+  await expect(row(page, 'github-copilot').locator('em')).toHaveText('No verified switch');
 
   await toggle(page).focus();
   await page.keyboard.press('Space');
   await expect(toggle(page)).toBeChecked();
   await expect(toggle(page)).toBeFocused();
   await expect(row(page, 'claude').locator('em')).toHaveText('Turned off');
+  // Only Antigravity's agy CLI sessions take the opt-out, so its row says less than "Turned off".
+  await expect(row(page, 'antigravity').locator('em')).toHaveText('Off for task sessions');
+  await expect(row(page, 'antigravity')).toHaveAttribute('data-active', 'false');
+  await expect(row(page, 'github-copilot').locator('em')).toHaveText('No verified switch');
   await expect(row(page, 'codex')).toHaveAttribute('data-active', 'true');
   await expect(row(page, 'cline')).toHaveAttribute('data-active', 'false');
   await expect(privacy(page).getByRole('status')).toHaveText('Agents started from now on have telemetry turned off.');
-  // Row details wrap instead of being cut off.
-  const clipped = await row(page, 'claude').locator('small').evaluate(el => el.scrollWidth > el.clientWidth);
-  expect(clipped).toBe(false);
+  // Row details wrap instead of being cut off (Antigravity's is the longest).
+  for (const provider of ['claude', 'antigravity']) {
+    expect(await row(page, provider).locator('small').evaluate(el => el.scrollWidth > el.clientWidth), provider).toBe(false);
+  }
 
   // The saved value survives leaving and reopening Settings.
   await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
@@ -55,6 +61,22 @@ test('the telemetry switch saves, keeps focus and every agent row shows what it 
   await toggle(page).uncheck();
   await expect(privacy(page).getByRole('status')).toHaveText('Agents started from now on use their own telemetry settings.');
   await expect(row(page, 'claude').locator('em')).toHaveText('Vendor default');
+  await expect(row(page, 'antigravity').locator('em')).toHaveText('Vendor default');
+});
+
+test('the partial label and the longest detail fit the narrowest window at 160% text', async ({ page }) => {
+  await page.setViewportSize({ width: 460, height: 740 });
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.6'));
+  await page.goto('/');
+  await openAgents(page);
+  await toggle(page).check();
+  await expect(row(page, 'antigravity').locator('em')).toHaveText('Off for task sessions');
+  // The label doesn't wrap and the detail wraps inside the row: neither may run past its box.
+  const fits = await row(page, 'antigravity').evaluate(el => {
+    const right = el.getBoundingClientRect().right;
+    return el.scrollWidth <= el.clientWidth && [...el.querySelectorAll('em, small')].every(node => node.scrollWidth <= node.clientWidth && node.getBoundingClientRect().right <= right);
+  });
+  expect(fits).toBe(true);
 });
 
 test('a failed save puts the switch back and offers a retry', async ({ page }) => {
@@ -74,8 +96,9 @@ test('a failed save puts the switch back and offers a retry', async ({ page }) =
 });
 
 test('a failed load offers a retry', async ({ page }) => {
-  // Twice: Recommended, where Settings opens, asks first and shows no status when it can't tell.
-  await failing(page, 'harness_privacy', 2);
+  // Three times: Recommended, where Settings opens, asks first and again when the provider versions
+  // are reported (before or after the Agents embed asks), and shows no status when it can't tell.
+  await failing(page, 'harness_privacy', 3);
   await page.goto('/');
   await openAgents(page);
   await expect(privacy(page).getByRole('status')).toHaveText('Agent telemetry settings couldn’t load.');

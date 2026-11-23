@@ -21,7 +21,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         }
     })?;
     acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    Ok(acp::parse_models_for("github-copilot", &metadata))
 }
 
 #[cfg(test)]
@@ -45,7 +45,7 @@ mod tests {
 
     #[test]
     fn copilot_session_without_a_catalog_resolves_to_default_only() {
-        let models = acp::parse_models(&session());
+        let models = acp::parse_models_for("github-copilot", &session());
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "default");
     }
@@ -60,7 +60,7 @@ mod tests {
                 "type":"select","id":"model","category":"model","currentValue":"gpt-test",
                 "options":[{"value":"gpt-test","name":"Copilot Test Model"}]
             }));
-        let models = acp::parse_models(&metadata);
+        let models = acp::parse_models_for("github-copilot", &metadata);
         assert_eq!(
             models
                 .iter()
@@ -69,6 +69,51 @@ mod tests {
             ["default", "gpt-test"]
         );
         assert_eq!(models[1].name, "Copilot Test Model");
+    }
+
+    #[test]
+    fn copilot_parsing_rejects_antigravity_efforts_and_variant_suffix_derivation() {
+        let mut metadata = session();
+        metadata["configOptions"]
+            .as_array_mut()
+            .unwrap()
+            .extend([
+                json!({
+                    "type":"select","id":"model","category":"model","currentValue":"gpt-test",
+                    "options":[
+                        {"value":"gpt-test","name":"Copilot Test Model"},
+                        {"value":"claude-test","name":"Claude Test Model"}
+                    ]
+                }),
+                json!({
+                    "type":"select","id":"thought_level","category":"thought_level","currentValue":"high",
+                    "options":[
+                        {"value":"low","name":"Low"},
+                        {"value":"high","name":"High"}
+                    ]
+                }),
+            ]);
+        metadata["models"] = json!({
+            "currentModelId": "gpt-test",
+            "availableModels": [
+                {"modelId": "gpt-test", "name": "Copilot Test Model"},
+                {"modelId": "claude-test-low", "name": "Claude Test Low"},
+                {"modelId": "claude-test-high", "name": "Claude Test High"}
+            ]
+        });
+
+        let models = acp::parse_models_for("github-copilot", &metadata);
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            ["default", "gpt-test", "claude-test"]
+        );
+        for model in &models {
+            assert!(model.reasoning_efforts.is_empty(), "unexpected efforts on {}", model.id);
+            assert!(model.default_reasoning_effort.is_none(), "unexpected default effort on {}", model.id);
+        }
     }
 
     /// Requires GitHub Copilot CLI to be installed and signed in with `copilot login`.

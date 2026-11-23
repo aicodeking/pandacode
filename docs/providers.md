@@ -668,21 +668,32 @@ labels and supported controls; image, HTTP MCP, resume, and planning support are
 checked explicitly. No private API, unofficial adapter, or browser-cookie
 authentication is used. Antigravity's own policy applies, with ACP approval
 requests shown in Standard; Auto edits approves explicit edit requests and Full
-access approves offered one-time permissions. Structured questions are not
-auto-selected. Modes not advertised by the server are not invented: when the
-server advertises no Plan counterpart, a Plan task still runs in the server's
-current mode, with PandaCode prefixing the read-only brief, declining
-state-changing permission requests and naming that mode in the status line;
-Accept edits and Full access fall back the same way with the same note. A
-fallback is refused when the server's current mode looks more permissive than
-the chosen one (an edit or bypass mode for Plan or Standard, a bypass mode for
-Accept edits).
+access runs the `agy` CLI in its Auto mode (passing `--dangerously-skip-permissions`)
+and approves offered one-time permissions. When resuming a session fails because
+the server no longer has it, PandaCode retries with `session/load` (when
+advertised), then starts a fresh session and notes that in the task's status.
+Structured questions are not
+auto-selected. Modes not advertised by the server are not invented. A task
+whose approval mode the server does not advertise does not start: agy 1.5.7+
+opens new sessions in Auto, so running it in agy's own default mode would
+approve more than the task allows. The task reports that and what to do: run
+`agy update` in a terminal outside PandaCode (or use its official installer), or
+select the agy CLI instead of the standalone ACP server, which is older and
+advertises no mode. On the other ACP harnesses, when the server advertises no Plan counterpart, a Plan task
+still runs in the server's current mode, with PandaCode prefixing the read-only
+brief, declining state-changing permission requests and naming that mode in the
+status line; Accept edits and Full access fall back the same way with the same
+note. A fallback is refused when the server's current mode looks more
+permissive than the chosen one (an edit or bypass mode for Plan or Standard, a
+bypass mode for Accept edits).
 
 **Connection check.** In Settings, expand Antigravity's installation details and
 choose **Check connection**. This separately verifies ACP initialization and an
 empty session, reports a required sign-in or failed startup, and allows retry. It
 does not send a prompt, sign in automatically, or verify model quota. A detected
-executable alone is never presented as a verified connection.
+executable alone is never presented as a verified connection. Like the model
+list, the check runs on the default account; a named connection is checked by a
+task that uses it.
 
 ACP model discovery allows up to 60 seconds for cold startup. Successful metadata
 is cached for five minutes by executable identity and shared with slash-command

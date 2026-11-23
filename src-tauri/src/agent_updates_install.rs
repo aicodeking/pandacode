@@ -76,6 +76,9 @@ fn command(path: &Path) -> Result<Command> {
         .env("KIMI_CODE_NO_AUTO_UPDATE", "1")
         .env("KIMI_CLI_NO_AUTO_UPDATE", "1")
         .env("OPENCODE_DISABLE_AUTOUPDATE", "true");
+    if path.file_stem().is_some_and(|s| s.eq_ignore_ascii_case("agy")) {
+        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    }
     Ok(command)
 }
 
@@ -97,6 +100,9 @@ fn run_output(command: Command, timeout: Duration, allow_truncated: bool) -> Res
 
 fn version_command(path: &Path, provider: &str) -> Result<Command> {
     let mut command = command(path)?;
+    if family(provider) == "antigravity" {
+        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    }
     if provider == "grok" {
         command.arg("--no-auto-update");
     }
@@ -1084,5 +1090,30 @@ mod tests {
         )
         .is_err());
         assert!(!verifying);
+    }
+
+    #[test]
+    fn antigravity_version_probe_disables_agy_auto_update() {
+        let env_value = |cmd: &Command, key: &str| {
+            cmd.get_envs()
+                .find(|(name, _)| *name == key)
+                .and_then(|(_, value)| value)
+                .map(|value| value.to_string_lossy().into_owned())
+        };
+        for (path, provider) in [
+            (Path::new("/fixture/agy"), "antigravity"),
+            (Path::new("/fixture/AGY.EXE"), "antigravity"),
+            (Path::new("/fixture/custom-antigravity"), "antigravity"),
+        ] {
+            let cmd = version_command(path, provider).unwrap();
+            assert_eq!(
+                env_value(&cmd, "AGY_CLI_DISABLE_AUTO_UPDATE").as_deref(),
+                Some("true"),
+                "expected AGY_CLI_DISABLE_AUTO_UPDATE=true for {}",
+                path.display()
+            );
+        }
+        let claude = version_command(Path::new("/fixture/claude"), "claude").unwrap();
+        assert_eq!(env_value(&claude, "AGY_CLI_DISABLE_AUTO_UPDATE"), None);
     }
 }

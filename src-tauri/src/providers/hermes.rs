@@ -37,7 +37,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         }
     })?;
     acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    Ok(acp::parse_models_for("hermes", &metadata))
 }
 
 #[cfg(test)]
@@ -72,14 +72,14 @@ mod tests {
 
     #[test]
     fn hermes_session_without_models_resolves_to_default_only() {
-        let models = acp::parse_models(&session_empty());
+        let models = acp::parse_models_for("hermes", &session_empty());
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "default");
     }
 
     #[test]
     fn hermes_session_advertised_models_are_parsed_and_default_is_retained() {
-        let models = acp::parse_models(&session_with_models());
+        let models = acp::parse_models_for("hermes", &session_with_models());
         assert_eq!(models.len(), 3);
         assert_eq!(models[0].id, "default");
         assert_eq!(models[1].id, "nous/hermes-3-llama-3.1-405b");

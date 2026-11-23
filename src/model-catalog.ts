@@ -13,7 +13,7 @@ export function fallbackModel(provider: ProviderId, id = 'default'): ProviderMod
 
 /** Harnesses that accept only the model IDs they advertise: no custom IDs. */
 export function advertisedModelsOnly(provider: ProviderId): boolean {
-  return provider === 'github-copilot' || provider === 'devin';
+  return provider === 'github-copilot' || provider === 'devin' || provider === 'antigravity';
 }
 
 export function modelChoices(provider: ProviderId, catalog: ProviderModel[], current = ''): ProviderModel[] {

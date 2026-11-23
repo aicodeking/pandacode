@@ -447,6 +447,7 @@ pub fn start_harness(
 /// Reads SQLite, skill settings and skill folders: `start_harness` runs only inside
 /// `crate::blocking` (`task_controls::start_harness_terminal`), never on the async runtime.
 fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandBuilder, String> {
+    check_antigravity_connection(context)?;
     crate::skill_manager::begin_launch(context.session_id);
     // Unrecoverable switches never refuse a console: they deny or ask (`launch_disabled`).
     let disabled = crate::skill_manager::launch_disabled(
@@ -455,15 +456,17 @@ fn harness_command(context: &HarnessContext<'_>, root: &Path) -> Result<CommandB
         crate::skill_manager::disabled_for(context.session_id),
     );
     let args = harness_arguments_with_skills(context, &disabled)?;
-    let executable = crate::providers::executable(context.provider)
-        .ok_or("Install this harness before opening its console.")?;
-    if context.provider == "hermes" && executable.file_stem().is_some_and(|s| s == "hermes-acp") {
-        return Err("Hermes ACP server does not have an interactive console. Install the `hermes` CLI for terminal chat, or continue in PandaCode.".into());
-    }
+    let executable = resolve_harness_executable(
+        context.provider,
+        crate::providers::executable(context.provider),
+    )?;
     let mut cmd = crate::providers::pty_command(&executable)?;
     crate::provider_settings::apply_environment(context.provider, &mut cmd);
     for name in crate::providers::claude_auth::removed_environment(context.provider) {
         cmd.env_remove(name);
+    }
+    if let Some((key, value)) = console_update_environment(context.provider) {
+        cmd.env(key, value);
     }
     cmd.args(args);
     let existing = |key: &str| {
@@ -569,12 +572,132 @@ fn harness_arguments_with_skills(
     Ok(args)
 }
 
+const ANTIGRAVITY_ACP_CONSOLE_ERROR: &str = "Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.";
+
+fn is_agy_executable(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+}
+
+/// The `agy` CLI an Antigravity console starts; its arguments and executable come from this one
+/// lookup. `executable` prefers the standalone ACP server when both are installed, and that
+/// server has no console, so the CLI is then looked up where a shell finds it, as `executable`
+/// itself does when the server is absent. `Err` says why there is no console.
+fn agy_console_executable(
+    executable: Option<PathBuf>,
+    find_cli: impl FnOnce() -> Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    match executable {
+        // `executable` already falls back to `agy`: nothing of Antigravity is installed.
+        None => Err("Install this harness before opening its console.".into()),
+        Some(path) if is_agy_executable(&path) => Ok(path),
+        // Only the server, or an override that is not the CLI: a console still needs the CLI.
+        Some(_) => find_cli().ok_or_else(|| ANTIGRAVITY_ACP_CONSOLE_ERROR.into()),
+    }
+}
+
+fn agy_cli_on_path() -> Option<PathBuf> {
+    crate::providers::tool_path("agy")
+}
+
+fn resolve_harness_executable(
+    provider: &str,
+    executable: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if provider == "antigravity" {
+        return agy_console_executable(executable, agy_cli_on_path);
+    }
+    let executable = executable.ok_or("Install this harness before opening its console.")?;
+    if provider == "hermes" && executable.file_stem().is_some_and(|s| s == "hermes-acp") {
+        return Err("Hermes ACP server does not have an interactive console. Install the `hermes` CLI for terminal chat, or continue in PandaCode.".into());
+    }
+    Ok(executable)
+}
+
+/// agy checks for its own update when it starts, which would replace the CLI under a console
+/// the user is typing in. ACP launches (`providers::acp::antigravity_base_args`) and version
+/// probes (`providers::version`) set this; the console only starts the `agy` CLI, so it gets
+/// the same guard. Nothing for any other console.
+fn console_update_environment(provider: &str) -> Option<(&'static str, &'static str)> {
+    (provider == "antigravity").then_some(("AGY_CLI_DISABLE_AUTO_UPDATE", "true"))
+}
+
+const ANTIGRAVITY_CONNECTION_CONSOLE_ERROR: &str = "This task uses a named Antigravity connection, which the console cannot open. Continue the task in PandaCode instead.";
+
+/// `Some(message)` when a task's named Antigravity connection cannot be continued in a console.
+/// The console applies the provider environment only, so a connection that moves agy's account
+/// or Gemini, app data or CLI directory would have its conversation resume under the default account. Checked by
+/// name only and case-insensitively, as the ACP launch's own checks: refusing is the safe side.
+/// No connection, or one that sets none of these, does not block the console.
+fn antigravity_connection_console_error(
+    launch: Option<&crate::connections::Launch>,
+) -> Option<&'static str> {
+    let switches = launch.is_some_and(|launch| {
+        let env = launch.env.iter().any(|(name, _)| {
+            ["HOME", "USERPROFILE", "GEMINI_DIR", "ANTIGRAVITY_GEMINI_DIR"]
+                .iter()
+                .any(|key| name.eq_ignore_ascii_case(key))
+        });
+        let args = launch.args.iter().any(|arg| {
+            ["--gemini-dir", "--gemini_dir", "--app-data-dir", "--app_data_dir", "--cli_dir_name"]
+                .iter()
+                .any(|flag| arg.strip_prefix(flag).is_some_and(|rest| rest.is_empty() || rest.starts_with('=')))
+        });
+        env || args
+    });
+    switches.then_some(ANTIGRAVITY_CONNECTION_CONSOLE_ERROR)
+}
+
+const ANTIGRAVITY_PROVIDER_ENV_CONSOLE_ERROR: &str = "Antigravity provider settings specify a custom GEMINI_DIR, which the agy CLI console cannot target. Continue the task in PandaCode instead.";
+
+/// `Some(message)` when Antigravity's provider settings move its Gemini directory. `agy acp`
+/// turns `GEMINI_DIR`/`ANTIGRAVITY_GEMINI_DIR` into `--gemini-dir`, but the top-level `agy`
+/// console has no such flag and ignores both variables, so it would resume under the default one.
+fn antigravity_provider_env_console_error(env: &[(String, String)]) -> Option<&'static str> {
+    env.iter()
+        .any(|(name, value)| {
+            !value.trim().is_empty()
+                && ["GEMINI_DIR", "ANTIGRAVITY_GEMINI_DIR"]
+                    .iter()
+                    .any(|key| name.eq_ignore_ascii_case(key))
+        })
+        .then_some(ANTIGRAVITY_PROVIDER_ENV_CONSOLE_ERROR)
+}
+
+/// Reads the task's connection for `harness_command`, which runs this before anything is started.
+fn check_antigravity_connection(context: &HarnessContext<'_>) -> Result<(), String> {
+    if context.provider != "antigravity" {
+        return Ok(());
+    }
+    if let Some(error) =
+        antigravity_provider_env_console_error(&crate::provider_settings::environment("antigravity"))
+    {
+        return Err(error.into());
+    }
+    // A launch that cannot be built (a missing secret) refuses the console with its own reason:
+    // the task cannot run on that connection either.
+    let launch = crate::connections::for_task(context.session_id, "antigravity")
+        .map(|connection| crate::connections::launch(&connection))
+        .transpose()?;
+    match antigravity_connection_console_error(launch.as_ref()) {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
+    }
+}
+
 fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String> {
+    if context.provider == "antigravity" {
+        // The lookup that picks the executable refuses here too, before any argument is built,
+        // so the two can never disagree.
+        agy_console_executable(crate::providers::executable("antigravity"), agy_cli_on_path)?;
+    }
+    harness_arguments_for(context)
+}
+
+/// The arguments alone; `harness_arguments` adds the checks that need the installed CLIs.
+fn harness_arguments_for(context: &HarnessContext<'_>) -> Result<Vec<String>, String> {
     let provider = context.provider;
     let resume_id = context.resume_id;
-    if provider == "antigravity" {
-        return Err("Antigravity's ACP server does not have an interactive console. Use its synced commands in the composer, or open the agy CLI separately.".into());
-    }
     if provider == "hermes" {
         if let Some(exe) = crate::providers::executable("hermes") {
             if exe.file_stem().is_some_and(|s| s == "hermes-acp") {
@@ -582,7 +705,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             }
         }
     }
-    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "grok" | "mimo" | "alibaba" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes" | "cursor") {
+    if !matches!(provider, "codex" | "claude" | "kimi" | "glm" | "opencode" | "antigravity" | "grok" | "mimo" | "alibaba" | "pi" | "omp" | "github-copilot" | "muse" | "cline" | "devin" | "hermes" | "cursor") {
         return Err("Choose a supported coding harness.".into());
     }
     if provider == "github-copilot" {
@@ -623,6 +746,7 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             match provider {
                 "codex" | "muse" => "resume",
                 "claude" | "glm" | "mimo" | "alibaba" | "grok" | "devin" | "hermes" | "cursor" => "--resume",
+                "antigravity" => "--conversation",
                 "cline" => "--id",
                 _ => "--session",
             }
@@ -720,6 +844,19 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
             "full" => args.push("--force".into()),
             _ => {}
         },
+        "antigravity" => match context.mode {
+            "plan" => args.extend(["--mode".into(), "plan".into()]),
+            "auto" => args.extend(["--mode".into(), "accept-edits".into()]),
+            "review" => {
+                return Err("Antigravity does not support Approve for me mode. Switch the task to Standard, Accept edits, Plan, or Full access before opening the console.".into());
+            }
+            "full" => args.push("--dangerously-skip-permissions".into()),
+            // `--mode` takes only accept-edits, auto or plan and has no default value, so
+            // `--mode default` is not a fix. Standard is the settings key's documented pin:
+            // agentMode "" starts in default mode, for this session only through --settings,
+            // overriding the Auto that agy 1.5.7+ starts in (or a permissive saved agentMode).
+            _ => args.extend(["--settings".into(), r#"{"agentMode":""}"#.into()]),
+        },
         "cline" => {
             args.push("-i".into());
             if context.mode == "plan" {
@@ -765,6 +902,9 @@ fn harness_arguments(context: &HarnessContext<'_>) -> Result<Vec<String>, String
                 format!("model_reasoning_effort=\"{effort}\""),
             ]),
             "claude" | "glm" | "mimo" | "alibaba" => args.extend(["--effort".into(), effort.into()]),
+            "antigravity" if matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") => {
+                args.extend(["--effort".into(), effort.into()])
+            }
             "grok" => args.extend(["--reasoning-effort".into(), effort.into()]),
             "pi" | "omp" | "cline" => args.extend(["--thinking".into(), effort.into()]),
             "muse" => args.extend(["--reasoning-effort".into(), effort.into()]),
@@ -1238,6 +1378,26 @@ mod tests {
     use std::{sync::mpsc, time::Duration};
 
     #[test]
+    fn antigravity_console_refuses_provider_gemini_dir() {
+        let env = |name: &str, value: &str| vec![(name.to_string(), value.to_string())];
+        assert_eq!(
+            antigravity_provider_env_console_error(&env("GEMINI_DIR", "/custom")),
+            Some(ANTIGRAVITY_PROVIDER_ENV_CONSOLE_ERROR)
+        );
+        assert_eq!(
+            antigravity_provider_env_console_error(&env("antigravity_gemini_dir", "/custom")),
+            Some(ANTIGRAVITY_PROVIDER_ENV_CONSOLE_ERROR)
+        );
+        assert_eq!(antigravity_provider_env_console_error(&env("GEMINI_DIR", "   ")), None);
+        assert_eq!(antigravity_provider_env_console_error(&env("ANTIGRAVITY_GEMINI_DIR", "")), None);
+        assert_eq!(
+            antigravity_provider_env_console_error(&env("HTTP_PROXY", "http://localhost:8080")),
+            None
+        );
+        assert_eq!(antigravity_provider_env_console_error(&[]), None);
+    }
+
+    #[test]
     fn skill_manager_console_enforces_claude_family_and_uses_advisory_channels() {
         let disabled = BTreeSet::from(["writer:edit".into()]);
         for provider in ["claude", "glm", "mimo", "alibaba"] {
@@ -1627,10 +1787,11 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|args| args == ["--permission-mode", "default"]));
-        assert!(harness_arguments(&HarnessContext {
-            provider: "antigravity",
-            ..context
-        })
+        // Only the ACP server installed: no console for the task's antigravity arguments.
+        assert!(agy_console_executable(
+            Some(Path::new("/opt/agy_acp_server.par").to_path_buf()),
+            || None
+        )
         .unwrap_err()
         .contains("ACP server"));
         // Grok Build's TUI resumes by ID and takes its native permission modes.
@@ -1672,6 +1833,147 @@ mod tests {
         for provider in ["claude", "glm", "mimo", "alibaba"] {
             let review = harness_arguments(&HarnessContext { provider, mode: "review", ..context }).unwrap();
             assert!(review.windows(2).any(|args| args == ["--permission-mode", "auto"]), "{provider}");
+        }
+    }
+
+    #[test]
+    fn antigravity_console_allows_agy_cli_and_rejects_acp_server() {
+        assert!(is_agy_executable(Path::new("/usr/local/bin/agy")));
+        assert!(is_agy_executable(Path::new(if cfg!(windows) {
+            r"C:\Tools\AGY.EXE"
+        } else {
+            "/tools/AGY.EXE"
+        })));
+        assert!(!is_agy_executable(Path::new("/opt/agy_acp_server.par")));
+        assert!(!is_agy_executable(Path::new(if cfg!(windows) {
+            r"C:\Tools\agy_acp_server.exe"
+        } else {
+            "/tools/agy_acp_server.exe"
+        })));
+
+        let context = HarnessContext {
+            session_id: "task",
+            provider: "antigravity",
+            resume_id: Some("conv-123"),
+            model: Some("gemini-3-pro"),
+            reasoning_effort: Some("high"),
+            mode: "plan",
+        };
+        let agy = Path::new("/usr/local/bin/agy");
+        let acp_server = Path::new("/opt/agy_acp_server.par");
+        let console_executable = |installed: Option<&Path>, on_path: Option<&Path>| {
+            agy_console_executable(installed.map(Path::to_path_buf), || {
+                on_path.map(Path::to_path_buf)
+            })
+        };
+        // agy only: the CLI is the console executable, whatever else is installed.
+        assert_eq!(
+            resolve_harness_executable("antigravity", Some(agy.to_path_buf())),
+            Ok(agy.to_path_buf())
+        );
+        // The server installed next to the CLI (`executable` prefers it): agy comes from PATH,
+        // with the agy arguments below.
+        assert_eq!(
+            console_executable(Some(acp_server), Some(agy)),
+            Ok(agy.to_path_buf())
+        );
+        // Server only: refused. Uninstalled: the generic message, not the ACP-only one.
+        assert_eq!(
+            console_executable(Some(acp_server), None).unwrap_err(),
+            ANTIGRAVITY_ACP_CONSOLE_ERROR
+        );
+        assert_eq!(
+            console_executable(None, None).unwrap_err(),
+            "Install this harness before opening its console."
+        );
+        // Whatever this machine has installed, the real lookup names the CLI or says why not.
+        match resolve_harness_executable("antigravity", crate::providers::executable("antigravity")) {
+            Ok(path) => assert!(is_agy_executable(&path)),
+            Err(error) => assert!(
+                error == "Install this harness before opening its console."
+                    || error == ANTIGRAVITY_ACP_CONSOLE_ERROR,
+                "{error}"
+            ),
+        }
+        assert_eq!(
+            harness_arguments_for(&context).unwrap(),
+            [
+                "--conversation",
+                "conv-123",
+                "--mode",
+                "plan",
+                "--model",
+                "gemini-3-pro",
+                "--effort",
+                "high"
+            ]
+        );
+        assert_eq!(
+            harness_arguments_for(&HarnessContext {
+                resume_id: None,
+                model: None,
+                reasoning_effort: None,
+                mode: "auto",
+                ..context
+            })
+            .unwrap(),
+            ["--mode", "accept-edits"]
+        );
+        assert!(harness_arguments_for(&HarnessContext {
+            resume_id: None,
+            model: None,
+            reasoning_effort: None,
+            mode: "review",
+            ..context
+        })
+        .unwrap_err()
+        .contains("Approve for me"));
+        assert_eq!(
+            harness_arguments_for(&HarnessContext {
+                resume_id: None,
+                model: None,
+                reasoning_effort: None,
+                mode: "full",
+                ..context
+            })
+            .unwrap(),
+            ["--dangerously-skip-permissions"]
+        );
+        // Standard is the documented one-session pin (agentMode ""), never `--mode`, which has
+        // no default value. The pin also holds when the console resumes with a model and effort.
+        for (standard, expected) in [
+            (
+                HarnessContext {
+                    resume_id: None,
+                    model: None,
+                    reasoning_effort: Some("custom"),
+                    mode: "ask",
+                    ..context
+                },
+                vec!["--settings", r#"{"agentMode":""}"#],
+            ),
+            (
+                HarnessContext { mode: "ask", ..context },
+                vec![
+                    "--conversation",
+                    "conv-123",
+                    "--settings",
+                    r#"{"agentMode":""}"#,
+                    "--model",
+                    "gemini-3-pro",
+                    "--effort",
+                    "high",
+                ],
+            ),
+        ] {
+            let args = harness_arguments_for(&standard).unwrap();
+            assert_eq!(args, expected);
+            assert!(args.iter().all(|arg| arg != "--mode" && arg != "default"));
+        }
+        // Plan, Accept edits and Full access use the CLI's own flags, never the settings pin.
+        for mode in ["plan", "auto", "full"] {
+            let args = harness_arguments_for(&HarnessContext { mode, ..context }).unwrap();
+            assert!(args.iter().all(|arg| arg != "--settings" && !arg.contains("agentMode")), "{mode}");
         }
     }
 
@@ -1976,6 +2278,64 @@ mod platform_tests {
         let environment = opencode_console_environment("default", &BTreeSet::new(), &root, None);
         assert_eq!(environment.len(), 1);
         assert_eq!(environment[0].0, "OPENCODE_CONFIG_CONTENT");
+    }
+
+    #[test]
+    fn antigravity_console_disables_agy_self_update_and_no_other_console_gets_environment() {
+        // The guard ACP launches and version probes already set, so opening a console cannot
+        // update the CLI under the user.
+        assert_eq!(
+            console_update_environment("antigravity"),
+            Some(("AGY_CLI_DISABLE_AUTO_UPDATE", "true"))
+        );
+        for provider in [
+            "codex", "claude", "kimi", "glm", "opencode", "grok", "mimo", "alibaba", "pi", "omp",
+            "github-copilot", "muse", "cline", "devin", "hermes", "cursor",
+        ] {
+            assert_eq!(console_update_environment(provider), None, "{provider}");
+        }
+    }
+
+    #[test]
+    fn antigravity_console_refuses_only_a_connection_that_switches_account_or_gemini_dir() {
+        let launch = |env: &[(&str, &str)], args: &[&str]| crate::connections::Launch {
+            executable: None,
+            env: env.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect(),
+            args: args.iter().map(|arg| (*arg).to_owned()).collect(),
+            secrets: Vec::new(),
+        };
+        // Isolated: the home folder is the account agy is signed in under (either spelling, any
+        // case), or a Gemini directory, app data directory or CLI directory name by variable or
+        // by argument (either spelling, with or without `=`).
+        for (env, args) in [
+            (vec![("HOME", "/isolated")], vec![]),
+            (vec![("home", "/isolated")], vec![]),
+            (vec![("USERPROFILE", "/isolated")], vec![]),
+            (vec![("GEMINI_DIR", "/isolated")], vec![]),
+            (vec![("gemini_dir", "/isolated")], vec![]),
+            (vec![("ANTIGRAVITY_GEMINI_DIR", "/isolated")], vec![]),
+            (vec![], vec!["--gemini-dir", "/isolated"]),
+            (vec![], vec!["--gemini-dir=/isolated"]),
+            (vec![], vec!["--gemini_dir", "/isolated"]),
+            (vec![], vec!["--gemini_dir=/isolated"]),
+            (vec![], vec!["--app-data-dir", "/custom"]),
+            (vec![], vec!["--app_data_dir=/custom"]),
+            (vec![], vec!["--cli_dir_name=custom"]),
+        ] {
+            assert_eq!(
+                antigravity_connection_console_error(Some(&launch(&env, &args))),
+                Some(ANTIGRAVITY_CONNECTION_CONSOLE_ERROR),
+                "{env:?} {args:?}"
+            );
+        }
+        // A connection that sets none of those (a key, a proxy, a model) leaves the account alone.
+        let plain = launch(
+            &[("GEMINI_API_KEY", "key"), ("HTTP_PROXY", "http://proxy")],
+            &["--model", "gemini-3-pro", "--sandbox"],
+        );
+        assert_eq!(antigravity_connection_console_error(Some(&plain)), None);
+        // No connection at all.
+        assert_eq!(antigravity_connection_console_error(None), None);
     }
 
     #[test]
