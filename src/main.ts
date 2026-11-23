@@ -89,7 +89,9 @@ import { renderTaskBoard, renderTaskDetails, taskStage } from './task-board';
 import { streamMarkdown } from './streaming-markdown';
 import { TerminalPanel } from './terminal-panel';
 import { ProjectRunner } from './run-project';
-import { captureTranscriptAnchor, followTranscriptBottom } from './transcript-scroll';
+import { canNestedScrollerConsume, captureTranscriptAnchor, createSmoothScroller, decideScrollTransition, followTranscriptBottom } from './transcript-scroll';
+import { mountThreadScrollIndicator, type ThreadScrollIndicator, type ThreadScrollSnapshot } from './thread-scroll-indicator';
+import type { ScrollTurnSummary } from './thread-scroll-model';
 import { Subagents } from './subagents';
 import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
@@ -1112,6 +1114,42 @@ transcriptScroller.tabIndex = 0;
  * composer never clear it: only the reader scrolling up or opening a fold does, and reaching
  * the bottom sets it again. The observer re-pins before paint, so nothing jumps for a frame. */
 let stickToBottom = true, lastTranscriptTop = 0, resumeFollow = true;
+/** What may have laid the transcript out otherwise since lastTranscriptTop was recorded: its scroll extent then, and
+ * whether anything around it (the composer fitting its prompt, the inspector or header redrawing) changed since. Work in
+ * one task can lay the page out while the transcript is momentarily taller, wider or shorter of content, and WebKit clamps
+ * a follower's scroll to that layout; its scroll event, after the layout came back, is not the reader moving
+ * (decideScrollTransition's `layoutChanged`). */
+type ScrollExtent = { height: number; client: number; width: number };
+let lastTranscriptExtent: ScrollExtent = { height: 0, client: 0, width: 0 }, surroundingsChanged = false;
+const transcriptExtent = (): ScrollExtent => ({ height: transcriptScroller.scrollHeight, client: transcriptScroller.clientHeight, width: transcriptScroller.clientWidth });
+const sameExtent = (a: ScrollExtent, b: ScrollExtent): boolean => a.height === b.height && a.client === b.client && a.width === b.width;
+/** Records where the transcript is and its extent; called right after a write or read of scrollTop, so layout is clean. */
+function noteTranscriptTop(top = transcriptScroller.scrollTop): void {
+  lastTranscriptTop = top; lastTranscriptExtent = transcriptExtent(); surroundingsChanged = false;
+}
+/** Eased scrolls of our own (the scroll indicator's jumps): each step it writes is recorded, so the scroll handler
+ * never reads one as the reader moving. */
+const smoothScroller = createSmoothScroller(transcriptScroller, { onStep: top => noteTranscriptTop(top) });
+/** The reader is scrolling right now (wheel, touch, scrollbar, keys): no trim and no pin may move rows under them. */
+const USER_SCROLL_IDLE_MS = 160;
+let userScrolling = false, userScrollTimer = 0;
+function noteUserScroll(): void {
+  userScrolling = true;
+  clearTimeout(userScrollTimer);
+  userScrollTimer = window.setTimeout(() => {
+    userScrolling = false; userScrollTimer = 0;
+    // The trim a scroll to the end held back runs once the reader stops there.
+    if (transcriptGap() <= 2) transcriptView.scheduleTrim();
+  }, USER_SCROLL_IDLE_MS);
+}
+/** The reader moved in this thread since it opened (or since their last send): a page landing late never pins them. */
+let readerScrolledSinceOpen = false;
+/** A scroll indicator jump drawing its turn (transcript-view.ts revealTurn). */
+let jumpAbort: AbortController | undefined;
+/** The left-side thread scroll indicator, mounted once the transcript view is. */
+let scrollIndicator: ThreadScrollIndicator | undefined;
+function cancelFollow(): void { cancelAnimationFrame(followFrame); followFrame = 0; sendFollow = false; }
+function cancelSmoothJump(): void { jumpAbort?.abort(); jumpAbort = undefined; smoothScroller.cancel(); }
 const transcriptGap = (): number => transcriptScroller.scrollHeight - transcriptScroller.scrollTop - transcriptScroller.clientHeight;
 const readingTranscriptTool = (): boolean => Boolean(document.activeElement?.closest('.tool-activity, .turn-activity, .turn-changes, .agent-input'));
 /** Clear the floating header when a fold brings an off-screen card back into view. */
@@ -1136,9 +1174,11 @@ function keepTopOnShrink(): void {
   setTailRoom(tailRoom + aim - end);
   transcriptScroller.scrollTop = aim;
   // Where it landed, not where it was aimed: the room is whole pixels, and a fraction short would read as the reader scrolling up.
-  lastTranscriptTop = transcriptScroller.scrollTop;
+  noteTranscriptTop();
 }
 function followTranscript(): void {
+  // An eased jump of our own is under way: pinning now would fight it.
+  if (smoothScroller.isActive()) return;
   if (!stickToBottom) {
     liveCardSeen = undefined;
     // Room below the window can go without clamping the reader or moving their line.
@@ -1159,12 +1199,12 @@ function followTranscript(): void {
     if (!followFrame) { followVelocity = 0; followStill = 0; followAt = performance.now(); followFrame = requestAnimationFrame(easeFollow); }
     // The spring steps before layout; this runs after it (the observer), so the frame's own growth is held to the cap too.
     const gap = transcriptGap();
-    if (!sendFollow && gap > FOLLOW_MAX_LAG) { transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG; lastTranscriptTop = transcriptScroller.scrollTop; }
+    if (!sendFollow && gap > FOLLOW_MAX_LAG) { transcriptScroller.scrollTop += gap - FOLLOW_MAX_LAG; noteTranscriptTop(); }
     return;
   }
   cancelAnimationFrame(followFrame); followFrame = 0; sendFollow = false;
   transcriptScroller.scrollTop = transcriptScroller.scrollHeight;
-  lastTranscriptTop = transcriptScroller.scrollTop;
+  noteTranscriptTop();
 }
 /** A result card's height animation (trace-motion.ts `expand`) is running in the live trace. */
 const traceUnfolding = (): boolean => Boolean(document.querySelector('#stream-region .live-tools')?.getAnimations({ subtree: true })
@@ -1192,7 +1232,7 @@ function easeFollow(now: number): void {
   followVelocity = (followVelocity - omega * base * dt) * decay;
   const before = transcriptScroller.scrollTop;
   transcriptScroller.scrollTop = before + next - y;
-  lastTranscriptTop = transcriptScroller.scrollTop;
+  noteTranscriptTop();
   // Compare this attempted step, not the previous post-write position: normal motion must not count as a stall.
   followStill = dt > 0 && lastTranscriptTop === before ? followStill + 1 : 0;
   if (followStill >= 2 && gap <= 4) { sendFollow = false; stickTranscript(); return; }
@@ -1211,11 +1251,23 @@ function absorbTailRoom(): void {
   const gap = transcriptGap();
   if (gap > 0.5) setTailRoom(tailRoom - gap);
 }
-function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; lastTranscriptTop = transcriptScroller.scrollTop; }
-const transcriptResize = new ResizeObserver(followTranscript);
+function stickTranscript(): void { stickToBottom = true; transcriptScroller.scrollTop = transcriptScroller.scrollHeight; noteTranscriptTop(); }
+// Rows changing size move turns across the reading line with no scroll event where the engine does not anchor the scroll
+// (WebKit, here): the rail's current tick is worked out again after the follow, once per frame.
+const transcriptResize = new ResizeObserver(() => { followTranscript(); scrollIndicator?.syncScroll(); });
 followTranscriptBottom(transcriptScroller, () => stickToBottom && !readingTranscriptTool());
-const observeTranscript = (): void => { transcriptResize.disconnect(); for (const node of [transcriptScroller, ...transcriptScroller.children]) transcriptResize.observe(node); };
-new MutationObserver(observeTranscript).observe(transcriptScroller, { childList: true });
+/** The transcript and its rows under the observer: only rows that come or go change it, so a mutation never makes every
+ * row report (and the follow run) again. */
+const observedNodes = new Set<Element>();
+function observeTranscriptNode(node: Element): void { if (!observedNodes.has(node)) { observedNodes.add(node); transcriptResize.observe(node); } }
+const observeTranscript = (records?: MutationRecord[]): void => {
+  if (!records) { observeTranscriptNode(transcriptScroller); for (const node of transcriptScroller.children) observeTranscriptNode(node); return; }
+  for (const record of records) {
+    for (const node of record.removedNodes) if (node instanceof Element && node.parentNode !== transcriptScroller && observedNodes.delete(node)) transcriptResize.unobserve(node);
+    for (const node of record.addedNodes) if (node instanceof Element && node.parentNode === transcriptScroller) observeTranscriptNode(node);
+  }
+};
+new MutationObserver(records => observeTranscript(records)).observe(transcriptScroller, { childList: true });
 observeTranscript();
 // Images agents viewed (tool rows, cards, the live header) all come from `tool_image`: only paths the thread's tool
 // records name, absolute (/tmp screenshots included) or relative to the task's checkout. Network paths never load.
@@ -1227,7 +1279,8 @@ const toolImageLoader: ToolImageLoader = (sessionId, path, maxEdge) => isNetwork
 // held transcript keeps showing the previous thread's rows after a switch); a click opens the viewer and never
 // toggles the row around it.
 attachToolImages(transcriptScroller, () => state.sessionId ?? '', toolImageLoader);
-const releaseTranscript = (): void => { resumeFollow = false; if (transcriptScroller.scrollTop > 0) stickToBottom = false; };
+/** The reader left the bottom (or asked to go elsewhere): the follow and any jump of ours stop, even at the very top. */
+const releaseTranscript = (): void => { stickToBottom = false; resumeFollow = false; readerScrolledSinceOpen = true; cancelFollow(); cancelSmoothJump(); };
 // Composer mutations do not imply a resize; the transcript ResizeObserver handles actual size changes before paint.
 // What is skipped is NAMED here rather than inferred: the transcript's own subtree, the composer, and the progress pip with
 // everything inside it. The pip floats over the conversation — #progress-pip is position:absolute in the relatively
@@ -1247,35 +1300,52 @@ const colabPipHost = $('#colab-pip');
 const isColabGhost = (node: Node): boolean => node instanceof Element && Boolean(node.closest('.cp-ghost'));
 const onlyColabGhosts = (record: MutationRecord): boolean => record.type === 'childList'
   && record.addedNodes.length + record.removedNodes.length > 0 && [...record.addedNodes, ...record.removedNodes].every(isColabGhost);
+// The scroll indicator and its preview float over the pane too (position:absolute), and its ticks change on every scroll.
+const floatsOverTranscript = (target: Node): boolean => progressPipHost.contains(target) || colabPipHost.contains(target) || isColabGhost(target)
+  || Boolean(scrollIndicator?.element.contains(target)) || Boolean(scrollIndicator?.previewElement.contains(target));
 const rePinsTranscript = (record: MutationRecord): boolean => {
   const target = record.target;
-  return !transcriptScroller.contains(target) && !composerArea.contains(target) && !progressPipHost.contains(target) && !colabPipHost.contains(target)
-    && !isColabGhost(target) && !onlyColabGhosts(record);
+  return !transcriptScroller.contains(target) && !composerArea.contains(target) && !floatsOverTranscript(target) && !onlyColabGhosts(record);
 };
-new MutationObserver(records => { if (records.some(rePinsTranscript)) followTranscript(); })
+/** One repin per frame for a follower, however many writes land in it: a pin per microtask would read layout each time. */
+let mutationFollowFrame = 0;
+new MutationObserver(records => {
+  if (!records.some(rePinsTranscript)) return;
+  if (!stickToBottom) { followTranscript(); return; }
+  if (!mutationFollowFrame) mutationFollowFrame = requestAnimationFrame(() => { mutationFollowFrame = 0; followTranscript(); });
+})
   .observe($('.conversation-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
+/** Changes around the transcript that can size its box: everything in the main pane but the transcript's own rows (their
+ * changes show in its scrollHeight) and what floats over it. The composer counts here, unlike for rePinsTranscript. */
+const aroundTranscript = (record: MutationRecord): boolean =>
+  !transcriptScroller.contains(record.target) && !floatsOverTranscript(record.target) && !onlyColabGhosts(record);
+// Records arrive at the end of the task that made them, before that frame's scroll event. Only a follower needs to know.
+new MutationObserver(records => { if (!surroundingsChanged && stickToBottom) surroundingsChanged = records.some(aroundTranscript); })
+  .observe($('.main-pane'), { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-state', 'hidden'] });
 transcriptScroller.addEventListener('scroll', () => {
-  const top = transcriptScroller.scrollTop;
+  const top = transcriptScroller.scrollTop, programmatic = smoothScroller.isActive();
+  const scrollEnd = Math.max(0, transcriptScroller.scrollHeight - transcriptScroller.clientHeight);
+  // A trim waits for the reader to stop (and for our own jumps to land): rows going mid-gesture would move under them.
+  if (!programmatic && !userScrolling && top >= scrollEnd - 2) transcriptView.scheduleTrim();
   // Scrolling up gives back the blank room a fold or handoff left under the last card: only the part now below the
   // window goes, so nothing on screen moves and the scroll follows the wheel; the reader has left the bottom (a later
   // scroll back down to the end pins again). A clamp (the old top past the end, or the scroll still at the end after a
   // pixel's shrink) is not the reader moving.
-  const scrollEnd = transcriptScroller.scrollHeight - transcriptScroller.clientHeight;
-  if (top >= scrollEnd - 2) transcriptView.scheduleTrim();
-  if (top < lastTranscriptTop && tailRoom && !tailBridging && lastTranscriptTop <= scrollEnd + 1 && top < scrollEnd - 1) {
-    absorbTailRoom(); stickToBottom = false; lastTranscriptTop = transcriptScroller.scrollTop;
-    void loadOlderMessages(); return;
+  if (!programmatic && top < lastTranscriptTop - 0.5 && tailRoom && !tailBridging && lastTranscriptTop <= scrollEnd + 1 && top < scrollEnd - 1) {
+    absorbTailRoom(); stickToBottom = false; resumeFollow = false; readerScrolledSinceOpen = true; cancelFollow();
+    noteTranscriptTop();
+    if (!jumpAbort) void loadOlderMessages();
+    return;
   }
-  // Following and not moving up (the observer's own pins): nothing can change, so skip measuring. A pin is not the
-  // reader asking for history: drawing it here would widen every thread as it opens, only for the trim to cut it again.
-  if (stickToBottom && top >= lastTranscriptTop) { lastTranscriptTop = top; return; }
-  // Native focus/anchoring scrolls after Read more are not the reader asking to follow again.
-  if (resumeFollow && transcriptGap() <= 2) stickToBottom = true;
-  // Content that shrank clamps the scroll up (the old top is past the end now): that is not the reader leaving.
-  else if (stickToBottom && lastTranscriptTop > transcriptScroller.scrollHeight - transcriptScroller.clientHeight) followTranscript();
-  else if (top < lastTranscriptTop) stickToBottom = false;
-  lastTranscriptTop = transcriptScroller.scrollTop;
-  if (!stickToBottom) void loadOlderMessages();
+  // Upward movement releases before anything else, so a nudge up from the bottom never snaps back; content that shrank
+  // under a follower (the old top past the end) re-pins; a reader back at the bottom after Read more follows again.
+  const extent = transcriptExtent(), layoutChanged = surroundingsChanged || !sameExtent(extent, lastTranscriptExtent);
+  const next = decideScrollTransition({ top, lastTop: lastTranscriptTop, scrollHeight: extent.height, clientHeight: extent.client, stickToBottom, resumeFollow, programmatic, layoutChanged, userScrolling });
+  stickToBottom = next.stickToBottom; resumeFollow = next.resumeFollow; lastTranscriptTop = next.nextLastTop; lastTranscriptExtent = extent; surroundingsChanged = false;
+  if (next.action === 'release') { readerScrolledSinceOpen = true; cancelFollow(); }
+  else if (next.action === 'repin') followTranscript();
+  // A pin is not the reader asking for history, and neither is a jump of ours drawing its turn.
+  if (!stickToBottom && !programmatic && !jumpAbort) void loadOlderMessages();
 }, { passive: true });
 transcriptScroller.addEventListener('click', event => {
   const target = event.target as Element;
@@ -1292,12 +1362,21 @@ transcriptScroller.addEventListener('click', event => {
 transcriptScroller.addEventListener('toggle', event => { const tool = event.target as HTMLDetailsElement; if (tool.open && tool.matches('details[data-tool-key]')) fillToolBody(tool); }, true);
 // A page consisting mostly of folded tools may be shorter than the viewport.
 // Let upward wheel/keyboard intent fetch its history even without a scroll event.
-transcriptScroller.addEventListener('wheel', event => { if (event.deltaY > 0) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; } else if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); } }, { passive: true });
-transcriptScroller.addEventListener('pointerdown', event => { if (event.pointerType === 'touch' || event.target === transcriptScroller) resumeFollow = true; }, { passive: true });
+transcriptScroller.addEventListener('wheel', event => {
+  // A wheel a code block or tool output can still take is theirs: the thread neither releases nor fetches.
+  if (!event.deltaY || canNestedScrollerConsume(event.target, transcriptScroller, event.deltaY)) return;
+  noteUserScroll(); cancelSmoothJump();
+  if (event.deltaY < 0) { releaseTranscript(); void loadOlderMessages(); }
+  else { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; }
+}, { passive: true });
+transcriptScroller.addEventListener('touchstart', () => { noteUserScroll(); cancelSmoothJump(); cancelFollow(); }, { passive: true });
+transcriptScroller.addEventListener('touchmove', () => { noteUserScroll(); cancelSmoothJump(); }, { passive: true });
+// The scrollbar (or a touch): dragging back down to the end follows again; dragging up releases first (decideScrollTransition).
+transcriptScroller.addEventListener('pointerdown', event => { if (event.pointerType === 'touch' || event.target === transcriptScroller) { noteUserScroll(); cancelSmoothJump(); resumeFollow = true; } }, { passive: true });
 transcriptScroller.addEventListener('keydown', event => {
   if (event.target !== transcriptScroller) return;
-  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) { releaseTranscript(); void loadOlderMessages(); }
-  else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) { resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; }
+  if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) { noteUserScroll(); releaseTranscript(); void loadOlderMessages(); }
+  else if (['ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) { noteUserScroll(); cancelSmoothJump(); resumeFollow = true; if (!stickToBottom && transcriptGap() <= 2) stickToBottom = true; }
 });
 /* While the window's size changes, transcript rows off screen skip layout and paint (styles.css):
  * in a long thread they are most of each step's cost. A reader scrolled up gets their row back
@@ -1318,9 +1397,10 @@ addEventListener('resize', () => {
     windowSettle = 0;
     transcriptScroller.removeAttribute('data-window-resizing');
     if (windowReaderTask === state.sessionId) {
-      if (restoreWindowReader && !stickToBottom) restoreWindowReader();
-      else if (resumeFollow) { stickToBottom = true; followTranscript(); }
-      lastTranscriptTop = transcriptScroller.scrollTop;
+      // A reader who scrolled up during the resize stays where they are; only a follower pins.
+      if (!stickToBottom) restoreWindowReader?.();
+      else followTranscript();
+      noteTranscriptTop();
     }
     restoreWindowReader = undefined;
   }, WINDOW_SETTLE_MS);
@@ -2460,10 +2540,11 @@ const transcriptView = mountTranscriptView<TranscriptTurn, RowViews>({
     return swaps;
   },
   redrawRow,
-  rowsChanged: workersOnly => { refreshTeamProgress(); if (!workersOnly) decorateTranscript(); },
+  rowsChanged: workersOnly => { refreshTeamProgress(); if (!workersOnly) decorateTranscript(); scrollIndicator?.sync(); },
   watch: (nodes, defer) => measureReplies(nodes, defer),
-  placed: top => { lastTranscriptTop = top; },
-  trimBlocked: () => transcriptGap() > 2 || Boolean(tailRoom) || tailBridging || Boolean(followFrame) || threadFind.isOpen(),
+  // A restore of ours (a step, a trim, a far row laying out) moves rows under the reading line: the rail's tick follows.
+  placed: top => { noteTranscriptTop(top); scrollIndicator?.syncScroll(); },
+  trimBlocked: () => transcriptGap() > 2 || Boolean(tailRoom) || tailBridging || Boolean(followFrame) || threadFind.isOpen() || userScrolling || smoothScroller.isActive() || Boolean(jumpAbort),
   findInput: () => document.querySelector<HTMLInputElement>('.thread-find input'),
   findCount: (turn, query) => turnMatches(turn, query),
   prepareCounts: turns => findCounts.prepare(turns),
@@ -2472,6 +2553,127 @@ const transcriptView = mountTranscriptView<TranscriptTurn, RowViews>({
   // A page that failed is asked for again only by the reader scrolling, never by every redraw.
   fetchOlder: () => { if (state.messages.find(message => message.id > 0)?.id !== olderFailedAt) void loadOlderMessages(true, false); },
   report,
+});
+/** A typed prompt as the reader wrote it, without the context blocks attached to it. */
+const typedPrompt = (message: Message | undefined): string | undefined => message ? contextBlocks(message.content).typed || message.content : undefined;
+/** The saved turns' summaries, worked out once per window (the rail asks on every scroll frame). */
+let savedSummaryCache: { turns: readonly TranscriptTurn[]; summaries: ScrollTurnSummary[] } | undefined;
+function savedTurnSummaries(turns: readonly TranscriptTurn[], ids: readonly (readonly string[])[]): ScrollTurnSummary[] {
+  if (savedSummaryCache?.turns === turns) return savedSummaryCache.summaries;
+  const summaries = turns.map((turn, index): ScrollTurnSummary => {
+    const messageIds = ids[index] ?? turnIds(turn);
+    return {
+      id: messageIds[0], userText: typedPrompt(turn.user),
+      assistantText: turn.final?.content ?? [...turn.activity].reverse().find(message => message.role === 'assistant')?.content,
+      hasError: turn.errors.length > 0, messageIds,
+    };
+  });
+  savedSummaryCache = { turns, summaries };
+  return summaries;
+}
+/** The open thread's live card, when one is drawn. */
+function liveCardElement(): HTMLElement | null {
+  const region = document.getElementById('stream-region');
+  return region?.querySelector<HTMLElement>('.turn-card.is-live') ?? (region?.firstElementChild as HTMLElement | null | undefined) ?? null;
+}
+/** The live turn the rail shows after the saved ones: only while `#stream-region` draws it for this thread (not a bot's chat rows). */
+function liveTurnSummary(sessionId: string): ScrollTurnSummary | undefined {
+  const region = document.getElementById('stream-region');
+  if (region?.dataset.sessionId !== sessionId || !region.firstElementChild || botForThread()) return undefined;
+  const finishing = finishingStreams.get(sessionId), live = state.streams.get(sessionId) ?? finishing?.stream;
+  if (!live) return undefined;
+  return { id: 'live', isLive: true, userText: typedPrompt(live.earlier?.turn.user), assistantText: live.text || undefined, hasError: Boolean(finishing?.error), messageIds: ['live'] };
+}
+const HIDDEN_SNAPSHOT: ThreadScrollSnapshot = { hidden: true, turns: [], hasOlder: false, atBottom: true, readingLine: 0, drawnTops: () => [] };
+function scrollSnapshot(): ThreadScrollSnapshot {
+  const s = session();
+  if (!s || state.sharedChannelId || state.messagesLoading || state.messagesError || newTaskView() || !transcriptVisible()) return HIDDEN_SNAPSHOT;
+  const view = transcriptView.view;
+  const saved = view.sessionId === s.id ? savedTurnSummaries(view.turns, view.ids) : [];
+  const live = liveTurnSummary(s.id);
+  return {
+    hidden: false, turns: live ? [...saved, live] : saved, hasOlder: state.hasOlder,
+    atBottom: stickToBottom || transcriptGap() <= 2,
+    readingLine: readingLine(),
+    drawnTops: () => {
+      const tops = transcriptView.drawnRowElements().map(({ index, element }) => ({ index, top: element.getBoundingClientRect().top }));
+      const card = live ? liveCardElement() : null;
+      if (card) tops.push({ index: saved.length, top: card.getBoundingClientRect().top });
+      return tops;
+    },
+  };
+}
+/** Where the scroll puts `element`'s top on the reading line; null when there is nothing to scroll to. */
+const toReadingLine = (element: Element | null): number | null =>
+  element ? transcriptScroller.scrollTop + element.getBoundingClientRect().top - readingLine() : null;
+/** Focus left in a tool summary would hold the follow and pull the scroll back to it (WebKit). */
+function leaveToolFocus(viaKeyboard: boolean): void { if (!viaKeyboard && readingTranscriptTool()) transcriptScroller.focus({ preventScroll: true }); }
+/** The rail's jump: draws down to the turn (it may be above the window) and eases its top to the reading line. */
+function jumpToTurn(targetId: string, viaKeyboard: boolean): void {
+  cancelSmoothJump(); releaseTranscript(); stopTailEase();
+  leaveToolFocus(viaKeyboard);
+  const landed = (): void => { noteTranscriptTop(); scrollIndicator?.syncScroll(); };
+  if (targetId === 'live') {
+    smoothScroller.scrollTo(() => toReadingLine(document.querySelector('#stream-region .turn-card.is-live') ?? document.getElementById('stream-region')), { onDone: landed });
+    return;
+  }
+  const controller = new AbortController();
+  jumpAbort = controller;
+  const sessionAtStart = state.sessionId, generationAtStart = state.generation;
+  void (async () => {
+    let ok = false;
+    try { ok = await transcriptView.revealTurn(targetId, controller.signal); }
+    catch (error) { report(error); }
+    finally { if (jumpAbort === controller) jumpAbort = undefined; }
+    if (!ok || controller.signal.aborted || state.sessionId !== sessionAtStart || state.generation !== generationAtStart) return;
+    smoothScroller.scrollTo(() => toReadingLine(transcriptView.rowElementForMessage(targetId)), { onDone: landed });
+  })();
+}
+/** The rail's jump to the end: once it lands, the thread follows again. */
+function jumpToLatest(viaKeyboard: boolean): void {
+  cancelSmoothJump(); stopTailEase();
+  if (tailRoom && !tailBridging) setTailRoom(0);
+  leaveToolFocus(viaKeyboard);
+  smoothScroller.scrollTo(() => Math.max(0, transcriptScroller.scrollHeight - transcriptScroller.clientHeight), {
+    onDone: landed => {
+      if (!landed) return;
+      stickToBottom = true; resumeFollow = true; readerScrolledSinceOpen = false;
+      followTranscript(); scrollIndicator?.syncScroll();
+    },
+  });
+}
+/** The rail's Load earlier: fetches the older page and eases to the newest turn it added. */
+async function loadEarlierTurns(): Promise<void> {
+  cancelSmoothJump(); releaseTranscript();
+  const sessionId = state.sessionId, prevFirstId = transcriptView.view.ids[0]?.[0];
+  await loadOlderMessages(true, false);
+  const view = transcriptView.view;
+  if (state.sessionId !== sessionId || view.sessionId !== sessionId || prevFirstId === undefined) return;
+  const at = view.ids.findIndex(list => list.includes(prevFirstId));
+  // The page joined into the old first turn: that turn now starts earlier.
+  const target = at > 0 ? view.ids[at - 1][0] : at === 0 && view.ids[0][0] !== prevFirstId ? view.ids[0][0] : undefined;
+  if (target === undefined) return;
+  scrollIndicator?.sync();
+  jumpToTurn(target, false);
+}
+/** What the rail last drew of the live turn: it redraws when that changes, never per streamed token. */
+let indicatorLiveKey = '';
+function syncIndicatorLive(): void {
+  if (!scrollIndicator) return;
+  const live = liveTurnSummary(state.sessionId);
+  const turnKey = (state.streams.get(state.sessionId) ?? finishingStreams.get(state.sessionId)?.stream)?.turnKey ?? '';
+  const key = live ? `${state.sessionId}:${turnKey}:${Boolean(live.assistantText)}:${live.hasError}` : '';
+  if (key === indicatorLiveKey) return;
+  indicatorLiveKey = key;
+  scrollIndicator?.sync();
+}
+// Mounted after everything its callbacks read is declared.
+scrollIndicator = mountThreadScrollIndicator({
+  pane: $('.conversation-pane'), scroller: transcriptScroller, composer: $('#composer-area'), workspace: $('.workspace'),
+  getSnapshot: () => scrollSnapshot(),
+  jumpToTurn: (targetId, { viaKeyboard }) => jumpToTurn(targetId, viaKeyboard),
+  jumpToLatest: ({ viaKeyboard }) => jumpToLatest(viaKeyboard),
+  loadEarlier: () => { void loadEarlierTurns(); },
 });
 let rowsSeed: { sessionId: string; first: string | null } | undefined;
 /** The last threads left, kept to reattach (transcript-view.ts). Bot threads are not kept: their decorations span rows. */
@@ -2487,11 +2689,11 @@ async function openFromTile(id: string, scrollTop: number | undefined): Promise<
   const tile = scrollTop === undefined ? undefined : tileWindows.ofThread(id);
   const anchor = tile?.ids[drawnFrom(tile)]?.[0];
   rowsSeed = tile ? { sessionId: id, first: tile.first } : undefined;
-  await selectSession(id);
-  const view = transcriptView.view;
-  if (scrollTop === undefined || anchor === undefined || view.sessionId !== id || state.sessionId !== id || !view.ids[drawnFrom(view)]?.includes(anchor)) return;
-  transcriptScroller.scrollTop = scrollTop; releaseTranscript();
+  // Applied as soon as the page draws (openThread), not after the task's details: the pane never shows its bottom first.
+  await selectSession(id, false, scrollTop === undefined || anchor === undefined ? undefined : { top: scrollTop, anchor });
 }
+/** Where a thread opened from a tile starts: the tile's scroll offset, while the pane draws from the same turn. */
+type InitialScroll = { top: number; anchor: string };
 /** A thread's turns as drawn, and what a live card takes over from the last one. */
 function cardTurns(messages: Message[]): ShownTurn[] {
   return mergeLeadTurns(normalizeCardTurns(withErrorTurns(groupTurns(messages))));
@@ -2505,6 +2707,10 @@ function shownTurns(sessionId: string, bot: boolean): { saved: CardTurn[]; earli
   return { saved: bot ? saved : withWorkerCards(saved, sessionId), earlier, running };
 }
 function renderTranscript(preservePosition = false): void {
+  drawTranscript(preservePosition);
+  scrollIndicator?.sync();
+}
+function drawTranscript(preservePosition: boolean): void {
   closeContentMenus();
   const open = session();
   showThreadScene(open && !open.draft && !state.sharedChannelId ? open.id : null);
@@ -2635,7 +2841,7 @@ function renderTranscript(preservePosition = false): void {
   if (restoreAnchor) restoreAnchor();
   else if (readingTool) transcript.scrollTop = scrollTop;
   else followTranscript();
-  lastTranscriptTop = transcript.scrollTop;
+  noteTranscriptTop(transcript.scrollTop);
   // After every restore and the pin, so the saved card is measured where it will stay.
   if (shownCards && liveRect) handOffCard(transcript, shownCards, liveRect, !restoreAnchor && !readingTool && stickToBottom, liveTraceOpen, focusRole, traceReopened, liveFoot);
   // A note the reader had open goes back in place of the redrawn one, so the row lists the node that is on screen.
@@ -2688,7 +2894,7 @@ function handOffCard(transcript: HTMLElement, shown: Set<string | undefined>, li
   const end = Math.max(0, room), start = timing && delta ? Math.max(0, room + delta) : end;
   setTailRoom(start);
   transcriptScroller.scrollTop = target;
-  lastTranscriptTop = transcriptScroller.scrollTop;
+  noteTranscriptTop();
   if (timing && start !== end) growTailRoom(start, end, timing, () => {}, true); else followTranscript();
 }
 /** The control in the live card that has focus, as a selector the saved card answers (header, a trace step, Read
@@ -2733,7 +2939,7 @@ function foldInPlace(card: HTMLElement, trace: HTMLDetailsElement, live: DOMRect
   const start = Math.max(from, target + transcriptScroller.clientHeight - (total - open - from) - shown), end = Math.max(0, start + shown - shut);
   setTailRoom(Math.max(start, end));
   transcriptScroller.scrollTop = target;
-  lastTranscriptTop = transcriptScroller.scrollTop;
+  noteTranscriptTop();
   if (!timing) { setTailRoom(end); return; }
   growTailRoom(start, end, timing);
 }
@@ -3015,6 +3221,7 @@ function renderStream(): void {
   // A bot's welcome is for an idle, empty thread; its first live event (an approval, say) replaces it.
   if ((state.streams.has(state.sessionId) || finishingStreams.has(state.sessionId)) && isRunning() && region.parentElement?.querySelector('.bot-welcome-setup')) { renderTranscript(); return; }
   paintStream(region, state.sessionId, transcriptScroller, true);
+  syncIndicatorLive();
 }
 /** Draws a thread's live turn into `region`: the main transcript's `#stream-region`, or the By the way
  *  panel's (`main` false: no approval bar, bot chrome or team rows of the open thread). */
@@ -3101,7 +3308,7 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
   if (bot) botThread.paintWorking(region, bot, provider()?.name || 'the agent', () => state.streams.get(sessionId), Boolean(finishing));
   updateWorkTimer();
   // Following needs no pin here: Markdown paints pin after themselves, and the ResizeObserver after layout.
-  if (readingTool) { transcript.scrollTop = scrollTop; if (main) lastTranscriptTop = transcript.scrollTop; }
+  if (readingTool) { transcript.scrollTop = scrollTop; if (main) noteTranscriptTop(transcript.scrollTop); }
 }
 type StreamParts = {
   activity: HTMLDetailsElement; thinking: HTMLDetailsElement; thought: HTMLElement; tools: HTMLElement; status: HTMLElement;
@@ -4506,6 +4713,7 @@ function showFetchedPage(earlier: Message[], backfill: boolean): void {
   }
   // Everything above the window is this page (the whole thread was drawn before it).
   if (wholeDrawn) transcriptView.showOlder(backfill ? Infinity : MORE_TURNS, backfill ? Infinity : ROW_BUDGET);
+  scrollIndicator?.sync();
 }
 /** Redraws one row in place, keeping its folds and formatted text; the caller holds the reader's position. */
 function redrawRow(row: DrawnRow, html: string): DrawnRow {
@@ -4594,21 +4802,21 @@ const pageSignature = (messages: Message[]): string => messages.filter(message =
 
 // The menu bar item lists finished tasks until they are viewed.
 function markTraySeen(sessionId: string): void { void call('tray_seen', { sessionId }).catch(() => undefined); }
-function selectSession(id: string, focusComposer = false): Promise<void> {
+function selectSession(id: string, focusComposer = false, initialScroll?: InitialScroll): Promise<void> {
   state.drafts.flush();
   if (id !== state.sessionId) voiceDictation.detach();
-  return id === state.sessionId ? openThread(id, focusComposer) : snapDockDuring(() => openThread(id, focusComposer));
+  return id === state.sessionId ? openThread(id, focusComposer, initialScroll) : snapDockDuring(() => openThread(id, focusComposer, initialScroll));
 }
 /** What a thread's load sends from its queue once the team is known (transcript-host.ts dispatchHeld). */
 const heldQueue: HeldQueueHost = { queued: id => queueOf(id).length > 0, hasTeam: id => teams.has(id), loadTeam, dispatch: id => dispatchQueue(id), run };
-async function openThread(id: string, focusComposer: boolean): Promise<void> {
+async function openThread(id: string, focusComposer: boolean, initialScroll?: InitialScroll): Promise<void> {
   if (deletedSessions.has(id)) return;
   const s = state.sessions.find(s => s.id === id); if (!s) return;
   closeMenus();
   if (document.querySelector('#dialog')?.classList.contains('change-review-dialog')) closeModal();
   const previousTask = session(), changingTask = previousTask?.id !== id;
   // A first load left before its details landed never clears its own wait: its page, remembered, must not come back disabled.
-  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); }
+  if (changingTask) { if (previousTask) rememberThread(previousTask.id); leaveDraft(id); saveThreadPanel(); transcriptView.forgetFind(); taskDetailsPending = undefined; flushPendingDismiss(); cancelSmoothJump(); readerScrolledSinceOpen = false; }
   // However it is opened (click, ⌘1…9, ⌘⇧[ / ], board, palette), the thread holds the sidebar
   // section its row is in while it stays open, so the row never jumps from under the pointer.
   if (changingTask) {
@@ -4630,18 +4838,30 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   const openedNothing = bootOpenedNothing; bootOpenedNothing = false;
   if (heldBackThread?.id === id) { heldBackThread = undefined; heldBackOpened(); } else if (openedNothing) tasksChanged();
   const remembered = changingTask ? threadPages.get(id) : undefined;
-  state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false;
+  // The open thread opened again (its row, a palette pick): its rows and the reader's place stay; the page refreshes behind them.
+  const keepShown = !changingTask && !state.messagesError && state.messages.length > 0;
+  if (!keepShown) { state.messages = withMirrorPrompt(id, remembered ? [...remembered.messages] : []); state.messagesLoading = !remembered; state.messagesError = ''; state.hasOlder = remembered?.hasOlder ?? false; }
   const generation = ++state.generation;
   // What acts on the task waits for this load's details and team. A remembered page whose team is already known has
   // been usable since it was left; one left before its team landed waits again, so a send never goes out as a plain
   // message to what turns out to be a team thread.
-  taskDetailsPending = remembered && teams.has(id) ? undefined : { id, generation };
+  taskDetailsPending = (remembered || keepShown) && teams.has(id) ? undefined : { id, generation };
   renderInspector();
   if (changingTask) run(restoreSelectedFile());
   const requestedMessages = state.messages;
   const requestedStream = state.streams.get(id), requestedFinishing = finishingStreams.get(id);
-  stickToBottom = true; resumeFollow = true; lastTranscriptTop = 0; render();
+  if (!keepShown) { stickToBottom = true; resumeFollow = true; lastTranscriptTop = 0; }
+  render();
   if (remembered) stickTranscript();
+  /** A tile's place, once the pane draws from the tile's turn; the reader scrolling first wins. Tried once per render. */
+  const applyInitialScroll = (): void => {
+    const view = transcriptView.view;
+    if (!initialScroll || readerScrolledSinceOpen || generation !== state.generation) return;
+    if (view.sessionId !== id || state.sessionId !== id || !view.ids[drawnFrom(view)]?.includes(initialScroll.anchor)) return;
+    transcriptScroller.scrollTop = initialScroll.top; releaseTranscript();
+    initialScroll = undefined;
+  };
+  applyInitialScroll();
   // A thread switch settles in once, after its real content draws: here for a remembered page,
   // below once the page arrives (never on the loading placeholder).
   const settle = changingTask && Boolean(previousTask);
@@ -4670,6 +4890,8 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
     run(refreshInspector());
     state.messagesLoading = false;
     if (state.messages !== shownMessages) { renderComposer(); return false; }
+    // A kept transcript stays on screen: the refresh behind it failing is reported, never drawn over it.
+    if (keepShown) { renderComposer(); return true; }
     state.messagesError = errorText(error); renderTranscript(); renderComposer();
     return true;
   };
@@ -4684,11 +4906,13 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   if (pageTaken) setMessagePage(page);
   state.messagesLoading = false;
   if (!state.streams.has(id) && finishingStreams.get(id) === requestedFinishing) finishingStreams.delete(id);
-  // A remembered page that is still current is already on screen; leave it untouched.
-  const changed = !remembered || pageSignature(state.messages) !== shown;
+  // A remembered (or kept) page that is still current is already on screen; leave it untouched.
+  const changed = (!remembered && !keepShown) || pageSignature(state.messages) !== shown;
   if (changed) renderTranscript();
   if (settle && !remembered && changed) settleIn($('#transcript'));
-  if (changed) stickTranscript();
+  applyInitialScroll(); initialScroll = undefined;
+  // A reader who moved while the page was in flight keeps their place.
+  if (changed && stickToBottom && !readerScrolledSinceOpen) stickTranscript();
   // Its messages are rendered: once they have painted too, a crash (in the details or inspector refresh below,
   // say) is not this thread's opening. Until then a transcript that kills the app while painting stays marked.
   rememberThread(id); rememberOpenThread(localStorage, id, askedTask?.draft); finishThreadRestoreAfterPaint(localStorage, id);
@@ -5627,7 +5851,7 @@ async function sendDraft(): Promise<void> {
     stream(s.id).lastPromptAt = sentAt; stream(s.id).startedAt = Math.min(stream(s.id).startedAt, sentAt); stream(s.id).status = 'Starting agent'; s.status = 'running'; s.taskStage = 'in_progress'; s.completedAt = null;
     sent = sentPrompt(s, content, Date.now());
     if (isCurrent()) {
-      stickToBottom = true; followSend();
+      cancelSmoothJump(); stickToBottom = true; resumeFollow = true; readerScrolledSinceOpen = false; followSend();
       state.messages = [...state.messages, sent];
       // The sidebar redraws after the first frame (navigationAfterPaint), so the send paints the thread first.
       state.attachments = state.attachments.filter(path => !filePaths.includes(path)); renderHeader(); renderTranscript(); renderComposer();
@@ -8186,7 +8410,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const live = stream(s.id); live.lastPromptAt = sentAt; live.startedAt = Math.min(live.startedAt, sentAt); live.status = `Connecting to ${target.name}…`;
     s.status = 'running'; s.taskStage = 'in_progress';
     if (state.sessionId === s.id) {
-      stickToBottom = true; followSend(); state.messages = [...state.messages, sent]; render();
+      cancelSmoothJump(); stickToBottom = true; resumeFollow = true; readerScrolledSinceOpen = false; followSend(); state.messages = [...state.messages, sent]; render();
       const shown = $('#transcript').querySelectorAll<HTMLElement>('.user-message');
       if (shown.length) enterView(shown[shown.length - 1], 12);
     }

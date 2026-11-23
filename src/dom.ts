@@ -236,7 +236,10 @@ export async function markdown(target: HTMLElement, value: string, scroll?: HTML
   if (known !== undefined) { remember(value, known); target.innerHTML = known; decorateFileLinks(target, target); return; }
   // A reply that just streamed is built from its stream's settled HTML, not parsed whole again.
   const settling = settle(value);
+  // Raw text first: in a row above a paused reader it would move their line on WebKit (no scroll anchoring) until the HTML lands.
+  const restoreRaw = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
   target.textContent = value;
+  restoreRaw?.();
   const html = (settling && await settling) ?? await markdownHtml(value);
   if (target.isConnected && target.textContent === value) {
     const restore = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
