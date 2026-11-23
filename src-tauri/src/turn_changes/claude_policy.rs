@@ -584,19 +584,16 @@ fn host_managed_settings_match(path_matches: impl FnMut(&Path) -> bool) -> bool 
         // Unknown legacy policy location.
         return true;
     }
-    if paths
+    let files_match = paths
         .as_ref()
-        .is_none_or(|paths| managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches))
-    {
-        return true;
-    }
+        .is_none_or(|paths| managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches));
     #[cfg(windows)]
     {
-        windows_registry_policy_present(windows_registry_policy_status)
+        files_match || windows_registry_policy_present(windows_registry_policy_status)
     }
     #[cfg(not(windows))]
     {
-        false
+        files_match
     }
 }
 
