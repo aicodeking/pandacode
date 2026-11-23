@@ -2,6 +2,7 @@ import { subscribe } from './bridge';
 import { escape, icon } from './dom';
 import { showPopover, hidePopover } from './popover-motion';
 import type { TerminalActivity, TerminalContext, TerminalController } from './terminal';
+import { initializeTerminalResizing, type TerminalResizer } from './terminal-resize';
 import './terminal-panel.css';
 
 type Tab = { id: string; title: string; context: TerminalContext; label: string; host: HTMLElement; ready: Promise<void>; controller?: TerminalController; removed: boolean };
@@ -20,18 +21,23 @@ export class TerminalPanel {
   private closing = new Set<string>();
   private dismiss?: () => void;
   private tabs: HTMLElement;
+  private resizer: TerminalResizer;
   private tabsMarkup = '';
   /** Starts in flight here: their `terminal-opened` arrives before their ID does. */
   private starting = 0;
   private opened: TerminalOpened[] = [];
   constructor(private drawer: HTMLElement, private host: HTMLElement, private report: (error: unknown) => void) {
     this.tabs = drawer.querySelector<HTMLElement>('[role="tablist"]')!;
+    const mainPane = drawer.closest<HTMLElement>('.main-pane');
+    if (!mainPane) throw new Error('The terminal drawer must live in the main pane.');
+    this.resizer = initializeTerminalResizing(drawer, mainPane);
     void listen('terminal-opened', event => { this.opened.push(event); this.adoptOpened(); }).catch(report);
     drawer.addEventListener('click', event => {
       const target = (event.target as Element).closest<HTMLElement>('[data-terminal-action]');
       if (!target) return;
       const action = target.dataset.terminalAction;
       if (action === 'minimize') this.minimize();
+      else if (action === 'maximize') { this.resizer.toggleMaximize(); this.paint(); }
       else if (action === 'new') void this.add().catch(report);
       else if (action === 'select') {
         const group = this.group(); if (!group) return;
@@ -55,8 +61,11 @@ export class TerminalPanel {
     this.context = context; this.label = label;
     for (const tab of this.groups.get(key)?.tabs ?? []) tab.label ||= label;
     if (key === this.key) return;
-    this.cancelClose(); this.key = key; this.paint();
+    // Maximize belongs to the moment, not the thread: every switch brings the conversation back.
+    this.cancelClose(); this.resizer.restore(); this.key = key; this.paint();
   }
+  /** Leave the maximized view, e.g. when the board or GitHub view needs the work area. */
+  restoreSize(): void { if (!this.resizer.maximized) return; this.resizer.restore(); this.paint(); }
   async toggle(): Promise<void> {
     if (this.open) { this.minimize(); return; }
     const group = this.group();
@@ -209,6 +218,7 @@ export class TerminalPanel {
   }
   private paint(): void {
     const group = this.group(), active = this.active();
+    if (!this.open) this.resizer.restore();
     this.drawer.hidden = !this.open;
     for (const owner of this.groups.values()) for (const tab of owner.tabs) tab.host.hidden = owner !== group || tab !== active;
     const label = this.drawer.querySelector<HTMLElement>('#terminal-project')!;
@@ -219,6 +229,13 @@ export class TerminalPanel {
     const toggle = document.querySelector<HTMLElement>('#terminal-toggle');
     toggle?.setAttribute('aria-expanded', String(this.open)); toggle?.classList.toggle('active', this.open);
     toggle?.classList.toggle('has-terminals', Boolean(group?.tabs.length));
+    const maximize = this.drawer.querySelector<HTMLButtonElement>('[data-terminal-action="maximize"]');
+    // The label names the action (like Minimize beside it), so no aria-pressed: "Restore terminal, pressed" reads as a contradiction.
+    if (maximize && maximize.dataset.state !== (this.resizer.maximized ? 'restore' : 'maximize')) {
+      const state = this.resizer.maximized ? 'restore' : 'maximize', label = state === 'restore' ? 'Restore terminal' : 'Maximize terminal';
+      maximize.dataset.state = state; maximize.innerHTML = icon(state);
+      maximize.setAttribute('aria-label', label); maximize.title = label;
+    }
   }
 }
 
