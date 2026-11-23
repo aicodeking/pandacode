@@ -36,13 +36,23 @@ const MODS_JAVA: &str = r"(?:(?:public|private|protected|static|final|abstract|s
 const MODS_KOTLIN: &str = r"(?:(?:public|private|protected|internal|open|abstract|final|sealed|data|enum|inline|value|annotation|override|suspend|operator|companion|tailrec|infix|external|expect|actual)\s+)*";
 const MODS_SWIFT: &str = r"(?:(?:public|private|fileprivate|internal|open|final|static|class|override|mutating|nonmutating|indirect|convenience|required|lazy|weak|nonisolated|@\w+(?:\([^)]*\))?)\s+)*";
 const MODS_PHP: &str = r"(?:(?:public|private|protected|static|final|abstract|readonly)\s+)*";
+/// `// …` and `/* … */` comments ending a line: after a container header, between an anonymous
+/// namespace and its brace, or after a one-line body (`int cap() const { return c_; } // O(1)`).
+macro_rules! trailing_comments {
+    () => {
+        r"(?:(?://.*)|(?:/\*.*?\*/\s*))*"
+    };
+}
 /// After a definition's `(`: parameters running on, or a whole `) … { body }` on this line. A
-/// declaration ending in `;` without a body matches neither.
-const PARAMS_THEN_BODY: &str = r"\((?:[^;]*|[^;{]*\)[^;{]*\{.*\}\s*;?\s*)$";
+/// declaration ending in `;` without a body matches neither, even with `// { … }` after it.
+const PARAMS_THEN_BODY: &str = concat!(r"\((?:[^;]*|[^;{]*\)[^;{]*\{.*\}\s*;?\s*", trailing_comments!(), r")$");
 /// After a signature: a brace ending the line, or a whole one-line body.
-const OPEN_OR_BODY: &str = r"\{(?:\s*|.*\}\s*;?\s*)$";
-/// TS return type: never starting with `{`, which is an object type (`count(): { n: number };`).
-const TS_RETURN: &str = r"(?::\s*[^{\s][^{]*)?";
+const OPEN_OR_BODY: &str = concat!(r"\{(?:\s*|.*\}\s*;?\s*)", trailing_comments!(), "$");
+/// TS return type before a method's `{`: whole `{ … }` object types may sit inside it, but no
+/// `;`, and it never ends in `&`, `|`, `=>`, `=`, `(`, `<`, `,`, `?` or `:`, so the object type
+/// closing a declaration (`render(): Props & { id: string };`, `count(): { n: number };`) is no
+/// body, while `shape(): Props & { id: string } { … }` keeps its own.
+const TS_RETURN: &str = r"(?::\s*(?:[^{;]|\{[^{}]*\})*?(?:[^{;\s&|=(<,?:>]|\{[^{}]*\}|(?:[^{;\s=]|\{[^{}]*\})>)\s*)?";
 /// Attributes on the same line, then visibility.
 const RUST_LEAD: &str = r"^\s*(?:#!?\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?";
 
@@ -144,7 +154,7 @@ fn swift_rules() -> Rules {
 
 
 /// Comments after a container header or between an anonymous namespace and its brace.
-const CPP_COMMENTS: &str = r"(?:(?://.*)|(?:/\*.*?\*/\s*))*";
+const CPP_COMMENTS: &str = trailing_comments!();
 /// `Box`, `Box<T>`, `Outer<T>::Inner<U>`: the owner of an out-of-line definition.
 const CPP_QUALIFIER: &str = r"(?P<qualifier>\w+(?:<[^>{};]*>)?(?:::\w+(?:<[^>{};]*>)?)*)";
 
@@ -379,7 +389,14 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     if *kind == OPEN_METHOD {
         return closes_as_method(lines, index).then(|| ("method", name.to_owned(), qualifier));
     }
-    if language == Language::CFamily && *kind == "class" && name.contains("::") {
+    // `namespace a::b`, Ruby `class Foo::Bar` / `module A::B::C`: the enclosing path qualifies
+    // the last name, so `path#Foo::Bar` (qualifier `Foo`, name `Bar`) and `path#Bar` both find it.
+    let nested_container = match language {
+        Language::CFamily => *kind == "class",
+        Language::Ruby => matches!(*kind, "class" | "module"),
+        _ => false,
+    };
+    if nested_container && name.contains("::") {
         let (qualifier, name) = split_nested_namespace(name);
         return Some((kind, name, Some(qualifier)));
     }
@@ -387,7 +404,7 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
 }
 
 /// `a::inline b::c` → (`a::b`, `c`): the enclosing path as the qualifier, so `path#a::b`'s
-/// lookup (qualifier `a`, name `b`) finds it. `inline` is syntax, not part of any name.
+/// lookup (qualifier `a`, name `b`) finds it. `inline` is C++ syntax, not part of any name.
 fn split_nested_namespace(path: &str) -> (String, String) {
     let mut parts: Vec<&str> = path.split("::").map(|part| part.split_whitespace().last().unwrap_or(part)).collect();
     let name = parts.pop().unwrap_or_default().to_owned();
@@ -673,9 +690,10 @@ fn has_word(text: &str, word: &str) -> bool {
 }
 
 /// Whether definitions inside `outer` count as qualified by `qualifier`: its name, or for a
-/// container such as `namespace a::b` (name `b`, qualifier `a`) its enclosing path too.
+/// container such as `namespace a::b` or Ruby `module A::B` (name `b`, qualifier `a`) its
+/// enclosing path too.
 fn scopes(outer: &Symbol, qualifier: &str) -> bool {
-    has_word(&outer.name, qualifier) || (outer.kind == "class" && outer.qualifier.as_deref().is_some_and(|path| has_word(path, qualifier)))
+    has_word(&outer.name, qualifier) || (matches!(outer.kind, "class" | "module") && outer.qualifier.as_deref().is_some_and(|path| has_word(path, qualifier)))
 }
 
 /// Whether `symbol` has a receiver or sits inside a definition holding `qualifier` as a whole word

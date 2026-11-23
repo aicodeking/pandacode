@@ -11,6 +11,7 @@ use super::{
 };
 use regex::bytes::Regex;
 use std::{
+    borrow::Cow,
     cell::{Cell, OnceCell},
     collections::{BTreeMap, HashMap, HashSet},
     path::Path,
@@ -564,7 +565,7 @@ impl<'a> FileView<'a> {
                 self.cut.set(true);
                 break;
             }
-            let symbol = enclosing.at(line).map(|symbol| format!("{} {}-{}", symbol.name, symbol.line, symbol.end));
+            let symbol = enclosing.at(line).map(|symbol| format!("{} {}-{}", qualified_name(symbol), symbol.line, symbol.end));
             let (shown, cut, at) = if hit { window_around_match(self.line_bytes(line), regex) } else { (self.line_text(line).trim_start().to_owned(), false, 0) };
             clipped += usize::from(cut);
             let number = line.to_string();
@@ -640,9 +641,15 @@ pub(super) fn ranked(hits: impl IntoIterator<Item = (usize, bool)>, most: usize)
 }
 
 pub(super) fn symbol_label(symbol: &Symbol) -> String {
+    format!("{} {} {}-{}", symbol.kind, qualified_name(symbol), symbol.line, symbol.end)
+}
+
+/// A container's full path (`a::b`, `Foo::Bar`), as written and as `path#a::b` looks it up; any
+/// other definition by its own name, its receiver shown on its line.
+fn qualified_name(symbol: &Symbol) -> Cow<'_, str> {
     match (symbol.kind, symbol.qualifier.as_deref()) {
-        ("class", Some(qualifier)) => format!("{} {qualifier}::{} {}-{}", symbol.kind, symbol.name, symbol.line, symbol.end),
-        _ => format!("{} {} {}-{}", symbol.kind, symbol.name, symbol.line, symbol.end),
+        ("class" | "module", Some(qualifier)) => format!("{qualifier}::{}", symbol.name).into(),
+        _ => symbol.name.as_str().into(),
     }
 }
 

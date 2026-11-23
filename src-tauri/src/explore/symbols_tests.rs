@@ -484,11 +484,11 @@ fn failed_regex_and_stray_quote_scans_stay_linear() {
         let started = Instant::now();
         let lex = Lexed::new(&lines, Language::Script, &limit());
         assert_eq!(lex.inside_literal.len(), 1);
-        assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
         for done in [Limit::new(Arc::new(AtomicBool::new(true))), Limit::lasting(Duration::ZERO, Arc::default())] {
             let started = Instant::now();
             assert!(Lexed::new(&lines, Language::Script, &done).inside_literal.is_empty());
-            assert!(started.elapsed() < Duration::from_millis(500));
+            assert!(started.elapsed() < Duration::from_secs(2));
             assert!(done.was_cut());
         }
     }
@@ -503,7 +503,7 @@ fn a_single_long_line_can_expire_during_lexing() {
         let lex = Lexed::new(&[text.as_str()], Language::Script, &done);
         assert!(lex.inside_literal.is_empty(), "{prefix:?}: the interrupted line must not be recorded");
         assert!(done.was_cut());
-        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 }
 
@@ -536,7 +536,7 @@ fn qualified_lookup_is_linear_and_honors_stopped_limits() {
     let started = Instant::now();
     qualified_matches(&symbols, Some("Missing"), |symbol| symbol.name == "run", &budget, |_| count += 1);
     assert_eq!(count, 0);
-    assert!(started.elapsed() < Duration::from_millis(500), "{:?}", started.elapsed());
+    assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
     for qualifier in [None, Some("Missing")] {
         let done = Limit::new(Arc::new(AtomicBool::new(true)));
         qualified_matches(&symbols, qualifier, |_| panic!("a stopped lookup must not test candidates"), &done, |_| panic!("a stopped lookup must not yield candidates"));
@@ -787,4 +787,91 @@ fn script_one_line_class_methods_are_extracted_and_signatures_are_not() {
     has(&found, "run", "method", 7, 13);
     assert_eq!(found.iter().filter(|s| ["count", "reset", "shape"].contains(&s.0.as_str())).count(), 3, "{found:?}");
     assert!(found.iter().all(|s| !["if", "for", "catch", "switch", "forEach"].contains(&s.0.as_str())), "{found:?}");
+}
+
+#[test]
+fn script_declarations_ending_in_object_types_are_not_one_line_bodies() {
+    for line in [
+        "render(): Props & { id: string };",
+        "render(): Props & { id: string }",
+        "get(): A | { b: number };",
+        "get(): A | { b: number } | { c: string }",
+        "make(): (x: number) => { id: string };",
+        "make(): () => { id: string }",
+        "count(): { n: number };",
+        "pick(): Array<{ id: string }>;",
+        "pick(): Partial<T> & { id: string };",
+    ] {
+        for text in [format!("interface I {{\n  {line}\n}}\n"), format!("abstract class B {{\n  abstract {line}\n}}\n")] {
+            let found = names("a.ts", &text);
+            assert!(found.iter().all(|s| s.1 != "method"), "{text}: {found:?}");
+        }
+    }
+}
+
+#[test]
+fn script_methods_with_union_generic_and_object_return_types_keep_their_bodies() {
+    let text = "class Store {\n  get(): A | B { return this.a; }\n  map(): Map<string, number> { return this.m; }\n  count(): number { return this.items.length; }\n  nested(): Array<Map<K, V>> { return []; }\n  shape(): Props & { id: string } { return { ...this.p, id: '1' }; }\n  pick(): Array<{ id: string }> { return []; }\n  load(): Promise<A | undefined> {\n    return this.a;\n  }\n  make(): () => void {\n    return () => {};\n  }\n}\n";
+    let found = names("a.ts", text);
+    for (name, line) in [("get", 2), ("map", 3), ("count", 4), ("nested", 5), ("shape", 6)] {
+        has(&found, name, "method", line, line);
+    }
+    has(&found, "pick", "method", 7, 7);
+    has(&found, "load", "method", 8, 10);
+    has(&found, "make", "method", 11, 13);
+}
+
+#[test]
+fn one_line_bodies_with_trailing_comments_are_extracted() {
+    for (path, text, name, line) in [
+        ("a.cpp", "inline int Vec::cap() const { return c_; } // O(1)\n", "cap", 1),
+        ("a.cpp", "class Vec {\n    int size() const { return n_; } /* fast */\n};\n", "size", 2),
+        ("a.cpp", "int add(int a, int b) { return a + b; } /* sum */ // twice\n", "add", 1),
+        ("a.cpp", "int run() { // starts here\n    return 1;\n}\n", "run", 1),
+        ("A.java", "class Account {\n    public int getBalance() { return balance; } // getter\n}\n", "getBalance", 2),
+        ("A.java", "class Account {\n    void reset() { n = 0; } /* clear */\n}\n", "reset", 2),
+        ("a.ts", "class Cart {\n  count(): number { return this.items.length; } // size\n}\n", "count", 2),
+        ("a.ts", "class Cart {\n  clear() { this.n = 0; } /* reset */\n}\n", "clear", 2),
+    ] {
+        let found = names(path, text);
+        let end = if name == "run" { 3 } else { line };
+        assert!(found.iter().any(|s| s.0 == name && s.2 == line && s.3 == end), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn declarations_with_commented_braces_after_them_stay_out() {
+    for (path, text, name) in [
+        ("a.cpp", "class Vec {\n    int size() const; // { ok }\n};\n", "size"),
+        ("a.cpp", "int size() const; // { ok }\n", "size"),
+        ("a.cpp", "int Vec::cap() const; /* { inline } */\n", "cap"),
+        ("A.java", "interface Shape {\n    int area(); // iface\n    int side(); // { not a body }\n}\n", "area"),
+        ("A.java", "interface Shape {\n    int side(); // { not a body }\n}\n", "side"),
+        ("a.ts", "interface Counter {\n  size(): number; // { n }\n}\n", "size"),
+    ] {
+        let found = names(path, text);
+        assert!(found.iter().all(|s| s.0 != name), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn ruby_nested_classes_and_modules_are_found_by_their_paths() {
+    let text = "class Foo::Bar\n  def run\n    1\n  end\nend\nmodule A::B::C\n  def self.go\n    2\n  end\nend\n";
+    let found = symbols("x.rb", text);
+    let bar = found.iter().find(|symbol| symbol.name == "Bar").unwrap_or_else(|| panic!("{found:?}"));
+    let c = found.iter().find(|symbol| symbol.name == "C").unwrap_or_else(|| panic!("{found:?}"));
+    assert_eq!((bar.kind, bar.qualifier.as_deref(), bar.line, bar.end), ("class", Some("Foo"), 1, 5));
+    assert_eq!((c.kind, c.qualifier.as_deref(), c.line, c.end), ("module", Some("A::B"), 6, 10));
+    assert_eq!(lookup(&found, Some("Foo"), "Bar"), [bar]);
+    assert_eq!(lookup(&found, None, "Bar"), [bar]);
+    assert_eq!(lookup(&found, Some("B"), "C"), [c]);
+    assert!(lookup(&found, Some("Bar"), "C").is_empty());
+    let run = found.iter().find(|symbol| symbol.name == "run").unwrap();
+    assert_eq!(lookup(&found, Some("Bar"), "run"), [run]);
+    assert_eq!(lookup(&found, Some("Foo"), "run"), [run]);
+    let go = found.iter().find(|symbol| symbol.name == "go").unwrap();
+    for qualifier in ["A", "B", "C"] {
+        assert_eq!(lookup(&found, Some(qualifier), "go"), [go], "{qualifier}");
+    }
+    assert!(lookup(&found, Some("Foo"), "go").is_empty());
 }

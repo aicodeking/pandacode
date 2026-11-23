@@ -246,8 +246,10 @@ that already listed it refuse its calls. Changed restrictions invalidate warm sp
 Opt-in non-Claude harnesses (Codex, OpenCode, Kimi, Grok, Pi and omp) do not yet
 parse their own read-deny settings; the secret rules above still apply to them.
 
-**Instruction.** Runs with the tool get one line in the app instructions (`LOOK` in
-`src-tauri/src/lib.rs`): use it to locate code with all questions in one call, and answer
+### Instruction
+
+Runs with the tool get one line in the app instructions (`LOOK` in
+`src-tauri/src/app_instructions.rs`, beside `EDIT_CLAUDE` and `EDIT_OTHER`): use it to locate code with all questions in one call, and answer
 once a reply names the files and symbols needed, searching again only for a named gap.
 `look()` then appends one edit sentence by harness (`RunExplore::claude_code`). This section
 is the one home of the edit rule; other docs link here.

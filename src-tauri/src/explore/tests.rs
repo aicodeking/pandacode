@@ -1143,3 +1143,60 @@ fn java_and_script_one_line_methods_answer_outline_symbols_and_reads() {
     assert_eq!(missing["symbols"][0]["definitions"], 0, "{missing}");
     assert_eq!(missing["symbols"][1]["definitions"], 0, "{missing}");
 }
+
+#[test]
+fn script_object_type_declarations_and_trailing_comments_answer_outline_and_symbols() {
+    let repo = Repo::new();
+    repo.write("a.ts", "interface View {\n  render(): Props & { id: string };\n  get(): A | { b: number };\n  make(): (x: number) => { id: string };\n  draw(): Props & { id: string }\n  size(): number; // { n }\n}\nclass Store {\n  get(): A | B { return this.a; }\n  count(): number { return this.items.length; } // size\n}\n");
+    let reply = assert_lookups(&repo, "a.ts", &[("Store.get", "get(): A | B { return this.a; }"), ("count", "count(): number { return this.items.length; } // size")]);
+    assert_eq!(reply["outline"][0]["text"], "interface View 1-7\nclass Store 8-11\n  method get 9-9\n  method count 10-10\n");
+    let missing = repo.explore(json!({"symbols":["render","make","draw","size"]}));
+    for at in 0..4 {
+        assert_eq!(missing["symbols"][at]["definitions"], 0, "{missing}");
+    }
+}
+
+#[test]
+fn cpp_and_java_one_liners_with_trailing_comments_answer_outline_and_symbols() {
+    let repo = Repo::new();
+    repo.write("a.cpp", "class Vec {\n    int size() const { return n_; } /* fast */\n    int used() const; // { ok }\n};\ninline int Vec::cap() const { return c_; } // O(1)\n");
+    let reply = assert_lookups(&repo, "a.cpp", &[("Vec::size", "int size() const { return n_; } /* fast */"), ("Vec::cap", "inline int Vec::cap() const { return c_; } // O(1)")]);
+    assert_eq!(reply["outline"][0]["text"], "class Vec 1-4\n  method size 2-2\nfunction cap 5-5\n");
+    repo.write("A.java", "class Account {\n    public int getBalance() { return balance; } // getter\n}\ninterface Shape {\n    int area(); // iface\n}\n");
+    let reply = assert_lookups(&repo, "A.java", &[("Account.getBalance", "public int getBalance() { return balance; } // getter")]);
+    assert_eq!(reply["outline"][0]["text"], "class Account 1-3\n  method getBalance 2-2\nclass Shape 4-6\n");
+    let missing = repo.explore(json!({"symbols":["used","area"]}));
+    assert_eq!(missing["symbols"][0]["definitions"], 0, "{missing}");
+    assert_eq!(missing["symbols"][1]["definitions"], 0, "{missing}");
+}
+
+#[test]
+fn ruby_nested_classes_and_modules_answer_outline_symbols_reads_and_hits() {
+    let repo = Repo::new();
+    repo.write("x.rb", "class Foo::Bar\n  def run\n    needle\n  end\nend\nmodule A::B::C\n  def self.go\n    needle\n  end\nend\n");
+    let reply = assert_lookups(&repo, "x.rb", &[("Foo::Bar", "class Foo::Bar"), ("A::B::C", "module A::B::C"), ("Bar.run", "def run"), ("Foo.run", "def run"), ("C.go", "def self.go"), ("A::go", "def self.go")]);
+    assert_eq!(reply["outline"][0]["text"], "class Foo::Bar 1-5\n  method run 2-4\nmodule A::B::C 6-10\n  method go 7-9\n");
+    assert_eq!((&reply["read"][0]["from"], &reply["read"][0]["to"]), (&json!(1), &json!(5)), "{reply}");
+    assert_eq!((&reply["read"][1]["from"], &reply["read"][1]["to"]), (&json!(6), &json!(10)), "{reply}");
+    let plain = repo.explore(json!({"symbols":["Bar","C"],"read":["x.rb#Bar"]}));
+    assert_eq!(plain["symbols"][0]["definitions"], 1, "{plain}");
+    assert_eq!(plain["symbols"][1]["definitions"], 1, "{plain}");
+    assert_eq!(plain["read"][0]["from"], 1, "{plain}");
+    // A hit right inside a container (no method around it) is labelled with its full path.
+    repo.write("y.rb", "class Foo::Bar\n  NEEDLE = 1\nend\nmodule A::B::C\n  NEEDLE = 2\nend\n");
+    let found = repo.explore(json!({"search":["NEEDLE"],"glob":["y.rb"]}));
+    let text = found["search"][0]["text"].as_str().unwrap();
+    assert!(text.contains("@ Foo::Bar 1-3\n"), "{text}");
+    assert!(text.contains("@ A::B::C 4-6\n"), "{text}");
+}
+
+#[test]
+fn search_hits_inside_nested_cpp_namespaces_show_the_full_path() {
+    let repo = Repo::new();
+    repo.write("a.cpp", "namespace a::b {\nint needle = 1;\n}\nnamespace x {\nint needle = 2;\n}\n");
+    let found = repo.explore(json!({"search":["needle"],"glob":["a.cpp"]}));
+    let text = found["search"][0]["text"].as_str().unwrap();
+    assert!(text.contains("@ a::b 1-3\n2:int needle = 1;\n"), "{text}");
+    assert!(text.contains("@ x 4-6\n5:int needle = 2;\n"), "{text}");
+    assert!(!text.contains("@ b "), "{text}");
+}
