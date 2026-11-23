@@ -21,7 +21,10 @@ use std::{
 
 mod host;
 mod team;
-pub(crate) use host::{claude_restricts_reads, edits_wait_for_run, instruction, turn_note, with_host, TOOL as TRACK_TOOL};
+pub(crate) use host::{
+    claude_restricts_reads, edits_wait_for_run, host_managed_settings_path, instruction,
+    project_config_roots, turn_note, with_host, TOOL as TRACK_TOOL,
+};
 #[cfg(test)]
 pub(crate) use host::edits_wait_for_approval;
 

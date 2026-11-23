@@ -34,7 +34,9 @@ pub(super) struct ExitEntry {
     pub(super) cwd: Option<PathBuf>,
 }
 
-pub(super) type Registry = Mutex<HashMap<String, ExitEntry>>;
+/// Every pending exit of a session, oldest first: each keeps its own `cwd`, so a newer exit in
+/// another folder never hides an older one from `await_exits_in`.
+pub(super) type Registry = Mutex<HashMap<String, Vec<ExitEntry>>>;
 
 /// Processes of clean Claude-family runs still exiting, by session id. Claude Code's natural exit
 /// after its `result` frame is within `BACKGROUND_EXIT_WAIT` (`EXIT_WAIT` once a launch waits); the run returns at once and `reap` waits instead.
@@ -50,7 +52,7 @@ pub(crate) fn pending_exits() -> Vec<(String, Option<PathBuf>)> {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
-        .map(|(session_id, entry)| (session_id.clone(), entry.cwd.clone()))
+        .flat_map(|(session_id, entries)| entries.iter().map(|entry| (session_id.clone(), entry.cwd.clone())))
         .collect()
 }
 
@@ -77,26 +79,29 @@ async fn wait_exit(session_id: &str, cap: Duration, hurry: bool) -> Result<(), S
     // One cap for the whole wait, which follows the chain: an exit registered while this one
     // ran (a pending spare killed, then retired) waits on it, so look again until none is left.
     let wait = async {
+        // A finished exit left in place (not removed) must not be waited on again.
+        let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
         loop {
-            let exiting = exit_registry()
+            let fresh: Vec<_> = exit_registry()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .get(session_id)
-                .map(|entry| entry.exiting.clone());
-            let Some(mut exiting) = exiting else { return };
+                .into_iter()
+                .flatten()
+                .map(|entry| &entry.exiting)
+                .filter(|exiting| !waited.iter().any(|done| done.same_channel(exiting)))
+                .cloned()
+                .collect();
+            if fresh.is_empty() {
+                return;
+            }
             if hurry {
                 hurry_session(session_id);
             }
-            // Sender closure is the reaper's completion signal.
-            let _ = exiting.changed().await;
-            // A finished exit left in place (not removed) must not be waited on again.
-            let current = exit_registry()
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(session_id)
-                .map(|entry| entry.exiting.clone());
-            if current.is_none_or(|current| current.same_channel(&exiting)) {
-                return;
+            for mut exiting in fresh {
+                // Sender closure is the reaper's completion signal.
+                let _ = exiting.changed().await;
+                waited.push(exiting);
             }
         }
     };
@@ -148,6 +153,7 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .iter()
+                .flat_map(|(id, entries)| entries.iter().map(move |entry| (id, entry)))
                 .filter_map(|(id, entry)| {
                     if waited.iter().any(|done| done.same_channel(&entry.exiting)) {
                         return None;
@@ -198,6 +204,7 @@ pub(super) async fn wait_all(registry: &Registry, cap: Duration) {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .values()
+                .flatten()
                 .map(|entry| &entry.exiting)
                 .filter(|exiting| !waited.iter().any(|done| done.same_channel(exiting)))
                 .cloned()
@@ -246,10 +253,13 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
     let (done, exiting) = tokio::sync::watch::channel(());
     let previous = {
         let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
-        let previous = registry.get(session_id).cloned();
-        let cwd = cwd.or_else(|| previous.as_ref().and_then(|entry| entry.cwd.clone()));
-        registry.insert(session_id.to_owned(), ExitEntry { exiting: exiting.clone(), cwd });
-        previous.map(|entry| entry.exiting)
+        let entries = registry.entry(session_id.to_owned()).or_default();
+        let previous = entries.last().map(|entry| entry.exiting.clone());
+        // Earlier entries keep their own `cwd` (a folder wait still finds them); an exit without
+        // one inherits the latest, as it continues that run in the same folder.
+        let cwd = cwd.or_else(|| entries.last().and_then(|entry| entry.cwd.clone()));
+        entries.push(ExitEntry { exiting: exiting.clone(), cwd });
+        previous
     };
     let session_id = session_id.to_owned();
     runtime.spawn(async move {
@@ -268,8 +278,11 @@ fn spawn_exit_hurried<F: std::future::Future<Output = ()> + Send + 'static>(
             }
         }
         let mut registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
-        if registry.get(&session_id).is_some_and(|current| current.exiting.same_channel(&exiting)) {
-            registry.remove(&session_id);
+        if let Some(entries) = registry.get_mut(&session_id) {
+            entries.retain(|entry| !entry.exiting.same_channel(&exiting));
+            if entries.is_empty() {
+                registry.remove(&session_id);
+            }
         }
         drop(done);
     });

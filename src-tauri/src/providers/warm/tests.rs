@@ -853,25 +853,95 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
 
 #[cfg(unix)]
 #[test]
-fn a_config_folder_walk_never_follows_a_symlinked_folder_and_is_capped() {
+fn a_config_folder_walk_follows_symlinked_folders_once_and_is_capped() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-walk-{}", uuid::Uuid::new_v4().simple()));
     let skills = root.join("skills");
+    let external = root.join("external");
     std::fs::create_dir_all(skills.join("a")).unwrap();
+    write_config(&external, "SKILL.md", "a");
     std::os::unix::fs::symlink(&skills, skills.join("a/loop")).unwrap();
+    std::os::unix::fs::symlink(&external, skills.join("linked")).unwrap();
     let paths = |stamp: &Value| -> Vec<String> {
         stamp.as_array().unwrap().iter().filter_map(|item| item.get(0).and_then(Value::as_str).map(str::to_owned)).collect()
     };
-    let walked = paths(&config_dir_stamp(&skills));
+    let before = config_dir_stamp(&skills);
+    let walked = paths(&before);
     assert!(walked.contains(&"a/loop".to_string()));
-    assert!(!walked.iter().any(|path| path.starts_with("a/loop/")), "a symlinked folder is never walked: {walked:?}");
+    assert!(!walked.iter().any(|path| path.starts_with("a/loop/")), "a link back to a visited folder is not walked: {walked:?}");
+    assert!(walked.contains(&"linked/SKILL.md".to_string()), "a symlinked skill folder is walked: {walked:?}");
+    write_config(&external, "SKILL.md", "ab");
+    assert_ne!(config_dir_stamp(&skills), before, "editing a linked skill in place must start the next turn cold");
     for index in 0..140 {
         std::fs::write(skills.join(format!("f{index:03}.md")), "x").unwrap();
     }
     let capped = config_dir_stamp(&skills);
     assert_eq!(capped.as_array().unwrap().last(), Some(&json!("capped")));
+    assert!(capped.as_array().unwrap().len() <= 128 + 2, "the entry cap holds");
     assert_eq!(config_dir_stamp(&skills), capped, "a capped walk is deterministic");
     assert_eq!(config_dir_stamp(&root.join("missing")), Value::Null);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-roots-{}", uuid::Uuid::new_v4().simple()));
+    let repo = root.join("repo");
+    let nested = repo.join("src/deep");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(&nested).unwrap();
+    let user = root.join("user");
+    let stamp = |cwd: &Path| claude_config_fingerprint_in(cwd, Some(user.as_path()));
+    let mut previous = stamp(&nested);
+    for (name, contents) in [("AGENTS.md", "a"), ("AGENTS.md", "ab"), (".claude/settings.json", "{}"), ("CLAUDE.md", "a")] {
+        write_config(&repo, name, contents);
+        let next = stamp(&nested);
+        assert_ne!(next, previous, "writing the repository root's {name} must start a nested launch cold");
+        previous = next;
+    }
+    write_config(&nested, "AGENTS.md", "a");
+    assert_ne!(stamp(&nested), previous, "writing AGENTS.md in the working folder must start the next turn cold");
+
+    // A linked worktree inherits its main checkout's local settings, memory and rules.
+    let main = root.join("main");
+    let gitdir = main.join(".git/worktrees/wt");
+    let worktree = root.join("wt");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::create_dir_all(&worktree).unwrap();
+    std::fs::write(main.join(".git/config"), "[core]\n bare = false\n").unwrap();
+    std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    let mut previous = stamp(&worktree);
+    for (name, contents) in [(".claude/settings.local.json", "{}"), (".claude/settings.local.json", "{ }"), ("AGENTS.md", "a"), (".claude/rules/rule.md", "a")] {
+        write_config(&main, name, contents);
+        let next = stamp(&worktree);
+        assert_ne!(next, previous, "writing the main checkout's {name} must start a worktree launch cold");
+        previous = next;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn claude_config_dir_names_match_case_insensitively_when_asked() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-case-{}", uuid::Uuid::new_v4().simple()));
+    let (cwd, mixed, lower) = (root.join("project"), root.join("mixed"), root.join("lower"));
+    let text = |path: &Path| path.to_string_lossy().into_owned();
+    let provider_env = vec![("Claude_Config_Dir".to_string(), text(&mixed))];
+    assert_eq!(claude_config_dir_from_with(provider_env.clone(), None, &cwd, true), Some(mixed.clone()));
+    assert_ne!(claude_config_dir_from_with(provider_env.clone(), None, &cwd, false), Some(mixed.clone()));
+    let connection = crate::connections::Connection {
+        id: "work".into(),
+        provider: "claude".into(),
+        name: "Work".into(),
+        env: std::collections::BTreeMap::from([("claude_config_dir".to_string(), text(&lower))]),
+        ..Default::default()
+    };
+    // The connection's variables come after the saved environment, so the last one wins.
+    assert_eq!(claude_config_dir_from_with(provider_env.clone(), Some(&connection), &cwd, true), Some(lower.clone()));
+    let relative = crate::connections::Connection {
+        env: std::collections::BTreeMap::from([("CLAUDE_config_DIR".to_string(), "rel".to_string())]),
+        ..connection.clone()
+    };
+    assert_eq!(claude_config_dir_from_with(provider_env, Some(&relative), &cwd, true), Some(cwd.join("rel")));
 }
 
 #[test]

@@ -128,15 +128,9 @@ pub(super) fn claude_restricts_reads_with(
 }
 
 pub(super) fn host_managed_settings_restrict_reads() -> bool {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
-        managed_settings_restrict_reads(Some(Path::new(
-            "/Library/Application Support/ClaudeCode/managed-settings.json",
-        )))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        managed_settings_restrict_reads(Some(Path::new("/etc/claude-code/managed-settings.json")))
+        managed_settings_restrict_reads(host_managed_settings_path().as_deref())
     }
     #[cfg(windows)]
     {
@@ -190,39 +184,90 @@ pub(super) fn read_deny_rules(config_dir: &Path, cwd: &Path, home_settings: Opti
     if SETTINGS_FILES.iter().any(|name| file_restricts_reads(&config_dir.join(name))) {
         return true;
     }
-    let mut root = cwd;
-    for ancestor in cwd.ancestors() {
-        match std::fs::symlink_metadata(ancestor.join(".git")) {
-            Ok(_) => { root = ancestor; break; }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(_) => return read_settings_warning("unreadable project root"),
-        }
-    }
-    for ancestor in cwd.ancestors() {
+    let roots = project_config_roots(cwd);
+    for ancestor in &roots.ancestors {
         let project = ancestor.join(".claude");
         if project != config_dir && home_settings != Some(project.as_path())
             && SETTINGS_FILES.iter().any(|name| file_restricts_reads(&project.join(name)))
         {
             return true;
         }
-        if ancestor == root {
-            break;
-        }
     }
-    let main_root = match linked_worktree_main_root(root) {
-        Ok(Some(main_root)) => main_root,
-        Ok(None) => return false,
-        Err(reason) => return read_settings_warning(reason),
-    };
+    if let Some(reason) = roots.error {
+        return read_settings_warning(reason);
+    }
+    let Some(main_root) = roots.main_worktree else { return false };
     let project = main_root.join(".claude");
     let checked = |dir: &Path| same_settings_directory(&project, dir);
-    if checked(config_dir) || home_settings.is_some_and(checked)
-        || cwd.ancestors().take_while(|ancestor| ancestor.starts_with(root))
-            .any(|ancestor| checked(&ancestor.join(".claude")))
-    {
+    if checked(config_dir) || home_settings.is_some_and(checked) {
         return false;
     }
     file_restricts_reads(&project.join("settings.local.json"))
+}
+
+/// The project folders whose Claude Code settings, memory and rules apply to a launch in `cwd`.
+pub(crate) struct ProjectConfigRoots {
+    /// Directories from `cwd` up to the nearest `.git` root (inclusive), or just `[cwd]` outside a repo.
+    pub(crate) ancestors: Vec<PathBuf>,
+    /// For a linked worktree, the main checkout root (omitted if already covered by `ancestors`).
+    pub(crate) main_worktree: Option<PathBuf>,
+    /// Non-NotFound error while probing `.git` or linked worktree metadata, if any.
+    pub(crate) error: Option<&'static str>,
+}
+
+/// `cwd` through the nearest repository root and, for a linked worktree, its main checkout
+/// (shared by `read_deny_rules` and the warm key). A `.git` probe that fails stops the walk at
+/// that folder and reports the error.
+pub(crate) fn project_config_roots(cwd: &Path) -> ProjectConfigRoots {
+    let mut ancestors = Vec::new();
+    let mut root = None;
+    for ancestor in cwd.ancestors() {
+        ancestors.push(ancestor.to_path_buf());
+        match std::fs::symlink_metadata(ancestor.join(".git")) {
+            Ok(_) => {
+                root = Some(ancestor);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return ProjectConfigRoots { ancestors, main_worktree: None, error: Some("unreadable project root") },
+        }
+    }
+    let Some(root) = root else {
+        return ProjectConfigRoots { ancestors: vec![cwd.to_path_buf()], main_worktree: None, error: None };
+    };
+    let (main_worktree, error) = match linked_worktree_main_root(root) {
+        Ok(main_root) => (main_root, None),
+        Err(reason) => (None, Some(reason)),
+    };
+    let covered = |main_root: &PathBuf| ancestors.iter().any(|ancestor| {
+        same_settings_directory(main_root, ancestor)
+            || same_settings_directory(&main_root.join(".claude"), &ancestor.join(".claude"))
+    });
+    let main_worktree = main_worktree.filter(|main_root| !covered(main_root));
+    ProjectConfigRoots { ancestors, main_worktree, error }
+}
+
+/// Where this host keeps Claude Code's enterprise `managed-settings.json` (its drop-in folder is
+/// the sibling `managed-settings.d`), or `None` when unknown.
+pub(crate) fn host_managed_settings_path() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(PathBuf::from("/Library/Application Support/ClaudeCode/managed-settings.json"))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(PathBuf::from("/etc/claude-code/managed-settings.json"))
+    }
+    #[cfg(windows)]
+    {
+        std::env::var_os("PROGRAMDATA")
+            .filter(|value| !value.is_empty())
+            .map(|value| PathBuf::from(value).join("ClaudeCode").join("managed-settings.json"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        None
+    }
 }
 
 pub(super) fn same_settings_directory(left: &Path, right: &Path) -> bool {

@@ -57,8 +57,15 @@ pub(super) fn key_with_disabled(
 }
 
 /// Project-scoped files under the working folder that Claude Code reads at startup.
-const PROJECT_CLAUDE_FILES: [&str; 6] =
-    [".mcp.json", ".claude/settings.json", ".claude/settings.local.json", "CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"];
+const PROJECT_CLAUDE_FILES: [&str; 7] = [
+    ".mcp.json",
+    ".claude/settings.json",
+    ".claude/settings.local.json",
+    "CLAUDE.md",
+    "CLAUDE.local.md",
+    ".claude/CLAUDE.md",
+    "AGENTS.md",
+];
 /// Project-scoped folders of rules, agents, commands and skills Claude Code loads at startup.
 const PROJECT_CLAUDE_DIRS: [&str; 4] = [".claude/rules", ".claude/agents", ".claude/commands", ".claude/skills"];
 /// User-scoped files under the effective Claude config folder. Never `~/.claude.json`: Claude
@@ -78,18 +85,52 @@ fn claude_config_fingerprint(config: &RunConfig) -> Vec<Value> {
     claude_config_fingerprint_in(&config.cwd, user_dir.as_deref())
 }
 
-/// Metadata only (never contents) of the Claude config files and folders under `cwd` and
-/// `user_dir`, so a spare started before one was created, edited or removed is never adopted.
+/// Metadata only (never contents) of the Claude config files and folders for a launch in `cwd`
+/// (every folder up to the repository root, a linked worktree's main checkout, `user_dir` and
+/// the host's managed settings), so a spare started before one was created, edited or removed
+/// is never adopted.
 pub(super) fn claude_config_fingerprint_in(cwd: &Path, user_dir: Option<&Path>) -> Vec<Value> {
-    let project_files = PROJECT_CLAUDE_FILES.iter().map(|name| config_file_stamp(&cwd.join(name)));
-    let project_dirs = PROJECT_CLAUDE_DIRS.iter().map(|name| config_dir_stamp(&cwd.join(name)));
+    let home_claude = dirs::home_dir().map(|home| home.join(".claude"));
+    let managed = crate::turn_changes::host_managed_settings_path();
+    claude_config_fingerprint_with(cwd, user_dir, home_claude.as_deref(), managed.as_deref())
+}
+
+/// `claude_config_fingerprint_in` with the home `.claude` folder and managed settings given.
+fn claude_config_fingerprint_with(
+    cwd: &Path,
+    user_dir: Option<&Path>,
+    home_claude: Option<&Path>,
+    managed: Option<&Path>,
+) -> Vec<Value> {
+    let roots = crate::turn_changes::project_config_roots(cwd);
+    // A project's `.claude` that is the user folder (a repository rooted at home) is stamped as
+    // the user folder only, as `read_deny_rules` does, even when CLAUDE_CONFIG_DIR moved it.
+    let project = |root: &Path| {
+        let claude = root.join(".claude");
+        let skip_claude = user_dir == Some(claude.as_path()) || home_claude == Some(claude.as_path());
+        let files = PROJECT_CLAUDE_FILES
+            .iter()
+            .map(|name| if skip_claude && name.starts_with(".claude/") { Value::Null } else { config_file_stamp(&root.join(name)) });
+        let dirs = PROJECT_CLAUDE_DIRS
+            .iter()
+            .map(|name| if skip_claude { Value::Null } else { config_dir_stamp(&root.join(name)) });
+        let mut stamp = vec![json!(root.to_string_lossy())];
+        stamp.extend(files.chain(dirs));
+        Value::Array(stamp)
+    };
+    let projects = roots.ancestors.iter().chain(roots.main_worktree.as_ref()).map(|root| project(root.as_path()));
     let user_files = USER_CLAUDE_FILES
         .iter()
         .map(|name| user_dir.map_or(Value::Null, |dir| config_file_stamp(&dir.join(name))));
     let user_dirs = USER_CLAUDE_DIRS
         .iter()
         .map(|name| user_dir.map_or(Value::Null, |dir| config_dir_stamp(&dir.join(name))));
-    project_files.chain(project_dirs).chain(user_files).chain(user_dirs).collect()
+    let managed = [
+        managed.map_or(Value::Null, config_file_stamp),
+        managed.map_or(Value::Null, |path| config_dir_stamp(&path.with_extension("d"))),
+    ];
+    let error = json!(roots.error);
+    projects.chain(user_files).chain(user_dirs).chain(managed).chain([error]).collect()
 }
 
 /// The Claude config folder this task's process starts with: the saved environment, then the
@@ -107,6 +148,17 @@ pub(super) fn claude_config_dir_from(
     connection: Option<&Connection>,
     cwd: &Path,
 ) -> Option<PathBuf> {
+    claude_config_dir_from_with(provider_env, connection, cwd, cfg!(windows))
+}
+
+/// `claude_config_dir_from`, matching variable names case-insensitively when `ignore_case`
+/// (Windows environment names are).
+pub(super) fn claude_config_dir_from_with(
+    provider_env: Vec<(String, String)>,
+    connection: Option<&Connection>,
+    cwd: &Path,
+    ignore_case: bool,
+) -> Option<PathBuf> {
     let mut env = provider_env;
     if let Some(connection) = connection {
         env.extend(connection.env.iter().map(|(name, value)| (name.clone(), value.clone())));
@@ -118,10 +170,31 @@ pub(super) fn claude_config_dir_from(
             env.push((CLAUDE_CONFIG_DIR.into(), dir.clone()));
         }
     }
-    match crate::account_config::var(&env, CLAUDE_CONFIG_DIR).filter(|value| !value.is_empty()) {
-        Some(dir) if Path::new(&dir).is_relative() => Some(cwd.join(dir)),
-        _ => crate::account_config::config_dir("claude", &env),
-    }
+    claude_config_dir_in(&env, cwd, ignore_case)
+}
+
+/// The config folder `env` (then this process's environment) selects. A leading `~` expands to
+/// the home folder and a relative folder resolves against `cwd`.
+fn claude_config_dir_in(env: &[(String, String)], cwd: &Path, ignore_case: bool) -> Option<PathBuf> {
+    let value = env_lookup(env, CLAUDE_CONFIG_DIR, ignore_case).or_else(|| std::env::var(CLAUDE_CONFIG_DIR).ok());
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return crate::account_config::home(env).map(|home| home.join(".claude"));
+    };
+    let tilde = value.strip_prefix('~').filter(|rest| rest.is_empty() || rest.starts_with('/') || (cfg!(windows) && rest.starts_with('\\')));
+    let dir = match tilde {
+        Some(rest) => crate::account_config::home(env)?.join(rest.trim_start_matches(['/', '\\'])),
+        None => PathBuf::from(&value),
+    };
+    Some(if dir.is_relative() { cwd.join(dir) } else { dir })
+}
+
+/// The last value of `name` in `env`, as `account_config::var` reads it (without the process
+/// fallback), comparing names case-insensitively when `ignore_case`.
+fn env_lookup(env: &[(String, String)], name: &str, ignore_case: bool) -> Option<String> {
+    env.iter()
+        .rev()
+        .find(|(key, _)| if ignore_case { key.eq_ignore_ascii_case(name) } else { key == name })
+        .map(|(_, value)| value.clone())
 }
 
 fn metadata_stamp(meta: &std::fs::Metadata) -> Value {
@@ -147,7 +220,8 @@ fn config_file_stamp(path: &Path) -> Value {
 
 /// A config folder's own metadata and, sorted by relative path, that of every entry up to
 /// `CONFIG_WALK_DEPTH` levels and `CONFIG_WALK_ENTRIES` entries deep, plus `"capped"` when
-/// the walk stopped early. Never opens a file and never descends a symlinked folder.
+/// the walk stopped early. Never opens a file; a symlinked folder is walked (so editing a linked
+/// skill counts) unless its target was already visited, so a link loop cannot recurse.
 pub(super) fn config_dir_stamp(root: &Path) -> Value {
     let meta = match std::fs::metadata(root) {
         Ok(meta) => meta,
@@ -158,7 +232,8 @@ pub(super) fn config_dir_stamp(root: &Path) -> Value {
         return metadata_stamp(&meta);
     }
     let mut entries = Vec::new();
-    let complete = walk_config_dir(root, "", 1, &mut entries);
+    let mut visited: std::collections::HashSet<PathBuf> = root.canonicalize().into_iter().collect();
+    let complete = walk_config_dir(root, "", 1, &mut entries, &mut visited);
     entries.sort_by(|a, b| a.0.cmp(&b.0));
     let mut stamp = vec![metadata_stamp(&meta)];
     stamp.extend(entries.into_iter().map(|(relative, entry)| json!([relative, entry])));
@@ -169,7 +244,13 @@ pub(super) fn config_dir_stamp(root: &Path) -> Value {
 }
 
 /// Collects `(relative path, stamp)` for `dir`'s entries in name order; false once capped.
-fn walk_config_dir(dir: &Path, relative: &str, depth: usize, entries: &mut Vec<(String, Value)>) -> bool {
+fn walk_config_dir(
+    dir: &Path,
+    relative: &str,
+    depth: usize,
+    entries: &mut Vec<(String, Value)>,
+    visited: &mut std::collections::HashSet<PathBuf>,
+) -> bool {
     let mut names: Vec<std::ffi::OsString> = match std::fs::read_dir(dir) {
         Ok(read) => read.filter_map(|entry| entry.ok().map(|entry| entry.file_name())).collect(),
         Err(error) => {
@@ -192,12 +273,21 @@ fn walk_config_dir(dir: &Path, relative: &str, depth: usize, entries: &mut Vec<(
                 continue;
             }
         };
-        // A symlinked file is stamped by its target, so editing the target counts; a symlinked
-        // folder is never walked, so a link loop cannot recurse.
+        // A symlink is stamped by its target, so editing the target counts. A symlinked folder
+        // is walked only when its target was not visited yet, so a link loop cannot recurse.
         let symlink = link.file_type().is_symlink();
-        let stamp = if symlink { std::fs::metadata(&path).map_or_else(|_| metadata_stamp(&link), |meta| metadata_stamp(&meta)) } else { metadata_stamp(&link) };
-        entries.push((child.clone(), stamp));
-        if !symlink && link.is_dir() && depth < CONFIG_WALK_DEPTH && !walk_config_dir(&path, &child, depth + 1, entries) {
+        let target = if symlink { std::fs::metadata(&path).ok() } else { None };
+        entries.push((child.clone(), metadata_stamp(target.as_ref().unwrap_or(&link))));
+        let is_dir = target.as_ref().map_or(link.is_dir(), std::fs::Metadata::is_dir);
+        if !is_dir || depth >= CONFIG_WALK_DEPTH {
+            continue;
+        }
+        let canonical = path.canonicalize();
+        let descend = match canonical {
+            Ok(canonical) => visited.insert(canonical) || !symlink,
+            Err(_) => !symlink,
+        };
+        if descend && !walk_config_dir(&path, &child, depth + 1, entries, visited) {
             return false;
         }
     }

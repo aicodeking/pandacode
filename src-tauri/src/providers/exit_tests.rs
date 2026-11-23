@@ -317,7 +317,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
     let stdin = child.stdin.take().unwrap();
     let mut group = ProcessGroup::register(Some(pid));
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), exit::ExitEntry { exiting, cwd: None });
+    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None }]);
     let (release, gate) = tokio::sync::oneshot::channel();
     let reaper = tokio::spawn(async move {
         gate.await.unwrap();
@@ -343,7 +343,7 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
 async fn a_hard_cap_fails_without_clearing_the_exit_registration() {
     let session = "exit-hard-cap";
     let (done, exiting) = tokio::sync::watch::channel(());
-    exit_registry().lock().unwrap().insert(session.into(), exit::ExitEntry { exiting, cwd: None });
+    exit_registry().lock().unwrap().insert(session.into(), vec![exit::ExitEntry { exiting, cwd: None }]);
     let error = await_exit_with_cap(session, Duration::ZERO).await.unwrap_err();
     assert!(error.contains("still shutting down"), "{error}");
     assert!(exit_registry().lock().unwrap().contains_key(session));
@@ -351,6 +351,36 @@ async fn a_hard_cap_fails_without_clearing_the_exit_registration() {
     drop(done);
     await_exit_with_cap(session, Duration::from_secs(5)).await.unwrap();
     exit_registry().lock().unwrap().remove(session);
+}
+
+/// A newer pending exit of the same session in another folder must not hide the older one:
+/// a wait on the older folder still lasts until that exit is gone.
+#[tokio::test]
+async fn a_newer_exit_in_another_folder_keeps_the_older_cwd() {
+    let base = std::env::temp_dir().join(format!("pandacode-exit-cwds-{}", uuid::Uuid::new_v4().simple()));
+    let (old_dir, new_dir) = (base.join("old"), base.join("new"));
+    std::fs::create_dir_all(&old_dir).unwrap();
+    std::fs::create_dir_all(&new_dir).unwrap();
+    let session = format!("exit-cwds-{}", uuid::Uuid::new_v4().simple());
+    let hold_old = exit::hold_in_cwd_for_test(&session, old_dir.clone());
+    let hold_new = exit::hold_in_cwd_for_test(&session, new_dir.clone());
+    let mut cwds: Vec<_> = pending_exits().into_iter().filter(|(id, _)| *id == session).filter_map(|(_, cwd)| cwd).collect();
+    cwds.sort();
+    let mut expected = vec![old_dir.clone(), new_dir.clone()];
+    expected.sort();
+    assert_eq!(cwds, expected, "each pending exit keeps its own cwd");
+    let waiter = tokio::spawn({
+        let old_dir = old_dir.clone();
+        async move { await_exits_in(&old_dir).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiter.is_finished(), "returned while the old folder's exit was pending");
+    drop(hold_old);
+    tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("waiter should end with the old exit").unwrap().unwrap();
+    drop(hold_new);
+    tokio::time::timeout(Duration::from_secs(5), await_exit(&session)).await.unwrap().unwrap();
+    assert!(!exit_registry().lock().unwrap().contains_key(&session), "the last exit clears the session");
+    let _ = std::fs::remove_dir_all(base);
 }
 
 #[tokio::test]
@@ -387,7 +417,7 @@ fn local_registry(entries: &[(&str, tokio::sync::watch::Receiver<()>)]) -> exit:
     std::sync::Mutex::new(
         entries
             .iter()
-            .map(|(session, exiting)| (session.to_string(), exit::ExitEntry { exiting: exiting.clone(), cwd: None }))
+            .map(|(session, exiting)| (session.to_string(), vec![exit::ExitEntry { exiting: exiting.clone(), cwd: None }]))
             .collect(),
     )
 }
@@ -434,7 +464,7 @@ async fn await_all_exits_waits_for_an_exit_registered_meanwhile() {
         async move { exit::wait_all(&registry, Duration::from_secs(30)).await }
     });
     let (second, b) = tokio::sync::watch::channel(());
-    registry.lock().unwrap().insert("b".into(), exit::ExitEntry { exiting: b, cwd: None });
+    registry.lock().unwrap().insert("b".into(), vec![exit::ExitEntry { exiting: b, cwd: None }]);
     drop(first);
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(!waiting.is_finished(), "returned before the later exit finished");

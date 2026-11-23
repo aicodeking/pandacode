@@ -246,14 +246,14 @@ pub fn supported(config: &RunConfig) -> bool {
     config.provider == "claude" && config.goal.is_none() && config.skill.is_none()
 }
 
-/// The warm agent for this turn, if one exists, is still running and was started for
-/// exactly this launch. Any other warm agent for the task is discarded.
 /// Every launch of the task counts, with or without a spare to adopt.
 pub(crate) fn launched(session_id: &str) {
     let launch = NEXT_LAUNCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), launch);
 }
 
+/// The warm agent for this turn, if one exists, is still running and was started for
+/// exactly this launch. Any other warm agent for the task is discarded.
 pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
     // Re-read after the caller awaited its key: the user may have switched spares off meanwhile.
     if !enabled_now() {

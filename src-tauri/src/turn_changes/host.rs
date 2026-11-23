@@ -11,7 +11,9 @@ mod claude_policy;
 pub(crate) use claude_policy::edits_wait_for_approval;
 #[cfg(test)]
 use claude_policy::*;
-pub(crate) use claude_policy::{claude_restricts_reads, edits_wait_for_run};
+pub(crate) use claude_policy::{
+    claude_restricts_reads, edits_wait_for_run, host_managed_settings_path, project_config_roots,
+};
 
 /// The tracking instruction, the same for every run: every edit batch, native tools included,
 /// begins a capture first, which is correct whether or not native edits wait for approval.
