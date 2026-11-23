@@ -16,6 +16,7 @@ pub(crate) mod watchdog;
 pub use council::{CouncilConfig, CouncilSeat, CouncilStatus};
 
 use crate::{
+    message_queue,
     providers::ToolHost,
     storage::{self, MessagePage, Store},
     AppState, Result, RunInput,
@@ -2451,6 +2452,17 @@ struct Launch {
     images: Option<Vec<String>>,
     admission: Admission,
 }
+struct ScheduledLaunch {
+    launch: Launch,
+    queue_changed: bool,
+}
+
+const QUEUED_USER_HEADER: &str = "Queued user messages in queue order. Follow these new instructions before acting on the worker reports.\n\n";
+const QUEUED_USER_LABEL: &str = "User message:\n";
+const QUEUED_USER_END: &str = "PandaCode coordination:\n\n";
+// Leave room for the encoded coordination envelope as well as the raw prompt.
+const QUEUED_WAKE_LIMIT: usize = 120 * 1024;
+
 /// Reserves an architect turn that PandaCode starts itself and saves the team, unless that many turns
 /// in a row made no progress: then it pauses the team, so nothing spends tokens unattended forever.
 /// Only reached at the limit with nothing running: `team_action` holds wakes while workers run, so the
@@ -2461,7 +2473,7 @@ fn wake_lead(
     prompt: String,
     kind: internal_turns::CoordinationKind,
     notify: &mut impl FnMut(&TeamSnapshot),
-) -> Result<Option<Launch>> {
+) -> Result<Option<ScheduledLaunch>> {
     if team.stalled_wakes >= MAX_STALLED_WAKES {
         team.status = "paused".into();
         team.generation += 1;
@@ -2475,6 +2487,39 @@ fn wake_lead(
         return Ok(None);
     }
     keep_objective_note(store, team)?;
+    // The queue, user transcript rows and reserved wake must commit together. Early failure
+    // and coordination wakes while workers are still active do not collect queued messages.
+    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut steering = String::new();
+    let entries = if matches!(kind, internal_turns::CoordinationKind::WorkerReview | internal_turns::CoordinationKind::Continue) {
+        let budget = QUEUED_WAKE_LIMIT.saturating_sub(prompt.len() + QUEUED_USER_HEADER.len() + QUEUED_USER_END.len());
+        message_queue::take_all_ready(&transaction, &team.session_id, |entry| {
+            // Normal queue delivery resolves attachments and slash commands. Keep these entries
+            // and everything after them in place, including text that cannot fit this wake.
+            let bytes = QUEUED_USER_LABEL.len() + entry.text.len() + 2;
+            if !entry.attachments.as_array().is_some_and(Vec::is_empty)
+                || crate::slash_commands::split_command(&entry.text).is_some()
+                || bytes > budget.saturating_sub(steering.len())
+            {
+                return false;
+            }
+            steering.push_str(QUEUED_USER_LABEL);
+            steering.push_str(&entry.text);
+            steering.push_str("\n\n");
+            true
+        })?
+    } else {
+        Vec::new()
+    };
+    let queue_changed = !entries.is_empty();
+    let prompt = if queue_changed {
+        for entry in &entries {
+            store.message(&team.session_id, "user", &entry.text)?;
+        }
+        format!("{QUEUED_USER_HEADER}{steering}{QUEUED_USER_END}{prompt}")
+    } else {
+        prompt
+    };
     team.stalled_wakes += 1;
     team.pending_turn = Some(PendingTurn {
         prompt: prompt.clone(),
@@ -2483,7 +2528,7 @@ fn wake_lead(
         reserved_at: storage::now(),
         kind: Some(kind),
     });
-    let action = Launch {
+    let launch = Launch {
         sid: team.session_id.clone(),
         prompt,
         images: None,
@@ -2493,8 +2538,12 @@ fn wake_lead(
         },
     };
     save(store, team)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    if queue_changed {
+        message_queue::record_deliveries(&team.session_id, entries.len() as i64);
+    }
     notify(team);
-    Ok(Some(action))
+    Ok(Some(ScheduledLaunch { launch, queue_changed }))
 }
 fn eligible(team: &TeamSnapshot, index: usize) -> bool {
     let worker = &team.workers[index];
@@ -2569,12 +2618,25 @@ fn fail_blocked(team: &mut TeamSnapshot, direct: bool) -> bool {
     changed
 }
 fn next_action(app: &tauri::AppHandle) -> Result<Option<Launch>> {
-    next_action_state(&app.state::<AppState>(), &mut |team| emit(app, team))
+    let action = next_scheduled_launch(&app.state::<AppState>(), &mut |team| emit(app, team))?;
+    Ok(action.map(|scheduled| {
+        if scheduled.queue_changed {
+            let _ = app.emit("queue-changed", json!({"sessionId": scheduled.launch.sid}));
+        }
+        scheduled.launch
+    }))
 }
+#[cfg(test)]
 fn next_action_state(
     state: &AppState,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) -> Result<Option<Launch>> {
+    Ok(next_scheduled_launch(state, notify)?.map(|scheduled| scheduled.launch))
+}
+fn next_scheduled_launch(
+    state: &AppState,
+    notify: &mut impl FnMut(&TeamSnapshot),
+) -> Result<Option<ScheduledLaunch>> {
     let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Ok(None);
@@ -2626,7 +2688,7 @@ fn team_action<'a>(
     roots: &std::cell::OnceCell<std::collections::HashMap<&'a str, std::path::PathBuf>>,
     original: &TeamSnapshot,
     notify: &mut impl FnMut(&TeamSnapshot),
-) -> Result<Option<Launch>> {
+) -> Result<Option<ScheduledLaunch>> {
     let mut team = original.clone();
     // One team's missing folder or bad setup must not stop scheduling for every other team.
     let mut folder_step = false;
@@ -2710,7 +2772,7 @@ fn team_action<'a>(
             };
             save(store, &mut team)?;
             notify(&team);
-            return Ok(Some(action));
+            return Ok(Some(ScheduledLaunch { launch: action, queue_changed: false }));
         }
     }
     if !agents.contains_key(&team.session_id) {
@@ -2731,7 +2793,7 @@ fn team_action<'a>(
             };
             save(store, &mut team)?;
             notify(&team);
-            return Ok(Some(action));
+            return Ok(Some(ScheduledLaunch { launch: action, queue_changed: false }));
         }
     }
     // At the no-progress limit, wakes wait while workers run: they stay due, and a completion resets
@@ -2844,11 +2906,12 @@ fn team_action<'a>(
         }
         if team.dispatch_revision <= team.reviewed_revision {
             // The second stop below the target asks the user.
-            if let Some(refusal) = council::finish_refusal(&team).filter(|_| council::asks_user(&team)) {
-                return settle_asking(store, &mut team, refusal, notify);
-            }
             let refusal = council::finish_refusal(&team);
-            return pause_refused(store, &mut team, refusal.as_deref(), notify);
+            match refusal {
+                Some(refusal) if council::asks_user(&team) => settle_asking(store, &mut team, refusal, notify)?,
+                refusal => pause_refused(store, &mut team, refusal.as_deref(), notify)?,
+            }
+            return Ok(None);
         }
         team.round += 1;
         team.status = "running".into();
@@ -2981,7 +3044,7 @@ fn retry_lead(team: &mut TeamSnapshot, provider_error: Option<&str>) {
 const EFFORT_NOTE: &str = "Effort:";
 /// Pauses a team whose lead stopped twice without dispatching or finishing; when Council refused its
 /// finish, the user sees why.
-fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<Option<Launch>> {
+fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<()> {
     team.status = "paused".into();
     team.error = Some(match refusal {
         Some(refusal) => format!("The architect ended without dispatching work or finishing. {refusal} Resume to continue."),
@@ -2989,7 +3052,7 @@ fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, 
     });
     save(store, team)?;
     notify(team);
-    Ok(None)
+    Ok(())
 }
 /// Queues one lead turn the scheduler starts, for a team resting while its lead asked the user.
 fn lift_turn(store: &Store, team: &mut TeamSnapshot, ask: &str) -> Result<()> {
@@ -3002,13 +3065,13 @@ fn lift_turn(store: &Store, team: &mut TeamSnapshot, ask: &str) -> Result<()> {
 }
 /// Rests a team whose lead ended its turn on a round below the target: it asks the user, who can
 /// lower the target, turn Council off, or say to keep going.
-fn settle_asking(store: &Store, team: &mut TeamSnapshot, refusal: String, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<Option<Launch>> {
+fn settle_asking(store: &Store, team: &mut TeamSnapshot, refusal: String, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<()> {
     team.status = "ready".into();
     team.error = Some(refusal);
     team.timed_out = false;
     save(store, team)?;
     notify(team);
-    Ok(None)
+    Ok(())
 }
 /// The lead's edits in the turn that called finish_team are recorded only when that turn ends. If they
 /// leave changes no passing round covers, the team goes back to waiting with the refusal, and the
