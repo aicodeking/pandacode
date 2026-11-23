@@ -146,7 +146,10 @@ test('MCP: input key/values and JSON records as reference rows with +N more', ()
   assert.match(html, /<dt>team<\/dt><dd>ENG<\/dd>/);
   assert.equal(count(html, 'class="tc-row"'), 6);
   assert.match(html, /\+3 more/);
-  assert.match(html, /tc-row-time">Oct 28</);
+  // The row time is the record's own date in the user's locale ("Oct 28", "28 Oct"), so it is
+  // formatted here the same way rather than pinned to one locale's order.
+  const updated = new Date('2024-10-28T08:12:00Z').toLocaleDateString([], { month: 'short', day: 'numeric' });
+  assert.ok(html.includes(`tc-row-time">${updated}`), `the row time shows ${updated}`);
   assert.match(html, /Body 0/);
   assert.match(richCard(tool('mcp__x__get', {}, { a: 1, nested: { b: 2 } })), /<dt>nested<\/dt><dd>1 field<\/dd>/);
   // Docs-style results with only a title and a link use the link as the meta.

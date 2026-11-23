@@ -6,13 +6,20 @@ import assert from 'node:assert/strict';
 process.env.TZ = 'UTC';
 
 // The pure half of crash recovery: what the native answer means and what the notice says.
-const { parseCrashRecovery, plainCause, crashTime, crashNotice, anyInterruptedByCrash, interruptedByCrash, INTERRUPTED_WINDOW, INTERRUPTED_LINE, INTERRUPTED_SHORT, REPORT_LINE, PAUSED_LEAD, pausedLine, resumeTime, notRestartedLead, RESTARTS_OFF_LINE, TITLE_LIMIT, NOTICE_LIMIT, MIN_TITLE, RESUME_WINDOW, WINDOW_RELOADED_LINE, WINDOW_RELOADED_AGAIN_LINE, WINDOW_STOPPED_BEFORE_LINE, NOTHING_OPENED_LINE, NO_THREAD_OPENED, pausedLead, untilNextDay, heldBackLine, shortTitle, reloadNotice, openThreadName, OPEN_THREAD, RESTARTS_BACK_LINE, AGENTS_STOPPED_LINE, REPORT_SHORT, PAUSED_REPORT_LINE, PAUSED_REPORT_SHORT, PAUSED_NOTICE_LIMIT, RESUMED_NOTICE_LIMIT, keptClosedLine, resumesAt } = await import('../src/crash-recovery-model.ts');
+const { parseCrashRecovery, plainCause, crashTime: crashTimeIn, crashNotice: crashNoticeIn, anyInterruptedByCrash, interruptedByCrash, INTERRUPTED_WINDOW, INTERRUPTED_LINE, INTERRUPTED_SHORT, REPORT_LINE, PAUSED_LEAD, pausedLine, resumeTime: resumeTimeIn, notRestartedLead, RESTARTS_OFF_LINE, TITLE_LIMIT, NOTICE_LIMIT, MIN_TITLE, RESUME_WINDOW, WINDOW_RELOADED_LINE, WINDOW_RELOADED_AGAIN_LINE, WINDOW_STOPPED_BEFORE_LINE, NOTHING_OPENED_LINE, NO_THREAD_OPENED, pausedLead, untilNextDay, heldBackLine, shortTitle, reloadNotice, openThreadName, OPEN_THREAD, RESTARTS_BACK_LINE, AGENTS_STOPPED_LINE, REPORT_SHORT, PAUSED_REPORT_LINE, PAUSED_REPORT_SHORT, PAUSED_NOTICE_LIMIT, RESUMED_NOTICE_LIMIT, keptClosedLine, resumesAt } = await import('../src/crash-recovery-model.ts');
 
 const NOW = Date.UTC(2026, 10, 11, 12, 0, 0);
+// The notice trims to a character limit, and a clock time's width depends on the locale (12-hour
+// "2:58 PM" against 24-hour "14:58"), so the texts below are checked in one: en-US, whatever the
+// machine formats with. Tests that check another locale pass it explicitly.
+const crashNotice = (recovery, now, context = {}) => crashNoticeIn(recovery, now, { locale: 'en-US', ...context });
+const crashTime = (at, now, locale = 'en-US') => crashTimeIn(at, now, locale);
+const resumeTime = (crashedAt, now, locale = 'en-US') => resumeTimeIn(crashedAt, now, locale);
+
 /** The notice's time for a crash `ago` ms before NOW. */
-const at = (ago = 5_000) => crashTime(NOW - ago, NOW);
+const at = (ago = 5_000) => crashTime(NOW - ago, NOW, 'en-US');
 /** The paused closing line for a crash `ago` ms before NOW. */
-const resume = (ago = 60_000) => pausedLine(resumeTime(NOW - ago, NOW));
+const resume = (ago = 60_000) => pausedLine(resumeTime(NOW - ago, NOW, 'en-US'));
 /** The limit a notice for `r` must keep: paused notices have their own. */
 const limitOf = r => resumedAt(r) ? RESUMED_NOTICE_LIMIT : r?.restartsPaused ? PAUSED_NOTICE_LIMIT : NOTICE_LIMIT;
 /** A paused notice past RESUME_WINDOW: restarts are on again. */
@@ -79,6 +86,10 @@ test('the crash time is a clock time, with the date when it was not today and th
   assert.equal(crashTime(new Date(2026, 10, 12, 14, 32).getTime(), now, 'en-GB'), 'at 14:32');
   assert.equal(crashTime(new Date(2026, 10, 11, 23, 59).getTime(), now, 'en-US'), 'on Nov 11 at 11:59 PM');
   assert.equal(crashTime(new Date(2025, 10, 3, 9, 0).getTime(), now, 'en-GB'), 'on 3 Nov 2025 at 9:00');
+  // The notice writes the time in the locale it is given, else the user's.
+  const crashedAt = new Date(2026, 10, 12, 14, 32).getTime();
+  assert.match(crashNotice(recovery({ crashedAt }), now, { interrupted: false, locale: 'en-GB' }).text, /at 14:32/);
+  assert.match(crashNotice(recovery({ crashedAt }), now, { interrupted: false, locale: 'en-US' }).text, /at 2:32 PM/);
   // It never goes stale: the same words an hour or a day later.
   const later = crashNotice(recovery({ crashedAt: now - 60_000 }), now + 60 * 60_000, quiet).text;
   assert.equal(later, crashNotice(recovery({ crashedAt: now - 60_000 }), now, quiet).text);
