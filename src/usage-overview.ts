@@ -9,7 +9,7 @@ export interface AgentLimit { provider: ProviderId; name: string; peak: number |
 export type CostState = { kind: 'pending' } | { kind: 'error'; message: string } | { kind: 'ready'; summary: Summary; tracked: ProviderId[]; pricing: string };
 
 const percent = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
-const TRACKED_LOGS = 'Claude Code and Codex';
+const TRACKED_LOGS = 'Claude Code, Codex, and Pi';
 
 export function tone(value: number): 'exhausted' | 'high' | 'normal' { return value >= 95 ? 'exhausted' : value >= 80 ? 'high' : 'normal'; }
 
@@ -91,7 +91,7 @@ export function renderCostDetails(host: HTMLElement, cost: CostState, names: (id
   if (cost.kind !== 'ready') { host.replaceChildren(); return; }
   const { summary } = cost;
   if (!summary.totals.tokens) {
-    host.innerHTML = `<p class="usage-cost-empty">${cost.tracked.length ? `No ${TRACKED_LOGS} usage in this period.` : `No ${TRACKED_LOGS} logs were found on this computer.`}</p>`;
+    host.innerHTML = `<p class="usage-cost-empty">${cost.tracked.length ? 'No usage from tracked agents in this period.' : `No local usage logs were found for ${TRACKED_LOGS}.`}</p>`;
     return;
   }
   const chart = document.createElement('section'); chart.className = 'usage-section usage-chart-section';

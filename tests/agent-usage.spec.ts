@@ -90,7 +90,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
     `) });
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
+  await expect(usageButton(page)).toBeEnabled();
 }
 
 async function openUsage(page: Page): Promise<void> {
@@ -692,6 +692,31 @@ test('Agent usage estimates API cost by range, agent, model, and day from local 
   await page.keyboard.press('ArrowRight');
   await expect(tab(page, 'OpenCode')).toBeFocused();
   await expect(card(page, 'OpenCode')).toContainText('No activity recorded for this agent yet.');
+});
+
+test('Agent usage names Pi among the logs used for estimates', async ({ page }, testInfo) => {
+  await openApp(page);
+  await page.evaluate(() => {
+    const ledger = (window as any).__usageFixture.ledger;
+    ledger.sources = [];
+    ledger.rows = [];
+    ledger.sessions = [];
+  });
+  await openUsage(page);
+  await expect(tab(page, 'Overview')).toBeVisible({ timeout: 20_000 });
+  await expect(dialog(page).locator('.usage-cost-empty')).toHaveText('No local usage logs were found for Claude Code, Codex, and Pi.');
+  await expect(dialog(page).getByRole('img', { name: 'About estimated API cost' })).toHaveAttribute('aria-description', /Claude Code, Codex, and Pi logs/);
+  await page.evaluate(hour => {
+    Object.assign((window as any).__usageFixture.ledger, {
+      sources: [{ provider: 'pi', files: 1 }],
+      models: [{ provider: 'pi', name: 'claude-sonnet-5-5', priced: true }],
+      rows: [[hour, 0, 2000, 3500, 0, 2500, 0.12, 0.03]],
+      sessions: [{ provider: 'pi', first: hour, last: hour }],
+    });
+  }, hourOn(0));
+  await refresh(page).click();
+  await expect(dialog(page).getByRole('button', { name: /^Pi\. \$0\.12 estimated/ })).toBeVisible();
+  await dialog(page).screenshot({ path: testInfo.outputPath('pi-usage.png'), animations: 'disabled' });
 });
 
 test('Agent usage keeps limits working when local logs cannot be read', async ({ page }) => {
