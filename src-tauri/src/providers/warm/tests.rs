@@ -492,7 +492,7 @@ fn a_failed_renewal_is_logged_with_its_number() {
 
 #[test]
 fn the_warm_key_reads_only_the_launch_not_the_message() {
-    // `lead_spare_tests` compares exactly these fields between a lead's spare and its wake.
+    // `lead_spare::tests` compares every `RunConfig` input to these fields between a lead's spare and its wake.
     let base = crate::providers::tests::config("claude");
     let message = RunConfig { prompt: "Review the settled workers.".into(), images: vec![PathBuf::from("/tmp/shot.png")], ..base.clone() };
     assert_eq!(key(&base, &[]), key(&message, &[]));
@@ -502,8 +502,8 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
     };
     let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "fastMode", "worker", "disallowedTools"].map(String::from).to_vec();
     config_fields.extend(["namedConnection", "connection", "environment", "telemetryOff"].map(String::from));
-    // Read from the session and the provider, which a lead's spare and its wake share.
-    config_fields.extend(["disabledSkills", "executable"].map(String::from));
+    // Read from the session, provider and cwd, which a lead's spare and its wake share.
+    config_fields.extend(["disabledSkills", "executable", "claudeConfig"].map(String::from));
     let (mut a, mut b) = (field_names, config_fields);
     a.sort();
     b.sort();
