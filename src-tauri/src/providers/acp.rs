@@ -1686,6 +1686,7 @@ impl ScratchDir {
         }
         super::AgentTemp::sweep_once(&parent);
         let dir = parent.join(format!("pandacode-{prefix}-{}", uuid::Uuid::new_v4()));
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut child = std::fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut child, 0o700);

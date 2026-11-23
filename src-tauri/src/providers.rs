@@ -3748,9 +3748,9 @@ fn release_group(group: &mut ProcessGroup) {
 /// clean exit, which a forced kill skips. So it gets its own `TEMP`, deleted when this drops.
 pub(crate) struct AgentTemp(PathBuf);
 /// Sweeps run in this process; a test checks the once-per-process rule.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 static SWEEPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn agent_temp_sweeps() -> usize {
     SWEEPS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -3772,7 +3772,7 @@ impl AgentTemp {
     pub(crate) fn sweep_once(root: &Path) {
         static SWEPT: std::sync::Once = std::sync::Once::new();
         SWEPT.call_once(|| {
-            #[cfg(test)]
+            #[cfg(all(test, unix))]
             SWEEPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             // An unpacked `_MEI*` runtime is hundreds of MB: deleting it must not hold an async
             // worker. Only old folders go, so the caller's new one is safe from this thread.

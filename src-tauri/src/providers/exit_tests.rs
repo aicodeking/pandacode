@@ -322,7 +322,8 @@ async fn a_delayed_reaper_never_allows_a_live_process_to_be_resumed() {
     let reaper = tokio::spawn(async move {
         gate.await.unwrap();
         child.kill().await.unwrap();
-        finish_child(&mut child, stdin, &mut group, EXIT_WAIT).await;
+        drop(stdin);
+        finish_child(&mut child, &mut group, Some(EXIT_WAIT)).await;
         exit_registry().lock().unwrap().remove(session);
         drop(done);
     });
