@@ -21,11 +21,12 @@ pub(crate) fn spare_config(mut next: RunConfig, task: Session) -> RunConfig {
 }
 
 /// Whether a turn's end starts a spare for the next turn. Team workers rarely get a follow-up, and
-/// their spares would push out the architect's. A maintenance turn starts none: `/compact` is
-/// the turn that changes what a resumed process would load, and the next real turn can start
-/// cold once.
-pub(crate) fn starts_spare(config: &RunConfig, managed_worker: bool, cloud: bool, maintenance: bool) -> bool {
-    providers::warms(config) && !managed_worker && !cloud && !maintenance
+/// their spares would push out the architect's. A `/compact` turn starts none: it changes what a
+/// resumed process would load, and the next real turn can start cold once. Read-only maintenance
+/// commands (`/status`, `/context`, `/usage`, …) leave the conversation as it was, so they still
+/// warm the next turn.
+pub(crate) fn starts_spare(config: &RunConfig, managed_worker: bool, cloud: bool, compacts: bool) -> bool {
+    providers::warms(config) && !managed_worker && !cloud && !compacts
 }
 
 /// Team states in which a lead's review wake can still come by itself (`architect::active`).
@@ -361,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn a_maintenance_turn_matches_the_good_spare_and_starts_no_empty_one() {
+    fn a_maintenance_turn_matches_the_good_spare_and_only_compact_withholds_the_next() {
         let (state, project) = concurrent_task_tests::test_state();
         let task = state.store.lock().unwrap().create_session(&project, "claude", "claude-opus-5-5", "ask").unwrap().id;
         let launch = |text: &str, maintenance: bool| {
@@ -392,7 +393,10 @@ mod tests {
         assert_eq!(shape(&spare), shape(&context));
         assert_eq!(turn_tools, context_tools);
         assert_eq!(context.prompt, "/context", "the message stays the bare command");
-        assert!(!starts_spare(&context, false, false, true), "a maintenance turn starts no spare");
+        assert!(starts_spare(&context, false, false, false), "a read-only maintenance turn still warms the next turn");
+        let (compact, _) = launch("/compact", true);
+        assert_eq!(shape(&spare), shape(&compact));
+        assert!(!starts_spare(&compact, false, false, true), "a /compact turn starts no spare");
     }
 
     #[tokio::test]

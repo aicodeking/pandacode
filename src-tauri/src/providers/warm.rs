@@ -352,6 +352,32 @@ pub(super) fn launched_without_spare(session_id: &str) {
     }
 }
 
+/// Whether the task has a pooled spare worth keying this launch against. With none, this counts
+/// the launch (as `take` would) and logs a lead's pending gone reason, so a cold launch skips the
+/// warm key's config walk entirely; with one, nothing changes and the caller keys and `take`s.
+pub(super) fn has_spare_or_record_cold(session_id: &str) -> bool {
+    let (pooled, note) = has_spare_or_record_cold_in(&SPARES, session_id);
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+    pooled
+}
+
+fn has_spare_or_record_cold_in(pool: &Pool, session_id: &str) -> (bool, Option<String>) {
+    let gone = {
+        let mut locked = spares(pool);
+        if locked.spares.contains_key(session_id) {
+            return (true, None);
+        }
+        // Lock order: SPARES before LAUNCHES (matching `register`), so no spare for the old
+        // launch can register between this check and the epoch moving on.
+        let launch = NEXT_LAUNCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), launch);
+        locked.gone.remove(session_id)
+    };
+    (false, gone.map(|why| lead_decision(pool, Some(why.reason()))))
+}
+
 /// A lead wake's adoption log line (`lead_note`), counted, with the pool's totals since launch.
 fn lead_decision(pool: &Pool, miss: Option<&str>) -> String {
     let (adopted, missed) = {

@@ -154,7 +154,7 @@ fn read_launch(args: &[&str], env: &[(&str, &str)]) -> crate::connections::Launc
 
 fn restricts_reads(settings: &Settings, provider: &str, connection: Option<crate::connections::Launch>) -> bool {
     claude_restricts_reads_with(provider, &settings.base.join("project"), || Ok(connection),
-        || false, || Some(settings.base.join("config")), || None)
+        || false, || Some(settings.base.join("config")))
 }
 
 #[test]
@@ -234,17 +234,17 @@ fn linked_worktrees_inherit_main_checkout_local_read_rules() {
         let settings = Settings::new();
         let (main, worktree, _) = linked_checkout(&settings, false, relative);
         let config = settings.base.join("config");
-        assert!(!read_deny_rules(&config, &main, None));
-        assert!(!read_deny_rules(&config, &worktree, None));
+        assert!(!read_deny_rules(&config, &main));
+        assert!(!read_deny_rules(&config, &worktree));
         std::fs::write(main.join(".claude/settings.local.json"),
             r#"{"permissions":{"deny":["Read(restricted/customer.csv)"]}}"#).unwrap();
-        assert!(read_deny_rules(&config, &main, None));
-        assert!(read_deny_rules(&config, &worktree, None), "relative={relative}");
+        assert!(read_deny_rules(&config, &main));
+        assert!(read_deny_rules(&config, &worktree), "relative={relative}");
         let nested = worktree.join("src/nested");
         std::fs::create_dir_all(&nested).unwrap();
-        assert!(read_deny_rules(&config, &nested, None), "nested relative={relative}");
-        assert!(!read_deny_rules(&config, &worktree, Some(&main.join(".claude"))), "overridden home");
-        assert!(read_deny_rules(&main.join(".claude"), &worktree, Some(&main.join(".claude"))), "active config");
+        assert!(read_deny_rules(&config, &nested), "nested relative={relative}");
+        assert!(read_deny_rules(&config, &worktree), "home-rooted main checkout is still a project");
+        assert!(read_deny_rules(&main.join(".claude"), &worktree), "active config");
     }
 }
 
@@ -260,7 +260,7 @@ fn linked_worktrees_inherit_only_local_settings_and_bare_repos_have_no_main_chec
             std::fs::create_dir_all(settings.base.join(".claude")).unwrap();
             std::fs::write(settings.base.join(".claude/settings.local.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
         }
-        assert!(!read_deny_rules(&settings.base.join("config"), &worktree, None), "bare={bare}");
+        assert!(!read_deny_rules(&settings.base.join("config"), &worktree), "bare={bare}");
     }
 }
 
@@ -279,7 +279,7 @@ fn nonstandard_linked_checkout(settings: &Settings) -> (PathBuf, PathBuf, PathBu
 
 fn linked_reads_restricted(settings: &Settings, worktree: &Path) -> bool {
     claude_restricts_reads_with("claude", worktree, || Ok(None), || false,
-        || Some(settings.base.join("config")), || None)
+        || Some(settings.base.join("config")))
 }
 
 #[test]
@@ -478,15 +478,15 @@ fn malformed_linked_worktree_metadata_fails_closed() {
             let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
             let path = if name == "gitfile" { worktree.join(".git") } else { gitdir.join("commondir") };
             std::fs::write(path, &bytes).unwrap();
-            assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "{name} length={}", bytes.len());
+            assert!(read_deny_rules(&settings.base.join("config"), &worktree), "{name} length={}", bytes.len());
         }
     }
     let settings = Settings::new();
     let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
     std::fs::remove_file(gitdir.join("commondir")).unwrap();
-    assert!(!read_deny_rules(&settings.base.join("config"), &worktree, None), "ordinary gitfile/submodule");
+    assert!(!read_deny_rules(&settings.base.join("config"), &worktree), "ordinary gitfile/submodule");
     std::fs::create_dir(gitdir.join("commondir")).unwrap();
-    assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "commondir is not a file");
+    assert!(read_deny_rules(&settings.base.join("config"), &worktree), "commondir is not a file");
 }
 
 #[cfg(unix)]
@@ -498,12 +498,12 @@ fn unreadable_and_dangling_worktree_metadata_fails_closed() {
         let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
         let path = if name == "gitfile" { worktree.join(".git") } else { gitdir.join("commondir") };
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        let restricted = read_deny_rules(&settings.base.join("config"), &worktree, None);
+        let restricted = read_deny_rules(&settings.base.join("config"), &worktree);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(restricted, "unreadable {name}");
         std::fs::remove_file(&path).unwrap();
         symlink(settings.base.join("absent"), &path).unwrap();
-        assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "dangling {name}");
+        assert!(read_deny_rules(&settings.base.join("config"), &worktree), "dangling {name}");
     }
     let settings = Settings::new();
     let (main, worktree, _) = linked_checkout(&settings, false, false);
@@ -511,7 +511,7 @@ fn unreadable_and_dangling_worktree_metadata_fails_closed() {
     let pointer = worktree.join("pointer");
     std::fs::rename(worktree.join(".git"), &pointer).unwrap();
     symlink(&pointer, worktree.join(".git")).unwrap();
-    assert!(read_deny_rules(&settings.base.join("config"), &worktree, None), "symlink to gitfile");
+    assert!(read_deny_rules(&settings.base.join("config"), &worktree), "symlink to gitfile");
 }
 
 #[test]
@@ -595,7 +595,8 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
     let program_data = settings.base.as_os_str().to_owned();
     let mut paths = Vec::new();
     let mut keys = Vec::new();
-    assert!(!windows_managed_settings_may_allow_with(
+    assert!(!windows_managed_settings_match_with(
+        None,
         Some(program_data.clone()),
         |path| {
             paths.push(path.to_owned());
@@ -609,8 +610,8 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
     assert_eq!(
         paths,
         [
-            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
-            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.d"),
+            windows_policy(r"C:\Program Files", "managed-settings.json"),
+            windows_policy(r"C:\Program Files", "managed-settings.d"),
             settings.base.join("ClaudeCode/managed-settings.json"),
             settings.base.join("ClaudeCode/managed-settings.d"),
         ]
@@ -624,12 +625,12 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
     );
     for key in [0x8000_0002, 0x8000_0001] {
         for status in [0, 5, 3, -1] {
-            assert!(windows_managed_settings_may_allow_with(Some(program_data.clone()), |_| false,
+            assert!(windows_managed_settings_match_with(None, Some(program_data.clone()), |_| false,
                 |root, _| if root == key { status } else { 2 }));
         }
     }
     for program_data in [None, Some(std::ffi::OsString::new())] {
-        assert!(windows_managed_settings_may_allow_with(program_data, |_| panic!("no policy root"), |_, _| panic!("no policy root")));
+        assert!(windows_managed_settings_match_with(None, program_data, |_| panic!("no policy root"), |_, _| panic!("no policy root")));
     }
     let managed_dir = settings.base.join("ClaudeCode");
     std::fs::create_dir(&managed_dir).unwrap();
@@ -639,22 +640,23 @@ fn windows_managed_read_paths_and_registry_errors_fail_closed() {
         managed_entry_restricts_reads(path)
     };
     std::fs::write(managed_dir.join("managed-settings.json"), "{}").unwrap();
-    assert!(!windows_managed_settings_may_allow_with(Some(program_data.clone()), probe, |_, _| 2));
+    assert!(!windows_managed_settings_match_with(None, Some(program_data.clone()), probe, |_, _| 2));
     std::fs::create_dir(managed_dir.join("managed-settings.d")).unwrap();
     std::fs::write(managed_dir.join("managed-settings.d/read.json"), r#"{"permissions":{"deny":["Read"]}}"#).unwrap();
-    assert!(windows_managed_settings_may_allow_with(Some(program_data), probe, |_, _| 2));
+    assert!(windows_managed_settings_match_with(None, Some(program_data), probe, |_, _| 2));
 }
 
 #[test]
 fn windows_program_files_drop_ins_affect_edit_approval_and_read_restrictions() {
     let settings = Settings::new();
     let program_data = settings.base.as_os_str().to_owned();
-    let program_files_drop_ins = Path::new(r"C:\Program Files\ClaudeCode\managed-settings.d");
+    let program_files_drop_ins = windows_policy(r"C:\Program Files", "managed-settings.d");
     let fixture = settings.base.join("managed-settings.d");
     let probe = |check: fn(&Path) -> bool| {
-        windows_managed_settings_may_allow_with(
+        windows_managed_settings_match_with(
+            None,
             Some(program_data.clone()),
-            |path| path == program_files_drop_ins && check(&fixture),
+            |path| path == program_files_drop_ins.as_path() && check(&fixture),
             |_, _| 2,
         )
     };
@@ -680,7 +682,7 @@ fn relay_reads_ignore_user_and_project_rules_but_honor_managed_policy() {
     for provider in ["glm", "mimo", "alibaba"] {
         assert!(!restricts_reads(&settings, provider, None), "{provider}");
         assert!(claude_restricts_reads_with(provider, &settings.base, || panic!("managed restriction"),
-            || true, || panic!("relay config"), || panic!("relay home")));
+            || true, || panic!("relay config")));
         assert!(restricts_reads(&settings, provider, Some(read_launch(&["--settings=custom.json"], &[]))));
     }
 }
@@ -697,7 +699,7 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
         }
         assert!(restricts_reads(&settings, provider, Some(read_launch(&[], &[("CLAUDE_CONFIG_DIR", "")]))));
         assert!(claude_restricts_reads_with(provider, &settings.base, || Err("missing saved key".into()),
-            || false, || panic!("bad connection"), || None));
+            || false, || panic!("bad connection")));
     }
     let custom = settings.base.join("custom");
     std::fs::create_dir(&custom).unwrap();
@@ -725,8 +727,8 @@ fn claude_connections_resolve_config_and_reject_unfollowed_flags() {
     settings.user("settings.json", r#"{"permissions":{"deny":["Read"]}}"#);
     std::fs::write(custom.join("settings.local.json"), "{}").unwrap();
     assert!(!claude_restricts_reads_with("claude", &settings.base.join("project"), || Ok(connection()),
-        || false, || panic!("override wins"), || None));
-    assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, || None, || None));
+        || false, || panic!("override wins")));
+    assert!(claude_restricts_reads_with("claude", &settings.base, || Ok(None), || false, || None));
 }
 
 #[test]
@@ -739,14 +741,16 @@ fn project_read_rules_stop_at_nearest_git_root_and_skip_overridden_home() {
     std::fs::create_dir(project.join("elsewhere")).unwrap();
     std::fs::write(project.join(".git"), "gitdir: elsewhere").unwrap();
     settings.project("settings.local.json", r#"{"permissions":{"deny":["Read"]}}"#);
-    assert!(read_deny_rules(&settings.base.join("config"), &nested, None));
+    assert!(read_deny_rules(&settings.base.join("config"), &nested));
     std::fs::create_dir(nested.join(".git")).unwrap();
-    assert!(!read_deny_rules(&settings.base.join("config"), &nested, None), "nearest root");
+    assert!(!read_deny_rules(&settings.base.join("config"), &nested), "nearest root");
     std::fs::remove_dir(nested.join(".git")).unwrap();
-    assert!(!read_deny_rules(&settings.base.join("config"), &nested, Some(&project.join(".claude"))), "overridden home config");
-    assert!(read_deny_rules(&project.join(".claude"), &nested, Some(&project.join(".claude"))), "active home config");
+    // CLAUDE_CONFIG_DIR elsewhere: a repository rooted at $HOME still loads $HOME/.claude as
+    // project settings, so it is checked (fail closed) rather than skipped.
+    assert!(read_deny_rules(&settings.base.join("config"), &nested), "home .claude as project settings");
+    assert!(read_deny_rules(&project.join(".claude"), &nested), "active home config");
     std::fs::remove_file(project.join(".git")).unwrap();
-    assert!(!read_deny_rules(&settings.base.join("config"), &nested, None), "no repo: only cwd");
+    assert!(!read_deny_rules(&settings.base.join("config"), &nested), "no repo: only cwd");
 }
 
 #[test]
@@ -754,7 +758,7 @@ fn non_claude_harnesses_never_probe_claude_read_settings() {
     for provider in ["codex", "opencode", "kimi"] {
         assert!(!claude_restricts_reads_with(provider, Path::new("unused"),
             || panic!("non-Claude connection"), || panic!("non-Claude policy"),
-            || panic!("non-Claude config"), || panic!("non-Claude home")));
+            || panic!("non-Claude config")));
     }
 }
 
@@ -914,7 +918,8 @@ fn managed_policy_stat_errors_fail_closed_on_every_platform() {
         std::io::ErrorKind::NotFound.into()
     )));
     assert!(managed_path_may_allow_with(|| Ok(())));
-    assert!(windows_managed_settings_may_allow_with(
+    assert!(windows_managed_settings_match_with(
+        None,
         Some(r"C:\ProgramData".into()),
         |_| managed_path_may_allow_with(|| Err(std::io::ErrorKind::PermissionDenied.into())),
         |_, _| panic!("unreadable policy path already requires tracking"),
@@ -926,7 +931,8 @@ fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state
     let program_data = std::path::PathBuf::from(r"D:\Enterprise Data");
     let mut paths = Vec::new();
     let mut keys = Vec::new();
-    assert!(!windows_managed_settings_may_allow_with(
+    assert!(!windows_managed_settings_match_with(
+        None,
         Some(program_data.clone().into_os_string()),
         |path| {
             paths.push(path.to_owned());
@@ -941,8 +947,8 @@ fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state
     assert_eq!(
         paths,
         [
-            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.json"),
-            PathBuf::from(r"C:\Program Files\ClaudeCode\managed-settings.d"),
+            windows_policy(r"C:\Program Files", "managed-settings.json"),
+            windows_policy(r"C:\Program Files", "managed-settings.d"),
             root.join("managed-settings.json"),
             root.join("managed-settings.d"),
         ]
@@ -956,7 +962,8 @@ fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state
     );
     for present in &paths {
         assert!(
-            windows_managed_settings_may_allow_with(
+            windows_managed_settings_match_with(
+                None,
                 Some(program_data.clone().into_os_string()),
                 |path| path == present,
                 |_, _| 2,
@@ -965,7 +972,8 @@ fn windows_managed_policy_paths_and_registry_keys_are_checked_without_host_state
         );
     }
     for unknown in [None, Some(std::ffi::OsString::new())] {
-        assert!(windows_managed_settings_may_allow_with(
+        assert!(windows_managed_settings_match_with(
+            None,
             unknown,
             |_| panic!("unknown PROGRAMDATA must fail closed"),
             |_, _| panic!("unknown PROGRAMDATA must fail closed")
@@ -982,7 +990,8 @@ fn windows_registry_presence_and_errors_require_native_edit_tracking() {
                 ..crate::providers::tests::config("glm")
             };
             let allows = || {
-                windows_managed_settings_may_allow_with(
+                windows_managed_settings_match_with(
+                    None,
                     Some(r"C:\ProgramData".into()),
                     |_| false,
                     |root, _| if root == policy_root { status } else { 2 },
@@ -1237,4 +1246,138 @@ fn an_explicit_capture_completed_without_changes_stays_clean() {
     tracker.report(json!({"action":"complete","captureId":begun["captureId"],"paths":["a.txt"]})).unwrap();
     let captured = tracker.finish().unwrap();
     assert!(captured.summary.files.is_empty() && !captured.summary.truncated);
+}
+
+/// A Windows policy location as `windows_managed_settings_paths` joins it.
+fn windows_policy(root: &str, name: &str) -> PathBuf {
+    PathBuf::from(root).join("ClaudeCode").join(name)
+}
+
+#[test]
+fn windows_program_files_are_joined_deduplicated_and_probed_by_the_production_matcher() {
+    use std::ffi::OsString;
+    let data = r"D:\Enterprise Data";
+    let default = r"C:\Program Files";
+    for (program_files, roots) in [
+        (Some(OsString::from(r"D:\Apps")), vec![default, r"D:\Apps", data]),
+        (Some(OsString::from(default)), vec![default, data]),
+        (Some(OsString::new()), vec![default, data]),
+        (None, vec![default, data]),
+    ] {
+        let (mut paths, mut keys) = (Vec::new(), Vec::new());
+        let label = format!("{program_files:?}");
+        assert!(!windows_managed_settings_match_with(
+            program_files.clone(),
+            Some(OsString::from(data)),
+            |path| {
+                paths.push(path.to_owned());
+                false
+            },
+            |root, path| {
+                keys.push((root, path.to_owned()));
+                2
+            },
+        ), "{label}");
+        let expected: Vec<PathBuf> = roots.iter()
+            .flat_map(|root| [windows_policy(root, "managed-settings.json"), windows_policy(root, "managed-settings.d")])
+            .collect();
+        assert_eq!(paths, expected, "{label}");
+        assert_eq!(keys, [(0x8000_0002, r"SOFTWARE\Policies\ClaudeCode".to_owned()), (0x8000_0001, r"SOFTWARE\Policies\ClaudeCode".to_owned())]);
+        // Each probed file or drop-in directory alone requires tracking.
+        for present in &expected {
+            assert!(windows_managed_settings_match_with(program_files.clone(), Some(OsString::from(data)),
+                |path| path == present.as_path(), |_, _| 2), "{label} {present:?}");
+        }
+        // Registry presence or any error other than not-found fails closed.
+        for status in [0, 5, 87] {
+            assert!(windows_managed_settings_match_with(program_files.clone(), Some(OsString::from(data)),
+                |_| false, |_, _| status), "{label} status {status}");
+        }
+        // Missing PROGRAMDATA is an unknown legacy location: fail closed without probing.
+        for unknown in [None, Some(OsString::new())] {
+            assert!(windows_managed_settings_match_with(program_files.clone(), unknown,
+                |_| panic!("no policy root"), |_, _| panic!("no policy root")), "{label}");
+        }
+    }
+}
+
+#[test]
+fn managed_drop_in_directories_with_too_many_entries_fail_closed() {
+    let settings = Settings::new();
+    let drop_ins = settings.base.join("managed-settings.d");
+    std::fs::create_dir(&drop_ins).unwrap();
+    for index in 0..256 {
+        std::fs::write(drop_ins.join(format!("note-{index}.txt")), "").unwrap();
+    }
+    assert!(!settings_drop_ins_restrict_reads(&drop_ins), "256 entries are walked");
+    std::fs::write(drop_ins.join("note-256.txt"), "").unwrap();
+    assert!(settings_drop_ins_restrict_reads(&drop_ins), "more than 256 entries fail closed");
+}
+
+#[test]
+fn an_empty_claude_config_dir_is_unknown_and_fails_closed() {
+    let cwd = std::env::temp_dir().join("pandacode-empty-config-dir");
+    let empty = [("CLAUDE_CONFIG_DIR".to_owned(), String::new())];
+    assert_eq!(resolve_claude_config_dir_env(&empty, &cwd, false), None);
+    let later_empty = [("CLAUDE_CONFIG_DIR".to_owned(), "custom".to_owned()), ("CLAUDE_CONFIG_DIR".to_owned(), String::new())];
+    assert_eq!(resolve_claude_config_dir_env(&later_empty, &cwd, false), None, "the last value wins");
+    assert_eq!(resolve_claude_config_dir_env(&later_empty[..1], &cwd, false), Some(cwd.join("custom")));
+    let config = crate::providers::RunConfig { mode: "ask".into(), cwd: cwd.clone(), ..crate::providers::tests::config("claude") };
+    let allows = |config: &crate::providers::RunConfig| claude_allows_edits_with(config, || false, || false,
+        || resolve_claude_config_dir_env(&empty, &config.cwd, false));
+    assert!(allows(&config));
+    assert!(!edits_wait_for_run_using(&config, allows));
+    assert!(claude_restricts_reads_with("claude", &cwd, || Ok(None), || false,
+        || resolve_claude_config_dir_env(&empty, &cwd, false)));
+}
+
+#[test]
+fn edit_allow_rules_cover_ancestors_up_to_the_git_root() {
+    let settings = Settings::new();
+    let (config, project) = (settings.base.join("config"), settings.base.join("project"));
+    let nested = project.join("src/nested");
+    std::fs::create_dir_all(&nested).unwrap();
+    std::fs::create_dir(project.join(".git")).unwrap();
+    assert!(!edit_allow_rules(&config, &nested));
+    settings.project("settings.json", r#"{"permissions":{"allow":["Edit"]}}"#);
+    assert!(edit_allow_rules(&config, &nested), "ancestor up to the .git root");
+    let run = crate::providers::RunConfig { mode: "ask".into(), cwd: nested.clone(), ..crate::providers::tests::config("claude") };
+    assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || false, || Some(config.clone()))));
+    std::fs::create_dir(nested.join(".git")).unwrap();
+    assert!(!edit_allow_rules(&config, &nested), "the walk stops at the nearest root");
+    std::fs::remove_dir(nested.join(".git")).unwrap();
+    // The active config folder doubling as a project folder is read once and still counts.
+    assert!(edit_allow_rules(&project.join(".claude"), &nested));
+}
+
+#[test]
+fn linked_worktrees_inherit_main_checkout_local_edit_allow_rules() {
+    for relative in [false, true] {
+        let settings = Settings::new();
+        let (main, worktree, _) = linked_checkout(&settings, false, relative);
+        let config = settings.base.join("config");
+        // A shared settings.json is not inherited from the main checkout.
+        std::fs::write(main.join(".claude/settings.json"), r#"{"permissions":{"allow":["Edit"]}}"#).unwrap();
+        assert!(edit_allow_rules(&config, &main));
+        assert!(!edit_allow_rules(&config, &worktree), "relative={relative}");
+        std::fs::write(main.join(".claude/settings.local.json"), r#"{"permissions":{"allow":["Write(src/**)"]}}"#).unwrap();
+        assert!(edit_allow_rules(&config, &worktree), "relative={relative}");
+        let run = crate::providers::RunConfig { mode: "ask".into(), cwd: worktree.clone(), ..crate::providers::tests::config("claude") };
+        assert!(!edits_wait_for_run_using(&run, |c| claude_allows_edits_with(c, || false, || false, || Some(config.clone()))));
+    }
+}
+
+#[test]
+fn unreadable_worktree_metadata_fails_closed_for_edit_allow_rules() {
+    let settings = Settings::new();
+    let (_, worktree, gitdir) = linked_checkout(&settings, false, false);
+    let config = settings.base.join("config");
+    assert!(!edit_allow_rules(&config, &worktree));
+    std::fs::remove_dir_all(&gitdir).unwrap();
+    assert!(edit_allow_rules(&config, &worktree), "missing gitdir");
+    std::fs::write(worktree.join(".git"), "not a gitfile\n").unwrap();
+    assert!(edit_allow_rules(&config, &worktree), "invalid gitfile");
+    std::fs::remove_file(worktree.join(".git")).unwrap();
+    std::fs::create_dir(worktree.join(".git")).unwrap();
+    assert!(!edit_allow_rules(&config, &worktree), "an ordinary repository is clean");
 }

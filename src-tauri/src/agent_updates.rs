@@ -668,6 +668,10 @@ pub async fn update_agent(
             || progress("verifying", None),
         );
         invalidate();
+        // Idle Claude spares run the old binary: retire them now rather than at expiry.
+        if row.providers.iter().any(|alias| family(alias) == "claude") {
+            crate::providers::warm::discard_all();
+        }
         for alias in &row.providers {
             crate::providers::acp_catalog::invalidate(alias);
             crate::slash_commands::invalidate_provider(alias);

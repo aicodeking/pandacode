@@ -48,12 +48,27 @@ pub(super) fn key_with_disabled(
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::super::privacy::telemetry_off(),
-        // So does a saved executable location.
-        "executable": crate::provider_settings::executable_override(&config.provider),
+        // So does a saved executable location, or a CLI upgraded in place (in the app or not).
+        "executable": executable_stamp(&config.provider),
         // Config files Claude reads only at startup: an edit while a spare idles starts cold.
         "claudeConfig": claude_config_fingerprint(config),
     })
     .to_string()
+}
+
+/// The saved executable location, the binary a launch would run, and that binary's metadata
+/// (following symlinks), so an upgraded CLI starts the next turn cold.
+fn executable_stamp(provider: &str) -> Value {
+    executable_stamp_for(
+        crate::provider_settings::executable_override(provider),
+        crate::providers::executable(provider),
+    )
+}
+
+pub(super) fn executable_stamp_for(saved: Option<PathBuf>, resolved: Option<PathBuf>) -> Value {
+    let binary = resolved.as_deref().map_or(Value::Null, config_file_stamp);
+    let target = resolved.as_deref().and_then(|path| path.canonicalize().ok());
+    json!({"saved": saved, "resolved": resolved, "target": target, "binary": binary})
 }
 
 /// Project-scoped files under the working folder that Claude Code reads at startup.
@@ -69,8 +84,10 @@ const PROJECT_CLAUDE_FILES: [&str; 7] = [
 /// Project-scoped folders of rules, agents, commands and skills Claude Code loads at startup.
 const PROJECT_CLAUDE_DIRS: [&str; 4] = [".claude/rules", ".claude/agents", ".claude/commands", ".claude/skills"];
 /// User-scoped files under the effective Claude config folder. Never `~/.claude.json`: Claude
-/// Code rewrites it at every startup, which would refuse every spare.
-const USER_CLAUDE_FILES: [&str; 2] = ["settings.json", "CLAUDE.md"];
+/// Code rewrites it at every startup, which would refuse every spare. `settings.local.json` is
+/// here too: a project rooted at the user folder's parent (a dotfiles repo at `~`) skips its own
+/// `.claude/` stamps, so this is where that file's edits are noticed.
+const USER_CLAUDE_FILES: [&str; 3] = ["settings.json", "settings.local.json", "CLAUDE.md"];
 /// User-scoped folders under the effective Claude config folder.
 const USER_CLAUDE_DIRS: [&str; 4] = ["rules", "agents", "commands", "skills"];
 /// How deep, and how many entries, one config folder's metadata walk reads.
@@ -111,7 +128,10 @@ pub(super) fn claude_config_fingerprint_with(
         "AGENTS.md",
         ".claude/CLAUDE.md",
     ];
-    const MAIN_SETTINGS: [&str; 2] = [".claude/settings.json", ".claude/settings.local.json"];
+    // A linked worktree's committed `.claude/` files are in its own checkout (stamped under
+    // `roots.ancestors`); only the untracked local settings come from the main checkout, as in
+    // `claude_policy.rs`.
+    const MAIN_LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
     let roots = crate::turn_changes::project_config_roots(cwd);
     let above_project = roots
@@ -150,19 +170,8 @@ pub(super) fn claude_config_fingerprint_with(
     for root in above_project {
         stamps.push(stamp_project(root, &MEMORY_FILES, &[".claude/rules"]));
     }
-    if let Some(main) = roots.main_worktree {
-        let mut stamp = vec![json!(main.to_string_lossy())];
-        stamp.extend(
-            MAIN_SETTINGS
-                .iter()
-                .map(|name| config_file_stamp(&main.join(name))),
-        );
-        stamp.extend(
-            PROJECT_CLAUDE_DIRS
-                .iter()
-                .map(|name| config_dir_stamp(&main.join(name))),
-        );
-        stamps.push(Value::Array(stamp));
+    if let Some(main) = roots.main_worktree.filter(|main| user_dir != Some(main.join(".claude").as_path())) {
+        stamps.push(json!([main.to_string_lossy(), config_file_stamp(&main.join(MAIN_LOCAL_SETTINGS))]));
     }
     if let Some(user) = user_dir {
         stamps.extend(

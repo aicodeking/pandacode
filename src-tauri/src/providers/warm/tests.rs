@@ -927,19 +927,18 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     std::fs::write(main.join(".git/config"), "[core]\n bare = false\n").unwrap();
     std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
     std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+    // Only the untracked local settings are inherited, as in `claude_policy.rs`: committed
+    // `.claude/` files are in the worktree's own checkout.
     let mut previous = stamp(&worktree);
-    for (name, contents) in [
-        (".claude/settings.local.json", "{}"),
-        (".claude/settings.local.json", "{ }"),
-        (".claude/rules/rule.md", "a"),
-        (".claude/rules/rule.md", "ab"),
-    ] {
-        write_config(&main, name, contents);
+    for contents in ["{}", "{ }"] {
+        write_config(&main, ".claude/settings.local.json", contents);
         let next = stamp(&worktree);
-        assert_ne!(next, previous, "writing the main checkout's {name} must start a worktree launch cold");
+        assert_ne!(next, previous, "writing the main checkout's local settings must start a worktree launch cold");
         previous = next;
     }
     for name in [
+        ".claude/settings.json",
+        ".claude/rules/rule.md",
         "AGENTS.md",
         "CLAUDE.md",
         "CLAUDE.local.md",
@@ -1375,4 +1374,81 @@ async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_
     quiesce_in(pool, &other_id).await.unwrap();
     assert!(process_gone(other_pid));
     let _ = std::fs::remove_dir_all(base);
+}
+
+#[test]
+fn a_dotfiles_repos_own_local_settings_edits_invalidate_a_warm_launch() {
+    // A repository rooted at the user's home: its `.claude/` is the user folder, so the project
+    // stamps skip it and the user stamps must cover `settings.local.json`.
+    let root = std::env::temp_dir().join(format!("pandacode-warm-dotfiles-{}", uuid::Uuid::new_v4().simple()));
+    let repo = root.join("home");
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    std::fs::create_dir_all(repo.join(".claude")).unwrap();
+    let user = repo.join(".claude");
+    let stamp = || claude_config_fingerprint_with(&repo, Some(&user), Some(&user), &[]);
+    let mut previous = stamp();
+    assert_eq!(previous, stamp(), "unchanged config files keep the key");
+    for contents in ["{}", "{ }"] {
+        write_config(&repo, ".claude/settings.local.json", contents);
+        let next = stamp();
+        assert_ne!(next, previous, "writing the user folder's settings.local.json must start the next turn cold");
+        previous = next;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_upgraded_claude_binary_changes_the_executable_stamp() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-binary-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&root).unwrap();
+    let binary = root.join("claude");
+    std::fs::write(&binary, "v1").unwrap();
+    let stamp = || executable_stamp_for(None, Some(binary.clone()));
+    let before = stamp();
+    assert_eq!(before, stamp(), "an unchanged binary keeps the key");
+    // A different length, so coarse mtime granularity cannot hide the upgrade.
+    std::fs::write(&binary, "v2.0").unwrap();
+    assert_ne!(stamp(), before, "upgrading the binary in place must start the next turn cold");
+    assert_ne!(executable_stamp_for(Some(binary.clone()), Some(binary.clone())), stamp(), "a saved location counts");
+    assert_ne!(executable_stamp_for(None, None), stamp(), "a missing binary counts");
+    #[cfg(unix)]
+    {
+        // The native installer moves a link to a new version folder.
+        let (old, new, link) = (root.join("v1"), root.join("v2"), root.join("link"));
+        std::fs::write(&old, "same").unwrap();
+        std::fs::write(&new, "same").unwrap();
+        std::os::unix::fs::symlink(&old, &link).unwrap();
+        let linked = executable_stamp_for(None, Some(link.clone()));
+        std::fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(&new, &link).unwrap();
+        assert_ne!(executable_stamp_for(None, Some(link.clone())), linked, "a relinked binary must start the next turn cold");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
+    let pool = own_pool();
+    let cold = format!("warm-cold-{}", uuid::Uuid::new_v4());
+    spares(pool).gone.insert(cold.clone(), Gone::Expired);
+    let before = epoch(&cold);
+    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold);
+    assert!(!pooled);
+    assert!(epoch(&cold) > before, "the launch is counted, so a spare for the old launch is refused");
+    assert_eq!(
+        note.as_deref(),
+        Some("Team lead's warm Claude agent not used (it expired); starting cold. Lead spares since launch: 0 adopted, 1 not used.")
+    );
+    assert!(!spares(pool).gone.contains_key(&cold));
+    assert_eq!(has_spare_or_record_cold_in(pool, &cold), (false, None), "each reason is said once");
+
+    let warm = format!("warm-pooled-{}", uuid::Uuid::new_v4());
+    admit(&mut spares(pool), warm.clone(), idle_spare(true, Duration::ZERO));
+    let launch = epoch(&warm);
+    assert_eq!(has_spare_or_record_cold_in(pool, &warm), (true, None));
+    assert!(waiting_in(pool, &warm), "the pooled spare is left for `take`");
+    assert_eq!(epoch(&warm), launch, "`take` counts the launch");
+    let (adopted, _) = take_in(pool, &warm, "launch");
+    assert!(adopted.is_some());
 }

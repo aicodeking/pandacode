@@ -84,16 +84,10 @@ pub(crate) fn oauth_token(inherit: bool, env: impl Fn(&str) -> Option<String>, s
 /// Where an administrator's Claude Code settings live; Claude Code applies
 /// them over the user's own. A connection set there (an `apiKeyHelper`, say)
 /// makes the setup "not your subscription", so PandaCode never runs Claude
-/// Code for it, and so never runs that helper unattended.
+/// Code for it, and so never runs that helper unattended. The same list the
+/// permission policy and warm key use (`turn_changes::host_managed_settings_paths`).
 pub(crate) fn managed_settings_paths() -> Vec<PathBuf> {
-    let paths: Vec<&str> = if cfg!(target_os = "macos") {
-        vec!["/Library/Application Support/ClaudeCode/managed-settings.json"]
-    } else if cfg!(windows) {
-        vec![r"C:\Program Files\ClaudeCode\managed-settings.json", r"C:\ProgramData\ClaudeCode\managed-settings.json"]
-    } else {
-        vec!["/etc/claude-code/managed-settings.json"]
-    };
-    paths.into_iter().map(PathBuf::from).collect()
+    crate::turn_changes::host_managed_settings_paths().unwrap_or_default()
 }
 
 /// `settings` with an administrator's `managed` ones laid over it, as Claude

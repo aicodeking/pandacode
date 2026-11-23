@@ -1,7 +1,8 @@
 //! Claude Code's own permission policy as it bears on file tracking: whether native edits wait
 //! for approval (mode plus the user's Edit/Write allow rules) and whether Read deny rules,
 //! managed settings or a linked worktree's main checkout restrict reads.
-use super::*;
+use serde_json::Value;
+use std::path::{Path, PathBuf};
 
 /// Whether a run's native edit tools wait for the user's approval before writing. A native
 /// edit's baseline is taken when its tool event reaches PandaCode, which only a waiting edit
@@ -35,13 +36,16 @@ pub(super) fn edits_wait_for_run_using(
 /// with `--setting-sources ""`, so user, project and local settings files do not apply to them,
 /// but Claude Code still enforces enterprise `managed-settings.json`, and a named connection on
 /// any Claude-family harness may pass `--allowedTools` or use another Claude config folder
-/// (not followed: treated as allowing).
+/// (not followed: treated as allowing). The config folder is resolved exactly as for reads.
 pub(super) fn claude_allows_edits(config: &crate::providers::RunConfig) -> bool {
     claude_allows_edits_with(
         config,
         || crate::connections::for_task(&config.session_id, &config.provider).is_some(),
         host_managed_settings_may_allow,
-        crate::agent_usage::claude_config_dir,
+        || {
+            let env = crate::provider_settings::environment("claude");
+            resolve_claude_config_dir_env(&env, &config.cwd, cfg!(windows))
+        },
     )
 }
 
@@ -79,7 +83,6 @@ pub(crate) fn claude_restricts_reads(session_id: &str, provider: &str, cwd: &Pat
             .map(|connection| crate::connections::launch(&connection)).transpose(),
         host_managed_settings_restrict_reads,
         || resolve_claude_config_dir_env(&env, cwd, cfg!(windows)),
-        || crate::account_config::home(&env),
     )
 }
 
@@ -89,7 +92,6 @@ pub(super) fn claude_restricts_reads_with(
     connection: impl FnOnce() -> std::result::Result<Option<crate::connections::Launch>, String>,
     managed_settings: impl FnOnce() -> bool,
     config_dir: impl FnOnce() -> Option<PathBuf>,
-    home_dir: impl FnOnce() -> Option<PathBuf>,
 ) -> bool {
     if !crate::providers::claude_family(provider) {
         return false;
@@ -122,8 +124,7 @@ pub(super) fn claude_restricts_reads_with(
         return false;
     }
     let Some(config_dir) = overridden.or_else(config_dir) else { return true };
-    let home_settings = home_dir().map(|home| home.join(".claude"));
-    read_deny_rules(&config_dir, cwd, home_settings.as_deref())
+    read_deny_rules(&config_dir, cwd)
 }
 
 fn claude_config_dir_value(env: &[(String, String)], ignore_case: bool) -> Option<&str> {
@@ -142,22 +143,20 @@ fn join_claude_config_dir(cwd: &Path, value: &str) -> Option<PathBuf> {
     (!value.is_empty()).then(|| cwd.join(value))
 }
 
+/// The Claude config folder a launch with `env` (over PandaCode's own environment) uses. A set
+/// but empty `CLAUDE_CONFIG_DIR` is unknown (`None`, fail closed), never `<home>/.claude`.
 pub(crate) fn resolve_claude_config_dir_env(
     env: &[(String, String)],
     cwd: &Path,
     ignore_case: bool,
 ) -> Option<PathBuf> {
-    let inherited;
-    let value = match claude_config_dir_value(env, ignore_case) {
-        Some(value) => Some(value),
-        None => {
-            inherited = std::env::var("CLAUDE_CONFIG_DIR").ok();
-            inherited.as_deref()
-        }
-    };
-    value
-        .and_then(|value| join_claude_config_dir(cwd, value))
-        .or_else(|| crate::account_config::home(env).map(|home| home.join(".claude")))
+    if let Some(value) = claude_config_dir_value(env, ignore_case) {
+        return join_claude_config_dir(cwd, value);
+    }
+    match std::env::var_os("CLAUDE_CONFIG_DIR") {
+        Some(value) => (!value.is_empty()).then(|| cwd.join(value)),
+        None => crate::account_config::home(env).map(|home| home.join(".claude")),
+    }
 }
 
 pub(super) fn host_managed_settings_restrict_reads() -> bool {
@@ -180,12 +179,17 @@ pub(super) fn managed_settings_restrict_reads(path: Option<&Path>) -> bool {
 }
 
 pub(super) fn settings_drop_ins_restrict_reads(path: &Path) -> bool {
+    /// More entries than this are not walked: the policy fails closed instead.
+    const MANAGED_DROP_INS_LIMIT: usize = 256;
     let entries = match std::fs::read_dir(path) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(path) => return false,
         Err(_) => return read_settings_warning("unreadable managed settings directory"),
     };
-    for entry in entries {
+    for (index, entry) in entries.enumerate() {
+        if index >= MANAGED_DROP_INS_LIMIT {
+            return read_settings_warning("too many managed settings files");
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(_) => return read_settings_warning("unreadable managed settings entry"),
@@ -200,16 +204,17 @@ pub(super) fn settings_drop_ins_restrict_reads(path: &Path) -> bool {
 }
 
 /// User settings plus project/local settings from cwd through the nearest repository root.
-/// Without a repository, only cwd is a project. An overridden user folder must not accidentally
-/// load the original $HOME/.claude again while walking a repository rooted at home.
-pub(super) fn read_deny_rules(config_dir: &Path, cwd: &Path, home_settings: Option<&Path>) -> bool {
+/// Without a repository, only cwd is a project. When `CLAUDE_CONFIG_DIR` points elsewhere,
+/// Claude Code still loads `$HOME/.claude/settings*.json` as project settings for a repository
+/// rooted at home, so only the active config folder itself is skipped (not read twice).
+pub(super) fn read_deny_rules(config_dir: &Path, cwd: &Path) -> bool {
     if SETTINGS_FILES.iter().any(|name| file_restricts_reads(&config_dir.join(name))) {
         return true;
     }
     let roots = project_config_roots(cwd);
     for ancestor in &roots.ancestors {
         let project = ancestor.join(".claude");
-        if project != config_dir && home_settings != Some(project.as_path())
+        if !same_settings_directory(&project, config_dir)
             && SETTINGS_FILES.iter().any(|name| file_restricts_reads(&project.join(name)))
         {
             return true;
@@ -220,11 +225,8 @@ pub(super) fn read_deny_rules(config_dir: &Path, cwd: &Path, home_settings: Opti
     }
     let Some(main_root) = roots.main_worktree else { return false };
     let project = main_root.join(".claude");
-    let checked = |dir: &Path| same_settings_directory(&project, dir);
-    if checked(config_dir) || home_settings.is_some_and(checked) {
-        return false;
-    }
-    file_restricts_reads(&project.join("settings.local.json"))
+    !same_settings_directory(&project, config_dir)
+        && file_restricts_reads(&project.join("settings.local.json"))
 }
 
 /// The project folders whose Claude Code settings, memory and rules apply to a launch in `cwd`.
@@ -301,9 +303,11 @@ fn windows_managed_settings_paths(
     program_files: Option<std::ffi::OsString>,
     program_data: Option<std::ffi::OsString>,
 ) -> Vec<PathBuf> {
-    let mut paths = vec![PathBuf::from(
-        r"C:\Program Files\ClaudeCode\managed-settings.json",
-    )];
+    // Joined like the others so a `%ProgramFiles%` equal to the default deduplicates on every
+    // platform's path rules.
+    let mut paths = vec![PathBuf::from(r"C:\Program Files")
+        .join("ClaudeCode")
+        .join("managed-settings.json")];
     for root in [program_files, program_data]
         .into_iter()
         .flatten()
@@ -577,24 +581,39 @@ pub(super) fn host_managed_settings_may_allow() -> bool {
     host_managed_settings_match(managed_path_may_allow)
 }
 
+#[cfg(windows)]
 fn host_managed_settings_match(path_matches: impl FnMut(&Path) -> bool) -> bool {
-    let paths = host_managed_settings_paths();
-    #[cfg(windows)]
-    if std::env::var_os("PROGRAMDATA").is_none_or(|value| value.is_empty()) {
-        // Unknown legacy policy location.
+    windows_managed_settings_match_with(
+        std::env::var_os("ProgramFiles"),
+        std::env::var_os("PROGRAMDATA"),
+        path_matches,
+        windows_registry_policy_status,
+    )
+}
+
+#[cfg(not(windows))]
+fn host_managed_settings_match(path_matches: impl FnMut(&Path) -> bool) -> bool {
+    host_managed_settings_paths()
+        .as_ref()
+        .is_none_or(|paths| managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches))
+}
+
+/// Windows policy files (and `.d` drop-ins) under `%ProgramFiles%` and `%PROGRAMDATA%`, then the
+/// policy registry keys. Both probes are injected so every platform tests this exact function.
+/// An unknown `PROGRAMDATA` (legacy policy location) fails closed.
+#[cfg(any(windows, test))]
+pub(super) fn windows_managed_settings_match_with(
+    program_files: Option<std::ffi::OsString>,
+    program_data: Option<std::ffi::OsString>,
+    path_matches: impl FnMut(&Path) -> bool,
+    registry_status: impl FnMut(u32, &str) -> i32,
+) -> bool {
+    if program_data.as_ref().is_none_or(|value| value.is_empty()) {
         return true;
     }
-    let files_match = paths
-        .as_ref()
-        .is_none_or(|paths| managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches));
-    #[cfg(windows)]
-    {
-        files_match || windows_registry_policy_present(windows_registry_policy_status)
-    }
-    #[cfg(not(windows))]
-    {
-        files_match
-    }
+    let paths = windows_managed_settings_paths(program_files, program_data);
+    managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches)
+        || windows_registry_policy_present(registry_status)
 }
 
 fn managed_entries_match<'a>(
@@ -619,21 +638,6 @@ pub(super) fn managed_path_may_allow_with(stat: impl FnOnce() -> std::io::Result
         Ok(()) => true,
         Err(error) => error.kind() != std::io::ErrorKind::NotFound,
     }
-}
-
-/// Inject both probes so every platform can test Windows policy paths and registry failures.
-#[cfg(test)]
-pub(super) fn windows_managed_settings_may_allow_with(
-    program_data: Option<std::ffi::OsString>,
-    path_matches: impl FnMut(&Path) -> bool,
-    registry_status: impl FnMut(u32, &str) -> i32,
-) -> bool {
-    if program_data.as_ref().is_none_or(|value| value.is_empty()) {
-        return true;
-    }
-    let paths = windows_managed_settings_paths(None, program_data);
-    managed_entries_match(paths.iter().map(PathBuf::as_path), path_matches)
-        || windows_registry_policy_present(registry_status)
 }
 
 #[cfg(any(windows, test))]
@@ -693,28 +697,48 @@ pub(super) const SETTINGS_FILES: [&str; 2] = ["settings.json", "settings.local.j
 pub(super) const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
 
 /// Best-effort, read-only check for an allow rule that lets native edits through without
-/// asking, in `config_dir`'s and `project`'s `.claude` settings files (`permissions.allow`, or a
-/// `permissions.defaultMode` other than `default`). Any unreadable, oversized or unexpected file
-/// counts as holding one, so the wait is never relied on by mistake. Managed (enterprise)
-/// settings are checked separately (`host_managed_settings_may_allow`). Limits: `--settings` flags, parent folders of `project` and the user's
-/// environment are not read, so a rule there still lets a write beat its baseline; the
+/// asking (`permissions.allow`, or a `permissions.defaultMode` other than `default`), in the
+/// same files `read_deny_rules` walks: `config_dir`'s settings, each `.claude` from `project`
+/// up to the nearest repository root, and a linked worktree's main checkout local settings.
+/// Any unreadable, oversized or unexpected file, or unreadable repository metadata, counts as
+/// holding one, so the wait is never relied on by mistake. Managed (enterprise) settings are
+/// checked separately (`host_managed_settings_may_allow`). Limits: `--settings` flags and the
+/// user's environment are not read, so a rule there still lets a write beat its baseline; the
 /// tracker then marks the turn partial. Nothing from a file's contents is ever logged.
-pub(crate) fn edit_allow_rules(config_dir: &std::path::Path, project: &std::path::Path) -> bool {
-    let project = project.join(".claude");
-    let files = SETTINGS_FILES.iter().map(|name| config_dir.join(name)).chain(SETTINGS_FILES.iter().map(|name| project.join(name)));
+pub(crate) fn edit_allow_rules(config_dir: &Path, project: &Path) -> bool {
+    let roots = project_config_roots(project);
+    let mut files: Vec<PathBuf> = SETTINGS_FILES.iter().map(|name| config_dir.join(name)).collect();
+    for ancestor in &roots.ancestors {
+        let settings = ancestor.join(".claude");
+        if !same_settings_directory(&settings, config_dir) {
+            files.extend(SETTINGS_FILES.iter().map(|name| settings.join(name)));
+        }
+    }
+    if let Some(main_root) = &roots.main_worktree {
+        let settings = main_root.join(".claude");
+        if !same_settings_directory(&settings, config_dir) {
+            files.push(settings.join("settings.local.json"));
+        }
+    }
     // Every file is checked, so each unreadable one is reported.
-    files.map(|path| file_allows_edits(&path)).fold(false, |found, allows| found | allows)
+    let found = files.iter().map(PathBuf::as_path).map(file_allows_edits).fold(false, |found, allows| found | allows);
+    match roots.error {
+        Some(reason) => edit_settings_warning(reason),
+        None => found,
+    }
 }
 
-pub(super) fn file_allows_edits(path: &std::path::Path) -> bool {
+pub(super) fn file_allows_edits(path: &Path) -> bool {
     match read_settings(path) {
         Ok(None) => false,
         Ok(Some(settings)) => settings_allow_edits(&settings),
-        Err(reason) => {
-            eprintln!("PandaCode: a Claude Code settings file could not be checked for edit allow rules ({reason}); native edits use the tracking handshake.");
-            true
-        }
+        Err(reason) => edit_settings_warning(reason),
     }
+}
+
+fn edit_settings_warning(reason: &str) -> bool {
+    eprintln!("PandaCode: Claude Code settings could not be checked for edit allow rules ({reason}); native edits use the tracking handshake.");
+    true
 }
 
 /// A dangling symlink is an unreadable policy, not proof that no settings exist.

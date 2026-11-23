@@ -4591,10 +4591,15 @@ async fn run_process_launch(
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
         Some(tools) if warm::supported(&config) && warm::enabled_now() => {
-            // The key reads the task's switches and saved settings: off the runtime.
-            let (keyed, catalog) = (config.clone(), tools.tools.clone());
-            let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
-            warm::take(&config.session_id, &key)
+            // No pooled spare: the launch is counted and the warm key's config walk skipped.
+            if warm::has_spare_or_record_cold(&config.session_id) {
+                // The key reads the task's switches and saved settings: off the runtime.
+                let (keyed, catalog) = (config.clone(), tools.tools.clone());
+                let key = crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await?;
+                warm::take(&config.session_id, &key)
+            } else {
+                None
+            }
         }
         _ => {
             warm::launched_without_spare(&config.session_id);

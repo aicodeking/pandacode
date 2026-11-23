@@ -1632,6 +1632,8 @@ struct PreparedRun {
     restore_stage: Option<String>,
     /// The message is a slash command the harness runs itself (`app_instructions::bare_command`).
     native_command: bool,
+    /// The message is `/compact`: its turn starts no post-turn warm spare (`lead_spare::starts_spare`).
+    compacts: bool,
     turn_message_id: i64,
     turn_started: std::time::Instant,
     context_handoff: Option<i64>,
@@ -1743,7 +1745,7 @@ fn prepare_task_run_in_project(
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
-    let (prompt, skill, maintenance, native_command) = match admission.command {
+    let (prompt, skill, maintenance, compacts, native_command) = match admission.command {
         Some(command) => {
             if command.provider != session.provider
                 || command.cwd != cwd
@@ -1760,10 +1762,12 @@ fn prepare_task_run_in_project(
             // Skills are rewritten to `$name …` mentions; anything else stays `/name …`,
             // which the harness parses itself.
             let native = command.resolution.skill.is_none();
+            let compacts = command.resolution.compacts();
             (
                 command.resolution.prompt,
                 command.resolution.skill,
                 command.resolution.maintenance,
+                compacts,
                 native,
             )
         }
@@ -1774,7 +1778,7 @@ fn prepare_task_run_in_project(
         {
             return Err("The task command changed. Try again to load its commands.".into());
         }
-        None => (text.clone(), None, false, false),
+        None => (text.clone(), None, false, false, false),
     };
     let needs_context = context_recovery::pending(&store, &session)?;
     let goal_control = matches!(
@@ -1879,6 +1883,7 @@ fn prepare_task_run_in_project(
         config,
         restore_stage: maintenance.then_some(session.task_stage),
         native_command,
+        compacts,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -1934,6 +1939,7 @@ fn prepare_cloud_attach(
         config,
         restore_stage: None,
         native_command: false,
+        compacts: false,
         turn_message_id: cloud.turn_message,
         turn_started: std::time::Instant::now(),
         context_handoff: None,
@@ -2165,6 +2171,7 @@ async fn launch_operation_admitted(
         mut config,
         restore_stage,
         native_command,
+        compacts,
         turn_message_id,
         turn_started,
         context_handoff,
@@ -2353,7 +2360,7 @@ async fn launch_operation_admitted(
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle.
-        let warm_next = (providers::warm_spares_on(&app) && lead_spare::starts_spare(&config, managed_worker, cloud, maintenance)).then(|| {
+        let warm_next = (providers::warm_spares_on(&app) && lead_spare::starts_spare(&config, managed_worker, cloud, compacts)).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
