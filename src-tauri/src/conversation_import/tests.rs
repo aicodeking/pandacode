@@ -1,9 +1,14 @@
 use super::claude;
 use super::*;
+use super::zcode;
 use crate::storage::Store;
 use serde_json::json;
 
 const SESSION: &str = "0f9d1c4e-6f7a-4b8e-9c2d-3a1b5e7f9d10";
+const ZNEW: &str = "sess_5a2b1c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+const ZOLD: &str = "sess_7c8d9e0f-1a2b-4c3d-8e5f-6a7b8c9d0e1f";
+/// Synthetic clock: fixed so sort order and created times are exact.
+const ZT: i64 = 1_762_223_000_000;
 
 fn log(dir: &Path, cwd: &Path) -> PathBuf {
     let project = dir.join("projects").join("-tmp-demo");
@@ -133,4 +138,162 @@ fn claude_summary_keeps_a_windows_cwd_from_a_crlf_log() {
     assert_eq!((summary.cwd.as_str(), summary.messages), (cwd, 2));
     assert_eq!(claude::history(&path).len(), 2);
     std::fs::remove_dir_all(dir).ok();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn session_row(conn: &rusqlite::Connection, id: &str, parent: Option<&str>, directory: &Path, title: &str, created: i64, updated: i64, deleted: Option<i64>) {
+    conn.execute(
+        "INSERT INTO session (id, parent_id, directory, title, time_created, time_updated, time_deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, parent, directory.to_string_lossy(), title, created, updated, deleted],
+    )
+    .unwrap();
+}
+
+fn message_row(conn: &rusqlite::Connection, id: &str, session_id: &str, at: i64, sequence: i64, data: serde_json::Value) {
+    conn.execute("INSERT INTO message (id, session_id, time_created, sequence, data) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, session_id, at, sequence, data.to_string()]).unwrap();
+}
+
+fn part_row(conn: &rusqlite::Connection, id: &str, message_id: &str, session_id: &str, sequence: i64, data: serde_json::Value) {
+    conn.execute("INSERT INTO part (id, message_id, session_id, sequence, data) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![id, message_id, session_id, sequence, data.to_string()]).unwrap();
+}
+
+/// A minimal ZCode store: one newer and one older conversation, plus a deleted
+/// and a subagent session that must stay out, all synthetic.
+fn zcode_db(dir: &Path) -> PathBuf {
+    let db = dir.join("zcode").join("db.sqlite");
+    std::fs::create_dir_all(db.parent().unwrap()).unwrap();
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT, title TEXT, time_created INTEGER, time_updated INTEGER, time_deleted INTEGER);
+         CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, sequence INTEGER, data TEXT);
+         CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, sequence INTEGER, data TEXT);",
+    )
+    .unwrap();
+    session_row(&conn, ZNEW, None, dir, "Fix the flaky widget test", ZT - 900_000, ZT, None);
+    session_row(&conn, ZOLD, None, dir, "Migration notes", ZT - 9_000_000, ZT - 8_640_000, None);
+    session_row(&conn, "sess_9a9a9a9a-1b2c-4d3e-8f4a-5b6c7d8e9f0a", None, dir, "Deleted planning", ZT - 4_000_000, ZT - 3_000_000, Some(ZT - 1_000_000));
+    session_row(&conn, "sess_subagent_1111", Some(ZNEW), dir, "Subagent step", ZT - 500_000, ZT - 400_000, None);
+    message_row(&conn, "m1", ZNEW, ZT - 800_000, 1, json!({"role":"user","time":{"created":ZT - 800_000}}));
+    part_row(&conn, "p1", "m1", ZNEW, 1, json!({"type":"text","text":"Make the widget retry twice"}));
+    // A synthetic environment injection: it counts as a stored message but is not conversation.
+    message_row(&conn, "m2", ZNEW, ZT - 700_000, 2, json!({"role":"user","metadata":{"runtimeMessage":true}}));
+    part_row(&conn, "p2", "m2", ZNEW, 1, json!({"type":"text","text":"environment context"}));
+    message_row(&conn, "m3", ZNEW, ZT - 600_000, 3, json!({"role":"assistant","modelId":"glm-5.3"}));
+    part_row(&conn, "p3", "m3", ZNEW, 1, json!({"type":"text","text":"I will add the retry."}));
+    part_row(&conn, "p4", "m3", ZNEW, 2, json!({"type":"tool","tool":"Edit","state":{"status":"completed","input":{"file":"widget.ts"}}}));
+    db
+}
+
+#[test]
+fn zcode_lists_top_level_conversations_newest_first_and_skips_deleted_and_subagent_ones() {
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let rows = zcode::conversations(&db).unwrap();
+    assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), [ZNEW, ZOLD], "newest first; deleted and subagent sessions stay out");
+    assert_eq!(rows[0].title, "Fix the flaky widget test");
+    assert_eq!(rows[0].directory, dir.to_string_lossy());
+    assert_eq!(rows[0].updated_at, ZT);
+    assert_eq!(rows[0].messages, 3, "every stored message counts, even synthetic ones");
+    assert_eq!(rows[1].messages, 0);
+    assert!(matches(&Some("flaky".into()), &[rows[0].title.as_str(), rows[0].directory.as_str()]));
+    assert!(!matches(&Some("flaky".into()), &[rows[1].title.as_str(), rows[1].directory.as_str()]));
+    assert!(zcode::conversations(&db).is_ok());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_unreadable_store_is_an_error_not_an_empty_list() {
+    let dir = temp();
+    let db = dir.join("old-schema.sqlite");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("CREATE TABLE session (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::conversations(&db).is_err(), "a store without the import columns is an error, not an empty page");
+    assert!(zcode::conversations(&dir.join("missing.sqlite")).is_err(), "a missing store cannot be listed either");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_broken_history_read_is_an_error_not_an_empty_history() {
+    // Broken part table: the session row reads, but history cannot.
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE part; CREATE TABLE part (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::conversation(&db, ZNEW).unwrap().is_some(), "the session itself is still readable");
+    assert!(zcode::history(&db, ZNEW).is_err(), "a failed part query is an error, not an empty history");
+    assert!(zcode::read(&db, ZNEW).is_err(), "a failed history read fails the import, not an empty task");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    // Broken message table: same for the message query and the model read.
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch("DROP TABLE message; CREATE TABLE message (id TEXT PRIMARY KEY);").unwrap();
+    drop(conn);
+    assert!(zcode::history(&db, ZNEW).is_err(), "a failed message query is an error, not an empty history");
+    assert!(zcode::model(&db, ZNEW).is_err(), "a failed message query is an error, not no model");
+    assert!(zcode::read(&db, ZNEW).is_err(), "a failed history read fails the import, not an empty task");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn zcode_history_keeps_text_and_tool_names_but_skips_runtime_injections() {
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let history = zcode::history(&db, ZNEW).unwrap();
+    let roles: Vec<_> = history.iter().map(|entry| entry.0).collect();
+    assert_eq!(roles, ["user", "assistant", "tool"]);
+    assert_eq!(history[0].1, "Make the widget retry twice");
+    assert_eq!(history[1].1, "I will add the retry.");
+    assert_eq!(history[2].1, "Tool: Edit");
+    let all = history.iter().map(|entry| entry.1.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(!all.contains("environment context"), "runtimeMessage rows are not conversation");
+    assert!(!all.contains("widget.ts"), "tool payloads stay out");
+    assert_eq!(zcode::history(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), Vec::new());
+    assert_eq!(zcode::model(&db, ZNEW).unwrap().as_deref(), Some("glm-5.3"));
+    assert_eq!(zcode::model(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), None);
+    assert_eq!(zcode::conversation(&db, ZNEW).unwrap().unwrap().created_at, ZT - 900_000);
+    assert_eq!(zcode::conversation(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap(), None);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn importing_a_zcode_conversation_uses_its_title_model_and_resume_id_and_dedupes() {
+    let dir = temp();
+    let db = zcode_db(&dir);
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    // The reads gather outside the store lock; the helper holds only the import.
+    let import = |store: &Store, id: &str| import_zcode_row(store, id, "fallback-model", zcode::read(&db, id).unwrap().unwrap());
+    let task = import(&store, ZNEW).unwrap();
+    assert_eq!(task.resume_id.as_deref(), Some(ZNEW));
+    assert_eq!(task.provider, "zcode");
+    assert_eq!(task.title, "Fix the flaky widget test");
+    assert_eq!(task.model, "glm-5.3", "the newest assistant model wins over the fallback");
+    assert_eq!(task.created_at, ZT - 900_000);
+    let canonical = dir.canonicalize().unwrap();
+    let canonical = canonical.to_string_lossy().into_owned();
+    let project = store.projects().unwrap().into_iter().find(|project| project.path == canonical).unwrap();
+    assert_eq!(task.project_id, project.id, "the conversation lands in the project for its folder");
+    let saved = store.messages(&task.id, None).unwrap();
+    let roles: Vec<_> = saved.iter().map(|message| message.role.as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "tool"], "entries keep their conversation order");
+    assert_eq!(store.imported_task("zcode", ZNEW).unwrap().as_deref(), Some(task.id.as_str()));
+    assert_eq!(import(&store, ZNEW).unwrap().id, task.id, "a second import returns the existing task");
+    assert!(zcode::read(&db, "sess_00000000-0000-4000-8000-000000000000").unwrap().is_none(), "a conversation gone from the store cannot be read");
+
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    // A folder that vanishes after the first import must not fail a re-import.
+    conn.execute("UPDATE session SET directory = '/definitely/gone/folder' WHERE id = ?1", rusqlite::params![ZNEW]).unwrap();
+    assert_eq!(import(&store, ZNEW).unwrap().id, task.id, "the existing task wins over the missing folder");
+    let (long, untitled) = ("sess_bb1b1b1b-2c3d-4e4f-8a5b-6c7d8e9f0a1b", "sess_cc2c2c2c-3d4e-4f5a-8b6c-7d8e9f0a1b2c");
+    session_row(&conn, long, None, &dir, &"x".repeat(300), ZT - 100_000, ZT - 100_000, None);
+    session_row(&conn, untitled, None, &dir, "", ZT - 90_000, ZT - 90_000, None);
+    assert_eq!(import(&store, long).unwrap().title.len(), 160, "long titles are capped like the Codex path");
+    assert_eq!(import(&store, untitled).unwrap().title, "Imported ZCode conversation");
+    let rows = zcode::conversations(&db).unwrap();
+    assert_eq!(rows.iter().find(|row| row.id == long).unwrap().title.len(), 160, "the picker caps long titles too");
+    assert_eq!(rows.iter().find(|row| row.id == untitled).unwrap().title, "Untitled conversation");
+    std::fs::remove_dir_all(dir).unwrap();
 }
