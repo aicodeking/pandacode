@@ -1069,6 +1069,12 @@ kind `tool_call`. In `turn.completed`, `usage.inputTokens` already includes
 `cacheReadTokens`, so context used is `inputTokens`. A busy session queues a
 second message server-side, so steering holds for the next turn.
 
+**Subagents and checkpoints.** `subagent.lifecycle` (spawned/stopped) is shown
+in the existing subagent panel via the Agent-tool observer. `checkpoint.created`
+is a status line with the checkpoint id. Compaction is the discovered `/compact`
+command (see slash-command discovery). Extra folders (`additionalDirectories` on
+create) wait on a task having extra roots to pass; this checkout has none yet.
+
 **Not yet.** Screenshots are refused (the composer offers documents and folders
 with a note); interactive questions (`interaction/requestUserInput`) decline with a
 note so the turn continues; slash-command discovery and the harness console are not
@@ -1474,7 +1480,14 @@ The key lives in the secure store (`alibaba-token-plan`) or comes from
 `ALIBABA_TOKEN_PLAN_API_KEY`, which is scrubbed from the child with the other relay keys.
 Isolation is MiMo's: `--setting-sources ""`, the endpoint and model slots in `--settings`.
 Every Claude Code slot must name a plan model or requests fail, so main and Opus are
-`qwen3.8-max` and Sonnet and Haiku `qwen3.8-flash` (the documented mapping). The picker
-lists the text models from the Personal Edition overview's "Supported models"
-(Qwen 3.6–4 preview, `auto`, DeepSeek V4, GLM 5.2/5.3), read on 2026-11-12;
-`qwen4-max-preview` retires after November 25, 2026. Cloud machines do not run it yet.
+`qwen3.8-max` and Sonnet and Haiku `qwen3.8-flash` (the documented mapping).
+
+The model picker and team editor list stable `qwen4-max` and the October 17 snapshot
+`deepseek-v4.1-flash-1017` as distinct choices, alongside `qwen4-max-preview` and
+`deepseek-v4.1-flash`. Qwen4-Max offers Low, High (default), and Extra high reasoning effort.
+See the [Personal Edition supported models](https://www.alibabacloud.com/help/en/model-studio/token-plan-personal-overview#supported-models)
+and [Anthropic-compatible API reference](https://www.alibabacloud.com/help/en/model-studio/anthropic-api-messages).
+
+Existing tasks and teams keep their saved `qwen4-max-preview` ID. Alibaba retires it after
+November 25, 2026 (UTC+8). Select `qwen4-max` to continue using Qwen4-Max after retirement.
+Cloud machines do not run Alibaba Token Plan yet.

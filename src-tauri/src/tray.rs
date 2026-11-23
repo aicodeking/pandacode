@@ -102,10 +102,32 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 }
 
 pub fn show(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    let Some(window) = app.get_webview_window("main").or_else(|| reopen_main_window(app)) else { return };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// The configured window the menu bar item opens: the workspace window, labelled `main`.
+fn workspace_window(config: &tauri::utils::config::Config) -> Option<&tauri::utils::config::WindowConfig> {
+    config.app.windows.iter().find(|window| window.label == "main")
+}
+
+/// The workspace window when the close button left nothing behind: build it again from the app
+/// config, so "Open PandaCode" opens a window instead of doing nothing. `hide_on_close` normally
+/// keeps the window alive; this is the fallback for when it did not, where a new window is the
+/// only way back to the tasks.
+fn reopen_main_window(app: &AppHandle) -> Option<WebviewWindow> {
+    let config = workspace_window(app.config())?.clone();
+    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build()) {
+        Ok(window) => {
+            crate::install_main_window(app, &window);
+            Some(window)
+        }
+        Err(error) => {
+            eprintln!("Workspace window could not be reopened: {error}");
+            None
+        }
     }
 }
 
@@ -505,5 +527,14 @@ mod tests {
         assert!(close_quits(true, false));
         assert!(close_quits(false, false), "nothing could reopen the window");
         assert!(!close_quits(false, true), "macOS and Windows with a menu bar item only hide");
+    }
+
+    #[test]
+    fn open_rebuilds_the_window_it_looks_for() {
+        let mut config = tauri::utils::config::Config::default();
+        config.app.windows = vec![tauri::utils::config::WindowConfig { label: "main".into(), ..Default::default() }];
+        assert!(workspace_window(&config).is_some(), "the workspace window is the one show finds");
+        config.app.windows[0].label = "renamed".into();
+        assert!(workspace_window(&config).is_none(), "only the window show looks for is rebuilt");
     }
 }

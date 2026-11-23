@@ -537,6 +537,33 @@ test.describe('architect teams', () => {
     await expect(tools.locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
   });
 
+  test('workers without a dispatch row stay inside the live card and then the saved continuation card', async ({ page }) => {
+    test.setTimeout(40_000);
+    const history = [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 1000 },
+      { id: 302, sessionId: 'session-2', role: 'assistant', content: 'Initial work.', createdAt: 2000 },
+      { id: 303, sessionId: 'session-2', role: 'changes', content: '', createdAt: 2000 },
+    ];
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [] }) }, { 'session-2': history });
+    await expect(transcript(page).getByText('Initial work.', { exact: true })).toBeVisible();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'Continuing the work.' }));
+    const liveCard = transcript(page).locator('.turn-card.is-live');
+    await expect(liveCard.locator('.live-text')).toContainText('Continuing the work.');
+    const build = worker('build', { createdAt: await page.evaluate(() => Date.now()), status: 'completed' });
+    await publish(page, team('session-2', { status: 'completed', workers: [build] }));
+    await expect(liveCard.locator(':scope > #team-progress-host .team-progress-worker')).toHaveCount(1);
+    await expect(transcript(page).locator('.team-progress:not(.turn-card *)')).toHaveCount(0);
+    await page.evaluate(createdAt => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push({ id: 304, sessionId: 'session-2', role: 'assistant', content: 'Continuing the work.', createdAt });
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+    }, build.createdAt);
+    await expect(liveCard).toHaveCount(0, { timeout: 20_000 });
+    const savedCard = transcript(page).locator('.turn-card:not(.is-live)').filter({ hasText: 'Continuing the work.' });
+    await expect(savedCard.locator('.team-progress-worker[data-worker-id="build"]')).toHaveCount(1);
+    await expect(transcript(page).locator('.team-progress')).toHaveCount(1);
+  });
+
   test('keeps earlier workers above a resumed coordination turn', async ({ page }) => {
     const earlier = [worker('build', { status: 'completed', createdAt: 2500 }), worker('review', { status: 'completed', createdAt: 2500 })];
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers: earlier }) }, { 'session-2': [
@@ -943,7 +970,7 @@ test.describe('architect teams', () => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': [
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
     ] as Message[] });
-    const list = transcript(page).locator('.team-progress'), toggle = list.locator('.team-progress-toggle');
+    const list = transcript(page).locator('.turn-card .team-progress'), toggle = list.locator('.team-progress-toggle');
     const row = list.locator('.team-progress-worker[data-worker-id="build"]');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(row).toBeHidden();

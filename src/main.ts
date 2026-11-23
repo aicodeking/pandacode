@@ -47,7 +47,7 @@ import { limitActive, limitBanner, resetLabel } from './usage-limit';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
-import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
+import { classicTeamSetup, isTeam, namedTeams, sameTeamSetup, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
 import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, measureReplies, replyHtml, replyOpen, timeHtml, watchReplies } from './turn-card';
@@ -76,7 +76,7 @@ import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, toolKind, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
-import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
+import { groupTurns, normalizeCardTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -135,7 +135,7 @@ import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
 import { isMac, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
-import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
+import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamProfile, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
@@ -302,7 +302,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); syncTeamRows(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -317,7 +317,10 @@ function onArchitect(team: TeamEvent): void {
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
   // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
   if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
-  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team)); if (!current) syncTeamRows(); }
+  if (team.sessionId === state.sessionId) {
+    scheduleTeamRender(wasActive !== teamActive(team));
+    if (!current || current.workers.length !== team.workers.length || team.workers.some((worker, index) => worker.createdAt !== current.workers[index].createdAt)) syncTeamRows();
+  }
   scheduleNavigation();
 }
 /** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
@@ -422,7 +425,8 @@ function teamState(s: Session): { id: string; label: string } {
   const team = teams.get(s.id);
   if (!team) return { id: 'off', label: 'Team' };
   if (team.config.rosterOnly) return { id: 'named', label: team.config.name?.trim() || 'Team' };
-  const kind = team.config.auto && routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
+  if (!team.config.auto) return { id: 'classic', label: 'Team' };
+  const kind = routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
   return kind ?? { id: 'lead', label: 'Team' };
 }
 const teamButtonHtml = (s: Session) => `${teamToggles.has(s.id) ? '<span class="support-spinner" aria-hidden="true"></span>' : icon('team')}<span class="sr-only">${escape(teamState(s).label)}</span>${icon('down')}`;
@@ -435,13 +439,14 @@ const modeTip = (mode: ApprovalMode) => `${mode.label}: ${mode.description}`;
 const modeName = (mode: ApprovalMode) => `Mode: ${mode.label}`;
 const modeFaceHtml = (mode: ApprovalMode) => `${icon(mode.icon)}<span class="sr-only">${escape(mode.label)}</span>${icon('down')}`;
 const trayStateChanged = () => { const id = state.sessionId; if (id) syncTrayState(id, teams.has(id)); };
-/** Team opens the team menu, or with Settings → Classic team setup opens Architect & workers. */
+/** Team always opens the menu. Classic team setup also adds a shortcut to the setup panel. */
 function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
-  return classicTeamSetup()
+  const menu = `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+  return menu + (classicTeamSetup()
     ? `<button type="button" id="architect-setup-trigger" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
-    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+    : '');
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
 let routing: RoutingStatus | null = null;
@@ -529,25 +534,53 @@ async function configureRouting(mode: RoutingMode): Promise<void> {
     }
   }
 }
-/** No team, a team whose lead picks models, or a team whose workers Panda Router picks by kind (the global mode). */
+/** Selects the task's team or opens the Classic setup panel. */
 async function showTeamMenu(anchor: HTMLElement): Promise<void> {
-  const task = session(); if (!task) return;
+  if (pendingMenuOpen && liveAnchor(pendingMenuOpen.anchor) === anchor) { cancelPendingMenu(); return; }
+  if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+  const task = session(); if (!task || taskBusyConfiguring(task.id)) return;
   if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
-  if (!teams.has(task.id)) await loadTeam(task.id);
+  closeMenus();
+  const generation = state.generation;
+  const { epoch, release } = beginMenuOpen(anchor);
+  const [library] = await Promise.all([
+    call<TeamLibrary>('architect_profiles').catch(() => null),
+    teams.has(task.id) ? null : loadTeam(task.id),
+  ]).finally(release);
+  const live = liveAnchor(anchor);
+  const canChange = () => task.id === state.sessionId && state.generation === generation;
+  if (epoch !== menuEpoch || !live || !canChange() || taskBusyConfiguring(task.id)) return;
   const { id: current, label } = teamState(task), team = teams.get(task.id);
   const routed = routing?.enabled === true;
+  const profiles = library?.profiles ?? [];
+  const selectedProfile = team && profiles.find(profile => {
+    const config = profile.setup.config;
+    if (config.rosterOnly) return isTeam(team.config, profile);
+    return Boolean(config.auto) === Boolean(team.config.auto) && !team.config.rosterOnly
+      && sameTeamSetup({ architect: session() ?? task, config: team.config }, profile.setup);
+  });
+  const selected = selectedProfile ? `profile:${selectedProfile.id}` : current;
   // A kind replaces a named agent team, and turns routing on when it is off (or its status is unknown).
   const note = current === 'named' ? `Replaces ${label}` : '';
   const items = [
     { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
-    ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
+    ...(current === 'named' && !selectedProfile ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
     ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
     ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: toned(k.leading, 'team'), heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
-  ].map(item => ({ ...item, selected: item.id === current }));
+    ...(classicTeamSetup() ? [{ id: 'setup', label: 'Architect & workers…', leading: icon('team'), separator: true }] : []),
+    ...profiles.map((profile, index) => ({ id: `profile:${profile.id}`, label: profile.name, description: profile.setup.config.rosterOnly ? 'Agent team' : pickerTeamDetail(profile), leading: toned(icon('team'), 'team'), heading: index ? undefined : 'Saved teams' })),
+  ].map(item => ({ ...item, selected: item.id === selected }));
   // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
-  let turnedOn = false;
-  await showChoices(anchor, { title: 'Team', width: 320, items, afterClose: () => { if (turnedOn && task.id === state.sessionId) renderComposer(); }, onSelect: async id => {
-    if (id === current || id === 'named') return;
+  let turnedOn = false, openSetup = false;
+  await showChoices(live, { title: 'Team', width: 320, items, searchPlaceholder: items.length > 100 ? 'Find a team…' : undefined, afterClose: () => {
+    if (!canChange()) return;
+    if (openSetup) { const trigger = liveAnchor(live); if (trigger) run(showArchitectSetup(trigger)); }
+    if (turnedOn) { renderComposer(); renderHeader(); }
+  }, onSelect: async id => {
+    if (id === 'setup') { openSetup = true; return; }
+    if (id === selected || id === 'named') return;
+    const profile = profiles.find(item => `profile:${item.id}` === id);
+    if (profile) { await saveTeamProfile(task, profile, canChange); turnedOn = true; return; }
     if (id === 'off') { await setTeam(task, false); return; }
     // The team turns on first, so a refusal leaves the global mode alone; an automatic team only changes kind.
     const keep = team && !team.config.rosterOnly && team.config.auto;
@@ -653,7 +686,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('toggle-files', 'Toggle file explorer', 'folder', '', 'id="files-toggle" aria-controls="inspector" aria-pressed="false"')}${button('toggle-file-editor', 'Toggle editor', 'edit', '', 'id="file-editor-toggle" aria-controls="file-panel" aria-expanded="false" hidden')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
     <div class="work-area"><section id="project-board" class="project-board" aria-label="Project board" hidden></section><section id="github-hub" aria-label="GitHub" hidden></section><section class="conversation-pane"><div id="task-details-heading" class="task-details-heading" hidden></div><aside id="progress-pip" class="progress-pip" aria-label="Visual progress" hidden></aside><div id="transcript" class="transcript" role="log" aria-label="Conversation" aria-live="off"></div><div id="composer-area" class="composer-area"></div><div id="composer-live" class="sr-only" role="status" aria-live="polite"></div></section></div>
-    <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
+    <div id="terminal-drawer" class="terminal-drawer" hidden><div class="drawer-heading"><span>${icon('terminal')}<span id="terminal-project" class="muted"></span></span><div class="terminal-tabs" role="tablist" aria-label="Terminal tabs"></div><div class="terminal-heading-actions"><button class="icon-button" data-terminal-action="new" aria-label="New terminal" title="New terminal">${icon('plus')}</button><button class="icon-button" data-terminal-action="maximize" aria-label="Maximize terminal" title="Maximize terminal">${icon('maximize')}</button><button class="icon-button" data-terminal-action="minimize" aria-label="Minimize terminal" title="Minimize terminal">${icon('minimize')}</button><button class="icon-button" data-terminal-action="close" aria-label="Close terminal" title="Close terminal" aria-haspopup="dialog">${icon('close')}</button></div></div><div id="terminal-host"></div></div>
   </main>
   <section id="settings-page" aria-label="Settings" hidden></section>
   <aside id="inspector" class="inspector" aria-label="Project inspector"><div class="inspector-strip"><nav class="inspector-tabs" role="tablist" aria-label="Panel views">${INSPECTOR_AVAILABLE.map(view => `<div class="inspector-tab" data-view="${view}" hidden><button class="inspector-tab-button" role="tab" aria-selected="false" tabindex="-1" data-action="${INSPECTOR_ACTIONS[view]}" aria-label="${INSPECTOR_TITLES[view]}" title="${escape(INSPECTOR_TIPS[view] ?? INSPECTOR_TITLES[view])}">${icon(INSPECTOR_ICONS[view])}<span class="inspector-tab-label">${INSPECTOR_TITLES[view]}</span>${view === 'changes' ? '<span id="changes-count" class="inspector-tab-count"></span>' : ''}</button>${button('close-inspector-tab', `Close ${INSPECTOR_TITLES[view]}`, 'close', 'inspector-tab-close', `data-view="${view}" tabindex="-1"`)}</div>`).join('')}${button('inspector-add-tab', 'Open a view', 'plus', 'inspector-tab-add', 'aria-haspopup="dialog"')}</nav><h2 id="inspector-title" class="sr-only">${INSPECTOR_TITLES[inspectorTabs.selected]}</h2><div class="inspector-strip-actions">${button('refresh-inspector', 'Refresh project', 'refresh', '', 'id="inspector-refresh"')}${button('toggle-inspector', 'Hide inspector', 'panel', 'inspector-hide')}</div></div><div id="inspector-content" class="inspector-content"></div><section id="browser-panel" class="browser-panel" aria-label="Browser" hidden></section><section id="simulator-panel" class="simulator-panel" aria-label="Simulators" hidden></section><section id="vm-panel" class="vm-panel" aria-label="Virtual machines" hidden></section><section id="design-panel" class="design-panel" aria-label="Design" hidden></section><section id="file-panel" class="file-panel" aria-label="Open files" hidden><div id="file-tabs" class="file-tabs" role="tablist" aria-label="Open files" hidden></div><section id="file-view" class="file-view" role="tabpanel" aria-label="Open file" hidden></section></section></aside>
@@ -1411,6 +1444,7 @@ function discardDraft(id: string): void {
   state.drafts.delete(id);
   provisionalTasks.delete(id);
   deletedSessions.add(id);
+  setQueueHold(id);
   const pending = provisionalCorrections.get(id);
   const drop = () => void call<boolean>('discard_draft', { sessionId: id }).catch(() => undefined);
   if (pending) void pending.catch(() => undefined).finally(drop);
@@ -1800,6 +1834,8 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
+  // A Team menu waiting for profiles can open from the replacement trigger after a composer redraw.
+  if (pendingMenuOpen?.anchor.id === 'team-trigger') return;
   // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
@@ -1824,7 +1860,7 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
     event.preventDefault(); event.stopPropagation(); cancelPendingMenu();
   }
   function onOutside(event: Event): void {
-    if (event.target instanceof Node && !anchor.contains(event.target)) cancelPendingMenu();
+    if (event.target instanceof Node && !liveAnchor(anchor)?.contains(event.target)) cancelPendingMenu();
   }
   pendingMenuOpen = { anchor, release };
   document.addEventListener('keydown', onEscape, true);
@@ -2177,36 +2213,36 @@ function botCrumb(bot: import('./bots').Bot): string {
   return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
-function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId, topLevel = false): string {
-  const start = turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
-  // A card always carries its (hidden) slot, so a team landing after the rows fills slots rather than redrawing every
-  // card. A slot that would be a row of its own (chat rows, a turn with no card) is drawn only with a team.
+function workerSlot(turn: TranscriptTurn, sessionId: string, topLevel = false): string {
+  const start = topLevel ? turn.user?.createdAt ?? turn.coordination?.createdAt : turnWorkerStart(turn);
+  // Each card carries a hidden slot so a team can arrive after the card draws. Chat rows add a slot only with a team.
   return start !== undefined && (!topLevel || teams.get(sessionId)) ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
 }
+const turnWorkerStart = (turn: TranscriptTurn): number | undefined => turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
 /** Each spawned worker shows in the turn it was spawned in; while that turn is still running,
  *  it follows the live activity at the end of the thread. */
 function refreshTeamProgress(): void {
-  const liveHost = document.querySelector<HTMLElement>('#team-progress-host');
-  if (!liveHost) return;
+  const transcript = document.getElementById('transcript');
+  if (!transcript) return;
+  const chatRows = Boolean(botForThread());
+  const liveHost = transcript.querySelector<HTMLElement>(chatRows ? '#team-progress-host' : '.turn-card #team-progress-host');
   const team = teams.get(state.sessionId), workers = team?.workers ?? [];
-  const slots = [...document.querySelectorAll<HTMLElement>('#transcript .team-progress-slot')].map(slot => ({ slot, start: Number(slot.dataset.turnStart) }));
-  const placed = new Map<HTMLElement, typeof workers>([[liveHost, []], ...slots.map(({ slot }) => [slot, []] as [HTMLElement, typeof workers])]);
-  // Only a turn that is still streaming has no saved place yet. Workers spawned before it
-  // started (a coordination turn whose message hasn't loaded yet) keep their saved place.
-  const startedAt = state.streams.get(state.sessionId)?.startedAt;
+  const slots = [...transcript.querySelectorAll<HTMLElement>(chatRows ? '.team-progress-slot' : '.turn-card .team-progress-slot')].reverse();
+  const placed = new Map<HTMLElement, typeof workers>(slots.map(slot => [slot, []]));
+  if (liveHost) placed.set(liveHost, []);
+  const startedAt = workerLiveStart(state.sessionId);
   for (const worker of workers) {
-    let index = -1;
-    slots.forEach((slot, at) => { if (slot.start <= worker.createdAt) index = at; });
-    // Its turn is older than the ones drawn so far; it takes its place when that turn is. A worker of the running turn
-    // always shows, whatever the drawn rows hold.
+    const slot = slots.find(slot => Number(slot.dataset.turnStart) <= worker.createdAt);
     const live = startedAt !== undefined && worker.createdAt >= startedAt;
-    if (index < 0 && !live && transcriptView.view.first !== null && transcriptView.view.sessionId === state.sessionId) continue;
-    const turn = slots[Math.max(index, 0)];
-    placed.get(!turn || (live && index === slots.length - 1) ? liveHost : turn.slot)!.push(worker);
+    // A worker older than the drawn window takes its place once that turn is drawn.
+    if (!slot && !live && transcriptView.view.first !== null && transcriptView.view.sessionId === state.sessionId) continue;
+    const host = (live ? liveHost : undefined) ?? slot ?? slots.at(-1) ?? liveHost;
+    if (host) placed.get(host)!.push(worker);
   }
   const asking = (sessionId: string) => architectView?.needsInput(sessionId) ?? false;
   for (const [host, shown] of placed) updateTeamProgress(host, team, state.providers, shown, asking);
 }
+const workerLiveStart = (sessionId: string): number | undefined => (state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream)?.startedAt;
 /** A turn's change card, or nothing when the snapshot has nothing to report. */
 function changesRow(sessionId: string, changes: TurnChanges | undefined): string {
   // A remote task's diffs live on its computer; their review and commit actions would act on this one.
@@ -2239,7 +2275,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
     const switches = captureAccountSwitches(rows);
     rows.dataset.key = key;
     const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
-    const turns = mergeLeadTurns(withErrorTurns(groupTurns(messages)));
+    const turns = cardTurns(messages);
     const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
     const env = markupEnv(id, false, thread);
     const { from, added } = tileWindows.draw(rows, saved, turn => savedTurnHtml(turn, id, false, env, thread), `${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`, () => restoreAccountSwitches(rows, switches));
@@ -2269,7 +2305,7 @@ const tileWindows = mountTileWindows<TranscriptTurn>({
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, sessionId) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, sessionId) + dismissedNoteHtml(earlier) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -2303,23 +2339,41 @@ function markupEnv(sessionId: string, chatRows: boolean, thread = shownThread())
   return JSON.stringify([sessionId, sessionId === state.sessionId, chatRows, thread.provider, task?.remoteDevice?.id ?? '', chatRows && Boolean(teams.get(sessionId)), activityExpanded(), state.view === 'board', projectRunner.available(), lastHandoff(thread.messages), state.providers.length, schedulesVersion(), ...turnInputs.inputs()]);
 }
 /** A saved turn's markup, from turnMarkup when it still holds: the open thread's, or a tile's with its `thread`. */
-function savedTurnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, env: string, thread?: Thread): string {
+function savedTurnHtml(turn: CardTurn, sessionId: string, chatRows: boolean, env: string, thread?: Thread): string {
   const messages = turnMessages(turn);
   const head = messages.find(Boolean);
   if (!head || (!thread && sessionId !== state.sessionId) || messages.some(message => message && message.id <= 0)) return turnHtml(turn, sessionId, chatRows, thread);
-  const parts = [...messages, ...(turn.timeline ?? []), turn.changes, ...(turn.earlierChanges ?? []), turn.key, turn.durationMs, turn.estimated, turn.workerStart, state.providers, replyOpen(turn.key), cardless(turn) && Boolean(teams.get(sessionId)), (turn as ShownTurn).dismissedErrors, (turn as ShownTurn).errorsDismissed, errorsOpenKey(turn, sessionId)];
+  const parts = [...messages, ...(turn.timeline ?? []), turn.changes, ...(turn.earlierChanges ?? []), turn.key, turn.durationMs, turn.estimated, turn.workerStart, state.providers, replyOpen(turn.key), turn.workersOnly, turn.dismissedErrors, turn.errorsDismissed, errorsOpenKey(turn, sessionId)];
   return turnMarkup(head, parts, env, () => turnHtml(turn, sessionId, chatRows, thread));
 }
 /** Which of a saved turn's error rows are expanded (errorRowHtml reads openErrors and openLiveErrors): part of what
  *  its cached markup depends on (savedTurnHtml). */
 const errorsOpenKey = (turn: TranscriptTurn, sessionId: string): string => turn.errors.length ? groupErrors(turn.errors).map(group => openErrors.has(`${turn.key}|${group.key}`) || liveErrorOpen(group, sessionId, false) ? '1' : '0').join('') : '';
-/** A turn drawn without a card (no activity, reply or error): its workers slot is a row of its own (workerSlot). */
-const cardless = (turn: TranscriptTurn): boolean => !turn.activity.length && !turn.final && !turn.errors.length && !(turn as ShownTurn).errorsDismissed;
-function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
+/** A turn with no work to show unless it has a team assignment. */
+const cardless = (turn: ShownTurn): boolean => !turn.activity.length && !turn.final && !turn.errors.length && !turn.errorsDismissed
+  && !earlierChangeSets(turn).some(set => set.attributed && set.files.length);
+type CardTurn = ShownTurn & { workersOnly?: boolean };
+/** An architect can spawn workers without leaving a saved trace or reply. Give those turns a card when needed. */
+function withWorkerCards(turns: CardTurn[], sessionId: string): CardTurn[] {
+  const workers = teams.get(sessionId)?.workers ?? [];
+  if (!(workers.length || turns.some(turn => turn.workersOnly)) || !turns.some(turn => cardless(turn) && turnWorkerStart(turn) !== undefined)) return turns;
+  const newestFirst = [...turns].reverse();
+  const startedAt = workerLiveStart(sessionId), workerTurns = new Set<CardTurn>();
+  for (const worker of workers) {
+    if (startedAt !== undefined && worker.createdAt >= startedAt) continue;
+    const turn = newestFirst.find(turn => (turnWorkerStart(turn) ?? Infinity) <= worker.createdAt);
+    if (turn && cardless(turn)) workerTurns.add(turn);
+  }
+  return turns.map(turn => {
+    const workersOnly = workerTurns.has(turn);
+    return workersOnly === Boolean(turn.workersOnly) ? turn : { ...turn, workersOnly };
+  });
+}
+function turnHtml(turn: CardTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
   const lead = turnLeadHtml(turn, thread);
   const notes = notesHtml(turn, thread);
   if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + savedErrorsHtml(turn.errors, turn.key, sessionId) + dismissedNoteHtml(turn) + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
-  if (cardless(turn)) return lead + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
+  if (cardless(turn) && !turn.workersOnly) return lead + notes;
   return lead + turnCardHtml(turn, sessionId, thread) + notes;
 }
 function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): string {
@@ -2337,13 +2391,19 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
 const TRANSCRIPT_HOLD_MS = 150;
-/** Whether the open thread's rows were drawn with a team: a turn with no card draws its workers slot only then. A
- *  thread found to have none reads as before its team was known, so learning that redraws nothing. */
+/** Whether the open thread's chat rows were drawn with a team. */
 let rowsTeam = false;
 /** The open thread's team became known (or went) after its rows drew: rows whose markup depends on it redraw (drawRows
  *  keeps the rest); otherwise the workers just move into their slots. */
 function syncTeamRows(): void {
-  if (transcriptRows === state.sessionId && rowsTeam !== Boolean(teams.get(state.sessionId))) renderTranscript(); else refreshTeamProgress();
+  if (transcriptRows === state.sessionId) {
+    const turns = transcriptView.view.turns;
+    if (botForThread() ? rowsTeam !== Boolean(teams.get(state.sessionId)) : withWorkerCards(turns, state.sessionId).some((turn, index) => turn !== turns[index])) {
+      renderTranscript();
+      return;
+    }
+  }
+  refreshTeamProgress();
 }
 let transcriptRows: string | undefined, transcriptHold: { expired: boolean; timer: number } | undefined;
 function holdTranscript(transcript: HTMLElement, id: string, rows: string | undefined): boolean {
@@ -2421,13 +2481,16 @@ async function openFromTile(id: string, scrollTop: number | undefined): Promise<
   transcriptScroller.scrollTop = scrollTop; releaseTranscript();
 }
 /** A thread's turns as drawn, and what a live card takes over from the last one. */
-function shownTurns(sessionId: string, bot: boolean): { saved: TranscriptTurn[]; earlier: TranscriptTurn | undefined; running: Stream | undefined } {
-  const grouped = withErrorTurns(groupTurns(visibleMessages(sessionId)));
-  const turns = bot ? grouped : mergeLeadTurns(grouped);
+function cardTurns(messages: Message[]): ShownTurn[] {
+  return mergeLeadTurns(normalizeCardTurns(withErrorTurns(groupTurns(messages))));
+}
+function shownTurns(sessionId: string, bot: boolean): { saved: CardTurn[]; earlier: TranscriptTurn | undefined; running: Stream | undefined } {
+  const messages = visibleMessages(sessionId);
+  const turns = bot ? withErrorTurns(groupTurns(messages)) : cardTurns(messages);
   // A lead's wake run takes the exchange it continues into its live card, so one reply is one card while it streams too.
   const running = bot || wakeHolds.has(sessionId) ? undefined : state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
   const { saved, earlier } = running ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
-  return { saved, earlier, running };
+  return { saved: bot ? saved : withWorkerCards(saved, sessionId), earlier, running };
 }
 function renderTranscript(preservePosition = false): void {
   closeContentMenus();
@@ -2510,7 +2573,7 @@ function renderTranscript(preservePosition = false): void {
   const shownCards = liveCard ? new Set([...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].map(card => card.dataset.turnCard)) : undefined;
   // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
   // Open the saved reply before layout can clamp the paused reader, and transfer its live reading anchor.
-  const completed = liveCard && !running ? saved.at(-1) : undefined;
+  const completed = liveCard && !running ? [...saved].reverse().find(turn => !cardless(turn) || turn.workersOnly) : undefined;
   if (completed?.final) {
     openReply(completed.key);
     const reply = liveCard!.querySelector<HTMLElement>('.turn-card-reply');
@@ -2540,7 +2603,7 @@ function renderTranscript(preservePosition = false): void {
   const seed = pageIn && rowsSeed?.sessionId === s.id && (rowsSeed.first === null || ids.some(list => list.includes(rowsSeed!.first!))) ? rowsSeed.first : undefined;
   if (pageIn || rowsSeed?.sessionId !== s.id) rowsSeed = undefined;
   const from = bot ? 0 : windowStart(ids, intact ? rowsView.first : seed), env = markupEnv(s.id, Boolean(bot));
-  const { rows: drawn, added } = drawRows(transcript, intact && !bot ? rowsView.rows : left?.rows ?? [], saved.slice(from).map(turn => savedTurnHtml(turn, s.id, Boolean(bot), env)), `${emptyHtml}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`);
+  const { rows: drawn, added } = drawRows(transcript, intact && !bot ? rowsView.rows : left?.rows ?? [], saved.slice(from).map(turn => savedTurnHtml(turn, s.id, Boolean(bot), env)), `${emptyHtml}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div>${bot ? '<div id="team-progress-host" class="turn-changes-row" hidden></div>' : ''}`);
   // Folds the reader opened in rows of a widened window the reopened one leaves out come back with those rows.
   const lastIds = left ? new Map(ids.map((list, index) => [list.at(-1)!, index])) : undefined;
   const trimmed = intact ? rowsView.trimmed : left ? leftViews(left, drawn, key => (lastIds!.get(key) ?? from) < from, captureRowViews) : new Map<string, RowViews>();
@@ -2961,13 +3024,14 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     const switches = captureAccountSwitches(region);
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors thread-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, sessionId) : ''}<div class="live-errors thread-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, sessionId) + dismissedNoteHtml(earlier) : ''}<div id="team-progress-host" hidden></div><div class="live-errors thread-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
     paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
     restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
     streamParts.set(region, parts = queryStreamParts(region));
+    if (main) refreshTeamProgress();
   }
   const { activity, message, thinking, output, status } = parts;
   if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
@@ -3353,8 +3417,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
   const tools = current.tools.filter(tool => !tool.statusOnly);
-  // The host sits after the region, or in the trace once a dispatch placed it there.
-  const workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? host.querySelector<HTMLElement>(':scope > #team-progress-host');
+  // Card threads keep the host inside the card. Chat rows can also place it after the region.
+  const workers = region.querySelector<HTMLElement>('#team-progress-host') ?? region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host');
   const dispatch = workers ? tools.findIndex(tool => typeof tool.content !== 'string' && /dispatch_workers/.test(tool.content.name)) : -1;
   const toolRuns = (entries: LiveTool[]) => groupToolRuns(entries, tool => tool.commentary ? undefined : tool.key);
   const runs = dispatch < 0 ? toolRuns(tools) : [...toolRuns(tools.slice(0, dispatch + 1)), null, ...toolRuns(tools.slice(dispatch + 1))];
@@ -3400,7 +3464,11 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     else if (activity.nextElementSibling !== liveMessage) activity.after(liveMessage);
   }
   const retained = new Set(next);
-  if (workers?.parentElement === host && !retained.has(workers)) region.after(workers);
+  if (workers?.parentElement === host && !retained.has(workers)) {
+    const card = workers.closest('.turn-card');
+    if (card) card.querySelector(':scope > .live-errors')!.before(workers);
+    else region.after(workers);
+  }
   for (const child of [...host.children]) if (!retained.has(child as HTMLElement)) child.remove();
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
   // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
@@ -4158,6 +4226,8 @@ function setWorkspaceView(view: WorkspaceView): void {
   closeMenus();
   state.view = view; localStorage.setItem('pandacode.view', view);
   state.boardPanel = false;
+  // The board and GitHub views live in the work area, which a maximized terminal hides.
+  if (view !== 'conversation') terminalPanel.restoreSize();
   inspectorSuppressed = view !== 'conversation';
   if (view === 'conversation') state.inspector = inspectorChosen && !matchMedia('(max-width: 920px)').matches;
   renderInspector();
@@ -4621,6 +4691,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   // A run that started or ended since the details were asked for owns the run's own fields; the rest still apply.
   applyTaskDetails(id, details, asked, steady && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing);
   renderHeader(); renderComposer();
+  scheduleLimitResumes();
   // What the queue held back while the team was unknown goes now.
   if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
@@ -4692,6 +4763,7 @@ function removeDeletedSessions(ids: string[]): void {
   for (const id of removed) {
     provisionalTasks.delete(id);
     deletedSessions.add(id); writeLink(localStorage, id, null);
+    setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4763,6 +4835,9 @@ const SLASH_INSTRUCTIONS: Record<string, string> = {
 function slashInstruction(action: string, argumentsText: string): string { return SLASH_INSTRUCTIONS[action] + (argumentsText ? '\n' + argumentsText : ''); }
 /** App slash commands that act only on the task they are given, so the By the way panel can run them for its side thread. */
 const SIDE_SAFE_SLASH = new Set(['usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs', 'export', 'fast', 'settings', 'theme']);
+/** Commands that act on this app alone, never on the agent, so Enter runs them even while a run is active.
+ *  `/status` is the one a reader wants mid-run: it names the context tokens the harness last reported. */
+const RUN_SAFE_SLASH = new Set([...SIDE_SAFE_SLASH, 'status']);
 /** Runs an app slash command typed in the By the way panel on its side thread. Returns text to send to the side
  *  agent instead (commands that become a prompt), true when handled, false when `text` is not an app command;
  *  commands that would act on the open thread are refused with a notice. */
@@ -4781,6 +4856,17 @@ async function btwSlash(side: Session, text: string, toolbar: HTMLElement | null
   if (SIDE_SAFE_SLASH.has(action) || (action === 'plan' && (!args || ['on', 'off'].includes(args)))) { await performSlashAction(action, args, side); return true; }
   notify(`Open the side thread as a full thread to use ${text.split(/\s/)[0]}.`);
   return true;
+}
+/** The context line in `/status`: what the harness last reported, kept current while the dialog stays open. */
+function contextDetail(task: Session): string {
+  return contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.';
+}
+/** A Task status dialog open during a run takes each new reading instead of the one it opened with. */
+function updateStatusContext(task: Session): void {
+  const line = document.querySelector<HTMLElement>(`#dialog[open] [data-status-usage="${CSS.escape(task.id)}"]`);
+  if (!line) return;
+  const detail = contextDetail(task);
+  if (line.textContent !== detail) line.textContent = detail;
 }
 async function performSlashAction(action: string, argumentsText: string, task: Session): Promise<void> {
   if (action.startsWith('console:')) { await openHarnessConsole(task, `/${action.slice(8)}${argumentsText ? ' ' + argumentsText : ''}`); return; }
@@ -4831,7 +4917,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     }
     case 'diff': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
-    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
+    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p data-status-usage="${escape(task.id)}">${escape(contextDetail(task))}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
       if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
@@ -4859,6 +4945,13 @@ const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
 function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); btwPanel.event(id, 'queue'); }
+/** Native team wakes only need to know whether the desktop is holding the queue. */
+function setQueueHold(sessionId: string, reason?: HoldReason): void {
+  const wasHeld = state.queueHolds.has(sessionId);
+  const held = reason !== undefined && !deletedSessions.has(sessionId);
+  if (held) state.queueHolds.set(sessionId, reason); else state.queueHolds.delete(sessionId);
+  if (held !== wasHeld) void call('set_queue_hold', { sessionId, held }).catch(() => undefined);
+}
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
   return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
@@ -4881,6 +4974,26 @@ function clearComposer(s: Session): void {
 async function enqueueFromComposer(forceQueue = false): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await enqueueDraft(forceQueue);
+}
+/** Enter while a run is active: queue the draft for the next turn, except a command that only acts on this
+ *  app. Sending `/status` to the agent would spend a turn and never show the usage the user asked for. */
+async function queueOrRunLocalCommand(): Promise<void> {
+  const s = session(), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const draft = prompt?.value ?? '', text = draft.trim();
+  if (s && prompt && !btwFromComposer() && /^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(text)) {
+    const generation = state.generation;
+    const resolved = await call<{ action: string | null; arguments: string }>('resolve_slash_command', { sessionId: s.id, text }).catch(() => null);
+    if (state.sessionId !== s.id || state.generation !== generation || !prompt.isConnected || prompt.value !== draft) return;
+    if (resolved?.action && RUN_SAFE_SLASH.has(resolved.action)) {
+      const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
+      prompt.value = ''; state.drafts.delete(s.id); resizePrompt();
+      try { await performSlashAction(resolved.action, resolved.arguments, s); }
+      catch (error) { restoreComposerDraft(s, draft); throw error; }
+      finally { finishSubmit(); }
+      return;
+    }
+  }
+  await enqueueFromComposer();
 }
 async function enqueueDraft(forceQueue: boolean): Promise<void> {
   if (btwFromComposer()) return;
@@ -5105,7 +5218,7 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-cancel') { state.queueEditing = ''; refreshComposer(s); return; }
   if (action === 'queue-save') return saveQueueEdit(s);
   if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); refreshComposer(s); return; }
-  if (action === 'queue-resume') { state.queueHolds.delete(s.id); refreshComposer(s); await dispatchQueue(s.id); }
+  if (action === 'queue-resume') { setQueueHold(s.id); refreshComposer(s); await dispatchQueue(s.id); }
 }
 /** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
 async function sendQueuedNow(s: Session, id: string): Promise<void> {
@@ -5151,7 +5264,7 @@ async function dispatchQueue(id: string): Promise<void> {
   // so a team thread's message never goes out as a plain one.
   if (id === state.sessionId && threadLoading()) return;
   if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSession(id) || task.archived) return;
-  if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
+  if (limitActive(task)) { setQueueHold(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
     if (next.id === first?.id) sendFirst.delete(id);
@@ -5159,7 +5272,7 @@ async function dispatchQueue(id: string): Promise<void> {
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
   } catch (error) {
-    state.queueHolds.set(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
+    setQueueHold(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
   } finally { state.queueBusy.delete(id); if (id === state.sessionId) renderComposer(); renderNavigation(); }
 }
 /** Starts a turn with a queued message, for the open task or one in the background. */
@@ -5185,6 +5298,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     if (btw && context && readLinks(localStorage)[btw.main.id]?.sideId === task.id) writeLink(localStorage, btw.main.id, { ...readLinks(localStorage)[btw.main.id], seenId: context.link.seenId });
   } catch (error) {
     // Put it back at the front and hold, so nothing is lost or sent out of order.
+    setQueueHold(task.id, 'failed');
     pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle'; if (sent) dropMirrorPrompt(task.id, sent);
     // A synthetic entry (no id, e.g. continuing after a limit) was never queued.
     if (entry.id) {
@@ -5192,21 +5306,38 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
       if (restored) setQueue(task.id, [restored, ...queueOf(task.id).filter(item => item.id !== restored.id)]);
       else notifyError('A queued message could not be put back; it was not sent.');
     }
-    state.queueHolds.set(task.id, 'failed');
     throw error;
   }
 }
 let limitTimer = 0;
-/** Continues limited tasks set to resume at reset; overdue ones (after a restart) continue at once. */
+const passedLimitResets = new Map<string, { limitedAt: number; limitedUntil: number }>();
+/** Re-checks each limit at its reset. Only tasks opted into resuming start a new turn by themselves. */
 function scheduleLimitResumes(): void {
   window.clearTimeout(limitTimer);
-  const waiting = state.sessions.filter(task => task.resumeAtReset && task.limitedUntil && !task.archived);
-  if (!waiting.length) return;
-  const next = Math.min(...waiting.map(task => task.limitedUntil!));
-  limitTimer = window.setTimeout(() => {
-    for (const task of state.sessions.filter(item => item.resumeAtReset && item.limitedUntil && item.limitedUntil <= Date.now() + 1000 && !item.archived)) run(continueAfterLimit(task));
-    scheduleLimitResumes();
-  }, Math.min(Math.max(0, next - Date.now()), 2147483647));
+  const now = Date.now();
+  let next = Infinity, refresh = false;
+  for (const task of state.sessions) {
+    const { id, limitedAt, limitedUntil } = task;
+    if (!limitedAt || !limitedUntil || task.archived || limitedUntil > now) {
+      passedLimitResets.delete(id);
+      if (limitedAt && limitedUntil && !task.archived) next = Math.min(next, limitedUntil);
+      continue;
+    }
+    if (task.resumeAtReset) {
+      if (!finishingStreams.has(id)) run(continueAfterLimit(task));
+      continue;
+    }
+    const previous = passedLimitResets.get(id);
+    // A run can finish after its reset and install a new hold for the same limit.
+    const limitedHold = state.queueHolds.get(id) === 'limited';
+    if (!limitedHold && previous?.limitedAt === limitedAt && previous.limitedUntil === limitedUntil) continue;
+    if (limitedHold) setQueueHold(id, 'reset');
+    passedLimitResets.set(id, { limitedAt, limitedUntil });
+    if (id === state.sessionId) renderComposer();
+    refresh = true;
+  }
+  if (refresh) renderNavigation();
+  if (Number.isFinite(next)) limitTimer = window.setTimeout(scheduleLimitResumes, Math.min(next - now, 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
@@ -5216,7 +5347,7 @@ async function continueAfterLimit(task: Session, text = 'Continue where you left
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishing) return;
   const hold = state.queueHolds.get(task.id);
-  if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
+  if (hold === 'limited' || hold === 'reset' || hold === 'restart') setQueueHold(task.id);
   task.resumeAtReset = false;
   state.queueBusy.add(task.id);
   try {
@@ -5331,7 +5462,7 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
-  catch (error) { if (hold === undefined) state.queueHolds.delete(task.id); else state.queueHolds.set(task.id, hold); throw error; }
+  catch (error) { setQueueHold(task.id, hold); throw error; }
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
@@ -5463,7 +5594,7 @@ async function sendDraft(): Promise<void> {
   const wasDraft = Boolean(listed.draft);
   listed.lastPromptAt = sentAt; listed.draft = false;
   // Sending by hand is an explicit continue: release a held queue, which then follows this run.
-  state.queueHolds.delete(s.id);
+  setQueueHold(s.id);
   pendingPromptActivity.set(s.id, sentAt); navigationAfterPaint();
   let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false, sent: Message | undefined;
   const isCurrent = () => state.sessionId === s.id;
@@ -5821,18 +5952,21 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
   const existing = sessionId === state.sessionId ? state.messages : page?.messages;
   if (existing && !existing.some(message => message.turnChanges?.id === changes.id)) {
     const messages = current ? liveVisibleMessages(existing, current) : existing.slice();
+    const completed: Message[] = [];
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
       for (const entry of current.tools) {
         // A dismissed error leaves no row; a counted one is one row carrying its count (groupErrors sums it).
         if (entry.statusOnly && entry.dismissed) continue;
         const row: CountedMessage = { id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now(), ...(entry.count ? { count: entry.count } : {}), ...(entry.savedIds?.length ? { savedIds: entry.savedIds } : {}) };
-        messages.push(row);
+        completed.push(row);
       }
-      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
-      messages.push(...current.accountSwitches);
+      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) completed.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
+      completed.push(...current.accountSwitches);
     }
-    messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
+    completed.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
+    const steer = current ? messages.findIndex(message => message.role === 'user' && message.createdAt > current.startedAt) : -1;
+    messages.splice(steer < 0 ? messages.length : steer, 0, ...completed);
     if (sessionId === state.sessionId) state.messages = messages;
     else {
       tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
@@ -5945,6 +6079,7 @@ function onAgent(event: AgentEvent): void {
     if (s && usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
+      updateStatusContext(s);
     }
     return;
   }
@@ -5966,8 +6101,9 @@ function onAgent(event: AgentEvent): void {
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
-    if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
-    else if (ending) state.queueHolds.set(event.sessionId, ending);
+    if (first?.stopping && ending === 'stopped') setQueueHold(event.sessionId, first.hold);
+    else if (ending) setQueueHold(event.sessionId, ending);
+    scheduleLimitResumes();
     if (s && botProjects.has(s.projectId)) {
       if (ending === 'failed') failedBotProjects.add(s.projectId);
       else if (!ending) failedBotProjects.delete(s.projectId);
@@ -5975,7 +6111,10 @@ function onAgent(event: AgentEvent): void {
     if (!ending) void maybeTurnChecks(event.sessionId);
     if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
     void applyNextBotModel(event.sessionId);
-    void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
+    void finishResponse(event.sessionId, finishing).finally(() => {
+      if (state.sessions.find(task => task.id === event.sessionId)?.resumeAtReset) scheduleLimitResumes();
+      run(dispatchQueue(event.sessionId));
+    }); return;
   }
   if (event.kind === 'session') return;
   if (event.kind === 'limited') {
@@ -5986,6 +6125,7 @@ function onAgent(event: AgentEvent): void {
     // A bot's limit already shows as its sidebar chip and above its composer.
     if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
+    scheduleLimitResumes();
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
@@ -6702,6 +6842,25 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
+/** The model picker and Team menu apply the same saved profile, including its lead. */
+function saveTeamProfile(task: Session, profile: TeamProfile, canChange: () => boolean): Promise<void> {
+  return saveExplicitHarness(task.id, async () => {
+    const available = () => canChange() && !deletedSessions.has(task.id) && !taskBusyConfiguring(task.id);
+    if (!available()) throw new Error('Select this task again to change its team.');
+    while (provisionalCorrections.has(task.id)) await provisionalCorrections.get(task.id)?.catch(() => undefined);
+    if (!available()) throw new Error('Select this task again to change its team.');
+    configuringSessions.add(task.id);
+    try {
+      const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
+      provisionalTasks.delete(task.id);
+      onArchitect(saved ?? { sessionId: task.id, removed: true });
+      await reloadSessions();
+    } finally {
+      configuringSessions.delete(task.id);
+      run(dispatchQueue(task.id));
+    }
+  });
+}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -6732,21 +6891,12 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
-    onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
+    onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      configuringSessions.add(selected.id);
-      try {
-        const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
-        provisionalTasks.delete(selected.id);
-        onArchitect(saved ?? { sessionId: selected.id, removed: true });
-        await reloadSessions();
-        if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
-      } finally { configuringSessions.delete(selected.id); }
-    }),
+      await saveTeamProfile(selected, profile, () => current() && generation === state.generation && !isRunning(selected.id));
+      if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
+    },
     // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
     // an empty list or the last launch's (which may name CLIs no longer installed).
     anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
@@ -8222,6 +8372,7 @@ function activateSharedChannel(channelId: string): void {
   state.sharedChannelScrollTop = 0;
   state.sharedChannelAtBottom = true;
   state.view = 'conversation'; state.boardPanel = false;
+  terminalPanel.restoreSize();
   render(); renderInspector(); renderBots();
   void refreshSharedChannel(channelId);
 }
@@ -8765,8 +8916,8 @@ document.addEventListener('keydown', event => {
   else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
-    // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
-    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
+    // Enter runs local commands or queues a message. Command/Ctrl Enter steers the running turn.
+    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : queueOrRunLocalCommand());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
@@ -8933,7 +9084,7 @@ async function boot(): Promise<void> {
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
-    state.queueHolds.set(entry.sessionId, 'restart');
+    setQueueHold(entry.sessionId, 'restart');
   }
   scheduleLimitResumes();
   if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
@@ -9187,6 +9338,7 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
         state.drafts.delete(live.id);
         provisionalTasks.delete(live.id);
         deletedSessions.add(live.id);
+        setQueueHold(live.id);
         void call<boolean>('discard_draft', { sessionId: live.id }).catch(() => undefined);
         return 'stale';
       }

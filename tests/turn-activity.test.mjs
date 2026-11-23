@@ -1,12 +1,60 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel } from '../src/turn-activity.ts';
+import { groupTurns, normalizeCardTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel } from '../src/turn-activity.ts';
 
 const message = (id, role, content, createdAt = id * 1000, extra = {}) =>
   ({ id, sessionId: 'task', role, content, createdAt, ...extra });
 const tool = id => JSON.stringify({ type: 'tool_activity', version: 1, id,
   name: 'Read', status: 'completed', input: 'README.md', output: 'Project notes' });
 const ids = messages => messages.map(message => message.id);
+const snapshot = id => ({ id, attributed: true, files: [], additions: 0, deletions: 0, truncated: false, concurrent: false });
+
+test('card turns give late changes to the reply before a steer and keep the steer bubble', () => {
+  const changes = snapshot('late'), next = snapshot('next');
+  const raw = groupTurns([
+    message(1, 'user', 'Edit'), message(2, 'assistant', 'Changed'),
+    message(3, 'user', 'keep going'), message(4, 'changes', '', 4000, { turnChanges: changes }),
+    message(5, 'changes', '', 5000, { turnChanges: next }),
+  ]);
+  const [worked, steer] = normalizeCardTurns(raw);
+  assert.equal(worked.final.id, 2);
+  assert.deepEqual(worked.earlierChanges, [changes]);
+  assert.equal(worked.changes, next);
+  assert.equal(steer.user.content, 'keep going');
+  assert.equal(steer.changes, undefined);
+  assert.equal(raw[1].changes, changes);
+});
+
+test('consecutive changes and startless notes join the preceding card in order', () => {
+  const first = snapshot('first'), next = snapshot('next');
+  const raw = groupTurns([
+    message(1, 'user', 'Edit'), message(2, 'assistant', 'Changed'),
+    message(3, 'changes', '', 3000, { turnChanges: first }),
+    message(4, 'changes', '', 4000, { turnChanges: next }),
+    message(5, 'system', 'Account switched'),
+  ]);
+  const turns = normalizeCardTurns(raw);
+  assert.equal(turns.length, 1);
+  assert.deepEqual(turns[0].earlierChanges, [first]);
+  assert.equal(turns[0].changes, next);
+  assert.deepEqual(ids(turns[0].notes), [5]);
+});
+
+test('startless continuations have their own worker start and changes stay on their side of a handoff', () => {
+  const first = snapshot('first'), next = snapshot('next');
+  const turns = normalizeCardTurns(groupTurns([
+    message(1, 'changes', '', 1000, { turnChanges: first }),
+    message(2, 'tool', tool('continued')),
+    message(3, 'assistant', 'Continued work'),
+    message(4, 'handoff', 'Changed harness'),
+    message(5, 'changes', '', 5000, { turnChanges: next }),
+  ]));
+  assert.equal(turns.length, 4);
+  assert.equal(turns[0].changes, first);
+  assert.equal(turns[1].workerStart, 2000);
+  assert.equal(turns[2].handoff.id, 4);
+  assert.equal(turns[3].changes, next);
+});
 
 test('app coordination starts a separate turn without becoming a user or assistant message', () => {
   const changes = { id: 'review', files: [], additions: 0, deletions: 0, truncated: false, concurrent: false };
@@ -328,7 +376,7 @@ test('a page that starts mid-turn still works, and workers keep the first start'
   assert.equal(unanchored.coordination, undefined);
   assert.equal(unanchored.key, 'turn:message:2');
   assert.deepEqual(ids(unanchored.activity), [2, 3]);
-  assert.equal(unanchored.workerStart, 3000);
+  assert.equal(unanchored.workerStart, 2000);
   const [anchored] = merged([message(1, 'user', 'Go'), message(2, 'assistant', 'A'), wake(3), message(4, 'assistant', 'B')]);
   assert.equal(anchored.workerStart, 1000);
 });

@@ -8,7 +8,7 @@ export const TEAM_MODE_EVENT = 'pandacode:team-mode';
 /** Named teams list at most this many models, like the automatic roster. */
 export const TEAM_MODELS_MAX = 24;
 
-/** True when the Team button opens the classic Architect & workers setup. */
+/** True when Classic setup is offered alongside the Team menu's automatic choices. */
 export function classicTeamSetup(): boolean {
   try { return localStorage.getItem(CLASSIC_KEY) === 'true'; } catch { return false; }
 }

@@ -69,6 +69,47 @@ async function openChanged(page: Page, name: RegExp): Promise<void> {
 test.afterEach(async ({ page }) => { expect(errors.get(page) ?? []).toEqual([]); });
 
 test.describe('turn changes', () => {
+  test('puts a snapshot saved after a steer in the preceding reply card', async ({ page }) => {
+    const messages = [
+      ...history(undefined),
+      { id: 203, sessionId: 'session-2', role: 'user', content: 'keep going', createdAt: 1200 },
+      { id: 204, sessionId: 'session-2', role: 'changes', content: '', createdAt: 1300, turnChanges: summary() },
+    ];
+    await install(page, { messages });
+    await selectFixture(page);
+    const thread = transcript(page);
+    await expect(thread.locator('.user-message')).toContainText(['Change the feature.', 'keep going']);
+    const card = thread.locator('.turn-card').filter({ hasText: 'The change is ready.' });
+    await expect(card.locator('.turn-card-foot')).toContainText('1 changed file');
+    await expect(thread.locator('.turn-card')).toHaveCount(1);
+    await expect(thread.locator('.turn-changes:not(.turn-card *)')).toHaveCount(0);
+  });
+
+  test('materializes live work and changes before a newer steer', async ({ page }) => {
+    await install(page, { messages: history(undefined).slice(0, 1) });
+    await selectFixture(page);
+    await expect(transcript(page).getByText('Change the feature.', { exact: true })).toBeVisible();
+    await page.evaluate(() => {
+      (window as any).__turnChangesTest.emit({ sessionId: 'session-2', kind: 'text', text: 'Work before the steer.' });
+    });
+    await expect(transcript(page).locator('.live-text')).toContainText('Work before the steer.');
+    await page.evaluate(changes => {
+      const fixture = (window as any).__turnChangesTest;
+      const event = (kind: string, text: string, data?: object) => fixture.emit({ sessionId: 'session-2', kind, text, data });
+      event('steer', 'keep going', { id: 'keep-going', status: 'delivered' });
+      fixture.holdHistory = true;
+      event('turn_changes', '', { messageId: 203, turnChanges: changes });
+      event('text', 'Working on the next turn.');
+    }, summary());
+    const thread = transcript(page);
+    const saved = thread.locator('.turn-card:not(.is-live)');
+    await expect(saved.locator('.turn-card-reply')).toContainText('Work before the steer.');
+    await expect(saved.locator('.turn-card-foot')).toContainText('1 changed file');
+    await expect(thread.locator('.user-message').last()).toContainText('keep going');
+    expect(await saved.evaluate(card => card.nextElementSibling?.textContent)).toContain('keep going');
+    await expect(thread.locator('.live-text')).toContainText('Working on the next turn.');
+  });
+
   for (const view of ['conversation', 'board']) test(`shows one compact completed-turn card after streaming in ${view}`, async ({ page }) => {
     await page.clock.install(); await install(page);
     // An installed clock still follows real time, and the preview's turn ends ~0.8 s after it starts: on a loaded machine

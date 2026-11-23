@@ -3753,6 +3753,140 @@ fn prompt_json(prompt: &str) -> Value {
 }
 
 #[test]
+fn worker_review_delivers_queued_user_messages_first_in_queue_order() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let first_text = "Review the authentication changes.\nKeep the public API.";
+    let second_text = "Run the engine tests before dispatching more work.";
+    {
+        let store = state.store.lock().unwrap();
+        let second = crate::message_queue::add(&store, &sid, second_text, &json!([])).unwrap();
+        let first = crate::message_queue::add(&store, &sid, first_text, &json!([])).unwrap();
+        crate::message_queue::reorder(&store, &sid, &[first.id, second.id]).unwrap();
+    }
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(scheduled.queue_changed);
+    let action = scheduled.launch;
+    assert!(action.prompt.starts_with("Queued user messages"));
+    let first = action.prompt.find(first_text).unwrap();
+    let second = action.prompt.find(second_text).unwrap();
+    let review = action.prompt.find("Review the settled workers").unwrap();
+    assert!(first < second && second < review);
+    assert!(action.prompt.contains("Engine done"));
+    let (lead, _) = claim(&state, action);
+    assert!(lead.config.prompt.contains(first_text));
+
+    let store = state.store.lock().unwrap();
+    assert!(crate::message_queue::list(&store, Some(&sid)).unwrap().is_empty());
+    assert_eq!(crate::message_queue::deliveries(&sid), 2);
+    let rows = store.messages(&sid, None).unwrap();
+    let user_texts: Vec<_> = rows.iter().filter(|row| row.role == "user").map(|row| row.content.as_str()).collect();
+    assert_eq!(user_texts, [first_text, second_text]);
+    assert_eq!(rows.last().unwrap().coordination_kind, Some(internal_turns::CoordinationKind::WorkerReview));
+}
+
+#[test]
+fn worker_review_without_queued_messages_keeps_the_original_prompt() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &run, "Engine done", true);
+    let mut team = team_of(&state, &sid);
+    team.round += 1;
+    let results = serde_json::to_string(&review_summaries(&team, true)).unwrap();
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert_eq!(scheduled.launch.prompt, format!("Review the settled workers for this objective: {}\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{results}", objective_quote(&team)));
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+}
+
+#[test]
+fn worker_review_does_not_deliver_a_held_queue() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let entry = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, "Wait for my review", &json!([])).unwrap()
+    };
+    crate::message_queue::set_queue_held(&sid, true);
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {});
+    crate::message_queue::set_queue_held(&sid, false);
+    let scheduled = scheduled.unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert!(scheduled.launch.prompt.starts_with("Review the settled workers"));
+    assert!(!scheduled.launch.prompt.contains(&entry.text));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [entry]);
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+    assert!(store.messages(&sid, None).unwrap().iter().all(|row| row.role != "user"));
+}
+
+#[test]
+fn worker_review_leaves_an_attachment_and_later_entries_in_the_queue() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let (attachment, followup) = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, "Review the engine", &json!([])).unwrap();
+        let attachment = crate::message_queue::add(&store, &sid, "", &json!([{"kind":"image","id":"capture"}])).unwrap();
+        let followup = crate::message_queue::add(&store, &sid, "Use the attached image", &json!([])).unwrap();
+        (attachment, followup)
+    };
+    finish(&state, &run, "Engine done", true);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(action.prompt.contains("Review the engine"));
+    assert!(!action.prompt.contains("Use the attached image"));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [attachment, followup]);
+    assert_eq!(crate::message_queue::deliveries(&sid), 1);
+}
+
+#[test]
+fn worker_review_rolls_back_the_queue_if_a_transcript_write_fails() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let queued = {
+        let store = state.store.lock().unwrap();
+        let first = crate::message_queue::add(&store, &sid, "Review first", &json!([])).unwrap();
+        let second = crate::message_queue::add(&store, &sid, "Review second", &json!([])).unwrap();
+        store.db.execute_batch("CREATE TRIGGER reject_steering BEFORE INSERT ON messages WHEN NEW.content='Review second' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        [first, second]
+    };
+    finish(&state, &run, "Engine done", true);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert!(team_of(&state, &sid).pending_turn.is_none());
+    {
+        let store = state.store.lock().unwrap();
+        assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), queued);
+        assert_eq!(crate::message_queue::deliveries(&sid), 0);
+        assert!(store.messages(&sid, None).unwrap().iter().all(|row| row.role != "user"));
+        store.db.execute_batch("DROP TRIGGER reject_steering").unwrap();
+    }
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_some());
+    assert_eq!(crate::message_queue::deliveries(&sid), 2);
+}
+
+#[test]
+fn worker_review_preserves_text_that_would_exceed_the_wake_limit() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let queued = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, &"x".repeat(QUEUED_WAKE_LIMIT), &json!([])).unwrap()
+    };
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert!(scheduled.launch.prompt.starts_with("Review the settled workers"));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [queued]);
+}
+
+#[test]
 fn a_snapshot_over_a_mebibyte_saves_and_its_finished_worker_wakes_the_lead() {
     let (state, sid) = state_fixture();
     let (run, _) = running_worker(&state, &sid, "engine", "src");

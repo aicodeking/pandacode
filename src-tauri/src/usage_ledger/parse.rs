@@ -249,6 +249,56 @@ pub(crate) fn codex_line(line: &str, state: &mut CodexState) -> Option<Record> {
     (record.tokens() > 0).then_some(record)
 }
 
+/// One line of a Pi session JSONL. Assistant messages, standalone `usage` entries
+/// (e.g. cache warming) and compaction/branch-summary entries all add to Pi's own
+/// session totals. `reasoning` is already inside `output` and `cacheWrite1h` is a
+/// subset of `cacheWrite`, so neither is counted again. Entries keep their id when
+/// a session is forked, so the id is the de-duplication key.
+pub(crate) fn pi_line(line: &str) -> Option<Record> {
+    // A prefix gate skips prompts, tool output and file blobs without a full parse.
+    if !line.contains("\"usage\"") {
+        return None;
+    }
+    let entry: Value = serde_json::from_str(line).ok()?;
+    let (usage, model): (&Value, Option<&Value>) = match entry["type"].as_str()? {
+        "message" => {
+            let message = &entry["message"];
+            if message["role"].as_str() != Some("assistant") {
+                return None;
+            }
+            (&message["usage"], Some(&message["model"]))
+        }
+        "usage" => (&entry["usage"], Some(&entry["model"])),
+        // Summary generation is billed to the session, but these entries carry no model.
+        "compaction" | "branch_summary" => (&entry["usage"], None),
+        _ => return None,
+    };
+    usage.as_object()?;
+    let seconds = unix_seconds(entry["timestamp"].as_str()?)?;
+    let input = count(&usage["input"]);
+    let cache_read = count(&usage["cacheRead"]);
+    let cache_write = count(&usage["cacheWrite"]);
+    let cache_write_1h = count(&usage["cacheWrite1h"]).min(cache_write);
+    let output = count(&usage["output"]);
+    let key = entry["id"].as_str().map(|id| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        ("pi", id, entry["timestamp"].as_str()).hash(&mut hasher);
+        hasher.finish()
+    });
+    let record = Record {
+        key,
+        hour: seconds.div_euclid(3600),
+        class: size_class(input + cache_read + cache_write),
+        model: model.and_then(model_name).unwrap_or_else(|| Model::from("unknown")),
+        input,
+        cache_read,
+        cache_write: cache_write - cache_write_1h,
+        cache_write_1h,
+        output,
+    };
+    (record.tokens() > 0).then_some(record)
+}
+
 /// Codex records only need hourly totals per model and size class.
 pub(crate) fn merge_hourly(records: &mut Vec<Record>, record: Record) {
     match records.iter_mut().rev().take(8).find(|existing| {

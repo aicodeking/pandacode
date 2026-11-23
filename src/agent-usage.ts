@@ -62,6 +62,11 @@ function peak(result: AgentUsage | undefined): number | null {
   const windows = validWindows(result);
   return windows.length ? Math.min(100, Math.max(0, ...windows.map(window => window.usedPercent))) : null;
 }
+/** Why an IPC read failed: the native side rejects with its error string, the preview with an Error. */
+function reason(cause: unknown, fallback: string): string {
+  if (cause instanceof Error && cause.message) return cause.message;
+  return typeof cause === 'string' && cause.trim() ? cause.trim() : fallback;
+}
 /** The windows an account shows: for pooled harnesses the same two as Settings → Providers, labelled the same way. */
 function shownWindows(provider: ProviderId, result: AgentUsage | undefined): UsageWindow[] {
   return POOLED.includes(provider) ? accountWindows(result) : validWindows(result);
@@ -286,8 +291,8 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     try {
       result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force });
       if (!result || result.provider !== provider.id || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
-    } catch {
-      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: 'Could not read limits. Try Refresh.' };
+    } catch (cause) {
+      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: reason(cause, 'Could not read limits. Try Refresh.') };
     } finally { stop(); }
     if (disposed) return;
     limits.set(provider.id, result);
@@ -312,7 +317,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       result = await call<AgentUsage>('agent_usage', { provider: provider.id, refresh: force, connection: connection.id });
       if (!result || !Array.isArray(result.windows)) throw new Error('Invalid usage result');
     } catch (cause) {
-      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: cause instanceof Error && cause.message ? cause.message : 'Could not read limits. Try Refresh.' };
+      result = { provider: provider.id, status: 'error', windows: [], checkedAt: Date.now(), stale: false, message: reason(cause, 'Could not read limits. Try Refresh.') };
     } finally { stop(); }
     const member = await memberOf(provider.id, connection.id);
     if (!disposed) { renderCard(section, { ...provider, name: connection.name }, result, member, dir); setUsage(provider.id, connection.id, result); }
@@ -361,7 +366,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       ledger = nextLedger; prompts = nextPrompts; ledgerError = null;
     } catch (cause) {
       if (disposed) return;
-      ledgerError = ledger ? null : cause instanceof Error && cause.message ? cause.message : 'Could not read local agent logs.';
+      ledgerError = ledger ? null : reason(cause, 'Could not read local agent logs.');
     } finally { ledgerPending = false; }
     renderOverview(); renderCalendars();
   }

@@ -306,6 +306,15 @@ impl Protocol {
                 }
             }
             if value["error"]["code"] == -32000 {
+                if self.config.provider == "opencode"
+                    && value["id"] == 3
+                    && self.phase == 1
+                    && !self.remote_id.is_empty()
+                {
+                    if let Some(error) = self.opencode_prompt_auth_error() {
+                        return Err(error);
+                    }
+                }
                 return Err(format!("{} requires authentication. Sign in using its own CLI or official extension, then retry.", self.config.provider));
             }
             let stage = match value["id"].as_u64() {
@@ -951,6 +960,39 @@ impl Protocol {
         }
         Ok(())
     }
+    /// OpenCode can open a session before the model's upstream provider
+    /// rejects the prompt for missing credentials (#391).
+    fn opencode_prompt_auth_error(&self) -> Option<String> {
+        let model_option = options(&self.acp_config, "model");
+        // An explicit choice was acknowledged before prompting. For Default,
+        // use the concrete model OpenCode reported for this session.
+        let model = [
+            Some(self.config.model.as_str()),
+            model_option.and_then(|option| option["currentValue"].as_str()),
+            self.acp_config["models"]["currentModelId"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|id| *id != "default" && !id.trim().is_empty() && valid_model_id(id))?;
+        let credentials = match model.split_once('/') {
+            Some((provider, _)) if !provider.is_empty() => format!("Add {provider} credentials"),
+            _ => "Add its provider's credentials".to_owned(),
+        };
+        let free_model = model_option
+            .into_iter()
+            .flat_map(choices)
+            .filter_map(|entry| entry["value"].as_str())
+            .find(|id| id.starts_with("opencode/") && id.ends_with("-free") && valid_model_id(id));
+        let free_hint = free_model.map_or_else(
+            || " OpenCode's free models need no key.".to_owned(),
+            |id| format!(" OpenCode's free models need no key, for example \"{id}\"."),
+        );
+        Some(format!(
+            "{} cannot use the selected model \"{model}\": {credentials} or choose another model.{free_hint}",
+            self.config.provider
+        ))
+    }
+
     fn acp_effort(&mut self, step: &mut Step) -> Result<(), String> {
         if let Some(effort) = &self.config.reasoning_effort {
             let option = if self.config.provider == "cursor" {
@@ -1434,6 +1476,70 @@ mod tests {
         assert!(error.contains("ValueError: invalid working directory"));
         assert!(!error.contains("fixture-secret"));
         assert!(!error.contains("private opaque metadata"));
+    }
+
+    // OpenCode ACP 2.3.2 prompt error from issue #391.
+    fn prompt_auth_error(id: u64) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"error":{
+            "code":-32000,"message":"Authentication required: provider authentication required","data":{}
+        }})
+    }
+
+    #[test]
+    fn opencode_prompt_auth_error_names_the_resolved_default_model() {
+        let mut p = Protocol::new(config("opencode"));
+        assert_eq!(p.receive(capabilities()).unwrap().write[0]["method"], "session/new");
+        // Model selection reported by session/new in the issue recording.
+        let session = json!({"sessionId":"ses_fixture","configOptions":[
+            {"id":"model","category":"model","type":"select","currentValue":"openai/gpt-6.2-sol","options":[
+                {"value":"openai/gpt-6.2-sol","name":"GPT-6.2 Sol"},
+                {"value":"opencode/deepseek-v4.1-flash-free","name":"DeepSeek V4.1 Flash Free"}]}
+        ]});
+        let prompt = p.receive(response(2, session)).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+        let error = p.receive(prompt_auth_error(3)).err().unwrap();
+        assert!(error.contains("cannot use the selected model \"openai/gpt-6.2-sol\""), "{error}");
+        assert!(error.contains("Add openai credentials"), "{error}");
+        assert!(error.contains("opencode/deepseek-v4.1-flash-free"), "{error}");
+        assert!(!error.contains("Sign in using its own CLI"), "{error}");
+    }
+
+    #[test]
+    fn antigravity_prompt_auth_error_keeps_the_cli_sign_in_hint() {
+        let mut p = Protocol::new(config("antigravity"));
+        p.receive(capabilities()).unwrap();
+        let mut session = metadata();
+        session["configOptions"].as_array_mut().unwrap().pop();
+        let prompt = p.receive(response(2, session)).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+        assert_eq!(
+            p.receive(prompt_auth_error(3)).err().unwrap(),
+            "antigravity requires authentication. Sign in using its own CLI or official extension, then retry."
+        );
+    }
+
+    #[test]
+    fn opencode_pre_prompt_auth_errors_keep_the_cli_sign_in_hint() {
+        for id in [1, 2, 5] {
+            let mut cfg = config("opencode");
+            cfg.model = "vendor/b".into();
+            cfg.resume_id = Some("remote".into());
+            let mut p = Protocol::new(cfg);
+            assert_eq!(p.initial()["method"], "initialize");
+            if id >= 2 {
+                assert_eq!(p.receive(capabilities()).unwrap().write[0]["method"], "session/load");
+            }
+            if id == 5 {
+                p.receive(response(2, metadata())).unwrap();
+                let selection = p.receive(response(4, json!({}))).unwrap();
+                assert_eq!(selection.write[0]["id"], 5);
+                assert_eq!(selection.write[0]["params"]["configId"], "model");
+            }
+            assert_eq!(
+                p.receive(prompt_auth_error(id)).err().unwrap(),
+                "opencode requires authentication. Sign in using its own CLI or official extension, then retry."
+            );
+        }
     }
 
     #[cfg(unix)]

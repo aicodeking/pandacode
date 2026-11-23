@@ -385,11 +385,14 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
-  // Mirrors providers::alibaba::models (first entries).
+  // Sample of providers::alibaba::models, including the distinct model variants.
   alibaba: [
     { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
     { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
-    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+    { id: 'qwen4-max', name: 'Qwen4-Max', description: 'Stable Qwen4 flagship. Availability depends on your plan.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }, { id: 'xhigh', name: 'Extra high', description: '' }], defaultReasoningEffort: 'high' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview. Retires after November 25, 2026 (UTC+8). Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', description: 'Fast DeepSeek on Token Plan. Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek-V4.1-Flash-1017', description: 'October 17 snapshot of DeepSeek-V4.1-Flash. Availability depends on your plan.' },
   ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
@@ -878,8 +881,8 @@ function previewQueue(): PreviewQueued[] {
   try { return (JSON.parse(localStorage.getItem('pandacode.preview.queue') ?? '[]') as PreviewQueued[]).filter(e => sessions.some(task => task.id === e.sessionId)).sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.position - b.position); } catch { return []; }
 }
 function savePreviewQueue(queue: PreviewQueued[]): void { try { localStorage.setItem('pandacode.preview.queue', JSON.stringify(queue)); } catch { /* preview only */ } }
-/** Sample conversations from the Claude Code and Codex CLIs for the Import conversations window. */
-const previewImportables: Record<'claude' | 'codex', { id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }[]> = {
+/** Sample conversations from Claude Code, Codex and ZCode for the Import conversations window. */
+const previewImportables: Record<'claude' | 'codex' | 'zcode', { id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }[]> = {
   claude: [
     { id: '7d3f2c1a-0b4e-4c6d-9a8b-1f2e3d4c5b6a', title: 'Fix login redirect loop', folder: '/Users/you/Projects/orbit', updatedAt: now - 3 * 3600000, messages: 24, model: 'claude-opus-5-5' },
     { id: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', title: 'Draft the pricing page copy', folder: '/Users/you/Projects/marketing-site', updatedAt: now - 2 * 86400000, messages: 12, model: 'claude-sonnet-5' },
@@ -887,6 +890,9 @@ const previewImportables: Record<'claude' | 'codex', { id: string; title: string
   ],
   codex: [
     { id: '4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f', title: 'Speed up the search index', folder: '/Users/you/Projects/pandacode', updatedAt: now - 5 * 3600000, messages: null, model: 'gpt-6-astra' },
+  ],
+  zcode: [
+    { id: 'sess_6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e', title: 'Trace a slow build', folder: '/Users/you/Projects/demo-app', updatedAt: now - 7 * 3600000, messages: 9, model: null },
   ],
 };
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */
@@ -1674,9 +1680,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo', 'alibaba'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
-    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
+    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
-    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
+    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : args?.provider === 'laya' ? [{ id: 'laya-system-one', name: 'laya-system-one' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
     case 'jev_watch_run': break; // Preview never starts Chrome or contacts model providers.
     case 'jev_assist_prepare': {
@@ -1972,6 +1978,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'tray_seen': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
+    case 'set_queue_hold': break;
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
       session(args.sessionId);
@@ -2028,14 +2035,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'list_importable_conversations': {
       const query = String(args.search ?? '').toLowerCase();
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
       const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
       const items = previewImportables[source].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
         .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
-      result = { items, cursor: null, note: items.length ? null : `No ${source === 'codex' ? 'Codex' : 'Claude Code'} conversations were found on this computer.` }; break;
+      const label = source === 'codex' ? 'Codex' : source === 'zcode' ? 'ZCode' : 'Claude Code';
+      result = { items, cursor: null, note: items.length ? null : `No ${label} conversations were found on this computer.` }; break;
     }
     case 'import_conversations': {
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
       const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
       for (const conversationId of args.ids as string[]) {
         const found = previewImportables[source].find(item => item.id === conversationId);
@@ -2474,6 +2482,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
     case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
     case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
+    case 'cloud_digitalocean_catalog': result = previewCloud.digitalOceanCatalog(); break;
+    case 'cloud_digitalocean_set_options': result = previewCloud.setDigitalOceanOptions(args.region, args.size); break;
     case 'cloud_machines': result = previewCloud.list(); break;
     case 'cloud_create': result = previewCloud.create(args.provider, args.name); break;
     case 'cloud_power': result = previewCloud.power(args.id, args.action); break;

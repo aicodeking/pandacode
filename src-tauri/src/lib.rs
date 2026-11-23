@@ -131,6 +131,32 @@ use tauri::{Emitter, Manager, State};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 type Result<T> = std::result::Result<T, String>;
+
+/// Whether a command's caller is the workspace webview.
+///
+/// Commands that act on the workspace take the calling `tauri::Webview`, not a
+/// `WebviewWindow`: the in-app browser is a child webview of the main window, and
+/// Tauri refuses to resolve a `WebviewWindow` for a window that holds one (its
+/// `is_webview_window` wants every webview in the window to share its label). A
+/// command that asked for the window would fail with "current webview is not a
+/// WebviewWindow" for as long as the browser panel stays open.
+pub(crate) fn is_main_webview(label: &str) -> bool {
+    label == "main"
+}
+
+#[cfg(test)]
+mod main_webview_tests {
+    use super::*;
+
+    #[test]
+    fn the_in_app_browser_is_not_the_workspace_webview() {
+        assert!(is_main_webview("main"));
+        assert!(!is_main_webview("browser-guest"));
+        assert!(!is_main_webview("tray"));
+        assert!(!is_main_webview("launcher"));
+    }
+}
+
 struct RunningAgent {
     input: UnboundedSender<RunInput>,
     stopped: Arc<AtomicBool>,
@@ -732,6 +758,10 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     // A team held on this limit goes now, not at the next watchdog tick.
     architect::wake(app);
     Ok(())
+}
+#[tauri::command]
+fn set_queue_hold(session_id: String, held: bool) {
+    message_queue::set_queue_held(&session_id, held);
 }
 /// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]
@@ -4371,6 +4401,29 @@ fn app_context() -> tauri::Context<tauri::Wry> {
     context
 }
 
+/// The workspace window's own setup: native appearance, the close listeners that hide it instead of
+/// destroying it, and dictation's stop. `tray::show` runs it again for a window it builds back.
+pub(crate) fn install_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow) {
+    if let Err(error) = appearance::setup(window) {
+        eprintln!("Native appearance setup failed: {error}");
+    }
+    let handle = app.clone();
+    window.on_window_event(move |event| {
+        // A close that only hides the window (macOS, Windows with a menu bar item)
+        // stops recording and keeps downloads. A close that quits (tray::hide_on_close)
+        // cancels everything at once: transcribing would upload audio only for the
+        // exit to throw the result away.
+        let Some(voice) = handle.try_state::<voice::Voice>() else { return };
+        match event {
+            tauri::WindowEvent::CloseRequested { .. } if tray::main_close_quits(&handle) => voice.shutdown(),
+            tauri::WindowEvent::CloseRequested { .. } => voice.stop_recording(&handle),
+            tauri::WindowEvent::Destroyed => voice.shutdown(),
+            _ => {}
+        }
+    });
+    tray::hide_on_close(window);
+}
+
 pub fn run() {
     // The npx installer signs the fresh bundle this way, before any window exists.
     if std::env::args().skip(1).any(|arg| arg == "--local-sign") {
@@ -4420,24 +4473,7 @@ pub fn run() {
                 eprintln!("Menu bar item is unavailable: {error}");
             }
             if let Some(window) = app.get_webview_window("main") {
-                if let Err(error) = appearance::setup(&window) {
-                    eprintln!("Native appearance setup failed: {error}");
-                }
-                let handle = app.handle().clone();
-                window.on_window_event(move |event| {
-                    // A close that only hides the window (macOS, Windows with a menu bar item)
-                    // stops recording and keeps downloads. A close that quits (tray::hide_on_close)
-                    // cancels everything at once: transcribing would upload audio only for the
-                    // exit to throw the result away.
-                    let Some(voice) = handle.try_state::<voice::Voice>() else { return };
-                    match event {
-                        tauri::WindowEvent::CloseRequested { .. } if tray::main_close_quits(&handle) => voice.shutdown(),
-                        tauri::WindowEvent::CloseRequested { .. } => voice.stop_recording(&handle),
-                        tauri::WindowEvent::Destroyed => voice.shutdown(),
-                        _ => {}
-                    }
-                });
-                tray::hide_on_close(&window);
+                install_main_window(app.handle(), &window);
             }
             Ok(())
         })
@@ -4618,6 +4654,7 @@ pub fn run() {
                 set_resume_at_reset,
                 clear_usage_limit,
                 discard_draft,
+                set_queue_hold,
                 message_queue::queue_list,
                 message_queue::queue_add,
                 message_queue::queue_update,
@@ -4835,6 +4872,8 @@ pub fn run() {
                 cloud::commands::cloud_setup_sandboxes,
                 cloud::commands::cloud_instabox_images,
                 cloud::commands::cloud_instabox_set_image,
+                cloud::commands::cloud_digitalocean_catalog,
+                cloud::commands::cloud_digitalocean_set_options,
                 cloud::commands::cloud_machines,
                 cloud::commands::cloud_create,
                 cloud::commands::cloud_power,

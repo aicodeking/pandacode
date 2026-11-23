@@ -93,30 +93,43 @@ fn apply_environment(command: &mut Command, key: &str) {
 }
 
 pub(super) fn models() -> Vec<ModelInfo> {
-    // The text models from the Token Plan's "Supported models" list (image,
-    // audio, video and dated snapshots left out). Custom IDs stay available.
+    // Text models from the Token Plan's "Supported models" list.
     [
         ("qwen3.8-max", "Qwen3.8-Max", "Qwen flagship."),
         ("qwen3.8-flash", "Qwen3.8-Flash", "Fast Qwen model; used for background work."),
-        ("qwen4-max-preview", "Qwen4-Max-Preview", "Preview; retires after November 25, 2026."),
+        ("qwen4-max", "Qwen4-Max", "Stable Qwen4 flagship."),
+        ("qwen4-max-preview", "Qwen4-Max-Preview", "Preview. Retires after November 25, 2026 (UTC+8)."),
         ("qwen3.7-max", "Qwen3.7-Max", "Previous Qwen flagship."),
         ("qwen3.7-plus", "Qwen3.7-Plus", "Balanced Qwen model."),
         ("qwen3.6-flash", "Qwen3.6-Flash", "Lightweight Qwen model."),
         ("auto", "Auto", "Token Plan picks the model. No forced tool choice or thinking budgets."),
         ("deepseek-v4-pro", "DeepSeek-V4-Pro", "DeepSeek on Token Plan."),
         ("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", "Fast DeepSeek on Token Plan."),
+        ("deepseek-v4.1-flash-1017", "DeepSeek-V4.1-Flash-1017", "October 17 snapshot of DeepSeek-V4.1-Flash."),
         ("glm-5.3", "GLM-5.3", "Zhipu GLM on Token Plan."),
         ("glm-5.2", "GLM-5.2", "Previous Zhipu GLM on Token Plan."),
     ]
     .into_iter()
-    .map(|(id, name, description)| ModelInfo {
-        speed_tiers: Vec::new(),
-        id: id.into(),
-        name: name.into(),
-        description: format!("{description} Availability depends on your plan."),
-        reasoning_efforts: Vec::new(),
-        default_reasoning_effort: None,
-        context_window: None,
+    .map(|(id, name, description)| {
+        let (reasoning_efforts, default_reasoning_effort) = match id {
+            "qwen4-max" => (
+                ["low", "high", "xhigh"]
+                    .into_iter()
+                    .map(|effort| super::effort_info(effort, None))
+                    .collect(),
+                Some("high".into()),
+            ),
+            _ => (Vec::new(), None),
+        };
+        ModelInfo {
+            speed_tiers: Vec::new(),
+            id: id.into(),
+            name: name.into(),
+            description: format!("{description} Availability depends on your plan."),
+            reasoning_efforts,
+            default_reasoning_effort,
+            context_window: None,
+        }
     })
     .collect()
 }
@@ -124,6 +137,28 @@ pub(super) fn models() -> Vec<ModelInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn catalog_lists_each_model_variant_once() {
+        let catalog = models();
+        for id in [
+            "qwen4-max",
+            "qwen4-max-preview",
+            "deepseek-v4.1-flash",
+            "deepseek-v4.1-flash-1017",
+        ] {
+            assert_eq!(catalog.iter().filter(|model| model.id == id).count(), 1, "{id}");
+        }
+    }
+
+    #[test]
+    fn stable_qwen4_max_advertises_documented_reasoning_efforts() {
+        let catalog = models();
+        let stable = catalog.iter().find(|model| model.id == "qwen4-max").unwrap();
+        let efforts: Vec<_> = stable.reasoning_efforts.iter().map(|effort| effort.id.as_str()).collect();
+        assert_eq!(efforts, ["low", "high", "xhigh"]);
+        assert_eq!(stable.default_reasoning_effort.as_deref(), Some("high"));
+    }
 
     #[test]
     fn endpoint_is_the_documented_token_plan_url() {
