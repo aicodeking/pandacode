@@ -372,11 +372,14 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
-  // Mirrors providers::alibaba::models (first entries).
+  // Sample of providers::alibaba::models, including the distinct model variants.
   alibaba: [
     { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
     { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
-    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+    { id: 'qwen4-max', name: 'Qwen4-Max', description: 'Stable Qwen4 flagship. Availability depends on your plan.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }, { id: 'xhigh', name: 'Extra high', description: '' }], defaultReasoningEffort: 'high' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview. Retires after November 25, 2026 (UTC+8). Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', description: 'Fast DeepSeek on Token Plan. Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek-V4.1-Flash-1017', description: 'October 17 snapshot of DeepSeek-V4.1-Flash. Availability depends on your plan.' },
   ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
