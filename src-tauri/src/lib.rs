@@ -109,13 +109,13 @@ pub use voice::local::handle_speech_worker;
 
 #[cfg(test)]
 use app_instructions::app_instructions;
+use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, HostPlan, LaunchText};
+#[cfg(test)]
+use app_instructions::Role;
 pub(crate) use checkout_busy::{
     any_checkout_busy_excluding, any_same_checkout, guard_idle, prepare_checkout_for_checks, quiesce_worktree,
     refuse_worktree_merge_busy, refuse_worktree_remove_busy, session_checkout_root,
 };
-use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, HostPlan, LaunchText};
-#[cfg(test)]
-use app_instructions::Role;
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
 use std::{
@@ -3274,7 +3274,7 @@ async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Re
 
 /// `recreate_worktree`: refuses while this or any other session holds the worktree, retires
 /// the processes pinned to the old folder, then recreates it.
-pub(crate) async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
+async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
     const BUSY: &str = "Stop the agent before recreating its worktree.";
     if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err(BUSY.into());

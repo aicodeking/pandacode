@@ -3,7 +3,7 @@ use std::path::Path;
 
 #[test]
 fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
     let listed = |content: &str| {
@@ -18,7 +18,7 @@ fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
 
 #[test]
 fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
     let assistant = Mutex::new("Checking the project.".to_string());
@@ -44,7 +44,7 @@ fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
 
 #[test]
 fn dismiss_error_event_carries_its_saved_row_id() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
     let assistant = Mutex::new(String::new());
@@ -74,7 +74,7 @@ fn dismiss_error_event_carries_its_saved_row_id() {
 
 #[test]
 fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tools() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
         .create_session(&project.id, "codex", "default", "ask")
@@ -112,7 +112,7 @@ fn assistant_boundaries_preserve_separate_commentary_and_final_rows_without_tool
 
 #[test]
 fn boundaries_after_tools_do_not_add_empty_or_duplicate_assistant_rows() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
         .create_session(&project.id, "claude", "sonnet", "ask")
@@ -150,7 +150,7 @@ fn boundaries_after_tools_do_not_add_empty_or_duplicate_assistant_rows() {
 
 #[test]
 fn failed_boundary_write_keeps_response_buffer_until_a_successful_retry() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
         .create_session(&project.id, "codex", "default", "ask")
@@ -173,7 +173,7 @@ fn failed_boundary_write_keeps_response_buffer_until_a_successful_retry() {
 
 #[test]
 fn late_tool_updates_do_not_split_an_assistant_response_that_is_still_streaming() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
         .create_session(&project.id, "codex", "default", "ask")
@@ -517,7 +517,7 @@ async fn remove_and_recreate_task_worktree_retire_sibling_and_own_pooled_warm_sp
 
 #[test]
 fn stale_running_status_recovers_after_completion_write_failure_without_hiding_live_runs() {
-    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();
     let task = store
         .create_session(&project.id, "claude", "sonnet", "ask")

@@ -1214,3 +1214,33 @@ fn search_hits_inside_nested_cpp_namespaces_show_the_full_path() {
     assert!(text.contains("@ x 4-6\n5:int needle = 2;\n"), "{text}");
     assert!(!text.contains("@ b "), "{text}");
 }
+
+#[test]
+fn nested_containers_scope_like_their_compact_spellings() {
+    let repo = Repo::new();
+    repo.write("x.rb", "class Foo\n  def run\n    :outer\n  end\n  class Bar\n    def run\n      :inner\n    end\n  end\nend\n");
+    let lookups = [("Foo.run", 2), ("Foo#run", 2), ("Bar.run", 6), ("Bar#run", 6), ("Foo::Bar#run", 6), ("Foo::Bar.run", 6)];
+    let reply = assert_lookups(&repo, "x.rb", &lookups.map(|(name, _)| (name, "def run")));
+    for (at, (name, line)) in lookups.into_iter().enumerate() {
+        assert_eq!((&reply["read"][at]["from"], &reply["read"][at]["to"]), (&json!(line), &json!(line + 2)), "x.rb#{name}: {reply}");
+    }
+    assert_lookups(&repo, "x.rb", &[("Foo::Bar", "class Bar")]);
+    repo.write("m.rb", "module A\n  def go\n    :outer\n  end\n  module B\n    def go\n      :inner\n    end\n  end\nend\n");
+    let reply = assert_lookups(&repo, "m.rb", &[("A.go", "def go"), ("B.go", "def go"), ("A::B.go", "def go"), ("A::B", "module B")]);
+    for (at, body) in [":outer", ":inner", ":inner"].into_iter().enumerate() {
+        assert!(reply["read"][at]["text"].as_str().unwrap().contains(body), "{reply}");
+    }
+    repo.write("a.cpp", "namespace a {\nvoid run() { outer(); }\nnamespace b {\nvoid run() { inner(); }\n}\n}\n");
+    assert_lookups(&repo, "a.cpp", &[("a::run", "outer();"), ("b::run", "inner();"), ("a::b::run", "inner();"), ("a::b", "namespace b {")]);
+}
+
+#[test]
+fn php_namespaced_reads_split_at_the_file() {
+    let repo = Repo::new();
+    repo.write("src/Foo.php", "<?php\nnamespace App\\Models;\nclass User {\n    public function save() { return 1; }\n}\nclass Post {\n    public function save() { return 2; }\n}\n");
+    let reply = repo.explore(json!({"read":["src/Foo.php#App\\Models\\User::save", "src/Foo.php#\\App\\User::save", "src/Foo.php#Post::save"]}));
+    for (at, body) in ["return 1;", "return 1;", "return 2;"].into_iter().enumerate() {
+        assert!(reply["read"][at].get("error").is_none(), "{reply}");
+        assert!(reply["read"][at]["text"].as_str().unwrap().contains(body), "{reply}");
+    }
+}

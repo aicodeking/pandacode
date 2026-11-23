@@ -256,20 +256,24 @@ fn parse_read<'a>(raw: &'a str, whole_file: impl Fn(&str) -> bool) -> Result<(&'
     Ok(symbol_split(raw, whole_file).map_or((raw, Span::Whole), |at| (&raw[..at], Span::Symbol(&raw[at + 1..]))))
 }
 
-/// The `#` ending the path in `path#symbol`. Only a `#` after the last `/` or `\` counts, so
-/// Ruby's `app/foo.rb#Foo#bar` reads `bar` in `Foo` and `dir#1/foo.rb#run` keeps its folder.
-/// The first such `#` whose prefix is a file wins (`a#1.rb#Foo#bar`); failing that, the first.
+/// The `#` ending the path in `path#symbol`. The first `#` after the last `/` whose prefix is a
+/// file wins (`a#1.rb#Foo#bar`, `dir#1\foo.rb#Foo#bar`); failing that, the first `#` after the
+/// last `/`, so Ruby's `app/foo.rb#Foo#bar` reads `bar` in `Foo`, `dir#1/foo.rb#run` keeps its
+/// folder, and a PHP namespace's `\` (`src/Foo.php#App\Models\User::save`) is no separator.
 fn symbol_split(raw: &str, whole_file: impl Fn(&str) -> bool) -> Option<usize> {
-    let tail = raw.rfind(['/', '\\']).map_or(0, |at| at + 1);
-    let mut hashes = raw[tail..].match_indices('#').map(|(at, _)| tail + at).filter(|&at| at + 1 < raw.len());
-    let first = hashes.next()?;
-    std::iter::once(first).chain(hashes).find(|&at| whole_file(&raw[..at])).or(Some(first))
+    let hashes = || raw.match_indices('#').map(|(at, _)| at).filter(|&at| at + 1 < raw.len());
+    if let Some(at) = hashes().find(|&at| !raw[at + 1..].contains('/') && whole_file(&raw[..at])) {
+        return Some(at);
+    }
+    let tail = raw.rfind('/').map_or(0, |at| at + 1);
+    hashes().find(|&at| at >= tail)
 }
 
-/// `run()`, `run(_:)`, `Foo::run`, `Foo.run`, `Foo#run`: the name and its last qualifier.
+/// `run()`, `run(_:)`, `Foo::run`, `Foo.run`, `Foo#run`, PHP `App\User::run`: the name and its
+/// last qualifier.
 pub(super) fn split_name(raw: &str) -> (Option<&str>, &str) {
     let raw = raw.split('(').next().unwrap_or(raw).trim();
-    let is_separator = |c: char| matches!(c, '.' | ':' | '#');
+    let is_separator = |c: char| matches!(c, '.' | ':' | '#' | '\\');
     let Some(at) = raw.rfind(is_separator) else { return (None, raw) };
     let qualifier = raw[..at].trim_end_matches(is_separator);
     let qualifier = qualifier.rsplit(is_separator).next().filter(|part| !part.is_empty());
@@ -466,6 +470,9 @@ mod tests {
             ("dir#1/foo.rb#Foo#bar", "dir#1/foo.rb", "Foo#bar"),
             ("dir\\foo.rb#Foo#bar", "dir\\foo.rb", "Foo#bar"),
             ("dir/a#1.rb#Foo#bar", "dir/a", "1.rb#Foo#bar"),
+            ("src/Foo.php#App\\Models\\User::save", "src/Foo.php", "App\\Models\\User::save"),
+            ("src/Foo.php#\\App\\User::save", "src/Foo.php", "\\App\\User::save"),
+            ("dir\\Foo.php#App\\Models\\User::save", "dir\\Foo.php", "App\\Models\\User::save"),
         ] {
             assert_eq!(parse_read(raw, |_| false).unwrap(), (path, Span::Symbol(symbol)), "{raw}");
         }
@@ -473,6 +480,10 @@ mod tests {
         assert_eq!(parse_read("dir/a#1.rb#Foo#bar", exists).unwrap(), ("dir/a#1.rb", Span::Symbol("Foo#bar")), "a file with # in its name wins");
         assert_eq!(parse_read("dir/a#1.rb", exists).unwrap(), ("dir/a#1.rb", Span::Whole));
         assert_eq!(parse_read("app/foo.rb#Foo#bar", exists).unwrap(), ("app/foo.rb", Span::Symbol("Foo#bar")));
+        let windows = |raw: &str| raw == "dir#1\\foo.rb";
+        assert_eq!(parse_read("dir#1\\foo.rb#Foo#bar", windows).unwrap(), ("dir#1\\foo.rb", Span::Symbol("Foo#bar")));
+        let php = |raw: &str| raw == "src/Foo.php";
+        assert_eq!(parse_read("src/Foo.php#App\\Models\\User::save", php).unwrap(), ("src/Foo.php", Span::Symbol("App\\Models\\User::save")));
         for raw in ["dir#1/foo.rb", "a.rb#", "dir/#"] {
             assert_eq!(parse_read(raw, |_| false).unwrap(), (raw, Span::Whole), "{raw}");
         }
@@ -486,7 +497,7 @@ mod tests {
 
     #[test]
     fn names_split_into_qualifier_and_name() {
-        for (raw, expected) in [("run", (None, "run")), ("run()", (None, "run")), ("run(_:)", (None, "run")), ("Foo::run", (Some("Foo"), "run")), ("a::Foo::run", (Some("Foo"), "run")), ("Foo.run", (Some("Foo"), "run")), ("Foo#run()", (Some("Foo"), "run"))] {
+        for (raw, expected) in [("run", (None, "run")), ("run()", (None, "run")), ("run(_:)", (None, "run")), ("Foo::run", (Some("Foo"), "run")), ("a::Foo::run", (Some("Foo"), "run")), ("Foo.run", (Some("Foo"), "run")), ("Foo#run()", (Some("Foo"), "run")), ("App\\Models\\User::save", (Some("User"), "save")), ("\\App\\User::save", (Some("User"), "save"))] {
             assert_eq!(split_name(raw), expected, "{raw}");
         }
     }

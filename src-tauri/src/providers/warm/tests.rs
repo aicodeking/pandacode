@@ -748,6 +748,35 @@ fn skill_manager_disabled_skills_invalidate_a_warm_launch() {
 }
 
 #[test]
+fn claude_config_file_edits_invalidate_a_warm_launch() {
+    let cwd = std::env::temp_dir().join(format!("pandacode-warm-config-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    let mut config = crate::providers::tests::config("claude");
+    config.cwd = cwd.clone();
+    let none = std::collections::BTreeSet::new();
+    let key = || key_with_disabled(&config, &[], "", &none);
+    let mut previous = key();
+    assert_eq!(previous, key(), "unchanged config files keep the key");
+    // Every write changes the byte length, so coarse mtime granularity cannot hide it.
+    for (name, contents) in [
+        (".mcp.json", "{}"),
+        (".mcp.json", r#"{"mcpServers":{}}"#),
+        (".claude/settings.json", "{}"),
+        (".claude/settings.json", r#"{"model":"x"}"#),
+        ("CLAUDE.md", "a"),
+        ("CLAUDE.md", "ab"),
+    ] {
+        std::fs::write(cwd.join(name), contents).unwrap();
+        let next = key();
+        assert_ne!(next, previous, "writing {name} must start the next turn cold");
+        previous = next;
+    }
+    std::fs::remove_file(cwd.join("CLAUDE.md")).unwrap();
+    assert_ne!(key(), previous, "removing CLAUDE.md must start the next turn cold");
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
 fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch() {
     let disabled = std::collections::BTreeSet::from(["Friendly skill".into()]);
     let base = crate::providers::tests::config("claude");

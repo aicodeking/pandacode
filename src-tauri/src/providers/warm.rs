@@ -17,10 +17,10 @@ const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
 
 /// Unreadable settings fail closed: no idle CLI or ahead-of-turn SessionStart hooks.
 pub fn enabled(app: &tauri::AppHandle) -> bool {
-    crate::app_marker::exists(app, WARM_SPARES_OFF_FILE).is_ok_and(|present| !present)
+    enabled_in(crate::app_marker::data_dir(app))
 }
 
-#[cfg(test)]
+/// The one on/off decision, also exercised directly by the unit tests.
 fn enabled_in(dir: Result<PathBuf, String>) -> bool {
     crate::app_marker::exists_in(dir, WARM_SPARES_OFF_FILE).is_ok_and(|present| !present)
 }
@@ -291,8 +291,43 @@ fn key_with_disabled(
         "telemetryOff": super::privacy::telemetry_off(),
         // So does a saved executable location.
         "executable": crate::provider_settings::executable_override(&config.provider),
+        // Config files Claude reads only at startup: an edit while a spare idles starts cold.
+        "claudeConfig": claude_config_fingerprint(&config.cwd),
     })
     .to_string()
+}
+
+/// Project-scoped files under the working folder that Claude Code reads at startup.
+const PROJECT_CLAUDE_CONFIG: [&str; 6] =
+    [".mcp.json", ".claude/settings.json", ".claude/settings.local.json", "CLAUDE.md", ".claude/CLAUDE.md", ".claude/skills"];
+/// User-scoped files under the effective Claude config folder.
+const USER_CLAUDE_CONFIG: [&str; 3] = ["settings.json", "CLAUDE.md", "skills"];
+
+/// Metadata only (never contents or paths) of the Claude config files, so a spare started
+/// before one was created, edited or removed is never adopted.
+fn claude_config_fingerprint(cwd: &Path) -> Vec<Value> {
+    let env = crate::provider_settings::environment("claude");
+    let user_dir = crate::account_config::config_dir("claude", &env);
+    let project = PROJECT_CLAUDE_CONFIG.iter().map(|name| config_file_stamp(&cwd.join(name)));
+    let user = USER_CLAUDE_CONFIG
+        .iter()
+        .map(|name| user_dir.as_ref().map_or(Value::Null, |dir| config_file_stamp(&dir.join(name))));
+    project.chain(user).collect()
+}
+
+fn config_file_stamp(path: &Path) -> Value {
+    match std::fs::metadata(path) {
+        Ok(meta) => {
+            let modified = meta
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|since| since.as_nanos().to_string());
+            json!([meta.is_dir(), meta.len(), modified])
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(error) => json!(format!("err:{:?}", error.kind())),
+    }
 }
 
 /// The spare launches with the instructions a cold launch would use (`run_inner` applies the

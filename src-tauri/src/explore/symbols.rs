@@ -4,6 +4,7 @@
 use super::{
     lex::{indent_of, signature_continues, Language, Lexed, LIMIT_CHECK_BYTES, LIMIT_CHECK_LINES, SIGNATURE_LOOKAHEAD},
     limit::Limit,
+    script_sig::{closes_as_method, script_method_signature, TS_RETURN},
 };
 use regex::{Regex, RegexSet};
 use std::{
@@ -11,8 +12,6 @@ use std::{
     sync::OnceLock,
 };
 
-/// How far ahead a multi-line method's `) {` may be.
-const SIGNATURE_LINES: usize = 12;
 /// A longer line is minified or data, never a definition worth finding.
 const MAX_RULE_LINE: usize = 2_000;
 /// One line slice, two flags and five depths, rounded up for allocation alignment.
@@ -50,32 +49,7 @@ macro_rules! trailing_comments {
 /// declaration ending in `;` without a body matches neither, even with `// { … }` after it.
 const PARAMS_THEN_BODY: &str = concat!(r"\((?:[^;]*|[^;{]*\)[^;{]*\{.*\}\s*;?\s*", trailing_comments!(), r")$");
 /// After a signature: a brace ending the line, or a whole one-line body.
-const OPEN_OR_BODY: &str = concat!(r"\{(?:\s*|.*\}\s*;?\s*)", trailing_comments!(), "$");
-/// A whole inline object type, `{ id: string }`, with no nested braces.
-macro_rules! ts_object_type {
-    () => {
-        r"\{[^{}]*\}"
-    };
-}
-/// One piece of a TS return type: any character but `{` or `;`, or a whole object type.
-macro_rules! ts_return_piece {
-    () => {
-        concat!(r"(?:[^{;]|", ts_object_type!(), ")")
-    };
-}
-/// The last piece of a TS return type: a character that cannot continue a type (not `&`, `|`,
-/// `=`, `(`, `<`, `,`, `?`, `:` or a lone `>` as in `=>`), a whole object type, or a generic's
-/// closing `>` after one of those (`Promise<void>`, `Map<K, { v: V }>`).
-macro_rules! ts_return_end {
-    () => {
-        concat!(r"(?:[^{;\s&|=(<,?:>]|", ts_object_type!(), r"|(?:[^{;\s=]|", ts_object_type!(), ")>)")
-    };
-}
-/// TS return type before a method's `{`: whole `{ … }` object types may sit inside it, but no
-/// `;`, and it never ends in `&`, `|`, `=>`, `=`, `(`, `<`, `,`, `?` or `:`, so the object type
-/// closing a declaration (`render(): Props & { id: string };`, `count(): { n: number };`) is no
-/// body, while `shape(): Props & { id: string } { … }` keeps its own.
-const TS_RETURN: &str = concat!(r"(?::\s*", ts_return_piece!(), "*?", ts_return_end!(), r"\s*)?");
+pub(super) const OPEN_OR_BODY: &str = concat!(r"\{(?:\s*|.*\}\s*;?\s*)", trailing_comments!(), "$");
 /// Attributes on the same line, then visibility.
 const RUST_LEAD: &str = r"^\s*(?:#!?\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?";
 
@@ -175,7 +149,6 @@ fn swift_rules() -> Rules {
     ]
 }
 
-
 /// Comments after a container header or between an anonymous namespace and its brace.
 const CPP_COMMENTS: &str = trailing_comments!();
 /// `Box`, `Box<T>`, `Outer<T>::Inner<U>`: the owner of an out-of-line definition.
@@ -217,7 +190,6 @@ fn shell_rules() -> Rules {
         r("function", r"^\s*([\w:.-]+)\s*\(\s*\)".into()),
     ]
 }
-
 
 struct Table {
     set: RegexSet,
@@ -455,60 +427,6 @@ fn without_template_args(qualifier: &str) -> String {
             depth == 0 && c != '<'
         })
         .collect()
-}
-
-/// `async run(` on its own line is a method only if a later `) {` or `): T {` closes it; a call
-/// spread over lines ends in `);`.
-fn closes_as_method(lines: &[&str], index: usize) -> bool {
-    lines[index + 1..].iter().take(SIGNATURE_LINES).find(|line| line.trim_start().starts_with(')')).is_some_and(|line| line.trim_end().ends_with('{'))
-}
-
-/// `run(x = f(1), s = ")"): T { … }`: the parameter list after the name (and any `<T>`) closes
-/// on this line, so neither a call taking a callback (`it("works", function () {`) nor a
-/// declaration with a commented `{ }` (`size(): number; // f() { }`) passes for a method.
-fn script_method_signature(line: &str, name_end: usize) -> bool {
-    static AFTER_PARAMS: OnceLock<Regex> = OnceLock::new();
-    let after_params = AFTER_PARAMS.get_or_init(|| Regex::new(&format!(r"^\s*{TS_RETURN}{OPEN_OR_BODY}")).expect("script method rule compiles"));
-    let skip_space = |at: usize| at + (line[at..].len() - line[at..].trim_start().len());
-    let mut at = skip_space(name_end);
-    if line[at..].starts_with('<') {
-        let Some(close) = line[at..].find('>') else { return false };
-        at = skip_space(at + close + 1);
-    }
-    line[at..].starts_with('(') && closing_paren(line, at).is_some_and(|close| after_params.is_match(&line[close + 1..]))
-}
-
-/// The `)` matching the `(` at `open`, skipping `'…'`, `"…"` and `` `…` `` with `\` escapes;
-/// `None` if the line ends or a `;` outside `{ … }` inline object types comes first.
-fn closing_paren(line: &str, open: usize) -> Option<usize> {
-    let (mut depth, mut braces, mut quote, mut escaped) = (0usize, 0usize, None, false);
-    for (at, byte) in line.bytes().enumerate().skip(open) {
-        if let Some(open_quote) = quote {
-            if escaped {
-                escaped = false;
-            } else if byte == b'\\' {
-                escaped = true;
-            } else if byte == open_quote {
-                quote = None;
-            }
-            continue;
-        }
-        match byte {
-            b'\'' | b'"' | b'`' => quote = Some(byte),
-            b'(' => depth += 1,
-            b')' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(at);
-                }
-            }
-            b'{' => braces += 1,
-            b'}' => braces = braces.saturating_sub(1),
-            b';' if braces == 0 => return None,
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Members of `type (`, `const (` and `var (` groups, which the column-0 rules cannot see.
@@ -772,18 +690,47 @@ fn scopes(outer: &Symbol, qualifier: &str) -> bool {
     has_word(&outer.name, qualifier)
 }
 
-/// Whether `symbol` has a receiver or sits inside a definition holding `qualifier` as a whole word
-/// (`Foo` in `impl Display for Foo<'a>`).
+/// Whether `symbol` is qualified by `qualifier`: its receiver holds it as a whole word (`Foo` in
+/// `impl Display for Foo<'a>`), or its innermost enclosing definition `scopes` it: the latest
+/// starting other definition holding `symbol`'s span, shortest first (equal spans tie; any may
+/// scope). So `Foo.run` never reaches into a `class Bar` nested in `Foo`, just as with `Foo::Bar`.
 #[cfg(test)]
 pub(super) fn qualified_by(symbols: &[Symbol], symbol: &Symbol, qualifier: &str) -> bool {
-    symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier)) || symbols.iter().any(|outer| {
-        outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && scopes(outer, qualifier)
-    })
+    let rank = |outer: &Symbol| (outer.line, std::cmp::Reverse(outer.end));
+    let enclosing = || symbols.iter().filter(|outer| *outer != symbol && outer.line <= symbol.line && symbol.end <= outer.end);
+    let innermost = enclosing().map(rank).max();
+    symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier))
+        || innermost.is_some_and(|innermost| enclosing().any(|outer| rank(outer) == innermost && scopes(outer, qualifier)))
 }
 
-/// Streams matching definitions in O(symbols), retaining only two same-line qualifier
-/// candidates. Earlier-line qualifiers need only their maximum end. The two same-line
-/// candidates have distinct values because `qualified_by` excludes value-equal symbols.
+/// Up to two value-distinct symbols: enough to tell whether one differs from any given symbol.
+#[derive(Default)]
+struct TwoDistinct<'a>([Option<&'a Symbol>; 2]);
+
+impl<'a> TwoDistinct<'a> {
+    fn add(&mut self, symbol: &'a Symbol) {
+        let free = usize::from(self.0[0].is_some());
+        if self.0[free].is_none() && self.0[0] != Some(symbol) {
+            self.0[free] = Some(symbol);
+        }
+    }
+
+    fn other_than(&self, symbol: &Symbol) -> bool {
+        self.0.iter().flatten().any(|&held| held != symbol)
+    }
+}
+
+/// Same-line definitions sharing one end, each holding the others.
+#[derive(Default)]
+struct Tier<'a> {
+    end: usize,
+    members: TwoDistinct<'a>,
+    scoping: TwoDistinct<'a>,
+}
+
+/// Streams the definitions `qualified_by` accepts, in file order. Like `Enclosing`, an open stack
+/// of earlier lines' span tiers (ends never growing towards the top) holds each symbol's innermost
+/// container on top: O(symbols), plus ordering each line's own definitions by end.
 pub(super) fn qualified_matches<'a>(
     symbols: &'a [Symbol],
     qualifier: Option<&str>,
@@ -802,37 +749,50 @@ pub(super) fn qualified_matches<'a>(
         }
         return;
     };
-    let (mut start, mut max_prev_end) = (0, None);
+    // Tiers from earlier lines: (end, whether one of its definitions scopes).
+    let mut open: Vec<(usize, bool)> = Vec::new();
+    let (mut order, mut tiers, mut start) = (Vec::<&Symbol>::new(), Vec::<Tier>::new(), 0);
     while start < symbols.len() {
         let mut end = start;
-        let (mut first, mut second): (Option<&Symbol>, Option<&Symbol>) = (None, None);
         while end < symbols.len() && symbols[end].line == symbols[start].line {
             if end.is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
                 return;
             }
-            let symbol = &symbols[end];
-            if scopes(symbol, qualifier) && first != Some(symbol) && second != Some(symbol) {
-                if first.is_none_or(|first| symbol.end > first.end) {
-                    second = first;
-                    first = Some(symbol);
-                } else if second.is_none_or(|second| symbol.end > second.end) {
-                    second = Some(symbol);
-                }
-            }
             end += 1;
         }
-        for (offset, symbol) in symbols[start..end].iter().enumerate() {
-            if (start + offset).is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
+        order.clear();
+        order.extend(&symbols[start..end]);
+        order.sort_by_key(|symbol| std::cmp::Reverse(symbol.end));
+        tiers.clear();
+        for &symbol in &order {
+            if tiers.last().is_none_or(|tier| tier.end != symbol.end) {
+                tiers.push(Tier { end: symbol.end, ..Tier::default() });
+            }
+            let tier = tiers.last_mut().expect("tier exists");
+            tier.members.add(symbol);
+            if scopes(symbol, qualifier) {
+                tier.scoping.add(symbol);
+            }
+        }
+        while open.last().is_some_and(|&(outer_end, _)| outer_end < tiers[0].end) {
+            open.pop();
+        }
+        for (at, symbol) in symbols[start..end].iter().enumerate() {
+            if (start + at).is_multiple_of(LIMIT_CHECK_LINES) && limit.expired() {
                 return;
             }
-            let same_line_end = first.filter(|&outer| outer != symbol).or(second.filter(|&outer| outer != symbol)).map(|outer| outer.end);
-            let qualified = max_prev_end.max(same_line_end).is_some_and(|outer_end| symbol.end <= outer_end)
-                || symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier));
-            if qualified && matches_name(symbol) {
+            // Its own tier if that holds another definition, else the next wider one.
+            let tier = tiers.partition_point(|tier| tier.end > symbol.end);
+            let enclosed = match tier {
+                _ if tiers[tier].members.other_than(symbol) => tiers[tier].scoping.other_than(symbol),
+                0 => open.last().is_some_and(|&(_, scoping)| scoping),
+                _ => tiers[tier - 1].scoping.0[0].is_some(),
+            };
+            if (enclosed || symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier))) && matches_name(symbol) {
                 found(symbol);
             }
         }
-        max_prev_end = max_prev_end.max(first.map(|outer| outer.end));
+        open.extend(tiers.iter().map(|tier| (tier.end, tier.scoping.0[0].is_some())));
         start = end;
     }
 }

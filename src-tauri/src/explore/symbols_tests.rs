@@ -903,3 +903,41 @@ fn script_methods_with_nested_parens_and_quoted_defaults_are_still_methods() {
         has(&found, name, "method", line, end);
     }
 }
+
+#[test]
+fn only_the_innermost_container_scopes_a_nested_definition() {
+    let ruby = symbols("x.rb", "class Foo\n  def run\n  end\n  class Bar\n    def run\n    end\n  end\nend\n");
+    let cpp = symbols("a.cpp", "namespace a {\nvoid run() {}\nnamespace b {\nvoid run() {}\n}\n}\n");
+    for (found, outer, inner) in [(&ruby, "Foo", "Bar"), (&cpp, "a", "b")] {
+        let run: Vec<_> = found.iter().filter(|symbol| symbol.name == "run").collect();
+        let nested = found.iter().find(|symbol| symbol.name == inner).unwrap();
+        assert_eq!(lookup(found, Some(outer), "run"), [run[0]], "{found:?}");
+        assert_eq!(lookup(found, Some(inner), "run"), [run[1]], "{found:?}");
+        assert_eq!(lookup(found, Some(outer), inner), [nested], "{found:?}");
+        assert!(qualified_by(found, run[0], outer) && !qualified_by(found, run[0], inner));
+        assert!(qualified_by(found, run[1], inner) && !qualified_by(found, run[1], outer));
+    }
+}
+
+#[test]
+fn same_line_spans_pick_the_shortest_container_and_ties_all_scope() {
+    let at = |name: &str, line, end| Symbol { name: name.into(), qualifier: None, kind: "fn", line, end };
+    let found = [at("Foo", 1, 9), at("Bar", 1, 5), at("run", 1, 5), at("Baz", 1, 5), at("go", 2, 3)];
+    for (qualifier, expected) in [("Foo", vec![]), ("Bar", vec!["run", "Baz", "go"]), ("Baz", vec!["Bar", "run", "go"])] {
+        let mut names = Vec::new();
+        qualified_matches(&found, Some(qualifier), |_| true, &limit(), |symbol| names.push(symbol.name.as_str()));
+        assert_eq!(names, expected, "{qualifier}");
+    }
+}
+
+#[test]
+fn script_methods_skip_block_comments_in_their_parameters() {
+    for (text, method) in [
+        ("class A {\n  run(a /* it's fine */) {\n  }\n}\n", true),
+        ("class A {\n  run(a /* ) ; */, b) {\n  }\n}\n", true),
+        ("class A {\n  run(a /* unterminated ) {\n  }\n}\n", false),
+    ] {
+        let found = symbols("a.ts", text);
+        assert_eq!(found.iter().any(|symbol| symbol.name == "run" && symbol.kind == "method"), method, "{text}: {found:?}");
+    }
+}

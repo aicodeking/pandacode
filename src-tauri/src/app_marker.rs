@@ -6,7 +6,7 @@ use tauri::Manager;
 
 type Result<T> = std::result::Result<T, String>;
 
-fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
+pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
 
