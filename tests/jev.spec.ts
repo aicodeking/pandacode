@@ -4,7 +4,7 @@ const dialog = (page: Page) => page.locator('#dialog');
 const probe = `
   window.__jevCalls ??= [];
   window.__jevCalls.push({ command, args: structuredClone(args) });
-  window.__jevConfig ??= { enabled: true, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false };
+  window.__jevConfig ??= { enabled: true, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false };
   window.__jevRuns ??= {};
   window.__jevEmit = patch => {
     const report = { id: 'run-1', sessionId: 'session-1', url: 'http://localhost:3000/', goal: 'Check the primary interaction', viewport: 'desktop', status: 'running', verification: 'not_checked', summary: 'Exploring the app', createdAt: Date.now(), durationMs: 1000, steps: 1, checks: [], events: [], ...window.__jevRuns[patch.id || 'run-1'], ...patch };
@@ -133,6 +133,31 @@ test('OpenRouter decisions list models only when the menu opens and send the key
   expect(saved.openrouterKey).toBe('fake-openrouter-test-key');
   await expect(page.locator('#jev-openrouter-key')).toHaveValue('');
 });
+test('Local Laya decisions need no key and expose the loopback endpoint', async ({ page }) => {
+  await installProbe(page, true);
+  await settings(page);
+  await expect(page.locator('#jev-decision-provider')).toHaveValue('typesafe');
+  await expect(page.locator('[data-jev-laya-field]')).toBeHidden();
+  await page.locator('#jev-decision-provider').selectOption('laya');
+  await expect(page.locator('#jev-typesafe-key')).toBeHidden();
+  await expect(page.locator('#jev-openrouter-key')).toBeHidden();
+  await expect(page.locator('[data-jev-laya-field]')).toBeVisible();
+  await expect(page.locator('#jev-decision-model')).toHaveValue('laya-system-one');
+  await expect(page.locator('#jev-decision-url')).toHaveValue('http://127.0.0.1:8000');
+  await page.locator('#jev-decisions-enabled').check();
+  await page.locator('[data-jev-save]').click();
+  await expect.poll(async () => (await calls(page, 'jev_save_configuration')).length).toBe(1);
+  const saved = (await calls(page, 'jev_save_configuration'))[0].args;
+  expect(saved.settings.decisionProvider).toBe('laya');
+  expect(saved.settings.decisionBaseUrl).toBe('http://127.0.0.1:8000');
+  expect(saved).not.toHaveProperty('typesafeKey');
+  expect(saved).not.toHaveProperty('openrouterKey');
+  await expect(page.locator('.jev-feedback')).toContainText('Saved');
+  await page.locator('#jev-decision-provider').selectOption('openrouter');
+  await expect(page.locator('[data-jev-laya-field]')).toBeHidden();
+  await expect(page.locator('#jev-openrouter-key')).toBeVisible();
+});
+
 test('Jev setup remains editable after errors and shows installation progress', async ({ page }) => {
   await installProbe(page, true); await settings(page);
   await page.evaluate(() => { (window as any).__jevFailSave = true; });
