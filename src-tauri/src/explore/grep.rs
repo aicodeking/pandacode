@@ -640,7 +640,10 @@ pub(super) fn ranked(hits: impl IntoIterator<Item = (usize, bool)>, most: usize)
 }
 
 pub(super) fn symbol_label(symbol: &Symbol) -> String {
-    format!("{} {} {}-{}", symbol.kind, symbol.name, symbol.line, symbol.end)
+    match (symbol.kind, symbol.qualifier.as_deref()) {
+        ("class", Some(qualifier)) => format!("{} {qualifier}::{} {}-{}", symbol.kind, symbol.name, symbol.line, symbol.end),
+        _ => format!("{} {} {}-{}", symbol.kind, symbol.name, symbol.line, symbol.end),
+    }
 }
 
 pub(super) fn clip(line: &str, chars: usize) -> String {

@@ -36,6 +36,13 @@ const MODS_JAVA: &str = r"(?:(?:public|private|protected|static|final|abstract|s
 const MODS_KOTLIN: &str = r"(?:(?:public|private|protected|internal|open|abstract|final|sealed|data|enum|inline|value|annotation|override|suspend|operator|companion|tailrec|infix|external|expect|actual)\s+)*";
 const MODS_SWIFT: &str = r"(?:(?:public|private|fileprivate|internal|open|final|static|class|override|mutating|nonmutating|indirect|convenience|required|lazy|weak|nonisolated|@\w+(?:\([^)]*\))?)\s+)*";
 const MODS_PHP: &str = r"(?:(?:public|private|protected|static|final|abstract|readonly)\s+)*";
+/// After a definition's `(`: parameters running on, or a whole `) … { body }` on this line. A
+/// declaration ending in `;` without a body matches neither.
+const PARAMS_THEN_BODY: &str = r"\((?:[^;]*|[^;{]*\)[^;{]*\{.*\}\s*;?\s*)$";
+/// After a signature: a brace ending the line, or a whole one-line body.
+const OPEN_OR_BODY: &str = r"\{(?:\s*|.*\}\s*;?\s*)$";
+/// TS return type: never starting with `{`, which is an object type (`count(): { n: number };`).
+const TS_RETURN: &str = r"(?::\s*[^{\s][^{]*)?";
 /// Attributes on the same line, then visibility.
 const RUST_LEAD: &str = r"^\s*(?:#!?\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?";
 
@@ -86,7 +93,7 @@ fn script_rules() -> Rules {
         r("namespace", r"^\s*(?:export\s+)?(?:declare\s+)?(?:namespace|module)\s+(\w+)".into()),
         r("function", r"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:function\b|(?:<[^>]*>\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>|\(\s*$)".into()),
         r("const", r"^(?:export\s+)?(?:const|let|var)\s+(\w+)".into()),
-        r("method", format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::[^{{]+)?\{{\s*$")),
+        r("method", format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(.*\)\s*{TS_RETURN}{OPEN_OR_BODY}")),
         r("method", r"^\s+(\w+)\s*:\s*(?:async\s*)?(?:function\b|(?:\([^)]*\)|\w+)\s*=>)".into()),
         r("method", format!(r"^\s+{MODS_TS}#?(\w+)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|\w+)\s*(?::[^=]+)?=>")),
         r(OPEN_METHOD, format!(r"^\s+{MODS_TS}\*?#?(\w+)\s*(?:<[^>]*>)?\s*\(\s*$")),
@@ -112,7 +119,7 @@ fn go_rules() -> Rules {
 fn java_rules() -> Rules {
     vec![
         r("class", format!(r"^\s*{MODS_JAVA}(?:class|interface|enum|record|@interface)\s+(\w+)")),
-        r("method", format!(r"^\s+{MODS_JAVA}(?:<[^>]*>\s*)?[\w<>\[\],.?]+(?:\s+[\w<>\[\],.?]+)*\s+(\w+)\s*\([^;]*$")),
+        r("method", format!(r"^\s+{MODS_JAVA}(?:<[^>]*>\s*)?[\w<>\[\],.?]+(?:\s+[\w<>\[\],.?]+)*\s+(\w+)\s*{PARAMS_THEN_BODY}")),
     ]
 }
 
@@ -138,6 +145,8 @@ fn swift_rules() -> Rules {
 
 /// Comments after a container header or between an anonymous namespace and its brace.
 const CPP_COMMENTS: &str = r"(?:(?://.*)|(?:/\*.*?\*/\s*))*";
+/// `Box`, `Box<T>`, `Outer<T>::Inner<U>`: the owner of an out-of-line definition.
+const CPP_QUALIFIER: &str = r"(?P<qualifier>\w+(?:<[^>{};]*>)?(?:::\w+(?:<[^>{};]*>)?)*)";
 
 fn c_family_rules() -> Rules {
     vec![
@@ -146,10 +155,10 @@ fn c_family_rules() -> Rules {
         r("macro", r"^\s*#\s*define\s+(\w+)".into()),
         r("type", r"^\s*typedef\b.*?(\w+)\s*;\s*$".into()),
         r("type", r"^\}\s*(\w+)\s*;\s*$".into()),
-        r("function", r"^\s*(?P<return_type>(?:[\w:<>,~]+(?:\s+|[*&]+\s*))+)[*&]*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
-        r("constructor", r"^\s*(?:(?:inline|constexpr|explicit)\s+)*(?P<qualifier>\w+(?:::\w+)*)::~?(?P<name>\w+)\s*\([^;]*$".into()),
-        r("function", r"^[A-Za-z_][\w\s*:&<>,~]*?[\s*&:]~?(\w+)\s*\([^;]*$".into()),
-        r("method", r"^\s+(?:(?:virtual|static|inline|explicit|constexpr|friend)\s+)*(?:[\w:*&<>,~]+\s+)*[*&]*(~?\w+)\s*\([^;{]*\)\s*(?:const\b|override\b|noexcept\b|final\b|\s)*(?::[^;{]*)?\{\s*$".into()),
+        r("function", format!(r"^\s*(?P<return_type>(?:[\w:<>,~]+(?:\s+|[*&]+\s*))+)[*&]*{CPP_QUALIFIER}::~?(?P<name>\w+)\s*{PARAMS_THEN_BODY}")),
+        r("constructor", format!(r"^\s*(?:(?:inline|constexpr|explicit)\s+)*{CPP_QUALIFIER}::~?(?P<name>\w+)\s*{PARAMS_THEN_BODY}")),
+        r("function", format!(r"^[A-Za-z_][\w\s*:&<>,~]*?[\s*&:]~?(\w+)\s*{PARAMS_THEN_BODY}")),
+        r("method", format!(r"^\s+(?:(?:virtual|static|inline|explicit|constexpr|friend)\s+)*(?:[\w:*&<>,~]+\s+)*[*&]*(~?\w+)\s*\([^;{{]*\)\s*(?:const\b|override\b|noexcept\b|final\b|\s)*(?::[^;{{]*)?{OPEN_OR_BODY}")),
     ]
 }
 
@@ -345,7 +354,7 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     let (kind, regex) = &table.rules[rule];
     let captures = regex.captures(line)?;
     let name = captures.name("name").or_else(|| captures.get(1))?.as_str();
-    let qualifier = captures.name("qualifier").map(|value| value.as_str().to_owned());
+    let qualifier = captures.name("qualifier").map(|value| if language == Language::CFamily { without_template_args(value.as_str()) } else { value.as_str().to_owned() });
     if language == Language::CFamily && qualifier.is_some() {
         let constructor = qualifier.as_deref().is_some_and(|q| q.rsplit("::").next() == Some(name));
         let has_type = captures.name("return_type").is_some_and(|lead| {
@@ -370,13 +379,38 @@ fn definition(path: &str, language: Language, lines: &[&str], index: usize) -> O
     if *kind == OPEN_METHOD {
         return closes_as_method(lines, index).then(|| ("method", name.to_owned(), qualifier));
     }
-    // `inline` is syntax in a nested namespace, not part of its lookup name.
-    let name = if language == Language::CFamily && *kind == "class" && name.contains("::") {
-        name.split("::").map(|part| part.split_whitespace().last().unwrap_or(part)).collect::<Vec<_>>().join("::")
-    } else {
-        name.to_owned()
-    };
-    Some((kind, name, qualifier))
+    if language == Language::CFamily && *kind == "class" && name.contains("::") {
+        let (qualifier, name) = split_nested_namespace(name);
+        return Some((kind, name, Some(qualifier)));
+    }
+    Some((kind, name.to_owned(), qualifier))
+}
+
+/// `a::inline b::c` → (`a::b`, `c`): the enclosing path as the qualifier, so `path#a::b`'s
+/// lookup (qualifier `a`, name `b`) finds it. `inline` is syntax, not part of any name.
+fn split_nested_namespace(path: &str) -> (String, String) {
+    let mut parts: Vec<&str> = path.split("::").map(|part| part.split_whitespace().last().unwrap_or(part)).collect();
+    let name = parts.pop().unwrap_or_default().to_owned();
+    (parts.join("::"), name)
+}
+
+/// `Outer<T>::Inner<K, V>` → `Outer::Inner`: lookups name the class, not its parameters.
+fn without_template_args(qualifier: &str) -> String {
+    let mut depth = 0usize;
+    qualifier
+        .chars()
+        .filter(|&c| {
+            match c {
+                '<' => depth += 1,
+                '>' => {
+                    depth = depth.saturating_sub(1);
+                    return false;
+                }
+                _ => {}
+            }
+            depth == 0 && c != '<'
+        })
+        .collect()
 }
 
 /// `async run(` on its own line is a method only if a later `) {` or `): T {` closes it; a call
@@ -638,12 +672,18 @@ fn has_word(text: &str, word: &str) -> bool {
     text.split(|c: char| !c.is_alphanumeric() && c != '_').any(|part| part == word)
 }
 
+/// Whether definitions inside `outer` count as qualified by `qualifier`: its name, or for a
+/// container such as `namespace a::b` (name `b`, qualifier `a`) its enclosing path too.
+fn scopes(outer: &Symbol, qualifier: &str) -> bool {
+    has_word(&outer.name, qualifier) || (outer.kind == "class" && outer.qualifier.as_deref().is_some_and(|path| has_word(path, qualifier)))
+}
+
 /// Whether `symbol` has a receiver or sits inside a definition holding `qualifier` as a whole word
 /// (`Foo` in `impl Display for Foo<'a>`).
 #[cfg(test)]
 pub(super) fn qualified_by(symbols: &[Symbol], symbol: &Symbol, qualifier: &str) -> bool {
     symbol.qualifier.as_deref().is_some_and(|receiver| has_word(receiver, qualifier)) || symbols.iter().any(|outer| {
-        outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && has_word(&outer.name, qualifier)
+        outer.line <= symbol.line && symbol.end <= outer.end && outer != symbol && scopes(outer, qualifier)
     })
 }
 
@@ -677,7 +717,7 @@ pub(super) fn qualified_matches<'a>(
                 return;
             }
             let symbol = &symbols[end];
-            if has_word(&symbol.name, qualifier) && first != Some(symbol) && second != Some(symbol) {
+            if scopes(symbol, qualifier) && first != Some(symbol) && second != Some(symbol) {
                 if first.is_none_or(|first| symbol.end > first.end) {
                     second = first;
                     first = Some(symbol);

@@ -429,13 +429,27 @@ export function harnessArgs({ arm, model, config, instructions, runBudget }) {
   return [...common, '--mcp-config', '{"mcpServers":{}}'];
 }
 
+/**
+ * Whether a suite outcome is acceptable: absent or passing, or a parsed assertion failure. Build
+ * errors, timeouts and assertion failures without parsed names never are. With a baseline (an
+ * iterable of failure names), every parsed failure must be in it; without one (sanity's baseline
+ * run), any parsed assertion failure is acceptable.
+ */
+export function suiteAcceptable(suite, baselineFailed = null) {
+  if (!suite || suite.pass) return true;
+  if (suite.kind !== 'assertion' || !(suite.failed?.length > 0)) return false;
+  if (baselineFailed == null) return true;
+  const allowed = baselineFailed instanceof Set ? baselineFailed : new Set(baselineFailed);
+  return suite.failed.every(name => allowed.has(name));
+}
+
 export async function gradeEdit(task, work, target, verified, gitDir = REPO) {
   await overlayTests(task, work, gitDir);
   const test = await runCommand(task.test, work, target);
   const suite = task.suite ? await runCommand(task.suite, work, target) : null;
   const baseline = new Set(verified[task.id]?.suiteBaselineFailed ?? []);
   const newFailures = (suite?.failed ?? []).filter(name => !baseline.has(name));
-  const suiteOk = !suite || suite.pass || (suite.kind === 'assertion' && suite.failed.length > 0 && !newFailures.length);
+  const suiteOk = suiteAcceptable(suite, baseline);
   const status = (await sh('git', ['-C', work, 'status', '--porcelain'])).stdout.split('\n').filter(Boolean);
   const overlaid = new Set(task.overlay.map(o => o.path));
   const changed = status.map(line => line.slice(3)).filter(path => !overlaid.has(path) && path !== 'src-tauri/Cargo.lock' && path !== 'src-tauri/Cargo.toml');

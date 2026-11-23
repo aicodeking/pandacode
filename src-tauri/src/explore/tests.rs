@@ -1062,3 +1062,84 @@ fn dense_line_tables_produce_partial_searches_without_panicking() {
     assert_eq!(found["incomplete"], true, "{found}");
     assert!(found["search"][0]["note"].as_str().is_some_and(|note| note.contains("Partial:")), "{found}");
 }
+
+/// `symbols`, `outline` and `path#name` for each lookup: one definition, read from its line.
+fn assert_lookups(repo: &Repo, path: &str, lookups: &[(&str, &str)]) -> Value {
+    let symbols: Vec<_> = lookups.iter().map(|(name, _)| *name).collect();
+    let reads: Vec<_> = lookups.iter().map(|(name, _)| format!("{path}#{name}")).collect();
+    let reply = repo.explore(json!({"symbols":symbols,"outline":[path],"read":reads}));
+    for (at, (name, line)) in lookups.iter().enumerate() {
+        assert_eq!(reply["symbols"][at]["definitions"], 1, "{name}: {reply}");
+        assert!(reply["symbols"][at].get("note").is_none(), "{name} narrows without a fallback: {reply}");
+        assert!(reply["symbols"][at]["text"].as_str().unwrap().contains(line), "{name}: {reply}");
+        assert!(reply["read"][at].get("error").is_none(), "{name}: {reply}");
+        assert!(reply["read"][at]["text"].as_str().unwrap().contains(line), "{name}: {reply}");
+    }
+    reply
+}
+
+#[test]
+fn nested_cpp_namespaces_answer_outline_symbols_and_reads() {
+    let repo = Repo::new();
+    repo.write("a.cpp", "namespace a::b {\nvoid run() {}\n}\nnamespace a::inline b::c {\nint go() { return 1; }\n}\n");
+    let reply = assert_lookups(&repo, "a.cpp", &[("a::b", "namespace a::b {"), ("a::b::c", "namespace a::inline b::c {"), ("b::run", "void run() {}"), ("a::run", "void run() {}"), ("c::go", "int go() { return 1; }")]);
+    let outline = reply["outline"][0]["text"].as_str().unwrap();
+    for entry in ["class a::b 1-3", "function run 2-2", "class a::b::c 4-6", "function go 5-5"] {
+        assert!(outline.contains(entry), "{entry}: {outline}");
+    }
+    assert_eq!(reply["read"][0]["from"], 1);
+    assert_eq!(reply["read"][0]["to"], 3);
+    assert_eq!(reply["read"][1]["from"], 4);
+    assert_eq!(reply["read"][1]["to"], 6);
+}
+
+#[test]
+fn cpp_one_line_and_template_definitions_answer_outline_symbols_and_reads() {
+    let repo = Repo::new();
+    repo.write("a.cpp", "class Vec {\n public:\n    int size() const { return n_; }\n    static int zero() { return 0; };\n    int size2() const;\n};\ninline int Vec::cap() const { return c_; }\nint Vec::len() const;\nFoo::Foo() : x_(0) { init(); }\nint add(int a, int b) { return a + b; }\nvoid sub(int a);\ntemplate <typename T>\nvoid Box<T>::put(T v) {\n    std::vector<int>::push_back(v);\n    Box<int>::helper();\n}\ntemplate <typename T>\nBox<T>::Box() {}\ntemplate <typename K, typename V>\ninline int Map<K, V>::size() const { return n_; }\n");
+    let reply = assert_lookups(&repo, "a.cpp", &[
+        ("Vec::size", "int size() const { return n_; }"),
+        ("Vec::zero", "static int zero() { return 0; };"),
+        ("Vec::cap", "inline int Vec::cap() const { return c_; }"),
+        ("Foo::Foo", "Foo::Foo() : x_(0) { init(); }"),
+        ("add", "int add(int a, int b) { return a + b; }"),
+        ("Box::put", "void Box<T>::put(T v) {"),
+        ("Box::Box", "Box<T>::Box() {}"),
+        ("Map::size", "inline int Map<K, V>::size() const { return n_; }"),
+    ]);
+    let outline = reply["outline"][0]["text"].as_str().unwrap();
+    for entry in ["  method size 3-3", "  method zero 4-4", "function cap 7-7", "function Foo 9-9", "function add 10-10", "function put 13-16", "function Box 18-18", "function size 20-20"] {
+        assert!(outline.contains(entry), "{entry}: {outline}");
+    }
+    for absent in ["size2", "len", "sub", "push_back", "helper"] {
+        assert!(!outline.contains(absent), "{absent}: {outline}");
+    }
+    let missing = repo.explore(json!({"symbols":["size2","len","sub","push_back","helper"]}));
+    for at in 0..5 {
+        assert_eq!(missing["symbols"][at]["definitions"], 0, "{missing}");
+    }
+}
+
+#[test]
+fn java_and_script_one_line_methods_answer_outline_symbols_and_reads() {
+    let repo = Repo::new();
+    repo.write("A.java", "class Account {\n    public int getBalance() { return balance; }\n    private static String id() { return \"x\"; }\n    public void reset() { count = 0; }\n}\ninterface Shape {\n    int area();\n    abstract void clear();\n}\n");
+    let reply = assert_lookups(&repo, "A.java", &[
+        ("Account.getBalance", "public int getBalance() { return balance; }"),
+        ("id", "private static String id() { return \"x\"; }"),
+        ("reset", "public void reset() { count = 0; }"),
+    ]);
+    assert_eq!(reply["outline"][0]["text"], "class Account 1-5\n  method getBalance 2-2\n  method id 3-3\n  method reset 4-4\nclass Shape 6-9\n");
+    repo.write("a.ts", "class Cart {\n  count(): number { return this.items.length; }\n  get total(): number { return this.sum; }\n  set value(v: number) { this.v = v; }\n  private clear() { this.n = 0; }\n  async ping(): Promise<void> { await noop(); }\n  run() {\n    if (ok) { return 1; }\n    for (const x of xs) { f(x); }\n  }\n}\ninterface Counter {\n  size(): number;\n}\n");
+    let reply = assert_lookups(&repo, "a.ts", &[
+        ("Cart.count", "count(): number { return this.items.length; }"),
+        ("total", "get total(): number { return this.sum; }"),
+        ("value", "set value(v: number) { this.v = v; }"),
+        ("clear", "private clear() { this.n = 0; }"),
+        ("Cart.ping", "async ping(): Promise<void> { await noop(); }"),
+    ]);
+    assert_eq!(reply["outline"][0]["text"], "class Cart 1-11\n  method count 2-2\n  method total 3-3\n  method value 4-4\n  method clear 5-5\n  method ping 6-6\n  method run 7-10\ninterface Counter 12-14\n");
+    let missing = repo.explore(json!({"symbols":["area","size"]}));
+    assert_eq!(missing["symbols"][0]["definitions"], 0, "{missing}");
+    assert_eq!(missing["symbols"][1]["definitions"], 0, "{missing}");
+}

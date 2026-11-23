@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { DISK_WAIT_MS, REPO, WORK_ROOT, assertBuild, snapshotBuild, canStart, claimRunner, cloneTarget, gradeEdit, guardDisk, harnessArgs, isRust, measuredRun, pinDependencies, pinnedSeed, pool, readyExplore, reportedCost, runClaude, applyFix, applyStub, assertExplorable, freeGiB, materialize, must, overlayTests, repoDir, runCommand, safeEnv, seededJobs, sh, stopChildrenOnSignal, exploreClause, register, reuseClause, startExplore as startServer, TOOLS_SERVE_TEST, waitForFile } from './lib.mjs';
+import { DISK_WAIT_MS, REPO, WORK_ROOT, assertBuild, snapshotBuild, canStart, claimRunner, cloneTarget, gradeEdit, guardDisk, harnessArgs, isRust, measuredRun, pinDependencies, pinnedSeed, pool, readyExplore, reportedCost, runClaude, applyFix, applyStub, assertExplorable, freeGiB, materialize, must, overlayTests, repoDir, runCommand, safeEnv, seededJobs, sh, stopChildrenOnSignal, exploreClause, register, reuseClause, startExplore as startServer, suiteAcceptable, TOOLS_SERVE_TEST, waitForFile } from './lib.mjs';
 export { canStart, harnessArgs };
 import { gradeLocalization, LONG_CONTEXT, metrics } from './metrics.mjs';
 import { bootstrapCi, mean, random, wilcoxon } from './stats.mjs';
@@ -338,7 +338,7 @@ async function sanity(selected) {
     const suite = task.suite ? await runCommand(task.suite, dir, target, 40 * 60_000) : null;
     const noStubNeeded = !task.stub?.length && before.kind === 'assertion';
     const mutationCaught = noStubNeeded || stubbed?.kind === 'assertion';
-    const suiteOk = !suite || suite.pass || (suite.kind === 'assertion' && suite.failed.length > 0);
+    const suiteOk = suiteAcceptable(suite);
     const verdict = before.kind !== 'pass' && mutationCaught && fixed.pass && suiteOk ? 'ok' : 'EXCLUDE';
     report[task.id] = {
       verdict, parent: before.kind, parentFailed: before.failed, stub: stubbed?.kind ?? (noStubNeeded ? 'not needed' : 'missing'), stubFailed: stubbed?.failed ?? [],

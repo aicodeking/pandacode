@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { appendLedger, ledgerTotals, readLedger } from './ledger.mjs';
-import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, gradeEdit, groupAlive, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup } from './lib.mjs';
+import { assertBuild, claimRunner, cloneTarget, depsFingerprint, exploreClause, gradeEdit, groupAlive, snapshotBuild, startTime, harnessArgs, reuseClause, measuredRun, pinnedSeed, pool, reportedCost, runClaude, runCommand, seededJobs, sh, signalGroup, suiteAcceptable } from './lib.mjs';
 import { armsFor, beforeValues, buildJobs, customToolCalls, simulateEditSteps, simulateNonInferior, REUSE_ARMS, REUSE_CHAIN, REUSE_CHECK, reuseChain, reuseMessage, storedTools } from './run.mjs';
 import { assignJobs } from './saver.mjs';
 import { wilcoxon } from './stats.mjs';
@@ -227,6 +227,46 @@ for (const runner of ['runClaude', 'sh', 'runCommand']) for (const ignoresTerm o
     }
   });
 }
+
+test('suiteAcceptable accepts absent and passing suites with or without a baseline', () => {
+  for (const baseline of [undefined, null, new Set(), ['known_failure']]) {
+    assert.equal(suiteAcceptable(null, baseline), true);
+    assert.equal(suiteAcceptable(undefined, baseline), true);
+    assert.equal(suiteAcceptable({ pass: true, kind: 'pass', failed: [] }, baseline), true);
+  }
+});
+
+test('suiteAcceptable rejects build, timeout, other and unnamed assertion failures with or without a baseline', () => {
+  const broken = [
+    { pass: false, kind: 'build', failed: [] },
+    { pass: false, kind: 'timeout', failed: [] },
+    { pass: false, kind: 'other', failed: ['known_failure'] },
+    { pass: false, kind: 'build', failed: ['known_failure'] },
+    { pass: false, kind: 'assertion', failed: [] },
+    { pass: false, kind: 'assertion' },
+  ];
+  for (const suite of broken) {
+    for (const baseline of [undefined, null, new Set(['known_failure']), ['known_failure']]) {
+      assert.equal(suiteAcceptable(suite, baseline), false, `${suite.kind} ${JSON.stringify(suite.failed)} ${baseline}`);
+    }
+  }
+});
+
+test('suiteAcceptable accepts a parsed assertion failure without a baseline (sanity)', () => {
+  assert.equal(suiteAcceptable({ pass: false, kind: 'assertion', failed: ['anything'] }), true);
+  assert.equal(suiteAcceptable({ pass: false, kind: 'assertion', failed: ['anything'] }, null), true);
+});
+
+test('suiteAcceptable accepts baseline-only assertion failures and rejects new ones', () => {
+  const baselineOnly = { pass: false, kind: 'assertion', failed: ['known_failure', 'other_known'] };
+  const withNew = { pass: false, kind: 'assertion', failed: ['known_failure', 'new_failure'] };
+  for (const baseline of [new Set(['known_failure', 'other_known']), ['known_failure', 'other_known']]) {
+    assert.equal(suiteAcceptable(baselineOnly, baseline), true);
+    assert.equal(suiteAcceptable(withNew, baseline), false);
+  }
+  assert.equal(suiteAcceptable(baselineOnly, new Set()), false);
+  assert.equal(suiteAcceptable(baselineOnly, []), false);
+});
 
 for (const fixture of [
   { name: 'build error', output: 'error: could not compile fixture', kind: 'build', pass: false },

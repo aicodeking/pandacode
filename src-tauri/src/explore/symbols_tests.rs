@@ -661,20 +661,130 @@ fn cpp_namespace_and_linkage_blocks_keep_qualified_definitions_and_reject_calls(
 
 #[test]
 fn cpp_commented_named_containers_keep_clean_names_and_spans() {
-    for (header, name) in [
-        ("inline namespace v1 { // version", "v1"),
-        ("namespace a::b { /* nested */", "a::b"),
-        ("namespace a::inline b {", "a::b"),
-        ("namespace foo // helpers\n{", "foo"),
-        ("class Foo { // implementation", "Foo"),
-        ("struct Foo { /* implementation */", "Foo"),
-        ("union Foo // implementation\n{", "Foo"),
-        ("enum class Foo { // implementation", "Foo"),
+    for (header, qualifier, name) in [
+        ("inline namespace v1 { // version", None, "v1"),
+        ("namespace a::b { /* nested */", Some("a"), "b"),
+        ("namespace a::inline b {", Some("a"), "b"),
+        ("namespace a::b::c {", Some("a::b"), "c"),
+        ("inline namespace v1::v2 {", Some("v1"), "v2"),
+        ("namespace foo // helpers\n{", None, "foo"),
+        ("class Foo { // implementation", None, "Foo"),
+        ("struct Foo { /* implementation */", None, "Foo"),
+        ("union Foo // implementation\n{", None, "Foo"),
+        ("enum class Foo { // implementation", None, "Foo"),
     ] {
         let text = format!("{header}\n    void Widget::method() {{}}\n}};\n");
         let found = symbols("a.cpp", &text);
         let container = found.iter().find(|symbol| symbol.name == name && symbol.kind == "class").unwrap_or_else(|| panic!("{header}: {found:?}"));
+        assert_eq!(container.qualifier.as_deref(), qualifier, "{header}: {found:?}");
         assert_eq!((container.line, container.end), (1, text.lines().count()), "{header}: {found:?}");
         assert!(found.iter().any(|symbol| symbol.name == "method" && symbol.qualifier.as_deref() == Some("Widget")), "{header}: {found:?}");
     }
+}
+
+/// The one definition `qualifier::name` (or `name` alone) finds, as `path#…` and `symbols` do.
+fn lookup<'a>(found: &'a [Symbol], qualifier: Option<&str>, name: &str) -> Vec<&'a Symbol> {
+    let mut matched = Vec::new();
+    qualified_matches(found, qualifier, |symbol| symbol.name == name, &limit(), |symbol| matched.push(symbol));
+    matched
+}
+
+#[test]
+fn nested_cpp_namespaces_are_found_by_their_qualified_names() {
+    let text = "namespace a::b {\nvoid run() {}\n}\nnamespace a::inline b::c {\nint go() { return 1; }\n}\nnamespace x {\nvoid run() {}\n}\n";
+    let found = symbols("a.cpp", text);
+    let b = found.iter().find(|symbol| symbol.name == "b").unwrap();
+    let c = found.iter().find(|symbol| symbol.name == "c").unwrap();
+    assert_eq!((b.qualifier.as_deref(), b.line, b.end), (Some("a"), 1, 3), "{found:?}");
+    assert_eq!((c.qualifier.as_deref(), c.line, c.end), (Some("a::b"), 4, 6), "{found:?}");
+    assert_eq!(lookup(&found, Some("a"), "b"), [b]);
+    assert_eq!(lookup(&found, None, "b"), [b]);
+    assert_eq!(lookup(&found, Some("b"), "c"), [c]);
+    assert!(lookup(&found, Some("x"), "b").is_empty());
+    // What a nested namespace holds is qualified by every part of its path.
+    let run = found.iter().find(|symbol| symbol.name == "run" && symbol.line == 2).unwrap();
+    assert_eq!(lookup(&found, Some("a"), "run"), [run]);
+    assert_eq!(lookup(&found, Some("b"), "run"), [run]);
+    assert_eq!(lookup(&found, Some("x"), "run").len(), 1);
+    assert_eq!(lookup(&found, Some("c"), "go").len(), 1);
+    assert_eq!(lookup(&found, Some("a"), "go").len(), 1);
+}
+
+#[test]
+fn cpp_one_line_definitions_are_extracted_with_their_qualifiers() {
+    for (text, qualifier, name, line) in [
+        ("class Vec {\n public:\n    int size() const { return n_; }\n};\n", None, "size", 3),
+        ("inline int Vec::cap() const { return c_; }\n", Some("Vec"), "cap", 1),
+        ("Foo::Foo() : x_(0) { init(); }\n", Some("Foo"), "Foo", 1),
+        ("struct S {\n    static int zero() { return 0; };\n};\n", None, "zero", 2),
+        ("static int zero() { return 0; };\n", None, "zero", 1),
+        ("int add(int a, int b) { return a + b; }\n", None, "add", 1),
+        ("namespace ns {\ninline int Vec::cap() const { return c_; }\nFoo::Foo() : x_(0) { init(); }\n}\n", Some("Vec"), "cap", 2),
+        ("namespace ns {\ninline int Vec::cap() const { return c_; }\nFoo::Foo() : x_(0) { init(); }\n}\n", Some("Foo"), "Foo", 3),
+        ("namespace ns {\nclass Vec {\n    int size() const { return n_; }\n    void put(int v) { data_.push_back(v); }\n};\n}\n", None, "put", 4),
+    ] {
+        let found = symbols("a.cpp", text);
+        let symbol = found.iter().find(|symbol| symbol.name == name && symbol.line == line).unwrap_or_else(|| panic!("{text}: {found:?}"));
+        assert_eq!((symbol.qualifier.as_deref(), symbol.end), (qualifier, line), "{text}: {found:?}");
+        assert_eq!(lookup(&found, qualifier, name), [symbol], "{text}");
+    }
+    // Definitions after a one-liner still resolve, so its span ends on its own line.
+    let found = symbols("a.cpp", "int a() { return 1; }\nvoid Foo::b() {\n    x();\n}\n");
+    assert!(found.iter().any(|symbol| symbol.name == "b" && symbol.qualifier.as_deref() == Some("Foo") && (symbol.line, symbol.end) == (2, 4)), "{found:?}");
+}
+
+#[test]
+fn cpp_declarations_and_one_line_calls_stay_out() {
+    for text in [
+        "int size() const;\n", "void foo(int a);\n", "int Vec::cap() const;\n",
+        "class Vec {\n    int size() const;\n    void foo(int a);\n};\n",
+        "void f() {\n    std::for_each(v.begin(), v.end(), [](int x) { use(x); });\n    QObject::connect(b, s, this, [this] { run(); });\n    Widget::helper();\n    std::vector<int>::push_back(x);\n    Box<int>::helper();\n    if (x) { return y; }\n    while (go) { step(); }\n}\n",
+        "void f() {\n    Box<int>::Box() { init(); }\n    void Box<T>::put(T v) { use(v); }\n}\n",
+    ] {
+        let found = symbols("a.cpp", text);
+        let unexpected = ["size", "foo", "cap", "for_each", "connect", "helper", "push_back", "Box", "put", "if", "while"];
+        assert!(found.iter().all(|symbol| !unexpected.contains(&symbol.name.as_str())), "{text}: {found:?}");
+    }
+}
+
+#[test]
+fn cpp_template_out_of_line_definitions_keep_their_class_qualifier() {
+    for (text, qualifier, name) in [
+        ("template <typename T>\nvoid Box<T>::put(T v) {\n    items.push_back(v);\n}\n", "Box", "put"),
+        ("template <typename K, typename V>\ninline int Map<K, V>::size() const { return n_; }\n", "Map", "size"),
+        ("template <typename T>\nBox<T>::Box() {}\n", "Box", "Box"),
+        ("template <typename T>\nBox<T>::~Box() {}\n", "Box", "Box"),
+        ("template <typename T> template <typename U>\nvoid Outer<T>::Inner<U>::run() {\n}\n", "Outer::Inner", "run"),
+        ("namespace ns {\ntemplate <typename T>\nvoid Box<T>::put(T v) {\n}\n}\n", "Box", "put"),
+    ] {
+        let found = symbols("a.cpp", text);
+        let symbol = found.iter().find(|symbol| symbol.name == name).unwrap_or_else(|| panic!("{text}: {found:?}"));
+        assert_eq!((symbol.kind, symbol.qualifier.as_deref()), ("function", Some(qualifier)), "{text}: {found:?}");
+        let last = qualifier.rsplit("::").next();
+        assert_eq!(lookup(&found, last, name), [symbol], "{text}");
+    }
+}
+
+#[test]
+fn java_one_line_methods_are_extracted_and_declarations_are_not() {
+    let text = "class Account {\n    public int getBalance() { return balance; }\n    private static String id() { return \"x\"; }\n    public void reset() { count = 0; }\n    void run() {\n        if (x) { return y; }\n        while (go) { step(); }\n        synchronized (lock) { n++; }\n    }\n}\ninterface Shape {\n    int getBalance();\n    abstract void reset();\n}\n";
+    let found = names("A.java", text);
+    for (name, line) in [("getBalance", 2), ("id", 3), ("reset", 4)] {
+        has(&found, name, "method", line, line);
+    }
+    has(&found, "run", "method", 5, 9);
+    assert_eq!(found.iter().filter(|s| s.0 == "getBalance" || s.0 == "reset").count(), 2, "{found:?}");
+    assert!(found.iter().all(|s| !["if", "while", "synchronized"].contains(&s.0.as_str())), "{found:?}");
+}
+
+#[test]
+fn script_one_line_class_methods_are_extracted_and_signatures_are_not() {
+    let text = "class Cart {\n  count(): number { return this.items.length; }\n  get total(): number { return this.sum; }\n  set value(v: number) { this.v = v; }\n  private reset() { this.n = 0; }\n  async ping(): Promise<void> { await noop(); }\n  run() {\n    if (ok) { return 1; }\n    for (const x of xs) { f(x); }\n    try { g(); } catch (e) { log(e); }\n    switch (k) { default: break; }\n    items.forEach((x) => { total += x; });\n  }\n}\ninterface Counter {\n  count(): number;\n  shape(): { n: number };\n}\nabstract class Base {\n  abstract reset(): void;\n  count(): number;\n  count(n?: number): number { return n ?? 0; }\n}\n";
+    let found = names("a.ts", text);
+    for (name, line) in [("count", 2), ("total", 3), ("value", 4), ("reset", 5), ("ping", 6), ("count", 22)] {
+        has(&found, name, "method", line, line);
+    }
+    has(&found, "run", "method", 7, 13);
+    assert_eq!(found.iter().filter(|s| ["count", "reset", "shape"].contains(&s.0.as_str())).count(), 3, "{found:?}");
+    assert!(found.iter().all(|s| !["if", "for", "catch", "switch", "forEach"].contains(&s.0.as_str())), "{found:?}");
 }

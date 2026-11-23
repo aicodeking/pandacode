@@ -162,7 +162,9 @@ pub(super) fn walk(root: &Path, strict: bool, limit: &Limit) -> Walk {
         let seen = filter_entries.fetch_add(1, Ordering::Relaxed);
         if filter_stopped.load(Ordering::Relaxed) || seen >= cap || (seen.is_multiple_of(WALK_LIMIT_CHECK) && expired()) {
             filter_stopped.store(true, Ordering::Relaxed);
-            // False would keep scanning read_dir. Pass this entry to the visitor to Quit.
+            // `ignore`'s parallel walker has already read this directory, so returning false
+            // would only skip this entry while its siblings keep arriving here. True hands it
+            // to the visitor, whose `stopped` check returns `WalkState::Quit` at once.
             return true;
         }
         admit(&filter_root, entry, strict, &filter_secret, &filter_excluded)
@@ -172,6 +174,8 @@ pub(super) fn walk(root: &Path, strict: bool, limit: &Limit) -> Walk {
         let (sender, entries, large, stopped) = (sender.clone(), &entries, &large, &stopped);
         Box::new(move |entry| {
             use ignore::WalkState;
+            // Must stay first, before any metadata read or send: once stopped, `filter_entry`
+            // passes cut entries (possibly secret or excluded) through without calling `admit`.
             if stopped.load(Ordering::Relaxed) {
                 limit.cut();
                 return WalkState::Quit;
