@@ -404,6 +404,8 @@ mod tests {
         let log = seen.clone();
         tokio::spawn(async move {
             let (stream, _) = server.accept().await.unwrap();
+            // tungstenite fixes this callback's error type; it cannot be boxed.
+            #[allow(clippy::result_large_err)]
             let callback = move |request: &Request, response: Response| {
                 *log.lock().unwrap() = request.headers().iter().map(|(n, v)| (n.as_str().to_string(), v.to_str().unwrap_or_default().to_string())).collect();
                 Ok(response)
