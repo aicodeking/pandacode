@@ -247,7 +247,7 @@ pub async fn connection_new_account(provider: String) -> Result<NewAccount> {
 }
 
 /// The folder variable each harness reads for its own config and login.
-fn config_dir_var(provider: &str) -> Option<&'static str> {
+pub(crate) fn config_dir_var(provider: &str) -> Option<&'static str> {
     match provider {
         "claude" | "glm" | "mimo" | "alibaba" => Some("CLAUDE_CONFIG_DIR"),
         "codex" => Some("CODEX_HOME"),

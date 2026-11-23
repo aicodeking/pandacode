@@ -1,4 +1,6 @@
 use super::*;
+use super::key::*;
+use super::spawn::*;
 #[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -774,6 +776,102 @@ fn claude_config_file_edits_invalidate_a_warm_launch() {
     std::fs::remove_file(cwd.join("CLAUDE.md")).unwrap();
     assert_ne!(key(), previous, "removing CLAUDE.md must start the next turn cold");
     let _ = std::fs::remove_dir_all(&cwd);
+}
+
+/// Write `contents` to `root/name`, creating its folders.
+fn write_config(root: &Path, name: &str, contents: &str) {
+    let path = root.join(name);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, contents).unwrap();
+}
+
+#[test]
+fn claude_local_memory_rules_agents_and_commands_edits_invalidate_a_warm_launch() {
+    let cwd = std::env::temp_dir().join(format!("pandacode-warm-config-dirs-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    let mut config = crate::providers::tests::config("claude");
+    config.cwd = cwd.clone();
+    let none = std::collections::BTreeSet::new();
+    let key = || key_with_disabled(&config, &[], "", &none);
+    let mut previous = key();
+    // Every write changes the byte length, so coarse mtime granularity cannot hide it.
+    for name in ["CLAUDE.local.md", ".claude/rules/common/style.md", ".claude/agents/reviewer.md", ".claude/commands/check.md"] {
+        for contents in ["a", "ab"] {
+            write_config(&cwd, name, contents);
+            let next = key();
+            assert_ne!(next, previous, "writing {name} must start the next turn cold");
+            previous = next;
+        }
+    }
+    std::fs::remove_file(cwd.join(".claude/rules/common/style.md")).unwrap();
+    assert_ne!(key(), previous, "removing a nested rule must start the next turn cold");
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-connection-{}", uuid::Uuid::new_v4().simple()));
+    let (cwd, global, own, by_env) = (root.join("project"), root.join("global"), root.join("own"), root.join("by-env"));
+    for dir in [&cwd, &global, &own, &by_env] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let text = |path: &Path| path.to_string_lossy().into_owned();
+    let provider_env = vec![("CLAUDE_CONFIG_DIR".to_string(), text(&global))];
+    assert_eq!(claude_config_dir_from(provider_env.clone(), None, &cwd), Some(global.clone()));
+    let folder = crate::connections::Connection {
+        id: "work".into(),
+        provider: "claude".into(),
+        name: "Work".into(),
+        config_dir: Some(text(&own)),
+        ..Default::default()
+    };
+    assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&folder), &cwd), Some(own.clone()));
+    let env = |value: String| std::collections::BTreeMap::from([("CLAUDE_CONFIG_DIR".to_string(), value)]);
+    let variable = crate::connections::Connection { config_dir: None, env: env(text(&by_env)), ..folder.clone() };
+    assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&variable), &cwd), Some(by_env.clone()));
+    // The connection's own folder is applied after its variables, as at launch.
+    let both = crate::connections::Connection { env: env(text(&by_env)), ..folder.clone() };
+    assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&both), &cwd), Some(own.clone()));
+    // A relative folder resolves against the working folder the process starts in.
+    let relative = crate::connections::Connection { config_dir: None, env: env("connection-config".into()), ..folder.clone() };
+    assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&relative), &cwd), Some(cwd.join("connection-config")));
+
+    let user = claude_config_dir_from(provider_env, Some(&folder), &cwd).unwrap();
+    let stamp = || claude_config_fingerprint_in(&cwd, Some(user.as_path()));
+    let mut previous = stamp();
+    write_config(&global, "settings.json", "{}");
+    write_config(&global, "rules/common/rule.md", "a");
+    assert_eq!(stamp(), previous, "the global folder is not this connection's");
+    for (name, contents) in [("settings.json", "{}"), ("settings.json", "{ }"), ("rules/common/rule.md", "a"), ("rules/common/rule.md", "ab")] {
+        write_config(&own, name, contents);
+        let next = stamp();
+        assert_ne!(next, previous, "writing {name} in the connection's folder must start the next turn cold");
+        previous = next;
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_config_folder_walk_never_follows_a_symlinked_folder_and_is_capped() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-walk-{}", uuid::Uuid::new_v4().simple()));
+    let skills = root.join("skills");
+    std::fs::create_dir_all(skills.join("a")).unwrap();
+    std::os::unix::fs::symlink(&skills, skills.join("a/loop")).unwrap();
+    let paths = |stamp: &Value| -> Vec<String> {
+        stamp.as_array().unwrap().iter().filter_map(|item| item.get(0).and_then(Value::as_str).map(str::to_owned)).collect()
+    };
+    let walked = paths(&config_dir_stamp(&skills));
+    assert!(walked.contains(&"a/loop".to_string()));
+    assert!(!walked.iter().any(|path| path.starts_with("a/loop/")), "a symlinked folder is never walked: {walked:?}");
+    for index in 0..140 {
+        std::fs::write(skills.join(format!("f{index:03}.md")), "x").unwrap();
+    }
+    let capped = config_dir_stamp(&skills);
+    assert_eq!(capped.as_array().unwrap().last(), Some(&json!("capped")));
+    assert_eq!(config_dir_stamp(&skills), capped, "a capped walk is deterministic");
+    assert_eq!(config_dir_stamp(&root.join("missing")), Value::Null);
+    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]

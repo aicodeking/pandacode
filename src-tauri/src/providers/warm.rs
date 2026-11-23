@@ -6,6 +6,12 @@ use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
 use std::sync::LazyLock;
 
+mod key;
+mod spawn;
+use self::key::miss;
+pub(super) use self::key::key;
+pub use self::spawn::prewarm;
+
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 pub(crate) fn init(app: &tauri::AppHandle) {
@@ -104,10 +110,6 @@ struct Lifecycle {
     /// read at its spawn (`still_current`).
     current: fn(&str, &RunConfig, &[Value], &str, &Inputs) -> bool,
     pool: &'static Pool,
-}
-
-fn claude() -> Lifecycle {
-    Lifecycle { idle: IDLE, spawn: spawn_claude, current: still_current, pool: &SPARES }
 }
 
 pub(super) struct Spare {
@@ -244,99 +246,6 @@ pub fn supported(config: &RunConfig) -> bool {
     config.provider == "claude" && config.goal.is_none() && config.skill.is_none()
 }
 
-/// Everything that shapes the launch: the command line, the folder and the tool catalog.
-pub(super) fn key(config: &RunConfig, tools: &[Value]) -> String {
-    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider))
-}
-
-/// `connection` is the task's named connection and its revision, or empty for the global setup.
-fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
-    let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled)
-}
-
-/// Whether this launch passes `--settings {"fastMode":true}` (`configure_command_with_agents`).
-fn claude_fast_mode(config: &RunConfig) -> bool {
-    config.provider == "claude"
-        && config
-            .codex_settings
-            .as_ref()
-            .is_some_and(|settings| settings["serviceTier"] == "fast")
-}
-
-fn key_with_disabled(
-    config: &RunConfig,
-    tools: &[Value],
-    connection: &str,
-    disabled: &std::collections::BTreeSet<String>,
-) -> String {
-    json!({
-        "namedConnection": connection,
-        "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
-        "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
-        "instructions": config.instructions, "tools": tools,
-        // Claude's fast mode passes `--settings {"fastMode":true}` at spawn (`configure_command_with_agents`).
-        "fastMode": claude_fast_mode(config),
-        // A team worker's tool trim (read-only, skills) is on its command line.
-        "worker": config.worker,
-        // The deny set read once per turn from the conversation's history (`lib.rs`), so a
-        // spare launched with another `--disallowedTools` is never adopted.
-        "disallowedTools": config.disallowed_tools,
-        "disabledSkills": disabled,
-        // The login a process starts with (API key or subscription) is fixed at spawn.
-        "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
-        // A saved environment variable change starts the next turn cold.
-        "environment": crate::provider_settings::environment_fingerprint(&config.provider),
-        // So do the telemetry opt-outs (`privacy.rs`).
-        "telemetryOff": super::privacy::telemetry_off(),
-        // So does a saved executable location.
-        "executable": crate::provider_settings::executable_override(&config.provider),
-        // Config files Claude reads only at startup: an edit while a spare idles starts cold.
-        "claudeConfig": claude_config_fingerprint(&config.cwd),
-    })
-    .to_string()
-}
-
-/// Project-scoped files under the working folder that Claude Code reads at startup.
-const PROJECT_CLAUDE_CONFIG: [&str; 6] =
-    [".mcp.json", ".claude/settings.json", ".claude/settings.local.json", "CLAUDE.md", ".claude/CLAUDE.md", ".claude/skills"];
-/// User-scoped files under the effective Claude config folder.
-const USER_CLAUDE_CONFIG: [&str; 3] = ["settings.json", "CLAUDE.md", "skills"];
-
-/// Metadata only (never contents or paths) of the Claude config files, so a spare started
-/// before one was created, edited or removed is never adopted.
-fn claude_config_fingerprint(cwd: &Path) -> Vec<Value> {
-    let env = crate::provider_settings::environment("claude");
-    let user_dir = crate::account_config::config_dir("claude", &env);
-    let project = PROJECT_CLAUDE_CONFIG.iter().map(|name| config_file_stamp(&cwd.join(name)));
-    let user = USER_CLAUDE_CONFIG
-        .iter()
-        .map(|name| user_dir.as_ref().map_or(Value::Null, |dir| config_file_stamp(&dir.join(name))));
-    project.chain(user).collect()
-}
-
-fn config_file_stamp(path: &Path) -> Value {
-    match std::fs::metadata(path) {
-        Ok(meta) => {
-            let modified = meta
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|since| since.as_nanos().to_string());
-            json!([meta.is_dir(), meta.len(), modified])
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
-        Err(error) => json!(format!("err:{:?}", error.kind())),
-    }
-}
-
-/// The spare launches with the instructions a cold launch would use (`run_inner` applies the
-/// skill reminder before keying), so its key and its `--append-system-prompt` both match.
-fn prepared(mut config: RunConfig, disabled: &std::collections::BTreeSet<String>) -> RunConfig {
-    crate::skill_manager::apply_instructions(&mut config, disabled);
-    config
-}
-
 /// The warm agent for this turn, if one exists, is still running and was started for
 /// exactly this launch. Any other warm agent for the task is discarded.
 /// Every launch of the task counts, with or without a spare to adopt.
@@ -459,24 +368,6 @@ fn lead_note(miss: Option<&str>) -> String {
         None => "Team lead's warm Claude agent adopted.".into(),
         Some(reason) => format!("Team lead's warm Claude agent not used ({reason}); starting cold."),
     }
-}
-
-/// Why a warm agent cannot take this launch, if it cannot.
-fn miss(alive: bool, spare_key: &str, key: &str, age: Duration, idle: Duration) -> Option<String> {
-    if !alive {
-        return Some("its process exited".into());
-    }
-    if age >= idle {
-        return Some("it expired".into());
-    }
-    if spare_key == key {
-        return None;
-    }
-    let (Ok(Value::Object(spare)), Ok(Value::Object(next))) = (serde_json::from_str::<Value>(spare_key), serde_json::from_str::<Value>(key)) else {
-        return Some("its launch changed".into());
-    };
-    let changed: Vec<&str> = next.iter().filter(|(field, value)| spare.get(*field) != Some(value)).map(|(field, _)| field.as_str()).collect();
-    Some(format!("changed: {}", changed.join(", ")))
 }
 
 /// Best-effort canonical path: uses `canonicalize` when `path` exists, and otherwise
@@ -777,281 +668,6 @@ fn take_expired(pool: &'static Pool, session_id: &str, born: std::time::Instant)
     take_expired_for_renewal(pool, session_id, born, false).map(|(spare, pending, _)| (spare, pending))
 }
 
-/// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
-/// placeholder server answers the agent's startup listing and is rebound on adoption.
-/// `renew` marks a team lead waiting on its workers: its spare joins the lead pool and, if
-/// `renew` holds at the moment it expires and no turn has launched, starts once more (see
-/// `Renew`: a "no" at an expiry ends the chain). `inputs` reads what the launch was built from
-/// outside `config` (`Inputs`); it is called only for a lead's spare.
-pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Renew>, inputs: impl Fn() -> String + Send + Sync + 'static) -> Result<(), String> {
-    if !enabled_now() {
-        return Ok(());
-    }
-    start(claude(), config, tools, approval_tools, launch,
-        renew.map(|renew| (until_discarded(&SPARES, renew), Arc::new(inputs) as Inputs)), 0).await
-}
-
-/// A switch-off ends this chain permanently, even if spares are re-enabled before an expiry
-/// check finishes and its bounded `gone` note has already been evicted.
-fn until_discarded(pool: &'static Pool, renew: Renew) -> Renew {
-    let epoch = spares(pool).discard_epoch;
-    Arc::new(move || {
-        let current = spares(pool).discard_epoch == epoch;
-        current && renew()
-    })
-}
-
-/// Whether an expired spare starts again: only a lead's, while its team still waits, before
-/// its wake launched, while its launch inputs are unchanged (`current` is false once a setting
-/// in its warm key changed, so it could never be adopted), and at most `MAX_RENEWALS` times.
-/// Called once per expiry, never again for the same chain.
-fn renews(renew: Option<&Renew>, launch: u64, epoch: u64, renewals: u32, current: bool) -> bool {
-    renewals < MAX_RENEWALS && epoch == launch && current && renew.is_some_and(|waiting| waiting())
-}
-
-/// Whether a renewal would start with the same warm key as the spare that expired: the
-/// settings read at spawn (environment, login, telemetry, named connection) are read again,
-/// and so are the explorer switch and agent-made tools behind its instructions and catalog
-/// (`inputs`, compared with `spawned`, what it read at the spare's spawn).
-fn still_current(spare_key: &str, config: &RunConfig, tools: &[Value], spawned: &str, inputs: &Inputs) -> bool {
-    if !enabled_now() {
-        return false;
-    }
-    let mut config = config.clone();
-    config.cwd = external_path(&config.cwd);
-    // The spawn keyed the config as a cold launch prepares it (skill reminder applied).
-    let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    let config = prepared(config, &disabled);
-    key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled) == spare_key && inputs() == spawned
-}
-
-/// A lead's renewal check with the inputs its spare was started on.
-type Lead = (Renew, Inputs);
-
-/// Boxed so the expiry timer can start the next spare (async recursion).
-fn start(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, renewals: u32) -> Starting {
-    Box::pin(async move {
-        let result = spawn_spare(life, config, tools, approval_tools, launch, renew, renewals).await;
-        if let Err(error) = &result {
-            eprintln!("{}", failure_note(renewals, error));
-        }
-        result
-    })
-}
-
-/// What a failed start logs; a lead's renewal says which one, so a lost spare can be traced.
-fn failure_note(renewals: u32, error: &str) -> String {
-    if renewals == 0 {
-        format!("Could not prepare a warm Claude agent: {error}")
-    } else {
-        format!("Could not renew the team lead's warm Claude agent (renewal {renewals} of {MAX_RENEWALS}): {error}")
-    }
-}
-
-/// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
-/// lead spare may start again (`renews`).
-async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, renewals: u32) -> Result<(), String> {
-    let session_id = config.session_id.clone();
-    let cwd_path = external_path(&config.cwd);
-    let inflight = {
-        let mut pool = spares(life.pool);
-        // SPARES -> LAUNCHES, matching folder discard: a cancelled renewal cannot insert
-        // a stale token after quiescence, read inputs or invoke the spawn callback.
-        if launch == 0 || epoch(&session_id) != launch {
-            return Ok(());
-        }
-        InFlight::enter_locked(life.pool, &mut pool, session_id.clone(), cwd_path.clone())
-    };
-    // What a renewal starts again with, unchanged: no turn launched in between.
-    // `inputs` reads files, so on a blocking thread.
-    let renewal = match renew {
-        Some((renew, inputs)) => {
-            let read = inputs.clone();
-            let spawned = tokio::task::spawn_blocking(move || read()).await.map_err(|error| format!("Could not read the launch inputs: {error}"))?;
-            Some((renew, inputs, spawned, config.clone(), tools.clone(), approval_tools.clone()))
-        }
-        None => None,
-    };
-    if launch == 0 || epoch(&session_id) != launch {
-        return Ok(());
-    }
-    let cwd = Some(cwd_path);
-    let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch).await? else { return Ok(()) };
-    let spare_key = key.clone();
-    let born = std::time::Instant::now();
-    let registered = register(life.pool, &session_id, launch, Spare { key, child, group, server, born, idle: life.idle, lead: renewal.is_some(), cwd });
-    drop(inflight);
-    // The spare is now pooled, or killed with its own exit registered (`retire`).
-    drop(starting);
-    if !registered {
-        return Ok(());
-    }
-    tokio::spawn(async move {
-        tokio::time::sleep(life.idle).await;
-        // Retired outside the lock: killed, and same-session launches wait for its exit.
-        let Some((expired, pending, renewing)) = take_expired_for_renewal(life.pool, &session_id, born, renewal.is_some()) else { return };
-        retire(&session_id, expired, pending);
-        let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else { return };
-        // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
-        // runs on a blocking thread, never on the timer's runtime worker.
-        let check = tokio::task::spawn_blocking(move || {
-            let current = (life.current)(&spare_key, &config, &tools, &spawned, &inputs);
-            if !current {
-                eprintln!("{}", lead_note(Some("its launch settings changed; not renewed")));
-            }
-            let again = renews(Some(&renew), launch, epoch(&session_id), renewals, current);
-            again.then_some((renew, inputs, config, tools, approvals))
-        });
-        if let Ok(Some((renew, inputs, config, tools, approvals))) = check.await {
-            if launch == 0 || epoch(&config.session_id) != launch {
-                return;
-            }
-            // `start` logs a failure with the renewal's number.
-            let _ = start(life, config, tools, approvals, launch, Some((renew, inputs)), renewals + 1).await;
-        }
-        // The old token overlaps `start`'s own guard through its entire handoff.
-        drop(renewing);
-    });
-    Ok(())
-}
-
-/// Claude Code's process for a spare, with a placeholder tool server; `None` for a launch
-/// that takes no spare (`supported`).
-fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Spawning {
-    Box::pin(spawn_claude_process(config, tools, approval_tools, launch))
-}
-
-async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
-    if !enabled_now() || !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() {
-        return Ok(None);
-    }
-    let connection = crate::connections::for_task(&config.session_id, &config.provider)
-        .map(|connection| crate::connections::launch(&connection))
-        .transpose()?;
-    let path = connection
-        .as_ref()
-        .and_then(|connection| connection.executable.clone())
-        .or_else(|| executable(&config.provider))
-        .ok_or("Claude Code is not installed")?;
-    config.cwd = external_path(&config.cwd);
-    // Switches, settings and the reminder's skill scan are read off the runtime.
-    let catalog = tools.clone();
-    let (config, key, disabled) = crate::blocking(move || {
-        let disabled = crate::skill_manager::disabled_for(&config.session_id);
-        let config = prepared(config, &disabled);
-        let key = key_with_disabled(
-            &config,
-            &catalog,
-            &crate::connections::warm_key(&config.session_id, &config.provider),
-            &disabled,
-        );
-        Ok((config, key, disabled))
-    })
-    .await?;
-    let mut command = command(&path)?;
-    crate::provider_settings::apply_environment(&config.provider, &mut command);
-    configure_command_with_skills(&mut command, &config, &disabled);
-    if let Some(connection) = &connection {
-        connection.apply(&mut command);
-    }
-    let server = if tools.is_empty() {
-        None
-    } else {
-        let placeholder = ToolHost {
-            tools,
-            approval_tools,
-            handler: Arc::new(|_, _| Box::pin(async { Err("This turn has not started yet.".to_string()) })),
-        };
-        let sink: Sink = Arc::new(|_| {});
-        let server = mcp_host::Server::start_with_approvals(placeholder, config.session_id.clone(), sink, &config.mode).await?;
-        command.args(["--mcp-config", &server.claude_config().to_string()]);
-        Some(server)
-    };
-    command
-        .current_dir(&config.cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    #[cfg(unix)]
-    command.process_group(0);
-    // The turn it follows may still be exiting; resuming before then could read a half-flushed session.
-    let exit = await_exit_patiently(&config.session_id);
-    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, exit, &mut command, || quitting() || !enabled_now()).await? else {
-        eprintln!("No warm Claude agent prepared: its launch changed or the previous turn did not exit.");
-        return Ok(None);
-    };
-    let group = ProcessGroup::register(child.id());
-    Ok(Some(Spawned { key, child, group, server, starting }))
-}
-
-/// Spawn once the previous process has exited, unless the task launched again meanwhile: that
-/// follow-up missed the pool and waits on the same exit, so spawning now would overlap it on one
-/// session. The returned `Pending` is registered before the spawn: until the caller drops it
-/// (after `register`), `await_exit` waits for this spare, so a launch or the harness console
-/// landing between the spawn and the pool never resumes the session beside it. `Ok(None)`
-/// means nothing was spawned, also once the app is quitting (`quitting`, read at the last moment).
-async fn spawn_when_current(
-    session_id: &str,
-    launch: u64,
-    exit: impl std::future::Future<Output = Result<(), String>>,
-    command: &mut Command,
-    quitting: impl Fn() -> bool,
-) -> Result<Option<(tokio::process::Child, Pending)>, String> {
-    if exit.await.is_err() {
-        return Ok(None);
-    }
-    let starting = pending_in_cwd(session_id, command.as_std().get_current_dir().map(Path::to_path_buf));
-    // Checked after registering: a launch before this point moved the epoch and is refused here;
-    // one after it waits for `starting`, and `register` kills the child (epoch moved).
-    if launch == 0 || epoch(session_id) != launch || quitting() {
-        return Ok(None);
-    }
-    command.spawn().map(|child| Some((child, starting))).map_err(|e| format!("Could not start Claude Code: {e}"))
-}
-
-/// Keep a started spare, unless the task launched again (a team review, a queued message) or
-/// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
-/// outdated conversation, or wait for a turn that is not coming. A refused, replaced or evicted
-/// spare is retired (killed outside the lock, its exit registered).
-fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare) -> bool {
-    let evicted = {
-        let mut pool = spares(pool);
-        // Launch 0 is a forgotten task (`discard`): a spare read from it is never current.
-        if launch == 0 || epoch(session_id) != launch {
-            let pending = pending_in_cwd(session_id, spare.cwd.clone());
-            drop(pool);
-            retire(session_id, spare, pending);
-            return false;
-        }
-        admit(&mut pool, session_id.to_owned(), spare)
-    };
-    for (id, spare, pending) in evicted {
-        retire(&id, spare, pending);
-    }
-    true
-}
-
-/// Add a spare, keeping only the newest few in its pool (ordinary or lead); returns the spares
-/// it pushed out (including one it replaced for the same task) with their tasks and `Pending`
-/// guards, which the caller retires after releasing the lock.
-fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<(String, Spare, Pending)> {
-    let lead = spare.lead;
-    let limit = if lead { LEAD_LIMIT } else { LIMIT };
-    pool.gone.remove(&session_id);
-    let mut evicted: Vec<(String, Spare, Pending)> = pool
-        .remove(&session_id, Gone::Replaced)
-        .map(|(old, pending)| (session_id.clone(), old, pending))
-        .into_iter()
-        .collect();
-    pool.spares.insert(session_id, spare);
-    while pool.spares.values().filter(|spare| spare.lead == lead).count() > limit {
-        let Some(oldest) = pool.spares.iter().filter(|(_, spare)| spare.lead == lead).min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };
-        evicted.extend(pool.remove(&oldest, Gone::Evicted).map(|(old, pending)| (oldest, old, pending)));
-    }
-    evicted
-}
-
 #[cfg(test)]
 pub(super) fn waiting(session_id: &str) -> bool {
     waiting_in(&SPARES, session_id)
@@ -1088,7 +704,7 @@ pub(crate) fn insert_spare_in_cwd_for_test(session_id: &str, cwd: PathBuf, lead:
         lead,
         cwd: Some(external_path(&cwd)),
     };
-    let registered = register(&SPARES, session_id, epoch(session_id), spare);
+    let registered = spawn::register(&SPARES, session_id, epoch(session_id), spare);
     assert!(registered, "test spare must register for {session_id}");
     pid
 }

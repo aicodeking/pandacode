@@ -82,9 +82,10 @@ with counts (`truncated`, `omitted_lines`, `omitted_files`), and a cut read give
 range to continue from (`next`) and says to read it before editing. A line too long
 for its room is clipped around its match and counted in the request's
 `clipped_lines`; that alone never marks the whole reply `truncated`.
-Search hit and context lines (and definition signatures) have leading and trailing
-whitespace trimmed to save bytes, while `read` ranges keep each line exactly, indentation
-included. To edit whitespace-sensitive code (Python, YAML, Makefiles), take the
+Search hit and context lines drop their leading whitespace to save bytes (definition
+signatures are trimmed at both ends), while `read` ranges keep each line verbatim,
+indentation included; the tool description says so: "Search lines drop their
+indentation; read keeps it." To edit whitespace-sensitive code (Python, YAML, Makefiles), take the
 indentation from a `read` (or the harness's own Read tool), never from a search hit.
 
 **What it will not show.** Searches skip gitignored files and walk only the

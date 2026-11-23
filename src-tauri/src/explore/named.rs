@@ -257,15 +257,22 @@ fn parse_read<'a>(raw: &'a str, whole_file: impl Fn(&str) -> bool) -> Result<(&'
 }
 
 /// The `#` ending the path in `path#symbol`. The first `#` after the last `/` whose prefix is a
-/// file wins (`a#1.rb#Foo#bar`, `dir#1\foo.rb#Foo#bar`); failing that, the first `#` after the
-/// last `/`, so Ruby's `app/foo.rb#Foo#bar` reads `bar` in `Foo`, `dir#1/foo.rb#run` keeps its
-/// folder, and a PHP namespace's `\` (`src/Foo.php#App\Models\User::save`) is no separator.
+/// file wins (`a#1.rb#Foo#bar`, `dir#1\foo.rb#Foo#bar`). Failing that (nothing on disk), the
+/// first `#` after the file name starts: past the last `/`, and past the last `\` that still has
+/// a `#` after it. So Ruby's `app/foo.rb#Foo#bar` reads `bar` in `Foo`, `dir#1/foo.rb#run` and
+/// Windows' `dir#1\foo.rb#Foo#bar` keep their folder, and a PHP namespace's `\`
+/// (`src/Foo.php#App\Models\User::save`), which only follows the last `#`, is no separator.
 fn symbol_split(raw: &str, whole_file: impl Fn(&str) -> bool) -> Option<usize> {
     let hashes = || raw.match_indices('#').map(|(at, _)| at).filter(|&at| at + 1 < raw.len());
     if let Some(at) = hashes().find(|&at| !raw[at + 1..].contains('/') && whole_file(&raw[..at])) {
         return Some(at);
     }
-    let tail = raw.rfind('/').map_or(0, |at| at + 1);
+    let after_slash = raw.rfind('/').map_or(0, |at| at + 1);
+    let tail = hashes()
+        .next_back()
+        .filter(|&end| end >= after_slash)
+        .and_then(|end| raw[after_slash..end].rfind('\\'))
+        .map_or(after_slash, |at| after_slash + at + 1);
     hashes().find(|&at| at >= tail)
 }
 
@@ -473,6 +480,11 @@ mod tests {
             ("src/Foo.php#App\\Models\\User::save", "src/Foo.php", "App\\Models\\User::save"),
             ("src/Foo.php#\\App\\User::save", "src/Foo.php", "\\App\\User::save"),
             ("dir\\Foo.php#App\\Models\\User::save", "dir\\Foo.php", "App\\Models\\User::save"),
+            ("Foo.php#App\\Models\\User::save", "Foo.php", "App\\Models\\User::save"),
+            ("dir#1\\foo.rb#Foo#bar", "dir#1\\foo.rb", "Foo#bar"),
+            ("dir#1\\foo.rb#run", "dir#1\\foo.rb", "run"),
+            ("a#1\\b#2\\foo.rb#Foo#bar", "a#1\\b#2\\foo.rb", "Foo#bar"),
+            ("dir#1/foo.rb#run", "dir#1/foo.rb", "run"),
         ] {
             assert_eq!(parse_read(raw, |_| false).unwrap(), (path, Span::Symbol(symbol)), "{raw}");
         }
@@ -482,6 +494,10 @@ mod tests {
         assert_eq!(parse_read("app/foo.rb#Foo#bar", exists).unwrap(), ("app/foo.rb", Span::Symbol("Foo#bar")));
         let windows = |raw: &str| raw == "dir#1\\foo.rb";
         assert_eq!(parse_read("dir#1\\foo.rb#Foo#bar", windows).unwrap(), ("dir#1\\foo.rb", Span::Symbol("Foo#bar")));
+        let ruby_hash = |raw: &str| raw == "a#1.rb";
+        assert_eq!(parse_read("a#1.rb#Foo#bar", ruby_hash).unwrap(), ("a#1.rb", Span::Symbol("Foo#bar")));
+        let folder = |raw: &str| raw == "dir#1/foo.rb";
+        assert_eq!(parse_read("dir#1/foo.rb#run", folder).unwrap(), ("dir#1/foo.rb", Span::Symbol("run")));
         let php = |raw: &str| raw == "src/Foo.php";
         assert_eq!(parse_read("src/Foo.php#App\\Models\\User::save", php).unwrap(), ("src/Foo.php", Span::Symbol("App\\Models\\User::save")));
         for raw in ["dir#1/foo.rb", "a.rb#", "dir/#"] {

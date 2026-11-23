@@ -1244,3 +1244,33 @@ fn php_namespaced_reads_split_at_the_file() {
         assert!(reply["read"][at]["text"].as_str().unwrap().contains(body), "{reply}");
     }
 }
+
+#[test]
+fn hash_named_files_and_folders_read_their_symbols() {
+    let repo = Repo::new();
+    let ruby = "class Foo\n  def bar\n    :bar\n  end\nend\ndef run\n  :run\nend\n";
+    let mut files = vec!["a#1.rb", "dir#1/foo.rb", "app/foo.rb"];
+    // A literal `\` is a file-name character off Windows, standing in for a Windows path.
+    if cfg!(unix) {
+        files.push("dir#1\\foo.rb");
+    }
+    for file in &files {
+        repo.write(file, ruby);
+    }
+    let mut reads = vec!["a#1.rb#Foo#bar", "dir#1/foo.rb#run", "app/foo.rb#Foo#bar"];
+    if cfg!(unix) {
+        reads.push("dir#1\\foo.rb#Foo#bar");
+    }
+    let reply = repo.explore(json!({ "read": reads }));
+    for (at, raw) in reads.iter().enumerate() {
+        let item = &reply["read"][at];
+        assert!(item.get("error").is_none(), "{raw}: {reply}");
+        assert_eq!(item["path"], json!(files[at]), "{raw}: {reply}");
+        let body = if raw.ends_with("#run") { ":run" } else { ":bar" };
+        assert!(item["text"].as_str().unwrap().contains(body), "{raw}: {reply}");
+    }
+    let missing = repo.explore(json!({"read":["gone#1\\foo.rb#Foo#bar", "gone/Foo.php#App\\Models\\User::save"]}));
+    for at in 0..2 {
+        assert_eq!(missing["read"][at]["error"], json!("File not found."), "{missing}");
+    }
+}
