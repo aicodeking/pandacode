@@ -265,6 +265,25 @@ impl Protocol {
                 }
             }
             if value["error"]["code"] == -32000 {
+                // The session already opened, so the CLI started and signed in
+                // far enough to create it. When a prompt still cannot
+                // authenticate, the selected model's provider is the likely
+                // cause; naming it is more useful than sending the user back to
+                // the CLI login that already worked (#391).
+                if let Some(model) = self.acp_model_in_use().filter(|_| !self.remote_id.is_empty()) {
+                    let provider = model.split_once('/').map(|(provider, _)| provider).unwrap_or_default();
+                    let hint = if provider.is_empty() {
+                        "Add its provider's credentials or choose another model.".to_owned()
+                    } else {
+                        format!("Add {provider} credentials or choose another model.")
+                    };
+                    let free = match self.acp_free_model() {
+                        Some(free) => format!(" OpenCode's free models need no key, for example \"{free}\"."),
+                        None if self.config.provider == "opencode" => " OpenCode's free models need no key.".into(),
+                        None => String::new(),
+                    };
+                    return Err(format!("{} cannot use the selected model \"{model}\": {hint}{free}", self.config.provider));
+                }
                 return Err(format!("{} requires authentication. Sign in using its own CLI or official extension, then retry.", self.config.provider));
             }
             let stage = match value["id"].as_u64() {
@@ -928,6 +947,36 @@ impl Protocol {
         }
         Ok(())
     }
+    /// The model this session will actually run: the explicit picker choice,
+    /// or the server's `currentValue` while the picker says `default`. ACP
+    /// servers resolve `default` themselves, so this is the only place the
+    /// concrete ID is visible before a model-level failure (#391).
+    fn acp_model_in_use(&self) -> Option<&str> {
+        let chosen = self.config.model.as_str();
+        if !chosen.is_empty() && chosen != "default" {
+            return Some(chosen);
+        }
+        options(&self.acp_config, "model")
+            .and_then(|option| option["currentValue"].as_str())
+            .filter(|id| super::valid_model_id(id))
+            .or_else(|| {
+                self.acp_config["models"]["currentModelId"]
+                    .as_str()
+                    .filter(|id| super::valid_model_id(id))
+            })
+    }
+    /// A free model the running server actually advertises. OpenCode's catalog
+    /// marks them with a `-free` suffix, and suggesting one is more useful than
+    /// telling the user a paid provider has no key (#391).
+    fn acp_free_model(&self) -> Option<&str> {
+        if self.config.provider != "opencode" {
+            return None;
+        }
+        choices(options(&self.acp_config, "model")?)
+            .into_iter()
+            .filter_map(|entry| entry["value"].as_str())
+            .find(|id| id.rsplit_once('/').is_some_and(|(_, name)| name.ends_with("-free")))
+    }
 }
 
 /// Grok Build lists its models, context sizes and reasoning efforts in the
@@ -1390,6 +1439,31 @@ mod tests {
         assert!(error.contains("ValueError: invalid working directory"));
         assert!(!error.contains("fixture-secret"));
         assert!(!error.contains("private opaque metadata"));
+    }
+
+    #[test]
+    fn prompt_auth_errors_name_the_default_model_instead_of_the_cli_login() {
+        let mut p = Protocol::new(config("opencode"));
+        p.receive(json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})).unwrap();
+        p.receive(json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"ses_fixture","configOptions":[
+            {"id":"model","name":"Model","category":"model","type":"select","currentValue":"openai/gpt-6.2-sol","options":[
+                {"value":"openai/gpt-6.2-sol","name":"GPT-6.2 Sol"},
+                {"value":"opencode/deepseek-v4.1-flash-free","name":"DeepSeek V4.1 Flash Free"}]}]}})).unwrap();
+        let error = p.receive(json!({"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Authentication required: provider authentication required","data":{}}})).err().unwrap();
+        assert!(error.contains("openai/gpt-6.2-sol"), "{error}");
+        assert!(error.contains("openai credentials"), "{error}");
+        assert!(error.contains("opencode/deepseek-v4.1-flash-free"), "{error}");
+        assert!(error.contains("free models need no key"), "{error}");
+        assert!(!error.contains("Sign in using its own CLI"), "{error}");
+    }
+
+    #[test]
+    fn session_creation_auth_errors_keep_the_cli_sign_in_hint() {
+        let mut p = Protocol::new(config("opencode"));
+        p.receive(json!({"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}})).unwrap();
+        let error = p.receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Login required","data":{}}})).err().unwrap();
+        assert!(error.contains("requires authentication"), "{error}");
+        assert!(error.contains("opencode"), "{error}");
     }
 
     #[cfg(unix)]
