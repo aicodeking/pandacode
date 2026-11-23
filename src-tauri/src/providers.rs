@@ -90,7 +90,7 @@ use worker_trim::{claude_refusal_hooks, claude_refuses_native, CLAUDE_REFUSAL_HO
 #[cfg(test)]
 use worker_trim::{CLAUDE_DEFERRED_TOOLS, CLAUDE_NOTEBOOK_TOOL};
 mod opencode_launch;
-use opencode_launch::{allow_opencode_tools, enforce_opencode_after_connection_with_env, opencode_environment};
+use opencode_launch::{allow_opencode_tools, command_environment, enforce_opencode_after_connection_with_env, opencode_environment};
 #[cfg(test)]
 use opencode_launch::enforce_opencode_after_connection;
 mod subagents;
@@ -190,6 +190,12 @@ pub(crate) const PROVIDERS: [(&str, &str); 21] = [
 
 /// Claude Code tools that only report back to a session that stays open after its turn.
 pub(crate) const CLAUDE_SESSION_BOUND_TOOLS: &str = "ScheduleWakeup,Monitor,CronCreate";
+/// Claude Code tools a team worker's brief already forbids (pinned by `scripts/agent-bench/s2.mjs`).
+pub(crate) const CLAUDE_WORKER_DENIED_TOOLS: &str = "Agent,Task,Workflow,ListAgents,SendMessage,RemoteTrigger,CronDelete,CronList,EnterWorktree,ExitWorktree";
+/// The edit tools a read-only worker is told not to use (pinned by `scripts/agent-bench/s2.mjs`).
+pub(crate) const CLAUDE_READ_ONLY_DENIED_TOOLS: &str = "Edit,Write,NotebookEdit";
+/// Denied to team workers when Settings → Agents → Workers can use skills is off (pinned by `scripts/agent-bench/s3.mjs`).
+pub(crate) const CLAUDE_SKILL_TOOL: &str = "Skill";
 
 /// Never runs an agent-reviewed task under some other policy.
 fn review_supported(provider: &str, mode: &str) -> Result<(), String> {

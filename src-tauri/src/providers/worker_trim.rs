@@ -4,14 +4,11 @@
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::CLAUDE_SESSION_BOUND_TOOLS;
+use super::{
+    CLAUDE_READ_ONLY_DENIED_TOOLS, CLAUDE_SESSION_BOUND_TOOLS, CLAUDE_SKILL_TOOL,
+    CLAUDE_WORKER_DENIED_TOOLS,
+};
 
-/// Claude Code tools a team worker's brief already forbids: native subagents and workflows,
-/// other sessions, worktrees and cloud routines. Their definitions and listings ride every
-/// request of every step (docs/worker-tokens.md). `TaskStop` stays: it also stops background Bash.
-pub(crate) const CLAUDE_WORKER_DENIED_TOOLS: &str = "Agent,Task,Workflow,ListAgents,SendMessage,RemoteTrigger,CronDelete,CronList,EnterWorktree,ExitWorktree";
-/// The edit tools a read-only worker is told not to use.
-pub(crate) const CLAUDE_READ_ONLY_DENIED_TOOLS: &str = "Edit,Write,NotebookEdit";
 /// The denied tools Claude Code defers: history can hold a ToolSearch reference to one, removing
 /// its definition invalidates later requests, and adding one changes the deferred-tool list. So
 /// a conversation keeps the set it started with (`History::lists_native`); one the role denies
@@ -20,10 +17,6 @@ pub(super) const CLAUDE_DEFERRED_TOOLS: [&str; 7] = ["SendMessage", "RemoteTrigg
 pub(super) const CLAUDE_NOTEBOOK_TOOL: &str = "NotebookEdit";
 /// The `PreToolUse` callback that refuses kept deferred tools (`claude_refusal_hooks`).
 pub(super) const CLAUDE_REFUSAL_HOOK: &str = "pandacode-refuse-native";
-/// Denied to team workers only while Settings → Agents → Workers can use skills is off (it is on
-/// by default, so user rules naming a skill keep working); off saves its listing, about 8k
-/// cache-write tokens per worker with a real skills library.
-pub(crate) const CLAUDE_SKILL_TOOL: &str = "Skill";
 
 /// How a team worker's Claude Code launch is trimmed (`RunConfig::worker`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]

@@ -48,7 +48,7 @@ pub(super) fn enforce_opencode_after_connection(
     }
 }
 
-fn command_environment(command: &Command, name: &str) -> Option<String> {
+pub(super) fn command_environment(command: &Command, name: &str) -> Option<String> {
     command
         .as_std()
         .get_envs()
