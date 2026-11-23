@@ -161,6 +161,52 @@ test('reduced motion keeps its one still frame, idle rate or not', async ({ page
   expect(await frames(page)).toBe(still);
 });
 
+test('Still sky pauses animation, survives reload, and hides while wallpapers are on', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await open(page);
+  await nextPaint(page);
+
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  const openAppearance = async () => {
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await settings.getByRole('tab', { name: 'Appearance', exact: true }).click();
+  };
+  const back = settings.getByRole('button', { name: 'Back to the workspace' });
+  const stillSky = settings.getByRole('checkbox', { name: 'Still sky', exact: true });
+  const wallpapers = settings.getByRole('checkbox', { name: 'Wallpapers', exact: true });
+
+  await openAppearance();
+  await expect(stillSky).toBeVisible();
+  await expect(stillSky).not.toBeChecked();
+  await stillSky.check();
+  await back.click();
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+  const still = await frames(page);
+  await page.waitForTimeout(400);
+  expect(await frames(page)).toBe(still);
+  await page.mouse.move(700, 600);
+  await page.mouse.move(760, 640, { steps: 5 });
+  await page.locator('#transcript').evaluate(node => node.setAttribute('data-running', ''));
+  await page.waitForTimeout(400);
+  expect(await frames(page)).toBe(still);
+  await expect(sky(page)).toHaveAttribute('data-wind', '0');
+
+  await page.reload();
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'static');
+  await openAppearance();
+  await expect(stillSky).toBeChecked();
+  await wallpapers.check();
+  await expect(settings.getByText('Still sky', { exact: true })).toBeHidden();
+  await wallpapers.uncheck();
+  await expect(stillSky).toBeVisible();
+  await expect(stillSky).toBeChecked();
+  await stillSky.uncheck();
+  const paused = await frames(page);
+  await back.click();
+  await expect(sky(page)).toHaveAttribute('data-sky-state', 'idle');
+  await expect.poll(() => frames(page)).toBeGreaterThan(paused + 1);
+});
+
 /** The rate governor (src/sky-window.ts `rateSample`): where a painted frame costs tens of milliseconds of main-thread work
  * (a CPU-composited WebKit, #348/#351), the rest and idle rates halve at the same pace. `__sky.forceFrameMs` (preview
  * only) stands in for the measured cost. */

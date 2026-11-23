@@ -28,6 +28,7 @@ import { SECTIONS, type SettingsPage, type SettingsSection } from './settings-se
 import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
 import { crashRestartSettingsHtml, mountCrashRestartSettings, type KeepDrafts } from './crash-restart-settings';
+import { setStillSkyEnabled, stillSkyEnabled } from './sky-window';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -161,6 +162,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'appearance': return `<div class="settings-group">
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
+        ${switchRow('still-sky', 'Still sky', 'Keep the live sky as a still frame without animating clouds or pointer motion.', stillSkyEnabled())}
       </div>
       <h3 class="settings-heading">Colors</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
       <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">Wallpapers</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
@@ -364,6 +366,17 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(() => recommended?.dispose());
     }
     if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
+    if (id === 'appearance') {
+      const stillSky = panel.querySelector<HTMLInputElement>('#still-sky')!;
+      const row = stillSky.closest<HTMLElement>('.setting-row')!;
+      const wallpapers = panel.querySelector<HTMLElement>('.settings-wallpapers')!;
+      const syncVisibility = () => { row.hidden = !wallpapers.hidden; };
+      const observer = new MutationObserver(syncVisibility);
+      observer.observe(wallpapers, { attributes: true, attributeFilter: ['hidden'] });
+      syncVisibility();
+      cleanups.push(() => observer.disconnect());
+      stillSky.addEventListener('change', () => setStillSkyEnabled(stillSky.checked));
+    }
     if (id === 'general') {
       cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
