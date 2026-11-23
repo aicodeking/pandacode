@@ -118,9 +118,11 @@ use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, H
 use app_instructions::Role;
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
+#[cfg(test)]
+use std::path::Path;
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU8, Ordering},
         Arc, Mutex,
