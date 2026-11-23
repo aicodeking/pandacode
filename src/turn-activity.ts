@@ -1,4 +1,5 @@
 import type { Message, TurnChangeFile, TurnChanges } from './types.ts';
+import type { ShownTurn } from './thread-errors.ts';
 import { decodeToolActivity } from './tool-activity.ts';
 
 export interface TranscriptTurn {
@@ -14,9 +15,9 @@ export interface TranscriptTurn {
   durationMs: number | null;
   estimated: boolean;
   changes?: TurnChanges;
-  /** A merged lead exchange only (mergeLeadTurns): the change sets before `changes`, oldest first. */
+  /** The change sets before `changes`, oldest first. */
   earlierChanges?: TurnChanges[];
-  /** A merged lead exchange only: when its workers' slot starts, for a first segment with no start of its own. */
+  /** When workers can belong to a turn without a user or coordination message. */
   workerStart?: number;
   /** A merged lead exchange only: `activity` with `final` still at its point in the timeline. */
   timeline?: Message[];
@@ -67,6 +68,7 @@ function makeTurn(messages: Message[]): TranscriptTurn {
     key: toolKey ?? legacyKey ?? `turn:${start?.role ?? 'message'}:${messages[0].id}`,
     durationMs, estimated,
     changes: messages.find(message => message.role === 'changes' && message.turnChanges)?.turnChanges ?? start?.turnChanges ?? undefined,
+    workerStart: start ? undefined : messages[0].createdAt,
   };
 }
 
@@ -95,8 +97,32 @@ export function groupTurns(messages: Message[]): TranscriptTurn[] {
   return turns;
 }
 
+const changeSets = (turn: TranscriptTurn): TurnChanges[] => [...(turn.earlierChanges ?? []), ...(turn.changes ? [turn.changes] : [])];
+
+/** Put late snapshots and notes with the work they follow, keeping any steer bubble in the timeline. */
+export function normalizeCardTurns(turns: readonly ShownTurn[]): ShownTurn[] {
+  const shown: ShownTurn[] = [];
+  let previous = -1;
+  for (const turn of turns) {
+    const noWork = !turn.activity.length && !turn.final && !turn.errors.length && !turn.errorsDismissed;
+    const changes = changeSets(turn);
+    const startless = !turn.user && !turn.coordination && !turn.handoff;
+    const steered = turn.user && !turn.notes.length && changes.length;
+    if (previous >= 0 && noWork && (startless || steered)) {
+      const earlier = shown[previous];
+      const sets = [...changeSets(earlier), ...changes];
+      shown[previous] = { ...earlier, changes: sets.at(-1), earlierChanges: sets.slice(0, -1), notes: [...earlier.notes, ...turn.notes] };
+      if (steered) shown.push({ ...turn, changes: undefined, earlierChanges: undefined });
+      continue;
+    }
+    shown.push(turn);
+    previous = turn.handoff ? -1 : shown.length - 1;
+  }
+  return shown;
+}
+
 /** One card's worth of segments. A later segment's coordination label and all but the newest final are timeline rows. */
-function joinSegments(segments: TranscriptTurn[]): TranscriptTurn {
+function joinSegments(segments: ShownTurn[]): ShownTurn {
   const first = segments[0];
   const final = [...segments].reverse().find(segment => segment.final)?.final;
   const timeline = segments.flatMap((segment, index) => [
@@ -107,24 +133,27 @@ function joinSegments(segments: TranscriptTurn[]): TranscriptTurn {
   // A segment that did work with no usable time makes the sum a lower bound; a wake that has done nothing costs nothing.
   const worked = segments.filter(segment => segment.durationMs !== null || segment.activity.length || segment.final || segment.errors.length);
   const timed = worked.filter(segment => segment.durationMs !== null);
-  const changes = segments.flatMap(segment => segment.changes ? [segment.changes] : []);
+  const changes = segments.flatMap(changeSets);
+  const dismissedErrors = segments.reduce((count, segment) => count + (segment.dismissedErrors ?? 0), 0);
   return {
     user: first.user, coordination: first.coordination, key: first.key, final, timeline,
     activity: timeline.filter(message => message !== final),
     errors: segments.flatMap(segment => segment.errors),
+    dismissedErrors: dismissedErrors || undefined,
+    errorsDismissed: segments.some(segment => segment.errorsDismissed) || undefined,
     notes: segments.flatMap(segment => segment.notes),
     durationMs: timed.length ? timed.reduce((total, segment) => total + segment.durationMs!, 0) : null,
     estimated: timed.length > 0 && (timed.length < worked.length || timed.some(segment => segment.estimated)),
     changes: changes.at(-1), earlierChanges: changes.slice(0, -1),
-    workerStart: first.user?.createdAt ?? first.coordination?.createdAt ?? segments.find(segment => segment.coordination)?.coordination?.createdAt,
+    workerStart: first.user?.createdAt ?? first.coordination?.createdAt ?? first.workerStart ?? segments.find(segment => segment.coordination)?.coordination?.createdAt,
   };
 }
 
 /** Everything between one user message and the next is one card when a lead woke in it. For drawing cards only:
  * chat rows, the launcher and worker history read `groupTurns`. A range with no wake (a goal run's turns) is left alone. */
-export function mergeLeadTurns(turns: TranscriptTurn[]): TranscriptTurn[] {
-  const merged: TranscriptTurn[] = [];
-  let range: TranscriptTurn[] = [];
+export function mergeLeadTurns(turns: ShownTurn[]): ShownTurn[] {
+  const merged: ShownTurn[] = [];
+  let range: ShownTurn[] = [];
   const close = () => {
     if (range.length > 1 && range.some(turn => turn.coordination)) merged.push(joinSegments(range));
     else merged.push(...range);

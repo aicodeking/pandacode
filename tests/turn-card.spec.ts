@@ -22,7 +22,7 @@ test('saved turns: header sentence and time, clamped reply, footer only with cha
   await expect(short.locator('.turn-card-time')).toHaveText('4s');
   await expect(short.locator('.turn-card-foot')).toHaveCount(0);
   await expect(short.locator('.turn-card-more')).toBeHidden();
-  await expect(long.locator('.turn-activity-label')).toContainText('Read 2 files');
+  await expect(long.locator('.turn-activity-label')).toContainText(/read 2 files/i);
   await expect(long.locator('.turn-card-time')).toHaveText('1h 30m 10s');
   // The header opens the step trace inside the card.
   const header = long.locator('.turn-activity-summary');
@@ -37,6 +37,27 @@ test('saved turns: header sentence and time, clamped reply, footer only with cha
   await expect(foot.locator('.change-deletions')).toHaveText('−2');
   await expect(foot.locator('.change-dots>span')).toHaveCount(5);
   expect(errors).toEqual([]);
+});
+
+test('history beginning with only changes still shows a turn card', async ({ page }) => {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch(), source = await response.text();
+    const marker = 'async function invoke(command, args) {';
+    expect(source).toContain(marker);
+    await route.fulfill({ response, body: source.replace(marker, `${marker}
+      if (command === 'get_messages' && args.sessionId === 'session-2') return { hasOlder: false, messages: [{
+        id: 401, sessionId: 'session-2', role: 'changes', content: '', createdAt: 4000,
+        turnChanges: { attributed: true, id: 'changes-only', files: [{ path: 'src/main.ts', status: 'modified', additions: 1, deletions: 0 }],
+          additions: 1, deletions: 0, truncated: false, concurrent: false },
+      }] };
+    `) });
+  });
+  await page.goto('/');
+  await page.locator('.task-item[data-id="session-2"]').click();
+  await expect(cards(page)).toHaveCount(1);
+  await expect(cards(page).locator('.turn-card-head')).toHaveText('Worked');
+  await expect(cards(page).locator('.turn-card-foot')).toContainText('1 changed file');
+  await expect(transcript(page).locator('.turn-changes:not(.turn-card *)')).toHaveCount(0);
 });
 
 test('find in thread opens a clamped reply when the match is past its clamp', async ({ page }) => {

@@ -76,7 +76,7 @@ import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
 import { describeTool, kindIcon, summarizeTools, toolKind, traceRowHtml } from './tool-trace';
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
-import { groupTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
+import { groupTurns, normalizeCardTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
@@ -302,7 +302,7 @@ async function ensureArchitectView(): Promise<ArchitectView> {
 }
 function onArchitect(team: TeamEvent): void {
   if (deletedSessions.has(team.sessionId)) return;
-  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); } return; }
+  if ('removed' in team) { teams.set(team.sessionId, null); if (team.sessionId === state.sessionId) { architectView?.setTask(team.sessionId, null, state.providers); renderComposer(); syncTeamRows(); } return; }
   const current = teams.get(team.sessionId);
   if (current && current.revision > team.revision) return;
   // Pauses and failures the user did not ask for would otherwise only show inside the panel.
@@ -317,7 +317,10 @@ function onArchitect(team: TeamEvent): void {
   void ensureArchitectView().then(view => { if (!deletedSessions.has(team.sessionId)) view.update(team); }).catch(report);
   // A snapshot that only moved its revision shows nothing new: no composer, thread or sidebar paint.
   if (current && teamSignature(current) === teamSignature(team) && taskState === `${task?.status}:${task?.taskStage}`) return;
-  if (team.sessionId === state.sessionId) { scheduleTeamRender(wasActive !== teamActive(team)); if (!current) syncTeamRows(); }
+  if (team.sessionId === state.sessionId) {
+    scheduleTeamRender(wasActive !== teamActive(team));
+    if (!current || current.workers.length !== team.workers.length || team.workers.some((worker, index) => worker.createdAt !== current.workers[index].createdAt)) syncTeamRows();
+  }
   scheduleNavigation();
 }
 /** Team snapshots can arrive many times a frame: the composer (and thread worker lines) paint once per frame. */
@@ -2177,36 +2180,36 @@ function botCrumb(bot: import('./bots').Bot): string {
   return botThread.crumbHtml(bot, { where, status: bot.paused ? 'Paused' : working ? 'Working' : 'Ready', nextModel: s && next ? { running: modelLabel(s), next: next.label } : undefined });
 }
 /** Where a turn's spawned workers appear: right after what the architect said in that turn. */
-function workerSlot(turn: { user?: Message; coordination?: Message; workerStart?: number }, sessionId = state.sessionId, topLevel = false): string {
-  const start = turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
-  // A card always carries its (hidden) slot, so a team landing after the rows fills slots rather than redrawing every
-  // card. A slot that would be a row of its own (chat rows, a turn with no card) is drawn only with a team.
+function workerSlot(turn: TranscriptTurn, sessionId: string, topLevel = false): string {
+  const start = topLevel ? turn.user?.createdAt ?? turn.coordination?.createdAt : turnWorkerStart(turn);
+  // Each card carries a hidden slot so a team can arrive after the card draws. Chat rows add a slot only with a team.
   return start !== undefined && (!topLevel || teams.get(sessionId)) ? `<div class="team-progress-slot" data-turn-start="${start}" hidden></div>` : '';
 }
+const turnWorkerStart = (turn: TranscriptTurn): number | undefined => turn.workerStart ?? turn.user?.createdAt ?? turn.coordination?.createdAt;
 /** Each spawned worker shows in the turn it was spawned in; while that turn is still running,
  *  it follows the live activity at the end of the thread. */
 function refreshTeamProgress(): void {
-  const liveHost = document.querySelector<HTMLElement>('#team-progress-host');
-  if (!liveHost) return;
+  const transcript = document.getElementById('transcript');
+  if (!transcript) return;
+  const chatRows = Boolean(botForThread());
+  const liveHost = transcript.querySelector<HTMLElement>(chatRows ? '#team-progress-host' : '.turn-card #team-progress-host');
   const team = teams.get(state.sessionId), workers = team?.workers ?? [];
-  const slots = [...document.querySelectorAll<HTMLElement>('#transcript .team-progress-slot')].map(slot => ({ slot, start: Number(slot.dataset.turnStart) }));
-  const placed = new Map<HTMLElement, typeof workers>([[liveHost, []], ...slots.map(({ slot }) => [slot, []] as [HTMLElement, typeof workers])]);
-  // Only a turn that is still streaming has no saved place yet. Workers spawned before it
-  // started (a coordination turn whose message hasn't loaded yet) keep their saved place.
-  const startedAt = state.streams.get(state.sessionId)?.startedAt;
+  const slots = [...transcript.querySelectorAll<HTMLElement>(chatRows ? '.team-progress-slot' : '.turn-card .team-progress-slot')].reverse();
+  const placed = new Map<HTMLElement, typeof workers>(slots.map(slot => [slot, []]));
+  if (liveHost) placed.set(liveHost, []);
+  const startedAt = workerLiveStart(state.sessionId);
   for (const worker of workers) {
-    let index = -1;
-    slots.forEach((slot, at) => { if (slot.start <= worker.createdAt) index = at; });
-    // Its turn is older than the ones drawn so far; it takes its place when that turn is. A worker of the running turn
-    // always shows, whatever the drawn rows hold.
+    const slot = slots.find(slot => Number(slot.dataset.turnStart) <= worker.createdAt);
     const live = startedAt !== undefined && worker.createdAt >= startedAt;
-    if (index < 0 && !live && transcriptView.view.first !== null && transcriptView.view.sessionId === state.sessionId) continue;
-    const turn = slots[Math.max(index, 0)];
-    placed.get(!turn || (live && index === slots.length - 1) ? liveHost : turn.slot)!.push(worker);
+    // A worker older than the drawn window takes its place once that turn is drawn.
+    if (!slot && !live && transcriptView.view.first !== null && transcriptView.view.sessionId === state.sessionId) continue;
+    const host = (live ? liveHost : undefined) ?? slot ?? slots.at(-1) ?? liveHost;
+    if (host) placed.get(host)!.push(worker);
   }
   const asking = (sessionId: string) => architectView?.needsInput(sessionId) ?? false;
   for (const [host, shown] of placed) updateTeamProgress(host, team, state.providers, shown, asking);
 }
+const workerLiveStart = (sessionId: string): number | undefined => (state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream)?.startedAt;
 /** A turn's change card, or nothing when the snapshot has nothing to report. */
 function changesRow(sessionId: string, changes: TurnChanges | undefined): string {
   // A remote task's diffs live on its computer; their review and commit actions would act on this one.
@@ -2239,7 +2242,7 @@ function drawTile(id: string, rows: HTMLElement, scroller: HTMLElement): void {
     const switches = captureAccountSwitches(rows);
     rows.dataset.key = key;
     const thread = { messages: page.messages, provider: state.sessions.find(task => task.id === id)?.provider ?? state.defaultProvider };
-    const turns = mergeLeadTurns(withErrorTurns(groupTurns(messages)));
+    const turns = cardTurns(messages);
     const { saved, earlier } = live ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
     const env = markupEnv(id, false, thread);
     const { from, added } = tileWindows.draw(rows, saved, turn => savedTurnHtml(turn, id, false, env, thread), `${earlier ? turnLeadHtml(earlier, thread) : ''}<div class="thread-mirror-live" data-earlier-ms="${earlier?.durationMs ?? 0}">${live ? tileLiveCard(earlier, id, thread) : ''}</div>`, () => restoreAccountSwitches(rows, switches));
@@ -2269,7 +2272,7 @@ const tileWindows = mountTileWindows<TranscriptTurn>({
 function tileLiveCard(earlier: TranscriptTurn | undefined, sessionId: string, thread: Thread): string {
   const tools = earlier?.activity.flatMap(message => { const tool = message.role === 'tool' ? decodeToolActivity(message.content) : undefined; return tool ? [tool] : []; }) ?? [];
   const trace = earlier?.activity.length ? activityHtml(earlier.key, tools.length ? foldedLabelHtml(tools) : 'Earlier in this turn', `<div class="live-earlier">${savedActivityHtml(earlier.activity, activityExpanded(), thread)}</div>`) : '';
-  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, sessionId) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
+  return `<section class="turn-card is-live"><div class="turn-card-head"><span class="turn-activity-label"></span><span class="thread-mirror-time"></span></div>${trace}<div class="turn-card-reply ds-card-inner"><article class="message agent-message"><div class="message-content markdown"></div></article></div>${earlier ? cardErrorsHtml(earlier, sessionId) + dismissedNoteHtml(earlier) + cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, thread) : ''}<div class="live-account-switches"></div>`;
 }
 /** A wake's earlier rows in the live trace: one closed line, so the card does not grow as the wake starts. */
 function liveEarlierFold(earlier: TranscriptTurn, tools: ToolActivity[]): string {
@@ -2303,23 +2306,41 @@ function markupEnv(sessionId: string, chatRows: boolean, thread = shownThread())
   return JSON.stringify([sessionId, sessionId === state.sessionId, chatRows, thread.provider, task?.remoteDevice?.id ?? '', chatRows && Boolean(teams.get(sessionId)), activityExpanded(), state.view === 'board', projectRunner.available(), lastHandoff(thread.messages), state.providers.length, schedulesVersion(), ...turnInputs.inputs()]);
 }
 /** A saved turn's markup, from turnMarkup when it still holds: the open thread's, or a tile's with its `thread`. */
-function savedTurnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, env: string, thread?: Thread): string {
+function savedTurnHtml(turn: CardTurn, sessionId: string, chatRows: boolean, env: string, thread?: Thread): string {
   const messages = turnMessages(turn);
   const head = messages.find(Boolean);
   if (!head || (!thread && sessionId !== state.sessionId) || messages.some(message => message && message.id <= 0)) return turnHtml(turn, sessionId, chatRows, thread);
-  const parts = [...messages, ...(turn.timeline ?? []), turn.changes, ...(turn.earlierChanges ?? []), turn.key, turn.durationMs, turn.estimated, turn.workerStart, state.providers, replyOpen(turn.key), cardless(turn) && Boolean(teams.get(sessionId)), (turn as ShownTurn).dismissedErrors, (turn as ShownTurn).errorsDismissed, errorsOpenKey(turn, sessionId)];
+  const parts = [...messages, ...(turn.timeline ?? []), turn.changes, ...(turn.earlierChanges ?? []), turn.key, turn.durationMs, turn.estimated, turn.workerStart, state.providers, replyOpen(turn.key), turn.workersOnly, turn.dismissedErrors, turn.errorsDismissed, errorsOpenKey(turn, sessionId)];
   return turnMarkup(head, parts, env, () => turnHtml(turn, sessionId, chatRows, thread));
 }
 /** Which of a saved turn's error rows are expanded (errorRowHtml reads openErrors and openLiveErrors): part of what
  *  its cached markup depends on (savedTurnHtml). */
 const errorsOpenKey = (turn: TranscriptTurn, sessionId: string): string => turn.errors.length ? groupErrors(turn.errors).map(group => openErrors.has(`${turn.key}|${group.key}`) || liveErrorOpen(group, sessionId, false) ? '1' : '0').join('') : '';
-/** A turn drawn without a card (no activity, reply or error): its workers slot is a row of its own (workerSlot). */
-const cardless = (turn: TranscriptTurn): boolean => !turn.activity.length && !turn.final && !turn.errors.length && !(turn as ShownTurn).errorsDismissed;
-function turnHtml(turn: TranscriptTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
+/** A turn with no work to show unless it has a team assignment. */
+const cardless = (turn: ShownTurn): boolean => !turn.activity.length && !turn.final && !turn.errors.length && !turn.errorsDismissed
+  && !earlierChangeSets(turn).some(set => set.attributed && set.files.length);
+type CardTurn = ShownTurn & { workersOnly?: boolean };
+/** An architect can spawn workers without leaving a saved trace or reply. Give those turns a card when needed. */
+function withWorkerCards(turns: CardTurn[], sessionId: string): CardTurn[] {
+  const workers = teams.get(sessionId)?.workers ?? [];
+  if (!(workers.length || turns.some(turn => turn.workersOnly)) || !turns.some(turn => cardless(turn) && turnWorkerStart(turn) !== undefined)) return turns;
+  const newestFirst = [...turns].reverse();
+  const startedAt = workerLiveStart(sessionId), workerTurns = new Set<CardTurn>();
+  for (const worker of workers) {
+    if (startedAt !== undefined && worker.createdAt >= startedAt) continue;
+    const turn = newestFirst.find(turn => (turnWorkerStart(turn) ?? Infinity) <= worker.createdAt);
+    if (turn && cardless(turn)) workerTurns.add(turn);
+  }
+  return turns.map(turn => {
+    const workersOnly = workerTurns.has(turn);
+    return workersOnly === Boolean(turn.workersOnly) ? turn : { ...turn, workersOnly };
+  });
+}
+function turnHtml(turn: CardTurn, sessionId: string, chatRows: boolean, thread = shownThread()): string {
   const lead = turnLeadHtml(turn, thread);
   const notes = notesHtml(turn, thread);
   if (chatRows) return lead + (turn.activity.length ? savedTurnActivity(turn.key, turnLabel(turn.durationMs, turn.estimated), turn.activity, thread) : '') + savedErrorsHtml(turn.errors, turn.key, sessionId) + dismissedNoteHtml(turn) + (turn.final ? messageHtml(turn.final, turn.activity.some(message => message.role === 'tool'), true, thread) : '') + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
-  if (cardless(turn)) return lead + notes + workerSlot(turn, sessionId, true) + changesRow(sessionId, turn.changes);
+  if (cardless(turn) && !turn.workersOnly) return lead + notes;
   return lead + turnCardHtml(turn, sessionId, thread) + notes;
 }
 function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): string {
@@ -2337,13 +2358,19 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
 /** On a first visit, the previous thread's rows stay (inert, dimmed to 0.7) for at most
  *  TRANSCRIPT_HOLD_MS while the page loads; then the loading line takes over at once. */
 const TRANSCRIPT_HOLD_MS = 150;
-/** Whether the open thread's rows were drawn with a team: a turn with no card draws its workers slot only then. A
- *  thread found to have none reads as before its team was known, so learning that redraws nothing. */
+/** Whether the open thread's chat rows were drawn with a team. */
 let rowsTeam = false;
 /** The open thread's team became known (or went) after its rows drew: rows whose markup depends on it redraw (drawRows
  *  keeps the rest); otherwise the workers just move into their slots. */
 function syncTeamRows(): void {
-  if (transcriptRows === state.sessionId && rowsTeam !== Boolean(teams.get(state.sessionId))) renderTranscript(); else refreshTeamProgress();
+  if (transcriptRows === state.sessionId) {
+    const turns = transcriptView.view.turns;
+    if (botForThread() ? rowsTeam !== Boolean(teams.get(state.sessionId)) : withWorkerCards(turns, state.sessionId).some((turn, index) => turn !== turns[index])) {
+      renderTranscript();
+      return;
+    }
+  }
+  refreshTeamProgress();
 }
 let transcriptRows: string | undefined, transcriptHold: { expired: boolean; timer: number } | undefined;
 function holdTranscript(transcript: HTMLElement, id: string, rows: string | undefined): boolean {
@@ -2421,13 +2448,16 @@ async function openFromTile(id: string, scrollTop: number | undefined): Promise<
   transcriptScroller.scrollTop = scrollTop; releaseTranscript();
 }
 /** A thread's turns as drawn, and what a live card takes over from the last one. */
-function shownTurns(sessionId: string, bot: boolean): { saved: TranscriptTurn[]; earlier: TranscriptTurn | undefined; running: Stream | undefined } {
-  const grouped = withErrorTurns(groupTurns(visibleMessages(sessionId)));
-  const turns = bot ? grouped : mergeLeadTurns(grouped);
+function cardTurns(messages: Message[]): ShownTurn[] {
+  return mergeLeadTurns(normalizeCardTurns(withErrorTurns(groupTurns(messages))));
+}
+function shownTurns(sessionId: string, bot: boolean): { saved: CardTurn[]; earlier: TranscriptTurn | undefined; running: Stream | undefined } {
+  const messages = visibleMessages(sessionId);
+  const turns = bot ? withErrorTurns(groupTurns(messages)) : cardTurns(messages);
   // A lead's wake run takes the exchange it continues into its live card, so one reply is one card while it streams too.
   const running = bot || wakeHolds.has(sessionId) ? undefined : state.streams.get(sessionId) ?? finishingStreams.get(sessionId)?.stream;
   const { saved, earlier } = running ? splitLiveExchange(turns) : { saved: turns, earlier: undefined };
-  return { saved, earlier, running };
+  return { saved: bot ? saved : withWorkerCards(saved, sessionId), earlier, running };
 }
 function renderTranscript(preservePosition = false): void {
   closeContentMenus();
@@ -2510,7 +2540,7 @@ function renderTranscript(preservePosition = false): void {
   const shownCards = liveCard ? new Set([...transcript.querySelectorAll<HTMLElement>('[data-turn-card]')].map(card => card.dataset.turnCard)) : undefined;
   // finishResponse measures the live card before the composer lets go of the steer row (which clamps the scroll).
   // Open the saved reply before layout can clamp the paused reader, and transfer its live reading anchor.
-  const completed = liveCard && !running ? saved.at(-1) : undefined;
+  const completed = liveCard && !running ? [...saved].reverse().find(turn => !cardless(turn) || turn.workersOnly) : undefined;
   if (completed?.final) {
     openReply(completed.key);
     const reply = liveCard!.querySelector<HTMLElement>('.turn-card-reply');
@@ -2540,7 +2570,7 @@ function renderTranscript(preservePosition = false): void {
   const seed = pageIn && rowsSeed?.sessionId === s.id && (rowsSeed.first === null || ids.some(list => list.includes(rowsSeed!.first!))) ? rowsSeed.first : undefined;
   if (pageIn || rowsSeed?.sessionId !== s.id) rowsSeed = undefined;
   const from = bot ? 0 : windowStart(ids, intact ? rowsView.first : seed), env = markupEnv(s.id, Boolean(bot));
-  const { rows: drawn, added } = drawRows(transcript, intact && !bot ? rowsView.rows : left?.rows ?? [], saved.slice(from).map(turn => savedTurnHtml(turn, s.id, Boolean(bot), env)), `${emptyHtml}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div><div id="team-progress-host" class="turn-changes-row" hidden></div>`);
+  const { rows: drawn, added } = drawRows(transcript, intact && !bot ? rowsView.rows : left?.rows ?? [], saved.slice(from).map(turn => savedTurnHtml(turn, s.id, Boolean(bot), env)), `${emptyHtml}${earlier ? turnLeadHtml(earlier) : ''}<div id="stream-region"></div>${bot ? '<div id="team-progress-host" class="turn-changes-row" hidden></div>' : ''}`);
   // Folds the reader opened in rows of a widened window the reopened one leaves out come back with those rows.
   const lastIds = left ? new Map(ids.map((list, index) => [list.at(-1)!, index])) : undefined;
   const trimmed = intact ? rowsView.trimmed : left ? leftViews(left, drawn, key => (lastIds!.get(key) ?? from) < from, captureRowViews) : new Map<string, RowViews>();
@@ -2961,13 +2991,14 @@ function paintStream(region: HTMLElement, sessionId: string, transcript: HTMLEle
     // Bot threads and the side panel keep their chat rows; every other turn streams into its card (turn-card.ts).
     const switches = captureAccountSwitches(region);
     region.innerHTML = (!main || botForThread() ? thinkingHtml + trace() + liveMessageHtml + '<div class="live-errors thread-errors"></div>'
-      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, sessionId) : ''}<div class="live-errors thread-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
+      : `<section class="turn-card is-live">${trace(timeHtml(Date.now() - workStart(current), true), earlier?.activity.length ? liveEarlierFold(earlier, current.earlier!.tools) : '')}${thinkingHtml}${replyHtml(SKELETON_HTML + liveMessageHtml, current.turnKey, '', true)}${earlier ? workerSlot(earlier, sessionId) + cardErrorsHtml(earlier, sessionId) + dismissedNoteHtml(earlier) : ''}<div id="team-progress-host" hidden></div><div class="live-errors thread-errors turn-card-errors"></div>${earlier ? cardFootHtml(sessionId, earlierChangeSets(earlier)) : ''}</section>${earlier ? notesHtml(earlier, shownThread()) : ''}`) + '<div class="live-account-switches"></div><div class="live-approvals"></div><div class="live-inputs"></div>';
     paintAccountSwitches(region.querySelector<HTMLElement>('.live-account-switches')!, current.accountSwitches);
     restoreAccountSwitches(region, switches);
     if (earlier) paintSavedMarkdown(region, state.messages, reusableMarkdown ?? new Map(), context, followTranscript);
     watchReplies(region);
     region.dataset.sessionId = sessionId; region.dataset.revision = '-1';
     streamParts.set(region, parts = queryStreamParts(region));
+    if (main) refreshTeamProgress();
   }
   const { activity, message, thinking, output, status } = parts;
   if (activity.dataset.turnKey !== current.turnKey) { activity.dataset.turnKey = current.turnKey; delete activity.dataset.folded; activity.open = true; }
@@ -3353,8 +3384,8 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
   // Live worker lines follow the call that spawned them, so later activity stays below them.
   // ponytail: anchors every live worker after the turn's first dispatch; a second dispatch's workers join them.
   const tools = current.tools.filter(tool => !tool.statusOnly);
-  // The host sits after the region, or in the trace once a dispatch placed it there.
-  const workers = region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host') ?? host.querySelector<HTMLElement>(':scope > #team-progress-host');
+  // Card threads keep the host inside the card. Chat rows can also place it after the region.
+  const workers = region.querySelector<HTMLElement>('#team-progress-host') ?? region.parentElement?.querySelector<HTMLElement>(':scope > #team-progress-host');
   const dispatch = workers ? tools.findIndex(tool => typeof tool.content !== 'string' && /dispatch_workers/.test(tool.content.name)) : -1;
   const toolRuns = (entries: LiveTool[]) => groupToolRuns(entries, tool => tool.commentary ? undefined : tool.key);
   const runs = dispatch < 0 ? toolRuns(tools) : [...toolRuns(tools.slice(0, dispatch + 1)), null, ...toolRuns(tools.slice(dispatch + 1))];
@@ -3400,7 +3431,11 @@ function paintLiveActivity(region: HTMLElement, current: Stream, transcript: HTM
     else if (activity.nextElementSibling !== liveMessage) activity.after(liveMessage);
   }
   const retained = new Set(next);
-  if (workers?.parentElement === host && !retained.has(workers)) region.after(workers);
+  if (workers?.parentElement === host && !retained.has(workers)) {
+    const card = workers.closest('.turn-card');
+    if (card) card.querySelector(':scope > .live-errors')!.before(workers);
+    else region.after(workers);
+  }
   for (const child of [...host.children]) if (!retained.has(child as HTMLElement)) child.remove();
   next.forEach((node, index) => { if (host.children[index] !== node) host.insertBefore(node, host.children[index] ?? null); });
   // Steps the agent narrated past fold once to their one-line summary, so later work never reopens them.
@@ -5821,18 +5856,21 @@ function materializeTurn(sessionId: string, changes: TurnChanges): void {
   const existing = sessionId === state.sessionId ? state.messages : page?.messages;
   if (existing && !existing.some(message => message.turnChanges?.id === changes.id)) {
     const messages = current ? liveVisibleMessages(existing, current) : existing.slice();
+    const completed: Message[] = [];
     // Materialize only at a turn boundary; tokens keep their existing incremental path.
     if (current) {
       for (const entry of current.tools) {
         // A dismissed error leaves no row; a counted one is one row carrying its count (groupErrors sums it).
         if (entry.statusOnly && entry.dismissed) continue;
         const row: CountedMessage = { id: transientId--, sessionId: sessionId, role: entry.commentary ? 'assistant' : entry.statusOnly ? 'error' : 'tool', content: entry.key === current.retainedMessageKey ? current.text : typeof entry.content === 'string' ? entry.content : JSON.stringify({ type: 'tool_activity', version: 1, ...entry.content }), createdAt: Date.now(), ...(entry.count ? { count: entry.count } : {}), ...(entry.savedIds?.length ? { savedIds: entry.savedIds } : {}) };
-        messages.push(row);
+        completed.push(row);
       }
-      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) messages.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
-      messages.push(...current.accountSwitches);
+      if (current.text && !current.tools.some(entry => entry.key === current.retainedMessageKey)) completed.push({ id: transientId--, sessionId: sessionId, role: 'assistant', content: current.text, createdAt: Date.now() });
+      completed.push(...current.accountSwitches);
     }
-    messages.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
+    completed.push({ id: transientId--, sessionId: sessionId, role: 'changes', content: '', createdAt: Date.now(), turnChanges: changes });
+    const steer = current ? messages.findIndex(message => message.role === 'user' && message.createdAt > current.startedAt) : -1;
+    messages.splice(steer < 0 ? messages.length : steer, 0, ...completed);
     if (sessionId === state.sessionId) state.messages = messages;
     else {
       tilePages.set(sessionId, { messages, hasOlder: page!.hasOlder });
