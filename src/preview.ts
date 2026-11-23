@@ -1962,6 +1962,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'tray_seen': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
+    case 'set_queue_hold': break;
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
       session(args.sessionId);

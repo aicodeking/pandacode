@@ -47,7 +47,7 @@ import { limitActive, limitBanner, resetLabel } from './usage-limit';
 import { cascade, enterView, glideIn, glideOut, hidePanel, hideToast, holdDim, installDialogMotion, materializeIn, materializeOut, publishSpringEasings, releaseHold, syncPulses, revealIn, settleIn, showPanel, showToast } from './motion';
 import { teamSignature, updateTeamProgress } from './team-progress';
 import { installedCatalog, setTeamRecency } from './team-catalog';
-import { classicTeamSetup, isTeam, namedTeams, teamDetail, TEAM_MODE_EVENT } from './team-mode';
+import { classicTeamSetup, isTeam, namedTeams, sameTeamSetup, teamDetail, TEAM_MODE_EVENT } from './team-mode';
 import { renderCoordination } from './coordination-message';
 import { renderTurnChanges, turnChangesFoot, changeRequest, captureChangeCards, restoreChangeCards, isCombined, mountCombinedReview } from './turn-changes';
 import { SKELETON_HTML, bridgeCard, fadeInFoot, fadeInReply, holdCard, keepReplyOpen, onReplyCollapse, openReply, measureReplies, replyHtml, replyOpen, timeHtml, watchReplies } from './turn-card';
@@ -135,7 +135,7 @@ import { attachmentChips, parseAttachments } from './message-attachments';
 import { compactSublines, infoMark, installTooltips } from './tooltip';
 import { isMac, shortcut } from './platform';
 import { createGoalBanner, showGoalDialog, showCommandCenter, type GoalState, type GoalAction, type CommandPanel } from './command-center';
-import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamConfig, type WorkerProfile } from './architect-types';
+import { LEAD_RETRY, teamActive, teamHeldUntil, type TeamSnapshot, type TeamEvent, type TeamLibrary, type TeamProfile, type TeamConfig, type WorkerProfile } from './architect-types';
 import type { ArchitectView } from './architect';
 import { syncOverlayContext } from './overlay-client';
 import { initializeAgentUpdates } from './agent-updates';
@@ -425,7 +425,8 @@ function teamState(s: Session): { id: string; label: string } {
   const team = teams.get(s.id);
   if (!team) return { id: 'off', label: 'Team' };
   if (team.config.rosterOnly) return { id: 'named', label: team.config.name?.trim() || 'Team' };
-  const kind = team.config.auto && routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
+  if (!team.config.auto) return { id: 'classic', label: 'Team' };
+  const kind = routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
   return kind ?? { id: 'lead', label: 'Team' };
 }
 const teamButtonHtml = (s: Session) => `${teamToggles.has(s.id) ? '<span class="support-spinner" aria-hidden="true"></span>' : icon('team')}<span class="sr-only">${escape(teamState(s).label)}</span>${icon('down')}`;
@@ -438,13 +439,14 @@ const modeTip = (mode: ApprovalMode) => `${mode.label}: ${mode.description}`;
 const modeName = (mode: ApprovalMode) => `Mode: ${mode.label}`;
 const modeFaceHtml = (mode: ApprovalMode) => `${icon(mode.icon)}<span class="sr-only">${escape(mode.label)}</span>${icon('down')}`;
 const trayStateChanged = () => { const id = state.sessionId; if (id) syncTrayState(id, teams.has(id)); };
-/** Team opens the team menu, or with Settings → Classic team setup opens Architect & workers. */
+/** Team always opens the menu. Classic team setup also adds a shortcut to the setup panel. */
 function teamButton(s: Session): string {
   if (s.remoteDevice) return '';
   const on = Boolean(teams.get(s.id)), busy = teamToggles.has(s.id);
-  return classicTeamSetup()
+  const menu = `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+  return menu + (classicTeamSetup()
     ? `<button type="button" id="architect-setup-trigger" class="composer-team-button" data-action="architect-setup" aria-label="Architect & workers" aria-description="${on ? 'On' : 'Off'}" aria-pressed="${on}" aria-busy="${busy}" ${busy ? 'disabled' : ''} data-tip="Architect & workers: ${on ? 'on' : 'off'}">${icon('team')}<span class="sr-only">Team</span></button>`
-    : `<button type="button" id="team-trigger" class="composer-team-button" data-action="team-menu" aria-description="${escape(teamTip(s))}" data-tip="${escape(teamTip(s))}" aria-label="${escape(teamName(s))}" aria-haspopup="dialog" aria-expanded="false" aria-busy="${busy}" ${on ? 'data-on' : ''}>${teamButtonHtml(s)}</button>`;
+    : '');
 }
 /** Panda Router's global mode, cached for the Team button and menu; Settings announces every status it shows. */
 let routing: RoutingStatus | null = null;
@@ -532,25 +534,53 @@ async function configureRouting(mode: RoutingMode): Promise<void> {
     }
   }
 }
-/** No team, a team whose lead picks models, or a team whose workers Panda Router picks by kind (the global mode). */
+/** Selects the task's team or opens the Classic setup panel. */
 async function showTeamMenu(anchor: HTMLElement): Promise<void> {
-  const task = session(); if (!task) return;
+  if (pendingMenuOpen && liveAnchor(pendingMenuOpen.anchor) === anchor) { cancelPendingMenu(); return; }
+  if (choiceMenuCleanup && choiceMenuAnchor === anchor) { closeChoiceMenu(); return; }
+  const task = session(); if (!task || taskBusyConfiguring(task.id)) return;
   if (task.remoteDevice) { notify(mirrorTeamNote(task)); return; }
-  if (!teams.has(task.id)) await loadTeam(task.id);
+  closeMenus();
+  const generation = state.generation;
+  const { epoch, release } = beginMenuOpen(anchor);
+  const [library] = await Promise.all([
+    call<TeamLibrary>('architect_profiles').catch(() => null),
+    teams.has(task.id) ? null : loadTeam(task.id),
+  ]).finally(release);
+  const live = liveAnchor(anchor);
+  const canChange = () => task.id === state.sessionId && state.generation === generation;
+  if (epoch !== menuEpoch || !live || !canChange() || taskBusyConfiguring(task.id)) return;
   const { id: current, label } = teamState(task), team = teams.get(task.id);
   const routed = routing?.enabled === true;
+  const profiles = library?.profiles ?? [];
+  const selectedProfile = team && profiles.find(profile => {
+    const config = profile.setup.config;
+    if (config.rosterOnly) return isTeam(team.config, profile);
+    return Boolean(config.auto) === Boolean(team.config.auto) && !team.config.rosterOnly
+      && sameTeamSetup({ architect: session() ?? task, config: team.config }, profile.setup);
+  });
+  const selected = selectedProfile ? `profile:${selectedProfile.id}` : current;
   // A kind replaces a named agent team, and turns routing on when it is off (or its status is unknown).
   const note = current === 'named' ? `Replaces ${label}` : '';
   const items = [
     { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
-    ...(current === 'named' ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
+    ...(current === 'named' && !selectedProfile ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
     ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
     ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: toned(k.leading, 'team'), heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
-  ].map(item => ({ ...item, selected: item.id === current }));
+    ...(classicTeamSetup() ? [{ id: 'setup', label: 'Architect & workers…', leading: icon('team'), separator: true }] : []),
+    ...profiles.map((profile, index) => ({ id: `profile:${profile.id}`, label: profile.name, description: profile.setup.config.rosterOnly ? 'Agent team' : pickerTeamDetail(profile), leading: toned(icon('team'), 'team'), heading: index ? undefined : 'Saved teams' })),
+  ].map(item => ({ ...item, selected: item.id === selected }));
   // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
-  let turnedOn = false;
-  await showChoices(anchor, { title: 'Team', width: 320, items, afterClose: () => { if (turnedOn && task.id === state.sessionId) renderComposer(); }, onSelect: async id => {
-    if (id === current || id === 'named') return;
+  let turnedOn = false, openSetup = false;
+  await showChoices(live, { title: 'Team', width: 320, items, searchPlaceholder: items.length > 100 ? 'Find a team…' : undefined, afterClose: () => {
+    if (!canChange()) return;
+    if (openSetup) { const trigger = liveAnchor(live); if (trigger) run(showArchitectSetup(trigger)); }
+    if (turnedOn) { renderComposer(); renderHeader(); }
+  }, onSelect: async id => {
+    if (id === 'setup') { openSetup = true; return; }
+    if (id === selected || id === 'named') return;
+    const profile = profiles.find(item => `profile:${item.id}` === id);
+    if (profile) { await saveTeamProfile(task, profile, canChange); turnedOn = true; return; }
     if (id === 'off') { await setTeam(task, false); return; }
     // The team turns on first, so a refusal leaves the global mode alone; an automatic team only changes kind.
     const keep = team && !team.config.rosterOnly && team.config.auto;
@@ -1414,6 +1444,7 @@ function discardDraft(id: string): void {
   state.drafts.delete(id);
   provisionalTasks.delete(id);
   deletedSessions.add(id);
+  setQueueHold(id);
   const pending = provisionalCorrections.get(id);
   const drop = () => void call<boolean>('discard_draft', { sessionId: id }).catch(() => undefined);
   if (pending) void pending.catch(() => undefined).finally(drop);
@@ -1803,6 +1834,8 @@ function closeProjectPicker(): void { cancelPendingMenu(); const close = project
 function closeChoiceMenu(): void { cancelPendingMenu(); const close = choiceMenuCleanup; choiceMenuCleanup = undefined; choiceMenuAnchor = undefined; close?.(); }
 function closeMenus(): void { ++architectSetupRequest; ++jevTestRequest; jevTestCleanup?.(); architectSetupCleanup?.(); closeModelPicker(); closeProjectPicker(); closeChoiceMenu(); }
 function closeContentMenus(): void {
+  // A Team menu waiting for profiles can open from the replacement trigger after a composer redraw.
+  if (pendingMenuOpen?.anchor.id === 'team-trigger') return;
   // Header/browser controls, the workspace view menu and the GitHub view's row menus survive transcript and composer updates.
   const anchor = choiceMenuAnchor ?? pendingMenuOpen?.anchor;
   if (!jevTestCleanup && anchor?.id !== 'task-menu-trigger' && anchor?.id !== 'view-menu' && !anchor?.closest('#sidebar-bots-panel, #github-hub')) closeMenus();
@@ -1827,7 +1860,7 @@ function beginMenuOpen(anchor: HTMLElement): { epoch: number; release: () => voi
     event.preventDefault(); event.stopPropagation(); cancelPendingMenu();
   }
   function onOutside(event: Event): void {
-    if (event.target instanceof Node && !anchor.contains(event.target)) cancelPendingMenu();
+    if (event.target instanceof Node && !liveAnchor(anchor)?.contains(event.target)) cancelPendingMenu();
   }
   pendingMenuOpen = { anchor, release };
   document.addEventListener('keydown', onEscape, true);
@@ -4658,6 +4691,7 @@ async function openThread(id: string, focusComposer: boolean): Promise<void> {
   // A run that started or ended since the details were asked for owns the run's own fields; the rest still apply.
   applyTaskDetails(id, details, asked, steady && state.streams.get(id) === requestedStream && finishingStreams.get(id) === requestedFinishing);
   renderHeader(); renderComposer();
+  scheduleLimitResumes();
   // What the queue held back while the team was unknown goes now.
   if (queueOf(id).length) run(dispatchQueue(id));
   // A saved team can select a harness whose catalog has not been opened this run.
@@ -4729,6 +4763,7 @@ function removeDeletedSessions(ids: string[]): void {
   for (const id of removed) {
     provisionalTasks.delete(id);
     deletedSessions.add(id); writeLink(localStorage, id, null);
+    setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
@@ -4800,6 +4835,9 @@ const SLASH_INSTRUCTIONS: Record<string, string> = {
 function slashInstruction(action: string, argumentsText: string): string { return SLASH_INSTRUCTIONS[action] + (argumentsText ? '\n' + argumentsText : ''); }
 /** App slash commands that act only on the task they are given, so the By the way panel can run them for its side thread. */
 const SIDE_SAFE_SLASH = new Set(['usage', 'hooks', 'preferences', 'imports', 'conversations', 'plugins', 'jobs', 'export', 'fast', 'settings', 'theme']);
+/** Commands that act on this app alone, never on the agent, so Enter runs them even while a run is active.
+ *  `/status` is the one a reader wants mid-run: it names the context tokens the harness last reported. */
+const RUN_SAFE_SLASH = new Set([...SIDE_SAFE_SLASH, 'status']);
 /** Runs an app slash command typed in the By the way panel on its side thread. Returns text to send to the side
  *  agent instead (commands that become a prompt), true when handled, false when `text` is not an app command;
  *  commands that would act on the open thread are refused with a notice. */
@@ -4818,6 +4856,17 @@ async function btwSlash(side: Session, text: string, toolbar: HTMLElement | null
   if (SIDE_SAFE_SLASH.has(action) || (action === 'plan' && (!args || ['on', 'off'].includes(args)))) { await performSlashAction(action, args, side); return true; }
   notify(`Open the side thread as a full thread to use ${text.split(/\s/)[0]}.`);
   return true;
+}
+/** The context line in `/status`: what the harness last reported, kept current while the dialog stays open. */
+function contextDetail(task: Session): string {
+  return contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.';
+}
+/** A Task status dialog open during a run takes each new reading instead of the one it opened with. */
+function updateStatusContext(task: Session): void {
+  const line = document.querySelector<HTMLElement>(`#dialog[open] [data-status-usage="${CSS.escape(task.id)}"]`);
+  if (!line) return;
+  const detail = contextDetail(task);
+  if (line.textContent !== detail) line.textContent = detail;
 }
 async function performSlashAction(action: string, argumentsText: string, task: Session): Promise<void> {
   if (action.startsWith('console:')) { await openHarnessConsole(task, `/${action.slice(8)}${argumentsText ? ' ' + argumentsText : ''}`); return; }
@@ -4868,7 +4917,7 @@ async function performSlashAction(action: string, argumentsText: string, task: S
       break;
     }
     case 'diff': inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'changes'; state.selectedFile = ''; renderInspector(); await refreshInspector(); break;
-    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p>${escape(contextSummary(task.contextUsage)?.detail ?? 'This harness has not reported context usage yet.')}</p><p class="muted">${escape(workspacePath())}</p>`); break;
+    case 'status': modal('Task status', `<p class="dialog-description">${escape(provider(task.provider)?.name ?? task.provider)} · ${escape(modelLabel(task))}</p><p>${escape(approvalMode(task.provider, task.mode).label)} approvals</p><p data-status-usage="${escape(task.id)}">${escape(contextDetail(task))}</p><p class="muted">${escape(workspacePath())}</p>`); break;
     case 'integrations': {
       if (task.provider !== 'codex') { modal('Integrations', '<p class="dialog-description">Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.</p>'); break; }
       if (state.sessionId === task.id) await showAgentIntegrations(workspaceContext(task));
@@ -4896,6 +4945,13 @@ const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
 function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); btwPanel.event(id, 'queue'); }
+/** Native team wakes only need to know whether the desktop is holding the queue. */
+function setQueueHold(sessionId: string, reason?: HoldReason): void {
+  const wasHeld = state.queueHolds.has(sessionId);
+  const held = reason !== undefined && !deletedSessions.has(sessionId);
+  if (held) state.queueHolds.set(sessionId, reason); else state.queueHolds.delete(sessionId);
+  if (held !== wasHeld) void call('set_queue_hold', { sessionId, held }).catch(() => undefined);
+}
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
   return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
@@ -4918,6 +4974,26 @@ function clearComposer(s: Session): void {
 async function enqueueFromComposer(forceQueue = false): Promise<void> {
   if (!voiceDictation.prepareSubmit()) return;
   await enqueueDraft(forceQueue);
+}
+/** Enter while a run is active: queue the draft for the next turn, except a command that only acts on this
+ *  app. Sending `/status` to the agent would spend a turn and never show the usage the user asked for. */
+async function queueOrRunLocalCommand(): Promise<void> {
+  const s = session(), prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+  const draft = prompt?.value ?? '', text = draft.trim();
+  if (s && prompt && !btwFromComposer() && /^\/(?:[\p{L}\p{N}_:.-]+|\?)(?:\s|$)/u.test(text)) {
+    const generation = state.generation;
+    const resolved = await call<{ action: string | null; arguments: string }>('resolve_slash_command', { sessionId: s.id, text }).catch(() => null);
+    if (state.sessionId !== s.id || state.generation !== generation || !prompt.isConnected || prompt.value !== draft) return;
+    if (resolved?.action && RUN_SAFE_SLASH.has(resolved.action)) {
+      const finishSubmit = voiceDictation.beginSubmit(s.id); if (!finishSubmit) return;
+      prompt.value = ''; state.drafts.delete(s.id); resizePrompt();
+      try { await performSlashAction(resolved.action, resolved.arguments, s); }
+      catch (error) { restoreComposerDraft(s, draft); throw error; }
+      finally { finishSubmit(); }
+      return;
+    }
+  }
+  await enqueueFromComposer();
 }
 async function enqueueDraft(forceQueue: boolean): Promise<void> {
   if (btwFromComposer()) return;
@@ -5142,7 +5218,7 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-cancel') { state.queueEditing = ''; refreshComposer(s); return; }
   if (action === 'queue-save') return saveQueueEdit(s);
   if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); refreshComposer(s); return; }
-  if (action === 'queue-resume') { state.queueHolds.delete(s.id); refreshComposer(s); await dispatchQueue(s.id); }
+  if (action === 'queue-resume') { setQueueHold(s.id); refreshComposer(s); await dispatchQueue(s.id); }
 }
 /** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
 async function sendQueuedNow(s: Session, id: string): Promise<void> {
@@ -5188,7 +5264,7 @@ async function dispatchQueue(id: string): Promise<void> {
   // so a team thread's message never goes out as a plain one.
   if (id === state.sessionId && threadLoading()) return;
   if (!task || !next || botProjects.has(task.projectId) || (state.queueHolds.has(id) && next.id !== first?.id) || state.queueBusy.has(id) || steeringQueued.has(next.id) || next.id === state.queueEditing || isRunning(id) || finishingStreams.has(id) || configuringSession(id) || task.archived) return;
-  if (limitActive(task)) { state.queueHolds.set(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
+  if (limitActive(task)) { setQueueHold(id, 'limited'); if (id === state.sessionId) renderComposer(); return; }
   state.queueBusy.add(id);
   try {
     if (next.id === first?.id) sendFirst.delete(id);
@@ -5196,7 +5272,7 @@ async function dispatchQueue(id: string): Promise<void> {
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
   } catch (error) {
-    state.queueHolds.set(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
+    setQueueHold(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
   } finally { state.queueBusy.delete(id); if (id === state.sessionId) renderComposer(); renderNavigation(); }
 }
 /** Starts a turn with a queued message, for the open task or one in the background. */
@@ -5222,6 +5298,7 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
     if (btw && context && readLinks(localStorage)[btw.main.id]?.sideId === task.id) writeLink(localStorage, btw.main.id, { ...readLinks(localStorage)[btw.main.id], seenId: context.link.seenId });
   } catch (error) {
     // Put it back at the front and hold, so nothing is lost or sent out of order.
+    setQueueHold(task.id, 'failed');
     pendingPromptActivity.delete(task.id); state.streams.delete(task.id); task.status = 'idle'; if (sent) dropMirrorPrompt(task.id, sent);
     // A synthetic entry (no id, e.g. continuing after a limit) was never queued.
     if (entry.id) {
@@ -5229,21 +5306,38 @@ async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void>
       if (restored) setQueue(task.id, [restored, ...queueOf(task.id).filter(item => item.id !== restored.id)]);
       else notifyError('A queued message could not be put back; it was not sent.');
     }
-    state.queueHolds.set(task.id, 'failed');
     throw error;
   }
 }
 let limitTimer = 0;
-/** Continues limited tasks set to resume at reset; overdue ones (after a restart) continue at once. */
+const passedLimitResets = new Map<string, { limitedAt: number; limitedUntil: number }>();
+/** Re-checks each limit at its reset. Only tasks opted into resuming start a new turn by themselves. */
 function scheduleLimitResumes(): void {
   window.clearTimeout(limitTimer);
-  const waiting = state.sessions.filter(task => task.resumeAtReset && task.limitedUntil && !task.archived);
-  if (!waiting.length) return;
-  const next = Math.min(...waiting.map(task => task.limitedUntil!));
-  limitTimer = window.setTimeout(() => {
-    for (const task of state.sessions.filter(item => item.resumeAtReset && item.limitedUntil && item.limitedUntil <= Date.now() + 1000 && !item.archived)) run(continueAfterLimit(task));
-    scheduleLimitResumes();
-  }, Math.min(Math.max(0, next - Date.now()), 2147483647));
+  const now = Date.now();
+  let next = Infinity, refresh = false;
+  for (const task of state.sessions) {
+    const { id, limitedAt, limitedUntil } = task;
+    if (!limitedAt || !limitedUntil || task.archived || limitedUntil > now) {
+      passedLimitResets.delete(id);
+      if (limitedAt && limitedUntil && !task.archived) next = Math.min(next, limitedUntil);
+      continue;
+    }
+    if (task.resumeAtReset) {
+      if (!finishingStreams.has(id)) run(continueAfterLimit(task));
+      continue;
+    }
+    const previous = passedLimitResets.get(id);
+    // A run can finish after its reset and install a new hold for the same limit.
+    const limitedHold = state.queueHolds.get(id) === 'limited';
+    if (!limitedHold && previous?.limitedAt === limitedAt && previous.limitedUntil === limitedUntil) continue;
+    if (limitedHold) setQueueHold(id, 'reset');
+    passedLimitResets.set(id, { limitedAt, limitedUntil });
+    if (id === state.sessionId) renderComposer();
+    refresh = true;
+  }
+  if (refresh) renderNavigation();
+  if (Number.isFinite(next)) limitTimer = window.setTimeout(scheduleLimitResumes, Math.min(next - now, 2147483647));
 }
 /** Recovery runs before queued follow-ups: continue the task, then the queue delivers when that run ends. */
 async function continueAfterLimit(task: Session, text = 'Continue where you left off.'): Promise<void> {
@@ -5253,7 +5347,7 @@ async function continueAfterLimit(task: Session, text = 'Continue where you left
   if (finishing && !finishing.error) { window.setTimeout(() => void continueAfterLimit(task, text), 50); return; }
   if (task.archived || isRunning(task.id) || state.queueBusy.has(task.id) || finishing) return;
   const hold = state.queueHolds.get(task.id);
-  if (hold === 'limited' || hold === 'restart') state.queueHolds.delete(task.id);
+  if (hold === 'limited' || hold === 'reset' || hold === 'restart') setQueueHold(task.id);
   task.resumeAtReset = false;
   state.queueBusy.add(task.id);
   try {
@@ -5368,7 +5462,7 @@ async function councilKeepFixing(sessionId: string): Promise<void> {
   // Its failure is the card's to show: the user's real queue keeps whatever hold it had.
   const hold = state.queueHolds.get(task.id), at = Date.now();
   try { await deliverQueued(task, { id: '', sessionId: task.id, position: 0, text: 'Keep fixing until every reviewer reaches the target.', attachments: [], createdAt: at, updatedAt: at }); }
-  catch (error) { if (hold === undefined) state.queueHolds.delete(task.id); else state.queueHolds.set(task.id, hold); throw error; }
+  catch (error) { setQueueHold(task.id, hold); throw error; }
 }
 /** Threads whose first send waits on Council turning on: a second Enter meanwhile sends nothing. */
 const councilFirstSends = new Set<string>();
@@ -5500,7 +5594,7 @@ async function sendDraft(): Promise<void> {
   const wasDraft = Boolean(listed.draft);
   listed.lastPromptAt = sentAt; listed.draft = false;
   // Sending by hand is an explicit continue: release a held queue, which then follows this run.
-  state.queueHolds.delete(s.id);
+  setQueueHold(s.id);
   pendingPromptActivity.set(s.id, sentAt); navigationAfterPaint();
   let browserItemsConsumed = false, moodboardItemsConsumed = false, promptItemsConsumed = false, sent: Message | undefined;
   const isCurrent = () => state.sessionId === s.id;
@@ -5983,6 +6077,7 @@ function onAgent(event: AgentEvent): void {
     if (s && usage) {
       s.contextUsage = usage;
       const current = state.streams.get(s.id); if (current) current.contextUsage = usage;
+      updateStatusContext(s);
     }
     return;
   }
@@ -6004,8 +6099,9 @@ function onAgent(event: AgentEvent): void {
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
-    if (first?.stopping && ending === 'stopped') { if (first.hold) state.queueHolds.set(event.sessionId, first.hold); else state.queueHolds.delete(event.sessionId); }
-    else if (ending) state.queueHolds.set(event.sessionId, ending);
+    if (first?.stopping && ending === 'stopped') setQueueHold(event.sessionId, first.hold);
+    else if (ending) setQueueHold(event.sessionId, ending);
+    scheduleLimitResumes();
     if (s && botProjects.has(s.projectId)) {
       if (ending === 'failed') failedBotProjects.add(s.projectId);
       else if (!ending) failedBotProjects.delete(s.projectId);
@@ -6013,7 +6109,10 @@ function onAgent(event: AgentEvent): void {
     if (!ending) void maybeTurnChecks(event.sessionId);
     if (event.sessionId === state.sessionId) { renderStream(); renderComposer(); }
     void applyNextBotModel(event.sessionId);
-    void finishResponse(event.sessionId, finishing).finally(() => run(dispatchQueue(event.sessionId))); return;
+    void finishResponse(event.sessionId, finishing).finally(() => {
+      if (state.sessions.find(task => task.id === event.sessionId)?.resumeAtReset) scheduleLimitResumes();
+      run(dispatchQueue(event.sessionId));
+    }); return;
   }
   if (event.kind === 'session') return;
   if (event.kind === 'limited') {
@@ -6024,6 +6123,7 @@ function onAgent(event: AgentEvent): void {
     // A bot's limit already shows as its sidebar chip and above its composer.
     if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
+    scheduleLimitResumes();
     return;
   }
   if ((event.kind === 'approval_cancelled' || event.kind === 'input_cancelled') && !state.streams.has(event.sessionId)) return;
@@ -6740,6 +6840,25 @@ function pickerTeamDetail(profile: TeamLibrary['profiles'][number]): string {
   const lead = provider(architect.provider)?.models.find(model => model.id === architect.model)?.name ?? (architect.model && architect.model !== 'default' ? architect.model : `${provider(architect.provider)?.name ?? architect.provider} default`);
   return `${lead} · ${config.workers.length} ${config.workers.length === 1 ? 'worker' : 'workers'}`;
 }
+/** The model picker and Team menu apply the same saved profile, including its lead. */
+function saveTeamProfile(task: Session, profile: TeamProfile, canChange: () => boolean): Promise<void> {
+  return saveExplicitHarness(task.id, async () => {
+    const available = () => canChange() && !deletedSessions.has(task.id) && !taskBusyConfiguring(task.id);
+    if (!available()) throw new Error('Select this task again to change its team.');
+    while (provisionalCorrections.has(task.id)) await provisionalCorrections.get(task.id)?.catch(() => undefined);
+    if (!available()) throw new Error('Select this task again to change its team.');
+    configuringSessions.add(task.id);
+    try {
+      const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: task.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
+      provisionalTasks.delete(task.id);
+      onArchitect(saved ?? { sessionId: task.id, removed: true });
+      await reloadSessions();
+    } finally {
+      configuringSessions.delete(task.id);
+      run(dispatchQueue(task.id));
+    }
+  });
+}
 /** `target`: the task whose composer holds `anchor` (the open thread's, or the By the way panel's side thread). */
 async function showModel(anchor: HTMLElement, target = session()): Promise<void> {
   // A New task under way is about to replace this composer: opening now would act on the task it leaves, and its arrival would close the picker.
@@ -6770,21 +6889,12 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
   const savedSelection = () => state.sessions.find(task => task.id === selected.id) ?? selected;
   modelPickerCleanup = openModelPicker({
     teams: named.map(profile => ({ id: profile.id, name: profile.name, detail: pickerTeamDetail(profile), provider: profile.setup.architect.provider, roster: [profile.setup.architect.provider, ...profile.setup.config.workers.map(worker => worker.provider)], selected: isTeam(teams.get(selected.id)?.config, profile) })),
-    onTeamSelect: id => saveExplicitHarness(selected.id, async () => {
+    onTeamSelect: async id => {
       const profile = named.find(team => team.id === id);
       if (!profile) throw new Error('This agent team no longer exists.');
-      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
-      if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      configuringSessions.add(selected.id);
-      try {
-        const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: profile.setup.config, architect: profile.setup.architect, profileId: profile.id });
-        provisionalTasks.delete(selected.id);
-        onArchitect(saved ?? { sessionId: selected.id, removed: true });
-        await reloadSessions();
-        if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
-      } finally { configuringSessions.delete(selected.id); }
-    }),
+      await saveTeamProfile(selected, profile, () => current() && generation === state.generation && !isRunning(selected.id));
+      if (inPanel) btwPanel.refresh(); else if (selected.id === state.sessionId) { renderComposer(); renderHeader(); }
+    },
     // Before the harness list is known the picker shows its Loading state and fills in when the list lands, rather than
     // an empty list or the last launch's (which may name CLIs no longer installed).
     anchor, providers: device || !providersKnown ? [] : state.providers, current: { get provider() { return savedSelection().provider; }, get model() { return savedSelection().model || 'default'; }, reasoningEffort: selected.reasoningEffort ?? null, serviceTier: selected.codexSettings?.serviceTier ?? null, contextUsage: selected.contextUsage },
@@ -8804,8 +8914,8 @@ document.addEventListener('keydown', event => {
   else if (command && event.shiftKey && event.code === 'KeyB') { event.preventDefault(); state.inspector = chooseInspector(inspectorSuppressed || !state.inspector); inspectorSuppressed = false; renderInspector(); }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'prompt' && !event.shiftKey && !isImeKey(event)) {
     event.preventDefault();
-    // While an agent works, Enter queues the message and Command/Ctrl Enter steers the running turn.
-    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : enqueueFromComposer());
+    // Enter runs local commands or queues a message. Command/Ctrl Enter steers the running turn.
+    if (isRunning()) run(event.metaKey || event.ctrlKey ? steerFromComposer() : queueOrRunLocalCommand());
     else if (finishingStreams.has(state.sessionId)) run(enqueueFromComposer()); else run(send());
   }
   else if (event.key === 'Enter' && (event.target as HTMLElement).id === 'shared-channel-prompt' && !event.shiftKey && !isImeKey(event)) { event.preventDefault(); (event.target as HTMLTextAreaElement).form?.requestSubmit(); }
@@ -8972,7 +9082,7 @@ async function boot(): Promise<void> {
   // Queues from an earlier launch wait for an explicit Resume.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
-    state.queueHolds.set(entry.sessionId, 'restart');
+    setQueueHold(entry.sessionId, 'restart');
   }
   scheduleLimitResumes();
   if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');
@@ -9226,6 +9336,7 @@ function correctProvisionalTask(task: Session): Promise<'ok' | 'missing' | 'stal
         state.drafts.delete(live.id);
         provisionalTasks.delete(live.id);
         deletedSessions.add(live.id);
+        setQueueHold(live.id);
         void call<boolean>('discard_draft', { sessionId: live.id }).catch(() => undefined);
         return 'stale';
       }

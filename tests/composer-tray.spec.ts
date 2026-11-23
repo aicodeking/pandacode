@@ -131,6 +131,51 @@ test('Team\'s tip clears the prompt at 620px wide', async ({ page }) => {
   expect(bubble.y).toBeGreaterThan(input.y + 30);
 });
 
+test('composer-tray Team lists saved teams and profiles alongside automatic and Classic setup', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.teamClassic', 'true');
+    localStorage.setItem('pandacode.preview.routing', JSON.stringify({ enabled: false }));
+  });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: `${await response.text()}\nwindow.__trayInvoke = invoke;\n` });
+  });
+  await page.goto('/?teams');
+  await page.waitForFunction(() => typeof (window as any).__trayInvoke === 'function');
+  const profileIds = await page.evaluate(async () => {
+    const invoke = (window as any).__trayInvoke;
+    const { profiles } = await invoke('architect_profiles', {});
+    const named = profiles.find((profile: { name: string }) => profile.name === 'Ship crew');
+    const { config, architect } = named.setup;
+    const saved = await invoke('architect_save_profile', { name: 'Manual review', setup: { architect, config: { ...config, auto: false, rosterOnly: false, name: null } } });
+    return [named.id, saved.profiles.find((profile: { name: string }) => profile.name === 'Manual review').id];
+  });
+  const team = page.locator('#team-trigger');
+  const choice = (name: string) => page.getByRole('menuitemradio', { name, exact: true });
+  const activeProfile = () => page.evaluate(async () => (await (window as any).__trayInvoke('architect_profiles', {})).activeProfileId);
+  await expect(team).toHaveAccessibleName('Team: off');
+  await team.click();
+  for (const name of ['No team', 'Team', 'Cheap team', 'Balanced team', 'Best team', 'Ship crew', 'Budget trio', 'Manual review', 'Architect & workers…']) {
+    await expect(choice(name)).toBeVisible();
+  }
+  await choice('Ship crew').click();
+  await expect(team).toHaveAccessibleName('Ship crew: on');
+  await expect.poll(activeProfile).toBe(profileIds[0]);
+  await team.click();
+  await expect(choice('Ship crew')).toHaveAttribute('aria-checked', 'true');
+  await choice('Manual review').click();
+  await expect.poll(activeProfile).toBe(profileIds[1]);
+  await expect(team).toHaveAccessibleName('Team: on');
+  await team.click();
+  await expect(choice('Manual review')).toHaveAttribute('aria-checked', 'true');
+  await choice('Balanced team').click();
+  await expect(team).toHaveAccessibleName('Balanced team: on');
+  await expect.poll(activeProfile).toBeNull();
+  await team.click();
+  await choice('Architect & workers…').click();
+  await expect(page.getByRole('heading', { name: 'Architect & workers', exact: true })).toBeVisible();
+});
+
 test('computer, Local, worktree, Team and Terminal use different glyphs', async ({ page }) => {
   await page.goto('/');
   await expect(mode(page)).toBeVisible();

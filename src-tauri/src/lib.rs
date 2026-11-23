@@ -1011,6 +1011,10 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     architect::wake(app);
     Ok(())
 }
+#[tauri::command]
+fn set_queue_hold(session_id: String, held: bool) {
+    message_queue::set_queue_held(&session_id, held);
+}
 /// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]
 async fn prompt_activity(state: State<'_, AppState>) -> Result<Vec<(i64, String, u64)>> {
@@ -4890,6 +4894,7 @@ pub fn run() {
                 set_resume_at_reset,
                 clear_usage_limit,
                 discard_draft,
+                set_queue_hold,
                 message_queue::queue_list,
                 message_queue::queue_add,
                 message_queue::queue_update,
