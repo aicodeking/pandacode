@@ -4,6 +4,7 @@
  * clamp, its live growth and the footer's arrival, all with the Web Animations API (the trace is the
  * one surface allowed richer choreography) and instant under reduced motion or before first paint. */
 import { escape } from './dom.ts';
+import { preserveTranscriptPosition } from './transcript-scroll.ts';
 import { formatDuration } from './turn-activity.ts';
 import './turn-card.css';
 
@@ -59,6 +60,7 @@ const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeO
     const box = entry.borderBoxSize?.[0], height = box ? Math.round(box.blockSize) : content.offsetHeight;
     return [{ content, reply, body, live, height, limit: live ? 0 : clampHeight(body) }];
   });
+  const restores = holdClampChanges(measured);
   for (const { content, reply, height, live, limit } of measured) {
     sizes.set(content, height);
     // A live reply's growth starts from liveGrowth, before layout. Writing a height here, during delivery, would resize
@@ -66,6 +68,7 @@ const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeO
     // is only recorded, so its body never steps back to an old height.
     if (!live) syncOverflow(reply, height, limit);
   }
+  restores.forEach(restore => restore());
 });
 /** A live reply's text lands in a task or frame callback; this runs right after it, before style and layout, so its body
  *  starts growing from the painted height in the very frame the new text first lays out: the height only ever moves on. */
@@ -86,6 +89,19 @@ const liveGrowth = typeof MutationObserver === 'undefined' ? undefined : new Mut
   }
 });
 const LIVE_MUTATIONS: MutationObserverInit = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] };
+
+/** Saved replies (far rows laying out after a jump) that are about to gain or lose their clamp change height above the
+ *  reader. WebKit has no scroll anchoring, so hold the reader's place in each affected transcript: captured once per
+ *  transcript before any write, restored after them all. Free while the transcript follows its bottom. */
+function holdClampChanges(measured: readonly { reply: HTMLElement; live: boolean; height: number; limit: number }[]): (() => void)[] {
+  const scrollers = new Set<HTMLElement>();
+  for (const { reply, live, height, limit } of measured) {
+    if (live || overflows(height, limit) === reply.hasAttribute('data-overflow')) continue;
+    const scroller = reply.closest<HTMLElement>('#transcript');
+    if (scroller) scrollers.add(scroller);
+  }
+  return [...scrollers].map(scroller => preserveTranscriptPosition(scroller));
+}
 
 const REPLY_CONTENT = '.turn-card-reply-content';
 /** What a visible Read more adds above the reply's row: turn-card.css `--reply-more-gap` (the row's margin-top, 0 without

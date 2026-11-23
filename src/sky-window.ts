@@ -104,7 +104,7 @@ const GPU_SAMPLE = 10;
 /** The precompile waits this long after the last input, and polls a parallel compile this often. */
 const INPUT_QUIET_MS = 1000, COMPILE_POLL_MS = 100;
 /** Pointer influence stops over the thread's readable surfaces: the clouds answer only where the sky shows. */
-const READABLE = '.message,.turn-activity,.message-error,.empty-conversation,.turn-changes-row,.thinking-block,#composer-area,.new-task-welcome,.workspace-header,#action-dock,.file-tabs';
+const READABLE = '.message,.turn-activity,.message-error,.empty-conversation,.turn-changes-row,.thinking-block,#composer-area,.new-task-welcome,.workspace-header,#action-dock,.file-tabs,#thread-scroll-indicator,#thread-scroll-preview';
 /** The reader's input surfaces (`readerMoves`, `readerTypes`): what scrolls a thread, and what takes typing in one. Each
  * has two spellings — the real one and a tile's read-only replica (`docs/agent-reference.md`: a rule that targets
  * `#transcript` needs `:is(#transcript,.thread-mirror-rows)`) — and a tile's `pane` holds neither the focused thread's

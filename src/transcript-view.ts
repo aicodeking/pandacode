@@ -273,7 +273,7 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
   }
   /** Whether nothing keeps a trim of `shown` off right now. */
   const mayTrim = (shown: RowsWindow<Turn, Views>): boolean =>
-    !host.drawsWhole() && onScreen(shown) && host.visible() && !host.trimBlocked() && !preparing.has(shown.sessionId) && !findStepping;
+    !host.drawsWhole() && onScreen(shown) && host.visible() && !host.trimBlocked() && !preparing.has(shown.sessionId) && !findStepping && !revealing;
   /** A trim still taking its rows down, a slice per idle period. */
   let trimming = false;
   /** A reader back at the bottom of a widened thread gives the older turns back, keeping enough above them that the next
@@ -335,10 +335,82 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
     return true;
   }
 
+  /* Jumps to a turn (the scroll indicator, a link to a message): the window draws down to it first, a step a frame,
+   * and the target row and its neighbours lay out at once, so the position the caller scrolls to is exact. */
+  /** Threads whose reveal is being formatted, kept apart from the reader's own steps (`preparing`) and Find's. */
+  const forReveal = new Map<string, (() => void) | null>();
+  /** Reveals in flight: a trim would take down the rows they draw. */
+  let revealing = 0;
+  /** The latest reveal: a newer one supersedes it. */
+  let revealToken = 0;
+  const turnIndexOf = (messageId: string): number => view.ids.findIndex(ids => ids.includes(messageId));
+  const rowElement = (row: DrawnRow | undefined): HTMLElement | null => row?.nodes.find((node): node is HTMLElement => node instanceof HTMLElement) ?? null;
+  /** Lays out drawn turn `index` (and its neighbours) now; its first element, or null. */
+  function revealDrawn(index: number): HTMLElement | null {
+    const element = rowElement(view.rows[index - drawnFrom(view)]);
+    farRows.reveal(element);
+    return element;
+  }
+  /** Draws down to the turn holding `messageId` and lays it out; true once it is drawn, false if it cannot be
+   *  (not in the thread, the thread left, `signal` aborted, a newer reveal). */
+  function revealTurn(messageId: string, signal?: AbortSignal): Promise<boolean> {
+    const shown = view, sessionId = shown.sessionId, target = turnIndexOf(messageId);
+    if (target < 0 || !onScreen(shown) || signal?.aborted) return Promise.resolve(false);
+    if (target >= drawnFrom(shown)) { revealDrawn(target); return Promise.resolve(true); }
+    const token = ++revealToken;
+    revealing++;
+    return new Promise<boolean>(resolve => {
+      let done = false;
+      const finish = (landed: boolean): void => {
+        if (done) return;
+        done = true; revealing--;
+        signal?.removeEventListener('abort', aborted);
+        resolve(landed);
+      };
+      const aborted = (): void => finish(false);
+      signal?.addEventListener('abort', aborted, { once: true });
+      const live = (): boolean => !done && token === revealToken && !signal?.aborted && view.sessionId === sessionId && onScreen(view);
+      const next = (): void => {
+        if (!live()) { finish(false); return; }
+        // Asked afresh each step: a page joining meanwhile shifts every index.
+        const at = turnIndexOf(messageId);
+        if (at < 0) { finish(false); return; }
+        if (drawnFrom(view) <= at) { revealDrawn(at); finish(true); return; }
+        if (!canShowOlder(view)) { finish(false); return; }
+        try { prepend(Math.max(stepFrom(view), at)); } catch (error) { host.report(error); finish(false); return; }
+        inFrame(next);
+      };
+      const begin = (): void => {
+        if (!live()) { finish(false); return; }
+        const at = turnIndexOf(messageId);
+        if (at < 0) { finish(false); return; }
+        // Busy with an earlier reveal: `begin` runs again once that step is done. A formatting error is only reported:
+        // the step still runs and draws the rows unformatted.
+        stepWhenFormatted(forReveal, sessionId, host.messagesOf(view.turns.slice(Math.min(at, drawnFrom(view)), drawnFrom(view))), () => inFrame(next), host.report, begin);
+      };
+      begin();
+    });
+  }
+  /** The drawn row holding `messageId`, laid out now; null when it is not drawn. */
+  function rowElementForMessage(messageId: string): HTMLElement | null {
+    const index = turnIndexOf(messageId);
+    return index < 0 || index < drawnFrom(view) ? null : revealDrawn(index);
+  }
+  /** Every drawn turn with its first element, in order, while the transcript shows the window. */
+  function drawnRowElements(): { index: number; ids: TurnIds; element: HTMLElement }[] {
+    if (!onScreen(view)) return [];
+    const start = drawnFrom(view);
+    return view.rows.flatMap((row, offset) => {
+      const element = rowElement(row);
+      return element ? [{ index: start + offset, ids: view.ids[start + offset], element }] : [];
+    });
+  }
+
   return {
     get view(): RowsWindow<Turn, Views> { return view; },
     set view(next: RowsWindow<Turn, Views>) { view = next; },
     onScreen, canShowOlder, showOlder, showForFind, extendFind, olderMatches, fill, scheduleTrim, joinPage, syncFarRows,
+    revealTurn, rowElementForMessage, drawnRowElements,
     /** Whether a step for the open thread is being formatted. */
     preparing: (sessionId: string): boolean => preparing.has(sessionId),
     /** The reader searched this thread: a query now draws its older turns too. */
