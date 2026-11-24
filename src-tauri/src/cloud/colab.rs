@@ -354,7 +354,9 @@ impl Colab {
             request = request.header(*name, *value);
         }
         if method == reqwest::Method::POST {
-            request = request.body(Vec::<u8>::new());
+            // hyper treats an empty body as end-of-stream and omits Content-Length on
+            // HTTP/1.1, and Colab's frontend answers a POST without it with HTTP 411.
+            request = request.header(reqwest::header::CONTENT_LENGTH, 0).body(Vec::<u8>::new());
         }
         parse(SERVICE, &send_text(SERVICE, request, LIMIT).await?)
     }
