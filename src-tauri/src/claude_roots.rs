@@ -243,16 +243,18 @@ pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Opti
 /// interpret rather than treating an ambiguous common directory as having no checkout. A config
 /// held as text has no folder to resolve `[include] path` against, so any include fails closed
 /// here; [`read_git_core_checkout`] follows them.
+#[cfg(test)]
 pub(crate) fn git_core_checkout(config: &str) -> std::result::Result<(bool, Option<String>), &'static str> {
     let mut checkout = (false, None);
-    parse_git_config(config, Includes::Refuse, &mut checkout)?;
+    parse_git_config(config, None, &mut checkout)?;
     Ok(checkout)
 }
 
-/// [`git_core_checkout`] for the file at `config_path`, following `[include] path`s as Git does: in
-/// place, relative to the including file's folder (`~/` from home), at most `MAX_INCLUDE_DEPTH`
-/// deep in one shared `MAX_GIT_CONFIG_BYTES` budget. A missing include is skipped like Git; an
-/// unreadable, oversize, cyclic or too-deep one fails closed, as does any `[includeIf]`.
+/// Parses unsubsectioned `[core]` (`bare`, `worktree`) for the file at `config_path`, following
+/// `[include] path`s as Git does: in place, relative to the including file's folder (`~/` from
+/// home), at most `MAX_INCLUDE_DEPTH` deep in one shared `MAX_GIT_CONFIG_BYTES` budget. A missing
+/// include is skipped like Git; an unreadable, oversize, cyclic or too-deep one fails closed, as
+/// does any `[includeIf]`.
 pub(crate) fn read_git_core_checkout(config_path: &Path) -> std::result::Result<(bool, Option<String>), &'static str> {
     let mut budget = IncludeBudget { remaining: MAX_GIT_CONFIG_BYTES, chain: Vec::new() };
     let mut checkout = (false, None);
@@ -262,12 +264,6 @@ pub(crate) fn read_git_core_checkout(config_path: &Path) -> std::result::Result<
 
 /// How deep `[include]` may nest below the common config.
 const MAX_INCLUDE_DEPTH: usize = 4;
-
-/// What a parse does with `[include] path`: refuse it, or follow it relative to `base`.
-enum Includes<'a> {
-    Refuse,
-    Follow { base: &'a Path, budget: &'a mut IncludeBudget },
-}
 
 /// Bytes left to read across a config and its includes, and the canonical include chain being
 /// parsed (a file already on it is a cycle; one included twice side by side is not).
@@ -285,7 +281,7 @@ impl IncludeBudget {
         let config = read_git_file(path, self.remaining)?;
         self.remaining -= config.len() as u64;
         self.chain.push(canonical);
-        let parsed = parse_git_config(&config, Includes::Follow { base: path, budget: &mut *self }, checkout);
+        let parsed = parse_git_config(&config, Some((path, &mut *self)), checkout);
         self.chain.pop();
         parsed
     }
@@ -307,7 +303,7 @@ impl IncludeBudget {
 
 /// One config's lines in order, updating `checkout` and handing `[include] path` to `includes`
 /// at the point it appears, so later assignments override included ones as in Git.
-fn parse_git_config(config: &str, mut includes: Includes<'_>, checkout: &mut (bool, Option<String>))
+fn parse_git_config(config: &str, mut includes: Option<(&Path, &mut IncludeBudget)>, checkout: &mut (bool, Option<String>))
     -> std::result::Result<(), &'static str> {
     let (mut core, mut include, mut section) = (false, false, false);
     let mut lines = config.lines();
@@ -323,7 +319,7 @@ fn parse_git_config(config: &str, mut includes: Includes<'_>, checkout: &mut (bo
             let (name, subsectioned) = git_config_section(header)?;
             include = name.eq_ignore_ascii_case("include");
             if name.eq_ignore_ascii_case("includeif")
-                || (include && (subsectioned || matches!(includes, Includes::Refuse)))
+                || (include && (subsectioned || includes.is_none()))
             {
                 return Err("unsupported git config include");
             }
@@ -368,8 +364,8 @@ fn parse_git_config(config: &str, mut includes: Includes<'_>, checkout: &mut (bo
         } else if include && key.eq_ignore_ascii_case("path") {
             let path = value.filter(|value| !value.is_empty()).ok_or("invalid git config include path")?;
             match &mut includes {
-                Includes::Refuse => return Err("unsupported git config include"),
-                Includes::Follow { base, budget } => budget.include(base, &path, checkout)?,
+                None => return Err("unsupported git config include"),
+                Some((base, budget)) => budget.include(base, &path, checkout)?,
             }
         }
     }
