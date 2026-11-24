@@ -217,11 +217,12 @@ the harness's own credentials always win over them, and a variable whose proxy p
 at this computer (`127.0.0.1`, `localhost`) refuses to start the task, because a
 cloud machine cannot reach it.
 
-Google Colab sends nothing before the user clicks **Sign in with Google** or turns
-Google Colab on in Settings → Connections → Cloud sandboxes. Sign-in talks to
-`accounts.google.com` and `oauth2.googleapis.com`; runtimes are assigned through
-`colab.research.google.com` and reached through the runtime proxy on
-`*.prod.colab.dev` or `*.googleusercontent.com` (Jupyter and SSH WebSockets).
+Google Colab sends nothing before the user clicks **Sign in with Google** or
+**Use gcloud ADC**, or turns Google Colab on in Settings → Connections → Cloud
+sandboxes. Sign-in talks to `accounts.google.com` and `oauth2.googleapis.com`;
+runtimes are assigned through `colab.research.google.com` and reached through the
+runtime proxy on `*.colab.dev` or `*.googleusercontent.com` (Jupyter and SSH
+WebSockets).
 `google-colab-cli==0.8.0` is fetched (`uv tool install`, from `pypi.org` and
 `files.pythonhosted.org`) when Sign in with Google finds no local OAuth client file
 or the user installs it; the pinned `colab-mcp` is fetched (`uvx`, from `github.com`,

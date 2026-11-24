@@ -7463,7 +7463,7 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
         assert!(!err.contains("Starting banner"), "{err}");
 
         // Non-JSON stdout with NO valid JSON frame before EOF still reports Invalid provider JSON.
-        let non_json_only = "echo 'fatal: unknown flag'; exit 1";
+        let non_json_only = "read -r init; echo 'fatal: unknown flag'; exit 1";
         let err = run_script("opencode", "stray-before-json", non_json_only, Path::new("/dev/null"))
             .await
             .unwrap_err();
