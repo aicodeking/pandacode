@@ -37,10 +37,16 @@ Warm Claude spares are on by default, as in Settings → Agents → **Warm Claud
 spares** on desktop. To disable them for `pandacode serve`, create an empty
 `warm-spares-off` file in the service user's app data directory (on Linux, for
 example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-off`); delete it
-to enable them again. An unreadable marker means off. Adoption, process starts
-and renewal checks read it without a restart. Disabling spares avoids idle Claude
-processes and ahead-of-turn `SessionStart` hooks; cost estimates and caveats are
-in [worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
+to enable them again. An unreadable marker means off. On a running host the
+marker takes effect without a restart for new work: from then on no spare is
+started, adopted or renewed. Spares already pooled are not stopped by the file
+alone: each retires when its task's next turn launches (cold), when its 10-minute
+idle timer expires, or when the host stops (restarting `pandacode serve` retires
+them at once; on desktop, turning the Settings switch off calls `disable_all`,
+which retires pooled spares immediately).
+Disabling spares avoids idle Claude processes and ahead-of-turn `SessionStart`
+hooks; cost estimates and caveats are in
+[worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 
 Agent-made tools follow the same `custom-tools-on` switch as the desktop. With no window,
 a `pandacode_tool_run` approval (any task not in Full access) goes to whatever can answer

@@ -3,7 +3,7 @@
 use super::*;
 use super::key::*;
 use super::spawn::*;
-use super::stats::{expired_note, not_renewed_note, CHURN_COOLDOWN};
+use super::stats::{expired_note, not_renewed_note, CHURN_COOLDOWN, EXPIRY_BACKOFF_STREAK, EXPIRY_COOLDOWN};
 use super::test_support::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -158,7 +158,7 @@ async fn a_renewal_that_never_pools_is_not_taken_for_renewed() {
     let declined = Lifecycle { idle: Duration::from_secs(3600), spawn: declined_spawn, ..stub() };
     let renewed = renewal(declined).await.unwrap();
     assert!(!renewed && !waiting_in(declined.pool, &session));
-    let note = expiry_note(declined.pool, renewed, launch, epoch(&session), true);
+    let note = expiry_note(declined.pool, renewed, launch, epoch(&session), Expiry::Current);
     assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent expired idle.")), "{note:?}");
     // The lead pool's churn backoff skipped it: the same.
     let cooling = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
@@ -167,13 +167,13 @@ async fn a_renewal_that_never_pools_is_not_taken_for_renewed() {
     }
     let renewed = renewal(cooling).await.unwrap();
     assert!(!renewed && stub_starts(&session) == 0 && spares(cooling.pool).lead.churn_skipped == 1);
-    assert!(expiry_note(cooling.pool, renewed, launch, epoch(&session), true).is_some());
+    assert!(expiry_note(cooling.pool, renewed, launch, epoch(&session), Expiry::Current).is_some());
     // A renewal that really pooled logs nothing, and neither does one a launch superseded.
     let pooled = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
     let renewed = renewal(pooled).await.unwrap();
     assert!(renewed && waiting_in(pooled.pool, &session));
-    assert_eq!(expiry_note(pooled.pool, renewed, launch, epoch(&session), true), None);
-    assert_eq!(expiry_note(pooled.pool, false, launch, launch + 1, true), None);
+    assert_eq!(expiry_note(pooled.pool, renewed, launch, epoch(&session), Expiry::Current), None);
+    assert_eq!(expiry_note(pooled.pool, false, launch, launch + 1, Expiry::Current), None);
     discard_from(pooled.pool, &session);
     await_exit(&session).await.unwrap();
 }
@@ -206,25 +206,57 @@ async fn a_lead_spares_renewal_check_runs_off_the_runtime_thread() {
 }
 
 #[test]
-fn a_renewal_is_current_only_while_its_warm_key_is_unchanged() {
+fn a_renewal_is_current_only_while_its_launch_settings_are_unchanged() {
     let base = crate::providers::tests::config("claude");
     let tools = vec![json!({"type":"function","name":"pandacode_title"})];
     // Only lead spares renew, and a lead's key carries its working tree's status.
-    let git_status = lead_git_status(&external_path(&base.cwd)).expect("the test folder's git status is known");
-    let spare = lead_key(&RunConfig { cwd: external_path(&base.cwd), ..base.clone() }, &tools, &git_status).unwrap();
+    let keyed = RunConfig { cwd: external_path(&base.cwd), ..base.clone() };
+    let git_status = lead_git_status(&keyed.cwd).expect("the test folder's git status is known");
+    let spare = lead_key(&keyed, &tools, &git_status).unwrap();
     let inputs: Inputs = Arc::new(|| "explore:true tools:Some(false)".into());
     let current = |key: &str, tools: &[Value], spawned: &str| still_current(key, &base, tools, spawned, &inputs);
     assert!(current(&spare, &tools, "explore:true tools:Some(false)"));
-    let plain = key(&RunConfig { cwd: external_path(&base.cwd), ..base.clone() }, &tools).unwrap();
-    assert!(!current(&plain, &tools, "explore:true tools:Some(false)"), "a key without the lead's git status");
+    // The working tree changed since the spawn (or its status timed out at the expiry): the
+    // renewal reads it again right before it spawns, so that is no launch setting.
+    let edited = lead_key(&keyed, &tools, "an-older-working-tree").unwrap();
+    assert!(current(&edited, &tools, "explore:true tools:Some(false)"), "only `gitStatus` differs");
+    assert!(!current("not a warm key", &tools, "explore:true tools:Some(false)"), "an unreadable key fails closed");
+    let other_model = lead_key(&RunConfig { model: "claude-sonnet-5-5".into(), ..keyed.clone() }, &tools, &git_status).unwrap();
+    assert!(!current(&other_model, &tools, "explore:true tools:Some(false)"), "a changed launch field");
     assert!(!current(&spare, &[], "explore:true tools:Some(false)"), "a changed tool catalog");
     // The explorer switch, agent-made tools or the instructions they shape changed since spawn.
     assert!(!current(&spare, &tools, "explore:false tools:Some(false)"), "changed launch inputs");
     // A setting read at spawn (here the telemetry switch) changing makes it stale.
     super::super::privacy::FORCE.with(|force| force.set(Some(!super::super::privacy::telemetry_off())));
-    let stale = !current(&spare, &tools, "explore:true tools:Some(false)");
+    let stale = !current(&edited, &tools, "explore:true tools:Some(false)");
     super::super::privacy::FORCE.with(|force| force.set(None));
     assert!(stale);
+}
+
+#[test]
+fn a_renewal_keys_the_working_tree_it_reads_right_before_it_spawns() {
+    let base = crate::providers::tests::config("claude");
+    let keyed = RunConfig { cwd: external_path(&base.cwd), ..base };
+    // The key fields a spawn computes first, then completes once the previous turn has exited.
+    let fields = key_fields(&keyed, &[]).expect("a resolvable config folder is keyed");
+    let spawned = with_git_status(fields.clone(), Some("after-the-exit"));
+    assert_eq!(lead_key(&keyed, &[], "after-the-exit").as_deref(), Some(spawned.as_str()));
+    // A wake keyed with the status read before that exit is a miss on `gitStatus` alone.
+    let before = with_git_status(fields, Some("before-the-exit"));
+    assert_eq!(miss(true, &spawned, &before, false).as_deref(), Some("changed: gitStatus"));
+    assert_eq!(without_git_status(&spawned), without_git_status(&before));
+    assert_eq!(without_git_status("[]"), None, "only a JSON object is a warm key");
+}
+
+#[test]
+fn an_expiry_with_spares_off_logs_nothing_and_a_changed_setting_says_so() {
+    let pool = own_pool();
+    assert_eq!(expiry_note(pool, false, 4, 4, Expiry::Off), None, "spares off: no line blames launch settings");
+    let changed = expiry_note(pool, false, 4, 4, Expiry::Changed);
+    assert!(changed.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent expired idle (not renewed: its launch settings changed).")), "{changed:?}");
+    let idle = expiry_note(pool, false, 4, 4, Expiry::Current);
+    assert!(idle.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent expired idle. Lead spares")), "{idle:?}");
+    assert_eq!(expiry_note(pool, true, 4, 4, Expiry::Changed), None, "a renewal that pooled logs nothing");
 }
 
 #[tokio::test]
@@ -603,6 +635,72 @@ fn a_pools_churn_backoff_starts_at_its_limit_and_lapses() {
     assert_eq!(churn, PoolChurn::default(), "and starts a fresh streak");
 }
 
+#[test]
+fn unused_expiries_in_a_row_back_off_until_the_cooldown_lapses() {
+    let now = std::time::Instant::now();
+    let mut churn = PoolChurn::default();
+    for _ in 1..EXPIRY_BACKOFF_STREAK {
+        churn.expired(now);
+        assert!(!churn.cooling(now), "a follow-up that missed the window is ordinary");
+    }
+    churn.expired(now);
+    assert!(churn.cooling(now), "{EXPIRY_BACKOFF_STREAK} unused in a row with no adoption between back off");
+    assert!(churn.cooling(now + CHURN_COOLDOWN), "for longer than an eviction backoff");
+    assert!(!churn.cooling(now + EXPIRY_COOLDOWN), "a lapsed backoff probes again");
+    assert_eq!(churn, PoolChurn::default(), "and starts fresh streaks");
+    // An eviction backoff never shortens a longer expiry backoff already set.
+    let mut both = PoolChurn::default();
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        both.expired(now);
+    }
+    both.evicted(1, now);
+    assert_eq!(both.churn_cooldown_until, now.checked_add(EXPIRY_COOLDOWN));
+}
+
+#[tokio::test]
+async fn unused_expiries_back_off_each_pool_apart_and_an_adoption_clears_it() {
+    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    let session = format!("warm-expiry-churn-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let turn = || {
+        launched(&session);
+        start(life, config.clone(), Vec::new(), HashSet::new(), epoch(&session), None, 0)
+    };
+    // Each spare waits out its window unused.
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        assert!(turn().await.unwrap());
+        let born = spares(life.pool).spares.get(&session).map(|spare| spare.born).expect("pooled");
+        let (spare, pending) = take_expired(life.pool, &session, born).expect("expired");
+        retire(&session, spare, pending);
+    }
+    {
+        let locked = spares(life.pool);
+        assert_eq!(locked.ordinary.expired, u64::from(EXPIRY_BACKOFF_STREAK));
+        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
+        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
+    }
+    assert!(!turn().await.unwrap(), "no spare starts while the pool backs off");
+    assert_eq!(stub_starts(&session), EXPIRY_BACKOFF_STREAK);
+    assert_eq!(spares(life.pool).ordinary.churn_skipped, 1);
+    // A lead spare still starts in its own pool.
+    let lead_session = format!("warm-expiry-churn-lead-{}", uuid::Uuid::new_v4());
+    let lead_config = RunConfig { session_id: lead_session.clone(), ..crate::providers::tests::config("claude") };
+    launched(&lead_session);
+    assert!(start(life, lead_config, Vec::new(), HashSet::new(), epoch(&lead_session), lead(Arc::new(|| true)), 0).await.unwrap());
+    // A launch adopting a spare ends the backoff at once.
+    let evicted = admit(&mut spares(life.pool), session.clone(), idle_spare(false, Duration::ZERO));
+    assert!(evicted.is_empty());
+    let (adopted, note) = take_in(life.pool, &session, "launch", true);
+    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
+    assert_eq!(spares(life.pool).ordinary_churn, PoolChurn::default());
+    drop(adopted);
+    assert!(turn().await.unwrap(), "an adoption clears the backoff");
+    for id in [&session, &lead_session] {
+        discard_from(life.pool, id);
+        await_exit(id).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn round_robin_turns_back_off_and_an_adoption_clears_the_backoff() {
     let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
@@ -678,8 +776,8 @@ async fn a_leads_cold_launch_counts_in_the_lead_pool() {
     await_exit(&session).await.unwrap();
 }
 
-#[test]
-fn warm_spare_stats_reports_both_pools_in_camel_case() {
+#[tokio::test]
+async fn warm_spare_stats_reports_both_pools_in_camel_case() {
     let pool = own_pool();
     {
         let mut locked = spares(pool);
@@ -690,6 +788,6 @@ fn warm_spare_stats_reports_both_pools_in_camel_case() {
     assert_eq!(stats["ordinary"], json!({"started": 3, "adopted": 2, "missed": 0, "expired": 0, "evicted": 0, "replaced": 0, "discarded": 0, "coldWithoutSpare": 4, "churnSkipped": 1}));
     assert_eq!(stats["lead"]["coldWithoutSpare"], 2);
     assert_eq!(stats["lead"]["missed"], 1);
-    let live = serde_json::to_value(warm_spare_stats()).unwrap();
+    let live = serde_json::to_value(warm_spare_stats().await).unwrap();
     assert!(live["ordinary"].is_object() && live["lead"].is_object(), "{live}");
 }

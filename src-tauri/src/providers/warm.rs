@@ -72,8 +72,9 @@ async fn enabled_off_runtime() -> bool {
 }
 
 /// Each pool's lifecycle totals since launch: a pure in-memory read (no file, no network).
+/// Async so Tauri runs it on the async runtime, never taking the pool lock on the main thread.
 #[tauri::command]
-pub(crate) fn warm_spare_stats() -> WarmStatsSnapshot {
+pub(crate) async fn warm_spare_stats() -> WarmStatsSnapshot {
     WarmStatsSnapshot::of(&spares(&SPARES))
 }
 
@@ -101,7 +102,7 @@ const LIMIT: usize = 2;
 const LEAD_LIMIT: usize = 2;
 /// An expired lead spare is started again at most this many times in a row, so one lead holds
 /// an idle CLI process for at most `(1 + MAX_RENEWALS) × IDLE` (30 minutes). Each spare is a
-/// whole idle Claude Code process (about 230–255 MiB resident on Claude Code 2.1.325,
+/// whole idle Claude Code process (about 210–255 MiB resident on Claude Code 2.1.325,
 /// docs/worker-tokens.md), so the chain stays short.
 const MAX_RENEWALS: u32 = 2;
 
@@ -173,7 +174,7 @@ struct Spares {
     /// line (docs/worker-tokens.md) and `warm_spare_stats`.
     lead: PoolStats,
     ordinary: PoolStats,
-    /// Each pool's round-robin eviction streak and backoff (`spawn_spare`).
+    /// Each pool's eviction and unused-expiry streaks and backoff (`spawn_spare`).
     lead_churn: PoolChurn,
     ordinary_churn: PoolChurn,
 }
@@ -200,9 +201,13 @@ impl Spares {
         let spare = self.spares.remove(session_id)?;
         let pending = pending_in_cwd(session_id, spare.cwd.clone());
         self.stats_mut(spare.lead).count(why);
-        if why == Gone::Evicted {
-            let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
-            self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
+        match why {
+            Gone::Evicted => {
+                let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
+                self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
+            }
+            Gone::Expired => self.churn_mut(spare.lead).expired(std::time::Instant::now()),
+            Gone::Discarded | Gone::Replaced => {}
         }
         if spare.lead {
             if self.gone.len() >= GONE_LIMIT {

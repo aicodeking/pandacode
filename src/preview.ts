@@ -2135,11 +2135,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (new URLSearchParams(location.search).has('warm-spares-fail')) throw new Error('Could not save the setting.');
       previewWarmSpares = Boolean(args.enabled); break;
     case 'warm_spare_stats': {
-      // `?warm-spares-stats`: this launch already started, adopted and missed spares in both pools.
+      // `?warm-spares-stats`: this launch already started, adopted, missed and expired spares in both pools.
+      // `?warm-spares-stats-expired`: every ordinary spare expired unused and churn backoff paused warming.
       const pool = (counts: Partial<Record<string, number>> = {}) => ({ started: 0, adopted: 0, missed: 0, expired: 0, evicted: 0, replaced: 0, discarded: 0, coldWithoutSpare: 0, churnSkipped: 0, ...counts });
-      result = new URLSearchParams(location.search).has('warm-spares-stats')
-        ? { ordinary: pool({ started: 4, adopted: 3, missed: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
-        : { ordinary: pool(), lead: pool() };
+      const query = new URLSearchParams(location.search);
+      result = query.has('warm-spares-stats-expired')
+        ? { ordinary: pool({ started: 6, adopted: 0, expired: 6, churnSkipped: 2 }), lead: pool() }
+        : query.has('warm-spares-stats')
+          ? { ordinary: pool({ started: 6, adopted: 3, missed: 1, expired: 2, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
+          : { ordinary: pool(), lead: pool() };
       break;
     }
     case 'worker_trim_enabled':

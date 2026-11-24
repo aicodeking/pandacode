@@ -718,9 +718,9 @@ async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_
 }
 
 /// `spawn_claude_process` keyed as for a legacy connection keeping `HOME` as a secret.
-fn spawn_unresolvable(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, _lead: bool) -> Spawning {
-    Box::pin(spawn_claude_keyed(config, tools, approval_tools, launch, |config, catalog, disabled, stdio| {
-        key_for_connection(config, catalog, "legacy#1", Some(&legacy_secret_connection("HOME")), disabled, stdio, None)
+fn spawn_unresolvable(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, lead: bool) -> Spawning {
+    Box::pin(spawn_claude_keyed(config, tools, approval_tools, launch, lead, |config, catalog, disabled, stdio| {
+        key_fields_for_connection(config, catalog, "legacy#1", Some(&legacy_secret_connection("HOME")), disabled, stdio)
     }))
 }
 
@@ -735,6 +735,9 @@ async fn an_unresolvable_user_config_folder_starts_no_spare() {
     // so this holds with no Claude Code installed.
     let spawned = spawn_unresolvable(config.clone(), tools.clone(), HashSet::new(), launch, false).await.unwrap();
     assert!(spawned.is_none(), "no process is started for a launch that has no warm key");
+    // A lead's too, declined before its `git status` is ever read.
+    let spawned = spawn_unresolvable(config.clone(), tools.clone(), HashSet::new(), launch, true).await.unwrap();
+    assert!(spawned.is_none(), "no lead process is started for a launch that has no warm key");
     let life = Lifecycle { idle: Duration::from_secs(3600), spawn: spawn_unresolvable, current: |_, _, _, _, _| true, pool: own_pool() };
     start(life, config, tools, HashSet::new(), launch, None, 0).await.unwrap();
     assert!(!waiting_in(life.pool, &session), "nothing is registered in the pool");

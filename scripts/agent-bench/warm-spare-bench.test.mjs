@@ -10,14 +10,14 @@ import { fileURLToPath } from 'node:url';
 import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
-  mcpConfigJson, parsePsArgs, PARK_MS, runOnce, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
+  mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
-  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'], stdioMcp: false, parkMs: PARK_MS });
+  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'], stdioMcp: false, parkMs: PARK_MS, seedTurns: SEED_TURNS });
   assert.deepEqual(parseArgs(['--suites', 'privacy-resumed,default-resumed']).suites, ['privacy-resumed', 'default-resumed']);
   assert.deepEqual(parseArgs(['--suites', 'privacy-user,privacy-minimal']).suites, ['privacy-user', 'privacy-minimal']);
-  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'], stdioMcp: false, parkMs: PARK_MS });
+  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'], stdioMcp: false, parkMs: PARK_MS, seedTurns: SEED_TURNS });
   assert.equal(parseArgs(['--park-ms', '3500']).parkMs, 3500);
   assert.throws(() => parseArgs(['--park-ms', '0']), /--park-ms needs/);
   assert.throws(() => parseArgs(['--park-ms', 'x']), /--park-ms needs/);
@@ -31,6 +31,18 @@ test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => 
   assert.throws(() => parseArgs(['--suites', 'other']), /privacy-resumed/);
   assert.throws(() => parseArgs(['--suites', 'offline-resumed']), /--suites takes/);
   assert.throws(() => parseArgs(['--nope']), /unknown flag/);
+});
+
+test('parseArgs reads --seed-turns from 1 to MAX_SEED_TURNS and rejects anything else', () => {
+  assert.equal(SEED_TURNS, 1);
+  assert.equal(MAX_SEED_TURNS, 200);
+  assert.equal(parseArgs([]).seedTurns, 1);
+  assert.equal(parseArgs(['--seed-turns', '1']).seedTurns, 1);
+  assert.equal(parseArgs(['--seed-turns', '50', '--suites', 'default-resumed']).seedTurns, 50);
+  assert.equal(parseArgs(['--suites', 'privacy-resumed', '--seed-turns', '200']).seedTurns, 200);
+  assert.deepEqual(parseArgs(['--seed-turns', '3', '--pairs', '2']).pairs, 2, 'the flag consumes exactly its value');
+  for (const bad of ['0', '-1', '2.5', '201', '1e9', 'x', '', 'NaN', 'Infinity']) assert.throws(() => parseArgs(['--seed-turns', bad]), /--seed-turns needs an integer from 1 to 200/, bad);
+  assert.throws(() => parseArgs(['--seed-turns']), /--seed-turns needs an integer from 1 to 200, got undefined/);
 });
 
 test('Rust string helpers decode plain, raw and fn-body literals', () => {
@@ -162,6 +174,28 @@ test('seedArgs persists exactly one short exchange with the minimal config', () 
   assert.ok(args.includes('--strict-mcp-config'));
 });
 
+test('seedArgs resumes the previous seed turn only when asked, keeping the default launch unchanged', () => {
+  assert.deepEqual(seedArgs(null), seedArgs());
+  const args = seedArgs('abc-123');
+  assert.deepEqual(args.filter(a => a.startsWith('--resume')), ['--resume=abc-123']);
+  assert.deepEqual(args.filter(a => !a.startsWith('--resume')), seedArgs());
+  assert.ok(!args.includes('--no-session-persistence'), 'follow-up seed turns must append to the transcript');
+});
+
+test('runSeedTurns runs each exchange in order, resuming the id the previous one returned', async () => {
+  const calls = [];
+  const last = await runSeedTurns(3, async resume => { calls.push(resume); return `s${calls.length}`; });
+  assert.equal(last, 's3');
+  assert.deepEqual(calls, [null, 's1', 's2']);
+  const once = [];
+  assert.equal(await runSeedTurns(SEED_TURNS, async resume => { once.push(resume); return 'only'; }), 'only');
+  assert.deepEqual(once, [null], 'the default seeds exactly one fresh exchange');
+  for (const bad of [0, -1, 1.5, NaN, '2']) await assert.rejects(runSeedTurns(bad, async () => 'x'), /positive integer/);
+  let ran = 0;
+  await assert.rejects(runSeedTurns(5, async () => { ran++; if (ran === 2) throw new Error('seed turn failed'); return 'x'; }), /seed turn failed/);
+  assert.equal(ran, 2, 'a failed seed turn stops the sequence');
+});
+
 test('transcriptDigest hashes every .jsonl by relative path and sees any change', () => {
   const dir = mkdtempSync(join(tmpdir(), 'warm-spare-digest-'));
   try {
@@ -204,7 +238,23 @@ test('resumeCheckError fails closed when the seed request was not captured', () 
   assert.match(resumeCheckError(3, 2), /resume not loaded/);
   assert.match(resumeCheckError(3, undefined), /resume not loaded/);
   assert.equal(resumeCheckError(3, 5), null);
-  assert.equal(resumeCheckError(0, 1), null);
+  assert.equal(resumeCheckError(0, 3), null);
+  assert.match(resumeCheckError(0, 1), /resume incomplete/, 'one seeded exchange holds at least two messages');
+});
+
+test('resumeCheckError keeps the one-turn default and scales with --seed-turns', () => {
+  // Recorded 1-turn run (warm-spare-2.1.325.json): seed request 2 messages, resumed 5.
+  assert.equal(resumeCheckError(2, 5), null);
+  assert.equal(resumeCheckError(2, 5, SEED_TURNS), resumeCheckError(2, 5));
+  assert.match(resumeCheckError(2, 2, 1), /resume not loaded/);
+  // Live --seed-turns 3 smoke (Claude Code 2.1.325, 2026-11-24): largest seed request 6, resumed 9 (2N and 2N + 3).
+  assert.equal(resumeCheckError(6, 9, 3), null);
+  assert.match(resumeCheckError(6, 6, 3), /resume not loaded/);
+  assert.equal(resumeCheckError(100, 103, 50), null);
+  assert.match(resumeCheckError(2, 5, 50), /resume incomplete: request held 5 messages, 50 seeded turns need more than 100/);
+  assert.match(resumeCheckError(90, 100, 50), /resume incomplete/);
+  assert.equal(resumeCheckError(90, 101, 50), null);
+  assert.match(resumeCheckError(null, 155, 50), /not captured/);
 });
 
 test('maxMessageCount is the largest captured request, null when none was captured', () => {
@@ -259,6 +309,30 @@ test('launchEnv adds the non-essential-traffic switch only offline and drops ses
   assert.equal(offline.CLAUDECODE, undefined);
   assert.equal(offline.DISABLE_TELEMETRY, undefined);
   assert.throws(() => launchEnv(4321, true, parent), /unknown launch env/);
+});
+
+test('launchEnv forwards exactly INHERITED_ENV_KEYS from the parent and nothing else', () => {
+  assert.ok(Object.isFrozen(INHERITED_ENV_KEYS));
+  assert.deepEqual([...INHERITED_ENV_KEYS], ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM', 'SystemRoot', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']);
+  const parent = Object.fromEntries(INHERITED_ENV_KEYS.map(k => [k, `v-${k}`]));
+  Object.assign(parent, { NODE_OPTIONS: '--x', CLAUDECODE: '1', CLAUDE_CONFIG_DIR: '/c', ANTHROPIC_API_KEY: 'sk-real', ANTHROPIC_BASE_URL: 'https://real', SSH_AUTH_SOCK: '/s', ARBITRARY_EXTRA: 'y', path: 'lower' });
+  const env = launchEnv(4321, 'default', parent);
+  const inherited = Object.keys(env).filter(k => k !== 'ANTHROPIC_BASE_URL' && k !== 'ANTHROPIC_API_KEY');
+  assert.deepEqual(inherited, [...INHERITED_ENV_KEYS]);
+  for (const k of INHERITED_ENV_KEYS) assert.equal(env[k], `v-${k}`, k);
+  assert.equal(env.ANTHROPIC_API_KEY, 'sk-ant-bench-dummy', 'a real key never reaches the child');
+  assert.equal(env.ANTHROPIC_BASE_URL, 'http://127.0.0.1:4321');
+  for (const k of ['NODE_OPTIONS', 'CLAUDECODE', 'CLAUDE_CONFIG_DIR', 'SSH_AUTH_SOCK', 'ARBITRARY_EXTRA', 'path']) assert.equal(env[k], undefined, k);
+  assert.deepEqual(Object.keys(launchEnv(4321, 'default', { PATH: '/bin' })), ['PATH', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY'], 'unset keys are skipped, not forwarded as undefined');
+});
+
+test('the report env lists the same inherited keys launchEnv forwards', () => {
+  const env = reportEnv();
+  assert.equal(env.inherited, INHERITED_ENV_KEYS.join(', '));
+  assert.deepEqual(env.inherited.split(', '), [...INHERITED_ENV_KEYS]);
+  assert.equal(env.ANTHROPIC_API_KEY, launchEnv(1, 'default', {}).ANTHROPIC_API_KEY);
+  assert.deepEqual(env.privacy_extra, { ...PRIVACY_ENV });
+  assert.deepEqual(env.offline_extra, { ...OFFLINE_ENV });
 });
 
 test('launchEnv privacy adds exactly PandaCode\'s telemetry-off env and not the non-essential-traffic switch', () => {

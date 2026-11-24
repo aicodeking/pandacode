@@ -60,11 +60,17 @@ impl PoolStats {
 /// After a pool evicts its limit of spares in a row with no adoption between (tasks taking turns
 /// round-robin, each pushing out the next one's spare), it starts none for this long.
 pub(super) const CHURN_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+/// After this many of a pool's spares in a row expire unused with no adoption between (follow-ups
+/// that rarely come within `IDLE`), it starts none for `EXPIRY_COOLDOWN`.
+pub(super) const EXPIRY_BACKOFF_STREAK: u32 = 3;
+pub(super) const EXPIRY_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
-/// A pool's evictions since its last adoption, and the backoff they set (`CHURN_COOLDOWN`).
+/// A pool's evictions and unused expiries since its last adoption, and the backoff they set
+/// (`CHURN_COOLDOWN`, `EXPIRY_COOLDOWN`). An adoption or a lapsed backoff clears both streaks.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PoolChurn {
     pub(super) consecutive_evictions: u32,
+    pub(super) consecutive_expiries: u32,
     pub(super) churn_cooldown_until: Option<Instant>,
 }
 
@@ -73,8 +79,22 @@ impl PoolChurn {
     pub(super) fn evicted(&mut self, limit: usize, now: Instant) {
         self.consecutive_evictions = self.consecutive_evictions.saturating_add(1);
         if self.consecutive_evictions >= u32::try_from(limit).unwrap_or(u32::MAX) {
-            self.churn_cooldown_until = now.checked_add(CHURN_COOLDOWN);
+            self.back_off(now, CHURN_COOLDOWN);
         }
+    }
+
+    /// One more spare expired unadopted; at `EXPIRY_BACKOFF_STREAK` in a row the pool backs off.
+    pub(super) fn expired(&mut self, now: Instant) {
+        self.consecutive_expiries = self.consecutive_expiries.saturating_add(1);
+        if self.consecutive_expiries >= EXPIRY_BACKOFF_STREAK {
+            self.back_off(now, EXPIRY_COOLDOWN);
+        }
+    }
+
+    /// Starts none until `now + cooldown`, keeping a later backoff already set.
+    fn back_off(&mut self, now: Instant, cooldown: Duration) {
+        let until = now.checked_add(cooldown);
+        self.churn_cooldown_until = self.churn_cooldown_until.max(until);
     }
 
     /// Whether a start is skipped at `now`. A lapsed backoff clears, so the pool probes again.

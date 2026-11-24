@@ -33,9 +33,12 @@ pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
 /// checkout. Only when `root` is itself in a checkout: a plain folder still counts every
 /// repository inside it. Submodules and vendored `.git` folders are part of `root`'s working tree
 /// (their writes touch it), so they still count; plain subfolders, deleted paths and non-git
-/// folders resolve to `root`'s checkout or none.
+/// folders resolve to `root`'s checkout or none. `other` is resolved first: the checkout walk
+/// is lexical, so `root/.claude/worktrees/x/..` would otherwise pass through `x` and be taken
+/// for that worktree although it names a folder of `root`'s own checkout.
 fn in_nested_checkout(other: &Path, root: &Path, root_resolved: &Path) -> bool {
-    let Some(other_root) = crate::claude_roots::git_checkout_root(other) else { return false };
+    let other_resolved = resolve_path(other);
+    let Some(other_root) = crate::claude_roots::git_checkout_root(&other_resolved) else { return false };
     let other_root_resolved = resolve_path(&other_root);
     other_root_resolved != root_resolved
         && path_in_folder(&other_root_resolved, root, root_resolved)
@@ -291,6 +294,27 @@ mod tests {
         // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
         std::fs::remove_file(nested.join(".git")).unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn parent_segments_out_of_a_nested_worktree_keep_the_main_checkout_busy() {
+        let base = std::env::temp_dir().join(format!("pandacode-checkout-dotdot-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        let nested = main.join(".claude").join("worktrees").join("x");
+        let admin = main.join(".git").join("worktrees").join("x");
+        for dir in [admin.clone(), nested.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
+        assert!(!any_same_checkout(&main, std::slice::from_ref(&nested)), "the nested worktree itself is another checkout");
+        // Each names a folder of the main checkout, though its spelling passes through `x`.
+        for other in [nested.join(".."), nested.join("..").join(".."), nested.join("..").join("missing"), nested.join("src").join("..").join("..")] {
+            assert!(any_same_checkout(&main, std::slice::from_ref(&other)), "{} is in the main checkout", other.display());
+        }
+        // A `..` that stays inside the nested worktree is still that worktree's.
+        assert!(!any_same_checkout(&main, &[nested.join("src").join("..")]));
         let _ = std::fs::remove_dir_all(base);
     }
 

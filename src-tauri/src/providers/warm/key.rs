@@ -34,6 +34,8 @@ pub(super) fn claude_fast_mode(config: &RunConfig) -> bool {
             .is_some_and(|settings| settings["serviceTier"] == "fast")
 }
 
+/// `key_fields_with_disabled` completed with a lead's `gitStatus` (`with_git_status`).
+#[cfg(test)]
 pub(super) fn key_with_disabled(
     config: &RunConfig,
     tools: &[Value],
@@ -42,12 +44,25 @@ pub(super) fn key_with_disabled(
     stdio: &[mcp_host::Stdio],
     lead_git_status: Option<&str>,
 ) -> Option<String> {
-    let named = crate::connections::for_task(&config.session_id, &config.provider);
-    key_for_connection(config, tools, connection, named.as_ref(), disabled, stdio, lead_git_status)
+    key_fields_with_disabled(config, tools, connection, disabled, stdio).map(|fields| with_git_status(fields, lead_git_status))
 }
 
-/// `key_with_disabled` with the task's named connection (`named`) already looked up.
+/// The warm key's fields (no lead `gitStatus`) with the task's named connection looked up: what a
+/// spare is spawned and a renewal checked with. `None` when the Claude config folder cannot be known.
+pub(super) fn key_fields_with_disabled(
+    config: &RunConfig,
+    tools: &[Value],
+    connection: &str,
+    disabled: &std::collections::BTreeSet<String>,
+    stdio: &[mcp_host::Stdio],
+) -> Option<Value> {
+    let named = crate::connections::for_task(&config.session_id, &config.provider);
+    key_fields_for_connection(config, tools, connection, named.as_ref(), disabled, stdio)
+}
+
+/// The key with the task's named connection (`named`) already looked up.
 /// `lead_git_status`: a team lead's working-tree digest, `None` (and never read) otherwise.
+#[cfg(test)]
 pub(super) fn key_for_connection(
     config: &RunConfig,
     tools: &[Value],
@@ -71,8 +86,8 @@ pub(in crate::providers) fn key_fields(config: &RunConfig, tools: &[Value]) -> O
 }
 
 /// A lead waits while its workers edit files, and Claude Code also snapshots the working tree's
-/// status in `gitStatus`: a lead spare is adopted only if that is unchanged too. The same string
-/// `key_for_connection` gives for these fields and `lead_git_status`.
+/// status in `gitStatus`: a lead spare is adopted only if that is unchanged too. A lead's spawn
+/// completes its key the same way, with the status read once its previous turn has exited.
 pub(in crate::providers) fn with_git_status(mut fields: Value, lead_git_status: Option<&str>) -> String {
     if let (Some(status), Value::Object(map)) = (lead_git_status, &mut fields) {
         map.insert("gitStatus".into(), json!(status));
@@ -80,8 +95,8 @@ pub(in crate::providers) fn with_git_status(mut fields: Value, lead_git_status: 
     fields.to_string()
 }
 
-/// `key_for_connection` before any lead `gitStatus` is added.
-fn key_fields_for_connection(
+/// The warm key's fields before any lead `gitStatus` is added.
+pub(super) fn key_fields_for_connection(
     config: &RunConfig,
     tools: &[Value],
     connection: &str,
@@ -544,6 +559,15 @@ pub(super) fn lead_git_status(cwd: &Path) -> Option<String> {
     }
     use sha2::Digest;
     Some(format!("{:x}", sha2::Sha256::digest(&output.stdout.bytes)))
+}
+
+/// A spare's key without its lead `gitStatus`: a renewal reads the working tree again right
+/// before it spawns, so only the other fields decide whether it is current. `None` when the key
+/// is not a JSON object.
+pub(super) fn without_git_status(key: &str) -> Option<Value> {
+    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(key) else { return None };
+    fields.remove("gitStatus");
+    Some(Value::Object(fields))
 }
 
 /// `lead_git_status` on a blocking thread.

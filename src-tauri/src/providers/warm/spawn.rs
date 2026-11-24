@@ -1,7 +1,7 @@
 //! Starting warm spares: the process for a launch, its registration in the pool, and a team
 //! lead's renewals when its spare expires.
 use super::*;
-use super::key::{key_with_disabled, lead_git_status, prepared};
+use super::key::{key_fields_with_disabled, prepared, without_git_status};
 use super::stats::{discarded_note_locked, expired_note, not_renewed_note};
 use std::time::{Instant, SystemTime};
 
@@ -47,25 +47,26 @@ pub(super) fn chain_expired(born_wall: SystemTime, idle: Duration) -> bool {
     born_wall.elapsed().ok().is_some_and(|wall| wall >= idle.saturating_mul(1 + MAX_RENEWALS))
 }
 
-/// Whether a renewal would start with the same warm key as the spare that expired: the
-/// settings read at spawn (environment, login, telemetry, named connection) are read again,
-/// and so are the explorer switch and agent-made tools behind its instructions and catalog
-/// (`inputs`, compared with `spawned`, what it read at the spare's spawn). Only lead spares
-/// renew, and a lead's key carries its working tree's `gitStatus`, read again here (an unknown
-/// one is never current).
+/// Whether a renewal would start with the same launch settings as the spare that expired: the
+/// settings read at spawn (environment, login, telemetry, named connection, config files, git
+/// head, executable) are read again, and so are the explorer switch and agent-made tools behind
+/// its instructions and catalog (`inputs`, compared with `spawned`, what it read at the spare's
+/// spawn). A lead's `gitStatus` is left out: the renewal reads the working tree again right
+/// before it spawns (`spawn_claude_keyed`), so an edit since, or a status that timed out here,
+/// changes no launch setting. Spares switched off are never current.
 pub(super) fn still_current(spare_key: &str, config: &RunConfig, tools: &[Value], spawned: &str, inputs: &Inputs) -> bool {
     if !enabled_now() {
         return false;
     }
+    let Some(spare_fields) = without_git_status(spare_key) else { return false };
     let mut config = config.clone();
     config.cwd = external_path(&config.cwd);
-    let Some(git_status) = lead_git_status(&config.cwd) else { return false };
     // The spawn keyed the config as a cold launch prepares it (skill reminder applied).
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     let config = prepared(config, &disabled);
     let stdio = mcp_host::stdio_servers(&config.session_id);
     let connection = crate::connections::warm_key(&config.session_id, &config.provider);
-    key_with_disabled(&config, tools, &connection, &disabled, &stdio, Some(&git_status)).as_deref() == Some(spare_key)
+    key_fields_with_disabled(&config, tools, &connection, &disabled, &stdio).is_some_and(|fields| fields == spare_fields)
         && inputs() == spawned
 }
 
@@ -172,18 +173,23 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
             return;
         };
         let session = session_id.clone();
-        // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
-        // runs on a blocking thread, never on the timer's runtime worker.
+        // The check reads files (agent-made tools, the off marker) and takes the store lock
+        // (`renew`), so it runs on a blocking thread, never on the timer's runtime worker.
         // Nothing is logged in here: whether to log depends on a launch superseding it meanwhile.
         let check = tokio::task::spawn_blocking(move || {
+            // Spares switched off: no renewal, and no line blaming launch settings (`Expiry::Off`).
+            if !enabled_now() {
+                return (Expiry::Off, None);
+            }
             let current = (life.current)(&spare_key, &config, &tools, &spawned, &inputs);
             // A chain that outlived its windows on the wall clock (the machine slept) ends too.
             let again = !chain_expired(chain.born_wall, life.idle) && renews(Some(&renew), launch, epoch(&session_id), chain.renewals, current);
-            (current, again.then_some((renew, inputs, config, tools, approvals)))
+            let expiry = if current { Expiry::Current } else { Expiry::Changed };
+            (expiry, again.then_some((renew, inputs, config, tools, approvals)))
         });
-        let (current, again) = check.await.unwrap_or_else(|error| {
+        let (expiry, again) = check.await.unwrap_or_else(|error| {
             eprintln!("Could not check the team lead's warm Claude agent renewal: {error}");
-            (true, None)
+            (Expiry::Current, None)
         });
         let renewed = match again {
             Some((renew, inputs, config, tools, approvals)) if launch != 0 && epoch(&config.session_id) == launch => {
@@ -194,7 +200,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
             }
             _ => false,
         };
-        if let Some(note) = expiry_note(life.pool, renewed, launch, epoch(&session), current) {
+        if let Some(note) = expiry_note(life.pool, renewed, launch, epoch(&session), expiry) {
             eprintln!("{note}");
         }
         // The old token overlaps `start`'s own guard through its entire handoff.
@@ -203,15 +209,31 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
     Ok(true)
 }
 
+/// What an expired lead spare's renewal check found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Expiry {
+    /// Its launch settings are unchanged (`still_current`).
+    Current,
+    /// A launch setting in its warm key, or a launch input, changed since its spawn.
+    Changed,
+    /// Spares are switched off: nothing renews and nothing is logged.
+    Off,
+}
+
 /// What an expired lead spare logs once its renewal check is done. Nothing when its renewal
-/// pooled (`renewed`), or when a launch superseded it (`epoch` moved on from `launch`; that
-/// launch's own log reports `it expired`). Otherwise, also when its renewal was skipped or
-/// refused, the spare simply expired idle: say so (and why) even if the wake never comes.
-pub(super) fn expiry_note(pool: &Pool, renewed: bool, launch: u64, epoch: u64, current: bool) -> Option<String> {
+/// pooled (`renewed`), when a launch superseded it (`epoch` moved on from `launch`; that
+/// launch's own log reports `it expired`), or when spares are switched off. Otherwise, also when
+/// its renewal was skipped or refused, the spare simply expired idle: say so (and why) even if
+/// the wake never comes.
+pub(super) fn expiry_note(pool: &Pool, renewed: bool, launch: u64, epoch: u64, expiry: Expiry) -> Option<String> {
     if renewed || launch == 0 || epoch != launch {
         return None;
     }
-    Some(if current { expired_note(pool, true) } else { not_renewed_note(pool, "its launch settings changed") })
+    match expiry {
+        Expiry::Current => Some(expired_note(pool, true)),
+        Expiry::Changed => Some(not_renewed_note(pool, "its launch settings changed")),
+        Expiry::Off => None,
+    }
 }
 
 /// Most a spare's idle timer sleeps at once (`idle_until_expired`).
@@ -250,46 +272,39 @@ pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, a
     if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() || !enabled_off_runtime().await {
         return Ok(None);
     }
-    let git_status = if lead {
-        let Some(status) = lead_git_status_digest(&external_path(&config.cwd)).await else {
-            eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
-            return Ok(None);
-        };
-        Some(status)
-    } else {
-        None
-    };
-    spawn_claude_keyed(config, tools, approval_tools, launch, move |config, catalog, disabled, stdio| {
+    spawn_claude_keyed(config, tools, approval_tools, launch, lead, |config, catalog, disabled, stdio| {
         let connection = crate::connections::warm_key(&config.session_id, &config.provider);
-        key_with_disabled(config, catalog, &connection, disabled, stdio, git_status.as_deref())
+        key_fields_with_disabled(config, catalog, &connection, disabled, stdio)
     })
     .await
 }
 
-/// The spare's process once `key_for` has keyed its prepared launch. A launch with no key (its
-/// Claude config folder cannot be known, `key_with_disabled`) is declined first: no secret is
-/// read, no executable searched for, no tool server or process started.
+/// The spare's process once `key_for` has given its prepared launch's warm-key fields. A launch
+/// with no key (its Claude config folder cannot be known, `key_fields_with_disabled`) is declined
+/// first: no secret is read, no executable searched for, no tool server or process started. A
+/// `lead`'s `gitStatus` is read only once the previous turn has exited, right before the spawn.
 pub(super) async fn spawn_claude_keyed(
     mut config: RunConfig,
     tools: Vec<Value>,
     approval_tools: HashSet<String>,
     launch: u64,
-    key_for: impl FnOnce(&RunConfig, &[Value], &std::collections::BTreeSet<String>, &[mcp_host::Stdio]) -> Option<String> + Send + 'static,
+    lead: bool,
+    key_for: impl FnOnce(&RunConfig, &[Value], &std::collections::BTreeSet<String>, &[mcp_host::Stdio]) -> Option<Value> + Send + 'static,
 ) -> Result<Option<Spawned>, String> {
     config.cwd = external_path(&config.cwd);
     // Read before the switch is: a switch-off after that read moves it (`disable_all`).
     let discard_epoch = spares(&SPARES).discard_epoch;
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();
-    let (config, key, disabled, stdio) = crate::blocking(move || {
+    let (config, fields, disabled, stdio) = crate::blocking(move || {
         let disabled = crate::skill_manager::disabled_for(&config.session_id);
         let config = prepared(config, &disabled);
         let stdio = mcp_host::stdio_servers(&config.session_id);
-        let key = key_for(&config, &catalog, &disabled, &stdio);
-        Ok((config, key, disabled, stdio))
+        let fields = key_for(&config, &catalog, &disabled, &stdio);
+        Ok((config, fields, disabled, stdio))
     })
     .await?;
-    let Some(key) = key else {
+    let Some(fields) = fields else {
         eprintln!("No warm Claude agent: its config folder cannot be known.");
         return Ok(None);
     };
@@ -334,19 +349,35 @@ pub(super) async fn spawn_claude_keyed(
     // The turn it follows may still be exiting; resuming before then could read a half-flushed
     // session. The switch is read off the runtime once it has; a switch-off after that read moves
     // `discard_epoch`, compared synchronously at the last moment before the spawn.
-    let previous = await_exit_patiently(&config.session_id);
-    let exit = async {
-        previous.await?;
-        if enabled_off_runtime().await { Ok(()) } else { Err("Warm Claude agents are off.".to_string()) }
+    let exited = await_exit_patiently(&config.session_id).await.is_ok() && enabled_off_runtime().await;
+    if !exited {
+        eprintln!("{NOT_PREPARED}");
+        return Ok(None);
+    }
+    // Claude Code snapshots `gitStatus` at spawn, so a lead's is read now, after the exit wait
+    // during which the exiting turn or the user may still have changed the working tree.
+    let git_status = if lead {
+        let Some(status) = lead_git_status_digest(&config.cwd).await else {
+            eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
+            return Ok(None);
+        };
+        Some(status)
+    } else {
+        None
     };
+    let key = with_git_status(fields, git_status.as_deref());
+    // Launch, switch-off and quit are checked again after the status read, as the spawn registers.
     let stopped = || quitting() || spares(&SPARES).discard_epoch != discard_epoch;
-    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, exit, &mut command, stopped).await? else {
-        eprintln!("No warm Claude agent prepared: its launch changed or the previous turn did not exit.");
+    let Some((child, starting)) = spawn_when_current(&config.session_id, launch, std::future::ready(Ok(())), &mut command, stopped).await? else {
+        eprintln!("{NOT_PREPARED}");
         return Ok(None);
     };
     let group = ProcessGroup::register(child.id());
     Ok(Some(Spawned { key, child, group, server, starting }))
 }
+
+/// What a spare that waited on its turn's exit and was then not spawned logs.
+const NOT_PREPARED: &str = "No warm Claude agent prepared: its launch changed or the previous turn did not exit.";
 
 /// Spawn once the previous process has exited, unless the task launched again meanwhile: that
 /// follow-up missed the pool and waits on the same exit, so spawning now would overlap it on one

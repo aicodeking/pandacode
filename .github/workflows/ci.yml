@@ -181,9 +181,9 @@ jobs:
       # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
       # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
       # that matched little would still pass, so require at least 200 passed tests on macOS and
-      # Windows and at least one passing (`... ok`, not `... ignored`) path_match, lead_spare, warm,
-      # exit and claude_roots test each, so a `#[cfg]` or `#[ignore]` slip that drops them on one
-      # platform fails here.
+      # Windows and at least one passing (`... ok`, not `... ignored`) path_match, lead_spare,
+      # checkout_busy, warm, exit and claude_roots test each, so a `#[cfg]` or `#[ignore]` slip that
+      # drops them on one platform fails here.
       # Portable to macOS BSD awk and Git Bash gawk (only `index` and a plain regex).
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
@@ -197,7 +197,7 @@ jobs:
             echo "::error::Only $passed platform Rust unit tests passed (expected at least 200): a filter or #[cfg] dropped tests"
             exit 1
           fi
-          for module in 'path_match::' 'lead_spare::' 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
+          for module in 'path_match::' 'lead_spare::' 'checkout_busy::' 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
             if ! awk -v m="test $module" 'index($0, m) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
               echo "::error::No passing $module tests ran on this platform"
               exit 1
