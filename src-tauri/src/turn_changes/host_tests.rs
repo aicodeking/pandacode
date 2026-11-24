@@ -1,5 +1,5 @@
 use super::claude_policy::*;
-use super::claude_roots::*;
+use crate::claude_roots::*;
 use super::*;
 
 fn assert_reported_path_spelling(begin_path: &str, complete_path: &str) {

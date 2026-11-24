@@ -18,7 +18,7 @@ use tokio::{
 };
 
 mod attachments;
-mod exit;
+pub(crate) mod exit;
 mod goals;
 mod launch_input;
 mod host_inputs;
@@ -4004,12 +4004,12 @@ async fn antigravity_spawn_gate() {
 /// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
 /// is removed: on Windows a process's working directory cannot be deleted.
 pub(crate) async fn end_lingering_in(folder: &Path) {
-    let resolved = warm::resolve_path(folder);
+    let resolved = exit::resolve_path(folder);
     let tasks: Vec<String> = lingering()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
-        .filter(|(_, lingering)| warm::path_in_folder(&lingering.cwd, folder, &resolved))
+        .filter(|(_, lingering)| exit::path_in_folder(&lingering.cwd, folder, &resolved))
         .map(|(task, _)| task.clone())
         .collect();
     for task in tasks {
@@ -4594,6 +4594,14 @@ fn cloud_launch() -> Launch {
     Launch { secrets: Vec::new(), reap_in_background: false }
 }
 
+/// A pooled warm spare's launch check, made off the runtime: spares switched off, no key (the
+/// config folder cannot be known), or the warm key to adopt against.
+enum WarmKey {
+    Disabled,
+    NoKey,
+    Key(String),
+}
+
 /// Errors carry no relay key redaction here: `run_inner` redacts every error of the run once.
 async fn run_process_launch(
     config: RunConfig,
@@ -4615,17 +4623,35 @@ async fn run_process_launch(
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
-        Some(tools) if warm::supported(&config) && warm::enabled_now() => {
-            // No pooled spare: the launch is counted and the warm key's config walk skipped.
+        // No pooled spare: the launch is counted and the warm key's config walk skipped. Switching
+        // spares off empties the pool, so this in-memory check also covers "off" without file I/O.
+        Some(tools) if warm::supported(&config) => {
             if warm::has_spare_or_record_cold(&config.session_id) {
-                // The key reads the task's switches and saved settings: off the runtime.
+                // The switch and the key read files (the key: the task's switches and saved
+                // settings), so both run off the runtime. Never abort a turn over a warm key.
                 let (keyed, catalog) = (config.clone(), tools.tools.clone());
-                // No key: the config folder cannot be known, so the pooled spare is retired and logged.
-                // A failed key task falls back the same way: never abort a turn over a warm key.
-                match crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await {
-                    Ok(Some(key)) => warm::take(&config.session_id, &key),
-                    Ok(None) | Err(_) => {
+                let outcome = crate::blocking(move || {
+                    Ok(if !warm::enabled_now() {
+                        WarmKey::Disabled
+                    } else {
+                        warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key)
+                    })
+                })
+                .await;
+                match outcome {
+                    Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key),
+                    Ok(WarmKey::Disabled) => {
+                        warm::launched_without_spare(&config.session_id);
+                        None
+                    }
+                    // No key: the config folder cannot be known, so the pooled spare is retired and logged.
+                    Ok(WarmKey::NoKey) => {
                         warm::launched_without_key(&config.session_id);
+                        None
+                    }
+                    Err(err) => {
+                        eprintln!("Warm Claude key check failed: {err}");
+                        warm::launched_without_key_reason(&config.session_id, "its warm key check failed");
                         None
                     }
                 }

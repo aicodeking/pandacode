@@ -1,8 +1,8 @@
 //! Warm agents: after a Claude turn ends, the next turn's process starts in the background
-//! so a follow-up skips the CLI's own startup (about 1.4 s). A warm agent is adopted only
-//! when everything on its command line and in its tool catalog still matches; otherwise it
-//! is discarded and the turn starts cold as before.
-use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
+//! so a follow-up skips the CLI's own startup (about 0.21–1.65 s, see docs/worker-tokens.md).
+//! A warm agent is adopted only when everything on its command line and in its tool catalog
+//! still matches; otherwise it is discarded and the turn starts cold as before.
+use super::exit::{path_in_folder, pending_in_cwd, resolve_path, retire_parts_in_cwd, Pending};
 use super::*;
 use std::sync::LazyLock;
 
@@ -136,13 +136,25 @@ struct Spares {
     /// so folder-scoped `discard_in` can advance their launch epochs before they spawn or register.
     starting: HashMap<u64, (String, PathBuf)>,
     gone: HashMap<String, Gone>,
-    /// Lead wakes that adopted their spare, and those that found one unusable or gone, since
-    /// launch: in memory only, read from the adoption log line (docs/worker-tokens.md).
-    lead_adopted: u64,
-    lead_missed: u64,
-    /// The same totals for ordinary (non-lead) spares.
-    ordinary_adopted: u64,
-    ordinary_missed: u64,
+    /// Each pool's lifecycle totals since launch: in memory only, read from the adoption log
+    /// line (docs/worker-tokens.md).
+    lead: PoolStats,
+    ordinary: PoolStats,
+    /// Supported launches that found no pooled spare at all (`has_spare_or_record_cold`).
+    cold_without_spare: u64,
+}
+
+/// One pool's spares since launch: registered, adopted or found unusable at launch, and every
+/// other way one left the pool unadopted.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+struct PoolStats {
+    started: u64,
+    adopted: u64,
+    missed: u64,
+    expired: u64,
+    evicted: u64,
+    replaced: u64,
+    discarded: u64,
 }
 
 type Pool = Mutex<Spares>;
@@ -175,11 +187,22 @@ impl Gone {
 const GONE_LIMIT: usize = 64;
 
 impl Spares {
+    fn stats_mut(&mut self, lead: bool) -> &mut PoolStats {
+        if lead { &mut self.lead } else { &mut self.ordinary }
+    }
+
     /// Remove `session_id` from the pool and register a `Pending` exit under the pool lock, so
     /// a concurrent `quiesce`/`await_exit` cannot slip between removal and `retire`.
     fn remove(&mut self, session_id: &str, why: Gone) -> Option<(Spare, Pending)> {
         let spare = self.spares.remove(session_id)?;
         let pending = pending_in_cwd(session_id, spare.cwd.clone());
+        let stats = self.stats_mut(spare.lead);
+        match why {
+            Gone::Evicted => stats.evicted += 1,
+            Gone::Discarded => stats.discarded += 1,
+            Gone::Expired => stats.expired += 1,
+            Gone::Replaced => stats.replaced += 1,
+        }
         if spare.lead {
             if self.gone.len() >= GONE_LIMIT {
                 self.gone.clear();
@@ -257,12 +280,18 @@ pub(crate) fn launched(session_id: &str) {
 
 /// The warm agent for this turn, if one exists, is still running and was started for
 /// exactly this launch. Any other warm agent for the task is discarded.
+#[cfg(all(test, unix))]
 pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
-    // Re-read after the caller awaited its key: the user may have switched spares off meanwhile.
     if !enabled_now() {
         launched_without_spare(session_id);
         return None;
     }
+    take_checked(session_id, key)
+}
+
+/// `take` for a caller that has just checked `enabled_now()` off the runtime (with its key).
+/// Switching spares off meanwhile empties the pool (`discard_all`), so nothing is adopted then.
+pub(super) fn take_checked(session_id: &str, key: &str) -> Option<Adopting> {
     let (spare, note) = take_in(&SPARES, session_id, key);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every hit is
     // logged too, with lead and ordinary totals, so each pool's speed-up can be measured.
@@ -352,9 +381,15 @@ fn retire(session_id: &str, spare: Spare, pending: Pending) {
 /// A launch that takes no spare (a host-less or unsupported one) still counts as a launch and
 /// retires whatever spare the task holds, so none idles beside its cold process.
 pub(super) fn launched_without_spare(session_id: &str) {
-    launched(session_id);
-    let dropped = spares(&SPARES).remove(session_id, Gone::Discarded);
-    if let Some((spare, pending)) = dropped {
+    launched_without_spare_in(&SPARES, session_id);
+}
+
+/// Counted as discarded, but with no `gone` note: this very launch already starts cold, and a
+/// note would make the lead's next supported launch log a miss for a spare it never could use.
+fn launched_without_spare_in(pool: &Pool, session_id: &str) {
+    let (removed, _gone) = remove_for_launch(pool, session_id);
+    if let Some((spare, pending)) = removed {
+        spares(pool).stats_mut(spare.lead).discarded += 1;
         retire(session_id, spare, pending);
     }
 }
@@ -362,18 +397,22 @@ pub(super) fn launched_without_spare(session_id: &str) {
 /// A launch whose warm key is unknowable (its config folder cannot be resolved): counts the launch,
 /// retires any pooled spare and logs the miss like `take` would, leaving no stale `gone` note.
 pub(super) fn launched_without_key(session_id: &str) {
-    if let Some(note) = launched_without_key_in(&SPARES, session_id) {
+    launched_without_key_reason(session_id, "its config folder cannot be known");
+}
+
+/// `launched_without_key`, logging `why` as the reason the spare was not used.
+pub(super) fn launched_without_key_reason(session_id: &str, why: &str) {
+    if let Some(note) = launched_without_key_in(&SPARES, session_id, why) {
         eprintln!("{note}");
     }
 }
 
-fn launched_without_key_in(pool: &Pool, session_id: &str) -> Option<String> {
-    const WHY: &str = "its config folder cannot be known";
+fn launched_without_key_in(pool: &Pool, session_id: &str, why: &str) -> Option<String> {
     let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((spare, pending)) = removed else {
         return gone.map(|why| decision(pool, true, Some(why.reason())));
     };
-    let note = decision(pool, spare.lead, Some(WHY));
+    let note = decision(pool, spare.lead, Some(why));
     retire(session_id, spare, pending);
     Some(note)
 }
@@ -399,27 +438,27 @@ fn has_spare_or_record_cold_in(pool: &Pool, session_id: &str) -> (bool, Option<S
         // launch can register between this check and the epoch moving on.
         let launch = NEXT_LAUNCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), launch);
+        locked.cold_without_spare += 1;
         locked.gone.remove(session_id)
     };
     (false, gone.map(|why| decision(pool, true, Some(why.reason()))))
 }
 
 /// A launch's adoption log line (`lead_note` or `ordinary_note`), counted in the lead or ordinary
-/// totals, with that kind's totals since launch.
+/// totals, with that pool's lifecycle totals since launch.
 fn decision(pool: &Pool, lead: bool, miss: Option<&str>) -> String {
-    let (adopted, missed) = {
+    let (s, cold) = {
         let mut pool = spares(pool);
-        let pool = &mut *pool;
-        let (adopted, missed) = if lead {
-            (&mut pool.lead_adopted, &mut pool.lead_missed)
-        } else {
-            (&mut pool.ordinary_adopted, &mut pool.ordinary_missed)
-        };
-        if miss.is_none() { *adopted += 1 } else { *missed += 1 }
-        (*adopted, *missed)
+        let stats = pool.stats_mut(lead);
+        if miss.is_none() { stats.adopted += 1 } else { stats.missed += 1 }
+        let stats = *stats;
+        (stats, pool.cold_without_spare)
     };
-    let (note, kind) = if lead { (lead_note(miss), "Lead") } else { (ordinary_note(miss), "Ordinary") };
-    format!("{note} {kind} spares since launch: {adopted} adopted, {missed} not used.")
+    if lead {
+        format!("{} Lead spares since launch: {} started, {} adopted, {} not used, {} expired, {} evicted, {} replaced, {} discarded.", lead_note(miss), s.started, s.adopted, s.missed, s.expired, s.evicted, s.replaced, s.discarded)
+    } else {
+        format!("{} Ordinary spares since launch: {} started, {} adopted, {} not used, {} expired, {} evicted, {} replaced, {} discarded; {cold} cold launches without a spare.", ordinary_note(miss), s.started, s.adopted, s.missed, s.expired, s.evicted, s.replaced, s.discarded)
+    }
 }
 
 /// An ordinary spare's adoption log line: adopted (`None`) or why its launch starts cold.
@@ -436,57 +475,6 @@ fn lead_note(miss: Option<&str>) -> String {
         None => "Team lead's warm Claude agent adopted.".into(),
         Some(reason) => format!("Team lead's warm Claude agent not used ({reason}); starting cold."),
     }
-}
-
-/// Best-effort canonical path: uses `canonicalize` when `path` exists, and otherwise
-/// canonicalizes the deepest existing ancestor so deleted folders (e.g. during
-/// `recreate_worktree`) still match spares recorded under a canonical or symlinked spelling.
-pub(super) fn resolve_path(path: &Path) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return external_path(&canonical);
-    }
-    let mut suffix = Vec::new();
-    let mut cursor = path;
-    loop {
-        if let Ok(canonical) = cursor.canonicalize() {
-            let mut resolved = external_path(&canonical);
-            for component in suffix.into_iter().rev() {
-                match component {
-                    std::path::Component::CurDir => {}
-                    std::path::Component::ParentDir => {
-                        resolved.pop();
-                    }
-                    other => resolved.push(other.as_os_str()),
-                }
-            }
-            return resolved;
-        }
-        let Some(parent) = cursor.parent() else {
-            return external_path(path);
-        };
-        if let Some(last) = cursor.components().next_back() {
-            suffix.push(last);
-        }
-        if parent == cursor {
-            return external_path(path);
-        }
-        cursor = parent;
-    }
-}
-
-/// Whether `candidate` lies inside (or equals) `folder`, literally or once both resolve
-/// through [`resolve_path`]. `folder_resolved` is `resolve_path(folder)` computed once.
-pub(super) fn path_in_folder(candidate: &Path, folder: &Path, folder_resolved: &Path) -> bool {
-    let candidate_ext = external_path(candidate);
-    let folder_ext = external_path(folder);
-    if candidate_ext == folder_ext || candidate_ext.starts_with(&folder_ext) {
-        return true;
-    }
-    if candidate_ext == folder_resolved || candidate_ext.starts_with(folder_resolved) {
-        return true;
-    }
-    let resolved = resolve_path(candidate);
-    resolved == folder_resolved || resolved.starts_with(folder_resolved)
 }
 
 /// Advance `session_id`'s launch epoch when it already has one, without forgetting the task

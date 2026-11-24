@@ -376,14 +376,21 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   (10 idle minutes) is restarted at most 2 times. Whether to restart is asked
   once per expiry: only while every live worker still runs and none waits on
   your approval or answer, and never once the wake has launched; a "no" ends the
-  renewals for good. Every adoption is logged (`Team lead's warm Claude agent
-  adopted.` or `Team lead's warm Claude agent not used (<reason>); starting
-  cold.`, from `providers/warm.rs`), so the wake speed-up can be measured. Each
-  spare is an idle CLI process (about 178–208 MB RSS on a minimal config, one
-  machine). It runs your `SessionStart` hooks when it starts, so a renewal chain
-  can run them in up to three processes per wake, and hook context can be up to
-  10 minutes old when adopted. The spare saves startup (about 1.4 s (est.), one local
-  measurement on plain Claude); with an API
+  renewals for good. Every adoption is logged to stderr, locally only
+  (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
+  not used (<reason>); starting cold.`, from `providers/warm.rs`), followed by
+  the pool's running lifecycle totals since launch (`Lead spares since launch:
+  <started> started, <adopted> adopted, <missed> not used, <expired> expired,
+  <evicted> evicted, <replaced> replaced, <discarded> discarded.`), so spares
+  that expire or are dropped unused stay visible and the wake speed-up can be
+  measured. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
+  default env, ~218–243 MiB with "Turn off agent telemetry" on; Claude Code
+  2.1.325, macOS arm64, n = 12). It runs your `SessionStart` hooks when it
+  starts, so a renewal chain can run them in up to three processes per wake,
+  and hook context can be up to 10 minutes old when adopted. The spare saves
+  the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
+  env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
+  [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API
   key the 5-minute message cache has likely expired before many review wakes, so
   it does not save the history's cache cost, and PandaCode does not set
   `ENABLE_PROMPT_CACHING_1H`. Stopping the task, or the team's Pause or Stop, drops the spare; a

@@ -1,7 +1,7 @@
 //! Where Claude Code looks for its settings: the config folder a launch's environment selects,
 //! the project folders from cwd through the repository root (and a linked worktree's main
 //! checkout), and the host's managed (enterprise) policy locations. Pure discovery; what the
-//! files say is judged in `claude_policy.rs`.
+//! files say is judged in `turn_changes/claude_policy.rs`.
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 

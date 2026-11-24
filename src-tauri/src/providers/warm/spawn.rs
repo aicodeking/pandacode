@@ -295,6 +295,7 @@ pub(super) fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<
         .map(|(old, pending)| (session_id.clone(), old, pending))
         .into_iter()
         .collect();
+    pool.stats_mut(lead).started += 1;
     pool.spares.insert(session_id, spare);
     while pool.spares.values().filter(|spare| spare.lead == lead).count() > limit {
         let Some(oldest) = pool.spares.iter().filter(|(_, spare)| spare.lead == lead).min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };

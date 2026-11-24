@@ -6,8 +6,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use super::claude_roots::managed_entries_match;
-use super::claude_roots::{
+use crate::claude_roots::managed_entries_match;
+use crate::claude_roots::{
     claude_config_dir_value, host_managed_settings_match, project_config_roots,
     resolve_claude_config_dir_env, resolve_claude_config_dir_env_with, same_settings_directory,
     settings_path_absent,

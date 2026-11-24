@@ -16,16 +16,13 @@ pub(crate) fn session_checkout_root(store: &Store, session_id: &str) -> Option<P
     store.project(&task.project_id).ok().map(|project| PathBuf::from(project.path))
 }
 
-/// Whether any of `others` is `root`, literally or once both are canonical.
+/// Whether any of `others` is `root` or lies inside it (an agent working in a subfolder of the
+/// checkout), literally or once both resolve through `providers::exit::resolve_path`, which also
+/// matches a deleted folder recorded under its symlinked or canonical spelling. The same matcher
+/// as folder-scoped spare discard and `await_exits_in`.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
-    let canonical = std::cell::OnceCell::new();
-    others.iter().any(|other| {
-        other == root
-            || other
-                .canonicalize()
-                .ok()
-                .is_some_and(|a| canonical.get_or_init(|| root.canonicalize().ok()).as_ref() == Some(&a))
-    })
+    let root_resolved = providers::exit::resolve_path(root);
+    others.iter().any(|other| providers::exit::path_in_folder(other, root, &root_resolved))
 }
 
 /// Whether any agent (other than `exclude_session`, when given) runs or has a pending exit in any
@@ -248,4 +245,33 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
         providers::quiesce_spares_in(folder).await?;
     }
     refuse_busy().await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::any_same_checkout;
+    use std::path::PathBuf;
+
+    #[test]
+    fn same_checkout_matches_canonical_nested_and_deleted_roots_only() {
+        let base = std::env::temp_dir().join(format!("pandacode-checkout-busy-{}", uuid::Uuid::new_v4().simple()));
+        let root = base.join("repo");
+        let nested = root.join("sub");
+        let sibling = base.join("repo-worktrees").join("pandacode-x");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        assert!(!any_same_checkout(&root, &[]));
+        assert!(any_same_checkout(&root, std::slice::from_ref(&root)));
+        assert!(any_same_checkout(&root, &[root.join(".")]));
+        assert!(any_same_checkout(&root, std::slice::from_ref(&nested)), "a working folder inside the checkout");
+        assert!(!any_same_checkout(&root, std::slice::from_ref(&sibling)), "a sibling worktree is another checkout");
+        assert!(!any_same_checkout(&nested, std::slice::from_ref(&root)), "a parent folder is not inside the root");
+        let canonical_root = root.canonicalize().unwrap();
+        let canonical_nested: PathBuf = canonical_root.join("sub");
+        std::fs::remove_dir_all(&root).unwrap();
+        assert!(any_same_checkout(&root, std::slice::from_ref(&canonical_root)), "a deleted root still matches");
+        assert!(any_same_checkout(&root, &[canonical_nested]));
+        assert!(!any_same_checkout(&root, &[sibling]));
+        let _ = std::fs::remove_dir_all(base);
+    }
 }

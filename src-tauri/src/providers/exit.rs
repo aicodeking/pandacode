@@ -1,7 +1,7 @@
 //! Background exit of clean Claude-family runs: `reap` finishes the process after the run
 //! returns, and `await_exit` makes the next same-session launch wait for it.
 
-use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
+use super::{external_path, redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -117,19 +117,55 @@ pub(crate) async fn await_all_exits(cap: Duration) {
     wait_all(exit_registry(), cap).await;
 }
 
-/// Whether `candidate` lies inside (or equals) `folder`, literally or once both are canonical.
-fn path_within(candidate: &Path, folder: &Path, folder_canonical: Option<&Path>) -> bool {
-    if candidate == folder || candidate.starts_with(folder) {
+/// Best-effort canonical path: uses `canonicalize` when `path` exists, and otherwise
+/// canonicalizes the deepest existing ancestor so deleted folders (e.g. during
+/// `recreate_worktree`) still match spares recorded under a canonical or symlinked spelling.
+pub(crate) fn resolve_path(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return external_path(&canonical);
+    }
+    let mut suffix = Vec::new();
+    let mut cursor = path;
+    loop {
+        if let Ok(canonical) = cursor.canonicalize() {
+            let mut resolved = external_path(&canonical);
+            for component in suffix.into_iter().rev() {
+                match component {
+                    std::path::Component::CurDir => {}
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    other => resolved.push(other.as_os_str()),
+                }
+            }
+            return resolved;
+        }
+        let Some(parent) = cursor.parent() else {
+            return external_path(path);
+        };
+        if let Some(last) = cursor.components().next_back() {
+            suffix.push(last);
+        }
+        if parent == cursor {
+            return external_path(path);
+        }
+        cursor = parent;
+    }
+}
+
+/// Whether `candidate` lies inside (or equals) `folder`, literally or once both resolve
+/// through [`resolve_path`]. `folder_resolved` is `resolve_path(folder)` computed once.
+pub(crate) fn path_in_folder(candidate: &Path, folder: &Path, folder_resolved: &Path) -> bool {
+    let candidate_ext = external_path(candidate);
+    let folder_ext = external_path(folder);
+    if candidate_ext == folder_ext || candidate_ext.starts_with(&folder_ext) {
         return true;
     }
-    let Some(folder_canonical) = folder_canonical else { return false };
-    if candidate == folder_canonical || candidate.starts_with(folder_canonical) {
+    if candidate_ext == folder_resolved || candidate_ext.starts_with(folder_resolved) {
         return true;
     }
-    candidate
-        .canonicalize()
-        .ok()
-        .is_some_and(|resolved| resolved == folder_canonical || resolved.starts_with(folder_canonical))
+    let resolved = resolve_path(candidate);
+    resolved == folder_resolved || resolved.starts_with(folder_resolved)
 }
 
 /// Wait until every pending exit whose recorded working directory lies in `folder` has exited
@@ -166,10 +202,10 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
             }
             let target = folder.clone();
             let matching = tokio::task::spawn_blocking(move || {
-                let canonical = target.canonicalize().ok();
+                let target_resolved = resolve_path(&target);
                 snapshot
                     .into_iter()
-                    .filter(|(_, cwd, _)| path_within(cwd, &target, canonical.as_deref()))
+                    .filter(|(_, cwd, _)| path_in_folder(cwd, &target, &target_resolved))
                     .collect::<Vec<_>>()
             })
             .await

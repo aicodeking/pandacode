@@ -22,12 +22,11 @@ use std::{
 mod host;
 mod team;
 pub(crate) use host::{
-    claude_config_dir_value, claude_restricts_reads, edits_wait_for_run,
-    host_managed_settings_paths, instruction, project_config_roots,
-    resolve_claude_config_dir_env_with, turn_note, with_host, TOOL as TRACK_TOOL,
+    claude_restricts_reads, edits_wait_for_run, instruction, turn_note, with_host,
+    TOOL as TRACK_TOOL,
 };
 #[cfg(test)]
-pub(crate) use host::{edits_wait_for_approval, resolve_claude_config_dir_env};
+pub(crate) use host::edits_wait_for_approval;
 
 #[cfg(test)]
 const FILES: usize = 6000;

@@ -7,11 +7,16 @@
 // Anthropic's telemetry/feature-flag hosts, never the Messages API); `privacy` adds exactly the
 // variables Settings → Agents → "Turn off agent telemetry" injects (`ENVIRONMENT` in
 // src-tauri/src/providers/privacy.rs, drift-guarded by the tests); `offline` adds
-// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 instead. Pure helpers are exported for tests.
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 instead. The `*-resumed` suites launch like a real
+// PandaCode follow-up (`--resume=<id>`) against a one-turn seed transcript in an isolated temporary
+// CLAUDE_CONFIG_DIR; `--no-session-persistence` keeps that transcript byte-identical across every
+// run (sha256 checked before and after), so no pair resumes a longer history than another. Pure
+// helpers are exported for tests.
 //
 //   node scripts/agent-bench/warm-spare-bench.mjs --pairs 12 --out scripts/agent-bench/results/warm-spare-2.1.325.json
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -27,7 +32,10 @@ const EXIT_TIMEOUT_MS = 15_000;
 const PROMPT = 'Reply with ok';
 const DUMMY_KEY = 'sk-ant-bench-dummy';
 const SEED = 0x5a7e;
-export const SUITES = ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user'];
+export const SUITES = ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'];
+/** The one exchange written into a resumed suite's seed transcript before any measured run. */
+export const SEED_PROMPT = 'Remember the word kiwi. Reply with ok';
+export const SEED_TURNS = 1;
 export const LAUNCH_ENVS = ['default', 'privacy', 'offline'];
 /** `ENVIRONMENT` in src-tauri/src/providers/privacy.rs, in order: what "Turn off agent telemetry" sets on every harness process. */
 export const PRIVACY_ENV = Object.freeze({
@@ -46,11 +54,15 @@ export const OFFLINE_ENV = Object.freeze({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAF
 
 // ---------- pure helpers ----------
 
-/** Split a suite name into its launch env and config: `default-user` → { env: 'default', minimal: false }. */
+/**
+ * Split a suite name into its launch env and config: `default-user` → { env: 'default', minimal: false }.
+ * `*-resumed` suites use the minimal config plus `--resume=<id>` in an isolated CLAUDE_CONFIG_DIR.
+ */
 export function suiteParts(name) {
   if (!SUITES.includes(name)) throw new Error(`unknown suite ${name}`);
   const [env, config] = name.split('-');
-  return { env, privacy: env === 'privacy', offline: env === 'offline', minimal: config === 'minimal' };
+  const resumed = config === 'resumed';
+  return { env, privacy: env === 'privacy', offline: env === 'offline', minimal: config === 'minimal' || resumed, resumed };
 }
 
 /** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`. */
@@ -220,6 +232,7 @@ function messagesStub(counts) {
       if (req.method !== 'POST' || path !== '/v1/messages') return json(res, {});
       let parsed = {};
       try { parsed = JSON.parse(body); } catch { /* fall through with defaults */ }
+      if (Array.isArray(parsed.messages)) counts.messageCounts.push(parsed.messages.length);
       const model = parsed.model ?? 'claude-sonnet-bench';
       const id = `msg_bench_${Date.now()}`;
       const usage = { input_tokens: 10, output_tokens: 1, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
@@ -380,42 +393,125 @@ export function launchEnv(apiPort, launch, parent = process.env) {
   return { ...env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${apiPort}`, ANTHROPIC_API_KEY: DUMMY_KEY, ...extra };
 }
 
-export function claudeArgs({ instructions, mcpConfig, minimal }) {
+/** PandaCode's stream-json launch; `resume` adds `--resume=<id>` as `providers.rs` does (the bench keeps `--no-session-persistence` so the seed transcript never grows). */
+export function claudeArgs({ instructions, mcpConfig, minimal, resume = null }) {
   return [
     '-p', '--output-format', 'stream-json', '--input-format', 'stream-json', '--verbose', '--include-partial-messages', '--replay-user-messages',
     '--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions', '--disallowedTools=ScheduleWakeup,Monitor,CronCreate',
     ...(minimal ? ['--setting-sources', 'project', '--strict-mcp-config'] : []),
+    ...(resume ? [`--resume=${resume}`] : []),
     '--mcp-config', mcpConfig, '--no-session-persistence', '--model', 'sonnet', '--append-system-prompt', instructions,
   ];
+}
+
+/** The seed turn of a resumed suite: one plain `-p` exchange that persists its session (no `--no-session-persistence`). */
+export function seedArgs() {
+  return ['-p', SEED_PROMPT, '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config', '--model', 'sonnet'];
+}
+
+/** sha256 of every `.jsonl` transcript under `projectsDir`, keyed by relative path (sorted). */
+export function transcriptDigest(projectsDir) {
+  let files = [];
+  try { files = readdirSync(projectsDir, { recursive: true }).map(String).filter(f => f.endsWith('.jsonl')).sort(); } catch { return {}; }
+  return Object.fromEntries(files.map(f => [f.split(/[\\/]/).pop(), createHash('sha256').update(readFileSync(join(projectsDir, f))).digest('hex')]));
+}
+
+/** Run the seed turn in `cwd` with `env` (which carries the temporary CLAUDE_CONFIG_DIR); returns its session id. */
+function runSeed(cwd, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('claude', seedArgs(), { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    children.add(child);
+    let stdout = ''; let stderr = '';
+    child.stdout.on('data', c => { stdout += c; });
+    child.stderr.on('data', c => { stderr = (stderr + c).slice(-2000); });
+    const timer = setTimeout(() => child.kill('SIGKILL'), RUN_TIMEOUT_MS);
+    child.on('error', reject);
+    child.on('exit', code => {
+      clearTimeout(timer); children.delete(child);
+      let result = null;
+      try { result = JSON.parse(stdout); } catch { /* reported below */ }
+      if (code !== 0 || !result?.session_id || result.is_error) return reject(new Error(`seed turn failed (code ${code}): ${scrub(stderr.slice(-300), process.env.HOME)}`));
+      resolve(result.session_id);
+    });
+  });
+}
+
+/**
+ * The temporary folder's `.claude.json`: the machine's `~/.claude.json` (what the other suites read)
+ * without its `projects` map. Without the cached account and feature state in it, every turn of a
+ * fresh folder awaits a bootstrap fetch that a dummy key can never satisfy, which no real folder does.
+ */
+export function mirroredClaudeJson(text) {
+  let parsed = null;
+  try { parsed = JSON.parse(text); } catch { return {}; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+  const { projects: _projects, ...rest } = parsed;
+  return rest;
+}
+
+/** A resumed suite's isolated config folder with one seeded session: env, session id and the transcript digest. */
+async function seedResumed(name, cwd, baseEnv) {
+  const configDir = mkdtempSync(join(tmpdir(), `warm-spare-${name}-config-`));
+  tempDirs.add(configDir);
+  let source = '';
+  try { source = readFileSync(join(baseEnv.HOME ?? '', '.claude.json'), 'utf8'); } catch { /* no user state: an empty folder */ }
+  const mirror = mirroredClaudeJson(source);
+  writeFileSync(join(configDir, '.claude.json'), JSON.stringify(mirror), { mode: 0o600 });
+  const env = { ...baseEnv, CLAUDE_CONFIG_DIR: configDir };
+  const sessionId = await runSeed(cwd, env);
+  const digest = transcriptDigest(join(configDir, 'projects'));
+  if (!Object.keys(digest).some(f => f === `${sessionId}.jsonl`)) throw new Error(`seed transcript for ${sessionId} not found in the temporary config folder`);
+  return { configDir, env, sessionId, digest, mirrored: Object.keys(mirror).length > 0 };
 }
 
 async function runSuite(name, pairs, ctx) {
   const cwd = mkdtempSync(join(tmpdir(), `warm-spare-${name}-`));
   tempDirs.add(cwd);
-  const { env: launch, minimal } = suiteParts(name);
-  const args = claudeArgs({ ...ctx, minimal });
-  const env = launchEnv(ctx.apiPort, launch);
+  const { env: launch, minimal, resumed } = suiteParts(name);
+  ctx.counts.api = {}; ctx.counts.mcp = {}; ctx.counts.messageCounts = [];
+  const seed = resumed ? await seedResumed(name, cwd, launchEnv(ctx.apiPort, launch)) : null;
+  const seedMessages = seed ? ctx.counts.messageCounts.at(-1) ?? null : null;
+  const args = claudeArgs({ ...ctx, minimal, resume: seed?.sessionId });
+  const env = seed ? seed.env : launchEnv(ctx.apiPort, launch);
   ctx.counts.api = {}; ctx.counts.mcp = {};
   const runs = [];
   const orders = [['cold', 'warm'], ...pairOrders(pairs, SEED + SUITES.indexOf(name))];
   for (let i = 0; i < orders.length; i++) {
     for (const arm of orders[i]) {
+      ctx.counts.messageCounts = [];
       const r = await runOnce({ arm, args, env, cwd });
-      const row = { suite: name, pair: i, warmup: i === 0, ...r, error: r.error && scrub(r.error, process.env.HOME) };
+      const resumedMessages = seed ? Math.max(0, ...ctx.counts.messageCounts) : undefined;
+      if (seed && r.error == null && !(resumedMessages > seedMessages)) r.error = `resume not loaded: request held ${resumedMessages} messages, seed request ${seedMessages}`;
+      const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
       runs.push(row);
       process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
     }
   }
+  let seedInfo = null;
+  if (seed) {
+    const after = transcriptDigest(join(seed.configDir, 'projects'));
+    const unchanged = JSON.stringify(after) === JSON.stringify(seed.digest);
+    if (!unchanged) throw new Error(`${name}: the seed transcript changed during the suite`);
+    seedInfo = {
+      turns: SEED_TURNS, prompt: SEED_PROMPT, seed_request_messages: seedMessages,
+      resumed_request_messages: [...new Set(runs.filter(r => !r.error).map(r => r.api_messages))],
+      transcript_sha256: seed.digest[`${seed.sessionId}.jsonl`], transcript_unchanged: unchanged,
+      config_dir: 'temporary CLAUDE_CONFIG_DIR, deleted after the suite',
+      config_state: seed.mirrored ? "the machine's ~/.claude.json without its projects map (cached account and feature state, as the other suites read it); no other user files" : 'empty (no ~/.claude.json found)',
+    };
+    rmSync(seed.configDir, { recursive: true, force: true });
+    tempDirs.delete(seed.configDir);
+  }
   rmSync(cwd, { recursive: true, force: true });
   tempDirs.delete(cwd);
-  return { runs, summary: summarize(runs), stub_requests: { messages_api: ctx.counts.api, mcp: ctx.counts.mcp } };
+  return { runs, summary: summarize(runs), stub_requests: { messages_api: ctx.counts.api, mcp: ctx.counts.mcp }, ...(seedInfo ? { seed: seedInfo } : {}) };
 }
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const version = execFileSync('claude', ['--version'], { encoding: 'utf8' }).trim();
   const instructions = leadInstructions();
-  const counts = { api: {}, mcp: {} };
+  const counts = { api: {}, mcp: {}, messageCounts: [] };
   const token = `bench-${Math.random().toString(36).slice(2)}`;
   const api = messagesStub(counts); const mcp = mcpServer(counts, token);
   const apiPort = await listen(api); const mcpPort = await listen(mcp);
@@ -439,10 +535,13 @@ async function main() {
     app_instructions_bytes: Buffer.byteLength(instructions, 'utf8'),
     flags: claudeArgs({ instructions: '<app_instructions>', mcpConfig: '<http-mcp-json>', minimal: false }),
     minimal_extra_flags: ['--setting-sources', 'project', '--strict-mcp-config'],
+    resumed_extra_flags: ['--resume=<seed session id>'],
+    seed_flags: seedArgs(),
     env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:<port>', ANTHROPIC_API_KEY: DUMMY_KEY, inherited: 'PATH, HOME, USER, SHELL, TMPDIR, LANG only', privacy_extra: { ...PRIVACY_ENV }, privacy_source: 'src-tauri/src/providers/privacy.rs ENVIRONMENT', offline_extra: { ...OFFLINE_ENV } },
     suites: Object.fromEntries(Object.keys(suites).map(k => [k, suiteParts(k)])),
-    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
+    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. *-resumed suites (default or privacy env, minimal config) first run one seed turn (a single short exchange, persisted) in a fresh temporary CLAUDE_CONFIG_DIR, then launch every cold and warm run with --resume=<seed session id> plus --no-session-persistence, so each resumes the same byte-identical one-turn transcript (the temporary folder holds a copy of ~/.claude.json without its projects map, so cached account and feature state match the other suites; with an empty folder every turn awaits a bootstrap fetch the dummy key cannot satisfy) (sha256 checked after the suite; each run\'s Messages API request must carry more messages than the seed request, proving the history loaded); long real histories are unmeasured. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
     stub_requests: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.stub_requests])),
+    seeds: Object.fromEntries(Object.entries(suites).filter(([, v]) => v.seed).map(([k, v]) => [k, v.seed])),
     summary: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.summary])),
     runs: Object.values(suites).flatMap(v => v.runs),
   };

@@ -530,6 +530,37 @@ test('re-picking the current model never calls configure_session, so a managed w
   expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet' });
 });
 
+test('re-picking the current model while on a named team leaves the team without configure_session', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'codex'));
+  await open(page, '/?teams', source => {
+    const patched = source.replace(/switch\s*\(command\)\s*\{/, '(window.__pickerCalls ??= []).push({ command, args }); switch (command) {');
+    if (patched === source) throw new Error('preview command switch not found');
+    return patched;
+  });
+  const calls = (name: string) => page.evaluate(n => ((window as any).__pickerCalls ?? []).filter((c: any) => c.command === n).map((c: any) => c.args), name);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(trigger(page)).toContainText('Ship crew');
+  // Ship crew's architect is Claude Code · Claude Opus 5, which the task now runs on.
+  await expect.poll(async () => (await task(page)).model).toBe('opus');
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'opus' });
+  const configuresBefore = (await calls('configure_session')).length;
+  const leavesBefore = (await calls('architect_configure')).filter((a: any) => a.config === null).length;
+
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(trigger(page)).not.toContainText('Ship crew');
+  await expect.poll(async () => (await calls('architect_configure')).filter((a: any) => a.config === null).length).toBe(leavesBefore + 1);
+  expect((await calls('architect_configure')).at(-1)).toMatchObject({ sessionId: 'session-1', config: null });
+  expect((await calls('configure_session')).length).toBe(configuresBefore);
+  await expect.poll(() => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') })))
+    .toEqual({ provider: 'claude', model: 'opus' });
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'opus' });
+});
+
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
 
 async function pick(page: Page, query: string, name: string): Promise<void> {

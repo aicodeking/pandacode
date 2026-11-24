@@ -85,9 +85,9 @@ pub(crate) fn oauth_token(inherit: bool, env: impl Fn(&str) -> Option<String>, s
 /// them over the user's own. A connection set there (an `apiKeyHelper`, say)
 /// makes the setup "not your subscription", so PandaCode never runs Claude
 /// Code for it, and so never runs that helper unattended. The same list the
-/// permission policy and warm key use (`turn_changes::host_managed_settings_paths`).
+/// permission policy and warm key use (`claude_roots::host_managed_settings_paths`).
 pub(crate) fn managed_settings_paths() -> Vec<PathBuf> {
-    crate::turn_changes::host_managed_settings_paths().unwrap_or_default()
+    crate::claude_roots::host_managed_settings_paths().unwrap_or_default()
 }
 
 /// `settings` with an administrator's `managed` ones laid over it, as Claude

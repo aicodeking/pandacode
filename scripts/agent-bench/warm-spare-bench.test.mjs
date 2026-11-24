@@ -1,20 +1,24 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
-  bootstrapMedianCi, claudeArgs, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
+  bootstrapMedianCi, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   rssKibToMib, rustFnStr, rustStr, scrub, summarize, treeRssMib, unescapeRust,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
-  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user'] });
+  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'] });
+  assert.deepEqual(parseArgs(['--suites', 'privacy-resumed,default-resumed']).suites, ['privacy-resumed', 'default-resumed']);
   assert.deepEqual(parseArgs(['--suites', 'privacy-user,privacy-minimal']).suites, ['privacy-user', 'privacy-minimal']);
   assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'] });
   assert.throws(() => parseArgs(['--suites', 'user']), /default-minimal/);
   assert.throws(() => parseArgs(['--pairs', '0']), /positive integer/);
   assert.throws(() => parseArgs(['--pairs', '2.5']), /positive integer/);
   assert.throws(() => parseArgs(['--out']), /needs a path/);
-  assert.throws(() => parseArgs(['--suites', 'other']), /offline-user/);
+  assert.throws(() => parseArgs(['--suites', 'other']), /privacy-resumed/);
+  assert.throws(() => parseArgs(['--suites', 'offline-resumed']), /--suites takes/);
   assert.throws(() => parseArgs(['--nope']), /unknown flag/);
 });
 
@@ -124,6 +128,50 @@ test('claudeArgs carries PandaCode flags and only the minimal suite isolates set
   assert.ok(!user.includes('--strict-mcp-config') && !user.includes('--setting-sources'));
   assert.ok(minimal.includes('--strict-mcp-config'));
   assert.equal(minimal[minimal.indexOf('--setting-sources') + 1], 'project');
+  assert.ok(!user.some(a => a.startsWith('--resume')) && !minimal.some(a => a.startsWith('--resume')));
+});
+
+test('claudeArgs resumes like providers.rs (--resume=<id>) and still keeps the transcript unwritten', () => {
+  const args = claudeArgs({ instructions: 'I', mcpConfig: '{}', minimal: true, resume: 'abc-123' });
+  assert.equal(args.filter(a => a.startsWith('--resume')).length, 1);
+  assert.ok(args.includes('--resume=abc-123'));
+  assert.ok(args.includes('--no-session-persistence'), 'every resumed run must leave the seed transcript byte-identical');
+  assert.ok(args.includes('--strict-mcp-config'));
+  assert.deepEqual(claudeArgs({ instructions: 'I', mcpConfig: '{}', minimal: true }), claudeArgs({ instructions: 'I', mcpConfig: '{}', minimal: true, resume: null }));
+});
+
+test('seedArgs persists exactly one short exchange with the minimal config', () => {
+  const args = seedArgs();
+  assert.equal(SEED_TURNS, 1);
+  assert.equal(args[args.indexOf('-p') + 1], SEED_PROMPT);
+  assert.ok(!args.includes('--no-session-persistence'), 'the seed must be written so it can be resumed');
+  assert.ok(!args.some(a => a.startsWith('--resume')));
+  assert.equal(args[args.indexOf('--output-format') + 1], 'json');
+  assert.equal(args[args.indexOf('--setting-sources') + 1], 'project');
+  assert.ok(args.includes('--strict-mcp-config'));
+});
+
+test('transcriptDigest hashes every .jsonl by file name and sees any change', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warm-spare-digest-'));
+  try {
+    assert.deepEqual(transcriptDigest(join(dir, 'missing')), {});
+    mkdirSync(join(dir, 'proj-a'), { recursive: true });
+    writeFileSync(join(dir, 'proj-a', 's1.jsonl'), '{"a":1}\n');
+    writeFileSync(join(dir, 'proj-a', 'notes.txt'), 'x');
+    const before = transcriptDigest(dir);
+    assert.deepEqual(Object.keys(before), ['s1.jsonl']);
+    assert.match(before['s1.jsonl'], /^[0-9a-f]{64}$/);
+    assert.deepEqual(transcriptDigest(dir), before);
+    writeFileSync(join(dir, 'proj-a', 's1.jsonl'), '{"a":1}\n{"b":2}\n');
+    assert.notDeepEqual(transcriptDigest(dir), before);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('mirroredClaudeJson drops the projects map and tolerates bad input', () => {
+  assert.deepEqual(mirroredClaudeJson(JSON.stringify({ projects: { '/x': {} }, hasCompletedOnboarding: true, cachedGrowthBookFeatures: { f: 1 } })), { hasCompletedOnboarding: true, cachedGrowthBookFeatures: { f: 1 } });
+  assert.deepEqual(mirroredClaudeJson(''), {});
+  assert.deepEqual(mirroredClaudeJson('[1]'), {});
+  assert.deepEqual(mirroredClaudeJson('null'), {});
 });
 
 test('scrub removes the home directory', () => {
@@ -132,10 +180,12 @@ test('scrub removes the home directory', () => {
 });
 
 test('suiteParts splits each suite into launch env and config', () => {
+  assert.deepEqual(SUITES, ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed']);
   assert.deepEqual(SUITES.map(suiteParts), [
-    { env: 'default', privacy: false, offline: false, minimal: true }, { env: 'default', privacy: false, offline: false, minimal: false },
-    { env: 'privacy', privacy: true, offline: false, minimal: true }, { env: 'privacy', privacy: true, offline: false, minimal: false },
-    { env: 'offline', privacy: false, offline: true, minimal: true }, { env: 'offline', privacy: false, offline: true, minimal: false },
+    { env: 'default', privacy: false, offline: false, minimal: true, resumed: false }, { env: 'default', privacy: false, offline: false, minimal: false, resumed: false },
+    { env: 'privacy', privacy: true, offline: false, minimal: true, resumed: false }, { env: 'privacy', privacy: true, offline: false, minimal: false, resumed: false },
+    { env: 'offline', privacy: false, offline: true, minimal: true, resumed: false }, { env: 'offline', privacy: false, offline: true, minimal: false, resumed: false },
+    { env: 'default', privacy: false, offline: false, minimal: true, resumed: true }, { env: 'privacy', privacy: true, offline: false, minimal: true, resumed: true },
   ]);
   for (const s of SUITES) assert.ok(LAUNCH_ENVS.includes(suiteParts(s).env), s);
   assert.throws(() => suiteParts('minimal'), /unknown suite/);
@@ -178,7 +228,8 @@ test('PRIVACY_ENV matches providers/privacy.rs ENVIRONMENT exactly (drift guard)
 
 test('recorded results cover every suite, carry the privacy env and no personal paths', () => {
   const text = readFileSync(new URL('./results/warm-spare-2.1.325.json', import.meta.url), 'utf8');
-  assert.ok(!/\/Users\/|\/home\/[^/\s"]+\//.test(text), 'results must not hold a home directory');
+  assert.ok(!/\/Users\/|\/home\/[^/\s"]+\/|\/private\/var\/folders\/|\/var\/folders\//.test(text), 'results must not hold a home or temporary directory');
+  assert.ok(!/@[a-z0-9-]+\.[a-z]{2,}/i.test(text), 'results must not hold an email address');
   const report = JSON.parse(text);
   assert.equal(report.benchmark, 'warm-spare-bench');
   assert.match(report.claude_version, /^2\.1\.325\b/);
@@ -191,6 +242,27 @@ test('recorded results cover every suite, carry the privacy env and no personal 
     assert.equal(s.runs, report.pairs * 2, suite);
     assert.equal(s.saving_result_ms.pairs, report.pairs, suite);
     for (const key of ['median', 'mean', 'wilcoxon_p']) assert.equal(typeof s.saving_result_ms[key], 'number', `${suite} ${key}`);
+    assert.equal(s.errors, 0, suite);
+    assert.equal(s.exit_code_0, `${s.runs}/${s.runs}`, suite);
+    assert.equal(s.exited_within_wait, `${s.runs}/${s.runs}`, suite);
+    assert.equal(typeof s.warm.idle_rss_mib.median, 'number', suite);
   }
-  assert.equal(report.runs.filter(r => !r.warmup).length, SUITES.length * report.pairs * 2);
+  const measured = report.runs.filter(r => !r.warmup);
+  assert.equal(measured.length, SUITES.length * report.pairs * 2);
+  assert.ok(measured.every(r => r.error === null && r.exit_code === 0), 'every measured run exits 0 without error');
+  assert.deepEqual(report.resumed_extra_flags, ['--resume=<seed session id>']);
+  assert.deepEqual(report.seed_flags, seedArgs());
+  const resumed = SUITES.filter(s => suiteParts(s).resumed);
+  assert.deepEqual(Object.keys(report.seeds), resumed);
+  for (const suite of resumed) {
+    const seed = report.seeds[suite];
+    assert.equal(seed.turns, 1, suite);
+    assert.equal(seed.prompt, SEED_PROMPT, suite);
+    assert.equal(seed.transcript_unchanged, true, `${suite}: every run resumed the same byte-identical transcript`);
+    assert.match(seed.transcript_sha256, /^[0-9a-f]{64}$/, suite);
+    assert.deepEqual(seed.resumed_request_messages.length, 1, `${suite}: every run resumed the same history`);
+    assert.ok(seed.resumed_request_messages[0] > seed.seed_request_messages, `${suite}: the resumed history reached the API`);
+    for (const r of report.runs.filter(x => x.suite === suite)) assert.equal(r.api_messages, seed.resumed_request_messages[0], `${suite} pair ${r.pair} ${r.arm}`);
+  }
+  for (const r of report.runs.filter(x => !suiteParts(x.suite).resumed)) assert.equal(r.api_messages, undefined);
 });

@@ -26,6 +26,7 @@ mod browser;
 mod child_env;
 mod checks;
 mod checkout_busy;
+mod claude_roots;
 mod code_search;
 mod connections;
 mod crash_guard;
@@ -966,10 +967,26 @@ fn configure_session_with(
     project_id: Option<&str>,
     invalidate_warm: impl FnOnce(&str),
 ) -> Result<Session> {
+    update_session_preserving_warm(
+        store,
+        session_id,
+        |store| store.configure(session_id, provider, model, project_id),
+        invalidate_warm,
+    )
+}
+/// Runs `update` on the task's row under the store lock, then, with the lock released,
+/// discards its warm spare only when `session_launch_changed` says the launch settings
+/// moved. Callers hold turn admission (`agents`) so a new turn's epoch cannot be clobbered.
+fn update_session_preserving_warm(
+    store: &Mutex<Store>,
+    session_id: &str,
+    update: impl FnOnce(&Store) -> Result<Session>,
+    invalidate_warm: impl FnOnce(&str),
+) -> Result<Session> {
     let (session, reconfigured) = {
         let store = store.lock().map_err(|e| e.to_string())?;
         let before = store.session(session_id)?;
-        let session = store.configure(session_id, provider, model, project_id)?;
+        let session = update(&store)?;
         let reconfigured = session_launch_changed(&before, &session);
         (session, reconfigured)
     };
@@ -992,19 +1009,15 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    let (session, reconfigured) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        let before = store.session(&session_id)?;
-        let session = store.set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
-        let reconfigured = session_launch_changed(&before, &session);
-        (session, reconfigured)
-    };
     // Like a model change: a lead's spare launched at the old effort could renew until its next wake.
-    if reconfigured {
-        providers::invalidate_warm_agent(&session_id);
-    }
+    let session = update_session_preserving_warm(
+        &state.store,
+        &session_id,
+        |store| store.set_reasoning_effort(&session_id, reasoning_effort.as_deref()),
+        providers::invalidate_warm_agent,
+    );
     drop(agents);
-    Ok(session)
+    session
 }
 /// Whether a settings change alters how the task's agent launches, so a warm spare
 /// started with the old settings must be discarded. Re-picking the current mode, model
@@ -1092,6 +1105,42 @@ mod session_launch_tests {
         let (session, invalidated) = configure("codex", "opus", None);
         assert_eq!(session.provider, "codex");
         assert_eq!(invalidated, [sid.as_str()]);
+    }
+
+    #[test]
+    fn reasoning_effort_update_preserves_warm_spare_on_noop_and_invalidates_on_change() {
+        let dir = std::env::temp_dir().join(format!("pandacode-effort-warm-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&dir).unwrap();
+        let created = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+        let sid = created.id.clone();
+        let store = Mutex::new(store);
+        let set_effort = |effort: Option<&str>| {
+            let mut invalidated = Vec::new();
+            let session = update_session_preserving_warm(
+                &store,
+                &sid,
+                |store| store.set_reasoning_effort(&sid, effort),
+                |id| invalidated.push(id.to_string()),
+            )
+            .unwrap();
+            (session, invalidated)
+        };
+
+        let (session, invalidated) = set_effort(created.reasoning_effort.as_deref());
+        assert!(invalidated.is_empty(), "re-picking the current effort keeps the warm spare");
+        assert_eq!(session.reasoning_effort, created.reasoning_effort);
+
+        let other = if created.reasoning_effort.as_deref() == Some("high") { "low" } else { "high" };
+        let (session, invalidated) = set_effort(Some(other));
+        assert_eq!(session.reasoning_effort.as_deref(), Some(other));
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        let (_, invalidated) = set_effort(Some(other));
+        assert!(invalidated.is_empty(), "repeating the new effort keeps the warm spare");
     }
 }
 #[tauri::command]

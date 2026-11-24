@@ -144,16 +144,16 @@ pub(super) fn claude_config_fingerprint(config: &RunConfig, connection: Option<&
         })
     });
     let inherited = std::env::var_os(CLAUDE_CONFIG_DIR);
-    let empty_config = crate::turn_changes::claude_config_dir_value(&env, cfg!(windows))
+    let empty_config = crate::claude_roots::claude_config_dir_value(&env, cfg!(windows))
         .map_or_else(|| inherited.as_deref().is_some_and(std::ffi::OsStr::is_empty), str::is_empty);
-    let user_dir = crate::turn_changes::resolve_claude_config_dir_env_with(
+    let user_dir = crate::claude_roots::resolve_claude_config_dir_env_with(
         &env,
         inherited.as_deref(),
         &config.cwd,
         cfg!(windows),
     );
     let home_claude = crate::account_config::home(&env).map(|home| home.join(".claude"));
-    let managed = crate::turn_changes::host_managed_settings_paths();
+    let managed = crate::claude_roots::host_managed_settings_paths();
     claude_config_fingerprint_with(
         &config.cwd,
         user_config_root(user_dir.as_deref(), empty_config, secret_config),
@@ -220,7 +220,7 @@ pub(super) fn claude_config_fingerprint_with(
         ),
         (UserConfigRoot::EmptyConfigDir, None) | (UserConfigRoot::Unresolvable, _) => return None,
     };
-    let roots = crate::turn_changes::project_config_roots(cwd);
+    let roots = crate::claude_roots::project_config_roots(cwd);
     let above_project = roots
         .ancestors
         .last()
@@ -301,7 +301,7 @@ pub(super) fn claude_config_dir_from_with(
     ignore_case: bool,
 ) -> Option<PathBuf> {
     let env = claude_launch_env(provider_env, connection);
-    crate::turn_changes::resolve_claude_config_dir_env(&env, cwd, ignore_case)
+    crate::claude_roots::resolve_claude_config_dir_env(&env, cwd, ignore_case)
 }
 
 /// The saved environment, then the connection's variables and its own config folder, in the
