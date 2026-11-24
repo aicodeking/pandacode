@@ -317,8 +317,14 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
 - **Warm Claude spares (on by default).** Settings → Agents → **Warm Claude spares**
   keeps idle Claude Code processes ready after successful turns, about 230–255 MiB
   each on fresh or short sessions (Claude Code 2.1.325; long resumed histories,
-  plugins or extra MCP servers can use more), up to 4 in total. A waiting team
-  lead can renew its spare twice. Turning the switch off immediately retires idle
+  plugins or extra MCP servers can use more), up to 4 in total (2 ordinary idle
+  spares and 2 for team leads). At most 2 per pool start at once, so turns that finish
+  together don't spawn unbounded processes; when more than 2 threads take turns,
+  the newest spare evicts the oldest idle one. A waiting team lead can renew its
+  spare twice. A spare snapshots git status when it starts: a branch switch or
+  commit makes the next turn start a fresh process, but uncommitted
+  working-tree status in Claude's initial context can be up to 10 minutes old
+  when a spare is adopted. Turning the switch off immediately retires idle
   spares and cancels pending renewals. The off setting is the empty
   `warm-spares-off` file in PandaCode's app data; an unreadable setting also
   disables spares. Each spare is a real Claude Code start, so before you send
@@ -327,8 +333,9 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   **Turn off agent telemetry** is on), starts the user and project MCP servers
   configured in Claude Code (remote MCP servers may connect in the background),
   and runs your `SessionStart` hooks (which may run commands or make network
-  requests) ahead of the next turn; no prompt is sent and no tokens or quota are
-  used. See [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
+  requests) ahead of the next turn. No prompt is sent: with a local loopback
+  stub, no Messages API call was made until a message was sent (live Claude
+  sign-in startup traffic was not measured). See [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a
   read-only search, outline and read tool agents call with no approval prompt;
   it refuses secret files. For Claude Code, PandaCode honors user, project,
@@ -346,12 +353,18 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
 **Warm Claude spares** (on by default) make background startup traffic that is
 not anonymous, so they are not in the table below: after each successful
 plain-Claude turn (a waiting team lead's spare can restart twice) PandaCode
-starts an idle Claude Code process (up to 4 in all). Like any Claude Code
+starts an idle Claude Code process (up to 4 idle in all: 2 ordinary and 2 for
+team leads, with at most 2 per pool starting at once; when more than 2 threads
+take turns, the newest spare evicts the oldest idle one). Like any Claude Code
 start, it contacts Anthropic under your Claude login (`HEAD /api/hello`, plus
 Claude Code's telemetry and feature flags unless **Turn off agent telemetry**
 is on), starts the user and project MCP servers configured in Claude Code
 (remote ones may connect in the background), and runs your `SessionStart`
-hooks. No prompt is sent and no tokens or quota are used. Nothing starts while
+hooks. No prompt is sent (verified with a local loopback stub: no Messages API
+call is made until you send a message; live Claude sign-in startup traffic was
+not measured). Its initial git status is a snapshot from when it started: a
+branch switch or commit starts a fresh process, but uncommitted working-tree
+status can be up to 10 minutes old when a spare is adopted. Nothing starts while
 Settings → Agents → **Warm Claude spares** is off, and turning it off stops idle
 spares at once.
 

@@ -93,7 +93,15 @@ pub(super) async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<V
         if launch == 0 || epoch(&session_id) != launch {
             return Ok(());
         }
-        InFlight::enter_locked(life.pool, &mut pool, session_id.clone(), cwd_path.clone())
+        // A burst of turns ending together never starts more processes (and `SessionStart`
+        // hooks) than the pool keeps. The task's own entries are not counted: a renewal holds
+        // its expiry token through this start, and a newer start replaces its spare anyway.
+        let lead = renew.is_some();
+        let limit = if lead { LEAD_LIMIT } else { LIMIT };
+        if in_flight(&pool, &session_id, lead) >= limit {
+            return Ok(());
+        }
+        InFlight::enter_locked(life.pool, &mut pool, session_id.clone(), cwd_path.clone(), lead)
     };
     // What a renewal starts again with, unchanged: no turn launched in between.
     // `inputs` reads files, so on a blocking thread.
@@ -161,6 +169,11 @@ pub(super) async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<V
         drop(renewing);
     });
     Ok(())
+}
+
+/// Other tasks' starts (and lead renewal checks) in flight for the ordinary or lead pool.
+fn in_flight(pool: &Spares, session_id: &str, lead: bool) -> usize {
+    pool.starting.values().filter(|(id, _, is_lead)| *is_lead == lead && id != session_id).count()
 }
 
 /// Claude Code's process for a spare, with a placeholder tool server; `None` for a launch

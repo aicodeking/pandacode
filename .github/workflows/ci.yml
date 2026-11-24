@@ -180,13 +180,27 @@ jobs:
       # executed natively in CI rather than only clippy-checked. libtest ORs the filters as
       # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
       # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
-      # that matched nothing would pass with `0 passed`, so require at least one test to have run.
+      # that matched little would still pass, so require at least 200 passed tests (macOS runs ~247,
+      # Windows ~207) and that warm, exit and claude_roots tests each ran, so a `#[cfg]` slip that
+      # drops them on one platform fails here. Portable to macOS bash and Git Bash (awk, grep -F).
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
         run: |
           cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: session_launch_tests:: cloud::colab::tests:: 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
-          grep -qE 'test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/platform-tests.log"
+          log="$RUNNER_TEMP/platform-tests.log"
+          passed=$(awk '/^test result: ok\. [0-9]+ passed/ { sum += $4 } END { print sum + 0 }' "$log")
+          echo "Platform Rust unit tests passed: $passed"
+          if [ "$passed" -lt 200 ]; then
+            echo "::error::Only $passed platform Rust unit tests passed (expected at least 200): a filter or #[cfg] dropped tests"
+            exit 1
+          fi
+          for module in 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
+            if ! grep -qF "test $module" "$log"; then
+              echo "::error::No $module tests ran on this platform"
+              exit 1
+            fi
+          done
       # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
       # null default captures silence, and its hint makes cpal list `default` as the default input.
       # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the

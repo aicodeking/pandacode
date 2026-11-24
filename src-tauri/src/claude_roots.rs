@@ -178,7 +178,7 @@ pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Opti
     if !common.is_dir() {
         return Err("invalid common gitdir");
     }
-    let (bare, worktree) = git_core_checkout(&read_git_metadata(&common.join("config"))?)?;
+    let (bare, worktree) = git_core_checkout(&read_git_config(&common.join("config"))?)?;
     if let Some(worktree) = worktree {
         // Path handles native drive letters, separators and UNC prefixes on Windows. In
         // particular, do not split paths on ':' or replace backslashes with Unix separators.
@@ -319,19 +319,34 @@ pub(crate) fn git_config_value(value: &str) -> std::result::Result<String, &'sta
     Ok(decoded)
 }
 
+/// Bound for Git's small path-pointer files (`.git` gitfile, `commondir`).
+const MAX_GIT_METADATA_BYTES: u64 = 16 * 1024;
+/// Bound for a common `config`: one `[branch]`/`[remote]` section per branch makes it grow far
+/// past the pointer files (16 KiB is only ~180 branches), and an oversize one disables explore.
+const MAX_GIT_CONFIG_BYTES: u64 = 1024 * 1024;
+
 /// Git's small path-pointer files are bounded independently of JSON settings, even if they
 /// grow after stat. Symlinks must resolve to readable regular files.
 pub(crate) fn read_git_metadata(path: &Path) -> std::result::Result<String, &'static str> {
+    read_git_file(path, MAX_GIT_METADATA_BYTES)
+}
+
+/// A common gitdir's `config`, bounded at `MAX_GIT_CONFIG_BYTES`; over it fails closed.
+pub(crate) fn read_git_config(path: &Path) -> std::result::Result<String, &'static str> {
+    read_git_file(path, MAX_GIT_CONFIG_BYTES)
+}
+
+/// A regular UTF-8 file of at most `limit` bytes, checked at stat and again while reading.
+fn read_git_file(path: &Path, limit: u64) -> std::result::Result<String, &'static str> {
     use std::io::Read;
-    const LIMIT: u64 = 16 * 1024;
     let metadata = std::fs::metadata(path).map_err(|_| "unreadable worktree metadata")?;
-    if !metadata.is_file() || metadata.len() > LIMIT {
+    if !metadata.is_file() || metadata.len() > limit {
         return Err("invalid worktree metadata file");
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|file| file.take(LIMIT + 1).read_to_end(&mut bytes))
+    std::fs::File::open(path).and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
         .map_err(|_| "unreadable worktree metadata")?;
-    if bytes.len() as u64 > LIMIT {
+    if bytes.len() as u64 > limit {
         return Err("oversized worktree metadata");
     }
     String::from_utf8(bytes).map_err(|_| "invalid worktree metadata encoding")
@@ -544,5 +559,35 @@ mod tests {
         std::fs::remove_file(admin.join("commondir")).unwrap();
         std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
         assert_eq!(linked_worktree_main_root(&worktree), Ok(None));
+    }
+
+    #[test]
+    fn a_large_common_config_still_resolves_and_an_oversize_one_fails_closed() {
+        let scratch = Scratch::new("large-config");
+        let main = scratch.0.join("main");
+        let admin = main.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let worktree = scratch.0.join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        // One section per branch, as `git worktree add -b` with upstream tracking leaves them.
+        let branches: String = (0..250)
+            .map(|n| format!("[branch \"pandacode/wt-{n}\"]\n\tremote = origin\n\tmerge = refs/heads/pandacode/wt-{n}\n\tvscode-merge-base = origin/main\n"))
+            .collect();
+        let config = format!("{branches}[core]\n\tbare = false\n");
+        assert!(config.len() > 20 * 1024, "well past the 16 KiB pointer-file bound: {} bytes", config.len());
+        let config_path = main.join(".git").join("config");
+        std::fs::write(&config_path, &config).unwrap();
+        let main_root = main.canonicalize().unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree), Ok(Some(main_root.clone())));
+        assert_eq!(project_config_roots(&worktree).main_worktree, Some(main_root));
+        // The pointer files keep their small bound.
+        assert_eq!(read_git_metadata(&config_path), Err("invalid worktree metadata file"));
+        // Past 1 MiB the config is refused, never read as "no main checkout".
+        let comments = "# padding\n".repeat((MAX_GIT_CONFIG_BYTES as usize) / 10 + 1);
+        std::fs::write(&config_path, format!("{comments}{config}")).unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree), Err("invalid worktree metadata file"));
+        assert_eq!(project_config_roots(&worktree).error, Some("invalid worktree metadata file"));
     }
 }

@@ -70,6 +70,9 @@ pub(super) fn key_for_connection(
         // CLI upgraded in place (in the app or not).
         "executable": executable_stamp(&config.provider, named),
         "claudeConfig": claude_config,
+        // Claude Code snapshots `gitStatus` (branch, recent commits) at spawn: a branch switch,
+        // detach or commit starts the next turn cold, while ordinary edits still adopt the spare.
+        "gitHead": git_head_stamp(&config.cwd),
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
     });
@@ -418,6 +421,66 @@ fn walk_config_dir(
         }
     }
     true
+}
+
+/// At most this much of a git metadata file (`.git`, `HEAD`, `commondir`, a loose ref) is read.
+const GIT_FILE_LIMIT: u64 = 4096;
+
+/// The checked-out branch (or detached commit) and its tip, read from the repository's files
+/// (git is never run): `HEAD`, the branch's loose ref and `packed-refs` metadata, in a linked
+/// worktree from its own `HEAD` and the shared `commondir`. The index and working tree are not
+/// stamped. `null` outside a repository.
+pub(super) fn git_head_stamp(cwd: &Path) -> Value {
+    let Some(gitdir) = find_gitdir(cwd) else { return Value::Null };
+    let head = match read_git_file(&gitdir.join("HEAD")) {
+        Ok(head) => head,
+        Err(error) => return json!({"head": error_stamp(&error)}),
+    };
+    let head = head.trim();
+    let common = read_git_file(&gitdir.join("commondir"))
+        .ok()
+        .map(|dir| dir.trim().to_owned())
+        .filter(|dir| !dir.is_empty())
+        .map_or_else(|| gitdir.clone(), |dir| gitdir.join(dir));
+    let branch = head
+        .strip_prefix("ref:")
+        .map(str::trim)
+        .filter(|name| name.starts_with("refs/") && !name.split('/').any(|part| part == ".."));
+    let Some(branch) = branch else { return json!({"head": head}) };
+    let tip = match read_git_file(&common.join(branch)) {
+        Ok(tip) => json!(tip.trim()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
+        Err(error) => error_stamp(&error),
+    };
+    json!({"head": head, "ref": tip, "packedRefs": config_file_stamp(&common.join("packed-refs"))})
+}
+
+/// The git folder of the nearest `.git` at or above `cwd`: the folder itself, or the one a `.git`
+/// file's `gitdir:` line names (relative to the file's folder). A `.git` that cannot be followed
+/// (a dangling link, an unreadable file) is still the repository: its `HEAD` stamps the error.
+fn find_gitdir(cwd: &Path) -> Option<PathBuf> {
+    for dir in cwd.ancestors() {
+        let dot_git = dir.join(".git");
+        match std::fs::symlink_metadata(&dot_git) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Some(dot_git),
+            Ok(_) if std::fs::metadata(&dot_git).is_ok_and(|meta| meta.is_dir()) => return Some(dot_git),
+            Ok(_) => {}
+        }
+        let linked = read_git_file(&dot_git).ok().and_then(|text| {
+            text.lines().find_map(|line| line.strip_prefix("gitdir:")).map(|target| dir.join(target.trim()))
+        });
+        return Some(linked.unwrap_or(dot_git));
+    }
+    None
+}
+
+/// The first `GIT_FILE_LIMIT` bytes of a git metadata file, as text.
+fn read_git_file(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::fs::File::open(path)?.take(GIT_FILE_LIMIT).read_to_string(&mut text)?;
+    Ok(text)
 }
 
 /// The spare launches with the instructions a cold launch would use (`run_inner` applies the

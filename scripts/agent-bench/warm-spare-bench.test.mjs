@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
-  bootstrapMedianCi, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
+  bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
 } from './warm-spare-bench.mjs';
 
@@ -311,4 +311,29 @@ test('recorded results cover every suite, carry the privacy env and no personal 
     for (const r of report.runs.filter(x => x.suite === suite)) assert.equal(r.api_messages, seed.resumed_request_messages[0], `${suite} pair ${r.pair} ${r.arm}`);
   }
   for (const r of report.runs.filter(x => !suiteParts(x.suite).resumed)) assert.equal(r.api_messages, undefined);
+});
+
+const openTimeouts = () => process.getActiveResourcesInfo().filter(r => r === 'Timeout').length;
+
+test('cancellableDelay resolves to its value and leaves no timer behind', async () => {
+  const before = openTimeouts();
+  const wait = cancellableDelay(1, 'late');
+  assert.equal(openTimeouts(), before + 1);
+  assert.equal(await wait.promise, 'late');
+  assert.equal(openTimeouts(), before);
+  wait.cancel(); // harmless after firing
+  assert.equal(openTimeouts(), before);
+});
+
+test('cancellableDelay.cancel clears its timer when a race settles first, so the loop can exit', async () => {
+  const before = openTimeouts();
+  const wait = cancellableDelay(60_000, null);
+  assert.equal(openTimeouts(), before + 1);
+  let fired = false;
+  wait.promise.then(() => { fired = true; });
+  try { assert.equal(await Promise.race([Promise.resolve('exited'), wait.promise]), 'exited'); } finally { wait.cancel(); }
+  assert.equal(openTimeouts(), before);
+  wait.cancel();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(fired, false);
 });

@@ -4639,7 +4639,7 @@ async fn run_process_launch(
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
         // No pooled spare: the launch is counted and the warm key's config walk skipped. The off
-        // switch reads a file, so it is only ever checked off the runtime (`crate::blocking`).
+        // switch reads a file, so the launch path checks it off the runtime (`crate::blocking`).
         Some(tools) if warm::supported(&config) => {
             // Managed workers never get spares, and a brand-new conversation's first turn can never
             // have one, so neither counts as a cold launch without a spare.
@@ -4677,13 +4677,10 @@ async fn run_process_launch(
                     }
                 }
                 // Counted and logged only while spares are on: with them off a launch says nothing.
-                warm::LaunchPool::Empty { may_record_cold: true } => {
-                    if crate::blocking(|| Ok(warm::enabled_now())).await.unwrap_or(false) {
-                        warm::record_cold_without_spare();
-                    }
+                warm::LaunchPool::Empty { may_record_cold } => {
+                    warm::finish_empty_launch(may_record_cold).await;
                     None
                 }
-                warm::LaunchPool::Empty { may_record_cold: false } => None,
             }
         }
         _ => {

@@ -477,6 +477,242 @@ async fn wait_natural_exit(child: &mut Child, mut hurry: tokio::sync::watch::Rec
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+    use super::super::{read_stderr, StderrReader};
+    use std::process::Stdio;
+    use tokio::process::Command;
+
+    /// A fresh folder under the temp dir, removed on drop (after the test's processes are gone).
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("pandacode-exit-x-{name}-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn unique(name: &str) -> String {
+        format!("exit-x-{name}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    /// A child that idles for 30 s, ignores stdin closing and dies only when stopped.
+    fn idle_cmd(cwd: &Path) -> Command {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            // Its own group, as a launch's CLI has: the reap signals the group.
+            command.process_group(0);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("ping");
+            command.args(["-n", "30", "127.0.0.1"]);
+            command
+        };
+        command
+            .current_dir(cwd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        command
+    }
+
+    /// Spawns `idle_cmd()` in `cwd` and hands it to `reap` under `session_id`, as a clean run does.
+    fn spawn_reaped(session_id: &str, cwd: &Path) {
+        let mut child = idle_cmd(cwd).spawn().expect("the idle child starts");
+        let group = ProcessGroup::register(child.id());
+        let (stdin, stdout, stderr) = (child.stdin.take().unwrap(), child.stdout.take().unwrap(), child.stderr.take().unwrap());
+        reap(Reaped {
+            session_id: session_id.to_owned(),
+            cwd: Some(cwd.to_path_buf()),
+            child,
+            stdin,
+            stdout,
+            group,
+            stderr: StderrReader(tokio::spawn(read_stderr(stderr))),
+            secrets: Vec::new(),
+        });
+    }
+
+    /// The recorded folders of `session_id`'s pending exits, from one `pending_exits()` snapshot.
+    fn pending_for(session_id: &str) -> Vec<Option<PathBuf>> {
+        pending_exits().into_iter().filter(|(id, _)| id == session_id).map(|(_, cwd)| cwd).collect()
+    }
+
+    #[tokio::test]
+    async fn reap_registers_cwd_and_await_exit_hurries_and_clears() {
+        let scratch = Scratch::new("reap");
+        let session = unique("reap");
+        spawn_reaped(&session, &scratch.0);
+        assert_eq!(pending_for(&session), vec![Some(scratch.0.clone())], "registered at once, with its folder");
+        assert!(pending_exits().contains(&(session.clone(), Some(scratch.0.clone()))));
+        let began = Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), await_exit(&session))
+            .await
+            .expect("await_exit never finished")
+            .expect("await_exit failed");
+        // Hurried: stopped from `EXIT_WAIT` after the reap, not left to `BACKGROUND_EXIT_WAIT`.
+        assert!(began.elapsed() < BACKGROUND_EXIT_WAIT, "not hurried: {:?}", began.elapsed());
+        assert!(pending_for(&session).is_empty(), "the exit is cleared once awaited");
+        assert!(!exit_registry().lock().unwrap_or_else(|p| p.into_inner()).contains_key(&session));
+        assert!(!hurries().lock().unwrap_or_else(|p| p.into_inner()).contains_key(&session), "its hurry signal is dropped too");
+    }
+
+    #[tokio::test]
+    async fn reap_chains_behind_an_earlier_pending_exit_and_waits_for_both() {
+        let scratch = Scratch::new("chain");
+        let session = unique("chain");
+        let earlier = pending_in_cwd(&session, Some(scratch.0.clone()));
+        spawn_reaped(&session, &scratch.0);
+        assert_eq!(pending_for(&session).len(), 2, "both exits are registered, oldest first");
+        let waiter = tokio::spawn({
+            let session = session.clone();
+            async move { await_exit(&session).await }
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(!waiter.is_finished(), "await_exit returned while the earlier exit was pending");
+        assert_eq!(pending_for(&session).len(), 2, "the reap waits behind the earlier exit");
+        drop(earlier);
+        tokio::time::timeout(Duration::from_secs(10), waiter)
+            .await
+            .expect("await_exit never finished")
+            .expect("the waiter panicked")
+            .expect("await_exit failed");
+        assert!(pending_for(&session).is_empty(), "both exits are cleared");
+        assert!(!exit_registry().lock().unwrap_or_else(|p| p.into_inner()).contains_key(&session));
+    }
+
+    #[tokio::test]
+    async fn await_exits_in_waits_for_reaped_child_in_nested_folder_without_blocking_other_folder() {
+        let scratch = Scratch::new("nested");
+        let root = scratch.0.join("root");
+        let sub = root.join("sub");
+        let other = scratch.0.join("other");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let session = unique("nested");
+        spawn_reaped(&session, &sub);
+        let began = Instant::now();
+        tokio::time::timeout(Duration::from_secs(1), await_exits_in(&other))
+            .await
+            .expect("another folder's wait was blocked")
+            .expect("await_exits_in failed for another folder");
+        assert!(began.elapsed() < Duration::from_secs(1));
+        tokio::time::timeout(Duration::from_secs(10), await_exits_in(&root))
+            .await
+            .expect("await_exits_in never finished")
+            .expect("await_exits_in failed");
+        assert!(pending_for(&session).is_empty(), "the nested exit is waited for and cleared");
+    }
+
+    #[tokio::test]
+    async fn await_all_exits_waits_for_multiple_reaped_sessions() {
+        let scratch = Scratch::new("all");
+        let first = unique("all-first");
+        let second = unique("all-second");
+        spawn_reaped(&first, &scratch.0);
+        spawn_reaped(&second, &scratch.0);
+        assert_eq!(pending_for(&first).len(), 1);
+        assert_eq!(pending_for(&second).len(), 1);
+        // Never fails or hangs: bounded by the cap even if another test holds an exit meanwhile.
+        await_all_exits(EXIT_HARD_CAP).await;
+        let registry = exit_registry().lock().unwrap_or_else(|p| p.into_inner());
+        assert!(!registry.contains_key(&first) && !registry.contains_key(&second), "both reaped sessions are gone");
+    }
+
+    #[test]
+    fn exit_note_redacts_secrets_and_bounds_tail_cross_platform() {
+        #[cfg(unix)]
+        let (failed, clean) = {
+            use std::os::unix::process::ExitStatusExt;
+            (std::process::ExitStatus::from_raw(1 << 8), std::process::ExitStatus::from_raw(0))
+        };
+        #[cfg(windows)]
+        let (failed, clean) = {
+            use std::os::windows::process::ExitStatusExt;
+            (std::process::ExitStatus::from_raw(1), std::process::ExitStatus::from_raw(0))
+        };
+        assert!(!failed.success() && clean.success());
+        let secrets = ["relay-key-1".to_owned(), "conn-value-2".to_owned()];
+        assert!(exit_note("s1", clean, "relay-key-1", &secrets).is_none(), "a clean exit logs nothing");
+        let note = exit_note("s1", failed, "  boom relay-key-1 and conn-value-2\n", &secrets).unwrap();
+        assert!(note.contains("session s1") && note.ends_with(": boom [redacted] and [redacted]"), "{note}");
+        assert!(!note.contains("relay-key-1") && !note.contains("conn-value-2"), "{note}");
+        let note = exit_note("s2", failed, "", &secrets).unwrap();
+        assert!(note.ends_with("after its run ended"), "no stderr, no tail: {note}");
+        // The tail is the last `NOTE_TAIL` characters (not bytes), after redaction.
+        let long = format!("{}relay-key-1 {}", "é".repeat(NOTE_TAIL), "x".repeat(NOTE_TAIL));
+        let note = exit_note("s3", failed, &long, &secrets).unwrap();
+        let tail = note.rsplit(": ").next().unwrap();
+        assert_eq!(tail.chars().count(), NOTE_TAIL, "{note}");
+        assert!(tail.chars().all(|c| c == 'x'), "only the end is kept: {note}");
+        assert!(!note.contains("relay-key-1"), "{note}");
+    }
+
+    /// End to end on Windows: a clean Claude-family run returns at its `result` frame and its CLI
+    /// is reaped in the background, as on Unix (`exit_tests.rs`, which is Unix-only).
+    #[cfg(windows)]
+    mod windows_run {
+        use super::super::super::{test_launch::run_process_with_tools, tests::config, AgentEvent, Sink};
+        use super::*;
+        use tokio::sync::mpsc::unbounded_channel;
+
+        /// Answers the init request and the prompt, then idles for 30 s with stdin closed.
+        const SCRIPT: &str = r#"
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{"type":"control_response","response":{"request_id":"pandacode-init","subtype":"success","response":{}}}')
+[Console]::Out.Flush()
+$null = [Console]::In.ReadLine()
+[Console]::Out.WriteLine('{"type":"system","subtype":"init","session_id":"win-reap"}')
+[Console]::Out.WriteLine('{"type":"result","subtype":"success","result":"done"}')
+[Console]::Out.Flush()
+Start-Sleep -Seconds 30
+"#;
+
+        #[tokio::test]
+        async fn clean_claude_run_returns_before_exit_and_reaps_in_background_on_windows() {
+            let scratch = Scratch::new("win-run");
+            let script = scratch.0.join("cli.ps1");
+            std::fs::write(&script, SCRIPT).unwrap();
+            let session = unique("win-run");
+            let mut config = config("claude");
+            config.session_id = session.clone();
+            config.cwd = scratch.0.clone();
+            let expected_cwd = external_path(&config.cwd);
+            // `-File`: any flags the launch appends (such as `--mcp-config`) become ignored script arguments.
+            let mut command = Command::new("powershell");
+            command.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]).arg(script);
+            // Kept open: a closed input after the spawn would end the run as a stop, which is never reaped.
+            let (_input, receiver) = unbounded_channel();
+            let sink: Sink = Arc::new(|_: AgentEvent| {});
+            let began = Instant::now();
+            tokio::time::timeout(Duration::from_secs(25), run_process_with_tools(config, sink, receiver, command, Vec::new(), None))
+                .await
+                .expect("the run waited for the CLI to exit")
+                .expect("the clean run failed");
+            assert!(began.elapsed() < Duration::from_secs(25), "returned at `result`, not after the 30 s idle");
+            assert!(
+                pending_exits().contains(&(session.clone(), Some(expected_cwd))),
+                "the CLI is still exiting in the background, under its folder: {:?}",
+                pending_exits()
+            );
+            tokio::time::timeout(Duration::from_secs(10), await_exit(&session))
+                .await
+                .expect("await_exit never finished")
+                .expect("await_exit failed");
+            assert!(pending_for(&session).is_empty(), "the reaped CLI is stopped and cleared");
+        }
+    }
 
     #[tokio::test]
     async fn await_exits_in_waits_for_canonical_and_nested_cwds_only() {

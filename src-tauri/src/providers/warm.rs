@@ -134,15 +134,16 @@ struct Spares {
     spares: HashMap<String, Spare>,
     /// Cancels whole renewal chains, including expired leads whose bounded `gone` note was cleared.
     discard_epoch: u64,
-    /// In-flight starts and expiry renewal checks, keyed by a token, recording `(session_id, cwd)`
-    /// so `quiesce_spares_in` can advance their launch epochs before they spawn or register.
-    starting: HashMap<u64, (String, PathBuf)>,
+    /// In-flight starts and expiry renewal checks, keyed by a token, recording `(session_id, cwd,
+    /// lead)` so `quiesce_spares_in` can advance their launch epochs before they spawn or register,
+    /// and `spawn_spare` caps each pool's starts in flight.
+    starting: HashMap<u64, (String, PathBuf, bool)>,
     gone: HashMap<String, Gone>,
     /// Each pool's lifecycle totals since launch: in memory only, read from the adoption log
     /// line (docs/worker-tokens.md).
     lead: PoolStats,
     ordinary: PoolStats,
-    /// Eligible launches with spares on that found no pooled spare (`record_cold_without_spare`).
+    /// Eligible launches with spares on that found no pooled spare (`finish_empty_launch`).
     cold_without_spare: u64,
 }
 
@@ -208,13 +209,13 @@ struct InFlight {
 
 impl InFlight {
     #[cfg(test)]
-    fn enter(pool: &'static Pool, session_id: String, cwd: PathBuf) -> Self {
-        Self::enter_locked(pool, &mut spares(pool), session_id, cwd)
+    fn enter(pool: &'static Pool, session_id: String, cwd: PathBuf, lead: bool) -> Self {
+        Self::enter_locked(pool, &mut spares(pool), session_id, cwd, lead)
     }
 
-    fn enter_locked(pool: &'static Pool, locked: &mut Spares, session_id: String, cwd: PathBuf) -> Self {
+    fn enter_locked(pool: &'static Pool, locked: &mut Spares, session_id: String, cwd: PathBuf, lead: bool) -> Self {
         let token = NEXT_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        locked.starting.insert(token, (session_id, cwd));
+        locked.starting.insert(token, (session_id, cwd, lead));
         Self { pool, token }
     }
 }
@@ -414,7 +415,7 @@ pub(super) enum LaunchPool {
     /// A spare is pooled: key the launch off the runtime, then `take_checked` with this epoch.
     Pooled { discard_epoch: u64 },
     /// None pooled. `may_record_cold`: an eligible launch with no lead `gone` note, whose cold start
-    /// the caller counts (`record_cold_without_spare`) once it has seen spares on, off the runtime.
+    /// `finish_empty_launch` counts once it has seen spares on, off the runtime.
     Empty { may_record_cold: bool },
 }
 
@@ -444,11 +445,21 @@ fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> 
     }
 }
 
-/// An eligible launch that found no spare while spares are on (checked by the caller off the
-/// runtime): counted in `cold_without_spare` and logged with the ordinary totals.
-pub(super) fn record_cold_without_spare() {
-    let note = cold_without_spare_note(&mut spares(&SPARES));
-    eprintln!("{note}");
+/// A launch `prepare_launch` found no spare for: an eligible one (`may_record_cold`) is counted in
+/// `cold_without_spare` and logged only while spares are on, read off the runtime.
+pub(super) async fn finish_empty_launch(may_record_cold: bool) {
+    let on = || async { crate::blocking(|| Ok(enabled_now())).await.unwrap_or(false) };
+    if let Some(note) = finish_empty_launch_with(&SPARES, may_record_cold, on).await {
+        eprintln!("{note}");
+    }
+}
+
+/// `finish_empty_launch` with its switch read by `enabled`, which an ineligible launch never calls.
+async fn finish_empty_launch_with<Fut: std::future::Future<Output = bool>>(pool: &Pool, may_record_cold: bool, enabled: impl FnOnce() -> Fut) -> Option<String> {
+    if !may_record_cold || !enabled().await {
+        return None;
+    }
+    Some(cold_without_spare_note(&mut spares(pool)))
 }
 
 /// Advance `session_id`'s launch epoch when it already has one, without forgetting the task
@@ -507,7 +518,7 @@ fn discard_all_from(pool: &Pool) {
         let mut pool = spares(pool);
         pool.discard_epoch = pool.discard_epoch.wrapping_add(1);
         let affected: HashSet<String> = pool.spares.keys().chain(pool.gone.keys())
-            .chain(pool.starting.values().map(|(id, _)| id)).cloned().collect();
+            .chain(pool.starting.values().map(|(id, _, _)| id)).cloned().collect();
         {
             // Same lock order as registration: pool, then launch epochs.
             let mut launches = LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -517,8 +528,11 @@ fn discard_all_from(pool: &Pool) {
         }
         pool.starting.clear();
         let ids: Vec<_> = pool.spares.keys().cloned().collect();
-        ids.into_iter().filter_map(|id| pool.remove(&id, Gone::Discarded)
-            .map(|(spare, pending)| (id, spare, pending))).collect::<Vec<_>>()
+        let removed = ids.into_iter().filter_map(|id| pool.remove(&id, Gone::Discarded)
+            .map(|(spare, pending)| (id, spare, pending))).collect::<Vec<_>>();
+        // Spares are off: no lead's next launch may report a miss (or count one) for them.
+        pool.gone.clear();
+        removed
     };
     let (mut ordinary, mut lead) = (false, false);
     for (id, spare, pending) in removed {
@@ -580,7 +594,7 @@ impl InFolder {
         let locked = spares(pool);
         Self {
             spares: locked.spares.iter().filter_map(|(id, spare)| Some((id.clone(), spare.cwd.clone()?))).collect(),
-            starting: locked.starting.iter().map(|(token, (id, cwd))| (*token, id.clone(), cwd.clone())).collect(),
+            starting: locked.starting.iter().map(|(token, (id, cwd, _))| (*token, id.clone(), cwd.clone())).collect(),
         }
     }
 
@@ -695,17 +709,11 @@ fn take_expired_for_renewal(
     }
     let (spare, pending) = locked.remove(session_id, Gone::Expired)?;
     let inflight = if renewing {
-        spare.cwd.clone().map(|cwd| InFlight::enter_locked(pool, &mut locked, session_id.to_owned(), cwd))
+        spare.cwd.clone().map(|cwd| InFlight::enter_locked(pool, &mut locked, session_id.to_owned(), cwd, spare.lead))
     } else {
         None
     };
     Some((spare, pending, inflight))
-}
-
-/// Non-renewing expiry used by the process-retirement tests.
-#[cfg(test)]
-fn take_expired(pool: &'static Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
-    take_expired_for_renewal(pool, session_id, born, false).map(|(spare, pending, _)| (spare, pending))
 }
 
 #[cfg(test)]

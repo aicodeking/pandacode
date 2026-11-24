@@ -313,6 +313,13 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => { cleanup()
 
 const delay = ms => new Promise(r => setTimeout(r, ms));
 
+/** A delay resolving to `value` after `ms`; `cancel()` clears its timer so nothing keeps the event loop alive once a race settles (the promise then never resolves). */
+export function cancellableDelay(ms, value) {
+  let timer = null;
+  const promise = new Promise(resolve => { timer = setTimeout(() => { timer = null; resolve(value); }, ms); });
+  return { promise, cancel: () => { if (timer !== null) { clearTimeout(timer); timer = null; } } };
+}
+
 function sampleRss(pid) {
   let rss = null; let tree = null;
   try { rss = rssKibToMib(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' })); } catch { /* fall back below */ }
@@ -337,6 +344,7 @@ async function runOnce({ arm, args, env, cwd }) {
   const out = { arm, init_ms: null, result_ms: null, exit_after_result_ms: null, exit_code: null, rss_mib: null, tree_rss_mib: null, result_subtype: null, error: null };
   let t0 = tSpawn;
   let tResult = null;
+  const resultTimeout = cancellableDelay(RUN_TIMEOUT_MS + PARK_MS);
   const done = new Promise((resolve, reject) => {
     let buffer = '';
     child.stdout.on('data', chunk => {
@@ -359,7 +367,7 @@ async function runOnce({ arm, args, env, cwd }) {
       }
     });
     exited.then(e => reject(new Error(`exited before result (code ${e.code}, signal ${e.signal})`)));
-    setTimeout(() => reject(new Error('timed out waiting for result')), RUN_TIMEOUT_MS + PARK_MS);
+    resultTimeout.promise.then(() => reject(new Error('timed out waiting for result')));
   });
   done.catch(() => {});
   try {
@@ -370,7 +378,9 @@ async function runOnce({ arm, args, env, cwd }) {
     }
     write(child, { type: 'control_request', request_id: 'pandacode-init', request: { subtype: 'initialize', hooks: null } });
     await done;
-    const exit = await Promise.race([exited, delay(EXIT_TIMEOUT_MS).then(() => null)]);
+    const exitTimeout = cancellableDelay(EXIT_TIMEOUT_MS, null);
+    let exit;
+    try { exit = await Promise.race([exited, exitTimeout.promise]); } finally { exitTimeout.cancel(); }
     if (!exit) { out.error = out.error ?? `no exit within ${EXIT_TIMEOUT_MS} ms of result`; child.kill('SIGKILL'); await exited; }
     else { out.exit_after_result_ms = exit.at - tResult; out.exit_code = exit.code; }
   } catch (error) {
@@ -378,6 +388,7 @@ async function runOnce({ arm, args, env, cwd }) {
     child.kill('SIGKILL');
     await exited;
   } finally {
+    resultTimeout.cancel();
     children.delete(child);
   }
   for (const key of ['init_ms', 'result_ms', 'exit_after_result_ms']) out[key] = round(out[key]);

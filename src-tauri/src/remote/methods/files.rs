@@ -765,48 +765,10 @@ pub(super) async fn running_in_state(state: &AppState, root: &Path) -> Result<bo
     running_in_state_excluding(state, root, None).await
 }
 
+/// `running_in_state` that ignores `exclude_session`'s own run and pending exit: the one shared
+/// matcher in `checkout_busy` (agents snapshotted before pending exits, canonicalizing off the runtime).
 pub(super) async fn running_in_state_excluding(state: &AppState, root: &Path, exclude_session: Option<&str>) -> Result<bool> {
-    // Snapshot `state.agents` before `pending_exits()` so a turn handing off from the agents map
-    // to background reaping (`exit::reap` registers before `lib.rs` removes the agent) cannot slip between them.
-    let running: Vec<String> = crate::run_requests::lock_agents(&state.agents)
-        .map_err(|e| e.to_string())?
-        .keys()
-        .filter(|id| exclude_session != Some(id.as_str()))
-        .cloned()
-        .collect();
-    let exiting: Vec<(String, Option<PathBuf>)> = crate::providers::pending_exits()
-        .into_iter()
-        .filter(|(id, _)| exclude_session != Some(id.as_str()))
-        .collect();
-    // Canonicalizing touches the file system (a slow or network volume can stall), so off the runtime.
-    let root = root.to_path_buf();
-    let store = state.store.clone();
-    crate::blocking(move || {
-        let mut others = Vec::with_capacity(running.len() + exiting.len());
-        {
-            let store = store.lock().map_err(|e| e.to_string())?;
-            for session_id in running {
-                if let Some(other) = crate::session_checkout_root(&store, &session_id) {
-                    others.push(other);
-                }
-            }
-            for (session_id, cwd) in exiting {
-                if let Some(dir) = cwd {
-                    others.push(dir);
-                }
-                if let Some(other) = crate::session_checkout_root(&store, &session_id) {
-                    others.push(other);
-                }
-            }
-        }
-        Ok(any_same_checkout(&root, &others))
-    })
-    .await
-}
-
-/// Whether any of `others` is `root` or lies inside it (literally or once resolved).
-fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
-    crate::any_same_checkout(root, others)
+    crate::checkout_busy::any_checkout_busy_excluding(state, &[root.to_path_buf()], exclude_session).await
 }
 
 /// Saves `text` over an existing text file under `root` when it still hashes to `base_hash`.
@@ -935,14 +897,19 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let elsewhere = dir.join("other");
         std::fs::create_dir(&elsewhere).unwrap();
-        assert!(any_same_checkout(&root, std::slice::from_ref(&root)));
-        assert!(any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
-        assert!(!any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
-        assert!(!any_same_checkout(&root, &[]));
+        assert!(crate::any_same_checkout(&root, std::slice::from_ref(&root)));
+        assert!(crate::any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
+        assert!(!crate::any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
+        assert!(!crate::any_same_checkout(&root, &[]));
         std::fs::remove_dir_all(&dir).unwrap();
+        // The phone's refusal uses the one shared matcher, which canonicalizes off the async runtime.
         let source = include_str!("files.rs");
-        let body = &source[source.find("async fn refuse_running_in").unwrap()..];
-        assert!(body.find("crate::blocking(").unwrap() < body.find("any_same_checkout(&root").unwrap(), "canonicalizing runs off the async runtime");
+        let body = &source[source.find("async fn running_in_state_excluding").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("crate::checkout_busy::any_checkout_busy_excluding("), "delegates to checkout_busy");
+        let shared = include_str!("../../checkout_busy.rs");
+        let shared = &shared[shared.find("async fn any_checkout_busy_excluding").unwrap()..];
+        assert!(shared.find("blocking(move").unwrap() < shared.find("any_same_checkout(root").unwrap(), "canonicalizing runs off the async runtime");
     }
 
     fn parse(name: &str, params: Value) -> Result<Box<dyn Run>> {

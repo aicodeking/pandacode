@@ -20,6 +20,11 @@ fn launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (bool, O
     }
 }
 
+/// Non-renewing expiry used by the process-retirement tests.
+fn take_expired(pool: &'static Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
+    take_expired_for_renewal(pool, session_id, born, false).map(|(spare, pending, _)| (spare, pending))
+}
+
 /// `launched_without_key_since` with no switch-off since the pool's current discard epoch.
 fn launched_without_key_in(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool) -> Option<String> {
     let discard_epoch = spares(pool).discard_epoch;
@@ -521,7 +526,7 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
     let mut config_fields = ["provider", "model", "effort", "mode", "cwd", "resume", "instructions", "tools", "fastMode", "worker", "disallowedTools"].map(String::from).to_vec();
     config_fields.extend(["namedConnection", "connection", "environment", "telemetryOff"].map(String::from));
     // Read from the session, provider and cwd, which a lead's spare and its wake share.
-    config_fields.extend(["disabledSkills", "executable", "claudeConfig", "stdioMcp"].map(String::from));
+    config_fields.extend(["disabledSkills", "executable", "claudeConfig", "gitHead", "stdioMcp"].map(String::from));
     let (mut a, mut b) = (field_names, config_fields);
     a.sort();
     b.sort();
@@ -1349,7 +1354,7 @@ async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_
 
     // Also register an in-flight spawn targeting `folder` before `take_for_discard_in`.
     let inflight_epoch = epoch(&inflight_id);
-    let inflight_guard = InFlight::enter(pool, inflight_id.clone(), external_path(&folder));
+    let inflight_guard = InFlight::enter(pool, inflight_id.clone(), external_path(&folder), false);
 
     // Simulate the gap between removing from `SPARES` (with `Pending` registered under the lock)
     // and calling `retire`, verifying `quiesce_pool_spares_in` blocks until retired processes exit.
@@ -1873,4 +1878,127 @@ fn a_lead_spare_not_renewed_logs_an_expiry_not_a_cold_start() {
     assert!(!note.contains("starting cold"), "{note}");
     assert!(note.contains("Lead spares since launch:"), "{note}");
     assert_eq!(spares(pool).lead, PoolStats { started: 2, adopted: 1, expired: 1, ..PoolStats::default() }, "reading the totals counts nothing");
+}
+
+/// Starts already in flight for other tasks, in the ordinary or lead pool, held until dropped.
+fn busy_starts(pool: &'static Pool, count: usize, lead: bool) -> Vec<InFlight> {
+    (0..count).map(|n| InFlight::enter(pool, format!("warm-cap-busy-{n}-{}", uuid::Uuid::new_v4()), std::env::temp_dir(), lead)).collect()
+}
+
+#[tokio::test]
+async fn each_pool_caps_its_starts_in_flight_without_blocking_the_other() {
+    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    for (full, limit) in [(false, LIMIT), (true, LEAD_LIMIT)] {
+        let busy = busy_starts(life.pool, limit, full);
+        for lead_start in [full, !full] {
+            let session = format!("warm-cap-{full}-{lead_start}-{}", uuid::Uuid::new_v4());
+            let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+            launched(&session);
+            let renew = if lead_start { lead(Arc::new(|| false)) } else { None };
+            start(life, config, Vec::new(), HashSet::new(), epoch(&session), renew, 0).await.unwrap();
+            let declined = lead_start == full;
+            assert_eq!(stub_starts(&session), u32::from(!declined), "full pool lead={full}, start lead={lead_start}");
+            assert_eq!(waiting_in(life.pool, &session), !declined);
+            assert_eq!(spares(life.pool).starting.len(), limit, "a start leaves no token behind");
+            discard_from(life.pool, &session);
+            await_exit(&session).await.unwrap();
+        }
+        drop(busy);
+        assert!(spares(life.pool).starting.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_renewal_holding_its_own_token_is_not_capped_by_it() {
+    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    let session = format!("warm-cap-renewal-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    launched(&session);
+    // The expiry token the renewal holds through its start, beside another team's start.
+    let own = InFlight::enter(life.pool, session.clone(), std::env::temp_dir(), true);
+    let others = busy_starts(life.pool, LEAD_LIMIT - 1, true);
+    start(life, config, Vec::new(), HashSet::new(), epoch(&session), lead(Arc::new(|| false)), 1).await.unwrap();
+    assert_eq!(stub_starts(&session), 1, "the renewal starts");
+    assert!(waiting_in(life.pool, &session));
+    drop((own, others));
+    discard_from(life.pool, &session);
+    await_exit(&session).await.unwrap();
+}
+
+/// A repository's metadata written directly (git is never run), on branch `main`.
+fn fake_repo(root: &Path) -> PathBuf {
+    let git = root.join(".git");
+    std::fs::create_dir_all(git.join("refs/heads")).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(git.join("refs/heads/main"), format!("{}\n", "a".repeat(40))).unwrap();
+    git
+}
+
+#[test]
+fn branch_switches_and_commits_change_the_warm_key_but_edits_do_not() {
+    let root = std::env::temp_dir().join(format!("warm-git-head-{}", uuid::Uuid::new_v4()));
+    let git = fake_repo(&root);
+    let config = RunConfig { cwd: root.join("src"), ..crate::providers::tests::config("claude") };
+    std::fs::create_dir_all(&config.cwd).unwrap();
+    let none = std::collections::BTreeSet::new();
+    let key_now = || key_with_disabled(&config, &[], "", &none, &[]).unwrap();
+    let changed = |before: &str, after: &str| miss(true, before, after, Duration::from_secs(1), IDLE);
+    let base = key_now();
+    assert_eq!(git_head_stamp(&config.cwd)["head"], "ref: refs/heads/main");
+    // Uncommitted edits (and staging) keep the spare.
+    std::fs::write(config.cwd.join("lib.rs"), "fn main() {}").unwrap();
+    std::fs::write(root.join("README.md"), "edited").unwrap();
+    std::fs::write(git.join("index"), "staged").unwrap();
+    assert_eq!(key_now(), base, "working-tree edits never change the warm key");
+    // A branch switch.
+    std::fs::write(git.join("refs/heads/feature"), format!("{}\n", "a".repeat(40))).unwrap();
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/feature\n").unwrap();
+    let switched = key_now();
+    assert_eq!(changed(&base, &switched).as_deref(), Some("changed: gitHead"));
+    // A commit moves the branch's loose ref.
+    std::fs::write(git.join("refs/heads/feature"), format!("{}\n", "b".repeat(40))).unwrap();
+    let committed = key_now();
+    assert_eq!(changed(&switched, &committed).as_deref(), Some("changed: gitHead"));
+    // A branch kept only in `packed-refs` (after `git pack-refs`), then updated there.
+    std::fs::remove_file(git.join("refs/heads/feature")).unwrap();
+    std::fs::write(git.join("packed-refs"), format!("{} refs/heads/feature\n", "b".repeat(40))).unwrap();
+    let packed = key_now();
+    assert_eq!(changed(&committed, &packed).as_deref(), Some("changed: gitHead"));
+    std::fs::write(git.join("packed-refs"), format!("# pack-refs with: peeled\n{} refs/heads/feature\n", "c".repeat(40))).unwrap();
+    assert_eq!(changed(&packed, &key_now()).as_deref(), Some("changed: gitHead"));
+    // A detached HEAD is its commit.
+    std::fs::write(git.join("HEAD"), format!("{}\n", "d".repeat(40))).unwrap();
+    assert_eq!(git_head_stamp(&config.cwd), json!({"head": "d".repeat(40)}));
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn a_linked_worktree_tracks_its_own_head_and_the_shared_branch() {
+    let root = std::env::temp_dir().join(format!("warm-git-worktree-{}", uuid::Uuid::new_v4()));
+    let git = fake_repo(&root.join("main"));
+    let worktree_git = git.join("worktrees").join("feature");
+    std::fs::create_dir_all(&worktree_git).unwrap();
+    std::fs::write(worktree_git.join("HEAD"), "ref: refs/heads/feature\n").unwrap();
+    std::fs::write(worktree_git.join("commondir"), "../..\n").unwrap();
+    std::fs::write(git.join("refs/heads/feature"), format!("{}\n", "a".repeat(40))).unwrap();
+    let checkout = root.join("feature");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join(".git"), format!("gitdir: {}\n", worktree_git.display())).unwrap();
+    let cwd = checkout.join("src");
+    let base = git_head_stamp(&cwd);
+    assert_eq!(base["head"], "ref: refs/heads/feature");
+    assert_eq!(base["ref"], json!("a".repeat(40)), "the branch is read from the common folder");
+    // A commit in the worktree moves the shared branch.
+    std::fs::write(git.join("refs/heads/feature"), format!("{}\n", "b".repeat(40))).unwrap();
+    let committed = git_head_stamp(&cwd);
+    assert_ne!(committed, base);
+    // Its own HEAD switching branches changes it too; the main checkout's HEAD does not.
+    std::fs::write(git.join("HEAD"), "ref: refs/heads/other\n").unwrap();
+    assert_eq!(git_head_stamp(&cwd), committed, "the main checkout's HEAD is not this worktree's");
+    std::fs::write(worktree_git.join("HEAD"), "ref: refs/heads/main\n").unwrap();
+    assert_eq!(git_head_stamp(&cwd)["ref"], json!("a".repeat(40)));
+    // A relative `gitdir:` resolves against the `.git` file's folder.
+    std::fs::write(checkout.join(".git"), "gitdir: ../main/.git/worktrees/feature\n").unwrap();
+    assert_eq!(git_head_stamp(&cwd)["head"], "ref: refs/heads/main");
+    std::fs::remove_dir_all(&root).unwrap();
 }

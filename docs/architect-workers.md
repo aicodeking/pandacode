@@ -393,7 +393,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   speed-up can be measured. A wake whose spare never started (declined or
   failed) or whose removal reason aged out of the 64-entry `gone` table is
   counted as an ordinary cold launch instead. With **Warm Claude spares** off
-  nothing is logged or counted. On the lead pool `not used` counts every wake that
+  nothing is logged or counted (`discard_all` also clears pending lead `gone`
+  notes, so a later wake logs nothing either). On the lead pool `not used` counts every wake that
   missed its spare, including spares already counted in `expired`, `evicted`,
   `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
   default env, ~218–243 MiB with "Turn off agent telemetry" on; Claude Code
@@ -402,8 +403,10 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   MCP servers can use more). It runs your `SessionStart` hooks and snapshots
   `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
   renewal chain can run hooks in up to three processes per wake, and both hook
-  output and initial git context can be up to 10 minutes old when adopted
-  (including after worker edits in the same checkout). The spare saves
+  output and initial git context can be up to 10 minutes old when adopted. A
+  branch switch or commit changes the warm key's `gitHead` and starts the wake
+  fresh, but uncommitted worker file edits in the same checkout still leave its
+  `gitStatus` up to 10 minutes old. The spare saves
   the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
   env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
   [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API
