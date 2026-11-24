@@ -1,12 +1,35 @@
-/** Whether the engine keeps the reader's content in place itself when content above it changes size (not WebKit). */
-export const scrollAnchors = typeof CSS !== 'undefined' && Boolean(CSS.supports?.('overflow-anchor', 'auto'));
+/** Movement smaller than this (px) is rounding, not the reader. */
+const SCROLL_EPSILON = 0.5;
 
 const scrollRounding = new WeakMap<HTMLElement, { top: number; remainder: number }>();
 
 /** Sets `transcript`'s scrollTop to `top`, remembering what a webview that rounds scrollTop to whole pixels dropped,
  *  so the next restore (scrollRemainder) can carry it instead of drifting a pixel at a time. */
 export function restoreScrollTop(transcript: HTMLElement, top: number): void {
+  // A write that would not move the scroller is skipped: in WKWebView any scrollTop assignment, even to the current
+  // value, ends the reader's momentum scroll mid-glide.
+  const moves = Math.abs(top - transcript.scrollTop) >= SCROLL_EPSILON;
+  if (moves) transcript.scrollTop = top;
+  recordRounding(transcript, top);
+  if (moves) anchorListeners.get(transcript)?.forEach(listener => listener(transcript.scrollTop));
+}
+
+const anchorListeners = new WeakMap<HTMLElement, readonly ((top: number) => void)[]>();
+/** Calls `listener` with the new scrollTop whenever restoreScrollTop moves `transcript` (an anchor restore from any
+ *  caller: a Markdown paint, a reply's clamp, a step up), so its owner records the position before the scroll event
+ *  arrives and never reads the restore as the reader moving. */
+export function onAnchorRestore(transcript: HTMLElement, listener: (top: number) => void): void {
+  anchorListeners.set(transcript, [...(anchorListeners.get(transcript) ?? []), listener]);
+}
+
+/** restoreScrollTop's bookkeeping, always writing: for our own animation (createSmoothScroller), which must land
+ *  exactly and is cancelled by any scroll of the reader's, so it never runs during their momentum. */
+function writeScrollTop(transcript: HTMLElement, top: number): void {
   transcript.scrollTop = top;
+  recordRounding(transcript, top);
+}
+
+function recordRounding(transcript: HTMLElement, top: number): void {
   const actual = transcript.scrollTop, remainder = top - actual;
   // Some webviews round scrollTop to whole pixels. Carry only rounding error,
   // never a clamped scroll, so many async code-block paints cannot add up to a jump.
@@ -55,8 +78,9 @@ function rowsInBand(transcript: HTMLElement, top: number, bottom: number, skip?:
 }
 
 /** Preserve the visible message or tool while content is inserted above it. `skip` names rows the search must not read
- *  (transcript-window.ts skipFarRows). The returned call takes what writes still to come will change above the
- *  reader (holdPlace's `pending`). */
+ *  (transcript-window.ts skipFarRows). The returned call takes what writes still to come will change above the reader
+ *  (holdPlace's `pending`); callers that finish every write before restoring pass nothing. The position is measured,
+ *  never left to the engine: WebKit reports `overflow-anchor` as supported yet does not anchor the transcript. */
 export function captureTranscriptAnchor(transcript: HTMLElement, skip?: (row: Element) => boolean): (pending?: number) => void {
   const { top, bottom, scale } = viewport(transcript);
   const scrollTop = transcript.scrollTop, height = transcript.scrollHeight;
@@ -74,8 +98,7 @@ export function captureTranscriptAnchor(transcript: HTMLElement, skip?: (row: El
       const attribute = attributes.find(name => node.hasAttribute(name))!;
       return { selector: `[${attribute}="${CSS.escape(node.getAttribute(attribute)!)}"]`, offset: (rect.top - top) / scale };
     });
-  return (pending = 0) => {
-    const later = scrollAnchors ? 0 : pending;
+  return (later = 0) => {
     for (const anchor of anchors) {
       const node = transcript.querySelector<HTMLElement>(anchor.selector);
       if (!node?.getClientRects().length) continue;
@@ -93,6 +116,9 @@ const followers = new WeakMap<HTMLElement, () => boolean>();
 export function followTranscriptBottom(transcript: HTMLElement, following: () => boolean): void { followers.set(transcript, following); }
 /** Whether `transcript`'s owner is keeping it pinned to the bottom right now (layout-free); false for any other scroller. */
 export function isFollowingTranscript(transcript: HTMLElement): boolean { return followers.get(transcript)?.() ?? false; }
+/** Whether `transcript` has an owner that decides its follow (followTranscriptBottom): then only that owner's intent,
+ *  never mere nearness to the bottom, may pin it. */
+export function hasFollowOwner(transcript: HTMLElement): boolean { return followers.has(transcript); }
 
 /** Capture immediately before an async Markdown paint, respecting new user scrolls. */
 export function preserveTranscriptPosition(transcript: HTMLElement, changed?: HTMLElement): () => void {
@@ -122,8 +148,6 @@ export type ScrollTransitionInput = {
 export type ScrollAction = 'ignore' | 'repin' | 'release' | 'restick' | 'keep';
 export type ScrollTransitionResult = { stickToBottom: boolean; resumeFollow: boolean; nextLastTop: number; action: ScrollAction };
 
-/** Movement smaller than this (px) is rounding, not the reader. */
-const SCROLL_EPSILON = 0.5;
 /** How close (px) to the bottom a reader coming back down counts as there. */
 const RESTICK_GAP = 2;
 
@@ -136,13 +160,16 @@ export function decideScrollTransition(input: ScrollTransitionInput): ScrollTran
   const clampedTop = Math.max(0, Math.min(maxTop, top));
   const gap = Math.max(0, maxTop - clampedTop);
   if (programmatic) return { stickToBottom, resumeFollow, nextLastTop: clampedTop, action: 'ignore' };
+  // A gesture of the reader's (wheel, touch, scrollbar, keys) is never a clamp: neither rule below applies during one,
+  // so a move up mid-gesture always releases, whatever the layout did meanwhile.
   // A follower moved up while the layout changed and the reader was not scrolling: the engine clamped the scroll to a
   // momentarily shorter layout (WebKit, as the composer fits its prompt or the inspector redraws), and the scroll event
-  // arrives after the layout came back. Not the reader leaving, however far below the end it left them.
+  // arrives after the layout came back. Not the reader leaving, however far below the end it left them. The owner sets
+  // `layoutChanged` only for a known layout task, a shrink or a resized box, never for content growing.
   if (stickToBottom && layoutChanged && !userScrolling && clampedTop < lastTop - SCROLL_EPSILON) return { stickToBottom: true, resumeFollow, nextLastTop: clampedTop, action: 'repin' };
   // Content shrank under a follower and the engine clamped it to (within a rounded pixel of) the new end. WebKit
   // shrinks by fractions of a pixel, so the clamp can be under SCROLL_EPSILON past the end and still look like a move up.
-  if (stickToBottom && lastTop > maxTop && gap <= RESTICK_GAP) return { stickToBottom: true, resumeFollow, nextLastTop: clampedTop, action: 'repin' };
+  if (stickToBottom && !userScrolling && lastTop > maxTop && gap <= RESTICK_GAP) return { stickToBottom: true, resumeFollow, nextLastTop: clampedTop, action: 'repin' };
   // Moving up releases the follow but keeps resumeFollow: only an opened or closed fold pauses it (and the wheel and
   // keys release through releaseTranscript), so coming back down to the bottom follows again.
   if (clampedTop < lastTop - SCROLL_EPSILON) return { stickToBottom: false, resumeFollow, nextLastTop: clampedTop, action: 'release' };
@@ -150,6 +177,35 @@ export function decideScrollTransition(input: ScrollTransitionInput): ScrollTran
   // Only a move down re-sticks, so resting a pixel or two above the bottom stays released.
   if (resumeFollow && gap <= RESTICK_GAP && clampedTop > lastTop + SCROLL_EPSILON) return { stickToBottom: true, resumeFollow: true, nextLastTop: clampedTop, action: 'restick' };
   return { stickToBottom: false, resumeFollow, nextLastTop: clampedTop, action: 'keep' };
+}
+
+/** After an upward wheel, downward wheel deltas this soon (ms) are the trackpad settling, not the reader coming back. */
+const WHEEL_RESTICK_COOLDOWN_MS = 250;
+/** A downward wheel delta this large (px) is deliberate even inside the cooldown. */
+const WHEEL_DELIBERATE_DELTA = 24;
+/** Downward travel (px, summed since the last upward wheel) that counts as intent once the cooldown passed... */
+const WHEEL_INTENT_ACCUM = 12;
+/** ...or a single delta this large (px). */
+const WHEEL_INTENT_DELTA = 6;
+/** Below this raw gap (px) the scroller is in elastic overscroll past the end: a bounce, not a place to follow from. */
+const WHEEL_OVERSCROLL_GAP = -0.5;
+
+export type WheelRestickInput = { deltaY: number; now: number; lastUpwardWheelAt: number; downAccum: number; gap: number; stickToBottom: boolean };
+/** `restick`: follow the bottom again now; `deliberate`: the wheel is the reader heading down (resumeFollow may arm);
+ *  `nextDownAccum`: the downward travel to carry to the next wheel. */
+export type WheelRestickResult = { restick: boolean; deliberate: boolean; nextDownAccum: number };
+
+/** Whether a downward wheel brings a released reader back to following. A macOS trackpad sends a few tiny positive
+ *  deltas (+0.01..+3px) as an upward swipe settles, and the elastic bounce at the end reports a gap below zero: neither
+ *  may re-pin a reader who just scrolled up. `gap` is the raw scrollHeight − scrollTop − clientHeight. */
+export function shouldWheelRestick(input: WheelRestickInput): WheelRestickResult {
+  const { deltaY, now, lastUpwardWheelAt, downAccum, gap, stickToBottom } = input;
+  if (!(deltaY > 0)) return { restick: false, deliberate: false, nextDownAccum: 0 };
+  const nextDownAccum = downAccum + deltaY;
+  const cooledDown = now - lastUpwardWheelAt >= WHEEL_RESTICK_COOLDOWN_MS;
+  const deliberate = deltaY >= WHEEL_DELIBERATE_DELTA || (cooledDown && (nextDownAccum >= WHEEL_INTENT_ACCUM || deltaY >= WHEEL_INTENT_DELTA));
+  const atEnd = gap >= WHEEL_OVERSCROLL_GAP && gap <= RESTICK_GAP;
+  return { restick: deliberate && atEnd && !stickToBottom, deliberate, nextDownAccum };
 }
 
 const SCROLLING_OVERFLOW = new Set(['auto', 'scroll', 'overlay']);
@@ -187,7 +243,7 @@ const reducedMotion = (): boolean => typeof matchMedia === 'function' && matchMe
 const easeOut = (t: number): number => 1 - (1 - t) ** 3;
 
 /** Time-based eased scrolling of `scroller`. A target may be a function, asked again every frame (a target that moves
- *  as content lays out); null abandons the scroll. Writes go through restoreScrollTop, and `onStep` gets each position
+ *  as content lays out); null abandons the scroll. Writes go through writeScrollTop, and `onStep` gets each position
  *  so the owner can tell its own scrolls from the reader's. An external scroll during the animation cancels it; one that
  *  comes with a change in scrollHeight is layout (scroll anchoring) and the animation carries on from there. */
 export function createSmoothScroller(scroller: HTMLElement, options: { onStep?: (top: number) => void; onActiveChange?: (active: boolean) => void } = {}): SmoothScroller {
@@ -198,7 +254,7 @@ export function createSmoothScroller(scroller: HTMLElement, options: { onStep?: 
   let run: Run | undefined, frame = 0;
   const maxTop = (): number => Math.max(0, scroller.scrollHeight - scroller.clientHeight);
   const clamp = (top: number): number => Math.max(0, Math.min(maxTop(), top));
-  const write = (top: number): number => { restoreScrollTop(scroller, top); options.onStep?.(scroller.scrollTop); return scroller.scrollTop; };
+  const write = (top: number): number => { writeScrollTop(scroller, top); options.onStep?.(scroller.scrollTop); return scroller.scrollTop; };
   /** Ends the current run, if any; `restarting` keeps the active state for the run about to start. */
   const end = (landed: boolean, restarting = false): void => {
     const ended = run;
