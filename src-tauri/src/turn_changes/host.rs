@@ -11,10 +11,12 @@ mod claude_policy;
 mod claude_roots;
 #[cfg(test)]
 pub(crate) use claude_policy::edits_wait_for_approval;
+#[cfg(test)]
+pub(crate) use claude_roots::resolve_claude_config_dir_env;
 pub(crate) use claude_policy::{claude_restricts_reads, edits_wait_for_run};
 pub(crate) use claude_roots::{
     claude_config_dir_value, host_managed_settings_paths, project_config_roots,
-    resolve_claude_config_dir_env, resolve_claude_config_dir_env_with,
+    resolve_claude_config_dir_env_with,
 };
 
 /// The tracking instruction, the same for every run: every edit batch, native tools included,
