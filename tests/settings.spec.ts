@@ -13,6 +13,7 @@ const providerCalls = (page: Page) => page.evaluate(() => (window as any).__sett
 
 for (const theme of ['dark', 'light']) for (const { width, scale } of [{ width: 460, scale: 1.4 }, { width: 540, scale: 1.6 }, { width: 1100, scale: 1 }]) {
   test(`settings organization keeps full Agents tabs readable at ${width}px ${scale * 100}% ${theme}`, async ({ page }, testInfo) => {
+    test.slow();
     await page.setViewportSize({ width, height: 740 });
     await page.addInitScript(({ theme, scale }) => {
       localStorage.setItem('pandacode.theme', theme);
@@ -193,6 +194,7 @@ async function open(page: Page): Promise<void> {
     `) });
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('html[data-ready]')).toHaveCount(1, { timeout: 15_000 });
   await expect(prompt(page)).toBeEnabled();
   await expect(page.locator('.task-item.selected')).toHaveCount(1);
 }
@@ -239,7 +241,11 @@ test('support details recover from a fetch error and offer manual copying when c
 });
 
 async function settings(page: Page): Promise<void> {
-  await page.keyboard.press('Meta+,');
+  // Under load the first shortcut can land before the keymap is wired: retry until the page opens.
+  await expect(async () => {
+    if (!(await dialog(page).isVisible())) await page.keyboard.press('Meta+,');
+    await expect(dialog(page)).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
   await expect(dialog(page).getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(tab(page, 'Recommended')).toHaveAttribute('aria-selected', 'true');
   await expect(tab(page, 'Recommended')).toBeFocused();

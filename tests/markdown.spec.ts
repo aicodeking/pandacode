@@ -17,13 +17,44 @@ async function render(page: Page, markdown: string): Promise<void> {
 }
 const probe = (page: Page) => page.locator('#markdown-probe');
 
-test.beforeEach(async ({ page }) => { await page.goto('/'); });
+test.beforeEach(async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.workspace')).toBeVisible({ timeout: 15_000 });
+});
 
 test.describe('enriched markdown', () => {
+  test('transcript headings keep the same relative hierarchy with and without a trace', async ({ page }) => {
+    await render(page, Array.from({ length: 6 }, (_, index) => `${'#'.repeat(index + 1)} Heading ${index + 1}`).join('\n\n'));
+    await probe(page).evaluate(el => {
+      const message = document.createElement('article');
+      message.className = 'agent-message';
+      el.before(message);
+      message.append(el);
+      el.classList.add('message-content');
+    });
+    for (const traced of [false, true]) {
+      await probe(page).evaluate((el, value) => el.parentElement!.classList.toggle('after-trace', value), traced);
+      for (let level = 1; level <= 6; level++) {
+        const heading = probe(page).getByRole('heading', { level });
+        const size = level <= 2 ? 19.04 : 16;
+        const style = await heading.evaluate(el => {
+          const cs = getComputedStyle(el);
+          return [parseFloat(cs.fontSize), parseFloat(cs.lineHeight)];
+        });
+        expect(style[0]).toBeCloseTo(size, 2);
+        expect(style[1]).toBeCloseTo(size * 1.25, 2);
+        await expect(heading).toHaveCSS('font-weight', '600');
+        await expect(heading).toHaveCSS('letter-spacing', 'normal');
+        await expect(heading).toHaveCSS('margin-bottom', traced ? '8px' : level === 6 ? '0px' : '10px');
+      }
+    }
+  });
+
   for (const fallback of [false, true]) test(`Arabic and English prose blocks keep independent direction${fallback ? ' in fallback Markdown' : ''}`, async ({ page }) => {
     if (fallback) {
       await page.route('**/src/vendor/enriched-markdown/md4c.js*', route => route.fulfill({ contentType: 'text/javascript', body: 'export default async () => { window.__fallbackUsed = true; throw new Error("No WebAssembly"); };' }));
       await page.reload();
+      await expect(page.locator('.workspace')).toBeVisible({ timeout: 15_000 });
     }
     const source = '## النتيجة!\n\nمرحبا بالعالم!\n\nHello, world!\n\n`npm test` مرحبا!\n\n- عنصر عربي!\n- English item!\n  - عنصر متداخل!\n\n1. خطوة!\n2. Next!\n\n- فقرة عربية!\n\n  Another paragraph!\n\n| الاسم | Name |\n| --- | --- |\n| أحمد! | Alice! |\n\n```js\nconst label = "مرحبا!";\n```';
     await render(page, source);
@@ -110,11 +141,28 @@ test.describe('enriched markdown', () => {
     await expect(probe(page).locator('th.md-align-center')).toHaveText('Middle');
     await expect(probe(page).locator('td.md-align-right')).toHaveText('c');
     await expect(probe(page).locator('td').first()).toHaveClass('md-align-left');
+    for (const header of await probe(page).getByRole('columnheader').all()) {
+      const metrics = await header.evaluate(el => {
+        const cs = getComputedStyle(el);
+        return { size: parseFloat(cs.fontSize), leading: parseFloat(cs.lineHeight) };
+      });
+      expect(metrics.size).toBeCloseTo(11, 1);
+      await expect(header).toHaveCSS('font-weight', '500');
+      expect(metrics.leading).toBeCloseTo(14.3, 1);
+    }
+    await expect(probe(page).locator('th.md-align-center')).toHaveCSS('text-align', 'center');
+    await expect(probe(page).locator('th.md-align-right')).toHaveCSS('text-align', 'right');
+    const cellSize = await probe(page).locator('td').first().evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    expect(cellSize).toBeCloseTo(16, 1);
+    await expect(probe(page).locator('td').first()).toHaveCSS('font-weight', '400');
+
   });
 
   test('typesets inline and display math, but leaves prices alone', async ({ page }) => {
     await render(page, 'Energy is $E=mc^2$, which costs $5 and $10.\n\n$$\\int_0^1 x\\,dx = \\tfrac{1}{2}$$');
     await expect(probe(page).locator('p .katex')).toHaveCount(1);
+    const katexSize = await probe(page).locator('p .katex').evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    expect(katexSize).toBeCloseTo(16.8, 1);
     await expect(probe(page).locator('p .katex-mathml annotation')).toHaveText('E=mc^2');
     await expect(probe(page).locator('p')).toContainText('costs $5 and $10.');
     await expect(probe(page).locator('.md-math-block .katex-display')).toHaveCount(1);
@@ -229,7 +277,8 @@ test.describe('streamed markdown', () => {
       for (const [from] of patches) expect(source).toContain(from);
       await route.fulfill({ response, body: patches.reduce((body, [from, to]) => body.replace(from, to), source) });
     });
-    await page.reload();
+    await page.goto('/?trace');
+    await expect(page.locator('.workspace')).toBeVisible({ timeout: 15_000 });
     await page.evaluate(reply => { (window as any).__markdownReply = reply; }, REPLY);
     await page.getByRole('button', { name: 'New task ⌘ N', exact: true }).click();
     // Type only once the New task page has drawn; before that the prompt still belongs to the thread that was open.
@@ -259,7 +308,11 @@ test.describe('streamed markdown', () => {
     }, REPLY);
     expect(cached).toBe(expected);
     const task = await page.locator('.task-item.selected').getAttribute('data-id');
-    await page.locator('.task-item:not(.selected)').first().click();
+    // Visit three other non-empty threads to evict leftRowsCache (limit 2), so returning redraws from markdownCache.
+    for (const [id, marker] of [['session-1', 'Search feels a little slow'], ['session-7', 'Show every kind of tool you can run.'], ['session-5', 'Make search ignore case and accents']] as const) {
+      await page.locator(`.task-item[data-id="${id}"]`).click();
+      await expect(transcript).toContainText(marker);
+    }
     await expect(reply).toHaveCount(0);
     await page.locator(`.task-item[data-id="${task}"]`).click();
     await expect.poll(() => reply.evaluate(node => node.innerHTML)).toBe(`${expected}<!--from-cache-->`);

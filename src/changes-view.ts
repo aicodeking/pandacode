@@ -43,15 +43,19 @@ const SHADOW_CSS = `
   pre[data-diff][data-overflow='wrap'] [data-line] { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
   pre[data-diff] [data-code] { scrollbar-gutter: stable; }
   pre[data-diff] [data-code]::-webkit-scrollbar { height: 10px; background: transparent; }
-  pre[data-diff] [data-code]::-webkit-scrollbar-thumb { background: color-mix(in srgb, currentColor 35%, transparent); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+  pre[data-diff] [data-code]::-webkit-scrollbar-thumb { background: color-mix(in srgb, currentColor 35%, transparent); border-radius: var(--radius-chip); border: 2px solid transparent; background-clip: content-box; }
   pre[data-diff] [data-code]::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, currentColor 55%, transparent); background-clip: content-box; }
   [data-file-info] { border-block: 0; }
   pre[data-diff] [data-gutter] { background-color: color-mix(in srgb, var(--diffs-fg, currentColor) 5%, var(--diffs-bg)); }
-  pre[data-diff] [data-separator='metadata'] { height: 20px; }
+  pre[data-diff] [data-separator='metadata'] { height: calc(var(--mono-size) * 5 / 3); }
   pre[data-diff] [data-separator='metadata'] [data-separator-wrapper] {
-    font-size: .68rem; line-height: 20px; opacity: .8;
+    font-size:var(--type-caption); line-height:calc(var(--mono-size) * 5 / 3); opacity: .8;
     background-color: color-mix(in srgb, var(--diffs-bg-separator) 45%, var(--diffs-bg));
-  }`;
+  }
+  /* The vendor sheet is one @layer base block; these unlayered rules win and put its literal radii (3px, 4px, 6px) on the scale. */
+  [data-diff-span] { border-radius: var(--radius-hair); }
+  [data-utility-button] { border-radius: var(--ds-control-radius); }
+  [data-separator-content] { border-start-end-radius: var(--radius-chip); border-end-end-radius: var(--radius-chip); }`;
 const TRUNCATED = /\n*\[Preview truncated at [^\]]*\]\n*$/;
 const SCOPES: Record<Scope, string> = { all: 'All changes', unstaged: 'Unstaged', staged: 'Staged' };
 const STATUS: Record<string, string> = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Modified', U: 'Conflict', '?': 'Untracked' };

@@ -469,7 +469,7 @@ test('with Council on and nothing reviewed yet, the panel says so quietly', asyn
 test('panel readability: the footer is meta size, and the panel is near-opaque over the card', async ({ page }) => {
   await open(page, '/?council=asking');
   await button(page).click();
-  const [foot, meta] = await panel(page).locator('.council-new').evaluate(node => { const probe = document.createElement('span'); probe.style.fontSize = 'var(--ds-text-meta)'; node.append(probe); const sizes = [getComputedStyle(node).fontSize, getComputedStyle(probe).fontSize]; probe.remove(); return sizes; });
+  const [foot, meta] = await panel(page).locator('.council-new').evaluate(node => { const probe = document.createElement('span'); probe.style.fontSize = 'var(--type-meta)'; node.append(probe); const sizes = [getComputedStyle(node).fontSize, getComputedStyle(probe).fontSize]; probe.remove(); return sizes; });
   expect(foot).toBe(meta);
   const alpha = await panel(page).evaluate(node => { const n = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number); return n.length > 3 ? n[3] : 1; });
   expect(alpha).toBeGreaterThanOrEqual(0.9);

@@ -43,6 +43,10 @@ async function open(page: Page, projects = 2, empty = false, theme: '' | 'light'
           // The delay comes after the mock answers, so a slow reply carries the state as it was when asked.
           window.__calls ??= []; window.__calls.push({ command, args });
           const result = await mock[methods[command]](args), delay = window.__delays[command]?.shift();
+          // A spec can lengthen one catalog description (window.__previewDescriptions) so a clamp still overflows.
+          if (command === 'skill_manager_preview' && window.__previewDescriptions && result?.skills) {
+            result.skills = result.skills.map(s => window.__previewDescriptions[s.name] ? { ...s, description: window.__previewDescriptions[s.name] } : s);
+          }
           if (delay) await new Promise(resolve => setTimeout(resolve, delay));
           if (window.__roster) result.harnesses = window.__roster;
           if (window.__overrides && result.skills) result.skills = result.skills.map(s => window.__overrides[s.name] ? { ...s, enforcementOverrides: window.__overrides[s.name] } : s);
@@ -1638,7 +1642,7 @@ test.describe('Skill manager', () => {
     test(`at ${width}px (${theme}) a locked row and a quarantined row read well`, async ({ page }) => {
       await page.setViewportSize({ width, height: 1400 });
       await page.addInitScript(() => { (window as any).__mockOptions = { quarantined: ['docx'], findings: [
-        { skill: 'docx', rule: 'pipe-to-shell', file: 'scripts/setup.sh', line: 12, excerpt: 'curl -fsSL https://example.com/a-very-long-path/that/keeps/going/install.sh | sh -s -- --yes --no-prompt' },
+        { skill: 'docx', rule: 'pipe-to-shell', file: 'scripts/setup.sh', line: 12, excerpt: 'curl -fsSL https://example.com/' + 'a-very-long-path/that/keeps/going/'.repeat(8) + 'install.sh | sh -s -- --yes --no-prompt' },
         { skill: 'docx', rule: 'secret', file: 'SKILL.md', line: 40, excerpt: 'API_KEY=sk-…[redacted]' },
       ] }; });
       await open(page, 2, false, theme);
@@ -1935,6 +1939,10 @@ test.describe('Skill manager', () => {
 
   test('at 820px Add gives each skill description two lines before it ellipsizes', async ({ page }) => {
     await page.setViewportSize({ width: 820, height: 900 });
+    // --type-meta is 12px, so the catalog sentence fits in two lines. This copy is long enough to still clamp.
+    await page.addInitScript(() => {
+      (window as any).__previewDescriptions = { 'oncall-runbook': 'Triage alerts, find the service that owns them, page the right owner, and keep the incident channel updated until it is resolved and written up. Include the timeline, the customer impact, the mitigation, the rollback, who is driving, and the next update time, and keep writing until the channel has the whole story from the first page through the resolution.' };
+    });
     await open(page);
     await page.getByRole('button', { name: 'Add skill' }).click();
     const dialog = page.getByRole('dialog', { name: 'Add skill' });

@@ -1,16 +1,16 @@
-.team-messages { margin: 4px 0 0; padding: 0 8px; font-size: var(--text-xs); }
+.team-messages { margin: 4px 0 0; padding: 0 8px; font-size:var(--type-meta); }
 /* A quiet one-line toggle with a chevron instead of the browser's triangle. */
-.team-messages > summary { display: flex; align-items: center; gap: 6px; height: 28px; list-style: none; color: var(--muted); cursor: pointer; font-size: var(--text-xs); font-weight: 550; }
+.team-messages > summary { display: flex; align-items: center; gap: 6px; min-height: 28px; list-style: none; color: var(--muted); cursor: pointer; font-size:var(--type-subheading); font-weight: var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none) }
 .team-messages > summary::-webkit-details-marker { display: none; }
 .team-messages > summary::before { content: ""; width: 5px; height: 5px; margin: 0 3px 0 1px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); }
 .team-messages[open] > summary::before { transform: rotate(45deg); }
 .team-messages > summary:hover { color: var(--text); }
 .team-messages ol { list-style: none; padding: 0; margin: 0; max-height: 18rem; overflow: auto; overscroll-behavior: contain; }
 .team-messages li { padding: .65rem 0; }
-.team-message-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; font-size: var(--text-xs); }
-.team-message-heading strong { font-weight: 600; overflow-wrap: anywhere; }
-.team-message-heading time { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.team-messages li p { margin: .3rem 0 0; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.team-messages-status { color: var(--muted); line-height: 1.5; }
+.team-message-heading { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none) }
+.team-message-heading strong { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.team-message-heading time { font-size:var(--type-caption); line-height:var(--type-caption-leading); font-weight:var(--type-caption-weight); color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.team-messages li p { margin: .3rem 0 0; line-height: var(--type-meta-leading); white-space: pre-wrap; overflow-wrap: anywhere; }
+.team-messages-status { color: var(--muted); line-height: var(--type-meta-leading); }
 .team-messages-status:empty { display: none; }
 .team-messages > button { margin-top: .6rem; }

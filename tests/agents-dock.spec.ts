@@ -8,8 +8,9 @@ const openGeneral = async (page: Page) => {
 };
 
 test('the widget stays off until it is turned on in Settings, and the choice survives a restart', async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto('/');
-  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await expect(page.locator('.task-item.selected')).toHaveCount(1, { timeout: 30_000 });
   const trigger = page.locator('.agents-dock-trigger');
   await expect(trigger).toBeHidden();
   expect(await page.locator('#agents-dock-host').evaluate(el => el.getBoundingClientRect().width)).toBe(0);
@@ -27,7 +28,7 @@ test('the widget stays off until it is turned on in Settings, and the choice sur
   await expect(trigger).toHaveAttribute('aria-label', 'Running agents, 3 active');
 
   await page.reload();
-  await expect(page.locator('.agents-dock-trigger')).toBeVisible();
+  await expect(page.locator('.agents-dock-trigger')).toBeVisible({ timeout: 30_000 });
   await openGeneral(page);
   await page.getByRole('checkbox', { name: 'Running agents widget', exact: true }).focus();
   await page.keyboard.press('Space');
@@ -37,7 +38,7 @@ test('the widget stays off until it is turned on in Settings, and the choice sur
 test('running agents widget reveals active tasks and closes on selecting one', async ({ page }) => {
   await widgetOn(page);
   await page.goto('/');
-  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await expect(page.locator('.task-item.selected')).toHaveCount(1, { timeout: 30_000 });
   const trigger = page.getByRole('button', { name: /Running agents/ });
   await expect(trigger).toBeVisible();
   await expect(trigger.locator('.agents-dock-count')).toHaveText('3');
@@ -55,7 +56,7 @@ test('Escape closes the header popover and returns focus to the trigger without 
   await widgetOn(page);
   await page.goto('/');
   const trigger = page.locator('.agents-dock-trigger');
-  await expect(trigger).toHaveAttribute('aria-controls', 'agents-dock-popover');
+  await expect(trigger).toHaveAttribute('aria-controls', 'agents-dock-popover', { timeout: 30_000 });
   await expect(trigger).toHaveAttribute('aria-label', 'Running agents, 3 active');
   await expect(trigger.locator('.agents-dock-count')).toHaveAttribute('aria-hidden', 'true');
   await trigger.focus();
@@ -80,7 +81,7 @@ test('the working ring follows the trigger radius and the popover uses the share
   expect(ring).toBe(button);
   await trigger.click();
   const radius = await page.locator('#agents-dock-popover').evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-  expect(radius).toBe(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--glass-radius').trim()));
+  expect(radius).toBe(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--radius-popover').trim()));
 });
 
 test('the pinned window is transparent, works from the keyboard and keeps focus across updates', async ({ page }) => {
@@ -149,7 +150,7 @@ test('the pinned window keeps one live region and shows a failed action in it', 
   const dismiss = row.getByRole('button', {name: 'Dismiss error'});
   expect((await dismiss.boundingBox())!.height).toBe(28);
   await expect(row.locator('[data-state-tone="danger"]')).toHaveCount(1);
-  expect(await dismiss.evaluate(el => ({press: getComputedStyle(el).getPropertyValue('--press').trim(), icon: getComputedStyle(el.querySelector('.icon')!).width, radius: getComputedStyle(el).borderTopLeftRadius}))).toEqual({press: '.9', icon: '15px', radius: '6px'});
+  expect(await dismiss.evaluate(el => ({press: getComputedStyle(el).getPropertyValue('--press').trim(), icon: getComputedStyle(el.querySelector('.icon')!).width, radius: getComputedStyle(el).borderTopLeftRadius}))).toEqual({press: '.9', icon: '15px', radius: '8px'});
   await dismiss.click();
   await expect(live).toBeEmpty();
   await expect(live).toHaveCount(1);

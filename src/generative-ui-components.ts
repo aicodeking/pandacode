@@ -3,6 +3,9 @@
  * draws a fence's view. Interactivity is local (tabs, sort, toggles) or fills the composer;
  * nothing here executes agent code or fetches a remote URL. */
 
+// Explicit .ts extension for Node's direct test import (tests/generative-ui.test.mjs).
+import { markTightCustom } from './generative-ui-selectors.ts';
+
 export const LIMITS = { source: 64 * 1024, depth: 4, nodes: 120, text: 4000, prompt: 4000, css: 16 * 1024, rows: 200, columns: 12, items: 40 } as const;
 
 type Tone = 'info' | 'success' | 'warning' | 'danger' | 'note';
@@ -227,8 +230,10 @@ function h<K extends keyof HTMLElementTagNameMap>(tag: K, props: Props = {}, ...
   return node;
 }
 
-/** Draws a fence: ```ui JSON, or ```chart/```svg/```html through the questions' renderer. */
-export async function renderBlock(kind: string, source: string): Promise<HTMLElement> {
+/** Draws a fence: ```ui JSON, or ```chart/```svg/```html through the questions' renderer.
+ * baseCss carries src/type-base.css and src/shadow-base.css, passed in because this module
+ * must stay importable in Node and cannot import CSS. */
+export async function renderBlock(kind: string, source: string, baseCss: string): Promise<HTMLElement> {
   const host = h('div', { class: 'gu' });
   if (kind === 'mermaid') {
     // No diagram renderer ships with PandaCode: show the source, labelled and copyable.
@@ -245,7 +250,8 @@ export async function renderBlock(kind: string, source: string): Promise<HTMLEle
   let spec: View;
   try { spec = parseSpec(source); }
   catch (error) { host.append(failure(error instanceof Error ? error.message : 'This view could not be shown.', source)); return host; }
-  host.append(await view(spec));
+  host.append(await view(spec, baseCss));
+  markTightCustom(host);
   return host;
 }
 
@@ -259,7 +265,7 @@ function workspaceImage(path: string): Promise<string> {
   return import('./bridge').then(bridge => bridge.call<string>('workspace_image', { sessionId, path }));
 }
 
-async function md(text: string | undefined, cls = 'gu-md'): Promise<HTMLElement | undefined> {
+async function md(text: string | undefined, cls = 'markdown gu-md'): Promise<HTMLElement | undefined> {
   if (!text) return undefined;
   const box = h('div', { class: cls });
   const { markdownHtml } = await import('./dom');
@@ -289,11 +295,11 @@ function actionRow(items: Action[], cls = 'gu-actions'): HTMLElement | undefined
 
 const heading = (text: string | undefined) => text ? h('div', { class: 'gu-title' }, text) : undefined;
 
-async function view(spec: View): Promise<HTMLElement> {
+async function view(spec: View, baseCss: string): Promise<HTMLElement> {
   switch (spec.type) {
     case 'markdown': return (await md(spec.text)) ?? h('div');
     case 'callout': return h('aside', { class: `gu-callout gu-tone-${spec.tone}`, role: spec.tone === 'danger' || spec.tone === 'warning' ? 'alert' : 'note' }, heading(spec.title), await md(spec.body));
-    case 'card': return h('section', { class: 'gu-card' }, heading(spec.title), await md(spec.body), ...(await Promise.all(spec.children.map(view))), actionRow(spec.actions), spec.footer ? h('footer', { class: 'gu-footer' }, spec.footer) : undefined);
+    case 'card': return h('section', { class: 'gu-card' }, heading(spec.title), await md(spec.body), ...(await Promise.all(spec.children.map(child => view(child, baseCss)))), actionRow(spec.actions), spec.footer ? h('footer', { class: 'gu-footer' }, spec.footer) : undefined);
     case 'stats': return h('div', { class: 'gu-stats' }, ...spec.items.map(item => h('div', { class: 'gu-stat' },
       h('div', { class: 'gu-stat-label' }, item.label), h('div', { class: 'gu-stat-value' }, item.value),
       item.delta ? h('div', { class: `gu-delta gu-${item.trend}` }, `${item.trend === 'up' ? '▲' : item.trend === 'down' ? '▼' : '•'} ${item.delta}`) : undefined,
@@ -310,7 +316,7 @@ async function view(spec: View): Promise<HTMLElement> {
     case 'steps': case 'plan': case 'timeline': {
       const items = await Promise.all(spec.items.map(async step => h('li', { class: `gu-step gu-s-${step.status}` },
         h('span', { class: 'gu-dot', 'aria-hidden': 'true' }),
-        h('div', {}, step.time ? h('div', { class: 'gu-hint' }, step.time) : undefined, h('div', { class: 'gu-step-title' }, step.title, h('span', { class: 'sr-only' }, ` (${step.status})`)), await md(step.detail, 'gu-md gu-step-detail')))));
+        h('div', {}, step.time ? h('div', { class: 'gu-hint' }, step.time) : undefined, h('div', { class: 'gu-step-title' }, step.title, h('span', { class: 'sr-only' }, ` (${step.status})`)), await md(step.detail, 'markdown gu-md gu-step-detail')))));
       return h('section', { class: `gu-flow gu-${spec.type}` }, heading(spec.title ?? (spec.type === 'plan' ? 'Plan' : undefined)), await md(spec.summary), h(spec.type === 'timeline' ? 'ul' : 'ol', { class: 'gu-steps' }, ...items), actionRow(spec.actions));
     }
     case 'checklist': {
@@ -318,8 +324,8 @@ async function view(spec: View): Promise<HTMLElement> {
       return h('section', { class: 'gu-checklist' }, heading(spec.title ? `${spec.title} · ${done}/${spec.items.length}` : undefined),
         h('ul', {}, ...spec.items.map(item => h('li', { class: item.done ? 'gu-done' : '' }, h('span', { class: 'gu-check', role: 'img', 'aria-label': item.done ? 'Done' : 'Not done' }), item.text))));
     }
-    case 'tabs': return tabs(spec.items);
-    case 'accordion': return h('div', { class: 'gu-accordion' }, ...(await Promise.all(spec.items.map(async item => h('details', { open: item.open }, h('summary', {}, item.label), h('div', { class: 'gu-panel' }, await md(item.body), ...(await Promise.all(item.children.map(view)))))))));
+    case 'tabs': return tabs(spec.items, baseCss);
+    case 'accordion': return h('div', { class: 'gu-accordion' }, ...(await Promise.all(spec.items.map(async item => h('details', { open: item.open }, h('summary', {}, item.label), h('div', { class: 'gu-panel' }, await md(item.body), ...(await Promise.all(item.children.map(child => view(child, baseCss))))))))));
     case 'tree': return h('section', { class: 'gu-tree' }, heading(spec.title), branch(spec.items, true));
     case 'diff': return h('figure', { class: 'gu-code gu-diff' }, codeHead(spec.file, spec.diff), h('pre', {}, ...spec.diff.split('\n').slice(0, 600).map(line =>
       h('span', { class: line.startsWith('+') && !line.startsWith('+++') ? 'gu-add' : line.startsWith('-') && !line.startsWith('---') ? 'gu-del' : line.startsWith('@@') ? 'gu-hunk' : '' }, `${line}\n`))));
@@ -339,8 +345,8 @@ async function view(spec: View): Promise<HTMLElement> {
     case 'actions': return h('div', {}, spec.label ? h('div', { class: 'gu-hint' }, spec.label) : undefined, actionRow(spec.buttons));
     case 'chips': return h('div', {}, spec.label ? h('div', { class: 'gu-hint' }, spec.label) : undefined, actionRow(spec.options, 'gu-actions gu-chips'));
     case 'form': return form(spec);
-    case 'stack': case 'grid': return h('div', { class: `gu-${spec.type}`, style: spec.type === 'grid' ? `--gu-columns:${spec.columns}` : undefined }, ...(await Promise.all(spec.children.map(view))));
-    case 'custom': return custom(spec);
+    case 'stack': case 'grid': return h('div', { class: `gu-${spec.type}`, style: spec.type === 'grid' ? `--gu-columns:${spec.columns}` : undefined }, ...(await Promise.all(spec.children.map(child => view(child, baseCss)))));
+    case 'custom': return custom(spec, baseCss);
     case 'unknown': return h('div', { class: 'gu-failed' }, h('p', { class: 'gu-error' }, `PandaCode has no “${spec.name}” view. Showing its data instead.`), h('pre', {}, h('code', {}, spec.raw)));
   }
 }
@@ -414,10 +420,10 @@ async function chart(spec: Extract<View, { type: 'chart' }>): Promise<HTMLElemen
 }
 
 let tabGroups = 0;
-async function tabs(items: Panel[]): Promise<HTMLElement> {
+async function tabs(items: Panel[], baseCss: string): Promise<HTMLElement> {
   const group = ++tabGroups;
   const list = h('div', { class: 'gu-tablist', role: 'tablist' });
-  const panels = await Promise.all(items.map(async (item, i) => h('div', { class: 'gu-panel', role: 'tabpanel', id: `gu-${group}-panel-${i}`, 'aria-labelledby': `gu-${group}-tab-${i}`, tabindex: 0, hidden: i > 0 }, await md(item.body), ...(await Promise.all(item.children.map(view))))));
+  const panels = await Promise.all(items.map(async (item, i) => h('div', { class: 'gu-panel', role: 'tabpanel', id: `gu-${group}-panel-${i}`, 'aria-labelledby': `gu-${group}-tab-${i}`, tabindex: 0, hidden: i > 0 }, await md(item.body), ...(await Promise.all(item.children.map(child => view(child, baseCss)))))));
   const buttons = items.map((item, i) => h('button', { type: 'button', role: 'tab', id: `gu-${group}-tab-${i}`, 'aria-controls': `gu-${group}-panel-${i}`, 'aria-selected': String(i === 0), tabindex: i === 0 ? 0 : -1 }, item.label));
   const select = (index: number) => buttons.forEach((button, i) => {
     button.setAttribute('aria-selected', String(i === index)); button.tabIndex = i === index ? 0 : -1; panels[i].hidden = i !== index;
@@ -461,7 +467,7 @@ function form(spec: Extract<View, { type: 'form' }>): HTMLElement {
   return element;
 }
 
-const CUSTOM_BASE = ':host{display:block;color:var(--text);font:inherit;overflow:auto}*{box-sizing:border-box;max-width:100%}img{height:auto}a{color:var(--accent-ink)}button{font:inherit;color:inherit;background:var(--raised);border:0;border-radius:6px;padding:4px 10px;cursor:pointer}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}[hidden]{display:none!important}';
+const CUSTOM_BASE = '*{max-width:100%}:host{overflow:auto}button{font-family:inherit;font-size:var(--type-body);font-weight:var(--weight-medium);line-height:var(--type-body-leading);color:inherit;background:var(--raised);border:0;border-radius:var(--radius-chip);padding:4px 10px;cursor:pointer}:host(.gu-tight) :is(button,input,select,textarea){border-radius:var(--radius-hair)}button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}[hidden]{display:none!important}';
 
 /** Sanitizes a custom view's HTML: no scripts, handlers, frames, forms or remote resources. */
 async function cleanCustom(html: string): Promise<DocumentFragment> {
@@ -492,10 +498,10 @@ async function cleanCustom(html: string): Promise<DocumentFragment> {
 /** An agent-built view: sanitized HTML with scoped CSS in its own shadow root, plus a small
  * declarative layer — data-ui-toggle, data-ui-tab/data-ui-panel, data-ui-set, data-ui-bind,
  * data-ui-prompt — that only changes this view or fills the composer. */
-async function custom(spec: Extract<View, { type: 'custom' }>): Promise<HTMLElement> {
+async function custom(spec: Extract<View, { type: 'custom' }>, baseCss: string): Promise<HTMLElement> {
   const host = h('div', { class: 'gu-custom', style: `max-height:${spec.height}px` });
   const root = host.attachShadow({ mode: 'open' });
-  const base = document.createElement('style'); base.textContent = CUSTOM_BASE;
+  const base = document.createElement('style'); base.textContent = baseCss + CUSTOM_BASE;
   const own = document.createElement('style'); own.textContent = spec.css;
   root.append(base, own, await cleanCustom(spec.html));
   const state = { ...spec.state };

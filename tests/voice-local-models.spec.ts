@@ -206,6 +206,16 @@ test.describe('voice input local models', () => {
     await expect(stop).toBeFocused();
     await stop.click();
     await expect(unified.locator('.voice-model-transcript')).toHaveText('Testing local speech on this device.');
+    await expect(unified).toHaveClass(/ds-card-inner/);
+    await expect(unified).toHaveCSS('border-radius', '8px');
+    await expect(unified.locator('.voice-model-actions button').first()).toHaveCSS('border-radius', '6px');
+    await expect(unified.locator('.voice-model-badge').first()).toHaveCSS('border-radius', '6px');
+    await expect(unified.locator('.voice-model-transcript')).toHaveCSS('border-radius', '6px');
+    const pane = unified.locator('xpath=ancestor::div[contains(@class,"voice-browser-pane")]');
+    await expect(pane).toHaveCSS('border-radius', '10px');
+    await expect(pane.locator('.voice-search')).toHaveCSS('border-radius', '8px');
+    const transcriptionCard = pane.locator('xpath=ancestor::section[contains(@class,"voice-card")]');
+    await expect(transcriptionCard).toHaveCSS('border-radius', '16px');
     await page.evaluate(() => { (window as any).__voiceLocalText = '  '; });
     await unified.getByRole('button', { name: `Test ${UNIFIED}`, exact: true }).click();
     await unified.getByRole('button', { name: `Stop testing ${UNIFIED}`, exact: true }).click();
@@ -310,17 +320,18 @@ test.describe('voice input local models', () => {
     await expect(remove).toBeDisabled();
     // Other cards stay deletable; only the tested model is protected.
     await expect(card(page, WHISPER).getByRole('button', { name: `Delete ${WHISPER}`, exact: true })).toBeEnabled();
-    // The preview module instance the app loaded (same URL, so the same state) answers like native.
-    const refused = await page.evaluate(async id => {
-      const url = performance.getEntriesByType('resource').map(entry => entry.name).find(name => new URL(name).pathname === '/src/preview.ts')!;
-      const preview = await import(/* @vite-ignore */ url);
-      return preview.invoke('voice_local_delete', { modelId: id }).then(() => 'deleted', (e: any) => String(e?.message ?? e));
-    }, (await localState(page)).testing);
+    await expect.poll(async () => (await localState(page)).testing).not.toBeNull();
+    // The preview module instance the app loaded answers like native via __voiceInvoke.
+    const refused = await page.evaluate(
+      async id => (window as any).__voiceInvoke('voice_local_delete', { modelId: id }).then(() => 'deleted', (e: any) => String(e?.message ?? e)),
+      (await localState(page)).testing,
+    );
     expect(refused).toBe('Stop the model test first.');
     await page.evaluate(() => { (window as any).__voiceLocalStopHold = true; });
     await unified.getByRole('button', { name: `Stop testing ${UNIFIED}`, exact: true }).click();
     await expect(unified.getByRole('button', { name: `Transcribing test of ${UNIFIED}`, exact: true })).toBeVisible();
     await expect(remove).toBeDisabled();
+    await page.waitForFunction(() => !(window as any).__voiceLocalStopHold);
     await page.evaluate(() => (window as any).__voiceLocalStopRelease());
     await expect(unified.locator('.voice-model-transcript')).toBeVisible();
     await expect(remove).toBeEnabled();

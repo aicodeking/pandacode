@@ -1,48 +1,48 @@
 /* Settings → Agents → Model routing. */
-.routing-modes{position:relative;isolation:isolate;display:flex;gap:2px;padding:3px;border-radius:calc(var(--ds-radius-control) + 3px);background:var(--ds-track);flex:none}
-.routing-modes>.segment-thumb{border-radius:var(--ds-radius-control);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+.routing-modes{position:relative;isolation:isolate;display:flex;gap:2px;padding:2px;border-radius:var(--ds-inner-radius);background:var(--ds-track);flex:none}
+.routing-modes>.segment-thumb{border-radius:var(--ds-control-radius);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
 .routing-modes:not([data-segmented])>button.selected{background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
-.routing-modes>button{position:relative;z-index:1;min-height:28px;padding:0 14px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--muted);white-space:nowrap;--press:1;transition:color var(--ds-ease-out) ease-out}
+.routing-modes>button{position:relative;z-index:1;min-height:28px;padding:0 14px;border-radius:var(--ds-control-radius);font-size:var(--type-body);font-weight:var(--type-body-weight);line-height:var(--type-body-leading);color:var(--muted);white-space:nowrap;--press:1;transition:color var(--ds-ease-out) ease-out}
 .routing-modes>button:hover{color:var(--text);transition-duration:var(--ds-ease-in)}
 .routing-modes>button.selected{color:var(--text)}
 .routing-modes>button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
-.routing-off{margin:0;font-size:var(--ds-text-meta);color:var(--muted)}
+.routing-off{margin:0;font-size:var(--type-meta);color:var(--muted)}
 /* Beats `.setting-row input` (sized for checkboxes). */
-.setting-row .routing-minp{width:72px;height:32px;accent-color:auto;padding:0 10px;border-radius:var(--ds-radius-control);border:0;background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--ds-text-ui);font-variant-numeric:tabular-nums}
+.setting-row .routing-minp{width:72px;height:32px;accent-color:auto;padding:0 10px;border-radius:var(--ds-control-radius);border:0;background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight);font-variant-numeric:tabular-nums}
 .routing-minp:focus-visible,.routing-text:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .routing-try{display:flex;flex-direction:column;gap:8px;padding:2px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 10px}
-.routing-text{width:100%;min-width:0;box-sizing:border-box;resize:vertical;padding:10px 12px;border-radius:var(--ds-radius-inner);border:0;background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--ds-text-ui);line-height:1.45}
+.routing-text{width:100%;min-width:0;box-sizing:border-box;resize:vertical;padding:10px 12px;border-radius:var(--ds-control-radius);border:0;background:var(--ds-card-inset);color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight);line-height:var(--type-body-leading)}
 .routing-try-actions{display:flex;justify-content:flex-end}
-.routing-result{font-size:var(--ds-text-meta);color:var(--muted)}
+.routing-result{font-size:var(--type-meta);color:var(--muted)}
 .routing-summary{margin:0 0 4px}
 .routing-ranking{list-style:none;margin:0;padding:0}
 .routing-ranking li{display:grid;grid-template-columns:40px 1fr 48px 64px;gap:8px;align-items:center;min-height:28px;font-variant-numeric:tabular-nums}
-.routing-ranking li:first-child{color:var(--text);font-weight:600}
+.routing-ranking li:first-child{color:var(--text);font-weight:var(--weight-medium)}
 .routing-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* Harness rows: chevron, logo, name from the row's left edge; model names line up under the harness name. */
 .settings-page-root :is(.routing-pool-row,.routing-pool-model-row){grid-template-columns:minmax(0,1fr) auto}
 .routing-pool-expand{justify-self:start;justify-content:flex-start;gap:6px;max-width:100%;min-width:0;padding:0;background:none;color:var(--text);font:inherit;text-align:left}
 .routing-pool-expand strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .routing-pool-expand:hover .routing-pool-chevron{color:var(--text)}
-.routing-pool-expand:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--ds-radius-chip)}
+.routing-pool-expand:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:var(--ds-control-radius)}
 .routing-pool-chevron{flex:none;width:14px;height:14px;color:var(--muted);transition:rotate var(--ds-ease-out) ease-out}
 .routing-pool-expand[aria-expanded=true] .routing-pool-chevron{rotate:90deg}
 .routing-logo{width:18px;height:18px;flex:none;align-self:center}
-.routing-logo.provider-logo-tile{font-size:10px;border-radius:4px}
+.routing-logo.provider-logo-tile{width:max(18px,1.6em);height:max(18px,1.6em);font-size:var(--type-caption);line-height:1;border-radius:var(--radius-chip)}
 .routing-health-row>div{align-items:center}
-.routing-pool-models{font-size:var(--ds-text-ui)}
+.routing-pool-models{font-size:var(--type-body)}
 .settings-page-root .routing-pool-models>.setting-row{min-height:36px;padding-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad) + 44px)}
-.routing-pool-models>p,.routing-pool-warning{margin:0;padding:6px var(--ds-row-pad-x) 6px calc(var(--ds-row-pad-x) - var(--ds-card-pad) + 44px);font-size:var(--ds-text-meta);color:var(--muted)}
+.routing-pool-models>p,.routing-pool-warning{margin:0;padding:6px var(--ds-row-pad-x) 6px calc(var(--ds-row-pad-x) - var(--ds-card-pad) + 44px);font-size:var(--type-meta);color:var(--muted)}
 .routing-pool-warning{padding-left:calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--ds-warn)}
 .routing-pool-model-row>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
 /* A model id shown beside a duplicate display name (issue #315), here and in Add model…; the name takes any ellipsis. */
 .routing-pool-model-row>.routing-pool-dup{display:flex;align-items:baseline;gap:4px}
 .routing-pool-dup>span{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.routing-pool-model-id{flex:none;max-width:46%;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:var(--ds-text-meta)}
-.team-model-id{color:var(--muted);font-size:var(--text-xs)}
+.routing-pool-model-id{flex:none;max-width:46%;overflow:hidden;text-overflow:ellipsis;color:var(--muted);font-size:var(--type-meta)}
+.team-model-id{color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading)}
 /* Dark-ink marks get a light backing on dark surfaces so they stay visible. */
-html[data-theme=dark] img.routing-logo:is([data-provider=glm],[data-provider=mimo],[data-provider=commandcode],[data-provider=hermes]){box-sizing:border-box;padding:1px;border-radius:4px;background:rgb(255 255 255 / .9)}
+html[data-theme=dark] img.routing-logo:is([data-provider=glm],[data-provider=mimo],[data-provider=commandcode],[data-provider=hermes]){box-sizing:border-box;padding:1px;border-radius:var(--radius-chip);background:rgb(255 255 255 / .9)}
 .routing-pool-models>p.routing-pool-limit{display:flex;align-items:center;gap:4px}
-.routing-pool-add{padding:2px 6px;border-radius:var(--ds-radius-chip);background:none;color:var(--text);font:inherit;font-weight:var(--weight-medium)}
+.routing-pool-add{padding:2px 6px;border-radius:var(--ds-control-radius);background:none;color:var(--text);font:inherit;font-weight:var(--weight-medium)}
 .routing-pool-add:hover{background:var(--ds-row-hover)}
 .routing-pool-add:focus-visible{outline:2px solid var(--focus);outline-offset:1px}

@@ -21,7 +21,7 @@ html[data-theme=dark] :is(.desktop-brand,.desktop-brand-launch){
 }
 .sidebar>.brand>.brand-name.desktop-brand{
   position:relative;flex:none;width:var(--brand-width,95px);height:calc(44px * var(--brand-scale,.7));
-  padding:0;border:0;border-radius:var(--ds-radius-control);background:transparent;
+  padding:0;border:0;border-radius:var(--ds-control-radius);background:transparent;
   color:var(--text);cursor:pointer;overflow:visible;--press:1;
 }
 .desktop-brand:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
@@ -33,7 +33,7 @@ html[data-theme=dark] :is(.desktop-brand,.desktop-brand-launch){
 .desktop-brand-word{
   position:relative;display:inline-block;white-space:nowrap;vertical-align:top;
   font-family:ui-rounded,"SF Pro Rounded","Arial Rounded MT Bold",system-ui,sans-serif;
-  font-size:20px;font-weight:800;font-optical-sizing:auto;font-kerning:none;line-height:24px;letter-spacing:-.4px;
+  font-size:20px;font-weight:var(--weight-strong);font-optical-sizing:auto;font-kerning:none;line-height:24px;letter-spacing:var(--tracking-tight);
 }
 .desktop-brand-letter{position:relative;display:inline-block;vertical-align:baseline;transform-origin:50% 100%;isolation:isolate}
 .desktop-brand-letter::after{
@@ -55,13 +55,13 @@ html[data-theme=dark] :is(.desktop-brand,.desktop-brand-launch){
 .desktop-brand-launch{position:fixed;left:0;top:0;z-index:1000;width:var(--brand-width,130px);height:44px;pointer-events:none;transform-origin:0 0;--launch-plate:1}
 .desktop-brand-launch::before{
   content:"";position:absolute;left:-16px;top:-25px;width:calc(var(--brand-width,130px) + 32px);height:82px;
-  background:var(--glass-warm);border:1px solid var(--glass-border);border-radius:var(--glass-radius);
+  background:var(--glass-warm);border:1px solid var(--glass-border);border-radius:var(--radius-popover);
   backdrop-filter:blur(54px);-webkit-backdrop-filter:blur(54px);
   box-shadow:var(--ds-shadow-card);opacity:var(--launch-plate);pointer-events:none;
 }
 /* Keep the traffic-light gutter intact; spend less space between the three controls. */
 @container sidebar (max-width:279px){
-  html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand){gap:2px;padding-right:4px}
+  html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand){gap:1px;padding-right:2px}
   html[data-native-platform=macos] .sidebar>.brand>.brand-name.desktop-brand{display:block;margin-left:auto}
   html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand)>.icon-button{width:24px;min-width:24px;padding:0}
   html[data-native-platform=macos] .sidebar>.brand:has(.desktop-brand)>.view-menu .icon+.icon{display:none}

@@ -422,7 +422,7 @@ const benchDiffs = typeof location !== 'undefined' && (new URLSearchParams(locat
 const BENCH_LINES: Record<string, (n: number, word: string) => string> = {
   ts: (n, w) => [`export function ${w}${n}(input: ${w[0].toUpperCase()}${w.slice(1)}Options): number {`, `  const ${w} = input.items.filter(item => item.weight > ${n % 17});`, `  if (!${w}.length) return ${n};`, `  return ${w}.reduce((total, item) => total + item.weight * ${n % 9 + 1}, 0);`, `}`, `// ${w} keeps the index warm between keystrokes (${n})`, `const ${w}Cache = new Map<string, ${w[0].toUpperCase()}${w.slice(1)}Entry>();`][n % 7],
   rs: (n, w) => [`pub fn ${w}_${n}(input: &[u32]) -> u64 {`, `    let ${w}: u64 = input.iter().map(|v| *v as u64 * ${n % 9 + 1}).sum();`, `    if ${w} > ${n} { return ${w}; }`, `    ${w}.saturating_sub(${n % 13})`, `}`, `// ${w} runs on the background pool (${n})`][n % 6],
-  css: (n, w) => [`.${w}-${n} {`, `  padding: ${n % 12}px ${n % 7}px;`, `  color: rgb(var(--accent-rgb) / 0.${n % 9 + 1});`, `  border-radius: ${n % 5}px;`, `}`][n % 5],
+  css: (n, w) => [`.${w}-${n} {`, `  padding: ${n % 12}px ${n % 7}px;`, `  color: rgb(var(--accent-rgb) / 0.${n % 9 + 1});`, `  border-radius: var(--ds-control-radius);`, `}`][n % 5],
   json: (n, w) => `  "${w}${n}": { "weight": ${n % 97}, "enabled": ${n % 2 === 0}, "label": "${w} ${n}" },`,
   md: (n, w) => [`## ${w[0].toUpperCase()}${w.slice(1)} ${n}`, ``, `The ${w} step runs after indexing and takes about ${n % 40} ms on a warm cache.`, `- Keep ${w} under ${n % 9 + 1} passes`, `- See \`${w}${n}()\` for details`][n % 5],
 };
@@ -1243,6 +1243,7 @@ const voicePreferencePatches: Partial<VoicePreferences>[] = [];
   vad: structuredClone(voiceLocalCatalog.vad), preferences: structuredClone(voicePreferences), downloads: [...voiceDownloads.keys()], testing: voiceLocalTest.modelId, micTesting: voiceLocalTest.mic, preferencePatches: structuredClone(voicePreferencePatches),
 });
 (window as any).__voiceLocalCatalog = () => structuredClone(voiceLocalCatalog);
+(window as any).__voiceInvoke = invoke;
 function voiceLocalFind(modelId: unknown): VoiceLocalModel {
   const model = voiceLocalCatalog.models.find(item => item.id === modelId);
   if (!model) throw new Error('Unknown speech model.');

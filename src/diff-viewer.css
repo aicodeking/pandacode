@@ -1,6 +1,7 @@
 .diff-viewer {
-  /* Row height; also sizes the placeholders of hunk groups that have not mounted yet. */
-  --diff-line-height: 1.45rem;
+  /* Hosts can set the row height on the viewer. Virtualized viewers resolve it to CSS pixels. */
+  --diff-line-height: calc(var(--mono-size) * 1.6);
+  --diff-row-pitch: var(--diff-line-height);
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
@@ -10,8 +11,10 @@
   overflow: hidden;
   color: var(--text);
   background: color-mix(in srgb, var(--panel) 82%, transparent);
-  border-radius: var(--radius-sm);
+  border-radius: var(--ds-card-radius);
 }
+/* The GitHub inline diff is an inset panel outside a <dialog>; keep its nesting steps (a). */
+.pull-file-diff .diff-viewer { border-radius: var(--ds-inner-radius); }
 .diff-viewer-toolbar {
   display: flex;
   flex: 0 0 auto;
@@ -28,7 +31,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mono);
-  font-size: var(--text-xs);
+  font-size:var(--mono-size);
   color: var(--muted);
 }
 .diff-viewer-controls { display: flex; align-items: center; gap: 8px; }
@@ -36,20 +39,22 @@
 .diff-viewer-layout {
   display: flex;
   align-items: center;
-  padding: 3px;
-  border-radius: var(--radius-sm);
+  padding: 2px;
+  border-radius: var(--ds-inner-radius);
   background: color-mix(in srgb, var(--bg) 68%, transparent);
 }
+.pull-file-diff .diff-viewer .diff-viewer-layout { border-radius: var(--ds-control-radius); }
+.pull-file-diff .diff-viewer .diff-viewer-layout .diff-viewer-button { border-radius: var(--radius-chip); }
 .diff-viewer-button {
   min-height: 30px;
   padding: 5px 9px;
   border: 0;
-  border-radius: var(--radius-xs);
+  border-radius: var(--ds-control-radius);
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: var(--text-xs);
-  line-height: 1.2;
+  font-size:var(--type-body);
+  line-height: var(--type-body-leading);
   cursor: pointer;
   touch-action: manipulation;
   transition: background-color var(--ds-ease-out) ease-out, color var(--ds-ease-out) ease-out;
@@ -71,8 +76,8 @@
   margin: 0;
   padding: 13px 16px;
   color: var(--muted);
-  font-size: var(--text-sm);
-  line-height: 1.6;
+  font-size:var(--type-meta);
+  line-height: var(--type-meta-leading);
   overflow-wrap: anywhere;
 }
 .diff-viewer-status { flex: 0 0 auto; }
@@ -85,6 +90,15 @@
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
+.diff-viewer-row-size {
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 0;
+  height: var(--diff-line-height);
+  visibility: hidden;
+  font-family: var(--mono);
+  font-size: var(--mono-size);
+}
 .diff-viewer-file { min-width: 0; }
 .diff-viewer-file + .diff-viewer-file { margin-top: 16px; }
 /* A long file is mounted in hunk groups; its continuations sit flush. */
@@ -92,8 +106,10 @@
 .diff-viewer-file diffs-container {
   display: block;
   --diffs-font-family: var(--mono);
-  --diffs-font-size: var(--mono-size);
-  --diffs-line-height: var(--diff-line-height);
+  --diffs-font-size:var(--mono-size);
+}
+.diff-viewer .diff-viewer-content .diff-viewer-file > diffs-container {
+  --diffs-line-height: var(--diff-row-pitch);
 }
 .diff-viewer-raw {
   padding: 12px 16px;

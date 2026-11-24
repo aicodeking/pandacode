@@ -1,5 +1,5 @@
 .terminal-resize-handle{position:absolute;inset:0 0 auto;height:8px;z-index:7;cursor:row-resize;touch-action:none;user-select:none;-webkit-user-select:none;outline:none}
-.terminal-resize-handle::after{content:"";position:absolute;left:50%;top:0;width:44px;height:2px;margin-left:-22px;border-radius:var(--radius-xs);background:var(--accent);opacity:0;transition:opacity var(--ds-ease-in) ease-out}
+.terminal-resize-handle::after{content:"";position:absolute;left:50%;top:0;width:44px;height:2px;margin-left:-22px;border-radius:var(--radius-hair);background:var(--accent);opacity:0;transition:opacity var(--ds-ease-in) ease-out}
 .terminal-resize-handle:is(:hover,:focus-visible)::after,.terminal-resizing .terminal-resize-handle::after{opacity:.8}
 .terminal-resize-handle:focus-visible::after{width:64px;height:4px;margin-left:-32px;background:var(--focus);opacity:1;box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 35%,transparent)}
 .terminal-resizing,.terminal-resizing *{cursor:row-resize!important;user-select:none!important;-webkit-user-select:none!important}

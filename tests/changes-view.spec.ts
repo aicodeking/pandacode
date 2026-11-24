@@ -80,6 +80,74 @@ test('loads the first eight eagerly and the rest near the viewport', async ({ pa
   await expect.poll(async () => (await loads(page)).includes('src/f59.ts:false')).toBe(true);
 });
 
+test('virtual diff rows and placeholders follow interface size and host CSS', async ({ page }) => {
+  test.slow();
+  const paths = ['large-a.ts', 'large-b.ts'];
+  const rows = 4001;
+  await mount(page, paths.map(path => ({ path, index: ' ', working: 'M' })),
+    Object.fromEntries(paths.map(path => [path, patch(path, rows - 1, 0)])));
+  const scroller = page.locator('.cv-body');
+  const diffs = page.locator('.diff-viewer diffs-container');
+  const rowOne = '[data-content] [data-line="1"]';
+  const firstRow = diffs.first().locator(rowOne);
+  const placeholder = diffs.last().locator('[data-placeholder]');
+  await expect(diffs).toHaveCount(2, { timeout: 30_000 });
+  // Visit the second file so Pierre has observed it enter and leave the viewport.
+  await diffs.last().evaluate(diff => {
+    const body = diff.closest('.cv-body')!;
+    body.scrollTop += diff.getBoundingClientRect().top - body.getBoundingClientRect().top;
+  });
+  await expect(diffs.last().locator(rowOne)).toBeVisible();
+  await scroller.evaluate(body => { body.scrollTop = 0; });
+  await expect(firstRow).toBeVisible();
+  await expect(placeholder).toBeAttached();
+
+  const deepLine = 3001;
+  const deepRow = diffs.first().locator(`[data-content] [data-line="${deepLine}"]`);
+  for (const [scale, rowHeight] of [[1, 19.2], [1.3, 24.96], [1.3, 27.25]]) {
+    if (rowHeight === 27.25) {
+      await page.addStyleTag({ content: '#host .diff-viewer { --diff-line-height: 27.25px; }' });
+    } else {
+      await page.evaluate(scale => document.documentElement.style.setProperty('--ui-scale', String(scale)), scale);
+    }
+    const height = ([row]: Element[]) => row?.getBoundingClientRect().height ?? 0;
+    await expect.poll(() => firstRow.evaluateAll(height)).toBeCloseTo(rowHeight, 1);
+    // The ResizeObserver rerender briefly detaches row 1, so read both heights in one poll.
+    await expect.poll(async () => {
+      const [rowPx, placeholderPx] = await Promise.all([firstRow.evaluateAll(height), placeholder.evaluateAll(height)]);
+      if (!(rowPx > 0)) return Infinity;
+      return Math.max(Math.abs(rowPx - rowHeight), Math.abs(placeholderPx / rows - rowPx));
+    }, {
+      message: 'Pierre should reserve the measured height for each offscreen row',
+    }).toBeLessThan(0.15);
+    await expect(firstRow).toBeVisible();
+
+    // A late resize rerender can still detach row 1, so retry the scroll until it lands on a live row.
+    await expect.poll(() => firstRow.evaluateAll(([row], line) => {
+      if (!row || !row.isConnected) return false;
+      const root = row.getRootNode();
+      if (!(root instanceof ShadowRoot) || !root.host) return false;
+      const body = root.host.closest('.cv-body');
+      if (!body) return false;
+      const first = row.getBoundingClientRect();
+      if (!(first.height > 0)) return false;
+      body.scrollTop += first.top - body.getBoundingClientRect().top + (line - 1) * first.height - 100;
+      return true;
+    }, deepLine)).toBe(true);
+    await expect.poll(() => deepRow.evaluateAll(([row]) => {
+      if (!row || !row.isConnected) return Infinity;
+      const root = row.getRootNode();
+      if (!(root instanceof ShadowRoot) || !root.host) return Infinity;
+      const body = root.host.closest('.cv-body');
+      if (!body) return Infinity;
+      return Math.abs(row.getBoundingClientRect().top - body.getBoundingClientRect().top - 100);
+    })).toBeLessThan(1);
+    expect(await diffs.first().locator('[data-content] [data-line]').count()).toBeLessThan(rows / 4);
+    await scroller.evaluate(body => { body.scrollTop = 0; });
+    await expect(firstRow).toBeVisible();
+  }
+});
+
 test('update keeps unchanged diffs mounted and re-mounts only changed patches', async ({ page }) => {
   test.slow();
   await mount(page, FILES, DIFFS);
