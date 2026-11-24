@@ -10,10 +10,10 @@ const task = (page: Page) => page.evaluate(async () => {
 });
 const activeOption = (page: Page) => picker(page).locator('[role="option"][aria-selected="true"]');
 
-async function open(page: Page, url = '/?teams'): Promise<void> {
+async function open(page: Page, url = '/?teams', patch = (source: string) => source): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
-    await route.fulfill({ response, body: `${await response.text()}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
+    await route.fulfill({ response, body: `${patch(await response.text())}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
   });
   await page.goto(url);
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1', { timeout: 15_000 });
@@ -500,6 +500,34 @@ test('re-picking the task\'s current model still remembers it as the last-used c
   expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet', resumeId: before.resumeId });
   await trigger(page).click();
   await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(label);
+});
+
+test('re-picking the current model never calls configure_session, so a managed worker task is not refused', async ({ page }) => {
+  // Every configure_session is refused, as the architect refuses changes to a managed worker task.
+  const refused = 'This worker is managed by its architect. Use the team controls.';
+  await page.addInitScript(() => localStorage.setItem('pandacode.provider', 'codex'));
+  await open(page, '/?teams', source => {
+    const patched = source.replace(/switch\s*\(command\)\s*\{/, `(window.__pickerCalls ??= []).push(command); if (command === 'configure_session') throw new Error(${JSON.stringify(refused)}); switch (command) {`);
+    if (patched === source) throw new Error('preview command switch not found');
+    return patched;
+  });
+  const configures = () => page.evaluate(() => ((window as any).__pickerCalls ?? []).filter((c: string) => c === 'configure_session').length);
+  const stored = () => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') }));
+  const current = picker(page).locator('[role="option"][aria-current="true"]');
+  await current.click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(stored).toEqual({ provider: 'claude', model: 'sonnet' });
+  expect(await configures()).toBe(0);
+  await expect(page.getByText(refused)).toHaveCount(0);
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet' });
+  await expect(page.locator('#prompt')).toBeFocused();
+
+  // A real change still configures the task (and here is refused), which proves the patch is live.
+  await trigger(page).click();
+  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
+  await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
+  await expect.poll(configures).toBe(1);
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet' });
 });
 
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });

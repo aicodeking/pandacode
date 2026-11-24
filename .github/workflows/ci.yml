@@ -180,7 +180,7 @@ jobs:
       # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
       # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
       # that matched nothing would pass with `0 passed`, so require at least one test to have run.
-      - name: Platform policy, home and warm-spare tests
+      - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
         run: |

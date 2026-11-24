@@ -223,15 +223,21 @@ async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     assert_eq!(take_in(pool, &discarded, &launch).1.as_deref(), Some("Team lead's warm Claude agent not used (it was discarded); starting cold. Lead spares since launch: 1 adopted, 4 not used."));
     // Each reason is said once; a task that never had a lead spare logs nothing.
     assert_eq!(take_in(pool, &discarded, &launch).1, None);
-    // An ordinary spare logs only its misses, as before.
+    // An ordinary spare logs its hits and misses with ordinary totals of its own.
     let plain = id("plain");
     admit(&mut spares(pool), plain.clone(), with_key(false, Duration::ZERO, &launch));
-    assert_eq!(take_in(pool, &plain, &launch).1, None);
+    let (spare, note) = take_in(pool, &plain, &launch);
+    assert!(spare.is_some());
+    assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 1 adopted, 0 not used."));
     admit(&mut spares(pool), plain.clone(), with_key(false, Duration::ZERO, &launch));
-    assert_eq!(take_in(pool, &plain, &next).1.as_deref(), Some("Warm Claude agent not used (changed: model); starting cold."));
-    // Ordinary spares never move the lead counters.
+    assert_eq!(
+        take_in(pool, &plain, &next).1.as_deref(),
+        Some("Warm Claude agent not used (changed: model); starting cold. Ordinary spares since launch: 1 adopted, 1 not used.")
+    );
+    // Ordinary spares never move the lead counters, and lead spares never move the ordinary ones.
     let counts = spares(pool);
     assert_eq!((counts.lead_adopted, counts.lead_missed), (1, 4));
+    assert_eq!((counts.ordinary_adopted, counts.ordinary_missed), (1, 1));
 }
 
 #[test]
@@ -691,7 +697,7 @@ async fn a_launch_without_a_spare_retires_the_pooled_one() {
     let pid = pid_of(&spare);
     spares(&SPARES).spares.insert(session.clone(), spare);
     launched_without_spare(&session);
-    assert!(!waiting_in(&SPARES, &session), "the spare idles beside the cold process");
+    assert!(!waiting_in(&SPARES, &session), "the spare must not idle beside the cold process");
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
 }
@@ -1186,7 +1192,10 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     let pid = insert(false, &standard_key);
     let (adopted, note) = take_in(pool, &session, &fast_key);
     assert!(adopted.is_none());
-    assert_eq!(note.as_deref(), Some("Warm Claude agent not used (changed: fastMode); starting cold."));
+    assert_eq!(
+        note.as_deref(),
+        Some("Warm Claude agent not used (changed: fastMode); starting cold. Ordinary spares since launch: 0 adopted, 1 not used.")
+    );
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
@@ -1194,7 +1203,10 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     let pid = insert(false, &fast_key);
     let (adopted, note) = take_in(pool, &session, &off_key);
     assert!(adopted.is_none());
-    assert_eq!(note.as_deref(), Some("Warm Claude agent not used (changed: fastMode); starting cold."));
+    assert_eq!(
+        note.as_deref(),
+        Some("Warm Claude agent not used (changed: fastMode); starting cold. Ordinary spares since launch: 0 adopted, 2 not used.")
+    );
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
@@ -1208,12 +1220,12 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     // Matching fast mode adopts cleanly, and standard None <-> serviceTier:null adopts cleanly.
     insert(false, &fast_key);
     let (adopted, note) = take_in(pool, &session, &fast_key);
-    assert!(note.is_none());
+    assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 1 adopted, 2 not used."));
     let (mut spare, _pending) = adopted.expect("matching fast-mode spare is adopted");
     spare.child.kill().await.unwrap();
     insert(false, &standard_key);
     let (adopted, note) = take_in(pool, &session, &off_key);
-    assert!(note.is_none());
+    assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 2 adopted, 2 not used."));
     let (mut spare, _pending) = adopted.expect("standard None and serviceTier:null share one warm key");
     spare.child.kill().await.unwrap();
 }
@@ -1642,11 +1654,15 @@ async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_no
         Some("Team lead's warm Claude agent not used (its config folder cannot be known); starting cold. Lead spares since launch: 0 adopted, 1 not used.")
     );
     assert!(epoch(&session) > before, "the launch is counted");
-    assert!(!waiting_in(pool, &session), "the spare idles beside the cold process");
+    assert!(!waiting_in(pool, &session), "the spare must not idle beside the cold process");
     assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for a later launch");
     assert_eq!(launched_without_key_in(pool, &session), None, "the miss is said once");
     assert_eq!(has_spare_or_record_cold_in(pool, &session), (false, None));
-    assert_eq!(spares(pool).lead_missed, 1);
+    {
+        let counts = spares(pool);
+        assert_eq!((counts.lead_adopted, counts.lead_missed), (0, 1));
+        assert_eq!((counts.ordinary_adopted, counts.ordinary_missed), (0, 0), "lead spares never move the ordinary counters");
+    }
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
 }
@@ -1661,12 +1677,14 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
     admit(&mut spares(pool), session.clone(), spare);
     assert_eq!(
         launched_without_key_in(pool, &session).as_deref(),
-        Some("Warm Claude agent not used (its config folder cannot be known); starting cold.")
+        Some("Warm Claude agent not used (its config folder cannot be known); starting cold. Ordinary spares since launch: 0 adopted, 1 not used.")
     );
     assert!(!waiting_in(pool, &session));
+    assert_eq!(launched_without_key_in(pool, &session), None, "the miss is said once");
     {
         let counts = spares(pool);
         assert_eq!((counts.lead_adopted, counts.lead_missed), (0, 0), "ordinary spares never move the lead counters");
+        assert_eq!((counts.ordinary_adopted, counts.ordinary_missed), (0, 1));
     }
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));

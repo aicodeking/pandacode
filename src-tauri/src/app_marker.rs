@@ -84,6 +84,10 @@ mod tests {
         std::fs::write(dir.join("file"), "").unwrap();
         let unreadable = dir.join("file").join("flag");
         assert!(exists_at(Ok(unreadable.clone())).is_err());
+        // A missing directory between the file and the marker: the ancestor walk skips it and still
+        // fails closed at the regular file.
+        let deep = dir.join("file").join("missing").join("flag");
+        assert!(exists_at(Ok(deep)).is_err());
         assert!(set_at(&unreadable, true).unwrap_err().starts_with("Could not save the setting"));
         std::fs::remove_dir_all(dir).unwrap();
     }

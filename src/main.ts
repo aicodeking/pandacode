@@ -7205,9 +7205,13 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      // Always configure, even when re-picking the current model, so the last-used choice is remembered;
-      // configure_session keeps the warm spare when launch settings are unchanged.
-      const previousProvider = savedSelection().provider;
+      // Re-picking the task's current harness and model skips configure_session: nothing changes on
+      // the task (its warm spare stays untouched) and a managed team worker would be refused by its
+      // architect. The pick is still remembered as the last-used choice below, and team changes
+      // (leaving a named team, refreshing an automatic one) still apply.
+      const saved = savedSelection();
+      const previousProvider = saved.provider;
+      const unchanged = providerId === saved.provider && (model || 'default') === (saved.model || 'default');
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.
@@ -7221,9 +7225,11 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
           const saved = await call<TeamSnapshot | null>('architect_configure', { sessionId: selected.id, config: await autoTeamConfig(auto), architect: null, profileId: null });
           onArchitect(saved ?? { sessionId: selected.id, removed: true });
         }
-        const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+        if (!unchanged) {
+          const updated = await call<Session>('configure_session', { sessionId: selected.id, provider: providerId, model });
+          const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
+        }
         provisionalTasks.delete(selected.id);
-        const index = state.sessions.findIndex(s => s.id === selected.id); if (index >= 0) state.sessions[index] = updated;
         // Same-harness model choices keep the account and its resumable conversation.
         if (!device && providerId !== previousProvider && namedConnections.tasks[selected.id]) namedConnections = await call('connection_assign', { sessionId: selected.id, connectionId: null });
         if (!device) {

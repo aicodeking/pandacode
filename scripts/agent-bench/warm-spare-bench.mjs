@@ -2,10 +2,12 @@
 // Warm-spare benchmark: cold vs warm (parked 2 s) Claude Code launches, idle RSS, and the CLI's
 // exit after `result`, driven the way PandaCode drives it (stream-json, HTTP MCP, the lead's app
 // instructions). Zero dollars and no API traffic: the Messages API is a loopback stub with a dummy
-// key, so the numbers isolate CLI startup from API latency. Two launch environments: `default` is
+// key, so the numbers isolate CLI startup from API latency. Three launch environments: `default` is
 // PandaCode's plain-Claude env (the CLI's own non-essential traffic stays on, so it may reach
-// Anthropic's telemetry/feature-flag hosts, never the Messages API); `offline` adds
-// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Pure helpers are exported for tests.
+// Anthropic's telemetry/feature-flag hosts, never the Messages API); `privacy` adds exactly the
+// variables Settings → Agents → "Turn off agent telemetry" injects (`ENVIRONMENT` in
+// src-tauri/src/providers/privacy.rs, drift-guarded by the tests); `offline` adds
+// CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 instead. Pure helpers are exported for tests.
 //
 //   node scripts/agent-bench/warm-spare-bench.mjs --pairs 12 --out scripts/agent-bench/results/warm-spare-2.1.325.json
 import { spawn, execFileSync } from 'node:child_process';
@@ -25,7 +27,22 @@ const EXIT_TIMEOUT_MS = 15_000;
 const PROMPT = 'Reply with ok';
 const DUMMY_KEY = 'sk-ant-bench-dummy';
 const SEED = 0x5a7e;
-export const SUITES = ['default-minimal', 'default-user', 'offline-minimal', 'offline-user'];
+export const SUITES = ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user'];
+export const LAUNCH_ENVS = ['default', 'privacy', 'offline'];
+/** `ENVIRONMENT` in src-tauri/src/providers/privacy.rs, in order: what "Turn off agent telemetry" sets on every harness process. */
+export const PRIVACY_ENV = Object.freeze({
+  DO_NOT_TRACK: '1',
+  DISABLE_TELEMETRY: '1',
+  DISABLE_ERROR_REPORTING: '1',
+  CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
+  KIMI_DISABLE_TELEMETRY: 'true',
+  GROK_TELEMETRY_ENABLED: 'false',
+  GROK_TELEMETRY_TRACE_UPLOAD: 'false',
+  DSH_TELEMETRY_DISABLED: '1',
+  OPENCODE_DISABLE_SHARE: '1',
+  PI_TELEMETRY: '0',
+});
+export const OFFLINE_ENV = Object.freeze({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
 
 // ---------- pure helpers ----------
 
@@ -33,7 +50,7 @@ export const SUITES = ['default-minimal', 'default-user', 'offline-minimal', 'of
 export function suiteParts(name) {
   if (!SUITES.includes(name)) throw new Error(`unknown suite ${name}`);
   const [env, config] = name.split('-');
-  return { env, offline: env === 'offline', minimal: config === 'minimal' };
+  return { env, privacy: env === 'privacy', offline: env === 'offline', minimal: config === 'minimal' };
 }
 
 /** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`. */
@@ -60,6 +77,14 @@ export function parseArgs(argv) {
 
 /** Decode a Rust string literal body (normal `"..."`, escapes \n \" \\). */
 export const unescapeRust = body => body.replace(/\\(["\\nt])/g, (_, c) => (c === 'n' ? '\n' : c === 't' ? '\t' : c));
+
+/** The `(key, value)` pairs of a `const NAME: &[(&str, &str)] = &[...];` table, comments skipped. */
+export function rustEnvTable(source, name) {
+  const block = source.match(new RegExp(`const ${name}: &\\[\\(&str, &str\\)\\] = &\\[([\\s\\S]*?)\\];`));
+  if (!block) throw new Error(`${name} not found`);
+  const body = block[1].split('\n').map(line => line.replace(/^\s*\/\/.*$/, '')).join('\n');
+  return [...body.matchAll(/\(\s*"((?:[^"\\]|\\.)*)"\s*,\s*"((?:[^"\\]|\\.)*)"\s*\)/g)].map(m => [unescapeRust(m[1]), unescapeRust(m[2])]);
+}
 
 /** A `const NAME: &str = "...";` (or `r#"..."#`) from Rust source. */
 export function rustStr(source, name) {
@@ -346,11 +371,13 @@ async function runOnce({ arm, args, env, cwd }) {
   return out;
 }
 
-/** The child env: a few inherited basics, the loopback API, and `offline`'s one extra switch. */
-export function launchEnv(apiPort, offline, parent = process.env) {
+/** The child env: a few inherited basics, the loopback API, and the launch env's switches (`privacy`: PRIVACY_ENV; `offline`: OFFLINE_ENV). */
+export function launchEnv(apiPort, launch, parent = process.env) {
+  if (!LAUNCH_ENVS.includes(launch)) throw new Error(`unknown launch env ${launch}`);
   const keep = ['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR', 'LANG', 'LC_ALL', 'TERM', 'SystemRoot', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'];
   const env = Object.fromEntries(keep.filter(k => parent[k] !== undefined).map(k => [k, parent[k]]));
-  return { ...env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${apiPort}`, ANTHROPIC_API_KEY: DUMMY_KEY, ...(offline ? { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } : {}) };
+  const extra = launch === 'privacy' ? PRIVACY_ENV : launch === 'offline' ? OFFLINE_ENV : {};
+  return { ...env, ANTHROPIC_BASE_URL: `http://127.0.0.1:${apiPort}`, ANTHROPIC_API_KEY: DUMMY_KEY, ...extra };
 }
 
 export function claudeArgs({ instructions, mcpConfig, minimal }) {
@@ -365,9 +392,9 @@ export function claudeArgs({ instructions, mcpConfig, minimal }) {
 async function runSuite(name, pairs, ctx) {
   const cwd = mkdtempSync(join(tmpdir(), `warm-spare-${name}-`));
   tempDirs.add(cwd);
-  const { offline, minimal } = suiteParts(name);
+  const { env: launch, minimal } = suiteParts(name);
   const args = claudeArgs({ ...ctx, minimal });
-  const env = launchEnv(ctx.apiPort, offline);
+  const env = launchEnv(ctx.apiPort, launch);
   ctx.counts.api = {}; ctx.counts.mcp = {};
   const runs = [];
   const orders = [['cold', 'warm'], ...pairOrders(pairs, SEED + SUITES.indexOf(name))];
@@ -412,9 +439,9 @@ async function main() {
     app_instructions_bytes: Buffer.byteLength(instructions, 'utf8'),
     flags: claudeArgs({ instructions: '<app_instructions>', mcpConfig: '<http-mcp-json>', minimal: false }),
     minimal_extra_flags: ['--setting-sources', 'project', '--strict-mcp-config'],
-    env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:<port>', ANTHROPIC_API_KEY: DUMMY_KEY, inherited: 'PATH, HOME, USER, SHELL, TMPDIR, LANG only', offline_extra: { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' } },
+    env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:<port>', ANTHROPIC_API_KEY: DUMMY_KEY, inherited: 'PATH, HOME, USER, SHELL, TMPDIR, LANG only', privacy_extra: { ...PRIVACY_ENV }, privacy_source: 'src-tauri/src/providers/privacy.rs ENVIRONMENT', offline_extra: { ...OFFLINE_ENV } },
     suites: Object.fromEntries(Object.keys(suites).map(k => [k, suiteParts(k)])),
-    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
+    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
     stub_requests: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.stub_requests])),
     summary: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.summary])),
     runs: Object.values(suites).flatMap(v => v.runs),

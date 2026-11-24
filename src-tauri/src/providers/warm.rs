@@ -74,7 +74,7 @@ const LIMIT: usize = 2;
 const LEAD_LIMIT: usize = 2;
 /// An expired lead spare is started again at most this many times in a row, so one lead holds
 /// an idle CLI process for at most `(1 + MAX_RENEWALS) × IDLE` (30 minutes). Each spare is a
-/// whole idle Claude Code process (about 178–208 MB resident in two probes on one machine,
+/// whole idle Claude Code process (about 230–255 MiB resident on Claude Code 2.1.325,
 /// docs/worker-tokens.md), so the chain stays short.
 const MAX_RENEWALS: u32 = 2;
 
@@ -140,6 +140,9 @@ struct Spares {
     /// launch: in memory only, read from the adoption log line (docs/worker-tokens.md).
     lead_adopted: u64,
     lead_missed: u64,
+    /// The same totals for ordinary (non-lead) spares.
+    ordinary_adopted: u64,
+    ordinary_missed: u64,
 }
 
 type Pool = Mutex<Spares>;
@@ -261,8 +264,8 @@ pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
         return None;
     }
     let (spare, note) = take_in(&SPARES, session_id, key);
-    // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every lead
-    // spare's hit and miss is logged too, so the lead pool's speed-up can be measured.
+    // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every hit is
+    // logged too, with lead and ordinary totals, so each pool's speed-up can be measured.
     if let Some(note) = note {
         eprintln!("{note}");
     }
@@ -301,32 +304,36 @@ impl Drop for Adopting {
 /// The spare this launch adopts, if any, and what to log about it (never any contents: only
 /// the outcome and the names of warm-key fields that changed).
 fn take_in(pool: &Pool, session_id: &str, key: &str) -> (Option<(Spare, Pending)>, Option<String>) {
-    launched(session_id);
-    let (removed, gone) = {
-        let mut pool = spares(pool);
-        let gone = pool.gone.remove(session_id);
-        let removed = pool.spares.remove(session_id).map(|spare| {
-            let pending = pending_in_cwd(session_id, spare.cwd.clone());
-            (spare, pending)
-        });
-        (removed, gone)
-    };
+    let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((mut spare, pending)) = removed else {
-        return (None, gone.map(|why| lead_decision(pool, Some(why.reason()))));
+        return (None, gone.map(|why| decision(pool, true, Some(why.reason()))));
     };
     let alive = matches!(spare.child.try_wait(), Ok(None));
     match miss(alive, &spare.key, key, spare.born.elapsed(), spare.idle) {
         None => {
-            let note = spare.lead.then(|| lead_decision(pool, None));
-            (Some((spare, pending)), note)
+            let note = decision(pool, spare.lead, None);
+            (Some((spare, pending)), Some(note))
         }
         Some(reason) => {
             // The cold launch's `await_exit` waits for this process, so two never share a session.
-            let note = if spare.lead { lead_decision(pool, Some(&reason)) } else { format!("Warm Claude agent not used ({reason}); starting cold.") };
+            let note = decision(pool, spare.lead, Some(&reason));
             retire(session_id, spare, pending);
             (None, Some(note))
         }
     }
+}
+
+/// Counts the launch and removes the task's spare and lead `gone` note. The removed spare's exit is
+/// registered (`pending_in_cwd`) under the pool lock, so nothing resumes the session beside it.
+fn remove_for_launch(pool: &Pool, session_id: &str) -> (Option<(Spare, Pending)>, Option<Gone>) {
+    launched(session_id);
+    let mut locked = spares(pool);
+    let gone = locked.gone.remove(session_id);
+    let removed = locked.spares.remove(session_id).map(|spare| {
+        let pending = pending_in_cwd(session_id, spare.cwd.clone());
+        (spare, pending)
+    });
+    (removed, gone)
 }
 
 /// Kill a spare that left the pool without being adopted and register its exit under the session
@@ -362,20 +369,11 @@ pub(super) fn launched_without_key(session_id: &str) {
 
 fn launched_without_key_in(pool: &Pool, session_id: &str) -> Option<String> {
     const WHY: &str = "its config folder cannot be known";
-    launched(session_id);
-    let (removed, gone) = {
-        let mut locked = spares(pool);
-        let gone = locked.gone.remove(session_id);
-        let removed = locked.spares.remove(session_id).map(|spare| {
-            let pending = pending_in_cwd(session_id, spare.cwd.clone());
-            (spare, pending)
-        });
-        (removed, gone)
-    };
+    let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((spare, pending)) = removed else {
-        return gone.map(|why| lead_decision(pool, Some(why.reason())));
+        return gone.map(|why| decision(pool, true, Some(why.reason())));
     };
-    let note = if spare.lead { lead_decision(pool, Some(WHY)) } else { format!("Warm Claude agent not used ({WHY}); starting cold.") };
+    let note = decision(pool, spare.lead, Some(WHY));
     retire(session_id, spare, pending);
     Some(note)
 }
@@ -403,17 +401,33 @@ fn has_spare_or_record_cold_in(pool: &Pool, session_id: &str) -> (bool, Option<S
         LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).insert(session_id.to_owned(), launch);
         locked.gone.remove(session_id)
     };
-    (false, gone.map(|why| lead_decision(pool, Some(why.reason()))))
+    (false, gone.map(|why| decision(pool, true, Some(why.reason()))))
 }
 
-/// A lead wake's adoption log line (`lead_note`), counted, with the pool's totals since launch.
-fn lead_decision(pool: &Pool, miss: Option<&str>) -> String {
+/// A launch's adoption log line (`lead_note` or `ordinary_note`), counted in the lead or ordinary
+/// totals, with that kind's totals since launch.
+fn decision(pool: &Pool, lead: bool, miss: Option<&str>) -> String {
     let (adopted, missed) = {
         let mut pool = spares(pool);
-        if miss.is_none() { pool.lead_adopted += 1 } else { pool.lead_missed += 1 }
-        (pool.lead_adopted, pool.lead_missed)
+        let pool = &mut *pool;
+        let (adopted, missed) = if lead {
+            (&mut pool.lead_adopted, &mut pool.lead_missed)
+        } else {
+            (&mut pool.ordinary_adopted, &mut pool.ordinary_missed)
+        };
+        if miss.is_none() { *adopted += 1 } else { *missed += 1 }
+        (*adopted, *missed)
     };
-    format!("{} Lead spares since launch: {adopted} adopted, {missed} not used.", lead_note(miss))
+    let (note, kind) = if lead { (lead_note(miss), "Lead") } else { (ordinary_note(miss), "Ordinary") };
+    format!("{note} {kind} spares since launch: {adopted} adopted, {missed} not used.")
+}
+
+/// An ordinary spare's adoption log line: adopted (`None`) or why its launch starts cold.
+fn ordinary_note(miss: Option<&str>) -> String {
+    match miss {
+        None => "Warm Claude agent adopted.".into(),
+        Some(reason) => format!("Warm Claude agent not used ({reason}); starting cold."),
+    }
 }
 
 /// A lead spare's adoption log line: adopted (`None`) or why its wake starts cold.

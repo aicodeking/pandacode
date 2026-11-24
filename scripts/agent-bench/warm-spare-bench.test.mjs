@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
-  bootstrapMedianCi, claudeArgs, launchEnv, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
+  bootstrapMedianCi, claudeArgs, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   rssKibToMib, rustFnStr, rustStr, scrub, summarize, treeRssMib, unescapeRust,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
-  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'offline-minimal', 'offline-user'] });
+  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user'] });
+  assert.deepEqual(parseArgs(['--suites', 'privacy-user,privacy-minimal']).suites, ['privacy-user', 'privacy-minimal']);
   assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'] });
   assert.throws(() => parseArgs(['--suites', 'user']), /default-minimal/);
   assert.throws(() => parseArgs(['--pairs', '0']), /positive integer/);
@@ -131,18 +133,64 @@ test('scrub removes the home directory', () => {
 
 test('suiteParts splits each suite into launch env and config', () => {
   assert.deepEqual(SUITES.map(suiteParts), [
-    { env: 'default', offline: false, minimal: true }, { env: 'default', offline: false, minimal: false },
-    { env: 'offline', offline: true, minimal: true }, { env: 'offline', offline: true, minimal: false },
+    { env: 'default', privacy: false, offline: false, minimal: true }, { env: 'default', privacy: false, offline: false, minimal: false },
+    { env: 'privacy', privacy: true, offline: false, minimal: true }, { env: 'privacy', privacy: true, offline: false, minimal: false },
+    { env: 'offline', privacy: false, offline: true, minimal: true }, { env: 'offline', privacy: false, offline: true, minimal: false },
   ]);
+  for (const s of SUITES) assert.ok(LAUNCH_ENVS.includes(suiteParts(s).env), s);
   assert.throws(() => suiteParts('minimal'), /unknown suite/);
+  assert.throws(() => suiteParts('privacy-other'), /unknown suite/);
 });
 
 test('launchEnv adds the non-essential-traffic switch only offline and drops session variables', () => {
-  const parent = { PATH: '/bin', HOME: '/h', CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDECODE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' };
-  const online = launchEnv(4321, false, parent);
-  assert.deepEqual(online, { PATH: '/bin', HOME: '/h', ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321', ANTHROPIC_API_KEY: 'sk-ant-bench-dummy' });
-  const offline = launchEnv(4321, true, parent);
-  assert.equal(offline.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1');
+  const parent = { PATH: '/bin', HOME: '/h', CLAUDE_CONFIG_DIR: '/elsewhere', CLAUDECODE: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1' };
+  const base = { PATH: '/bin', HOME: '/h', ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321', ANTHROPIC_API_KEY: 'sk-ant-bench-dummy' };
+  assert.deepEqual(launchEnv(4321, 'default', parent), base);
+  const offline = launchEnv(4321, 'offline', parent);
+  assert.deepEqual(offline, { ...base, ...OFFLINE_ENV });
   assert.equal(offline.CLAUDE_CONFIG_DIR, undefined);
   assert.equal(offline.CLAUDECODE, undefined);
+  assert.equal(offline.DISABLE_TELEMETRY, undefined);
+  assert.throws(() => launchEnv(4321, true, parent), /unknown launch env/);
+});
+
+test('launchEnv privacy adds exactly PandaCode\'s telemetry-off env and not the non-essential-traffic switch', () => {
+  const env = launchEnv(4321, 'privacy', { PATH: '/bin', HOME: '/h', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
+  assert.deepEqual(env, { PATH: '/bin', HOME: '/h', ANTHROPIC_BASE_URL: 'http://127.0.0.1:4321', ANTHROPIC_API_KEY: 'sk-ant-bench-dummy', ...PRIVACY_ENV });
+  assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, undefined);
+  for (const key of ['DO_NOT_TRACK', 'DISABLE_TELEMETRY', 'DISABLE_ERROR_REPORTING', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY']) assert.equal(env[key], '1', key);
+});
+
+test('rustEnvTable reads a (&str, &str) table, skipping comments', () => {
+  const src = 'const OTHER: &[(&str, &str)] = &[("X", "9")];\nconst ENVIRONMENT: &[(&str, &str)] = &[\n    // ("COMMENTED", "1"),\n    ("A", "1"), // trailing\n    ("B_C", "true"),\n];\n';
+  assert.deepEqual(rustEnvTable(src, 'ENVIRONMENT'), [['A', '1'], ['B_C', 'true']]);
+  assert.throws(() => rustEnvTable(src, 'MISSING'), /MISSING not found/);
+});
+
+test('PRIVACY_ENV matches providers/privacy.rs ENVIRONMENT exactly (drift guard)', () => {
+  const source = readFileSync(new URL('../../src-tauri/src/providers/privacy.rs', import.meta.url), 'utf8');
+  const table = rustEnvTable(source, 'ENVIRONMENT');
+  assert.ok(table.length >= 4, `ENVIRONMENT parsed ${table.length} entries`);
+  assert.deepEqual(Object.entries(PRIVACY_ENV), table, 'update PRIVACY_ENV in warm-spare-bench.mjs to match providers/privacy.rs, then rerun the benchmark');
+  assert.ok(!('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC' in PRIVACY_ENV), 'privacy suites must stay distinct from offline');
+  assert.ok(Object.isFrozen(PRIVACY_ENV));
+});
+
+test('recorded results cover every suite, carry the privacy env and no personal paths', () => {
+  const text = readFileSync(new URL('./results/warm-spare-2.1.325.json', import.meta.url), 'utf8');
+  assert.ok(!/\/Users\/|\/home\/[^/\s"]+\//.test(text), 'results must not hold a home directory');
+  const report = JSON.parse(text);
+  assert.equal(report.benchmark, 'warm-spare-bench');
+  assert.match(report.claude_version, /^2\.1\.325\b/);
+  assert.deepEqual(Object.keys(report.summary), SUITES);
+  assert.deepEqual(report.env.privacy_extra, { ...PRIVACY_ENV });
+  assert.deepEqual(report.env.offline_extra, { ...OFFLINE_ENV });
+  for (const suite of SUITES) {
+    assert.deepEqual(report.suites[suite], suiteParts(suite), suite);
+    const s = report.summary[suite];
+    assert.equal(s.runs, report.pairs * 2, suite);
+    assert.equal(s.saving_result_ms.pairs, report.pairs, suite);
+    for (const key of ['median', 'mean', 'wilcoxon_p']) assert.equal(typeof s.saving_result_ms[key], 'number', `${suite} ${key}`);
+  }
+  assert.equal(report.runs.filter(r => !r.warmup).length, SUITES.length * report.pairs * 2);
 });
