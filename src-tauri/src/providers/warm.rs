@@ -352,6 +352,34 @@ pub(super) fn launched_without_spare(session_id: &str) {
     }
 }
 
+/// A launch whose warm key is unknowable (its config folder cannot be resolved): counts the launch,
+/// retires any pooled spare and logs the miss like `take` would, leaving no stale `gone` note.
+pub(super) fn launched_without_key(session_id: &str) {
+    if let Some(note) = launched_without_key_in(&SPARES, session_id) {
+        eprintln!("{note}");
+    }
+}
+
+fn launched_without_key_in(pool: &Pool, session_id: &str) -> Option<String> {
+    const WHY: &str = "its config folder cannot be known";
+    launched(session_id);
+    let (removed, gone) = {
+        let mut locked = spares(pool);
+        let gone = locked.gone.remove(session_id);
+        let removed = locked.spares.remove(session_id).map(|spare| {
+            let pending = pending_in_cwd(session_id, spare.cwd.clone());
+            (spare, pending)
+        });
+        (removed, gone)
+    };
+    let Some((spare, pending)) = removed else {
+        return gone.map(|why| lead_decision(pool, Some(why.reason())));
+    };
+    let note = if spare.lead { lead_decision(pool, Some(WHY)) } else { format!("Warm Claude agent not used ({WHY}); starting cold.") };
+    retire(session_id, spare, pending);
+    Some(note)
+}
+
 /// Whether the task has a pooled spare worth keying this launch against. With none, this counts
 /// the launch (as `take` would) and logs a lead's pending gone reason, so a cold launch skips the
 /// warm key's config walk entirely; with one, nothing changes and the caller keys and `take`s.

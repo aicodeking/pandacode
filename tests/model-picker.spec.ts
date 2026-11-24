@@ -458,6 +458,28 @@ test('a true harness switch clears a stale account binding after configuring the
   expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
 });
 
+test('re-picking the task\'s current model still remembers it as the last-used choice', async ({ page }) => {
+  // The last pick was another harness on another task.
+  await page.addInitScript(() => {
+    localStorage.setItem('pandacode.provider', 'codex');
+    localStorage.setItem('pandacode.model.codex', 'gpt-5');
+  });
+  await open(page);
+  const stored = () => page.evaluate(() => ({ provider: localStorage.getItem('pandacode.provider'), model: localStorage.getItem('pandacode.model.claude') }));
+  expect(await stored()).toEqual({ provider: 'codex', model: null });
+  const before = await task(page);
+  expect(before).toMatchObject({ provider: 'claude', model: 'sonnet' });
+  const current = picker(page).locator('[role="option"][aria-current="true"]');
+  const label = (await current.getAttribute('aria-label'))!;
+  await current.click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect.poll(stored).toEqual({ provider: 'claude', model: 'sonnet' });
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  expect(await task(page)).toMatchObject({ provider: 'claude', model: 'sonnet', resumeId: before.resumeId });
+  await trigger(page).click();
+  await expect(picker(page).locator('[aria-current="true"]')).toHaveAccessibleName(label);
+});
+
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
 
 async function pick(page: Page, query: string, name: string): Promise<void> {

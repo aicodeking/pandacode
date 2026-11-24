@@ -125,8 +125,10 @@ jobs:
     # Linux job does not cover, so a platform-only break shows up in CI instead of first at release time.
     # Each row copies its release.yml build row: same runner and TRANSCRIBE_CMAKE_ARGS (see the comment
     # there; an empty value adds no CMake arguments). Clippy covers the same targets as the Linux job;
-    # tests stay on Linux, except the release-profile real-audio smoke (as in the Linux job) on macOS,
-    # Windows x64 and Linux arm64. The Linux arm64 row installs the same native packages as the Linux job.
+    # the full suite stays on Linux, except targeted platform-sensitive unit tests (warm spares, Claude
+    # policy/roots, home and config-dir resolution, exits) on macOS arm64 and Windows x64, and the
+    # release-profile real-audio smoke (as in the Linux job) on macOS, Windows x64 and Linux arm64.
+    # The Linux arm64 row installs the same native packages as the Linux job.
     name: Rust clippy (${{ matrix.target }})
     strategy:
       fail-fast: false
@@ -172,6 +174,18 @@ jobs:
         run: node --test scripts/release/ci-startup-smoke.test.mjs
       - run: npm run build
       - run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      # Run platform-sensitive warm-spare, Claude policy/roots, home-resolution and exit tests on
+      # macOS and Windows so case-insensitive env vars, USERPROFILE and Windows managed-settings
+      # paths are executed natively in CI rather than only clippy-checked. libtest ORs the filters as
+      # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
+      # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
+      # that matched nothing would pass with `0 passed`, so require at least one test to have run.
+      - name: Platform policy, home and warm-spare tests
+        if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
+        shell: bash
+        run: |
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit session_launch_tests:: cloud::colab::tests:: 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
+          grep -qE 'test result: ok\. [1-9][0-9]* passed' "$RUNNER_TEMP/platform-tests.log"
       # CI runners have no sound card, so ALSA's default can't capture and the smoke would skip. A
       # null default captures silence, and its hint makes cpal list `default` as the default input.
       # libasound2-plugins (installed above) defines `jack`, which lists with no JACK server, so the

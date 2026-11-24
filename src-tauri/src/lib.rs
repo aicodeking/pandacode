@@ -942,20 +942,40 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
+    // Invalidate while turn admission (`agents`) is held so a new turn's epoch cannot be clobbered.
+    let session = configure_session_with(
+        &state.store,
+        &session_id,
+        &provider,
+        &model,
+        project_id.as_deref(),
+        providers::invalidate_warm_agent,
+    );
+    drop(agents);
+    session
+}
+/// Applies a task's provider, model and project, then discards its warm spare only when
+/// the launch settings changed: a lead's spare keeps the config it launched with, so it
+/// would renew on the old provider/model. Re-picking the current choice keeps the spare.
+/// The store lock is released before `invalidate_warm` runs.
+fn configure_session_with(
+    store: &Mutex<Store>,
+    session_id: &str,
+    provider: &str,
+    model: &str,
+    project_id: Option<&str>,
+    invalidate_warm: impl FnOnce(&str),
+) -> Result<Session> {
     let (session, reconfigured) = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        let before = store.session(&session_id)?;
-        let session = store.configure(&session_id, &provider, &model, project_id.as_deref())?;
+        let store = store.lock().map_err(|e| e.to_string())?;
+        let before = store.session(session_id)?;
+        let session = store.configure(session_id, provider, model, project_id)?;
         let reconfigured = session_launch_changed(&before, &session);
         (session, reconfigured)
     };
-    // A lead's spare keeps the config it launched with, so it would renew on the old provider/model.
-    // Invalidate while turn admission is serialized so a new turn's epoch cannot be clobbered.
-    // Re-picking the current provider, model and project keeps the spare.
     if reconfigured {
-        providers::invalidate_warm_agent(&session_id);
+        invalidate_warm(session_id);
     }
-    drop(agents);
     Ok(session)
 }
 #[tauri::command]
@@ -1035,6 +1055,43 @@ mod session_launch_tests {
         let project = Session { project_id: format!("{}-other", before.project_id), ..before.clone() };
         assert!(session_launch_changed(&before, &provider));
         assert!(session_launch_changed(&before, &project));
+    }
+
+    #[test]
+    fn configure_session_with_preserves_warm_spare_on_noop_and_invalidates_on_change() {
+        let dir = std::env::temp_dir().join(format!("pandacode-configure-session-{}", uuid::Uuid::new_v4()));
+        let other_dir = dir.join("other");
+        std::fs::create_dir_all(&other_dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&dir).unwrap();
+        let other = store.add_project(&other_dir).unwrap();
+        let sid = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap().id;
+        let store = Mutex::new(store);
+        let configure = |provider: &str, model: &str, project_id: Option<&str>| {
+            let mut invalidated = Vec::new();
+            let session = configure_session_with(&store, &sid, provider, model, project_id, |id| invalidated.push(id.to_string())).unwrap();
+            (session, invalidated)
+        };
+
+        // A new project moves a task only before it has a conversation, so check it first.
+        let (session, invalidated) = configure("claude", "sonnet", Some(&other.id));
+        assert_eq!(session.project_id, other.id);
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        store.lock().unwrap().resume(&sid, "resume-1").unwrap();
+        let (session, invalidated) = configure("claude", "sonnet", None);
+        assert!(invalidated.is_empty(), "re-picking the current choice keeps the warm spare");
+        assert_eq!(session.resume_id.as_deref(), Some("resume-1"));
+
+        let (session, invalidated) = configure("claude", "opus", None);
+        assert_eq!(session.model, "opus");
+        assert_eq!(invalidated, [sid.as_str()]);
+
+        let (session, invalidated) = configure("codex", "opus", None);
+        assert_eq!(session.provider, "codex");
+        assert_eq!(invalidated, [sid.as_str()]);
     }
 }
 #[tauri::command]

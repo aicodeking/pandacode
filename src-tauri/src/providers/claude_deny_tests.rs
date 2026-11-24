@@ -210,7 +210,9 @@ fn held_custom_tools_do_not_change_the_warm_key() {
     let plan = HostPlan { team: false, codex: false, cloud: false, trim: Role::of(false, false).wants(), explore: None };
     let tools = |listed: Vec<Value>| build_host(&plan, &History::holding(&CUSTOM), &mut FakeLayers { custom: true, custom_specs: Some(listed), definitions: standard.clone(), ..Default::default() }).host.unwrap().tools;
     let cfg = RunConfig { resume_id: Some("conv-1".into()), ..config("claude") };
-    assert_eq!(warm::key(&cfg, &tools(standard.clone())), warm::key(&cfg, &tools(specs("plan"))));
+    let standard_key = warm::key(&cfg, &tools(standard.clone())).expect("standard warm key");
+    let plan_key = warm::key(&cfg, &tools(specs("plan"))).expect("plan warm key");
+    assert_eq!(standard_key, plan_key);
 }
 
 /// What Claude's permission check does with a call to PandaCode's `tool`: `true` when it

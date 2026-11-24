@@ -134,6 +134,15 @@ fn a_saved_agent_tool_keeps_the_warm_key() {
     crate::custom_tools::run_ended(&session);
 }
 
+/// Removes a test's temporary folder when dropped, so a failed assertion never leaks it.
+struct TempDir(PathBuf);
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(unix)]
 fn idle_spare(lead: bool, age: Duration) -> Spare {
     let mut command = Command::new("sleep");
@@ -765,6 +774,7 @@ fn skill_manager_disabled_skills_invalidate_a_warm_launch() {
 #[test]
 fn claude_config_file_edits_invalidate_a_warm_launch() {
     let cwd = std::env::temp_dir().join(format!("pandacode-warm-config-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(cwd.clone());
     std::fs::create_dir_all(cwd.join(".claude")).unwrap();
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
@@ -788,7 +798,6 @@ fn claude_config_file_edits_invalidate_a_warm_launch() {
     }
     std::fs::remove_file(cwd.join("CLAUDE.md")).unwrap();
     assert_ne!(key(), previous, "removing CLAUDE.md must start the next turn cold");
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 /// Write `contents` to `root/name`, creating its folders.
@@ -801,6 +810,7 @@ fn write_config(root: &Path, name: &str, contents: &str) {
 #[test]
 fn claude_local_memory_rules_agents_and_commands_edits_invalidate_a_warm_launch() {
     let cwd = std::env::temp_dir().join(format!("pandacode-warm-config-dirs-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(cwd.clone());
     std::fs::create_dir_all(cwd.join(".claude")).unwrap();
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
@@ -818,12 +828,12 @@ fn claude_local_memory_rules_agents_and_commands_edits_invalidate_a_warm_launch(
     }
     std::fs::remove_file(cwd.join(".claude/rules/common/style.md")).unwrap();
     assert_ne!(key(), previous, "removing a nested rule must start the next turn cold");
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 #[test]
 fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-connection-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let (cwd, global, own, by_env) = (root.join("project"), root.join("global"), root.join("own"), root.join("by-env"));
     for dir in [&cwd, &global, &own, &by_env] {
         std::fs::create_dir_all(dir).unwrap();
@@ -861,13 +871,13 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
         assert_ne!(next, previous, "writing {name} in the connection's folder must start the next turn cold");
         previous = next;
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[cfg(unix)]
 #[test]
 fn a_config_folder_walk_follows_symlinked_folders_once_and_is_capped() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-walk-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let skills = root.join("skills");
     let external = root.join("external");
     std::fs::create_dir_all(skills.join("a")).unwrap();
@@ -892,12 +902,12 @@ fn a_config_folder_walk_follows_symlinked_folders_once_and_is_capped() {
     assert!(capped.as_array().unwrap().len() <= 128 + 2, "the entry cap holds");
     assert_eq!(config_dir_stamp(&skills), capped, "a capped walk is deterministic");
     assert_eq!(config_dir_stamp(&root.join("missing")), Value::Null);
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-roots-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let repo = root.join("repo");
     let nested = repo.join("src/deep");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -965,7 +975,6 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
             "writing the main checkout's {name} must preserve the warm key"
         );
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
@@ -1017,7 +1026,9 @@ fn skill_manager_warm_spare_applies_the_same_skill_instructions_as_a_cold_launch
     crate::skill_manager::apply_instructions(&mut cold, &disabled);
     let spare = prepared(base.clone(), &disabled);
     assert!(spare.instructions.contains("Friendly skill"));
-    assert_eq!(key_with_disabled(&spare, &[], "", &disabled, &[]), key_with_disabled(&cold, &[], "", &disabled, &[]));
+    let spare_key = key_with_disabled(&spare, &[], "", &disabled, &[]).expect("spare warm key");
+    let cold_key = key_with_disabled(&cold, &[], "", &disabled, &[]).expect("cold warm key");
+    assert_eq!(spare_key, cold_key);
     // Applying twice (spare prepared, then adopted by run_inner) changes nothing.
     assert_eq!(prepared(spare.clone(), &disabled).instructions, spare.instructions);
     let mut command = Command::new("claude");
@@ -1210,6 +1221,7 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
 #[test]
 fn path_in_folder_matches_canonical_nested_and_deleted_folders() {
     let base = std::env::temp_dir().join(format!("pandacode-warm-path-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(base.clone());
     let folder = base.join("wt");
     let nested = folder.join("sub/dir");
     let sibling = base.join("wt-other");
@@ -1232,7 +1244,6 @@ fn path_in_folder_matches_canonical_nested_and_deleted_folders() {
     assert!(path_in_folder(&canonical_nested, &folder, &deleted_resolved));
     assert!(!path_in_folder(&sibling, &folder, &deleted_resolved));
 
-    let _ = std::fs::remove_dir_all(base);
 }
 
 #[cfg(unix)]
@@ -1310,6 +1321,7 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
 async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_with_pending_handoff() {
     let pool = own_pool();
     let base = std::env::temp_dir().join(format!("pandacode-warm-folder-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(base.clone());
     let folder = base.join("wt");
     let nested = folder.join("sub");
     let other = base.join("other");
@@ -1386,7 +1398,6 @@ async fn discard_in_retires_canonical_nested_inflight_and_deleted_folder_spares_
 
     quiesce_in(pool, &other_id).await.unwrap();
     assert!(process_gone(other_pid));
-    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -1394,6 +1405,7 @@ fn a_dotfiles_repos_own_local_settings_edits_invalidate_a_warm_launch() {
     // A repository rooted at the user's home: its `.claude/` is the user folder, so the project
     // stamps skip it and the user stamps must cover `settings.local.json`.
     let root = std::env::temp_dir().join(format!("pandacode-warm-dotfiles-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let repo = root.join("home");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
@@ -1407,12 +1419,12 @@ fn a_dotfiles_repos_own_local_settings_edits_invalidate_a_warm_launch() {
         assert_ne!(next, previous, "writing the user folder's settings.local.json must start the next turn cold");
         previous = next;
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn an_upgraded_claude_binary_changes_the_executable_stamp() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-binary-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     std::fs::create_dir_all(&root).unwrap();
     let binary = root.join("claude");
     std::fs::write(&binary, "v1").unwrap();
@@ -1436,12 +1448,12 @@ fn an_upgraded_claude_binary_changes_the_executable_stamp() {
         std::os::unix::fs::symlink(&new, &link).unwrap();
         assert_ne!(executable_stamp_for(None, Some(link.clone())), linked, "a relinked binary must start the next turn cold");
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn a_named_connections_own_executable_is_stamped_instead_of_the_global_one() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-conn-binary-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     std::fs::create_dir_all(&root).unwrap();
     let (own, global) = (root.join("claude-work"), root.join("claude"));
     std::fs::write(&own, "v1").unwrap();
@@ -1468,12 +1480,12 @@ fn a_named_connections_own_executable_is_stamped_instead_of_the_global_one() {
     std::fs::write(&own, "v2.0").unwrap();
     assert_ne!(stamp(Some(&connection)), before, "upgrading the connection's binary in place must start the next turn cold");
     assert_eq!(stamp(None), global_before, "the global binary is unchanged");
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
 fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-empty-config-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let (cwd, home) = (root.join("project"), root.join("home/.claude"));
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::create_dir_all(&home).unwrap();
@@ -1517,7 +1529,6 @@ fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
         None,
         "an empty CLAUDE_CONFIG_DIR with no known home starts no spare"
     );
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// A legacy connection keeping `name` (a folder variable) as a secret, whose value is never read.
@@ -1540,6 +1551,7 @@ const LEGACY_SECRET_FOLDER_VARIABLES: [&str; 4] = ["HOME", "USERPROFILE", "CLAUD
 #[test]
 fn an_unresolvable_user_config_folder_is_never_adopted() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-unresolvable-{}", uuid::Uuid::new_v4().simple()));
+    let _cleanup = TempDir(root.clone());
     let (cwd, home) = (root.join("project"), root.join("home/.claude"));
     std::fs::create_dir_all(&cwd).unwrap();
     // Saved `HOME=""` makes Node's `os.homedir()` return `""`, so Claude Code reads
@@ -1562,7 +1574,6 @@ fn an_unresolvable_user_config_folder_is_never_adopted() {
         assert_eq!(claude_config_fingerprint(&base, Some(&legacy)), None, "a legacy secret {name} has no fingerprint");
         assert_eq!(key_for_connection(&base, &[], "legacy#1", Some(&legacy), &none, &[]), None, "a legacy secret {name} has no warm key");
     }
-    let _ = std::fs::remove_dir_all(&root);
 }
 
 /// `spawn_claude_process` keyed as for a legacy connection keeping `HOME` as a secret.
@@ -1615,4 +1626,47 @@ async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
     assert_eq!(epoch(&warm), launch, "`take` counts the launch");
     let (adopted, _) = take_in(pool, &warm, "launch");
     assert!(adopted.is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_note() {
+    let pool = own_pool();
+    let session = format!("warm-nokey-lead-{}", uuid::Uuid::new_v4());
+    let spare = idle_spare(true, Duration::ZERO);
+    let pid = pid_of(&spare);
+    admit(&mut spares(pool), session.clone(), spare);
+    let before = epoch(&session);
+    assert_eq!(
+        launched_without_key_in(pool, &session).as_deref(),
+        Some("Team lead's warm Claude agent not used (its config folder cannot be known); starting cold. Lead spares since launch: 0 adopted, 1 not used.")
+    );
+    assert!(epoch(&session) > before, "the launch is counted");
+    assert!(!waiting_in(pool, &session), "the spare idles beside the cold process");
+    assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for a later launch");
+    assert_eq!(launched_without_key_in(pool, &session), None, "the miss is said once");
+    assert_eq!(has_spare_or_record_cold_in(pool, &session), (false, None));
+    assert_eq!(spares(pool).lead_missed, 1);
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
+    let pool = own_pool();
+    let session = format!("warm-nokey-plain-{}", uuid::Uuid::new_v4());
+    let spare = idle_spare(false, Duration::ZERO);
+    let pid = pid_of(&spare);
+    admit(&mut spares(pool), session.clone(), spare);
+    assert_eq!(
+        launched_without_key_in(pool, &session).as_deref(),
+        Some("Warm Claude agent not used (its config folder cannot be known); starting cold.")
+    );
+    assert!(!waiting_in(pool, &session));
+    let counts = spares(pool);
+    assert_eq!((counts.lead_adopted, counts.lead_missed), (0, 0), "ordinary spares never move the lead counters");
+    drop(counts);
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
 }

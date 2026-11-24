@@ -4620,11 +4620,11 @@ async fn run_process_launch(
             if warm::has_spare_or_record_cold(&config.session_id) {
                 // The key reads the task's switches and saved settings: off the runtime.
                 let (keyed, catalog) = (config.clone(), tools.tools.clone());
-                // No key: the config folder cannot be known, so the pooled spare is discarded.
+                // No key: the config folder cannot be known, so the pooled spare is retired and logged.
                 match crate::blocking(move || Ok(warm::key(&keyed, &catalog))).await? {
                     Some(key) => warm::take(&config.session_id, &key),
                     None => {
-                        warm::launched_without_spare(&config.session_id);
+                        warm::launched_without_key(&config.session_id);
                         None
                     }
                 }
