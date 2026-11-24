@@ -356,7 +356,8 @@ async fn a_settings_discard_keeps_the_switch_off_state_a_switch_off_moves() {
     let launch = epoch(&pooled);
     assert!(register(pool, &pooled, launch, spare(true)));
     spares(pool).gone.insert(expired.clone(), Gone::Expired);
-    let (before, chain) = (spares(pool).discard_epoch, until_discarded(pool, Arc::new(|| true)));
+    let before = spares(pool).discard_epoch;
+    let chain = until_discarded(pool, Arc::new(|| true));
     // A setting or CLI changed (Colab's MCP, an agent update): spares stay on.
     discard_all_from(pool);
     {

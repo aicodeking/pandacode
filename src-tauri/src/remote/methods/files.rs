@@ -1569,8 +1569,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pandacode-files-shared-{}", uuid::Uuid::new_v4().simple()));
         let main = dir.join("main");
         let nested = main.join(".claude").join("worktrees").join("x");
-        std::fs::create_dir_all(main.join(".git")).unwrap();
+        let admin = main.join(".git").join("worktrees").join("x");
+        std::fs::create_dir_all(&admin).unwrap();
         std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
         std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
         let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
         let project = store.add_project(&main).unwrap();
