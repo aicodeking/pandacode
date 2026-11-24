@@ -47,7 +47,7 @@ fn turning_the_local_code_explorer_off_starts_the_next_turn_cold() {
     let launch = |enabled: bool| {
         let explore = crate::explore::run_name(false, enabled, &base.provider);
         let tools = if explore.is_some() { crate::explore::catalog() } else { Vec::new() };
-        key(&RunConfig { instructions: crate::app_instructions(&crate::app_instructions::InstructionOptions { chat: false, role: crate::Role::Task, explore, tools: false, cloud: false }), ..base.clone() }, &tools)
+        key(&RunConfig { instructions: crate::app_instructions(&crate::app_instructions::InstructionOptions { chat: false, role: crate::Role::Task, explore, tools: false, cloud: false }), ..base.clone() }, &tools).unwrap()
     };
     assert_eq!(launch(true), launch(true));
     assert_ne!(launch(true), launch(false));
@@ -63,7 +63,7 @@ fn switching_modes_changes_only_the_mode_field_of_the_warm_key() {
     let launch = |mode: &str| {
         let config = RunConfig { mode: mode.into(), ..base.clone() };
         let instructions = crate::app_instructions::launch_instructions(&config, crate::Role::Task, None, true);
-        key(&RunConfig { instructions, ..config }, &[])
+        key(&RunConfig { instructions, ..config }, &[]).unwrap()
     };
     for mode in ["auto", "review", "plan", "full"] {
         assert_eq!(miss(true, &launch("ask"), &launch(mode), Duration::from_secs(1), IDLE).as_deref(), Some("changed: mode"), "{mode}");
@@ -79,7 +79,7 @@ fn a_first_saved_tool_does_not_change_the_warm_key() {
     let launch = || {
         let tools = crate::custom_tools::test_host(dir.0.clone(), "project", dir.0.clone(), "warm-tools", "ask").tools;
         let instructions = crate::app_instructions::launch_instructions(&base, crate::Role::Task, None, true);
-        key(&RunConfig { instructions, ..base.clone() }, &tools)
+        key(&RunConfig { instructions, ..base.clone() }, &tools).unwrap()
     };
     let empty = launch();
     crate::custom_tools::test_save(&dir.0, "project", "build-app", "true");
@@ -90,7 +90,7 @@ fn a_first_saved_tool_does_not_change_the_warm_key() {
 fn a_worker_trim_change_starts_the_next_turn_cold() {
     use crate::providers::WorkerTrim;
     let base = crate::providers::tests::config("claude");
-    let with = |worker: Option<WorkerTrim>| key(&RunConfig { worker, ..base.clone() }, &[]);
+    let with = |worker: Option<WorkerTrim>| key(&RunConfig { worker, ..base.clone() }, &[]).unwrap();
     let trims = [
         None,
         Some(WorkerTrim { read_only: false, skills: false, trim: true }),
@@ -110,7 +110,7 @@ fn a_worker_trim_change_starts_the_next_turn_cold() {
 #[test]
 fn a_changed_deny_set_starts_the_next_turn_cold() {
     let base = crate::providers::tests::config("claude");
-    let with = |denied: Option<&str>| key(&RunConfig { disallowed_tools: denied.map(str::to_owned), ..base.clone() }, &[]);
+    let with = |denied: Option<&str>| key(&RunConfig { disallowed_tools: denied.map(str::to_owned), ..base.clone() }, &[]).unwrap();
     let (a, b) = ("--disallowedTools=ScheduleWakeup,Monitor,CronCreate", "--disallowedTools=ScheduleWakeup,Monitor,CronCreate,Skill");
     assert_eq!(with(Some(a)), with(Some(a)));
     assert_ne!(with(Some(a)), with(Some(b)));
@@ -126,11 +126,11 @@ fn a_saved_agent_tool_keeps_the_warm_key() {
     let session = format!("warm-{}", uuid::Uuid::new_v4());
     let specs = || crate::custom_tools::test_host(tools.0.clone(), "p1", root.0.clone(), &session, "ask").tools;
     // An empty project is offered the same specs as one with tools: the first save keeps the key.
-    let empty = key(&base, &specs());
+    let empty = key(&base, &specs()).unwrap();
     crate::custom_tools::test_save(&tools.0, "p1", "build-app", "echo built");
-    assert_eq!(key(&base, &specs()), empty, "the first save");
+    assert_eq!(key(&base, &specs()).unwrap(), empty, "the first save");
     crate::custom_tools::test_save(&tools.0, "p1", "test-app", "echo tested");
-    assert_eq!(key(&base, &specs()), empty, "a later save");
+    assert_eq!(key(&base, &specs()).unwrap(), empty, "a later save");
     crate::custom_tools::run_ended(&session);
 }
 
@@ -144,7 +144,6 @@ fn idle_spare(lead: bool, age: Duration) -> Spare {
 }
 
 /// A pool of the test's own, so tests running in parallel never share spares.
-#[cfg(unix)]
 pub(super) fn own_pool() -> &'static Pool {
     Box::leak(Box::default())
 }
