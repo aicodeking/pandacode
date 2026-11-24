@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { currentTheme } from './theme';
 import { textScale } from './ui-size';
+import { measureTokenPx } from './css-metrics';
 import '@xterm/xterm/css/xterm.css';
 
 export interface TerminalContext {
@@ -40,6 +41,16 @@ interface TerminalPreferences {
   theme?: import('@xterm/xterm').ITheme;
 }
 
+function terminalTokenDefaults(host: HTMLElement) {
+  const rootStyle = getComputedStyle(document.documentElement);
+  const fontFamily = rootStyle.getPropertyValue('--mono').trim() || '"SF Mono", "Cascadia Code", Menlo, monospace';
+  const px = measureTokenPx('--mono-size', 12 * textScale(), host);
+  const fontSize = Number.isFinite(px) && px > 0 ? Math.round(px * 10) / 10 : 12 * textScale();
+  const leading = parseFloat(rootStyle.getPropertyValue('--leading-code'));
+  const lineHeight = Number.isFinite(leading) && leading > 0 ? leading : 1.55;
+  return { fontFamily, fontSize, lineHeight };
+}
+
 export async function mountTerminal(container: HTMLElement, context: TerminalContext, reportError: (error: unknown) => void): Promise<TerminalController> {
   if (context.harness && !context.sessionId) throw new Error('Select a task before opening its harness console.');
   let command = context.harness?.command;
@@ -62,7 +73,7 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
     hint.textContent = context.harness.provider === 'kimi'
       ? 'Uses Kimi’s saved permissions. Review them in the console before pressing Enter.'
       : command ? 'When the console is ready, insert the command and press Enter.' : 'Native harness console. Type a command to continue.';
-    hint.style.cssText = 'color:var(--muted);font-size:.78rem;flex:1';
+    hint.style.cssText = 'color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading);flex:1';
     controls.append(hint);
     insertButton = document.createElement('button');
     insertButton.type = 'button'; insertButton.className = 'secondary-button';
@@ -76,7 +87,8 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   const preferences = await call<TerminalPreferences>('get_terminal_preferences').catch(() => ({} as TerminalPreferences));
   if (preferences.source) container.dataset.terminalSettings = preferences.source;
   const theme = () => ({ ...terminalTheme(), ...paletteTerminal(), ...preferences.theme });
-  const terminal = new Terminal({ fontFamily: preferences.fontFamily ? `${JSON.stringify(preferences.fontFamily)}, monospace` : '"SF Mono", "Cascadia Code", Menlo, monospace', fontSize: 12 * textScale(), lineHeight: preferences.lineHeight ?? 1.5, cursorStyle: preferences.cursorStyle ?? 'block', cursorBlink: preferences.cursorBlink ?? true, scrollback: 1500, minimumContrastRatio: 4.5, theme: theme() });
+  const defaults = terminalTokenDefaults(surface);
+  const terminal = new Terminal({ fontFamily: preferences.fontFamily ? `${JSON.stringify(preferences.fontFamily)}, monospace` : defaults.fontFamily, fontSize: defaults.fontSize, lineHeight: preferences.lineHeight ?? defaults.lineHeight, cursorStyle: preferences.cursorStyle ?? 'block', cursorBlink: preferences.cursorBlink ?? true, scrollback: 1500, minimumContrastRatio: 4.5, theme: theme() });
   const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(surface);
   if (surface.clientWidth && surface.clientHeight) fit.fit();
   let terminalId = '', exited = false, hasOutput = false, disposed = false, inserted = false;
@@ -137,7 +149,13 @@ export async function mountTerminal(container: HTMLElement, context: TerminalCon
   const input = terminal.onData(data => { if (!exited && !disposed) void call('write_terminal', { terminalId, data }).catch(reportError); });
   let resizeFrame = 0;
   const resize = () => { cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(() => { if (disposed || !surface.clientWidth || !surface.clientHeight) return; fit.fit(); if (!exited) void call('resize_terminal', { terminalId, cols: terminal.cols, rows: terminal.rows }).catch(reportError); }); };
-  const refreshSize = () => { terminal.options.fontSize = 12 * textScale(); resize(); };
+  const refreshSize = () => {
+    const defaults = terminalTokenDefaults(surface);
+    terminal.options.fontFamily = preferences.fontFamily ? `${JSON.stringify(preferences.fontFamily)}, monospace` : defaults.fontFamily;
+    terminal.options.fontSize = defaults.fontSize;
+    terminal.options.lineHeight = preferences.lineHeight ?? defaults.lineHeight;
+    resize();
+  };
   refreshSize();
   window.addEventListener('pandacode-ui-scale-change', refreshSize);
   const observer = new ResizeObserver(resize);

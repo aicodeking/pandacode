@@ -1,13 +1,13 @@
 /* Prompt attachments: image thumbnails, documents and folders in the composer, plus the drop glow. */
-:is(.attachments,.message-attachments)>.prompt-chip{display:inline-flex;align-items:center;gap:8px;padding:4px 5px 4px 6px;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--panel) 80%,transparent);color:var(--text);font-size:var(--text-2xs);max-width:min(100%,280px)}
+:is(.attachments,.message-attachments)>.prompt-chip{display:inline-flex;align-items:center;gap:8px;padding:4px 5px 4px 6px;border-radius:var(--radius-chip);background:color-mix(in srgb,var(--panel) 80%,transparent);color:var(--text);font-size:var(--type-body);line-height:var(--type-body-leading);max-width:min(100%,280px)}
 :is(.attachments,.message-attachments)>.prompt-chip>.icon{width:14px;height:14px;color:var(--muted);flex-shrink:0}
 :is(.attachments,.message-attachments)>.prompt-chip-image{padding-left:4px}
-:is(.attachments,.message-attachments)>.prompt-chip-image img{width:36px;height:36px;object-fit:cover;border-radius:var(--radius-xs);background:#fff;flex-shrink:0}
+:is(.attachments,.message-attachments)>.prompt-chip-image img{width:36px;height:36px;object-fit:cover;border-radius:var(--radius-hair);background:#fff;flex-shrink:0}
 .attachments>.prompt-chip-image[data-source="sketch"] img{background:#fff}
-.prompt-chip-text{display:flex;flex-direction:column;min-width:0;line-height:1.25;text-align:left}
-.prompt-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
-.prompt-chip-text small{color:var(--muted);font-size:var(--text-2xs);white-space:nowrap}
-.attachments>.prompt-chip button{padding:3px;border-radius:var(--radius-xs);color:var(--muted);flex-shrink:0}
+.prompt-chip-text{display:flex;flex-direction:column;min-width:0;line-height:var(--type-body-leading);text-align:left}
+.prompt-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading)}
+.prompt-chip-text small{color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading);white-space:nowrap}
+.attachments>.prompt-chip button{padding:3px;border-radius:var(--radius-hair);color:var(--muted);flex-shrink:0}
 .attachments>.prompt-chip button:hover{color:var(--text);background:var(--raised)}
 .attachments>.prompt-chip .icon{width:12px;height:12px}
 .attachments>.prompt-chip>.icon:first-child{width:14px;height:14px}
@@ -18,4 +18,5 @@
 @media(prefers-contrast:more){:is(.attachments,.message-attachments)>.prompt-chip{border-color:var(--text)}}
 
 /* Micro-interactions: only without reduced motion. */
+.message-context>pre{margin:6px 0 0;padding:8px 10px;overflow-x:auto;font-family:var(--mono);font-size:var(--mono-size);line-height:var(--leading-code)}
 @media(prefers-reduced-motion:no-preference){.attachments>.prompt-chip,.attachments>.prompt-chip button,.message-context>summary{transition:background-color var(--ds-ease-in) ease-out,color var(--ds-ease-in) ease-out,border-color var(--ds-ease-in) ease-out}.message-context[open]>pre{animation:mc-fade 160ms ease-out}@keyframes mc-fade{from{opacity:0}}}

@@ -394,6 +394,42 @@ test.describe('terminal', () => {
     expect(await calls(page, 'start_terminal')).toHaveLength(1);
   });
 
+  test('updates the terminal from the mono size token and preserves explicit font preferences', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem('pandacode.uiScale', '1.6');
+      (window as any).__terminalPreferences = { fontFamily: 'Courier New', lineHeight: 1.4 };
+    });
+    await open(page);
+    await expect(page.locator('html')).toHaveCSS('--ui-scale', '1.6');
+    const rows = screen(page).locator('.xterm-rows');
+    const fontSize = () => rows.evaluate(el => parseFloat(getComputedStyle(el).fontSize));
+    const rowHeight = () => rows.locator('> div').first().evaluate(el => parseFloat(getComputedStyle(el).lineHeight));
+    await expect.poll(fontSize).toBeCloseTo(19.2, 2);
+
+    const tokenSize = await page.evaluate(() => {
+      document.documentElement.style.setProperty('--mono-size', '1rem');
+      document.documentElement.style.setProperty('--leading-code', '1');
+      window.dispatchEvent(new Event('pandacode-ui-scale-change'));
+      const probe = document.createElement('span');
+      probe.style.fontSize = 'var(--mono-size)';
+      document.body.append(probe);
+      const size = parseFloat(getComputedStyle(probe).fontSize);
+      probe.remove();
+      return size;
+    });
+    expect(tokenSize).toBeCloseTo(22.4, 2);
+    await expect.poll(fontSize).toBeCloseTo(tokenSize, 2);
+    await expect(rows).toHaveCSS('font-family', /\bCourier New\b/);
+    const explicitHeight = await rowHeight();
+
+    // Use another terminal with the same font and size to measure the token's 1× row height.
+    await page.evaluate(() => { delete (window as any).__terminalPreferences.lineHeight; });
+    await drawer(page).getByRole('button', { name: 'New terminal', exact: true }).click();
+    await expect(screen(page)).toContainText('Ready terminal-2');
+    await expect.poll(fontSize).toBeCloseTo(tokenSize, 2);
+    expect(explicitHeight / await rowHeight()).toBeCloseTo(1.4, 1);
+  });
+
   test('keeps a close request anchored when its terminal finishes starting', async ({ page }) => {
     await open(page); await running(page);
     await page.evaluate(() => { (window as any).__holdTerminalStart = true; });

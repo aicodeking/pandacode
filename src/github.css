@@ -1,25 +1,26 @@
 /* Import dialog: filters, then a checklist of issues that already knows what is on the board. */
 .github-import-dialog{width:min(40rem,calc(100vw - 2rem))}
 .github-filters{display:flex;flex-wrap:wrap;gap:.6rem;align-items:center;margin:0 0 .9rem}
-.github-filters input:not([type="checkbox"]){flex:1 1 9rem;min-width:0;padding:.55rem .7rem;font-size:var(--text-sm)}
-.github-filter-toggle{display:inline-flex;align-items:center;gap:.5rem;font-size:var(--text-sm);white-space:nowrap;padding:.3rem .2rem}
+.github-filters input:not([type="checkbox"]){flex:1 1 9rem;min-width:0;padding:.55rem .7rem;font-size:var(--type-body)}
+.github-filter-toggle{display:inline-flex;align-items:center;gap:.5rem;font-size:var(--type-meta);white-space:nowrap;padding:.3rem .2rem}
 .github-filter-toggle input{width:15px;height:15px;accent-color:var(--accent);margin:0}
-.github-issue-list{display:flex;flex-direction:column;gap:.3rem;max-height:min(46vh,26rem);overflow:auto;padding:.2rem;border-radius:var(--radius-sm);background:color-mix(in srgb,var(--panel) 72%,transparent)}
-.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:var(--radius-sm);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out}
+.github-issue-list{display:flex;flex-direction:column;gap:.3rem;max-height:min(46vh,26rem);overflow:auto;padding:.2rem;border-radius:var(--ds-inner-radius);background:color-mix(in srgb,var(--panel) 72%,transparent)}
+.github-issue{display:flex;align-items:center;gap:.75rem;padding:.6rem .75rem;border-radius:var(--ds-control-radius);cursor:pointer;transition:background-color var(--ds-ease-out) ease-out}
 .github-issue:hover{background:color-mix(in srgb,var(--text) 4%,transparent)}
 .github-issue input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0;margin:0}
 .github-issue-linked{color:var(--muted)}
 .github-issue-copy{display:flex;flex-direction:column;gap:.15rem;min-width:0;flex:1}
-.github-issue-copy strong{font-size:var(--text-sm);font-weight:var(--weight-medium);overflow-wrap:anywhere}
-.github-issue-copy small{font-size:var(--text-2xs);color:var(--muted)}
-.github-issue-badge{font-size:var(--text-2xs);font-weight:var(--weight-medium);color:var(--accent-ink);background:var(--accent-dim);border-radius:var(--radius-full);padding:.2rem .55rem;white-space:nowrap}
-.github-issue-update{font-size:var(--text-xs);min-height:1.9rem;padding:.25rem .6rem;white-space:nowrap}
-.github-import-status{margin:1.2rem .5rem;font-size:var(--text-sm);color:var(--muted);text-align:center}
-.github-import-count{margin-right:auto;font-size:var(--text-xs);color:var(--muted)}
+.github-issue-copy strong{font-size:var(--type-subheading);line-height:var(--type-subheading-leading);font-weight:var(--type-subheading-weight);overflow-wrap:anywhere}
+.github-issue-copy small{font-size:var(--type-meta);color:var(--muted)}
+.github-issue-badge{font-size:var(--type-caption);line-height:var(--type-caption-leading);font-weight:var(--weight-medium);color:var(--accent-ink);background:var(--accent-dim);border-radius:var(--radius-chip);padding:.2rem .55rem;white-space:nowrap}
+.github-issue-update{font-size:var(--type-meta);min-height:1.9rem;padding:.25rem .6rem;white-space:nowrap}
+.github-import-status{margin:1.2rem .5rem;font-size:var(--type-meta);color:var(--muted);text-align:center}
+.github-import-count{margin-right:auto;font-size:var(--type-caption);line-height:var(--type-caption-leading);color:var(--muted)}
 .github-pr-dialog{width:min(34rem,calc(100vw - 2rem))}
-.github-pr-dialog textarea{width:100%;padding:10px 12px;line-height:1.6;font-size:var(--text-sm)}
-.github-pr-dialog select{width:100%;padding:9px 12px;border-radius:var(--radius-sm);background:var(--fill-hover);font-size:var(--text-sm)}
-.github-pr-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:var(--radius-xs);padding:1px 4px}
+.github-pr-dialog textarea{width:100%;padding:10px 12px;line-height:var(--type-body-leading);font-size:var(--type-body)}
+.github-pr-dialog select{width:100%;padding-block:9px;padding-inline-start:12px;border-radius:var(--ds-control-radius);background-color:var(--fill-hover);font-size:var(--type-body)}
+.github-pr-dialog select:where([multiple],[size]:not([size="1"])){padding-inline-end:12px}
+.github-pr-dialog .dialog-description code{font-family:var(--mono);font-size:var(--code-inline-size);background:var(--raised);border-radius:var(--radius-chip);padding:1px 4px}
 .github-pr-error{color:var(--danger)}
 .github-pull-list{margin-top:.8rem;max-height:min(36vh,18rem)}
 .github-pull-pick{width:100%;text-align:left;min-height:0}

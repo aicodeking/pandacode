@@ -148,12 +148,12 @@ function drawStencil(context: CanvasRenderingContext2D, shape: Shape, b: { x: nu
   switch (shape.stencil) {
     case 'heading': label(context, text || 'Heading', b.x, b.y, b.w, b.h, Math.max(size, Math.min(b.h * 0.7, 40)), shape.stroke, 'left', 700); break;
     case 'button': box(8, fill ?? tint(shape.stroke, 0.12)); label(context, text || 'Button', b.x, b.y, b.w, b.h, size, shape.stroke); break;
-    case 'input': box(7, fill ?? '#ffffff'); label(context, text || 'Placeholder', b.x + 12, b.y, b.w - 24, b.h, size, muted, 'left', 500); break;
-    case 'checkbox': { const s = Math.min(20, b.h); roundRect(context, b.x, b.y + (b.h - s) / 2, s, s, 4); context.stroke(); context.beginPath(); context.moveTo(b.x + s * 0.25, b.y + b.h / 2); context.lineTo(b.x + s * 0.45, b.y + b.h / 2 + s * 0.2); context.lineTo(b.x + s * 0.78, b.y + b.h / 2 - s * 0.25); context.stroke(); label(context, text || 'Option', b.x + s + 10, b.y, b.w - s - 10, b.h, size, shape.stroke, 'left', 500); break; }
+    case 'input': box(8, fill ?? '#ffffff'); label(context, text || 'Placeholder', b.x + 12, b.y, b.w - 24, b.h, size, muted, 'left', 500); break;
+    case 'checkbox': { const s = Math.min(20, b.h); roundRect(context, b.x, b.y + (b.h - s) / 2, s, s, 2); context.stroke(); context.beginPath(); context.moveTo(b.x + s * 0.25, b.y + b.h / 2); context.lineTo(b.x + s * 0.45, b.y + b.h / 2 + s * 0.2); context.lineTo(b.x + s * 0.78, b.y + b.h / 2 - s * 0.25); context.stroke(); label(context, text || 'Option', b.x + s + 10, b.y, b.w - s - 10, b.h, size, shape.stroke, 'left', 500); break; }
     case 'toggle': { const h = Math.min(24, b.h), w = h * 1.8; roundRect(context, b.x, b.y + (b.h - h) / 2, w, h, h / 2); context.fillStyle = tint(shape.stroke, 0.18); context.fill(); context.stroke(); context.beginPath(); context.arc(b.x + w - h / 2, b.y + b.h / 2, h / 2 - 3, 0, Math.PI * 2); context.fillStyle = shape.stroke; context.fill(); label(context, text || 'Setting', b.x + w + 10, b.y, b.w - w - 10, b.h, size, shape.stroke, 'left', 500); break; }
-    case 'image': box(6, fill ?? tint(shape.stroke, 0.06)); context.save(); context.beginPath(); context.rect(b.x, b.y, b.w, b.h); context.clip(); line(b.x, b.y, b.x + b.w, b.y + b.h); line(b.x + b.w, b.y, b.x, b.y + b.h); context.restore(); break;
+    case 'image': box(6, fill ?? tint(shape.stroke, 0.06)); context.save(); roundRect(context, b.x, b.y, b.w, b.h, 6); context.clip(); line(b.x, b.y, b.x + b.w, b.y + b.h); line(b.x + b.w, b.y, b.x, b.y + b.h); context.restore(); break;
     case 'card': {
-      box(10, fill ?? '#ffffff');
+      box(16, fill ?? '#ffffff');
       label(context, text || 'Card title', b.x + 16, b.y + 12, b.w - 32, size * 1.6, size, shape.stroke, 'left', 650);
       const top = b.y + 16 + size * 1.8; context.strokeStyle = muted;
       for (let i = 0; i < 3 && top + i * 14 + 6 < b.y + b.h - 8; i++) line(b.x + 16, top + i * 14, b.x + b.w - 16 - (i === 2 ? b.w * 0.3 : 0), top + i * 14);
@@ -161,7 +161,7 @@ function drawStencil(context: CanvasRenderingContext2D, shape: Shape, b: { x: nu
     }
     case 'navbar': {
       box(0, fill ?? '#ffffff');
-      const pad = 16, logoW = Math.min(90, b.w * 0.2); roundRect(context, b.x + pad, b.y + b.h / 2 - 12, logoW, 24, 5); context.fillStyle = tint(shape.stroke, 0.16); context.fill(); context.stroke();
+      const pad = 16, logoW = Math.min(90, b.w * 0.2); roundRect(context, b.x + pad, b.y + b.h / 2 - 12, logoW, 24, 6); context.fillStyle = tint(shape.stroke, 0.16); context.fill(); context.stroke();
       label(context, text || 'Logo', b.x + pad, b.y + b.h / 2 - 12, logoW, 24, Math.min(size, 14), shape.stroke, 'center', 700);
       const items = ['Home', 'Features', 'Pricing']; let x = b.x + b.w - pad;
       for (const item of items.reverse()) { const w = context.measureText(item).width + 34; x -= w; if (x < b.x + pad + logoW) break; label(context, item, x, b.y, w, b.h, Math.min(size, 14), muted, 'center', 500); }

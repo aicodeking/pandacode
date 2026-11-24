@@ -1,26 +1,26 @@
 /* A thread's wake-ups: the first row of the prompt box, on its outer fill with no card of its own. The row
    is a muted label with trailing muted icons and, open, an inner card of rows in place: a calendar-clock with
    a status dot, title over a status line, trailing play and more. */
-.wake-strip{--wake-cal:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.65' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 11V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4M4 10h16M8 3v4M16 3v4'/%3E%3Ccircle cx='16.5' cy='16.5' r='4'/%3E%3Cpath d='M16.5 14.8v1.9l1.2.8'/%3E%3C/svg%3E");color:var(--muted);font-size:var(--ds-text-sub)}
+.wake-strip{--wake-cal:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.65' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 11V7a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h4M4 10h16M8 3v4M16 3v4'/%3E%3Ccircle cx='16.5' cy='16.5' r='4'/%3E%3Cpath d='M16.5 14.8v1.9l1.2.8'/%3E%3C/svg%3E");color:var(--muted);font-size:var(--type-body)}
 .wake-strip[hidden]{display:none}
 .wake-line{display:flex;align-items:center;gap:2px;min-height:36px;padding:0 2px}
-.wake-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:8px;min-height:36px;padding:0 8px 0 var(--ds-row-pad-x);border-radius:var(--ds-radius-inner);text-align:left;color:inherit;font-size:var(--ds-text-sub);font-weight:var(--weight-regular);--press:1;transition:background-color var(--ds-ease-out) ease-out}
+.wake-toggle{flex:1;min-width:0;display:flex;align-items:center;gap:8px;min-height:36px;padding:0 8px 0 var(--ds-row-pad-x);border-radius:var(--ds-control-radius);text-align:left;color:inherit;font-size:var(--type-body);font-weight:var(--weight-regular);--press:1;transition:background-color var(--ds-ease-out) ease-out}
 .wake-toggle:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 /* A clock and the next time say it: the sentence around the <strong> ("Next wake-up … · title") stays for screen readers. Open, the rows name each wake-up. */
 .wake-summary:has(strong){font-size:0}
-.wake-summary:has(strong) strong{font-size:var(--ds-text-sub)}
+.wake-summary:has(strong) strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 .wake-toggle .icon{flex:none;--icon-size:var(--icon-md);width:16px;height:16px;color:var(--muted)}
 .wake-summary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wake-summary strong{font-weight:var(--weight-medium);color:var(--text)}
-.wake-count{flex:none;font-size:var(--ds-text-sub);font-variant-numeric:tabular-nums;color:var(--muted)}
+.wake-count{flex:none;font-size:var(--type-caption);line-height:var(--type-caption-leading);font-variant-numeric:tabular-nums;color:var(--muted)}
 .wake-resume,.wake-settings{flex:none;color:var(--text)}
 .wake-resume{font-weight:var(--weight-medium)}
 .wake-toggle[aria-expanded="true"] .wake-chevron{rotate:180deg}
 .wake-add{width:28px;height:28px;flex:none;color:var(--muted)}
 .wake-add .icon{width:16px;height:16px}
 .wake-body{padding:0;display:grid;gap:4px}
-.wake-list{list-style:none;margin:0;padding:2px;display:grid;gap:2px;max-height:228px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--ds-border);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
-.wake-row{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto auto;grid-template-rows:auto auto;column-gap:var(--ds-row-gap);row-gap:1px;align-items:center;min-width:0;min-height:var(--ds-row-h-sub);padding:var(--ds-row-pad-y) 4px var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);line-height:1.3;transition:background-color var(--ds-ease-out) ease-out}
+.wake-list{list-style:none;margin:0;padding:2px;display:grid;gap:2px;max-height:228px;overflow:auto;overscroll-behavior:contain;border:1px solid var(--ds-border);border-radius:var(--ds-inner-radius);background:var(--ds-card-inner);box-shadow:var(--ds-shadow-card)}
+.wake-row{position:relative;display:grid;grid-template-columns:20px minmax(0,1fr) auto auto;grid-template-rows:auto auto;column-gap:var(--ds-row-gap);row-gap:1px;align-items:center;min-width:0;min-height:var(--ds-row-h-sub);padding:var(--ds-row-pad-y) 4px var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:var(--ds-control-radius);line-height:var(--type-body-leading);transition:background-color var(--ds-ease-out) ease-out}
 .wake-row:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 /* The row's calendar-clock and its status dot (on: green; paused: none). */
 .wake-row::before{content:"";grid-column:1;grid-row:1/3;width:20px;height:20px;background:var(--muted);-webkit-mask:var(--wake-cal) center/contain no-repeat;mask:var(--wake-cal) center/contain no-repeat}
@@ -31,10 +31,10 @@
 /* A run this schedule sent is under way: a blue dot and "Running for 1m", as in the reference. */
 .wake-row[data-running]::after{background:var(--ds-info)}
 .wake-row[data-running] .wake-meta{color:var(--ds-info)}
-.wake-title{grid-column:2;grid-row:1;align-self:end;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:var(--ds-text-body);font-weight:var(--weight-medium)}
-.wake-meta{grid-column:2;grid-row:2;align-self:start;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--ds-text-sub);color:var(--muted);font-variant-numeric:tabular-nums}
+.wake-title{grid-column:2;grid-row:1;align-self:end;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
+.wake-meta{grid-column:2;grid-row:2;align-self:start;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);font-variant-numeric:tabular-nums}
 /* Who set it: quiet trailing meta, as the reference's trailing text. */
-.wake-origin{grid-column:3;grid-row:1/3;font-size:var(--ds-text-sub);color:var(--faint)}
+.wake-origin{grid-column:3;grid-row:1/3;font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--faint)}
 .wake-actions{grid-column:4;grid-row:1/3;display:flex;align-items:center;gap:4px;color:var(--muted)}
 .wake-actions .wake-switch{margin:0 4px 0 2px}
 .wake-actions .icon-button{width:32px;height:32px;color:var(--muted)}
@@ -44,15 +44,15 @@
 .wake-actions .wake-text-button[data-wake="run"]>span{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .wake-actions .wake-text-button[data-wake="run"] .icon{width:18px;height:18px}
 .wake-actions .wake-text-button[data-wake="run"]:hover{color:var(--text)}
-.wake-text-button{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 9px;border-radius:var(--ds-radius-control);font-size:var(--ds-text-ui);font-weight:var(--weight-medium);color:var(--text);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.wake-text-button{display:inline-flex;align-items:center;gap:5px;min-height:32px;padding:0 9px;border-radius:var(--ds-control-radius);font-size:var(--type-body);font-weight:var(--weight-medium);color:var(--text);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
 .wake-text-button:hover{background:var(--ds-fill-hover);transition-duration:var(--ds-ease-in)}
 .wake-text-button .icon{width:14px;height:14px}
 .wake-text-button.danger{color:var(--ds-danger)}
-.wake-confirm{font-size:var(--ds-text-ui);color:var(--text)}
+.wake-confirm{font-size:var(--type-body);color:var(--text)}
 .wake-history{padding:2px 0 4px}
-.wake-history h4{display:flex;align-items:center;min-height:32px;margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);color:var(--muted)}
+.wake-history h4{display:flex;align-items:center;min-height:32px;margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);color:var(--muted);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 .wake-history ol{list-style:none;margin:0;padding:0;display:grid;gap:1px}
-.wake-run{display:flex;align-items:center;gap:8px;min-width:0;min-height:26px;padding:0 10px;font-size:var(--ds-text-meta)}
+.wake-run{display:flex;align-items:center;gap:8px;min-width:0;min-height:26px;padding:0 10px;font-size:var(--type-meta)}
 .wake-dot{flex:none;width:8px;height:8px;border-radius:50%;background:var(--faint)}
 .wake-dot[data-outcome="started"]{background:var(--ds-success)}
 .wake-dot[data-outcome="queued"]{background:transparent;box-shadow:inset 0 0 0 1.5px var(--ds-info)}
@@ -64,31 +64,32 @@
 /* Quick add: a compact glass popover above its trigger (it borrows .floating-menu's glass). */
 .wake-popover.floating-menu{width:340px;padding:14px;z-index:85}
 .wake-form{display:grid;gap:10px}
-.wake-form-title{display:flex;align-items:center;gap:8px;font-size:var(--ds-text-ui);font-weight:var(--weight-strong)}
+.wake-form-title{display:flex;align-items:center;gap:8px;font-size:var(--type-heading);font-weight:var(--type-heading-weight);line-height:var(--type-heading-leading);letter-spacing:var(--tracking-tight);}
 .wake-form-title .icon{width:16px;height:16px;color:var(--muted)}
-.wake-field{display:grid;gap:4px;min-width:0;font-size:var(--ds-text-meta);color:var(--muted)}
-.wake-field textarea,.wake-field input,.wake-field select{width:100%;box-sizing:border-box;padding:7px 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-fill);color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
+.wake-field{display:grid;gap:4px;min-width:0;font-size:var(--type-subheading);color:var(--muted);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
+.wake-field textarea,.wake-field input,.wake-field select{width:100%;box-sizing:border-box;padding-block:7px;padding-inline-start:10px;border:0;border-radius:var(--ds-control-radius);background-color:var(--ds-fill);color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight)}
+.wake-field textarea,.wake-field input,.wake-field select:where([multiple],[size]:not([size="1"])){padding-inline-end:10px}
 .wake-field textarea{resize:vertical;min-height:48px}
 .wake-field :focus-visible{outline:2px solid var(--focus);outline-offset:0}
 .wake-presets{display:flex;flex-wrap:wrap;gap:6px}
-.wake-chip{min-height:28px;padding:0 10px;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-meta);font-weight:var(--weight-medium);color:var(--text);--press:1;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.wake-chip{min-height:28px;padding:0 10px;border-radius:var(--radius-full);background:var(--ds-fill);font-size:var(--type-caption);line-height:var(--type-caption-leading);font-weight:var(--weight-medium);color:var(--text);--press:1;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
 .wake-chip:hover{background:var(--ds-fill-hover);transition-duration:var(--ds-ease-in)}
 .wake-chip[aria-pressed="true"]{background:var(--ds-primary-bg);color:var(--ds-primary-fg)}
 .wake-row-fields{display:grid;grid-template-columns:1.4fr 1fr;gap:8px}
-.wake-error{margin:0;font-size:var(--ds-text-meta);color:var(--ds-danger)}
+.wake-error{margin:0;font-size:var(--type-meta);color:var(--ds-danger)}
 .wake-form-footer{display:flex;align-items:center;gap:6px}
 .wake-form-footer>span{flex:1}
-.wake-form-footer .primary-button,.wake-form-footer .secondary-button{min-height:32px;padding:0 14px;font-size:var(--ds-text-ui)}
+.wake-form-footer .primary-button,.wake-form-footer .secondary-button{min-height:32px;padding:0 14px;font-size:var(--type-body)}
 
 /* A message a schedule sent: a gentle line over it so it reads apart from typed messages.
    It is a button: it opens the thread's wake-ups on that schedule. */
-.scheduled-mark{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;margin:0 0 6px;padding:2px 8px 2px 6px;border-radius:var(--ds-radius-chip);border:0;background:var(--ds-fill);font:inherit;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;text-align:left;--press:1}
+.scheduled-mark{display:flex;align-items:center;gap:6px;max-width:100%;min-width:0;margin:0 0 6px;padding:2px 8px 2px 6px;border-radius:var(--radius-full);border:0;background:var(--ds-fill);font:inherit;font-size:var(--type-caption);line-height:var(--type-caption-leading);color:var(--muted);white-space:nowrap;text-align:left;--press:1}
 .scheduled-mark:hover{background:var(--ds-fill-hover)}
 .scheduled-mark:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .scheduled-mark .icon{flex:none;width:14px;height:14px;color:var(--muted)}
 .scheduled-mark strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-weight:var(--weight-medium);color:var(--text)}
 .scheduled-mark>span:not(.scheduled-tag)::before{content:"·";margin-right:6px;color:var(--faint)}
-.scheduled-tag{flex:none;padding:0 6px;border-radius:4px;font-size:12px;line-height:18px;background:var(--ds-fill-hover);color:var(--text)}
+.scheduled-tag{display:inline-flex;align-items:center;flex:none;min-height:18px;padding:0 6px;border-radius:var(--radius-chip);font-size:var(--type-caption);line-height:1;background:var(--ds-fill-hover);color:var(--text)}
 
 /* The sidebar clock for a thread with an upcoming wake-up: after the age, resting faint; it takes the running colour only once due or under way. */
 .task-wake{display:inline-grid;place-items:center;flex:none;width:12px;height:12px;margin-left:auto;color:var(--faint)}

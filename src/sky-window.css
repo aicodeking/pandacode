@@ -31,7 +31,7 @@ html:not([data-theme="dark"]) .workspace[data-scene="sky"]>.main-pane :is(.messa
 html[data-theme] .workspace[data-scene="sky"] .conversation-pane{--thread-surface:var(--sky-glass);--thread-frost:none}
 html[data-theme] .workspace[data-scene="sky"] .conversation-pane .composer-area .composer{
   background:var(--sky-glass);backdrop-filter:none;-webkit-backdrop-filter:none;
-  border-radius:var(--ds-radius-card);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+  border-radius:var(--ds-card-radius);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
 /* The header sits outside the scroller, so its text keeps the soft page-tone halo: no edge, it only steadies glyphs over
  * cloud texture. Nothing inside #transcript/#stream-region carries one: a text-shadow or an icon drop-shadow is a live
  * filter on every text box and every icon in every message, re-rastered on each canvas frame and each scroll step. Thread

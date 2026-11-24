@@ -79,9 +79,22 @@ test('Solve starts a linked thread that works on the issue', async ({ page }) =>
   await row(page, 128).getByRole('button', { name: 'Thread' }).click();
   await expectSideThread(page);
   await expect(page.locator('#navigation .task-item.selected')).toContainText('Fix #128');
+  // Poll: under load WebKit can briefly resolve a not-yet-styled message to NaN.
+  const message = sent.locator('.message-content');
+  await expect(message).toBeVisible();
+  await expect.poll(() => message.evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeCloseTo(12, 2);
+  await expect.poll(() => message.evaluate(el => parseFloat(getComputedStyle(el).lineHeight))).toBeCloseTo(19.2, 2);
+  const { fontSize, lineHeight } = await message.evaluate(el => {
+    const style = getComputedStyle(el);
+    return { fontSize: style.fontSize, lineHeight: style.lineHeight };
+  });
+  const prompt = page.locator('#prompt');
+  await expect(prompt).toHaveCSS('font-size', fontSize);
+  await expect(prompt).toHaveCSS('line-height', lineHeight);
+  await expect(prompt).toHaveCSS('min-height', '48px');
   // Chatting continues right there, and Escape closes the panel.
-  await page.locator('#prompt').fill('Also add a regression test');
-  await page.locator('#prompt').press('Enter');
+  await prompt.fill('Also add a regression test');
+  await prompt.press('Enter');
   await expect(page.locator('#transcript .user-message').last()).toContainText('Also add a regression test');
   await expect(hub(page)).toBeVisible();
 });
@@ -180,6 +193,12 @@ test('when gh fails, the view says why and how to fix it', async ({ page }) => {
   const empty = hub(page).locator('.gh-empty');
   await expect(empty).toContainText('Connect GitHub');
   await expect(empty).toContainText('brew install gh');
+  // Inline code in the empty-state copy is 0.9em of its paragraph.
+  const emptyCode = empty.locator('p code').first();
+  await expect(emptyCode).toHaveText('brew install gh');
+  const ratio = await emptyCode.evaluate(el => parseFloat(getComputedStyle(el).fontSize) / parseFloat(getComputedStyle(el.closest('p')!).fontSize));
+  expect(ratio).toBeCloseTo(0.9, 1);
+  expect(Math.abs(ratio - 0.9)).toBeLessThanOrEqual(0.02);
   await expect(empty.locator('.gh-error-detail')).toHaveText('Failed to start GitHub CLI: No such file or directory (os error 2)');
   await expect(empty.getByRole('button', { name: 'Try again' })).toBeVisible();
 });
@@ -304,9 +323,20 @@ test('a run’s jobs show their steps and summary, and a re-run lists its earlie
   await expect(steps.nth(2).locator('.gh-duration')).toHaveText('3m 30s');
   // The summary is Markdown, sanitized: no script survives.
   const summary = details.locator('.gh-job-summary');
+  await expect(summary).toHaveClass(/\bmarkdown\b/);
+  await expect(summary).toHaveAccessibleName('Summary of test (ubuntu-latest)');
+  await expect(summary).toHaveCSS('overflow-y', 'auto');
   await expect(summary.locator('strong')).toHaveText('2 failed');
   await expect(summary.locator('li')).toHaveCount(2);
+  await expect(summary.locator('li').first()).toHaveCSS('display', 'list-item');
   await expect(summary.locator('script')).toHaveCount(0);
+  // The summary is compact meta copy (12px), a step below the job title (14px subheading) above it.
+  const jobTitle = details.locator('.gh-job:has(.gh-job-summary) > .gh-job-head .gh-row-title').first();
+  await expect(jobTitle).toBeVisible();
+  const [summarySize, titleSize] = await Promise.all([summary.first(), jobTitle].map(el => el.evaluate(node => parseFloat(getComputedStyle(node).fontSize))));
+  expect(summarySize).toBeCloseTo(12, 1);
+  expect(titleSize).toBeCloseTo(14, 1);
+  expect(summarySize).toBeLessThan(titleSize);
   const attempts = details.locator('.gh-attempts');
   await expect(attempts).toContainText('Earlier attempts');
   await expect(attempts.locator('.gh-attempt-item')).toHaveCount(1);

@@ -4,10 +4,10 @@
 .composer-context>.link-chip{flex-shrink:0}
 .composer-area{container:composer/inline-size}
 @container composer (max-width:560px){.composer-context .composer-local{display:none}.composer-context.composer-context-compact{gap:10px}.composer-context .branch-chip{max-width:none}}
-.composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:var(--text-xs);background:transparent;border-color:transparent}
+.composer-context-compact{min-height:36px;padding:4px 12px;gap:14px;font-size:var(--type-caption);line-height:var(--type-caption-leading);background:transparent;border-color:transparent}
 .composer-project-fixed{display:inline-flex;align-items:center;gap:7px;min-width:0;max-width:40%;color:var(--text);font-weight:var(--weight-medium);cursor:default}
 .composer-project-fixed>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.branch-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:min(46%,320px);padding:5px 8px;border-radius:var(--radius-sm);color:var(--text);font-weight:var(--weight-medium);font-size:inherit;text-align:left}
+.branch-chip{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:min(46%,320px);padding:5px 8px;border-radius:var(--ds-control-radius);color:var(--text);font-weight:var(--weight-medium);font-size:inherit;text-align:left}
 .branch-chip>.icon:first-child{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted);flex-shrink:0}
 .branch-chip>.icon:last-child{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs);color:var(--muted);flex-shrink:0}
 .branch-chip-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:inherit;font-weight:var(--weight-medium)}
@@ -18,7 +18,7 @@
 .branch-chip-missing{color:var(--danger)}
 .branch-chip-fixed{cursor:default}
 /* The computer a task runs on (PandaCode Connect); fixed once the task has started. */
-.composer-computer{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:30%;padding:5px 8px;border-radius:var(--radius-sm);color:var(--text);font-weight:var(--weight-medium);font-size:inherit}
+.composer-computer{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:30%;padding:5px 8px;border-radius:var(--ds-control-radius);color:var(--text);font-weight:var(--weight-medium);font-size:inherit}
 .composer-computer>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .composer-computer>.icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm);color:var(--muted);flex-shrink:0}
 .composer-computer:not(.composer-computer-fixed):hover{background:var(--raised)}
@@ -31,7 +31,8 @@ html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(
 
 /* Linked GitHub work reads as a small tag; its state is named, never only colored. */
 /* PR and issue chips are the neutral .ds-chip: fill, hairline, muted mono text; status colour only on the icon. */
-.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:var(--ds-radius-chip);font-family:var(--mono);font-size:var(--ds-text-chip);font-weight:var(--weight-regular);color:var(--muted);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);white-space:nowrap;--press:.96}
+.link-chip{display:inline-flex;align-items:center;gap:5px;padding:3px 8px 3px 6px;border-radius:var(--radius-chip);font-family:var(--mono);font-size:var(--mono-size);font-weight:var(--weight-regular);color:var(--muted);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);white-space:nowrap;--press:.96}
+:is(button,a).link-chip{border-radius:var(--radius-full)}
 .link-chip>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .link-chip-state{font-family:inherit;font-weight:var(--weight-regular);color:var(--muted);text-transform:capitalize}
 .link-chip>.icon{color:var(--ds-success)}
@@ -40,20 +41,21 @@ html[data-theme="dark"] .branch-chip:not(:disabled):active{background:color-mix(
 .link-chip-draft>.icon{color:var(--muted)}
 .link-chip:not(:disabled):hover{background:var(--ds-fill-hover);color:var(--text)}
 .link-chip-draft .link-chip-state{color:var(--muted)}
-.board-card .link-chip,.task-detail-project .link-chip{font-size:var(--text-2xs);padding:2px 7px 2px 5px}
+.board-card .link-chip,.task-detail-project .link-chip{font-size:var(--mono-size);padding:2px 7px 2px 5px}
 .board-card-meta .link-chip{margin-left:auto}
 .board-card-meta .link-chip+.link-chip,.board-card-meta .link-chip+.board-running{margin-left:0}
 
 /* Worktree dialogs. */
 .worktree-dialog{width:min(430px,calc(100vw - 32px))}
-.worktree-dialog select{padding:9px 12px;border-radius:var(--radius-sm);background:var(--fill-hover);font-size:var(--text-sm)}
-.worktree-preview{font-family:var(--mono);font-size:var(--text-2xs);overflow-wrap:anywhere}
-.worktree-preview code,.worktree-cleanup-option code,.worktree-dialog .dialog-description code{font-family:var(--mono);font-size:.92em;background:var(--raised);border-radius:var(--radius-xs);padding:1px 4px}
+.worktree-dialog select{padding-block:9px;padding-inline-start:12px;border-radius:var(--ds-control-radius);background-color:var(--fill-hover);font-size:var(--type-body)}
+.worktree-dialog select:where([multiple],[size]:not([size="1"])){padding-inline-end:12px}
+.worktree-preview{font-family:var(--mono);font-size:var(--mono-size);overflow-wrap:anywhere}
+.worktree-preview code,.worktree-cleanup-option code,.worktree-dialog .dialog-description code{font-family:var(--mono);font-size:var(--code-inline-size);background:var(--raised);border-radius:var(--radius-chip);padding:1px 4px}
 .worktree-preview-invalid{color:var(--danger)}
-.worktree-existing{display:flex;align-items:center;gap:9px;margin:12px 0 0;font-size:var(--text-sm);color:var(--text)}
+.worktree-existing{display:flex;align-items:center;gap:9px;margin:12px 0 0;font-size:var(--type-meta);color:var(--text)}
 .worktree-existing input,.worktree-cleanup-option input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0;margin:0}
 .worktree-error{color:var(--danger)}
-.worktree-cleanup-option{display:flex;align-items:flex-start;gap:10px;margin:6px 0 0;padding:11px 12px;border-radius:var(--radius-sm);background:var(--panel);font-size:var(--text-sm);line-height:1.5}
+.worktree-cleanup-option{display:flex;align-items:flex-start;gap:10px;margin:6px 0 0;padding:11px 12px;border-radius:var(--ds-control-radius);background:var(--panel);font-size:var(--type-meta);line-height:var(--type-meta-leading)}
 .worktree-cleanup-option input{margin-top:2px}
 dialog .worktree-cleanup-option{background:color-mix(in srgb,var(--panel) 72%,transparent)}
 @media(prefers-contrast:more){.link-chip{border:1px solid var(--text)}.branch-chip[aria-expanded="true"]{outline:1px solid var(--focus);outline-offset:-1px}}

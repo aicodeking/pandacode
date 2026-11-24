@@ -264,20 +264,28 @@ test.describe('architect teams', () => {
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async (text:string) => { (window as any).__copiedMessage = text; }}});
     });
     await installArchitect(page, {'session-2':team('session-2')});
-    const saved = '**Worker result**\n\n```ts\nconst count = 2;\n```';
+    const saved = '## Worker result\n\n```ts\nconst count = 2;\n```';
     await seedHistory(page,'session-2','build',saved);
     await openWorkers(page).click(); await row(page,'build').click();
     const message = panel(page).locator('.architect-worker-message[data-message-id="101"]');
-    await expect(message).toContainText('Worker result');
+    const savedHeading = message.getByRole('heading', { name: 'Worker result', level: 2 });
+    await expect(savedHeading).toBeVisible();
     await expect(message.getByRole('button',{name:'Fork from here'})).toHaveAttribute('data-message-session','worker-build');
     await message.getByRole('button',{name:'Copy message',exact:true}).click();
     await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe(saved);
     expect((await calls(page,'get_message_content')).at(-1).args).toEqual({sessionId:'worker-build',messageId:101});
-    await page.evaluate(() => (window as any).__architectTest.event({sessionId:'worker-build',kind:'text',text:'**Still verifying** the worker result.'}));
-    await expect(live(page)).toContainText('Still verifying');
+    const streaming = '## Still verifying\n\nChecking the worker result.';
+    await page.evaluate(text => (window as any).__architectTest.event({sessionId:'worker-build',kind:'text',text}), streaming);
+    const liveHeading = live(page).getByRole('heading', { name: 'Still verifying', level: 2 });
+    await expect(liveHeading).toBeVisible();
+    const headingStyle = (heading: Locator) => heading.evaluate(element => {
+      const { fontSize, fontWeight, lineHeight, marginTop } = getComputedStyle(element);
+      return { fontSize, fontWeight, lineHeight, marginTop };
+    });
+    expect(await headingStyle(savedHeading)).toEqual(await headingStyle(liveHeading));
     const actions = panel(page).locator('.architect-live-actions');
     await actions.getByRole('button',{name:'Copy message',exact:true}).click();
-    await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe('**Still verifying** the worker result.');
+    await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe(streaming);
     await expect(actions.getByRole('button',{name:'Fork from here'})).toHaveCount(0);
   });
 
@@ -1525,6 +1533,36 @@ async function openShowcase(page: Page): Promise<void> {
 }
 
 test.describe('compact workers list', () => {
+test('worker labels fit their line heights at 160% in a narrow window', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.6'));
+  await openShowcase(page);
+  await page.setViewportSize({ width: 540, height: 800 });
+  const worker = row(page, 'styles');
+  await expect(page.locator('html')).toHaveCSS('--ui-scale', '1.6');
+  for (const [selector, role] of [
+    ['.architect-worker-copy strong', 'subheading'],
+    ['.architect-worker-state', 'caption'],
+    ['.architect-worker-meta-line small', 'meta'],
+    ['.architect-worker-effort', 'caption'],
+    ['.architect-worker-attempt', 'caption'],
+  ]) {
+    const { height, leading, expected } = await worker.locator(selector).evaluate((element, role) => {
+      const style = getComputedStyle(element);
+      return {
+        height: parseFloat(style.height),
+        leading: parseFloat(style.lineHeight),
+        expected: parseFloat(style.fontSize) * Number(style.getPropertyValue(`--type-${role}-leading`)),
+      };
+    }, role);
+    expect.soft(leading, selector).toBeCloseTo(expected, 1);
+    expect.soft(height, selector).toBeGreaterThanOrEqual(expected - 0.1);
+  }
+  const name = worker.locator('.architect-worker-copy strong');
+  await expect(name).toHaveCSS('text-overflow', 'ellipsis');
+  expect(await name.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await worker.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+});
+
 test('workers are dense rows ordered by status, with effort and attempt chips', async ({ page }) => {
   await openShowcase(page);
   const rows = panel(page).locator('.architect-worker-row');
@@ -2394,7 +2432,10 @@ test.describe('compact workers round 14', () => {
     // Measured once the panel's open spring has settled (it scales the bar while it runs).
     await panelSettled(page);
     // Narrow enough that the line ends with "+N more" (at the default width every count fits).
-    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
+    await page.evaluate(() => new Promise<void>(resolve => {
+      (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px';
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
     const tally = panel(page).locator('.architect-panel-tally-text');
     for (const button of [tally.locator('.architect-tally-asking'), tally.locator('.architect-tally-more')]) {
       await expect(button).toBeVisible();

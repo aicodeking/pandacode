@@ -1,4 +1,5 @@
 import './styles.css';
+import './design-system.css';
 import './motion.css';
 import './agents-dock.css';
 import { call } from './bridge';

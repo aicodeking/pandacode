@@ -556,16 +556,18 @@ test('launcher keeps live narratives between compact tool groups and preserves l
   const groups = activity.locator('details.tool-group');
   await expect(groups).toHaveCount(2);
   await expect(groups.nth(0).locator(':scope > summary')).toContainText('Read 2 files');
-  await expect(groups.nth(1).locator(':scope > summary')).toContainText('Running 1 command');
+  await expect(groups.nth(1).locator(':scope > summary')).toContainText('Running tests…');
   await expect(groups.nth(0)).toHaveJSProperty('open',false);
   await expect(groups.nth(1)).toHaveJSProperty('open',false);
   const sequence = () => activity.locator('[data-commentary], details.tool-group').evaluateAll(elements => elements.map(element => element.matches('.tool-group') ? element.querySelector('.tool-group-label')!.textContent : element.textContent));
+  // Markdown formats each narrative asynchronously and appends a trailing newline; wait for both.
+  await expect(activity.locator('[data-commentary] .markdown')).toHaveCount(2);
   const originalSequence = await sequence();
   expect(originalSequence).toEqual([
     expect.stringContaining('I will inspect the current launcher.'),
     expect.stringContaining('Read 2 files'),
     expect.stringContaining('The client is ready; I will verify the behavior.'),
-    expect.stringContaining('Running 1 command'),
+    expect.stringContaining('Running tests…'),
   ]);
   await groups.nth(0).locator(':scope > summary').click();
   const firstTool = groups.nth(0).locator('[data-tool-key="tool:read-launcher"]');
@@ -654,6 +656,9 @@ for (const task of ['preview-active', 'preview-worker']) {
     await page.locator(`.launcher-task[data-task="${task}"]`).click();
     const history = page.locator('.launcher-thread-history');
     await expect(history).toContainText('The first streaming response.');
+    // Plain text shows before the async Markdown pass; wait until all three bodies (saved prompt,
+    // saved reply, live reply) are formatted so only refreshes fall inside the observed window.
+    await expect(history.locator('.markdown')).toHaveCount(3);
     await page.clock.runFor(100);
     await history.evaluate(host => {
       const win = window as any;
@@ -1010,13 +1015,52 @@ test('launcher thread stays readable and scrollable at minimum window size', asy
   await page.setViewportSize({width:490,height:410});
   await page.goto('/?view=launcher');
   await expect(page.locator('.launcher-task[data-task="preview-active"]')).toBeVisible();
+  const prompt = page.locator('.launcher-compose textarea');
+  const promptType = await prompt.evaluate(element => {
+    const style = getComputedStyle(element);
+    return [parseFloat(style.fontSize), parseFloat(style.lineHeight)];
+  });
+  expect(promptType[0]).toBeCloseTo(16, 2);
+  expect(promptType[1]).toBeCloseTo(25.6, 2);
+  await prompt.fill('First line\nSecond line');
+  expect(await prompt.evaluate(element => element.clientHeight >= parseFloat(getComputedStyle(element).lineHeight) * 2)).toBe(true);
+  await expect(page.getByRole('button',{name:'Start task',exact:true})).toBeInViewport();
+  await expect(page.getByRole('searchbox',{name:'Search tasks'})).toBeInViewport();
+  await expect(page.locator('.launcher-footer')).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
+  await prompt.fill('');
   await page.evaluate(async () => {
     const {overlayCall} = await import('/src/overlay-client.ts');
     const thread = await overlayCall('overlay_thread',{sessionId:'preview-active'}) as {liveText:string};
-    thread.liveText = Array.from({length:20},(_,index)=>`Step ${index+1}: I verified the keyboard controls and focus states.`).join('\n\n');
+    thread.liveText = [
+      ...Array.from({length:6},(_,index)=>`${'#'.repeat(index+1)} Heading ${index+1}`),
+      '**Strong emphasis** and __Bold emphasis__.',
+      '| Left | Right |\n| :--- | ---: |\n| body | value |',
+      ...Array.from({length:20},(_,index)=>`Step ${index+1}: I verified the keyboard controls and focus states.`),
+    ].join('\n\n');
   });
   await page.locator('.launcher-task[data-task="preview-active"]').click();
-  await expect(page.locator('.launcher-thread-live')).toContainText('Step 20:');
+  const response = page.locator('.launcher-thread-live');
+  await expect(response).toContainText('Step 20:');
+  const typography = (locator:Locator) => locator.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {size:Math.round(parseFloat(style.fontSize)*100)/100,leading:Math.round(parseFloat(style.lineHeight)*100)/100,weight:style.fontWeight,tracking:style.letterSpacing};
+  });
+  for (const prose of [page.locator('.launcher-thread-user'), response, response.locator('p').first()]) {
+    expect(await typography(prose)).toMatchObject({size:16,leading:25.6,weight:'400'});
+  }
+  expect(await typography(response.locator('header'))).toEqual({size:14,leading:19.6,weight:'500',tracking:'normal'});
+  for (let level=1;level<=6;level++) {
+    const heading = response.getByRole('heading',{name:`Heading ${level}`,level,exact:true});
+    expect(await typography(heading)).toEqual({size:level<=2 ? 19.04 : 16,leading:level<=2 ? 23.8 : 20,weight:'600',tracking:'normal'});
+  }
+  await expect(response.getByRole('columnheader')).toHaveCount(2);
+  for (const header of await response.getByRole('columnheader').all()) {
+    expect(await typography(header)).toEqual({size:11,leading:14.3,weight:'500',tracking:'normal'});
+  }
+  await expect(response.getByRole('columnheader', {name:'Right',exact:true})).toHaveClass('md-align-right');
+  expect(await typography(response.locator('td').first())).toMatchObject({size:16,leading:25.6,weight:'400'});
+  expect(await response.locator('strong').evaluateAll(elements => elements.map(element => getComputedStyle(element).fontWeight))).toEqual(['600','600']);
   await expect(page.getByRole('button',{name:'Back to active agents'})).toBeInViewport();
   await expect(page.getByRole('button',{name:'Open in app',exact:true})).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth && document.documentElement.scrollHeight <= innerHeight)).toBe(true);
@@ -1335,4 +1379,36 @@ test('a failed replay below the limit keeps the entry and counts the failure', a
   await page.goto('/?view=launcher');
   await expect.poll(() => page.evaluate(() => localStorage.getItem('pandacode.launcher.replayFailures'))).toBe('{"a":1}');
   expect(await page.evaluate(() => localStorage.getItem('pandacode.launcher.pendingDeletes'))).toBe('{"a":[1]}');
+});
+
+test('launcher backfill reaches a saved prompt beyond twelve compact collapsed tool pages', async ({ page }) => {
+  // Twelve backfill pages under WebKit load need more than the 20s default for the 15s–30s waits below.
+  test.slow();
+  await page.setViewportSize({ width: 460, height: 510 });
+  await instrumentLauncher(page, `if (command === 'overlay_thread' && args.sessionId === 'preview-active') {
+    const tools = 1200;
+    const all = [{id:1,sessionId:args.sessionId,role:'user',content:'The original saved prompt is reachable.',createdAt:1},
+      ...Array.from({length:tools}, (_, index) => ({id:index+2,sessionId:args.sessionId,role:'tool',createdAt:index+2,
+        content:JSON.stringify({type:'tool_activity',version:1,id:'read-'+index,name:'Read',status:'completed',input:'src/file.ts',output:'Read complete'})}))];
+    const eligible = all.filter(message => !args.beforeId || message.id < args.beforeId);
+    return {messages:eligible.slice(-100),hasOlder:eligible.length>100,liveText:'',status:'idle',historyVersion:tools+1};
+  }`);
+  await page.goto('/?view=launcher', { waitUntil: 'domcontentloaded' });
+  // Under load a click before the launcher initializes can be lost.
+  await expect(page.locator('html')).toHaveAttribute('data-ready', '', { timeout: 15_000 });
+  const task = page.locator('.launcher-task[data-task="preview-active"]');
+  await expect(task).toBeVisible({ timeout: 15_000 });
+  await task.click();
+  const scroll = page.locator('.launcher-thread-scroll');
+  await expect(scroll).toBeVisible({ timeout: 15_000 });
+  // No scroll gesture can trigger older-page loading in this compact, collapsed thread.
+  await expect.poll(() => scroll.evaluate(el => el.scrollHeight - el.clientHeight), { timeout: 15_000 }).toBeLessThanOrEqual(0);
+  await expect(page.locator('.launcher-thread-user')).toContainText('The original saved prompt is reachable.', { timeout: 30_000 });
+  const cursors = await page.evaluate(() => (window as any).__overlayCalls
+    .filter((call: any) => call.command === 'overlay_thread' && call.args.beforeId)
+    .map((call: any) => call.args.beforeId));
+  expect(new Set(cursors).size).toBe(12);
+  expect(cursors).toContain(2);
+  await expect(page.locator('.launcher-thread-activity[open], .launcher-thread-activity details[open]')).toHaveCount(0);
+  await expect.poll(() => scroll.evaluate(el => el.scrollHeight - el.clientHeight), { timeout: 15_000 }).toBeLessThanOrEqual(0);
 });

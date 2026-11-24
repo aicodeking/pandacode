@@ -667,6 +667,19 @@ test('Agent usage estimates API cost by range, agent, model, and day from local 
   await expect(table.locator('tbody tr')).toHaveCount(3);
   await expect(table.locator('tbody tr').first()).toContainText('claude-opus-5-5');
   await expect(table.locator('tbody tr').last()).toContainText('unpriced');
+  // Rendered table headers use the shared caption and subheading roles.
+  for (const [selector, size, leading] of [
+    ['thead th', 11, 14.3], ['tbody th', 14, 19.6],
+  ] as const) {
+    const header = table.locator(selector).first();
+    await expect(header).toHaveCSS('font-weight', '500');
+    const metrics = await header.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { size: parseFloat(style.fontSize), leading: parseFloat(style.lineHeight) };
+    });
+    expect(metrics.size).toBeCloseTo(size, 1);
+    expect(metrics.leading).toBeCloseTo(leading, 1);
+  }
   // Re-rendering the table keeps keyboard focus on the switch that was used.
   await overview.getByRole('button', { name: 'Day', exact: true }).focus();
   await page.keyboard.press('Enter');
@@ -845,6 +858,15 @@ test('Claude Code and Codex accounts show email, plan and accessible pool state'
   await work.getByRole('button', { name: 'Open Settings' }).click();
   await expect(dialog(page)).toBeHidden();
   await expect(page.locator('#settings-panel-providers')).toBeVisible();
+  for (const selector of ['.account-meter-label', '.account-meter-reset']) {
+    const text = page.locator(`#settings-panel-providers ${selector}`).first();
+    await expect(text).toBeVisible();
+    const leading = await text.evaluate(node => {
+      const style = getComputedStyle(node);
+      return { actual: parseFloat(style.lineHeight) / parseFloat(style.fontSize), expected: parseFloat(style.getPropertyValue('--type-meta-leading')) };
+    });
+    expect(leading.actual).toBeCloseTo(leading.expected, 3);
+  }
   expect(errors).toEqual([]);
 });
 

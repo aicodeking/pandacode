@@ -3,6 +3,7 @@
  * with the node set its web renderer supports. Math renders through KaTeX on demand. */
 
 import { brandFor } from './trace-brands.ts';
+import { ADMONITIONS } from './admonitions.ts';
 
 type NodeType =
   | 'Document' | 'Paragraph' | 'Text' | 'Link' | 'Heading' | 'LineBreak' | 'SoftBreak' | 'Strong' | 'Emphasis'
@@ -98,7 +99,6 @@ export async function parseMarkdown(markdown: string): Promise<MarkdownNode> {
 const escapeText = (text: string) => text.replace(/[&<>]/g, c => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
 const escapeAttr = (text: string) => escapeText(text).replace(/"/g, '&quot;');
 const text = (node: MarkdownNode): string => node.content ?? (node.children ?? []).map(text).join('');
-const ADMONITIONS: Record<string, string> = { note: 'Note', tip: 'Tip', important: 'Important', warning: 'Warning', caution: 'Caution' };
 const ALIGN = new Set(['left', 'center', 'right']);
 const GENERATIVE = new Set(['ui', 'chart', 'svg', 'html', 'mermaid']);
 // Raw HTML is text to md4c; these collapsibles are the one HTML form agents rely on.
@@ -167,7 +167,7 @@ export function renderMarkdown(root: MarkdownNode, options: RenderOptions = {}):
       }
       case 'UnorderedList': case 'OrderedList': {
         const tag = node.type === 'OrderedList' ? 'ol' : 'ul';
-        const tasks = node.children?.some(item => item.attributes?.isTask === 'true');
+        const tasks = Boolean(node.children?.length) && node.children!.every(item => item.attributes?.isTask === 'true');
         const start = Number(a.start);
         return `<${tag}${tasks ? ' class="md-task-list"' : ''}${tag === 'ol' && Number.isInteger(start) && start !== 1 ? ` start="${start}"` : ''}>\n${kids(node)}</${tag}>\n`;
       }

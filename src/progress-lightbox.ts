@@ -16,6 +16,8 @@ export type LightboxHost = {
   thumb(id: string): Promise<string>;
   /** Draw the current iteration into the lightbox stage. */
   paint(stage: HTMLElement, direction: number): void;
+  /** The stage changed size: re-fit its frame and overlay. */
+  resize(): void;
   ago(at: number): string;
   /** Opened with the pointer: focus the dialog itself rather than ringing the close button. */
   fromPointer: boolean;
@@ -43,6 +45,8 @@ export function openLightbox(host: LightboxHost): Lightbox {
   const observer = lazyThumbs(strip, host.thumb);
   linkMarks(q('.pp-lb-plate'));
   let closing = false;
+  const stageObserver = new ResizeObserver(() => { if (!closing) host.resize(); });
+  stageObserver.observe(q('.pp-lb-stage'));
 
   function update(direction: number): void {
     const snaps = host.snaps(), index = host.index(), s = snaps[index];
@@ -63,6 +67,7 @@ export function openLightbox(host: LightboxHost): Lightbox {
     closing = true;
     dialog.classList.add('is-closing');
     observer.disconnect();
+    stageObserver.disconnect();
     const done = () => { dialog.close(); dialog.remove(); host.closed(); };
     const exit = play(q('.pp-lb-plate'), [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.97) translateY(6px)' }], 200, { fill: 'forwards', easing: 'cubic-bezier(.4,0,1,1)' });
     if (!still()) try { dialog.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 200, fill: 'forwards', pseudoElement: '::backdrop' }); } catch { /* no ::backdrop animation here */ }

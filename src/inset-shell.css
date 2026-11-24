@@ -1,6 +1,6 @@
 /* Inset shell. One frame tone (--frame) fills the window; the sidebar and the Settings nav have no
  * fill of their own and sit on it. The conversation (.main-pane), the inspector and the Settings
- * content are inset panels (--panel-surface, 12px radius, 8px from the window edges) with a hairline
+ * content are inset panels (--panel-surface, card radius, 8px from the window edges) with a hairline
  * edge (--ds-border, drawn as an inset outline above the content) and the soft card shadow; Increase
  * Contrast makes the edge solid. The frame gaps are a window drag region
  * (`data-tauri-drag-region` on .workspace). Base rules (styles.css, settings.css, inspector-bar.css)
@@ -12,7 +12,7 @@
  * full-bleed (no margin, no radius), so the traffic lights sit on its header; an open inspector is
  * then a flat full-height pane past an 8px frame gutter. */
 .workspace{
-  --inset:8px;--inset-radius:12px;--pane-top:var(--inset);
+  --inset:8px;--inset-radius:var(--ds-card-radius);--pane-top:var(--inset);
   --header-height:calc(var(--titlebar-height) - 2 * var(--pane-top));
   /* A step from the sidebar tone toward the text, so the frame reads apart from the panels in both themes. */
   --frame:color-mix(in srgb,var(--sidebar),var(--text) 4%);
@@ -66,7 +66,7 @@ html[data-theme="dark"]:not([data-vsix]):is([data-native-material="liquidGlass"]
 /* The narrow rail spends no space on insets. */
 @media(max-width:650px){
   .workspace{--inset:0px;--inset-radius:0px}
-  .workspace>.inspector,.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{border-radius:12px 0 0 12px}
+  .workspace>.inspector,.workspace:is(.sidebar-collapsed,.board-view,.github-view)>.inspector{border-start-start-radius:var(--ds-card-radius);border-start-end-radius:0;border-end-end-radius:0;border-end-start-radius:var(--ds-card-radius)}
 }
 
 @media(prefers-reduced-transparency:reduce),(prefers-contrast:more){

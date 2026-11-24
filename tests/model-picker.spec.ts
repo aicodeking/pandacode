@@ -16,9 +16,13 @@ async function open(page: Page, url = '/?teams'): Promise<void> {
     await route.fulfill({ response, body: `${await response.text()}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
   });
   await page.goto(url);
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
-  await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1', { timeout: 15_000 });
+  await expect(trigger(page)).toBeVisible({ timeout: 15_000 });
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await picker(page).isVisible()) await trigger(page).click();
+    await expect(picker(page)).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
 }
 
 // Issue #123: the picker lists only installed harnesses. The preview marks
@@ -80,7 +84,7 @@ test('the picker is a small inset shell: a bare rail beside one inset list panel
       rail: getComputedStyle(panel.querySelector('.model-menu-rail')!).backgroundColor,
       listBorder: [list.borderTopWidth, list.borderTopColor], border: resolved('color', '--ds-border'),
       listFill: list.backgroundColor, inner: resolved('backgroundColor', '--ds-card-inner'),
-      listRadius: list.borderTopLeftRadius, radius: getComputedStyle(document.documentElement).getPropertyValue('--ds-radius-inner').trim(),
+      listRadius: list.borderTopLeftRadius, radius: getComputedStyle(document.documentElement).getPropertyValue('--radius-inner').trim(),
       thumb: thumb.backgroundColor, thumbToken: resolved('backgroundColor', '--ds-thumb'),
       listEdges: [box('.model-menu-list').left, box('.model-menu-list').right], trackEdges: [box('.model-menu-effort').left, box('.model-menu-effort').right],
     };
@@ -97,6 +101,7 @@ test('the picker is a small inset shell: a bare rail beside one inset list panel
 test('a team row keeps its name readable; the detail gives way first', async ({ page }) => {
   await open(page);
   await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' }).locator('.model-menu-count')).toHaveCSS('font-weight', '400');
   const names = picker(page).locator('.model-menu-team .model-menu-name');
   await expect(names).toHaveCount(2);
   expect(await names.evaluateAll(nodes => nodes.every(node => node.scrollWidth <= Math.ceil(node.getBoundingClientRect().width)))).toBe(true);
@@ -207,6 +212,23 @@ test('effort is a segmented radiogroup that saves on choice', async ({ page }) =
   await expect.poll(async () => (await task(page)).reasoningEffort).toBeNull();
   await expect(trigger(page).locator('.model-effort')).toBeHidden();
   await expect(picker(page)).toBeVisible();
+});
+
+test('effort is a segmented radiogroup with full labels at --ui-scale 1.6 in the minimum window', async ({ page }) => {
+  // open() may retry a startup redraw for up to 15s; triple the budget so that fits under load.
+  test.slow();
+  await page.setViewportSize({ width: 860, height: 940 });
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.6'));
+  await open(page);
+  const segments = picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio');
+  await expect(segments).toHaveCount(4);
+  expect(await segments.evaluateAll(buttons => buttons.every(button => {
+    const style = getComputedStyle(button);
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    return button.scrollWidth <= button.clientWidth && style.textOverflow !== 'ellipsis'
+      && range.getBoundingClientRect().width <= button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  }))).toBe(true);
 });
 
 test('teams: picking one sets the team, a plain model clears it', async ({ page }) => {

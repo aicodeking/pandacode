@@ -1,4 +1,5 @@
 import { escape, markdown } from './dom';
+import { ADMONITIONS } from './admonitions';
 import { captureFileLinkContext, decorateFileLinks, workspaceImagePath } from './file-links';
 import { trackSegment } from './motion';
 
@@ -68,12 +69,129 @@ function sanitizer(): Promise<(html: string) => string> {
   return purifier;
 }
 
+const ADMONITION_TAG = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*\r?\n/i;
+const ADMONITION_BR = /^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\][ \t]*$/i;
+
+function promoteTaskLists(root: HTMLElement, token: string): void {
+  const re = new RegExp(`^\\s*${token}([01])X ?`);
+  const lists = new Set<HTMLElement>();
+  for (const li of root.querySelectorAll<HTMLLIElement>('li')) {
+    let first: ChildNode | null = li.firstChild;
+    while (first && first.nodeType === Node.TEXT_NODE && !(first.textContent ?? '').trim()) first = first.nextSibling;
+    const container = first instanceof HTMLParagraphElement ? first : li;
+    let textNode: ChildNode | null = container.firstChild;
+    while (textNode && textNode.nodeType === Node.TEXT_NODE && !(textNode.textContent ?? '').trim()) textNode = textNode.nextSibling;
+    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) continue;
+    const match = re.exec(textNode.textContent ?? '');
+    if (!match) continue;
+    const done = match[1] === '1';
+    textNode.textContent = (textNode.textContent ?? '').slice(match[0].length);
+    if (!textNode.textContent) textNode.remove();
+    li.classList.add('md-task');
+    if (done) li.classList.add('md-task-done');
+    const list = li.parentElement;
+    if (list && (list.tagName === 'UL' || list.tagName === 'OL')) lists.add(list);
+    const box = document.createElement('span');
+    box.className = 'md-checkbox';
+    box.setAttribute('role', 'img');
+    box.setAttribute('aria-label', done ? 'Done' : 'Not done');
+    li.prepend(box);
+  }
+  for (const list of lists) {
+    const items = [...list.children].filter(child => child.tagName === 'LI');
+    if (items.length && items.every(item => item.classList.contains('md-task'))) list.classList.add('md-task-list');
+  }
+}
+
+function promoteAdmonitions(root: HTMLElement): void {
+  for (const blockquote of [...root.querySelectorAll('blockquote')].reverse()) {
+    if (blockquote.hasAttribute('cite')) continue;
+    const first = blockquote.firstElementChild;
+    if (!first || first.tagName !== 'P') continue;
+    const head = first.firstChild;
+    if (!head || head.nodeType !== Node.TEXT_NODE) continue;
+    const text = head.textContent ?? '';
+    let match = ADMONITION_TAG.exec(text);
+    let next: ChildNode | null = head.nextSibling;
+    while (next?.nodeType === Node.TEXT_NODE && !(next.textContent ?? '').trim()) next = next.nextSibling;
+    let removeBr = false;
+    if (!match && (!next || next.nodeName === 'BR')) {
+      match = ADMONITION_BR.exec(text);
+      removeBr = Boolean(match && next?.nodeName === 'BR');
+    }
+    if (!match) continue;
+    const type = match[1].toLowerCase();
+    const label = ADMONITIONS[type];
+    if (!label) continue;
+    if (removeBr) {
+      next?.remove();
+      head.remove();
+    } else {
+      const rest = text.slice(match[0].length);
+      if (rest) head.textContent = rest;
+      else head.remove();
+      if (!rest.trim()) {
+        let leading: ChildNode | null = first.firstChild;
+        while (leading?.nodeType === Node.TEXT_NODE && !(leading.textContent ?? '').trim()) {
+          const next: ChildNode | null = leading.nextSibling;
+          leading.remove();
+          leading = next;
+        }
+        if (leading?.nodeName === 'BR') {
+          const next = leading.nextSibling;
+          leading.remove();
+          if (next?.nodeType === Node.TEXT_NODE && !(next.textContent ?? '').trim()) next.remove();
+        }
+      }
+    }
+    if (!first.childNodes.length || (first.childNodes.length === 1 && first.firstChild?.nodeType === Node.TEXT_NODE && !(first.firstChild.textContent ?? '').trim())) {
+      first.remove();
+    }
+    const aside = document.createElement('aside');
+    aside.className = `md-admonition md-admonition-${type}`;
+    aside.setAttribute('role', 'note');
+    const title = document.createElement('p');
+    title.className = 'md-admonition-title';
+    title.textContent = label;
+    aside.append(title, ...blockquote.childNodes);
+    blockquote.replaceWith(aside);
+  }
+}
+
+function promoteTableHeaders(root: ParentNode): void {
+  for (const table of root.querySelectorAll('table')) {
+    if (table.querySelector(':scope > thead')) continue;
+    const bodies = table.querySelectorAll(':scope > tbody');
+    if (bodies.length !== 1) continue;
+    const tbody = bodies[0];
+    const row = tbody?.querySelector(':scope > tr');
+    if (!tbody || !row) continue;
+    const cells = [...row.children];
+    if (!cells.length || !cells.every(cell => {
+      const span = cell.getAttribute('rowspan');
+      if (span !== null && (Number(span) === 0 || Number(span) > 1)) return false;
+      return cell.tagName === 'TH' && ['', 'col', 'colgroup'].includes((cell.getAttribute('scope') ?? '').trim().toLowerCase());
+    })) continue;
+    const thead = document.createElement('thead');
+    thead.append(row);
+    tbody.before(thead);
+    if (!tbody.children.length) tbody.remove();
+  }
+}
+
 async function renderHtmlDocument(reader: HTMLElement, path: string, content: string, image?: ImageLoader): Promise<void> {
-  const [{ marked }, sanitize] = await Promise.all([import('marked'), sanitizer()]);
-  const html = sanitize(await marked.parse(content));
+  const [{ Marked }, sanitize] = await Promise.all([import('marked'), sanitizer()]);
+  const token = `PANDACODETASK${Math.random().toString(36).slice(2)}T`;
+  const parser = new Marked({ renderer: { checkbox: ({ checked }) => `${token}${checked ? '1' : '0'}X ` } });
+  const html = sanitize(await parser.parse(content));
   if (!reader.isConnected) return;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  promoteTableHeaders(template.content);
   captureFileLinkContext(reader);
-  reader.innerHTML = html;
+  reader.replaceChildren(template.content);
+  promoteTaskLists(reader, token);
+  promoteAdmonitions(reader);
   for (const img of reader.querySelectorAll<HTMLImageElement>('img[data-src]')) {
     const src = img.dataset.src ?? '';
     img.removeAttribute('data-src');

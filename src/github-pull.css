@@ -1,12 +1,12 @@
 /* The pull request view in the inspector, on the design-system cards (src/design-system.css). Loaded with main.ts so the tab never changes size on first open. */
-.pull-view{display:flex;flex-direction:column;gap:14px;min-height:0;padding:14px 12px 20px;font-size:var(--ds-text-ui)}
+.pull-view{display:flex;flex-direction:column;gap:14px;min-height:0;padding:14px 12px 20px;font-size:var(--type-body)}
 .pull-view[aria-busy="true"] .pull-actions [data-pull-action="refresh"] .icon{animation:pull-spin 900ms linear infinite}
 @keyframes pull-spin{to{transform:rotate(360deg)}}
 
 /* Header, as in the reference's right column: a quiet state line, the large title, then author + age
  * with the base ← head chips pushed to the row's end, then the full-width segmented control. */
 .pull-header{display:flex;flex-direction:column;gap:8px;padding:0 2px}
-.pull-topline{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;color:var(--muted);font-size:var(--ds-text-meta)}
+.pull-topline{display:flex;align-items:center;gap:8px;min-width:0;min-height:28px;color:var(--muted);font-size:var(--type-meta)}
 .pull-state{--tone:var(--ds-success);display:inline-flex;align-items:center;gap:6px;color:var(--text);font-weight:var(--weight-medium)}
 .pull-state>.ds-dot{color:var(--tone)}
 .pull-state-draft{--tone:var(--muted)}
@@ -18,7 +18,7 @@
 .pull-actions .icon-button:hover{color:var(--text)}
 .pull-title{overflow-wrap:anywhere;text-wrap:pretty}
 .pull-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;min-width:0}
-.pull-author{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--faint);font-size:var(--ds-text-body)}
+.pull-author{display:inline-flex;align-items:center;gap:8px;min-width:0;color:var(--faint);font-size:var(--type-subheading);line-height:var(--type-subheading-leading);font-weight:var(--type-subheading-weight)}
 .pull-author strong{color:var(--text);font-weight:var(--weight-regular)}
 .pull-avatar{--ds-avatar:var(--accent);color:var(--on-accent)}
 .pull-refs{display:inline-flex;align-items:center;gap:6px;min-width:0;max-width:100%;margin-left:auto;color:var(--muted)}
@@ -50,33 +50,32 @@
 .pull-checks-toggle[aria-expanded="true"] .pull-chevron>.icon{rotate:90deg}
 .pull-checks{list-style:none;margin:0 0 2px;padding:0}
 .pull-checks .ds-row{min-height:36px;padding:6px 14px 6px 42px;gap:10px}
-.pull-checks .ds-row-title{font-size:var(--ds-text-ui)}
 .pull-check-icon{flex:none;display:inline-grid;place-items:center}
 .pull-check-icon>.icon{width:14px;height:14px}
 /* The foot is a fill step off the rows (the reference's #1d on #19), rounded to the card's bottom corners; the card's 4px padding is pulled in. */
-.pull-merge{display:flex;flex-direction:column;gap:8px;margin:2px -4px -4px;padding:8px 14px 14px;border-top:1px solid var(--ds-border);border-radius:0 0 calc(var(--ds-radius-card) - 1px) calc(var(--ds-radius-card) - 1px);background:color-mix(in srgb,var(--text) 2%,transparent)}
-.pull-view .ds-row-title{font-size:var(--ds-text-check)}
+.pull-merge{display:flex;flex-direction:column;gap:8px;margin:2px -4px -4px;padding:8px 14px 14px;border-top:1px solid var(--ds-border);border-start-start-radius:0;border-start-end-radius:0;border-end-end-radius:var(--ds-card-radius);border-end-start-radius:var(--ds-card-radius);background:color-mix(in srgb,var(--text) 2%,transparent)}
 .pull-status>.pull-merge:first-child{margin-top:-4px;border-top:0;border-radius:inherit}
 .pull-merge>:is(.ds-btn-primary,.ds-btn-split){width:100%}
 .pull-merge .ds-btn-primary{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .pull-merge .pull-merge-main{min-width:0;padding:0 10px;gap:6px}
 .pull-merge .pull-merge-main .icon{width:16px;height:16px;flex:none}
-.pull-merge small{color:var(--muted);font-size:var(--ds-text-meta);text-align:center}
-.pull-merge select{width:100%;min-height:var(--ds-btn-h);padding:0 10px;color:var(--text);font:inherit;font-size:var(--ds-text-ui)}
+.pull-merge small{color:var(--muted);font-size:var(--type-meta);text-align:center}
+.pull-merge select{width:100%;min-height:var(--ds-btn-h);padding-block:0;padding-inline-start:10px;color:var(--text);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight)}
+.pull-merge select:where([multiple],[size]:not([size="1"])){padding-inline-end:10px}
 .pull-merge .ds-btn-split>.ds-btn:not(:first-child){width:auto;padding:0 14px}
 
 /* Sections: Description and Conversation. */
 .pull-section{display:flex;flex-direction:column;gap:14px;min-width:0}
 .pull-section-head{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 2px;color:var(--muted)}
-.pull-section-head>h4{margin:0;font-size:var(--ds-text-body);font-weight:var(--weight-strong);color:var(--text)}
+.pull-section-head>h4{margin:0;font-size:var(--type-heading);line-height:var(--type-heading-leading);font-weight:var(--type-heading-weight);letter-spacing:var(--tracking-tight);color:var(--text)}
 .pull-section-head>.icon{--icon-size:var(--icon-sm);width:14px;height:14px}
 .pull-section-head>.pull-stats{margin-left:auto}
 .pull-section-head>.icon-button{width:28px;height:28px;margin:0 -6px 0 auto;color:var(--muted)}
 .pull-section-head>.pull-stats+.icon-button{margin-left:4px}
 .pull-section-head>.icon-button:hover{color:var(--text)}
-.pull-count{color:var(--faint);font-weight:var(--weight-regular)}
+.pull-count{color:var(--faint);font-size:var(--type-caption);font-weight:var(--weight-medium);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-none)}
 .pull-stats{display:inline-flex;gap:4px}
-.pull-body{padding:0 2px;color:var(--text);font-size:var(--ds-text-body);line-height:1.55;overflow-wrap:anywhere}
+.pull-body{padding:0 2px;color:var(--text);font-size:var(--thread-font);line-height:var(--type-prose-leading);overflow-wrap:anywhere}
 .pull-body>:first-child{margin-top:0}
 .pull-body>:last-child,.pull-comment-body>:last-child{margin-bottom:0}
 .pull-added{color:var(--ds-success);font-variant-numeric:tabular-nums}
@@ -86,24 +85,23 @@
 .pull-error{color:var(--danger);overflow-wrap:anywhere}
 .pull-error-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
 .pull-timeline{list-style:none;margin:0;gap:2px}
-.pull-comment{padding:10px var(--ds-row-pad-x);border-radius:var(--ds-radius-inner)}
+.pull-comment{padding:10px var(--ds-row-pad-x);border-radius:var(--ds-inner-radius)}
 .pull-verdict-approved .pull-comment-meta{color:var(--ds-success)}
 .pull-verdict-changes_requested .pull-comment-meta{color:var(--ds-danger)}
-.pull-comment-meta{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--ds-text-meta);color:var(--muted)}
-.pull-comment-meta .pull-avatar{display:inline-grid;place-items:center;flex:none;width:20px;height:20px;border-radius:50%;background:var(--accent);font-size:var(--text-2xs);font-weight:var(--weight-strong)}
+.pull-comment-meta{display:flex;align-items:center;gap:8px;margin:0;font-size:var(--type-meta);color:var(--muted)}
+.pull-comment-meta .pull-avatar{display:inline-grid;place-items:center;flex:none;width:max(20px,1.6em);height:max(20px,1.6em);border-radius:50%;background:var(--accent);font-size:var(--type-caption);line-height:1;font-weight:var(--weight-medium)}
 .pull-comment-meta strong{color:var(--text);font-weight:var(--weight-medium)}
-.pull-comment-body{margin:6px 0 0 28px;font-size:var(--ds-text-ui);overflow-wrap:anywhere}
+.pull-comment-body{margin:6px 0 0 28px;font-size:var(--thread-font);line-height:var(--type-prose-leading);overflow-wrap:anywhere}
 
 /* Files and Commits: rows in one card. */
 .pull-files{list-style:none;margin:0}
 .pull-file>.icon{width:12px;height:12px;flex-shrink:0;color:var(--muted);transition:rotate var(--ds-ease-out) ease-out}
 .pull-file[aria-expanded="true"]>.icon{rotate:90deg}
-.pull-file .ds-row-title{font-size:var(--ds-text-ui)}
-.pull-file-diff{margin:2px 0 6px;background:var(--surface-sunken);border-radius:var(--ds-radius-inner);overflow:hidden}
+.pull-file-diff{margin:2px 0 6px;background:var(--surface-sunken);border-radius:var(--ds-inner-radius);overflow:hidden}
 .pull-commits{list-style:none;margin:0}
 .pull-commits .ds-row-icon>.icon{--icon-size:10px;width:10px;height:10px}
-.pull-commits .ds-row-title{font-size:var(--ds-text-ui);white-space:normal;overflow-wrap:anywhere}
-.pull-commit-meta code{font-family:var(--mono);font-size:var(--ds-text-chip)}
+.pull-commits .ds-row-title{white-space:normal;overflow-wrap:anywhere}
+.pull-commit-meta code{font-family:var(--mono);font-size:var(--code-inline-size);line-height:inherit}
 
 @media(prefers-reduced-motion:reduce){.pull-view[aria-busy="true"] .pull-actions [data-pull-action="refresh"] .icon{animation:none}.pull-file>.icon,.pull-chevron>.icon{transition:none}}
 

@@ -1,3 +1,5 @@
+import typeBase from './type-base.css?inline';
+import shadowBase from './shadow-base.css?inline';
 import './rich-markdown.css';
 import { markdownHtml } from './dom';
 
@@ -114,7 +116,7 @@ function block({ kind, code }: Block, pending: Promise<void>[]): HTMLElement {
       for (const image of clean.querySelectorAll('img')) if (!/^data:image\/(png|jpe?g|gif|webp);base64,/i.test(image.getAttribute('src') ?? '')) image.remove();
       const root = figure.attachShadow({ mode: 'open' });
       const base = document.createElement('style');
-      base.textContent = ':host{display:block;color:var(--text);font:inherit}*{box-sizing:border-box;max-width:100%}img{height:auto}table{border-collapse:collapse}td,th{padding:4px 8px}th{background:var(--fill-hover)}tr:nth-child(even) td{background:var(--fill-hover)}a{color:var(--accent-ink)}';
+      base.textContent = typeBase + shadowBase + '*{max-width:100%}table{border-collapse:collapse}td,th{padding:4px 8px}th{background:var(--fill-hover)}tr:nth-child(even) td{background:var(--fill-hover)}';
       root.append(base, clean);
     }
   }).catch(() => failed(figure, 'This view could not be shown.', code)));
@@ -173,7 +175,7 @@ export function chart(value: unknown): HTMLElement {
         ? `M ${cx - r} ${cy} a ${r} ${r} 0 1 0 ${2 * r} 0 a ${r} ${r} 0 1 0 ${-2 * r} 0`
         : `M ${cx} ${cy} L ${cx + r * Math.cos(angle)} ${cy + r * Math.sin(angle)} A ${r} ${r} 0 ${large} 1 ${cx + r * Math.cos(end)} ${cy + r * Math.sin(end)} Z`;
       svg.append(el('path', { d: path, fill: PALETTE[i % PALETTE.length], stroke: 'var(--panel)', 'stroke-width': 2 }));
-      svg.append(el('rect', { x: 268, y: 24 + i * 22, width: 12, height: 12, rx: 3, fill: PALETTE[i % PALETTE.length] }));
+      svg.append(el('rect', { x: 268, y: 24 + i * 22, width: 12, height: 12, rx: 2, fill: PALETTE[i % PALETTE.length] }));
       svg.append(el('text', { x: 288, y: 35 + i * 22, class: 'rich-chart-label' }, `${labels[i] ?? ''} · ${Math.round((v / total) * 100)}%`));
       angle = end;
     });

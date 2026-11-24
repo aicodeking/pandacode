@@ -178,14 +178,14 @@ const collapsed = params.has('collapsed');
 document.documentElement.dataset.theme = params.get('theme') === 'dark' ? 'dark' : 'light';
 const css = document.createElement('style');
 css.textContent = 'html,body{height:auto;overflow:auto;background:var(--bg)}#gallery{max-width:780px;margin:0 auto;padding:24px 24px '
-  + '48px;color:var(--text)}#gallery h2{margin:22px 0 6px 6px;font-size:.8rem;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}';
+  + '48px;color:var(--text)}#gallery h2{margin:22px 0 6px 6px;font-size:var(--type-caption);font-weight:var(--weight-strong);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-caps);color:var(--muted);text-transform:uppercase}';
 document.head.append(css);
 // The app's icon, so the browser does not ask for a missing /favicon.ico.
 document.head.insertAdjacentHTML('beforeend', '<link rel="icon" type="image/svg+xml" href="/icon.svg">');
 
 let n = 0;
 const gallery = document.getElementById('gallery')!;
-gallery.innerHTML = `<h1 style="font-size:1rem;margin:0 0 4px 6px">Tool trace gallery</h1>` + FAMILIES.map(([title, cases]) => {
+gallery.innerHTML = `<h1 style="font-size:var(--type-title);font-weight:var(--type-title-weight);line-height:var(--type-title-leading);letter-spacing:var(--tracking-tight);margin:0 0 4px 6px">Tool trace gallery</h1>` + FAMILIES.map(([title, cases]) => {
   const entries = cases.map(c => ({ key: `case-${n++}`,
     content: { id: `case-${n}`, name: c.name, status: c.status ?? 'completed', input: j(c.input ?? {}), output: j(c.output) } as ToolActivity }));
   return `<section data-gallery-family="${escape(title)}" data-expect="${escape(cases.map(c => c.verb).join('|'))}"><h2>${escape(title)}`

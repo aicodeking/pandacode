@@ -693,7 +693,10 @@ export class ArchitectView {
             const current = this.live.get(worker.sessionId);
             if (tool.status !== 'running' && current?.tools.get(tool.id)?.status === 'running') current.tools.set(tool.id, tool);
             article.dataset.savedToolId = tool.id; article.innerHTML = renderToolActivity(tool, 'tool:' + tool.id); } else article.textContent = message.content; }
-        else { const label = document.createElement('small'); label.textContent = message.role === 'assistant' ? worker.name : message.role === 'user' ? 'Assignment' : 'Activity'; const body = document.createElement('div'); article.append(label, body); bindFileLinkContext(body, fileContext); paints.push(markdown(body, message.content, scroll));
+        else {
+          const label = document.createElement('small'); label.textContent = message.role === 'assistant' ? worker.name : message.role === 'user' ? 'Assignment' : 'Activity';
+          const body = document.createElement('div'); body.className = 'markdown';
+          article.append(label, body); bindFileLinkContext(body, fileContext); paints.push(markdown(body, message.content, scroll));
           if (message.role === 'user' || message.role === 'assistant') {
             article.insertAdjacentHTML('beforeend', messageActionsHtml(worker.sessionId, message.id, Boolean(this.options.onFork) && message.id > 0 && !this.options.remote?.(taskId)));
           }
