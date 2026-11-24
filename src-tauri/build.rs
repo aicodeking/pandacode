@@ -18,13 +18,15 @@ fn main() {
     tauri_build::build()
 }
 
-/// `cfg(panda_onnx)`: targets that link Panda Router's ONNX profiler; the same predicate gates `ort` and
-/// `tokenizers` in Cargo.toml.
+/// `cfg(panda_onnx)`: los mismos destinos que habilitan `ort` y `tokenizers` en Cargo.toml.
 fn panda_onnx() {
     println!("cargo:rustc-check-cfg=cfg(panda_onnx)");
     let os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
-    if matches!((os.as_str(), arch.as_str()), ("macos" | "linux" | "windows", "aarch64")) {
+    if matches!(
+        (os.as_str(), arch.as_str()),
+        ("macos" | "linux" | "windows", "aarch64") | ("windows", "x86_64")
+    ) {
         println!("cargo:rustc-cfg=panda_onnx");
     }
 }

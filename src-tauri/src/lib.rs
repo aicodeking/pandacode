@@ -100,6 +100,8 @@ pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
 pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub use panda_router::windows_onnx::handle_router_worker;
 
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -4719,7 +4721,10 @@ pub fn run() {
             });
             // A failure here is not a crash: say why and exit, never a relaunch into it.
             let ready = (|| -> Result<()> {
+                model_routing::setup_desktop_profiler_events(app.handle());
                 let dir = setup_common(app)?;
+                // Windows x64: load cached profiler assets once, without a download or a route.
+                model_routing::warm_desktop_profiler();
                 app.manage(voice::Voice::new(dir.clone()));
                 agents_dock::setup(app.handle(), &dir)?;
                 overlay::setup(app.handle(), &dir).map_err(|error| error.to_string())
@@ -4813,6 +4818,8 @@ pub fn run() {
                 support::open_support,
                 support::support_details,
                 model_routing::model_routing_status_command,
+                model_routing::model_routing_profiler_readiness,
+                model_routing::model_routing_last_profiler,
                 model_routing::model_routing_exclusions,
                 model_routing::model_routing_set_exclusions,
                 model_routing::model_routing_configure_command,

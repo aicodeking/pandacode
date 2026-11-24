@@ -999,6 +999,12 @@ html[data-native-platform=macos] .github-view .gh-repos-head{padding-left:calc(8
 .update-status .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .update-status[hidden]{display:none}
 
+.router-profiler-indicator.ds-chip{height:22px;font-family:inherit;font-size:var(--text-2xs);color:var(--muted);flex:none}
+.router-profiler-indicator:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.header-actions .router-profiler-indicator>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
+@container workspace-header (max-width:420px){.router-profiler-indicator.ds-chip{padding-inline:5px}.router-profiler-prefix{display:none}}
+@media(forced-colors:active){.router-profiler-indicator.ds-chip{border:1px solid CanvasText}}
+
 /* Settings is a full page over the workspace (src/settings.ts). Laid out here so it never flashes in. */
 #settings-page{position:absolute;inset:0;z-index:40}
 #settings-page[hidden]{display:none}

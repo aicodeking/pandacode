@@ -2,8 +2,8 @@
 //! script kept outside the repo). ONNX tests need `PANDA_ROUTER_ASSETS` pointing at a directory with
 //! model.int8.onnx + tokenizer.json and are skipped without it (they fail instead when `CI` is set). See `strict()` for numeric parity.
 
-use std::path::PathBuf;
-use std::time::Instant;
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+use std::{path::PathBuf, time::Instant};
 
 use serde::Deserialize;
 
@@ -20,7 +20,9 @@ struct Fixture {
 struct FixtureTask {
     text: String,
     context: FixtureContext,
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     ids: Vec<u32>,
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     onnx: FixtureProfile,
     heuristic: FixtureProfile,
     routes: FixtureRoutes,
@@ -47,6 +49,7 @@ struct FixtureProfile {
 
 #[derive(Deserialize)]
 struct FixtureRoutes {
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     onnx: ModeRoutes,
     heuristic: ModeRoutes,
 }
@@ -96,6 +99,7 @@ fn card_model(id: &str) -> PoolModel {
     PoolModel { provider: "test".into(), model: id.into(), name: id.into() }
 }
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn assets() -> Option<PathBuf> {
     if !crate::panda_router::ONNX_AVAILABLE {
         eprintln!("note: this target builds without ONNX Runtime; skipping ONNX parity tests");
@@ -164,10 +168,12 @@ fn check_route(label: &str, got: &Route, want: &FixtureRoute, p_tol: f64) {
 /// fixture; another CPU (CI's runner) moves probabilities by up to ~0.2 and difficulty by a level.
 /// `PANDA_ROUTER_STRICT=1` asks for it; otherwise ONNX tests check tokenizer ids exactly and that
 /// profiles and routes are well formed. The matcher is pinned exactly by the heuristic tests.
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn strict() -> bool {
     std::env::var_os("PANDA_ROUTER_STRICT").is_some()
 }
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 fn check_well_formed(label: &str, got: &TaskProfile) {
     close(&format!("{label} category sum"), got.category.iter().sum(), 1.0, 1e-6);
     close(&format!("{label} difficulty sum"), got.difficulty.iter().sum(), 1.0, 1e-6);
@@ -299,6 +305,7 @@ fn heuristic_routes_match_python() {
     check_routes(&Router::heuristic(), &fixture(), |r| &r.heuristic, 0.0);
 }
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 #[test]
 fn load_rejects_wrong_checksum() {
     let dir = std::env::temp_dir().join(format!("panda-router-bad-{}", std::process::id()));
@@ -312,6 +319,7 @@ fn load_rejects_wrong_checksum() {
     assert!(Router::load(&dir).is_err());
 }
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 #[test]
 fn onnx_matches_python() {
     let Some(dir) = assets() else { return };
@@ -326,7 +334,7 @@ fn onnx_matches_python() {
         let c = ctx(&task.context);
         let ids = onnx.token_ids(&format_input(&task.text, &c)).unwrap();
         assert_eq!(ids, task.ids, "task {n} token ids");
-        let got = router.profile(&task.text, &c).unwrap();
+        let got = router.profile(&task.text, &c).unwrap().task;
         if strict() {
             check_profile(&format!("task {n}"), &got, &task.onnx, 1e-4);
         } else {
@@ -344,6 +352,7 @@ fn onnx_matches_python() {
     }
 }
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 #[test]
 fn onnx_routes_are_fast() {
     let Some(dir) = assets() else { return };
@@ -381,14 +390,38 @@ fn requires_tools_matches_python() {
     let text = "Fix the flaky test in queue.rs and run the suite";
     let c = TaskContext { repo_languages: vec!["rust".into()], files_in_scope: Some(3), requires_tools: true };
     close("heuristic needs_tools", heuristic::profile(text, &c).flags[profile::FLAG_NEEDS_TOOLS], 0.95, 1e-12);
-    let Some(dir) = assets() else { return };
-    let got = Router::load(&dir).unwrap().profile(text, &c).unwrap();
-    if strict() {
-        close("onnx needs_tools", got.flags[profile::FLAG_NEEDS_TOOLS], 0.9952313216327713, 1e-4);
-        close("onnx bugfix", got.category[1], 0.9209576043029076, 1e-4);
-    } else {
-        assert!(got.flags[profile::FLAG_NEEDS_TOOLS] > 0.5 && got.category[1] > 0.5, "tool-using bugfix");
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        let Some(dir) = assets() else { return };
+        let got = Router::load(&dir).unwrap().profile(text, &c).unwrap().task;
+        if strict() {
+            close("onnx needs_tools", got.flags[profile::FLAG_NEEDS_TOOLS], 0.9952313216327713, 1e-4);
+            close("onnx bugfix", got.category[1], 0.9209576043029076, 1e-4);
+        } else {
+            assert!(got.flags[profile::FLAG_NEEDS_TOOLS] > 0.5 && got.category[1] > 0.5, "tool-using bugfix");
+        }
     }
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[test]
+fn windows_onnx_profile_failure_uses_keywords() {
+    let text = "Fix the flaky test and run the suite";
+    let ctx = TaskContext { requires_tools: true, ..TaskContext::default() };
+    let expected = heuristic::profile(text, &ctx);
+    for bad in [
+        Err("child exited".into()),
+        Err("child timed out".into()),
+        Err("malformed reply".into()),
+        Ok(Vec::new()),
+    ] {
+        let got = ProfiledTask::isolated(text, &ctx, bad);
+        assert_eq!(got.source, "heuristic");
+        assert_eq!(got.task.category, expected.category);
+        assert_eq!(got.task.difficulty, expected.difficulty);
+        assert_eq!(got.task.flags, expected.flags);
+    }
+    assert_eq!(ProfiledTask::isolated(text, &ctx, Ok(vec![expected])).source, "onnx");
 }
 
 #[test]

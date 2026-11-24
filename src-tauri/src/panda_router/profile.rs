@@ -21,6 +21,8 @@ const MAX_CHARS: usize = 6000;
 
 /// What the matcher and the v4 success head need from a profiler.
 #[derive(Clone, Debug)]
+#[cfg_attr(all(target_os = "windows", target_arch = "x86_64"), derive(serde::Deserialize, serde::Serialize))]
+#[cfg_attr(all(target_os = "windows", target_arch = "x86_64"), serde(deny_unknown_fields))]
 pub struct TaskProfile {
     pub category: [f64; 13],
     pub difficulty: [f64; N_DIFFICULTY],

@@ -10,6 +10,8 @@ use sha2::{Digest, Sha256};
 use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStrategy};
 
 use super::profile::{TaskProfile, N_CHECKLIST, N_DIFFICULTY, N_SKILL_LEVELS};
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use super::windows_onnx::{LoadFailure, WorkerRuntime};
 
 const INTRA_THREADS: usize = 2;
 const PAD_TOKEN: &str = "[PAD]";
@@ -37,6 +39,7 @@ pub(super) static HEADS: LazyLock<Heads> = LazyLock::new(|| {
 });
 
 /// ONNX Runtime allows one environment per process, and a dropped one cannot be rebuilt: keep it.
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 static ENVIRONMENT: LazyLock<Result<ort::environment::Environment, String>> =
     LazyLock::new(|| ort::init().with_name("panda-router").build().map_err(|e| e.to_string()));
 
@@ -61,10 +64,43 @@ fn asset_hash(name: &str) -> &'static str {
 }
 
 impl OnnxProfiler {
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
     pub(super) fn load(dir: &Path) -> Result<Self, String> {
         let model = read_verified(dir, "model.int8.onnx", asset_hash("model.int8.onnx"))?;
         let tok = read_verified(dir, "tokenizer.json", asset_hash("tokenizer.json"))?;
-        let mut tokenizer = Tokenizer::from_bytes(&tok).map_err(|e| format!("tokenizer.json: {e}"))?;
+        Self::load_verified(&model, &tok, || &ENVIRONMENT)
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    pub(super) fn load_in_child(dir: &Path, runtime: &WorkerRuntime) -> Result<Self, LoadFailure> {
+        static ENVIRONMENT: std::sync::OnceLock<Result<ort::environment::Environment, String>> =
+            std::sync::OnceLock::new();
+        let verify = |name| {
+            read_verified(dir, name, asset_hash(name)).map_err(|error| {
+                if error.starts_with("cannot read ") { LoadFailure::ReadAssets } else { LoadFailure::HashAssets }
+            })
+        };
+        let model = verify("model.int8.onnx")?;
+        let tok = verify("tokenizer.json")?;
+        Self::load_verified(&model, &tok, || {
+            ENVIRONMENT.get_or_init(|| {
+                ort::init_from(runtime.dll())
+                    .map_err(|e| e.to_string())?
+                    .with_name("panda-router")
+                    .with_telemetry(false)
+                    .build()
+                    .map_err(|e| e.to_string())
+            })
+        })
+        .map_err(|_| LoadFailure::Runtime)
+    }
+
+    fn load_verified(
+        model: &[u8],
+        tok: &[u8],
+        environment: impl FnOnce() -> &'static Result<ort::environment::Environment, String>,
+    ) -> Result<Self, String> {
+        let mut tokenizer = Tokenizer::from_bytes(tok).map_err(|e| format!("tokenizer.json: {e}"))?;
         tokenizer
             .with_truncation(Some(TruncationParams {
                 max_length: HEADS.max_len,
@@ -75,14 +111,14 @@ impl OnnxProfiler {
             .map_err(|e| format!("tokenizer truncation: {e}"))?;
         tokenizer.with_padding(None);
         let pad_id = tokenizer.token_to_id(PAD_TOKEN).ok_or("tokenizer.json has no [PAD] token")?;
-        let env = ENVIRONMENT.as_ref().map_err(|e| format!("onnx runtime: {e}"))?;
+        let env = environment().as_ref().map_err(|e| format!("onnx runtime: {e}"))?;
         let session = Session::builder(env)
             .and_then(|b| Ok(b.with_intra_threads(INTRA_THREADS)?))
             // No arena and no memory pattern: freed tensors go back to the system instead of
             // staying reserved for the process.
             .and_then(|b| Ok(b.with_memory_pattern(false)?))
             .and_then(|b| Ok(b.with_execution_providers([ort::ep::CPU::default().with_arena_allocator(false).build()])?))
-            .and_then(|mut b| b.commit_from_memory(&model))
+            .and_then(|mut b| b.commit_from_memory(model))
             .map_err(|e| format!("cannot load model.int8.onnx: {e}"))?;
         Ok(Self { tokenizer, pad_id, session: Mutex::new(session) })
     }

@@ -1,4 +1,4 @@
-//! Panda Router: picks the model for a task, in process. A native port of PandaOrchestrator v4.3
+//! Panda Router: picks the model for a task. A native port of PandaOrchestrator v4.3
 //! (github.com/aicodeking/PandaOrchestrator @ 83e408c): an int8 ONNX task profiler (or a keyword heuristic
 //! when the model files are not installed), the learned success head, and the v4 policy with its
 //! escalation ladder. Nothing here touches the network; `model_routing` downloads the profiler and owns
@@ -16,6 +16,8 @@ mod onnx;
 mod profile;
 mod success;
 mod tiers;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) mod windows_onnx;
 #[cfg(test)]
 mod tests;
 
@@ -25,7 +27,10 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
 use onnx::OnnxProfiler;
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+use windows_onnx::WindowsOnnx as OnnxProfiler;
 pub use tiers::Tier;
 
 /// User tier list: card id for rated models, `<provider>/<model>` for unrated ones (`tier_key`).
@@ -34,6 +39,16 @@ pub type Tiers = HashMap<String, Tier>;
 /// Whether this build carries the ONNX profiler (see `panda_onnx` in build.rs).
 pub const ONNX_AVAILABLE: bool = cfg!(panda_onnx);
 use profile::{TaskProfile, CATEGORIES, N_DIFFICULTY};
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) fn isolated_profiler_failure() -> Option<&'static str> {
+    OnnxProfiler::failure_reason()
+}
+
+#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+pub(crate) fn isolated_profiler_unsupported() -> Option<String> {
+    windows_onnx::unsupported_reason()
+}
 
 /// Model files downloaded into the router directory: (file name, sha256 hex).
 pub const ASSETS: &[(&str, &str)] = &[
@@ -140,6 +155,29 @@ pub struct Router {
     onnx: Option<OnnxProfiler>,
 }
 
+struct ProfiledTask {
+    task: TaskProfile,
+    source: &'static str,
+}
+
+impl ProfiledTask {
+    fn keyword(text: &str, ctx: &TaskContext) -> Self {
+        Self { task: heuristic::profile(text, ctx), source: "heuristic" }
+    }
+
+    fn onnx(task: TaskProfile) -> Self {
+        Self { task, source: "onnx" }
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn isolated(text: &str, ctx: &TaskContext, result: Result<Vec<TaskProfile>, String>) -> Self {
+        match result {
+            Ok(mut tasks) if tasks.len() == 1 => Self::onnx(tasks.remove(0)),
+            _ => Self::keyword(text, ctx),
+        }
+    }
+}
+
 /// Maps a PandaCode model to a card id: the harness table, then upstream alias matching, then (for
 /// `default`) the display name. Ambiguous or unknown -> None.
 pub fn resolve_card(provider: &str, model: &str, name: &str) -> Option<&'static str> {
@@ -168,18 +206,21 @@ impl Router {
         Router { onnx: None }
     }
 
+    #[cfg(all(test, not(all(target_os = "windows", target_arch = "x86_64"))))]
     pub fn is_onnx(&self) -> bool {
         self.onnx.is_some()
     }
 
-    fn profiler_name(&self) -> &'static str {
-        if self.is_onnx() { "onnx" } else { "heuristic" }
-    }
-
-    fn profile(&self, text: &str, ctx: &TaskContext) -> Result<TaskProfile, String> {
-        match &self.onnx {
-            Some(onnx) => Ok(onnx.profile_batch(&[profile::format_input(text, ctx)])?.remove(0)),
-            None => Ok(heuristic::profile(text, ctx)),
+    fn profile(&self, text: &str, ctx: &TaskContext) -> Result<ProfiledTask, String> {
+        let Some(onnx) = &self.onnx else { return Ok(ProfiledTask::keyword(text, ctx)) };
+        let result = onnx.profile_batch(&[profile::format_input(text, ctx)]);
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            Ok(ProfiledTask::isolated(text, ctx, result))
+        }
+        #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+        {
+            Ok(ProfiledTask::onnx(result?.remove(0)))
         }
     }
 
@@ -244,7 +285,7 @@ impl Router {
     #[allow(clippy::too_many_arguments)]
     fn escalate_once(
         &self,
-        profile: &TaskProfile,
+        profile: &ProfiledTask,
         text: &str,
         ctx: &TaskContext,
         rated: &Rated,
@@ -256,9 +297,9 @@ impl Router {
         let i = rated.position(failed).ok_or("failed model is not in the pool")?;
         let prior: [f64; N_DIFFICULTY] = match previous.distribution.as_slice().try_into() {
             Ok(d) => matcher::normalized(&d),
-            Err(_) => matcher::normalized(&profile.difficulty),
+            Err(_) => matcher::normalized(&profile.task.difficulty),
         };
-        let post = matcher::Demand::new(profile).after_failure(&prior, rated.card(i), rated.ability(i));
+        let post = matcher::Demand::new(&profile.task).after_failure(&prior, rated.card(i), rated.ability(i));
         let mut failed_list: Vec<usize> = previous.failed.iter().filter_map(|m| rated.position(m)).collect();
         failed_list.push(i);
         let ladder: Vec<usize> = previous.ladder.iter().filter_map(|r| rated.by_card_id(&r.card_id)).collect();
@@ -268,7 +309,7 @@ impl Router {
     #[allow(clippy::too_many_arguments)]
     fn decide(
         &self,
-        profile: &TaskProfile,
+        profiled: &ProfiledTask,
         text: &str,
         ctx: &TaskContext,
         rated: &Rated,
@@ -278,6 +319,7 @@ impl Router {
         prev_ladder: &[usize],
         start: Instant,
     ) -> Route {
+        let profile = &profiled.task;
         let cards: Vec<&cards::Card> = (0..rated.entries.len()).map(|i| rated.card(i)).collect();
         let abilities: Vec<Option<f64>> = (0..rated.entries.len()).map(|i| rated.ability(i)).collect();
         let difficulty = difficulty.unwrap_or(profile.difficulty);
@@ -323,7 +365,7 @@ impl Router {
             unrated: rated.unrated.clone(),
             difficulty: level as u8 + 1,
             category: CATEGORIES[profile.top_category()].to_string(),
-            profiler: self.profiler_name(),
+            profiler: profiled.source,
             latency_ms: start.elapsed().as_secs_f64() * 1000.0,
         }
     }

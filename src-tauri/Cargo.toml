@@ -64,18 +64,20 @@ cpal = "0.17"
 rubato = "5"
 fs4 = "1.1"
 
-# Panda Router's ONNX profiler (static ONNX Runtime) only where a prebuilt runtime links and runs on
-# baseline hardware: none exists for Intel macOS, the x86_64 Linux one needs glibc 2.38 (releases build
-# on Ubuntu 22.04), and the x86_64 Windows one is built with /arch:AVX2 (its .CRT$XCU static initializers
-# execute BMI2 instructions before main(), crashing with 0xc000001d on pre-AVX2 CPUs). Keep this
-# predicate in step with `panda_onnx` in build.rs; other targets route with the keyword heuristic.
+# Runtime estático en ARM64; no existe para Mac Intel y Linux x64 exige glibc 2.38.
 [target.'cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(target_os = "linux", target_arch = "aarch64"), all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
 ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "download-binaries", "tls-rustls"] }
 tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
 
+# Windows x64 carga el DLL solo en un proceso hijo; no enlazar ni descargar ONNX aquí.
+[target.'cfg(all(target_os = "windows", target_arch = "x86_64"))'.dependencies]
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["load-dynamic"] }
+tokenizers = { version = "0.22.2", default-features = false, features = ["fancy-regex"] }
+windows = { version = "0.62", features = ["Win32_System_Diagnostics_Debug", "Win32_System_LibraryLoader"] }
+
 # On-device speech engine, linked statically and run in the `__speech-worker` child process.
 # Metal on Apple silicon; everything else is CPU only. x86 builds stay at SSE4.2/AVX/F16C via
-# TRANSCRIBE_CMAKE_ARGS set per x86_64 row in .github/workflows/release.yml (no AVX2+, unlike the ort crash noted above).
+# TRANSCRIBE_CMAKE_ARGS set per x86_64 row in .github/workflows/release.yml (no AVX2+).
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 transcribe-cpp = { version = "=0.4.1", default-features = false, features = ["metal"] }
 [target.'cfg(not(all(target_os = "macos", target_arch = "aarch64")))'.dependencies]

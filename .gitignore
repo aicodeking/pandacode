@@ -9,6 +9,7 @@ src-tauri/gen/
 test-results/
 playwright-report/
 /release/
+/.panda-router/
 website/public/downloads/
 website/dist/
 website/.astro/

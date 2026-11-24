@@ -1,10 +1,11 @@
-// CI startup check only: survival is not proof of rendering or feature behavior.
+// CI startup check and installed file assertions: survival is not proof of rendering or feature behavior.
 // Never launch a developer's installed app or run against a self-hosted runner.
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rmdir, chmod, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { root, targetConfig } from './common.mjs';
+import { runtimeDirectoryName, verifyWindowsRouterRuntime } from './windows-router-runtime.mjs';
 
 export function assertHostedRunner(env, target, platform = process.platform) {
   if (env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || !env.RUNNER_TEMP || !isAbsolute(env.RUNNER_TEMP)) {
@@ -161,6 +162,7 @@ async function main() {
       const names = await readdir(destination);
       const binaries = names.filter(name => name.toLowerCase() === 'pandacode.exe');
       if (names.length > 100 || binaries.length !== 1) throw new Error('NSIS did not install the expected app executable.');
+      if (target === 'windows-x86_64') await verifyWindowsRouterRuntime(join(destination, runtimeDirectoryName), { exact: true });
       await observeProcess(join(destination, binaries[0]), [], { env, cwd: directory, durationMs: 30_000 });
     }
     console.log(`${target}: packaged app stayed alive during the startup check (no GUI or agent behavior asserted).`);
