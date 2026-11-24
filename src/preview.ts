@@ -2134,6 +2134,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       // `?warm-spares-fail`: the save is refused, so the switch goes back.
       if (new URLSearchParams(location.search).has('warm-spares-fail')) throw new Error('Could not save the setting.');
       previewWarmSpares = Boolean(args.enabled); break;
+    case 'warm_spare_stats': {
+      // `?warm-spares-stats`: this launch already started, adopted and missed spares in both pools.
+      const pool = (counts: Partial<Record<string, number>> = {}) => ({ started: 0, adopted: 0, missed: 0, expired: 0, evicted: 0, replaced: 0, discarded: 0, coldWithoutSpare: 0, churnSkipped: 0, ...counts });
+      result = new URLSearchParams(location.search).has('warm-spares-stats')
+        ? { ordinary: pool({ started: 4, adopted: 3, missed: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
+        : { ordinary: pool(), lead: pool() };
+      break;
+    }
     case 'worker_trim_enabled':
       // `?worker-trim-read-fail`: the saved switch cannot be read.
       if (new URLSearchParams(location.search).has('worker-trim-read-fail')) throw new Error('Could not read the setting.');

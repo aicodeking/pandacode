@@ -2,17 +2,24 @@
 //! so a follow-up skips the CLI's own startup (about 0.17–1.71 s, see docs/worker-tokens.md).
 //! A warm agent is adopted only when everything on its command line and in its tool catalog
 //! still matches; otherwise it is discarded and the turn starts cold as before.
-use super::exit::{path_in_folder, pending_in_cwd, resolve_path, retire_parts_in_cwd, Pending};
+use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
+use crate::path_match::{path_in_folder, resolve_path};
 use std::sync::LazyLock;
 
 mod key;
 mod spawn;
 mod stats;
-use self::key::miss;
-use self::stats::{cold_without_spare_note, decision, discarded_note, no_spare_note, record_lead_miss, PoolStats};
-pub(super) use self::key::key;
+use self::key::{age_expired, miss};
+use self::stats::{cold_without_spare_note, decision, discarded_note, no_spare_note, record_adopted, record_lead_miss, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
+pub(super) use self::key::{key, lead_git_status_digest, lead_key};
 pub use self::spawn::prewarm;
+#[cfg(test)]
+mod test_support;
+#[cfg(test)]
+pub(super) use self::test_support::waiting;
+#[cfg(all(test, unix))]
+pub(crate) use self::test_support::{has_spare_for_test, insert_spare_in_cwd_for_test, process_gone_for_test, spare_pool_test_lock};
 
 static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
@@ -50,6 +57,22 @@ pub(super) fn enabled_now() -> bool {
         Some(app) => enabled(app),
         None => cfg!(test),
     }
+}
+
+/// `enabled_now`, read on a blocking thread so the async runtime never waits on the marker file.
+/// A test's thread-local override is read here first: the blocking thread would not see it.
+async fn enabled_off_runtime() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
+        return enabled;
+    }
+    crate::blocking(|| Ok(enabled_now())).await.unwrap_or(false)
+}
+
+/// Each pool's lifecycle totals since launch: a pure in-memory read (no file, no network).
+#[tauri::command]
+pub(crate) fn warm_spare_stats() -> WarmStatsSnapshot {
+    WarmStatsSnapshot::of(&spares(&SPARES))
 }
 
 #[tauri::command]
@@ -106,8 +129,8 @@ type Spawning = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Option
 #[derive(Clone, Copy)]
 struct Lifecycle {
     idle: Duration,
-    /// Starts the process for a launch, or `None` when this launch takes no spare.
-    spawn: fn(RunConfig, Vec<Value>, HashSet<String>, u64) -> Spawning,
+    /// Starts the process for a launch (`bool`: a lead's), or `None` when it takes no spare.
+    spawn: fn(RunConfig, Vec<Value>, HashSet<String>, u64, bool) -> Spawning,
     /// Whether a renewal's launch inputs still give the expired spare's key and the inputs
     /// read at its spawn (`still_current`).
     current: fn(&str, &RunConfig, &[Value], &str, &Inputs) -> bool,
@@ -120,6 +143,8 @@ pub(super) struct Spare {
     pub(super) group: ProcessGroup,
     pub(super) server: Option<mcp_host::Server>,
     born: std::time::Instant,
+    /// `born` on the wall clock, which keeps running while the machine sleeps (`Instant` may not).
+    born_wall: std::time::SystemTime,
     /// How long it may wait: its lifecycle's `idle`.
     idle: Duration,
     /// Started for a team lead waiting on its workers (the lead pool).
@@ -134,44 +159,31 @@ struct Spares {
     spares: HashMap<String, Spare>,
     /// Cancels whole renewal chains, including expired leads whose bounded `gone` note was cleared.
     discard_epoch: u64,
-    /// In-flight starts and expiry renewal checks, keyed by a token, recording `(session_id, cwd,
-    /// lead)` so `quiesce_spares_in` can advance their launch epochs before they spawn or register,
-    /// and `spawn_spare` caps each pool's starts in flight.
-    starting: HashMap<u64, (String, PathBuf, bool)>,
+    /// In-flight starts and expiry renewal checks, keyed by a token, so `quiesce_spares_in` can
+    /// advance their launch epochs before they spawn or register, and `spawn_spare` caps each
+    /// pool's starts in flight. An entry stays until its `InFlight` drops, even once cancelled.
+    starting: HashMap<u64, StartingEntry>,
     gone: HashMap<String, Gone>,
     /// Each pool's lifecycle totals since launch: in memory only, read from the adoption log
-    /// line (docs/worker-tokens.md).
+    /// line (docs/worker-tokens.md) and `warm_spare_stats`.
     lead: PoolStats,
     ordinary: PoolStats,
-    /// Eligible launches with spares on that found no pooled spare (`finish_empty_launch`).
-    cold_without_spare: u64,
+    /// Each pool's round-robin eviction streak and backoff (`spawn_spare`).
+    lead_churn: PoolChurn,
+    ordinary_churn: PoolChurn,
+}
+
+/// A start or renewal check in flight. `cancelled`: a switch-off or folder discard already
+/// advanced its launch epoch, so it can no longer register, but its task still runs (and still
+/// counts against the pool's cap) until its `InFlight` guard drops.
+struct StartingEntry {
+    session_id: String,
+    cwd: PathBuf,
+    lead: bool,
+    cancelled: bool,
 }
 
 type Pool = Mutex<Spares>;
-
-/// Why a lead spare left the pool before its wake.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Gone {
-    /// A newer lead spare pushed it out of the bounded lead pool.
-    Evicted,
-    /// Its team stopped or paused, or its task was deleted.
-    Discarded,
-    /// It waited `IDLE` (and was not renewed, or its renewal has not registered yet).
-    Expired,
-    /// A newer spare for the same task took its place.
-    Replaced,
-}
-
-impl Gone {
-    fn reason(self) -> &'static str {
-        match self {
-            Gone::Evicted => "it was evicted by a newer team's spare",
-            Gone::Discarded => "it was discarded",
-            Gone::Expired => "it expired",
-            Gone::Replaced => "it was replaced by a newer spare for the same task",
-        }
-    }
-}
 
 /// `gone` keeps at most this many reasons (tasks deleted with a reason pending never read it).
 const GONE_LIMIT: usize = 64;
@@ -183,6 +195,10 @@ impl Spares {
         let spare = self.spares.remove(session_id)?;
         let pending = pending_in_cwd(session_id, spare.cwd.clone());
         self.stats_mut(spare.lead).count(why);
+        if why == Gone::Evicted {
+            let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
+            self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
+        }
         if spare.lead {
             if self.gone.len() >= GONE_LIMIT {
                 self.gone.clear();
@@ -215,7 +231,7 @@ impl InFlight {
 
     fn enter_locked(pool: &'static Pool, locked: &mut Spares, session_id: String, cwd: PathBuf, lead: bool) -> Self {
         let token = NEXT_INFLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        locked.starting.insert(token, (session_id, cwd, lead));
+        locked.starting.insert(token, StartingEntry { session_id, cwd, lead, cancelled: false });
         Self { pool, token }
     }
 }
@@ -267,27 +283,31 @@ pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
         return None;
     }
     let discard_epoch = spares(&SPARES).discard_epoch;
-    take_checked(session_id, key, true, discard_epoch)
+    take_checked(session_id, key, true, false, discard_epoch)
 }
 
 /// `take` for a caller that has just checked `enabled_now()` off the runtime (with its key).
 /// Switching spares off meanwhile empties the pool (`discard_all`), so nothing is adopted then.
-/// A spare that vanished meanwhile counts a cold launch only for an `ordinary_eligible` launch
-/// whose pool was not emptied by a switch-off since `prepare_launch` read `discard_epoch`.
-pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool, discard_epoch: u64) -> Option<Adopting> {
-    let (spare, note) = take_since(&SPARES, session_id, key, ordinary_eligible, discard_epoch);
+/// A spare that vanished meanwhile counts a cold launch (in the lead pool for a `lead` launch)
+/// only for an `ordinary_eligible` launch whose pool was not emptied by a switch-off since
+/// `prepare_launch` read `discard_epoch`.
+pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> Option<Adopting> {
+    let (spare, note) = take_since(&SPARES, session_id, key, ordinary_eligible, lead, discard_epoch);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every hit is
-    // logged too, with lead and ordinary totals, so each pool's speed-up can be measured.
+    // logged too (by `into_parts`), with lead and ordinary totals, so each pool's speed-up can
+    // be measured.
     if let Some(note) = note {
         eprintln!("{note}");
     }
-    spare.map(|spare| Adopting { session_id: session_id.to_owned(), spare: Some(spare) })
+    spare.map(|spare| Adopting { pool: &SPARES, session_id: session_id.to_owned(), spare: Some(spare) })
 }
 
-/// A spare taken for adoption. Dropping it before `into_parts` (a launch that fails between
-/// taking the spare and owning its streams) retires the process like any other removal, so the
-/// next same-session launch waits for it instead of resuming beside it.
+/// A spare taken for adoption, counted as adopted only once `into_parts` commits to it. Dropping
+/// it first (a failed rebind, a Stop before the launch owned its streams) counts a miss and
+/// retires the process like any other removal, so the next same-session launch waits for it
+/// instead of resuming beside it.
 pub(super) struct Adopting {
+    pool: &'static Pool,
     session_id: String,
     spare: Option<(Spare, Pending)>,
 }
@@ -301,6 +321,7 @@ impl Adopting {
     /// Adopted: the run owns the process from here and must retire it itself on failure.
     pub(super) fn into_parts(mut self) -> (Child, ProcessGroup) {
         let (spare, _pending) = self.spare.take().expect("an adopted spare is taken once");
+        eprintln!("{}", record_adopted(self.pool, spare.lead));
         (spare.child, spare.group)
     }
 }
@@ -308,6 +329,7 @@ impl Adopting {
 impl Drop for Adopting {
     fn drop(&mut self) {
         if let Some((spare, pending)) = self.spare.take() {
+            eprintln!("{}", decision(self.pool, spare.lead, Some("its launch ended before adoption")));
             retire(&self.session_id, spare, pending);
         }
     }
@@ -315,19 +337,19 @@ impl Drop for Adopting {
 
 /// The spare this launch adopts, if any, and what to log about it (never any contents: only
 /// the outcome and the names of warm-key fields that changed).
-fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool, discard_epoch: u64) -> (Option<(Spare, Pending)>, Option<String>) {
+fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> (Option<(Spare, Pending)>, Option<String>) {
     let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((mut spare, pending)) = removed else {
         // Expired or evicted during the key walk: never an uncounted launch (discarded by a
         // switch-off: spares are off, so nothing counts as a cold launch without one).
-        return (None, no_spare_since(pool, gone, ordinary_eligible, discard_epoch));
+        return (None, no_spare_since(pool, gone, ordinary_eligible, lead, discard_epoch));
     };
     let alive = matches!(spare.child.try_wait(), Ok(None));
-    match miss(alive, &spare.key, key, spare.born.elapsed(), spare.idle) {
-        None => {
-            let note = decision(pool, spare.lead, None);
-            (Some((spare, pending)), Some(note))
-        }
+    // Either clock: a laptop asleep overnight stops `Instant` on some platforms, not the wall.
+    let expired = age_expired(spare.born.elapsed(), spare.born_wall.elapsed().ok(), spare.idle);
+    match miss(alive, &spare.key, key, expired) {
+        // Counted and logged only once the launch commits to it (`Adopting::into_parts`).
+        None => (Some((spare, pending)), None),
         Some(reason) => {
             // The cold launch's `await_exit` waits for this process, so two never share a session.
             let note = decision(pool, spare.lead, Some(&reason));
@@ -381,21 +403,21 @@ fn launched_without_spare_in(pool: &Pool, session_id: &str) {
 
 /// A launch whose warm key is unknowable (its config folder cannot be resolved): counts the launch,
 /// retires any pooled spare and logs the miss like `take` would, leaving no stale `gone` note.
-pub(super) fn launched_without_key(session_id: &str, ordinary_eligible: bool, discard_epoch: u64) {
-    launched_without_key_reason(session_id, "its config folder cannot be known", ordinary_eligible, discard_epoch);
+pub(super) fn launched_without_key(session_id: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) {
+    launched_without_key_reason(session_id, "its config folder cannot be known", ordinary_eligible, lead, discard_epoch);
 }
 
 /// `launched_without_key`, logging `why` as the reason the spare was not used.
-pub(super) fn launched_without_key_reason(session_id: &str, why: &str, ordinary_eligible: bool, discard_epoch: u64) {
-    if let Some(note) = launched_without_key_since(&SPARES, session_id, why, ordinary_eligible, discard_epoch) {
+pub(super) fn launched_without_key_reason(session_id: &str, why: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) {
+    if let Some(note) = launched_without_key_since(&SPARES, session_id, why, ordinary_eligible, lead, discard_epoch) {
         eprintln!("{note}");
     }
 }
 
-fn launched_without_key_since(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool, discard_epoch: u64) -> Option<String> {
+fn launched_without_key_since(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> Option<String> {
     let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((spare, pending)) = removed else {
-        return no_spare_since(pool, gone, ordinary_eligible, discard_epoch);
+        return no_spare_since(pool, gone, ordinary_eligible, lead, discard_epoch);
     };
     let note = decision(pool, spare.lead, Some(why));
     retire(session_id, spare, pending);
@@ -403,63 +425,65 @@ fn launched_without_key_since(pool: &Pool, session_id: &str, why: &str, ordinary
 }
 
 /// `no_spare_note`, counting a cold launch only if no switch-off emptied the pool since `discard_epoch`.
-fn no_spare_since(pool: &Pool, gone: Option<Gone>, ordinary_eligible: bool, discard_epoch: u64) -> Option<String> {
+fn no_spare_since(pool: &Pool, gone: Option<Gone>, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> Option<String> {
     let mut locked = spares(pool);
     let eligible = ordinary_eligible && locked.discard_epoch == discard_epoch;
-    no_spare_note(&mut locked, gone, eligible)
+    no_spare_note(&mut locked, gone, eligible, lead)
 }
 
 /// What `prepare_launch` found in the pool for a supported launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LaunchPool {
-    /// A spare is pooled: key the launch off the runtime, then `take_checked` with this epoch.
-    Pooled { discard_epoch: u64 },
+    /// A spare is pooled: key the launch off the runtime (with the working tree's git status when
+    /// the pooled spare is a `lead` one), then `take_checked` with this epoch.
+    Pooled { discard_epoch: u64, lead: bool },
     /// None pooled. `may_record_cold`: an eligible launch with no lead `gone` note, whose cold start
-    /// `finish_empty_launch` counts once it has seen spares on, off the runtime.
-    Empty { may_record_cold: bool },
+    /// `finish_empty_launch` counts (in the lead pool for a `lead` launch) once it has seen spares
+    /// on, off the runtime.
+    Empty { may_record_cold: bool, lead: bool },
 }
 
 /// Counts the launch and says whether the task has a pooled spare worth keying it against, so a
 /// cold launch skips the warm key's config walk. With none, a lead's pending `gone` reason is
-/// logged as its miss; no file is read here, so this is safe on the async runtime.
-pub(super) fn prepare_launch(session_id: &str, ordinary_eligible: bool) -> LaunchPool {
-    let (found, note) = prepare_launch_in(&SPARES, session_id, ordinary_eligible);
+/// logged as its miss; no file is read here, so this is safe on the async runtime. `lead`: the
+/// launch is a team lead's (it offers `pandacode_dispatch_workers`).
+pub(super) fn prepare_launch(session_id: &str, ordinary_eligible: bool, lead: bool) -> LaunchPool {
+    let (found, note) = prepare_launch_in(&SPARES, session_id, ordinary_eligible, lead);
     if let Some(note) = note {
         eprintln!("{note}");
     }
     found
 }
 
-fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (LaunchPool, Option<String>) {
+fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool, lead: bool) -> (LaunchPool, Option<String>) {
     let mut locked = spares(pool);
     // Lock order: SPARES before LAUNCHES (matching `register`), so no spare for the old launch can
     // register after this check. Advanced with a spare pooled too: a lead spare expiring during the
     // off-runtime key walk then sees a newer launch and is not renewed beside this one.
     launched(session_id);
-    if locked.spares.contains_key(session_id) {
-        return (LaunchPool::Pooled { discard_epoch: locked.discard_epoch }, None);
+    if let Some(spare) = locked.spares.get(session_id) {
+        return (LaunchPool::Pooled { discard_epoch: locked.discard_epoch, lead: spare.lead }, None);
     }
     match locked.gone.remove(session_id) {
-        Some(why) => (LaunchPool::Empty { may_record_cold: false }, Some(record_lead_miss(&mut locked, why))),
-        None => (LaunchPool::Empty { may_record_cold: ordinary_eligible }, None),
+        Some(why) => (LaunchPool::Empty { may_record_cold: false, lead }, Some(record_lead_miss(&mut locked, why))),
+        None => (LaunchPool::Empty { may_record_cold: ordinary_eligible, lead }, None),
     }
 }
 
 /// A launch `prepare_launch` found no spare for: an eligible one (`may_record_cold`) is counted in
-/// `cold_without_spare` and logged only while spares are on, read off the runtime.
-pub(super) async fn finish_empty_launch(may_record_cold: bool) {
-    let on = || async { crate::blocking(|| Ok(enabled_now())).await.unwrap_or(false) };
-    if let Some(note) = finish_empty_launch_with(&SPARES, may_record_cold, on).await {
+/// its pool's `cold_without_spare` and logged only while spares are on, read off the runtime.
+pub(super) async fn finish_empty_launch(may_record_cold: bool, lead: bool) {
+    if let Some(note) = finish_empty_launch_with(&SPARES, may_record_cold, lead, enabled_off_runtime).await {
         eprintln!("{note}");
     }
 }
 
 /// `finish_empty_launch` with its switch read by `enabled`, which an ineligible launch never calls.
-async fn finish_empty_launch_with<Fut: std::future::Future<Output = bool>>(pool: &Pool, may_record_cold: bool, enabled: impl FnOnce() -> Fut) -> Option<String> {
+async fn finish_empty_launch_with<Fut: std::future::Future<Output = bool>>(pool: &Pool, may_record_cold: bool, lead: bool, enabled: impl FnOnce() -> Fut) -> Option<String> {
     if !may_record_cold || !enabled().await {
         return None;
     }
-    Some(cold_without_spare_note(&mut spares(pool)))
+    Some(cold_without_spare_note(&mut spares(pool), lead))
 }
 
 /// Advance `session_id`'s launch epoch when it already has one, without forgetting the task
@@ -518,7 +542,7 @@ fn discard_all_from(pool: &Pool) {
         let mut pool = spares(pool);
         pool.discard_epoch = pool.discard_epoch.wrapping_add(1);
         let affected: HashSet<String> = pool.spares.keys().chain(pool.gone.keys())
-            .chain(pool.starting.values().map(|(id, _, _)| id)).cloned().collect();
+            .chain(pool.starting.values().map(|entry| &entry.session_id)).cloned().collect();
         {
             // Same lock order as registration: pool, then launch epochs.
             let mut launches = LAUNCHES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -526,7 +550,11 @@ fn discard_all_from(pool: &Pool) {
                 advance_launch_if_present(&mut launches, &id);
             }
         }
-        pool.starting.clear();
+        // Kept, not cleared: those starts still run until their guards drop, so a quick off → on
+        // must still count them against each pool's cap (`spawn::in_flight`).
+        for entry in pool.starting.values_mut() {
+            entry.cancelled = true;
+        }
         let ids: Vec<_> = pool.spares.keys().cloned().collect();
         let removed = ids.into_iter().filter_map(|id| pool.remove(&id, Gone::Discarded)
             .map(|(spare, pending)| (id, spare, pending))).collect::<Vec<_>>();
@@ -582,8 +610,9 @@ fn take_for_discard(pool: &Pool, session_id: &str) -> Option<(Spare, Pending)> {
     pool.remove(session_id, Gone::Discarded)
 }
 
-/// Pooled spares and in-flight starts with their working directories, copied under the pool lock
-/// so folder matching (`path_in_folder` may `canonicalize`) never runs with a lock held.
+/// Pooled spares and in-flight starts (not yet cancelled) with their working directories, copied
+/// under the pool lock so folder matching (`path_in_folder` may `canonicalize`) never runs with a
+/// lock held.
 struct InFolder {
     spares: Vec<(String, PathBuf)>,
     starting: Vec<(u64, String, PathBuf)>,
@@ -594,7 +623,8 @@ impl InFolder {
         let locked = spares(pool);
         Self {
             spares: locked.spares.iter().filter_map(|(id, spare)| Some((id.clone(), spare.cwd.clone()?))).collect(),
-            starting: locked.starting.iter().map(|(token, (id, cwd, _))| (*token, id.clone(), cwd.clone())).collect(),
+            starting: locked.starting.iter().filter(|(_, entry)| !entry.cancelled)
+                .map(|(token, entry)| (*token, entry.session_id.clone(), entry.cwd.clone())).collect(),
         }
     }
 
@@ -627,9 +657,10 @@ impl InFolder {
     }
 }
 
-/// Drop the matched spares still pooled with the same working directory and the matched in-flight
-/// starts still present, advancing those sessions' launch epochs so none can race back into the
-/// pool. Returns the removed spares (to retire outside the lock) and the affected session IDs.
+/// Drop the matched spares still pooled with the same working directory and cancel the matched
+/// in-flight starts still present (kept until their guards drop, so `in_flight` never undercounts
+/// them), advancing those sessions' launch epochs once so none can race back into the pool.
+/// Returns the removed spares (to retire outside the lock) and the affected session IDs.
 fn discard_within(pool: &Pool, within: InFolder) -> (Vec<(String, Spare, Pending)>, Vec<String>) {
     let mut locked = spares(pool);
     let ids: Vec<String> = within
@@ -640,7 +671,8 @@ fn discard_within(pool: &Pool, within: InFolder) -> (Vec<(String, Spare, Pending
         .collect();
     let mut affected = ids.clone();
     for (token, id, _) in within.starting {
-        if locked.starting.remove(&token).is_some() && !affected.contains(&id) {
+        let cancelled_now = locked.starting.get_mut(&token).is_some_and(|entry| !std::mem::replace(&mut entry.cancelled, true));
+        if cancelled_now && !affected.contains(&id) {
             affected.push(id);
         }
     }
@@ -695,101 +727,12 @@ async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String
         .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())?
 }
 
-/// Keep the renewal visible to folder discard from the moment its expired spare leaves the
-/// pool. Both the exit and the renewal token are registered before releasing the pool lock.
-fn take_expired_for_renewal(
-    pool: &'static Pool,
-    session_id: &str,
-    born: std::time::Instant,
-    renewing: bool,
-) -> Option<(Spare, Pending, Option<InFlight>)> {
-    let mut locked = spares(pool);
-    if locked.spares.get(session_id).is_none_or(|spare| spare.born != born) {
-        return None;
-    }
-    let (spare, pending) = locked.remove(session_id, Gone::Expired)?;
-    let inflight = if renewing {
-        spare.cwd.clone().map(|cwd| InFlight::enter_locked(pool, &mut locked, session_id.to_owned(), cwd, spare.lead))
-    } else {
-        None
-    };
-    Some((spare, pending, inflight))
-}
-
-#[cfg(test)]
-pub(super) fn waiting(session_id: &str) -> bool {
-    waiting_in(&SPARES, session_id)
-}
-
-#[cfg(test)]
-fn waiting_in(pool: &Pool, session_id: &str) -> bool {
-    spares(pool).spares.contains_key(session_id)
-}
-
-#[cfg(test)]
-pub(crate) fn spare_pool_test_lock() -> &'static tokio::sync::Mutex<()> {
-    static LOCK: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
-    &LOCK
-}
-
-#[cfg(test)]
-pub(crate) fn insert_spare_in_cwd_for_test(session_id: &str, cwd: PathBuf, lead: bool) -> u32 {
-    launched(session_id);
-    let mut command = idle_sleep_command();
-    if cwd.exists() {
-        command.current_dir(&cwd);
-    }
-    let child = command.spawn().unwrap();
-    let pid = child.id().unwrap();
-    let spare = Spare {
-        key: "test-spare".into(),
-        child,
-        group: ProcessGroup::register(Some(pid)),
-        server: None,
-        born: std::time::Instant::now(),
-        idle: IDLE,
-        lead,
-        cwd: Some(external_path(&cwd)),
-    };
-    let registered = spawn::register(&SPARES, session_id, epoch(session_id), spare);
-    assert!(registered, "test spare must register for {session_id}");
-    pid
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn has_spare_for_test(session_id: &str) -> bool {
-    waiting_in(&SPARES, session_id)
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn process_gone_for_test(pid: u32) -> bool {
-    // SAFETY: signal 0 only checks that the process exists.
-    unsafe { libc::kill(pid as i32, 0) == -1 }
-}
-
-/// After `await_exit`: on Windows the exit task already awaited the process handle (`child.wait()`).
-#[cfg(test)]
-pub(super) fn assert_process_gone(pid: u32) {
-    #[cfg(unix)]
-    assert!(process_gone_for_test(pid), "process {pid} still runs");
-    #[cfg(windows)]
-    let _ = pid;
-}
-
-/// An idle stand-in for a spare's CLI that runs about 30 s on every platform.
-#[cfg(test)]
-pub(super) fn idle_sleep_command() -> Command {
-    #[cfg(unix)]
-    let (program, args) = ("sleep", &["30"][..]);
-    #[cfg(windows)]
-    let (program, args) = ("ping", &["-n", "30", "127.0.0.1"][..]);
-    let mut command = Command::new(program);
-    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
-    command
-}
-
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod key_tests;
+#[cfg(test)]
+mod lifecycle_tests;
 
 /// Regression coverage for the warm-spare switch and retirement races.
 #[cfg(test)]

@@ -143,6 +143,65 @@ pub(crate) fn same_settings_directory(left: &Path, right: &Path) -> bool {
         .is_some_and(|(left, right)| left == right)
 }
 
+/// The first folder at or above `cwd` holding a `.git` (folder, gitfile or link), or `None` outside
+/// a repository. A `.git` that cannot be probed is skipped: callers fall back to the enclosing one.
+pub(crate) fn git_checkout_root(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|ancestor| std::fs::symlink_metadata(ancestor.join(".git")).is_ok())
+        .map(Path::to_path_buf)
+}
+
+/// The gitdir and common gitdir of the nearest checkout at or above `cwd` (`None` outside a repo):
+/// a main checkout's `.git` folder is both; a linked worktree's gitfile leads to its own gitdir,
+/// whose `commondir` names the shared one. An unfollowable `.git` or bad metadata is `Some(Err)`.
+pub(crate) fn git_dirs_for(cwd: &Path) -> Option<std::result::Result<(PathBuf, PathBuf), &'static str>> {
+    for ancestor in cwd.ancestors() {
+        match std::fs::symlink_metadata(ancestor.join(".git")) {
+            Ok(_) => return Some(gitdir_of(ancestor).and_then(|(gitdir, _)| {
+                let common = commondir_of(&gitdir)?.unwrap_or_else(|| gitdir.clone());
+                Ok((gitdir, common))
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(_) => return Some(Err("unreadable gitfile")),
+        }
+    }
+    None
+}
+
+/// The git directory `root/.git` stands for, and whether a gitfile led there: the folder itself,
+/// or the folder a gitfile's `gitdir:` line names (relative to `root`).
+fn gitdir_of(root: &Path) -> std::result::Result<(PathBuf, bool), &'static str> {
+    let dot_git = root.join(".git");
+    if std::fs::metadata(&dot_git).map_err(|_| "unreadable gitfile")?.is_dir() {
+        return Ok((dot_git, false));
+    }
+    let pointer = read_git_metadata(&dot_git)?;
+    let gitdir = pointer.trim().strip_prefix("gitdir:").map(str::trim)
+        .filter(|path| !path.is_empty()).ok_or("invalid gitfile")?;
+    let gitdir = root.join(gitdir);
+    if !std::fs::metadata(&gitdir).map_err(|_| "unreadable gitdir")?.is_dir() {
+        return Err("invalid gitdir");
+    }
+    Ok((gitdir, true))
+}
+
+/// The common git directory `gitdir/commondir` names (relative to `gitdir`), or `None` when there
+/// is no `commondir` (a main checkout, or an ordinary gitfile such as a submodule's).
+fn commondir_of(gitdir: &Path) -> std::result::Result<Option<PathBuf>, &'static str> {
+    let commondir = gitdir.join("commondir");
+    match std::fs::symlink_metadata(&commondir) {
+        Ok(_) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("unreadable commondir"),
+    }
+    let common = read_git_metadata(&commondir)?;
+    let common = common.trim();
+    if common.is_empty() {
+        return Err("empty commondir");
+    }
+    Ok(Some(gitdir.join(common)))
+}
+
 /// Linked worktrees inherit the main checkout's local settings. Ordinary gitfiles (including
 /// submodules) have no commondir, and bare common repositories have no main checkout.
 pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Option<PathBuf>, &'static str> {
@@ -152,33 +211,13 @@ pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Opti
         Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(&gitfile) => return Ok(None),
         Err(_) => return Err("unreadable gitfile"),
     }
-    let metadata = std::fs::metadata(&gitfile).map_err(|_| "unreadable gitfile")?;
-    if metadata.is_dir() {
-        return Ok(None);
-    }
-    let pointer = read_git_metadata(&gitfile)?;
-    let gitdir = pointer.trim().strip_prefix("gitdir:").map(str::trim)
-        .filter(|path| !path.is_empty()).ok_or("invalid gitfile")?;
-    let gitdir = root.join(gitdir);
-    if !std::fs::metadata(&gitdir).map_err(|_| "unreadable gitdir")?.is_dir() {
-        return Err("invalid gitdir");
-    }
-    let commondir = gitdir.join("commondir");
-    match std::fs::symlink_metadata(&commondir) {
-        Ok(_) => (),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound && settings_path_absent(&commondir) => return Ok(None),
-        Err(_) => return Err("unreadable commondir"),
-    }
-    let common = read_git_metadata(&commondir)?;
-    let common = common.trim();
-    if common.is_empty() {
-        return Err("empty commondir");
-    }
-    let common = gitdir.join(common).canonicalize().map_err(|_| "unreadable common gitdir")?;
+    let (gitdir, true) = gitdir_of(root)? else { return Ok(None) };
+    let Some(common) = commondir_of(&gitdir)? else { return Ok(None) };
+    let common = common.canonicalize().map_err(|_| "unreadable common gitdir")?;
     if !common.is_dir() {
         return Err("invalid common gitdir");
     }
-    let (bare, worktree) = git_core_checkout(&read_git_config(&common.join("config"))?)?;
+    let (bare, worktree) = read_git_core_checkout(&common.join("config"))?;
     if let Some(worktree) = worktree {
         // Path handles native drive letters, separators and UNC prefixes on Windows. In
         // particular, do not split paths on ':' or replace backslashes with Unix separators.
@@ -201,11 +240,79 @@ pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Opti
 }
 
 /// Only an unsubsectioned [core] defines bare/worktree. Reject syntax we cannot safely
-/// interpret rather than treating an ambiguous common directory as having no checkout.
+/// interpret rather than treating an ambiguous common directory as having no checkout. A config
+/// held as text has no folder to resolve `[include] path` against, so any include fails closed
+/// here; [`read_git_core_checkout`] follows them.
 pub(crate) fn git_core_checkout(config: &str) -> std::result::Result<(bool, Option<String>), &'static str> {
-    let (mut core, mut section, mut bare, mut worktree) = (false, false, false, None);
-    for line in config.lines() {
-        let line = line.trim();
+    let mut checkout = (false, None);
+    parse_git_config(config, Includes::Refuse, &mut checkout)?;
+    Ok(checkout)
+}
+
+/// [`git_core_checkout`] for the file at `config_path`, following `[include] path`s as Git does: in
+/// place, relative to the including file's folder (`~/` from home), at most `MAX_INCLUDE_DEPTH`
+/// deep in one shared `MAX_GIT_CONFIG_BYTES` budget. A missing include is skipped like Git; an
+/// unreadable, oversize, cyclic or too-deep one fails closed, as does any `[includeIf]`.
+pub(crate) fn read_git_core_checkout(config_path: &Path) -> std::result::Result<(bool, Option<String>), &'static str> {
+    let mut budget = IncludeBudget { remaining: MAX_GIT_CONFIG_BYTES, chain: Vec::new() };
+    let mut checkout = (false, None);
+    budget.parse_file(config_path, &mut checkout)?;
+    Ok(checkout)
+}
+
+/// How deep `[include]` may nest below the common config.
+const MAX_INCLUDE_DEPTH: usize = 4;
+
+/// What a parse does with `[include] path`: refuse it, or follow it relative to `base`.
+enum Includes<'a> {
+    Refuse,
+    Follow { base: &'a Path, budget: &'a mut IncludeBudget },
+}
+
+/// Bytes left to read across a config and its includes, and the canonical include chain being
+/// parsed (a file already on it is a cycle; one included twice side by side is not).
+struct IncludeBudget { remaining: u64, chain: Vec<PathBuf> }
+
+impl IncludeBudget {
+    fn parse_file(&mut self, path: &Path, checkout: &mut (bool, Option<String>)) -> std::result::Result<(), &'static str> {
+        if self.chain.len() > MAX_INCLUDE_DEPTH {
+            return Err("git config include too deep");
+        }
+        let canonical = path.canonicalize().map_err(|_| "unreadable worktree metadata")?;
+        if self.chain.contains(&canonical) {
+            return Err("cyclic git config include");
+        }
+        let config = read_git_file(path, self.remaining)?;
+        self.remaining -= config.len() as u64;
+        self.chain.push(canonical);
+        let parsed = parse_git_config(&config, Includes::Follow { base: path, budget: &mut *self }, checkout);
+        self.chain.pop();
+        parsed
+    }
+
+    fn include(&mut self, base: &Path, value: &str, checkout: &mut (bool, Option<String>)) -> std::result::Result<(), &'static str> {
+        let path = if let Some(rest) = value.strip_prefix("~/") {
+            crate::account_config::home(&[]).ok_or("unknown home for git config include")?.join(rest)
+        } else if value.starts_with('~') || value.starts_with("%(") {
+            return Err("unsupported git config include path");
+        } else {
+            base.parent().ok_or("invalid git config include path")?.join(value)
+        };
+        if settings_path_absent(&path) {
+            return Ok(()); // Git ignores an include whose file does not exist.
+        }
+        self.parse_file(&path, checkout)
+    }
+}
+
+/// One config's lines in order, updating `checkout` and handing `[include] path` to `includes`
+/// at the point it appears, so later assignments override included ones as in Git.
+fn parse_git_config(config: &str, mut includes: Includes<'_>, checkout: &mut (bool, Option<String>))
+    -> std::result::Result<(), &'static str> {
+    let (mut core, mut include, mut section) = (false, false, false);
+    let mut lines = config.lines();
+    while let Some(line) = lines.next() {
+        let line = line.trim_start();
         if line.is_empty() || line.starts_with(['#', ';']) {
             continue;
         }
@@ -213,42 +320,14 @@ pub(crate) fn git_core_checkout(config: &str) -> std::result::Result<(bool, Opti
             return Err("invalid git config character");
         }
         if let Some(header) = line.strip_prefix('[') {
-            let (header, tail) = header.split_once(']').ok_or("invalid git config section")?;
-            let tail = tail.trim();
-            if !tail.is_empty() && !tail.starts_with(['#', ';']) {
-                return Err("invalid git config section suffix");
-            }
-            let header = header.trim();
-            let name_end = header.find(char::is_whitespace).unwrap_or(header.len());
-            let (name, subsection) = header.split_at(name_end);
-            if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.')) {
-                return Err("invalid git config section name");
-            }
-            if name.eq_ignore_ascii_case("include") || name.eq_ignore_ascii_case("includeif") {
+            let (name, subsectioned) = git_config_section(header)?;
+            include = name.eq_ignore_ascii_case("include");
+            if name.eq_ignore_ascii_case("includeif")
+                || (include && (subsectioned || matches!(includes, Includes::Refuse)))
+            {
                 return Err("unsupported git config include");
             }
-            let subsection = subsection.trim();
-            if !subsection.is_empty() {
-                let inner = subsection.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
-                    .ok_or("invalid git config subsection")?;
-                let mut escaped = false;
-                for c in inner.chars() {
-                    if escaped {
-                        if !matches!(c, '\\' | '"') {
-                            return Err("invalid git config subsection escape");
-                        }
-                        escaped = false;
-                    } else if c == '\\' {
-                        escaped = true;
-                    } else if c == '"' {
-                        return Err("invalid git config subsection quote");
-                    }
-                }
-                if escaped {
-                    return Err("unterminated git config subsection escape");
-                }
-            }
-            core = name.eq_ignore_ascii_case("core") && subsection.is_empty();
+            core = name.eq_ignore_ascii_case("core") && !subsectioned;
             section = true;
             continue;
         }
@@ -262,28 +341,98 @@ pub(crate) fn git_core_checkout(config: &str) -> std::result::Result<(bool, Opti
         }
         let tail = tail.trim_start();
         let value = if let Some(value) = tail.strip_prefix('=') {
-            Some(git_config_value(value.trim_start())?)
+            let mut raw = value.to_owned();
+            while git_config_continues(&raw) {
+                raw.pop();
+                let next = lines.next().ok_or("unterminated git config continuation")?;
+                if next.contains('\0') {
+                    return Err("invalid git config character");
+                }
+                raw.push_str(next);
+            }
+            Some(git_config_value(&raw)?)
         } else if tail.is_empty() || tail.starts_with(['#', ';']) {
             None // A key without '=' is Git's implicit boolean true.
         } else {
             return Err("invalid git config assignment");
         };
         if core && key.eq_ignore_ascii_case("bare") {
-            bare = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+            checkout.0 = match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
                 None | Some("true" | "yes" | "on" | "1") => true,
                 Some("" | "false" | "no" | "off" | "0") => false,
                 _ => return Err("invalid git core.bare"),
             };
         } else if core && key.eq_ignore_ascii_case("worktree") {
             let value = value.filter(|value| !value.is_empty()).ok_or("empty git core.worktree")?;
-            worktree = Some(value);
+            checkout.1 = Some(value);
+        } else if include && key.eq_ignore_ascii_case("path") {
+            let path = value.filter(|value| !value.is_empty()).ok_or("invalid git config include path")?;
+            match &mut includes {
+                Includes::Refuse => return Err("unsupported git config include"),
+                Includes::Follow { base, budget } => budget.include(base, &path, checkout)?,
+            }
         }
     }
-    Ok((bare, worktree))
+    Ok(())
+}
+
+/// A section header (the text after `[`): its name and whether it has a quoted subsection.
+fn git_config_section(header: &str) -> std::result::Result<(&str, bool), &'static str> {
+    let (header, tail) = header.split_once(']').ok_or("invalid git config section")?;
+    let tail = tail.trim();
+    if !tail.is_empty() && !tail.starts_with(['#', ';']) {
+        return Err("invalid git config section suffix");
+    }
+    let header = header.trim();
+    let name_end = header.find(char::is_whitespace).unwrap_or(header.len());
+    let (name, subsection) = header.split_at(name_end);
+    if name.is_empty() || !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.')) {
+        return Err("invalid git config section name");
+    }
+    let subsection = subsection.trim();
+    if !subsection.is_empty() {
+        let inner = subsection.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+            .ok_or("invalid git config subsection")?;
+        let mut escaped = false;
+        for c in inner.chars() {
+            if escaped {
+                if !matches!(c, '\\' | '"') {
+                    return Err("invalid git config subsection escape");
+                }
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                return Err("invalid git config subsection quote");
+            }
+        }
+        if escaped {
+            return Err("unterminated git config subsection escape");
+        }
+    }
+    Ok((name, !subsection.is_empty()))
+}
+
+/// Whether a raw value line ends in a continuation (`git-config(1)`): a final `\` that is not
+/// itself escaped and not inside a comment. Quotes do not stop a continuation.
+fn git_config_continues(value: &str) -> bool {
+    let mut quoted = false;
+    let mut chars = value.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => quoted = !quoted,
+            '#' | ';' if !quoted => return false,
+            '\\' if chars.next().is_none() => return true, // An escape also consumes the next character.
+            _ => (),
+        }
+    }
+    false
 }
 
 /// Decode Git's quoted values and escapes, preserving quoted whitespace and comment bytes.
-/// Unsupported continuations/escapes fail closed; the entire config is already bounded.
+/// Leading unquoted whitespace is dropped and trailing unquoted whitespace trimmed, as in Git.
+/// Unsupported escapes fail closed (continuations are joined by the caller); the entire config
+/// is already bounded.
 pub(crate) fn git_config_value(value: &str) -> std::result::Result<String, &'static str> {
     let mut decoded = String::new();
     let mut quoted = false;
@@ -304,6 +453,7 @@ pub(crate) fn git_config_value(value: &str) -> std::result::Result<String, &'sta
                 });
                 significant = decoded.len();
             }
+            c if c.is_whitespace() && !quoted && decoded.is_empty() => (),
             _ => {
                 decoded.push(c);
                 if quoted || !c.is_whitespace() {
@@ -321,19 +471,14 @@ pub(crate) fn git_config_value(value: &str) -> std::result::Result<String, &'sta
 
 /// Bound for Git's small path-pointer files (`.git` gitfile, `commondir`).
 const MAX_GIT_METADATA_BYTES: u64 = 16 * 1024;
-/// Bound for a common `config`: one `[branch]`/`[remote]` section per branch makes it grow far
-/// past the pointer files (16 KiB is only ~180 branches), and an oversize one disables explore.
+/// Bound for a common `config` with its includes: a `[branch]` section per branch grows it far past
+/// the pointer files (16 KiB is only ~180 branches), and an oversize one disables explore.
 const MAX_GIT_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// Git's small path-pointer files are bounded independently of JSON settings, even if they
 /// grow after stat. Symlinks must resolve to readable regular files.
 pub(crate) fn read_git_metadata(path: &Path) -> std::result::Result<String, &'static str> {
     read_git_file(path, MAX_GIT_METADATA_BYTES)
-}
-
-/// A common gitdir's `config`, bounded at `MAX_GIT_CONFIG_BYTES`; over it fails closed.
-pub(crate) fn read_git_config(path: &Path) -> std::result::Result<String, &'static str> {
-    read_git_file(path, MAX_GIT_CONFIG_BYTES)
 }
 
 /// A regular UTF-8 file of at most `limit` bytes, checked at stat and again while reading.
@@ -589,5 +734,66 @@ mod tests {
         std::fs::write(&config_path, format!("{comments}{config}")).unwrap();
         assert_eq!(linked_worktree_main_root(&worktree), Err("invalid worktree metadata file"));
         assert_eq!(project_config_roots(&worktree).error, Some("invalid worktree metadata file"));
+    }
+
+    #[test]
+    fn git_dirs_follow_plain_repos_subfolders_and_linked_worktrees() {
+        let scratch = Scratch::new("git-dirs");
+        assert_eq!((git_dirs_for(&scratch.0), git_checkout_root(&scratch.0)), (None, None), "outside a repository");
+        let repo = scratch.0.join("repo");
+        let (dot_git, deep, worktree) = (repo.join(".git"), repo.join("src").join("deep"), scratch.0.join("wt"));
+        let admin = dot_git.join("worktrees").join("wt");
+        for dir in [&admin, &deep, &worktree.join("src")] { std::fs::create_dir_all(dir).unwrap(); }
+        for cwd in [&repo, &deep] {
+            assert_eq!(git_dirs_for(cwd), Some(Ok((dot_git.clone(), dot_git.clone()))), "{cwd:?}");
+            assert_eq!(git_checkout_root(cwd), Some(repo.clone()));
+        }
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        assert_eq!(git_dirs_for(&worktree.join("src")), Some(Ok((admin.clone(), admin.join("../..")))));
+        assert_eq!(git_checkout_root(&worktree.join("src")), Some(worktree.clone()));
+        std::fs::write(admin.join("commondir"), " \n").unwrap();
+        assert_eq!(git_dirs_for(&worktree), Some(Err("empty commondir")));
+        std::fs::write(worktree.join(".git"), "nonsense\n").unwrap();
+        assert_eq!(git_dirs_for(&worktree), Some(Err("invalid gitfile")));
+    }
+
+    #[test]
+    fn git_config_values_continue_after_an_unescaped_trailing_backslash() {
+        let main = Ok((false, Some("../main".to_owned())));
+        for config in ["[core]\n worktree = ../ma\\\nin\n", "[core]\r\n worktree = \"../ma\\\r\nin\" # c\r\n", "[core]\n worktree = \\\n  ../main\n"] {
+            assert_eq!(git_core_checkout(config), main, "{config:?}");
+        }
+        // A continued value in another section swallows what would otherwise be a `[core]` header.
+        assert_eq!(git_core_checkout("[remote \"origin\"]\n url = a\\\n[core]\n worktree = ../main\n"), Ok((false, None)));
+        // Neither a backslash in a comment nor an escaped one continues; a dangling one at the end fails closed.
+        assert_eq!(git_core_checkout("[core]\n bare = true # note \\\n worktree = ../main\n"), Ok((true, Some("../main".to_owned()))));
+        assert_eq!(git_core_checkout("[core]\n worktree = C:\\\\\n bare\n"), Ok((true, Some("C:\\".to_owned()))));
+        assert_eq!(git_core_checkout("[core]\n worktree = a\\"), Err("unterminated git config continuation"));
+    }
+
+    #[test]
+    fn git_config_includes_apply_in_place_skip_missing_files_and_refuse_cycles() {
+        let scratch = Scratch::new("include");
+        let (config, extra) = (scratch.0.join("config"), scratch.0.join("extra").join("checkout.config"));
+        std::fs::create_dir_all(scratch.0.join("extra")).unwrap();
+        std::fs::write(&extra, "[core]\n\tworktree = ../main\n").unwrap();
+        let text = "[core]\n bare = true\n[InClUdE]\n PaTh = extra/checkout.config\n path = missing.config\n";
+        std::fs::write(&config, text).unwrap();
+        assert_eq!(read_git_core_checkout(&config), Ok((true, Some("../main".to_owned()))));
+        assert_eq!(git_core_checkout(text), Err("unsupported git config include"), "text alone has no folder to resolve against");
+        // Later lines override included ones, as if the file were pasted in place.
+        std::fs::write(&config, "[include]\n path = extra/checkout.config\n[core]\n worktree = ../other\n").unwrap();
+        assert_eq!(read_git_core_checkout(&config), Ok((false, Some("../other".to_owned()))));
+        std::fs::write(&extra, "[include]\n path = ../config\n").unwrap();
+        assert_eq!(read_git_core_checkout(&config), Err("cyclic git config include"));
+        std::fs::write(&config, "[includeIf \"gitdir:/x/\"]\n path = missing.config\n").unwrap();
+        assert_eq!(read_git_core_checkout(&config), Err("unsupported git config include"));
+        // d2 through d5 nest four deep (d6 is missing); starting at d1 is one too many.
+        (1..=5).for_each(|n| std::fs::write(scratch.0.join(format!("d{n}")), format!("[include]\n path = d{}\n", n + 1)).unwrap());
+        std::fs::write(&config, "[include]\n path = d2\n").unwrap();
+        assert_eq!(read_git_core_checkout(&config), Ok((false, None)));
+        std::fs::write(&config, "[include]\n path = d1\n").unwrap();
+        assert_eq!(read_git_core_checkout(&config), Err("git config include too deep"));
     }
 }

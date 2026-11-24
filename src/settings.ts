@@ -101,7 +101,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Keeps idle Claude Code processes ready (~230–255 MiB each on short sessions, more with long histories or extra MCP servers; up to 4), runs SessionStart hooks early, and snapshots git status at start (branch switches and commits start fresh).' },
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Skips Claude Code’s cold start between turns (~0.17–1.71 s; Turn off agent telemetry already removes ~1.5 s of it for free). Keeps idle Claude Code processes ready (~230–255 MiB each on short sessions, more with long histories or extra MCP servers; up to 4); each starts your MCP servers, runs SessionStart hooks early and makes Claude Code’s startup requests. Branch switches and commits start fresh; an ordinary spare’s uncommitted git status can be up to 10 min old.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
@@ -119,21 +119,50 @@ const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
 /** Settings → Tools & add-ons → Agent-made tools: opt-in, off by default. */
 const CUSTOM_TOOLS_SWITCH = { id: 'custom-tools-enabled', name: 'custom_tools', title: 'Agent-made tools', hint: 'Agents save and run project scripts. Off by default: no measured gain.' } as const;
 
+/** One warm pool's totals since launch (`warm_spare_stats`, `providers/warm/stats.rs`). */
+type WarmPoolStats = {
+  started: number; adopted: number; missed: number; expired: number; evicted: number;
+  replaced: number; discarded: number; coldWithoutSpare: number; churnSkipped: number;
+};
+type WarmStatsSnapshot = { ordinary: WarmPoolStats; lead: WarmPoolStats };
+
+const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0);
+
+/** This launch's spare adoption, summed over both pools; Dock and Finder launches keep no stderr. */
+function warmStatsCaption(snapshot: WarmStatsSnapshot): string {
+  const pools = [snapshot?.ordinary, snapshot?.lead];
+  const sum = (key: keyof WarmPoolStats) => pools.reduce((total, pool) => total + count(pool?.[key]), 0);
+  const started = sum('started'), cold = sum('coldWithoutSpare'), evicted = sum('evicted');
+  if (started === 0 && cold === 0) return 'This launch: no spares started yet.';
+  const leadStarted = count(snapshot?.lead?.started);
+  return `This launch: ${sum('adopted')} adopted, ${sum('missed')} not used, ${cold} cold`
+    + (evicted > 0 ? `, ${evicted} evicted` : '')
+    + (leadStarted > 0 ? ` (${count(snapshot.lead.adopted)}/${leadStarted} lead)` : '');
+}
+
+const warmStatsLine = async () => warmStatsCaption(await call<WarmStatsSnapshot>('warm_spare_stats'));
+
 // IDs distinguish harnesses and keep a reopened Settings view behind any unfinished save.
 const nativeSwitchSaves = new Map<string, Promise<void>>();
 
 /** One native switch: disabled until read, so an unreadable value is never shown; read at each
- * run, so it needs nothing from the window; a refused save puts the switch back and says why. */
-function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean }): () => void {
+ * run, so it needs nothing from the window; a refused save puts the switch back and says why.
+ * An optional \`caption\` fills the status line while no error shows; failing, it shows nothing. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: () => Promise<string> }): () => void {
   const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
   let disposed = false;
-  // The hint sits behind the title's mark; the row's status line only ever shows an error.
+  // The hint sits behind the title's mark; the row's status line shows an error, else the caption.
   const status = input.closest('.setting-row')!.querySelector<HTMLElement>('.setting-status')!;
-  const say = (message: string, alert = false) => {
+  let caption = '';
+  let error: { message: string; alert: boolean } | null = null;
+  const render = () => {
+    const message = error?.message || caption;
     status.textContent = message;
     status.hidden = !message;
-    if (alert) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
+    if (error?.alert) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
   };
+  const say = (message: string, alert = false) => { error = message ? { message, alert } : null; render(); };
+  if (readCaption) void readCaption().then(text => { if (!disposed) { caption = text; render(); } }, () => {});
   input.setAttribute('aria-busy', 'true');
   void (async () => {
     try {
@@ -482,7 +511,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
-    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row)));
+    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row.id === 'warm-spares' ? { ...row, caption: warmStatsLine } : row)));
     if (id === 'agents') cleanups.push(...EXPLORE_HARNESSES.map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider }, locked: provider === 'claude' })));
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {

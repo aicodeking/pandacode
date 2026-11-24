@@ -6,13 +6,19 @@ use crate::connections::Connection;
 /// Everything that shapes the launch: the command line, the folder and the tool catalog.
 /// `None` when the launch's Claude config folder cannot be known: no spare is started or adopted.
 pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> Option<String> {
-    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider))
+    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), None)
+}
+
+/// `key` for a launch adopting a team lead's spare, whose key also carries the working tree's
+/// `git_status` digest (`lead_git_status`).
+pub(in crate::providers) fn lead_key(config: &RunConfig, tools: &[Value], git_status: &str) -> Option<String> {
+    key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), Some(git_status))
 }
 
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
-pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> Option<String> {
+pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str, lead_git_status: Option<&str>) -> Option<String> {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id))
+    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id), lead_git_status)
 }
 
 /// Whether this launch passes `--settings {"fastMode":true}` (`configure_command_with_agents`).
@@ -30,12 +36,14 @@ pub(super) fn key_with_disabled(
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
+    lead_git_status: Option<&str>,
 ) -> Option<String> {
     let named = crate::connections::for_task(&config.session_id, &config.provider);
-    key_for_connection(config, tools, connection, named.as_ref(), disabled, stdio)
+    key_for_connection(config, tools, connection, named.as_ref(), disabled, stdio, lead_git_status)
 }
 
 /// `key_with_disabled` with the task's named connection (`named`) already looked up.
+/// `lead_git_status`: a team lead's working-tree digest, `None` (and never read) otherwise.
 pub(super) fn key_for_connection(
     config: &RunConfig,
     tools: &[Value],
@@ -43,11 +51,12 @@ pub(super) fn key_for_connection(
     named: Option<&Connection>,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
+    lead_git_status: Option<&str>,
 ) -> Option<String> {
     // Config files Claude reads only at startup: an edit while a spare idles starts cold. Not
     // knowable at all (see `claude_config_fingerprint_with`): no key, so no spare.
     let claude_config = claude_config_fingerprint(config, named)?;
-    let key = json!({
+    let mut key = json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
@@ -76,6 +85,11 @@ pub(super) fn key_for_connection(
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
     });
+    // A lead waits while its workers edit files, and Claude Code also snapshots the working
+    // tree's status in `gitStatus`: a lead spare is adopted only if that is unchanged too.
+    if let (Some(status), Value::Object(fields)) = (lead_git_status, &mut key) {
+        fields.insert("gitStatus".into(), json!(status));
+    }
     Some(key.to_string())
 }
 
@@ -423,64 +437,88 @@ fn walk_config_dir(
     true
 }
 
-/// At most this much of a git metadata file (`.git`, `HEAD`, `commondir`, a loose ref) is read.
-const GIT_FILE_LIMIT: u64 = 4096;
-
 /// The checked-out branch (or detached commit) and its tip, read from the repository's files
-/// (git is never run): `HEAD`, the branch's loose ref and `packed-refs` metadata, in a linked
-/// worktree from its own `HEAD` and the shared `commondir`. The index and working tree are not
-/// stamped. `null` outside a repository.
+/// (`claude_roots::git_dirs_for`; git is never run): `HEAD` and the branch's loose ref, or, only
+/// when there is no loose ref, `packed-refs` metadata (so `git fetch --prune` or `git gc` rewriting
+/// it never refuses a spare whose branch is loose). A linked worktree reads its own `HEAD` and the
+/// shared refs. A reftable repository keeps every ref in its tables, whose list changes on each
+/// branch switch, commit or ref update, so that list is stamped instead. The index and working
+/// tree are not stamped. `null` outside a repository.
 pub(super) fn git_head_stamp(cwd: &Path) -> Value {
-    let Some(gitdir) = find_gitdir(cwd) else { return Value::Null };
-    let head = match read_git_file(&gitdir.join("HEAD")) {
+    let (gitdir, common) = match crate::claude_roots::git_dirs_for(cwd) {
+        None => return Value::Null,
+        Some(Err(reason)) => return json!({"error": reason}),
+        Some(Ok(dirs)) => dirs,
+    };
+    let tables = common.join("reftable").join("tables.list");
+    if !path_absent(&tables) {
+        let own = gitdir.join("reftable").join("tables.list");
+        return json!({"reftable": git_file_stamp(&tables), "worktreeReftable": (gitdir != common).then(|| git_file_stamp(&own))});
+    }
+    let head = match crate::claude_roots::read_git_metadata(&gitdir.join("HEAD")) {
         Ok(head) => head,
-        Err(error) => return json!({"head": error_stamp(&error)}),
+        Err(reason) => return json!({"head": {"error": reason}}),
     };
     let head = head.trim();
-    let common = read_git_file(&gitdir.join("commondir"))
-        .ok()
-        .map(|dir| dir.trim().to_owned())
-        .filter(|dir| !dir.is_empty())
-        .map_or_else(|| gitdir.clone(), |dir| gitdir.join(dir));
     let branch = head
         .strip_prefix("ref:")
         .map(str::trim)
         .filter(|name| name.starts_with("refs/") && !name.split('/').any(|part| part == ".."));
     let Some(branch) = branch else { return json!({"head": head}) };
-    let tip = match read_git_file(&common.join(branch)) {
-        Ok(tip) => json!(tip.trim()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
-        Err(error) => error_stamp(&error),
-    };
-    json!({"head": head, "ref": tip, "packedRefs": config_file_stamp(&common.join("packed-refs"))})
-}
-
-/// The git folder of the nearest `.git` at or above `cwd`: the folder itself, or the one a `.git`
-/// file's `gitdir:` line names (relative to the file's folder). A `.git` that cannot be followed
-/// (a dangling link, an unreadable file) is still the repository: its `HEAD` stamps the error.
-fn find_gitdir(cwd: &Path) -> Option<PathBuf> {
-    for dir in cwd.ancestors() {
-        let dot_git = dir.join(".git");
-        match std::fs::symlink_metadata(&dot_git) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(_) => return Some(dot_git),
-            Ok(_) if std::fs::metadata(&dot_git).is_ok_and(|meta| meta.is_dir()) => return Some(dot_git),
-            Ok(_) => {}
-        }
-        let linked = read_git_file(&dot_git).ok().and_then(|text| {
-            text.lines().find_map(|line| line.strip_prefix("gitdir:")).map(|target| dir.join(target.trim()))
-        });
-        return Some(linked.unwrap_or(dot_git));
+    let loose = common.join(branch);
+    match crate::claude_roots::read_git_metadata(&loose) {
+        Ok(tip) => json!({"head": head, "ref": tip.trim()}),
+        Err(_) if path_absent(&loose) => json!({"head": head, "ref": null, "packedRefs": config_file_stamp(&common.join("packed-refs"))}),
+        Err(reason) => json!({"head": head, "ref": {"error": reason}}),
     }
-    None
 }
 
-/// The first `GIT_FILE_LIMIT` bytes of a git metadata file, as text.
-fn read_git_file(path: &Path) -> std::io::Result<String> {
-    use std::io::Read;
-    let mut text = String::new();
-    std::fs::File::open(path)?.take(GIT_FILE_LIMIT).read_to_string(&mut text)?;
-    Ok(text)
+/// A small git metadata file's text and metadata (`null` when absent).
+fn git_file_stamp(path: &Path) -> Value {
+    if path_absent(path) {
+        return Value::Null;
+    }
+    let text = crate::claude_roots::read_git_metadata(path).map_or_else(|reason| json!({"error": reason}), |text| json!(text));
+    json!([text, config_file_stamp(path)])
+}
+
+/// Whether nothing at all is at `path` (a dangling link or an unreadable entry is something).
+fn path_absent(path: &Path) -> bool {
+    matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+}
+
+/// What a lead spare's working-tree digest is outside a repository.
+pub(super) const NOT_GIT: &str = "not-git";
+/// At most this much `git status` output is digested; a larger status is unknown.
+const GIT_STATUS_LIMIT: usize = 1024 * 1024;
+/// How long that `git status` may run.
+const GIT_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A digest of the working tree's `git status` for a team lead's spare: Claude Code snapshots it
+/// (`gitStatus`) at spawn, while a lead waits for workers that may change files. `NOT_GIT` outside
+/// a repository; `None` when it cannot be known (an unreadable repository, a failed or timed-out
+/// or oversized `git status`), so no lead spare starts or is adopted on an unknown status. Runs
+/// git through the bounded runner (`workspace::run_process`, no hooks or fsmonitor, no optional
+/// locks): never on the async runtime. Ordinary spares never call this.
+pub(super) fn lead_git_status(cwd: &Path) -> Option<String> {
+    match crate::claude_roots::git_dirs_for(cwd) {
+        None => return Some(NOT_GIT.into()),
+        Some(Err(_)) => return None,
+        Some(Ok(_)) => {}
+    }
+    let args = ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=normal"];
+    let output = crate::workspace::run_git_bounded(cwd, &args, GIT_STATUS_LIMIT, false, GIT_STATUS_TIMEOUT).ok()?;
+    if !output.status.success() || output.stdout.truncated {
+        return None;
+    }
+    use sha2::Digest;
+    Some(format!("{:x}", sha2::Sha256::digest(&output.stdout.bytes)))
+}
+
+/// `lead_git_status` on a blocking thread.
+pub(in crate::providers) async fn lead_git_status_digest(cwd: &Path) -> Option<String> {
+    let cwd = cwd.to_path_buf();
+    crate::blocking(move || Ok(lead_git_status(&cwd))).await.ok().flatten()
 }
 
 /// The spare launches with the instructions a cold launch would use (`run_inner` applies the
@@ -490,12 +528,18 @@ pub(super) fn prepared(mut config: RunConfig, disabled: &std::collections::BTree
     config
 }
 
-/// Why a warm agent cannot take this launch, if it cannot.
-pub(super) fn miss(alive: bool, spare_key: &str, key: &str, age: Duration, idle: Duration) -> Option<String> {
+/// Whether a spare has waited `limit` on the monotonic clock or, when it is readable, the wall
+/// clock: `Instant` may stand still while the machine sleeps, the wall clock does not.
+pub(super) fn age_expired(monotonic: Duration, wall: Option<Duration>, limit: Duration) -> bool {
+    monotonic >= limit || wall.is_some_and(|elapsed| elapsed >= limit)
+}
+
+/// Why a warm agent cannot take this launch, if it cannot. `expired`: `age_expired` held.
+pub(super) fn miss(alive: bool, spare_key: &str, key: &str, expired: bool) -> Option<String> {
     if !alive {
         return Some("its process exited".into());
     }
-    if age >= idle {
+    if expired {
         return Some("it expired".into());
     }
     if spare_key == key {

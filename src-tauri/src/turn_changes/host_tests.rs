@@ -370,7 +370,8 @@ fn git_config_values_preserve_quoted_comments_and_native_windows_paths() {
     for config in ["[core]\n bare\n", "[core]\n bare = YES # comment\n"] {
         assert_eq!(git_core_checkout(config).unwrap(), (true, None));
     }
-    for config in ["[core]\n worktree = missing\\", "[core]\n worktree = \\\n next",
+    assert_eq!(git_core_checkout("[core]\n worktree = \\\n next").unwrap(), (false, Some("next".into())));
+    for config in ["[core]\n worktree = missing\\",
         "[core \"]", "[core \"bad\\\"]", "[core \"bad\\q\"]",
         "[core]\n bare = true\n[core \"bad\" \"section\"]", "[core]\n worktree = a\0b"] {
         assert!(git_core_checkout(config).is_err(), "{config:?}");
@@ -438,6 +439,12 @@ fn linked_worktree_git_config_includes_fail_closed() {
             let common = if bare { settings.base.join("repo.git") } else { main.join(".git") };
             let config = format!("[core]\n bare = {bare}\n[{header}]\n path = checkout.config\n");
             std::fs::write(common.join("config"), &config).unwrap();
+            // Plain `[include]` skips missing files per git-config(1), so write an invalid target
+            // there to prove invalid local includes still fail closed; `[includeIf]` fails closed
+            // without reading any target.
+            if header.eq_ignore_ascii_case("include") {
+                std::fs::write(common.join("checkout.config"), "[core]\n bare = perhaps\n").unwrap();
+            }
             assert_eq!(git_core_checkout(&config), Err("unsupported git config include"));
             assert!(linked_reads_restricted(&settings, &worktree), "{header} bare={bare}");
         }

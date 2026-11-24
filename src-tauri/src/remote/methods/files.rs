@@ -902,14 +902,6 @@ mod tests {
         assert!(!crate::checkout_busy::any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
         assert!(!crate::checkout_busy::any_same_checkout(&root, &[]));
         std::fs::remove_dir_all(&dir).unwrap();
-        // The phone's refusal uses the one shared matcher, which canonicalizes off the async runtime.
-        let source = include_str!("files.rs");
-        let body = &source[source.find("async fn running_in_state_excluding").unwrap()..];
-        let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.contains("crate::checkout_busy::any_checkout_busy_excluding("), "delegates to checkout_busy");
-        let shared = include_str!("../../checkout_busy.rs");
-        let shared = &shared[shared.find("async fn any_checkout_busy_excluding").unwrap()..];
-        assert!(shared.find("blocking(move").unwrap() < shared.find("any_same_checkout(root").unwrap(), "canonicalizing runs off the async runtime");
     }
 
     fn parse(name: &str, params: Value) -> Result<Box<dyn Run>> {
@@ -1567,6 +1559,40 @@ mod tests {
         drop(hold);
         crate::providers::await_exit(&ephemeral).await.unwrap();
         assert!(!running_in_state(&state, &root).await.unwrap(), "checkout must clear once the pending exit ends");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The phone's refusal goes through the one shared matcher: a running agent in the checkout
+    /// (any spelling) counts unless excluded, and a nested worktree's exit holds only that worktree.
+    #[tokio::test]
+    async fn running_in_state_excluding_uses_the_shared_checkout_matcher() {
+        let dir = std::env::temp_dir().join(format!("pandacode-files-shared-{}", uuid::Uuid::new_v4().simple()));
+        let main = dir.join("main");
+        let nested = main.join(".claude").join("worktrees").join("x");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let project = store.add_project(&main).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "full").unwrap();
+        let state = test_state(store);
+
+        let (input, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        state.agents.lock().unwrap().insert(session.id.clone(), crate::RunningAgent::new(input, stopped));
+        assert!(running_in_state_excluding(&state, &main, None).await.unwrap(), "an agent running in the checkout");
+        assert!(running_in_state_excluding(&state, &main.join("."), None).await.unwrap(), "the same checkout, spelled differently");
+        assert!(!running_in_state_excluding(&state, &main, Some(&session.id)).await.unwrap(), "the excluded session's own run");
+        assert!(!running_in_state_excluding(&state, &nested, None).await.unwrap(), "the main checkout is not inside its nested worktree");
+        state.agents.lock().unwrap().remove(&session.id);
+
+        let ephemeral = format!("ephemeral-nested-{}", uuid::Uuid::new_v4().simple());
+        let hold = crate::providers::hold_exit_in_cwd_for_test(&ephemeral, nested.join("src"));
+        assert!(running_in_state_excluding(&state, &nested, None).await.unwrap(), "an exit inside the nested worktree holds it");
+        assert!(!running_in_state_excluding(&state, &main, None).await.unwrap(), "but not the main checkout around it");
+        assert!(!running_in_state_excluding(&state, &nested, Some(&ephemeral)).await.unwrap());
+        drop(hold);
+        crate::providers::await_exit(&ephemeral).await.unwrap();
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -4015,8 +4015,8 @@ pub(crate) async fn end_lingering_in(folder: &Path) {
         return;
     }
     fn lingering_in(snapshot: Vec<(String, PathBuf)>, folder: &Path) -> Vec<String> {
-        let resolved = exit::resolve_path(folder);
-        snapshot.into_iter().filter(|(_, cwd)| exit::path_in_folder(cwd, folder, &resolved)).map(|(task, _)| task).collect()
+        let resolved = crate::path_match::resolve_path(folder);
+        snapshot.into_iter().filter(|(_, cwd)| crate::path_match::path_in_folder(cwd, folder, &resolved)).map(|(task, _)| task).collect()
     }
     let (owned, copy) = (folder.to_path_buf(), snapshot.clone());
     let tasks = match tokio::task::spawn_blocking(move || lingering_in(copy, &owned)).await {
@@ -4610,10 +4610,12 @@ fn cloud_launch() -> Launch {
 }
 
 /// A pooled warm spare's launch check, made off the runtime: spares switched off, no key (the
-/// config folder cannot be known), or the warm key to adopt against.
+/// config folder cannot be known, or a lead spare's working-tree status), or the warm key to
+/// adopt against.
 enum WarmKey {
     Disabled,
     NoKey,
+    NoGitStatus,
     Key(String),
 }
 
@@ -4644,41 +4646,51 @@ async fn run_process_launch(
             // Managed workers never get spares, and a brand-new conversation's first turn can never
             // have one, so neither counts as a cold launch without a spare.
             let ordinary_eligible = config.worker.is_none() && config.resume_id.is_some();
-            match warm::prepare_launch(&config.session_id, ordinary_eligible) {
-                warm::LaunchPool::Pooled { discard_epoch } => {
+            // A team lead's launch offers the dispatch tool; its cold launches count in the lead pool.
+            let is_lead = tools.tools.iter().any(|tool| tool["name"].as_str() == Some("pandacode_dispatch_workers"));
+            match warm::prepare_launch(&config.session_id, ordinary_eligible, is_lead) {
+                warm::LaunchPool::Pooled { discard_epoch, lead } => {
+                    // A lead spare is keyed by the working tree's `gitStatus` too (git runs off
+                    // the runtime); an unknown status adopts nothing.
+                    let git_status = if lead { Some(warm::lead_git_status_digest(&config.cwd).await) } else { None };
                     // The switch and the key read files (the key: the task's switches and saved
                     // settings), so both run off the runtime. Never abort a turn over a warm key.
                     // `discard_epoch` keeps a switch-off during this check from counting a cold launch.
                     let (keyed, catalog) = (config.clone(), tools.tools.clone());
                     let outcome = crate::blocking(move || {
-                        Ok(if !warm::enabled_now() {
-                            WarmKey::Disabled
-                        } else {
-                            warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key)
+                        Ok(match git_status {
+                            _ if !warm::enabled_now() => WarmKey::Disabled,
+                            Some(None) => WarmKey::NoGitStatus,
+                            Some(Some(status)) => warm::lead_key(&keyed, &catalog, &status).map_or(WarmKey::NoKey, WarmKey::Key),
+                            None => warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key),
                         })
                     })
                     .await;
                     match outcome {
-                        Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible, discard_epoch),
+                        Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible, is_lead, discard_epoch),
                         Ok(WarmKey::Disabled) => {
                             warm::launched_without_spare(&config.session_id);
                             None
                         }
                         // No key: the config folder cannot be known, so the pooled spare is retired and logged.
                         Ok(WarmKey::NoKey) => {
-                            warm::launched_without_key(&config.session_id, ordinary_eligible, discard_epoch);
+                            warm::launched_without_key(&config.session_id, ordinary_eligible, is_lead, discard_epoch);
+                            None
+                        }
+                        Ok(WarmKey::NoGitStatus) => {
+                            warm::launched_without_key_reason(&config.session_id, "its git status cannot be read", ordinary_eligible, is_lead, discard_epoch);
                             None
                         }
                         Err(err) => {
                             eprintln!("Warm Claude key check failed: {err}");
-                            warm::launched_without_key_reason(&config.session_id, "its warm key check failed", ordinary_eligible, discard_epoch);
+                            warm::launched_without_key_reason(&config.session_id, "its warm key check failed", ordinary_eligible, is_lead, discard_epoch);
                             None
                         }
                     }
                 }
                 // Counted and logged only while spares are on: with them off a launch says nothing.
-                warm::LaunchPool::Empty { may_record_cold } => {
-                    warm::finish_empty_launch(may_record_cold).await;
+                warm::LaunchPool::Empty { may_record_cold, lead } => {
+                    warm::finish_empty_launch(may_record_cold, lead).await;
                     None
                 }
             }

@@ -1,7 +1,7 @@
 //! Background exit of clean Claude-family runs: `reap` finishes the process after the run
 //! returns, and `await_exit` makes the next same-session launch wait for it.
 
-use super::{external_path, redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
+use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -117,56 +117,8 @@ pub(crate) async fn await_all_exits(cap: Duration) {
     wait_all(exit_registry(), cap).await;
 }
 
-/// Best-effort canonical path: uses `canonicalize` when `path` exists, and otherwise
-/// canonicalizes the deepest existing ancestor so deleted folders (e.g. during
-/// `recreate_worktree`) still match spares recorded under a canonical or symlinked spelling.
-pub(crate) fn resolve_path(path: &Path) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return external_path(&canonical);
-    }
-    let mut suffix = Vec::new();
-    let mut cursor = path;
-    loop {
-        if let Ok(canonical) = cursor.canonicalize() {
-            let mut resolved = external_path(&canonical);
-            for component in suffix.into_iter().rev() {
-                match component {
-                    std::path::Component::CurDir => {}
-                    std::path::Component::ParentDir => {
-                        resolved.pop();
-                    }
-                    other => resolved.push(other.as_os_str()),
-                }
-            }
-            return resolved;
-        }
-        let Some(parent) = cursor.parent() else {
-            return external_path(path);
-        };
-        if let Some(last) = cursor.components().next_back() {
-            suffix.push(last);
-        }
-        if parent == cursor {
-            return external_path(path);
-        }
-        cursor = parent;
-    }
-}
-
-/// Whether `candidate` lies inside (or equals) `folder`, literally or once both resolve
-/// through [`resolve_path`]. `folder_resolved` is `resolve_path(folder)` computed once.
-pub(crate) fn path_in_folder(candidate: &Path, folder: &Path, folder_resolved: &Path) -> bool {
-    let candidate_ext = external_path(candidate);
-    let folder_ext = external_path(folder);
-    if candidate_ext == folder_ext || candidate_ext.starts_with(&folder_ext) {
-        return true;
-    }
-    if candidate_ext == folder_resolved || candidate_ext.starts_with(folder_resolved) {
-        return true;
-    }
-    let resolved = resolve_path(candidate);
-    resolved == folder_resolved || resolved.starts_with(folder_resolved)
-}
+// Folder matching shared with warm spares and the checkout guard (`checkout_busy.rs`).
+pub(crate) use crate::path_match::{path_in_folder, resolve_path};
 
 /// Wait until every pending exit whose recorded working directory lies in `folder` has exited
 /// (hurrying them as `await_exit` does), bounded by `EXIT_HARD_CAP`.
@@ -663,7 +615,7 @@ mod unit_tests {
     /// is reaped in the background, as on Unix (`exit_tests.rs`, which is Unix-only).
     #[cfg(windows)]
     mod windows_run {
-        use super::super::super::{test_launch::run_process_with_tools, tests::config, AgentEvent, Sink};
+        use super::super::super::{external_path, test_launch::run_process_with_tools, tests::config, AgentEvent, Sink};
         use super::*;
         use tokio::sync::mpsc::unbounded_channel;
 

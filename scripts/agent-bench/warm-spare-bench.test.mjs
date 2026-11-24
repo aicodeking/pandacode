@@ -1,18 +1,25 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
+  mcpConfigJson, parsePsArgs, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
-  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'] });
+  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'], stdioMcp: false });
   assert.deepEqual(parseArgs(['--suites', 'privacy-resumed,default-resumed']).suites, ['privacy-resumed', 'default-resumed']);
   assert.deepEqual(parseArgs(['--suites', 'privacy-user,privacy-minimal']).suites, ['privacy-user', 'privacy-minimal']);
-  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'] });
+  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'], stdioMcp: false });
+  assert.equal(parseArgs(['--stdio-mcp', '--pairs', '5']).stdioMcp, true);
+  assert.equal(parseArgs(['--pairs', '5', '--stdio-mcp']).pairs, 5);
   assert.throws(() => parseArgs(['--suites', 'user']), /default-minimal/);
   assert.throws(() => parseArgs(['--pairs', '0']), /positive integer/);
   assert.throws(() => parseArgs(['--pairs', '2.5']), /positive integer/);
@@ -336,4 +343,124 @@ test('cancellableDelay.cancel clears its timer when a race settles first, so the
   wait.cancel();
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(fired, false);
+});
+
+const BENCH = fileURLToPath(new URL('./warm-spare-bench.mjs', import.meta.url));
+const lines = text => text.split('\n').filter(Boolean).map(line => JSON.parse(line));
+const HANDSHAKE = [
+  { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'claude-code', version: '2.1.325' } } },
+  { jsonrpc: '2.0', method: 'notifications/initialized' },
+  { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+];
+
+function assertHandshake(replies) {
+  assert.equal(replies.length, 2, 'one reply per request, none for the notification');
+  assert.deepEqual(replies.map(r => r.id), [0, 1]);
+  assert.equal(replies[0].result.protocolVersion, '2025-11-25');
+  assert.equal(replies[0].result.serverInfo.name, STDIO_SERVER_NAME);
+  assert.deepEqual(replies[0].result.capabilities, { tools: { listChanged: false } });
+  assert.deepEqual(replies[1].result.tools, STDIO_MCP_TOOLS);
+}
+
+test('serveStdioMcp answers initialize and tools/list, stays resident, and resolves on EOF with no timers left', async () => {
+  const beforeTimers = openTimeouts();
+  const input = new PassThrough(); const output = new PassThrough();
+  let text = ''; output.setEncoding('utf8'); output.on('data', c => { text += c; });
+  let settled = false;
+  const served = serveStdioMcp(input, output).then(n => { settled = true; return n; });
+  input.write(`${JSON.stringify(HANDSHAKE[0])}\n${JSON.stringify(HANDSHAKE[1])}\n`);
+  input.write(JSON.stringify(HANDSHAKE[2]).slice(0, 10)); // a request split across chunks
+  input.write(`${JSON.stringify(HANDSHAKE[2]).slice(10)}\n`);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, false, 'resident while stdin is open');
+  assert.equal(openTimeouts(), beforeTimers, 'the server keeps no timers');
+  input.end();
+  assert.equal(await served, 3);
+  assertHandshake(lines(text));
+  assert.equal(output.listenerCount('error'), 0, 'the EPIPE guard is removed on exit');
+  assert.equal(openTimeouts(), beforeTimers);
+});
+
+test('serveStdioMcp replies to parse errors and batches, ignores responses, and survives a closed output', async () => {
+  const input = new PassThrough(); const output = new PassThrough();
+  let text = ''; output.setEncoding('utf8'); output.on('data', c => { text += c; });
+  const served = serveStdioMcp(input, output);
+  input.write('not json\n\n');
+  input.write(`${JSON.stringify([{ jsonrpc: '2.0', id: 7, method: 'ping' }, { jsonrpc: '2.0', method: 'notifications/initialized' }])}\n`);
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 9, result: {} })}\n`); // a response from the client: no reply
+  input.end(`${JSON.stringify({ jsonrpc: '2.0', id: 8, method: 'resources/list' })}`); // final line without a newline
+  await served;
+  const replies = lines(text);
+  assert.equal(replies[0].error.code, -32700);
+  assert.deepEqual(replies[1], [{ jsonrpc: '2.0', id: 7, result: {} }]);
+  assert.equal(replies[2].error.code, -32601);
+  assert.equal(replies.length, 3);
+
+  const lateIn = new PassThrough(); const lateOut = new PassThrough();
+  const late = serveStdioMcp(lateIn, lateOut);
+  lateOut.destroy();
+  lateIn.end(`${JSON.stringify(HANDSHAKE[0])}\n`);
+  await late; // no throw after the peer hung up
+});
+
+test('the bench script as a real stdio MCP child answers the handshake and exits 0 on stdin EOF', { timeout: 20_000 }, async () => {
+  const child = spawn(process.execPath, [BENCH, STDIO_SERVE_FLAG], { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = ''; let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', c => { stdout += c; });
+  child.stderr.setEncoding('utf8').on('data', c => { stderr += c; });
+  const exited = once(child, 'exit');
+  child.stdin.write(`${JSON.stringify(HANDSHAKE[0])}\n${JSON.stringify(HANDSHAKE[1])}\n`);
+  // Wait for the initialize reply before tools/list, as a real client does.
+  while (!stdout.includes('\n')) await once(child.stdout, 'data');
+  child.stdin.write(`${JSON.stringify(HANDSHAKE[2])}\n`);
+  while (stdout.split('\n').filter(Boolean).length < 2) await once(child.stdout, 'data');
+  assert.equal(child.exitCode, null, 'resident while stdin is open');
+  const killer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+  child.stdin.end();
+  const [code, signal] = await exited;
+  clearTimeout(killer);
+  assert.equal(signal, null, `exited by itself, stderr: ${stderr}`);
+  assert.equal(code, 0, stderr);
+  assert.equal(stderr, '');
+  assertHandshake(lines(stdout));
+});
+
+test('mcpConfigJson adds the stdio server only with --stdio-mcp', () => {
+  const http = JSON.parse(mcpConfigJson({ mcpPort: 4321, token: 't' }));
+  assert.deepEqual(Object.keys(http.mcpServers), ['pandacode_architect']);
+  assert.deepEqual(http.mcpServers.pandacode_architect, { type: 'http', url: 'http://127.0.0.1:4321/mcp', headers: { Authorization: 'Bearer t' } });
+  const both = JSON.parse(mcpConfigJson({ mcpPort: 4321, token: 't', stdio: true, node: '/n', script: '/s.mjs' }));
+  assert.deepEqual(both.mcpServers[STDIO_SERVER_NAME], { type: 'stdio', command: '/n', args: ['/s.mjs', STDIO_SERVE_FLAG], env: {} });
+  assert.deepEqual(both.mcpServers.pandacode_architect, http.mcpServers.pandacode_architect);
+});
+
+test('treeBreakdown splits Claude, its stdio MCP child and other descendants', () => {
+  const ps = [
+    '  10     1 204800 claude -p --output-format stream-json',
+    '  11    10  40960 /opt/node /x/warm-spare-bench.mjs --serve-stdio-mcp',
+    '  12    10  10240 /bin/zsh -c something',
+    '  13    12   1024 rg --files',
+    '  14     1 999999 /opt/node /x/warm-spare-bench.mjs --serve-stdio-mcp',
+    '  15    15      5 self-parented',
+    'garbage line',
+  ].join('\n');
+  assert.equal(parsePsArgs(ps).length, 6);
+  assert.deepEqual(parsePsArgs('  7 1 8')[0], { pid: 7, ppid: 1, kib: 8, args: '' });
+  assert.deepEqual(treeBreakdown(ps, 10), { self_rss_mib: 200, tree_rss_mib: 251, child_count: 3, mcp_child_count: 1, mcp_child_rss_mib: 40, mcp_child_pids: [11] });
+  assert.deepEqual(treeBreakdown(ps, 15), { self_rss_mib: 0, tree_rss_mib: 0, child_count: 0, mcp_child_count: 0, mcp_child_rss_mib: 0, mcp_child_pids: [] });
+  assert.equal(treeBreakdown(ps, 99), null);
+  assert.equal(treeBreakdown('  20 1 100 node --serve-stdio-mcpX\n  21 20 100 node x --serve-stdio-mcp-other', 20).mcp_child_count, 0, 'the marker matches a whole argument only');
+});
+
+test('summarize reports stdio MCP fields only when runs carry them', () => {
+  const stdioRow = (pair, arm, extra = {}) => row(pair, arm, 300, 20, arm === 'warm' ? { self_rss_mib: 190 + pair, mcp_child_rss_mib: 40, child_count: 1, mcp_child_count: 1, mcp_child_orphaned: false, ...extra } : { mcp_child_orphaned: false });
+  const runs = [1, 2, 3].flatMap(p => [stdioRow(p, 'cold'), stdioRow(p, 'warm', p === 3 ? { mcp_child_count: 0, mcp_child_rss_mib: 0, child_count: 0 } : {})]);
+  const s = summarize(runs);
+  assert.equal(s.warm.idle_self_rss_mib.median, 192);
+  assert.equal(s.warm.idle_mcp_child_rss_mib.max, 40);
+  assert.equal(s.warm.idle_child_count.min, 0);
+  assert.equal(s.warm.mcp_child_seen, '2/3');
+  assert.equal(s.warm.mcp_child_orphaned, 0);
+  const plain = summarize([row(1, 'cold', 300, 20), row(1, 'warm', 50, 10)]);
+  for (const key of ['idle_self_rss_mib', 'idle_mcp_child_rss_mib', 'idle_child_count', 'mcp_child_seen', 'mcp_child_orphaned']) assert.ok(!(key in plain.warm), key);
 });

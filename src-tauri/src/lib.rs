@@ -27,6 +27,7 @@ mod child_env;
 mod checks;
 mod checkout_busy;
 mod claude_roots;
+mod path_match;
 mod code_search;
 mod connections;
 mod crash_guard;
@@ -5141,6 +5142,7 @@ pub fn run() {
                 get_terminal_preferences,
                 providers::warm::warm_spares_enabled,
                 providers::warm::set_warm_spares_enabled,
+                providers::warm::warm_spare_stats,
                 explore::explore_enabled,
                 explore::set_explore_enabled,
                 explore::explore_harness_enabled,

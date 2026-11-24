@@ -18,57 +18,10 @@ struct Launch {
 const ZCODE_BUILTIN_CONFIG_ENV: &str = "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE";
 const ZCODE_CONFIG_DIRECTORY_LIMIT: usize = 512;
 
-/// Canonical Windows paths are useful for native file operations, but Node and
-/// ACP servers may interpret the extended namespace as part of the drive name.
-/// Only simplify paths with ordinary Win32 semantics; device/long/special paths
-/// must retain their prefix rather than silently refer to a different file.
-pub(crate) fn external_path(path: &Path) -> PathBuf {
-    external_path_for(path, cfg!(windows))
-}
-
-fn external_path_for(path: &Path, windows: bool) -> PathBuf {
-    if windows {
-        if let Some(text) = path.to_str() {
-            if let Some(path) = ordinary_windows_path(text) {
-                return path.into();
-            }
-        }
-    }
-    path.to_owned()
-}
-
-fn ordinary_windows_path(path: &str) -> Option<String> {
-    let extended = path.strip_prefix(r"\\?\")?;
-    let ordinary = if let Some(unc) = extended.strip_prefix(r"UNC\") {
-        if unc.split('\\').filter(|part| !part.is_empty()).count() < 2 {
-            return None;
-        }
-        format!(r"\\{unc}")
-    } else if extended.as_bytes().get(1..3) == Some(b":\\")
-        && extended.as_bytes()[0].is_ascii_alphabetic()
-    {
-        extended.to_owned()
-    } else {
-        return None;
-    };
-    if ordinary.encode_utf16().count() >= 260 {
-        return None;
-    }
-    for part in ordinary.split('\\').filter(|part| !part.is_empty()) {
-        let name = part.split('.').next().unwrap_or_default().to_ascii_uppercase();
-        if part.ends_with([' ', '.'])
-            || part.contains(['/', '*', '?'])
-            || matches!(name.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
-            || (name.len() == 4
-                && (name.starts_with("COM") || name.starts_with("LPT"))
-                && matches!(name.as_bytes()[3], b'1'..=b'9'))
-            || ["COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³"].contains(&name.as_str())
-        {
-            return None;
-        }
-    }
-    Some(ordinary)
-}
+// One spelling rule for every launch, exit and folder match (`path_match`); `external_path_for`
+// takes the platform explicitly so launches can build Windows paths (and test them) on any host.
+pub(crate) use crate::path_match::external_path;
+use crate::path_match::external_path_for;
 
 fn resolve(path: &Path, windows: bool) -> Result<Launch, String> {
     resolve_for(path, windows, &|key| std::env::var_os(key))
@@ -789,6 +742,7 @@ pub(super) fn find(name: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path_match::ordinary_windows_path;
     use std::fs;
     #[test]
     fn windows_external_paths_remove_only_safe_namespace_prefixes() {

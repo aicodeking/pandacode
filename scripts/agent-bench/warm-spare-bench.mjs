@@ -11,10 +11,15 @@
 // PandaCode follow-up (`--resume=<id>`) against a one-turn seed transcript in an isolated temporary
 // CLAUDE_CONFIG_DIR; `--no-session-persistence` keeps that transcript byte-identical across every
 // run (sha256 checked before and after), so no pair resumes a longer history than another. Pure
-// helpers are exported for tests.
+// helpers are exported for tests. `--stdio-mcp` adds a second, stdio MCP server (this script
+// re-run with --serve-stdio-mcp, a minimal Node JSON-RPC server that stays resident until stdin
+// closes), so each warm spare's idle sample splits into Claude's own RSS, the stdio MCP child's RSS
+// and the descendant count, and every exit checks the child went with Claude.
 //
 //   node scripts/agent-bench/warm-spare-bench.mjs --pairs 12 --out scripts/agent-bench/results/warm-spare-2.1.325.json
+//   node scripts/agent-bench/warm-spare-bench.mjs --pairs 5 --suites default-minimal,privacy-minimal --stdio-mcp
 import { spawn, execFileSync } from 'node:child_process';
+import { once } from 'node:events';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -24,7 +29,8 @@ import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bootstrapCi, mean, median, random, wilcoxon } from './stats.mjs';
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const SELF = fileURLToPath(import.meta.url);
+const REPO = join(dirname(SELF), '..', '..');
 export const BACKGROUND_EXIT_WAIT_MS = 3_000; // providers/exit.rs
 export const PARK_MS = 2_000;
 const RUN_TIMEOUT_MS = 90_000;
@@ -51,6 +57,10 @@ export const PRIVACY_ENV = Object.freeze({
   PI_TELEMETRY: '0',
 });
 export const OFFLINE_ENV = Object.freeze({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1' });
+/** argv[2] that turns this script into the stdio MCP server `--stdio-mcp` launches; also the marker that finds that child in `ps`. */
+export const STDIO_SERVE_FLAG = '--serve-stdio-mcp';
+export const STDIO_SERVER_NAME = 'bench_stdio';
+const ORPHAN_WAIT_MS = 2_000;
 
 // ---------- pure helpers ----------
 
@@ -65,9 +75,9 @@ export function suiteParts(name) {
   return { env, privacy: env === 'privacy', offline: env === 'offline', minimal: config === 'minimal' || resumed, resumed };
 }
 
-/** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`. */
+/** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`, `--stdio-mcp`. */
 export function parseArgs(argv) {
-  const opts = { pairs: 12, out: null, suites: [...SUITES] };
+  const opts = { pairs: 12, out: null, suites: [...SUITES], stdioMcp: false };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -82,6 +92,8 @@ export function parseArgs(argv) {
       const list = String(value ?? '').split(',').filter(Boolean);
       if (!list.length || list.some(s => !SUITES.includes(s))) throw new Error(`--suites takes ${SUITES.join(',')}, got ${value}`);
       opts.suites = list; i++;
+    } else if (flag === '--stdio-mcp') {
+      opts.stdioMcp = true;
     } else throw new Error(`unknown flag ${flag}`);
   }
   return opts;
@@ -166,6 +178,15 @@ export function summarize(runs, { exitWait = BACKGROUND_EXIT_WAIT_MS } = {}) {
   const savings = complete.map(p => p.cold.result_ms - p.warm.result_ms);
   const initSavings = complete.map(p => p.cold.init_ms - p.warm.init_ms);
   const exits = ok.map(r => r.exit_after_result_ms);
+  const warm = arm('warm');
+  const stdio = warm.some(r => r.mcp_child_rss_mib !== undefined) ? {
+    idle_self_rss_mib: describe(warm.map(r => r.self_rss_mib)),
+    idle_mcp_child_rss_mib: describe(warm.map(r => r.mcp_child_rss_mib)),
+    idle_child_count: describe(warm.map(r => r.child_count)),
+    idle_mcp_child_count: describe(warm.map(r => r.mcp_child_count)),
+    mcp_child_seen: `${warm.filter(r => r.mcp_child_count >= 1).length}/${warm.length}`,
+    mcp_child_orphaned: ok.filter(r => r.mcp_child_orphaned).length,
+  } : {};
   const sides = name => ({
     init_ms: describe(arm(name).map(r => r.init_ms)),
     result_ms: describe(arm(name).map(r => r.result_ms)),
@@ -176,7 +197,7 @@ export function summarize(runs, { exitWait = BACKGROUND_EXIT_WAIT_MS } = {}) {
     errors: measured.length - ok.length,
     exit_code_0: `${ok.filter(r => r.exit_code === 0).length}/${measured.length}`,
     cold: sides('cold'),
-    warm: { ...sides('warm'), idle_rss_mib: describe(arm('warm').map(r => r.rss_mib)), idle_tree_rss_mib: describe(arm('warm').map(r => r.tree_rss_mib)) },
+    warm: { ...sides('warm'), idle_rss_mib: describe(warm.map(r => r.rss_mib)), idle_tree_rss_mib: describe(warm.map(r => r.tree_rss_mib)), ...stdio },
     saving_result_ms: savings.length ? {
       pairs: savings.length,
       median: round(median(savings)), mean: round(mean(savings)),
@@ -208,6 +229,43 @@ export function treeRssMib(psText, root) {
     stack.push(...(kids.get(pid) ?? []));
   }
   return total ? round(total / 1024) : null;
+}
+
+/** Rows of `ps -A -o pid=,ppid=,rss=,args=` as { pid, ppid, kib, args }; malformed lines dropped. */
+export function parsePsArgs(psText) {
+  return String(psText).split('\n').map(line => line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)(?:\s+(.*))?$/)).filter(Boolean)
+    .map(([, pid, ppid, kib, args]) => ({ pid: Number(pid), ppid: Number(ppid), kib: Number(kib), args: args ?? '' }));
+}
+
+/**
+ * Split `root`'s process tree from `ps -A -o pid=,ppid=,rss=,args=` into Claude's own RSS, its
+ * descendants, and the descendants whose command line contains `marker` (the stdio MCP server).
+ * Null when `root` is not listed. Command lines never leave this function, only pids and sizes.
+ */
+export function treeBreakdown(psText, root, marker = STDIO_SERVE_FLAG) {
+  const rows = parsePsArgs(psText);
+  const self = rows.find(r => r.pid === root);
+  if (!self) return null;
+  const kids = new Map();
+  for (const r of rows) if (r.pid !== r.ppid) kids.set(r.ppid, [...(kids.get(r.ppid) ?? []), r]);
+  const descendants = []; const stack = [...(kids.get(root) ?? [])]; const seen = new Set([root]);
+  while (stack.length) {
+    const r = stack.pop();
+    if (seen.has(r.pid)) continue;
+    seen.add(r.pid); descendants.push(r);
+    stack.push(...(kids.get(r.pid) ?? []));
+  }
+  const marked = descendants.filter(r => r.args.split(/\s+/).includes(marker));
+  const mib = kib => round(kib / 1024);
+  const sum = list => list.reduce((total, r) => total + r.kib, 0);
+  return {
+    self_rss_mib: mib(self.kib),
+    tree_rss_mib: mib(self.kib + sum(descendants)),
+    child_count: descendants.length,
+    mcp_child_count: marked.length,
+    mcp_child_rss_mib: mib(sum(marked)),
+    mcp_child_pids: marked.map(r => r.pid).sort((a, b) => a - b),
+  };
 }
 
 /** Remove the user's home directory from text bound for the results file. */
@@ -262,13 +320,18 @@ export const MCP_TOOLS = [
   { name: 'pandacode_title', description: 'Set the sidebar title. Call it alongside another tool call; alone only on a clear topic change or when the title is just the first message. At most once per turn; never overrides a manual name.', inputSchema: obj({ title: { type: 'string', minLength: 1, maxLength: 80 } }, ['title']) },
 ];
 
-/** Answer one Streamable HTTP MCP JSON-RPC message; `null` for a notification. */
-export function mcpReply(message) {
-  if (message.id === undefined || message.id === null) return null;
+/** The stdio server's one tool: enough for Claude to list and register it, never called by the bench prompt. */
+export const STDIO_MCP_TOOLS = [
+  { name: 'bench_echo', description: 'Echo the given text back.', inputSchema: obj({ text: { type: 'string' } }, ['text']) },
+];
+
+/** Answer one MCP JSON-RPC message (Streamable HTTP by default, or `server` for stdio); `null` for a notification or response. */
+export function mcpReply(message, server = { name: 'pandacode_architect', tools: MCP_TOOLS }) {
+  if (!message || typeof message !== 'object' || message.id === undefined || message.id === null || typeof message.method !== 'string') return null;
   const ok = result => ({ jsonrpc: '2.0', id: message.id, result });
   switch (message.method) {
-    case 'initialize': return ok({ protocolVersion: message.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'pandacode_architect', version: 'bench' } });
-    case 'tools/list': return ok({ tools: MCP_TOOLS });
+    case 'initialize': return ok({ protocolVersion: message.params?.protocolVersion ?? '2025-06-18', capabilities: { tools: { listChanged: false } }, serverInfo: { name: server.name, version: 'bench' } });
+    case 'tools/list': return ok({ tools: server.tools });
     case 'ping': return ok({});
     case 'tools/call': return ok({ content: [{ type: 'text', text: 'bench stub' }], isError: true });
     default: return { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } };
@@ -293,6 +356,48 @@ function mcpServer(counts, token) {
       json(res, Array.isArray(message) ? replies : replies[0]);
     });
   });
+}
+
+/**
+ * A minimal stdio MCP server: newline-delimited JSON-RPC on `input`, replies on `output`, resident
+ * until `input` ends (no timers, so nothing outlives stdin). Resolves with the request count; a write
+ * after the peer hung up (EPIPE) is dropped rather than thrown.
+ */
+export async function serveStdioMcp(input = process.stdin, output = process.stdout) {
+  const server = { name: STDIO_SERVER_NAME, tools: STDIO_MCP_TOOLS };
+  let buffer = ''; let handled = 0; let broken = false;
+  const onError = () => { broken = true; };
+  output.on('error', onError);
+  const send = value => { if (!broken && !output.destroyed) output.write(`${JSON.stringify(value)}\n`); };
+  const handle = line => {
+    if (!line.trim()) return;
+    let message;
+    try { message = JSON.parse(line); } catch { return send({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }); }
+    const batch = Array.isArray(message) ? message : [message];
+    handled += batch.length;
+    const replies = batch.map(m => mcpReply(m, server)).filter(Boolean);
+    if (replies.length) send(Array.isArray(message) ? replies : replies[0]);
+  };
+  input.setEncoding?.('utf8');
+  input.on('data', chunk => {
+    buffer += chunk;
+    let nl;
+    while ((nl = buffer.indexOf('\n')) >= 0) { handle(buffer.slice(0, nl)); buffer = buffer.slice(nl + 1); }
+  });
+  try {
+    await Promise.race([once(input, 'end'), once(input, 'close')]);
+  } finally {
+    handle(buffer);
+    output.off('error', onError);
+  }
+  return handled;
+}
+
+/** The `--mcp-config` JSON: the app's HTTP server, plus the stdio server (this script with STDIO_SERVE_FLAG) when `stdio` is set. */
+export function mcpConfigJson({ mcpPort, token, stdio = false, node = process.execPath, script = SELF }) {
+  const servers = { pandacode_architect: { type: 'http', url: `http://127.0.0.1:${mcpPort}/mcp`, headers: { Authorization: `Bearer ${token}` } } };
+  if (stdio) servers[STDIO_SERVER_NAME] = { type: 'stdio', command: node, args: [script, STDIO_SERVE_FLAG], env: {} };
+  return JSON.stringify({ mcpServers: servers });
 }
 
 const listen = server => new Promise((resolve, reject) => {
@@ -320,6 +425,23 @@ export function cancellableDelay(ms, value) {
   return { promise, cancel: () => { if (timer !== null) { clearTimeout(timer); timer = null; } } };
 }
 
+/** Claude's own RSS, the stdio MCP child's RSS and the descendant count; null fields when `ps` is unavailable. */
+function sampleTree(pid) {
+  try { return treeBreakdown(execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss=,args='], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }), pid); } catch { return null; }
+}
+
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+
+/** Whether any of `pids` is still running ORPHAN_WAIT_MS after Claude exited (polled, so a fast exit returns at once). */
+async function anyOrphaned(pids) {
+  const deadline = performance.now() + ORPHAN_WAIT_MS;
+  while (pids.some(alive)) {
+    if (performance.now() >= deadline) return true;
+    await delay(50);
+  }
+  return false;
+}
+
 function sampleRss(pid) {
   let rss = null; let tree = null;
   try { rss = rssKibToMib(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' })); } catch { /* fall back below */ }
@@ -333,7 +455,7 @@ function sampleRss(pid) {
 const write = (child, value) => child.stdin.write(`${JSON.stringify(value)}\n`);
 
 /** One launch: cold (initialize at spawn) or warm (parked PARK_MS with stdin open first). */
-async function runOnce({ arm, args, env, cwd }) {
+async function runOnce({ arm, args, env, cwd, stdioMcp = false }) {
   const tSpawn = performance.now();
   const child = spawn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   children.add(child);
@@ -342,6 +464,7 @@ async function runOnce({ arm, args, env, cwd }) {
   const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal, at: performance.now() })));
   child.on('error', () => {});
   const out = { arm, init_ms: null, result_ms: null, exit_after_result_ms: null, exit_code: null, rss_mib: null, tree_rss_mib: null, result_subtype: null, error: null };
+  let mcpPids = [];
   let t0 = tSpawn;
   let tResult = null;
   const resultTimeout = cancellableDelay(RUN_TIMEOUT_MS + PARK_MS);
@@ -374,6 +497,11 @@ async function runOnce({ arm, args, env, cwd }) {
     if (arm === 'warm') {
       await delay(PARK_MS);
       Object.assign(out, sampleRss(child.pid));
+      if (stdioMcp) {
+        const tree = sampleTree(child.pid);
+        mcpPids = tree?.mcp_child_pids ?? [];
+        Object.assign(out, { self_rss_mib: tree?.self_rss_mib ?? null, mcp_child_rss_mib: tree?.mcp_child_rss_mib ?? null, child_count: tree?.child_count ?? null, mcp_child_count: tree?.mcp_child_count ?? null, tree_rss_mib: tree?.tree_rss_mib ?? out.tree_rss_mib });
+      }
       t0 = performance.now();
     }
     write(child, { type: 'control_request', request_id: 'pandacode-init', request: { subtype: 'initialize', hooks: null } });
@@ -383,6 +511,11 @@ async function runOnce({ arm, args, env, cwd }) {
     try { exit = await Promise.race([exited, exitTimeout.promise]); } finally { exitTimeout.cancel(); }
     if (!exit) { out.error = out.error ?? `no exit within ${EXIT_TIMEOUT_MS} ms of result`; child.kill('SIGKILL'); await exited; }
     else { out.exit_after_result_ms = exit.at - tResult; out.exit_code = exit.code; }
+    if (stdioMcp) {
+      if (arm === 'cold') mcpPids = []; // sampled only while parked
+      out.mcp_child_orphaned = await anyOrphaned(mcpPids);
+      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; for (const p of mcpPids) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } }
+    }
   } catch (error) {
     out.error = `${error.message}; stderr: ${stderr.slice(-300)}`;
     child.kill('SIGKILL');
@@ -512,12 +645,12 @@ async function runSuite(name, pairs, ctx) {
   for (let i = 0; i < orders.length; i++) {
     for (const arm of orders[i]) {
       ctx.counts.messageCounts = [];
-      const r = await runOnce({ arm, args, env, cwd });
+      const r = await runOnce({ arm, args, env, cwd, stdioMcp: ctx.stdioMcp });
       const resumedMessages = seed ? maxMessageCount(ctx.counts.messageCounts) : undefined;
       if (seed && r.error == null) r.error = resumeCheckError(seedMessages, resumedMessages);
       const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
       runs.push(row);
-      process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
+      process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.mcp_child_count != null ? `, stdio MCP ${row.mcp_child_count} child ${row.mcp_child_rss_mib} MiB, ${row.child_count} descendants` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
     }
   }
   let seedInfo = null;
@@ -548,8 +681,8 @@ async function main() {
   const token = `bench-${Math.random().toString(36).slice(2)}`;
   const api = messagesStub(counts); const mcp = mcpServer(counts, token);
   const apiPort = await listen(api); const mcpPort = await listen(mcp);
-  const mcpConfig = JSON.stringify({ mcpServers: { pandacode_architect: { type: 'http', url: `http://127.0.0.1:${mcpPort}/mcp`, headers: { Authorization: `Bearer ${token}` } } } });
-  const ctx = { instructions, mcpConfig, apiPort, counts };
+  const mcpConfig = mcpConfigJson({ mcpPort, token, stdio: opts.stdioMcp });
+  const ctx = { instructions, mcpConfig, apiPort, counts, stdioMcp: opts.stdioMcp };
   const suites = {};
   try {
     for (const name of opts.suites) suites[name] = await runSuite(name, opts.pairs, ctx);
@@ -570,6 +703,7 @@ async function main() {
     minimal_extra_flags: ['--setting-sources', 'project', '--strict-mcp-config'],
     resumed_extra_flags: ['--resume=<seed session id>'],
     seed_flags: seedArgs(),
+    ...(opts.stdioMcp ? { stdio_mcp: { server: STDIO_SERVER_NAME, command: `node scripts/agent-bench/warm-spare-bench.mjs ${STDIO_SERVE_FLAG}`, tools: STDIO_MCP_TOOLS.map(t => t.name), sampled: 'warm arm while parked: Claude self RSS, stdio MCP child RSS (descendants whose argv holds the serve flag), descendant count; every run checks the sampled child exits within 2 s of Claude' } } : {}),
     env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:<port>', ANTHROPIC_API_KEY: DUMMY_KEY, inherited: 'PATH, HOME, USER, SHELL, TMPDIR, LANG only', privacy_extra: { ...PRIVACY_ENV }, privacy_source: 'src-tauri/src/providers/privacy.rs ENVIRONMENT', offline_extra: { ...OFFLINE_ENV } },
     suites: Object.fromEntries(Object.keys(suites).map(k => [k, suiteParts(k)])),
     method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. *-resumed suites (default or privacy env, minimal config) first run one seed turn (a single short exchange, persisted) in a fresh temporary CLAUDE_CONFIG_DIR, then launch every cold and warm run with --resume=<seed session id> plus --no-session-persistence, so each resumes the same byte-identical one-turn transcript (the temporary folder holds a copy of ~/.claude.json without its projects map, so cached account and feature state match the other suites; with an empty folder every turn awaits a bootstrap fetch the dummy key cannot satisfy) (sha256 checked after the suite; each run\'s Messages API request must carry more messages than the seed request, proving the history loaded); long real histories are unmeasured. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
@@ -584,5 +718,6 @@ async function main() {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch(error => { console.error(error); cleanup(); process.exit(1); });
+  if (process.argv[2] === STDIO_SERVE_FLAG) serveStdioMcp().catch(error => { console.error(error); process.exitCode = 1; });
+  else main().catch(error => { console.error(error); cleanup(); process.exit(1); });
 }

@@ -180,9 +180,10 @@ jobs:
       # executed natively in CI rather than only clippy-checked. libtest ORs the filters as
       # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
       # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
-      # that matched little would still pass, so require at least 200 passed tests (macOS runs ~247,
-      # Windows ~207) and that warm, exit and claude_roots tests each ran, so a `#[cfg]` slip that
-      # drops them on one platform fails here. Portable to macOS bash and Git Bash (awk, grep -F).
+      # that matched little would still pass, so require at least 200 passed tests on macOS and
+      # Windows and at least one passing (`... ok`, not `... ignored`) warm, exit and claude_roots
+      # test each, so a `#[cfg]` or `#[ignore]` slip that drops them on one platform fails here.
+      # Portable to macOS BSD awk and Git Bash gawk (only `index` and a plain regex).
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
@@ -196,8 +197,8 @@ jobs:
             exit 1
           fi
           for module in 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
-            if ! grep -qF "test $module" "$log"; then
-              echo "::error::No $module tests ran on this platform"
+            if ! awk -v m="test $module" 'index($0, m) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
+              echo "::error::No passing $module tests ran on this platform"
               exit 1
             fi
           done

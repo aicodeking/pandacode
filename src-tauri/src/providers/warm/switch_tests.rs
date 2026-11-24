@@ -1,6 +1,7 @@
 use super::*;
 use super::key::*;
 use super::spawn::*;
+use super::test_support::*;
 
 struct EnabledOverride(Option<bool>);
 
@@ -40,7 +41,9 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     let mut prepared_config = config.clone();
     prepared_config.cwd = external_path(&config.cwd);
     let disabled = crate::skill_manager::disabled_for(&session);
-    let spare_key = key(&prepared(prepared_config, &disabled), &[]).unwrap();
+    // Only lead spares renew, and a lead's key carries its working tree's status.
+    let git_status = lead_git_status(&prepared_config.cwd).expect("the test folder's git status is known");
+    let spare_key = lead_key(&prepared(prepared_config, &disabled), &[], &git_status).unwrap();
     let inputs: Inputs = Arc::new(|| "unchanged".into());
     assert!(still_current(&spare_key, &config, &[], "unchanged", &inputs));
     assert!(supported(&config));
@@ -53,7 +56,7 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
         assert!(!still_current(&spare_key, &config, &[], "unchanged", &inputs));
         prewarm(config.clone(), Vec::new(), HashSet::new(), launch, None, || "unchanged".into()).await.unwrap();
         assert!(!waiting(&session), "disabled prewarm must leave no spare waiting");
-        assert!(spawn_claude_process(config, Vec::new(), HashSet::new(), launch).await.unwrap().is_none(),
+        assert!(spawn_claude_process(config, Vec::new(), HashSet::new(), launch, false).await.unwrap().is_none(),
             "disabled spares must return before looking up or spawning a CLI");
     }
     assert!(enabled_now(), "the guard restores the previous setting");
@@ -80,7 +83,7 @@ fn spare(lead: bool) -> Spare {
     let child = idle_sleep_command().spawn().unwrap();
     let group = ProcessGroup::register(child.id());
     Spare { key: "switch-test".into(), child, group, server: None,
-        born: std::time::Instant::now(), idle: IDLE, lead, cwd: None }
+        born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead, cwd: None }
 }
 
 #[tokio::test]
@@ -109,7 +112,9 @@ async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewal
     discard_all_from(pool);
     assert!(!chain());
     assert!(spares(pool).spares.is_empty());
-    assert!(spares(pool).starting.is_empty());
+    // The start and the renewal check still run until their guards drop: cancelled, not forgotten.
+    assert_eq!(spares(pool).starting.len(), 2);
+    assert!(spares(pool).starting.values().all(|entry| entry.cancelled));
     let waiting: Renew = Arc::new(|| true);
     for (id, old) in ids.iter().zip(epochs) {
         assert!(epoch(id) > old, "{id}'s pending work was invalidated");
@@ -122,6 +127,7 @@ async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewal
     for pid in pids { assert_process_gone(pid); }
     drop(inflight);
     drop(renewing);
+    assert!(spares(pool).starting.is_empty(), "each guard removes its own entry");
     discard_all_from(pool); // idempotent, including already-expired lead notes
     for id in &ids { discard_from(pool, id); }
 }
@@ -131,7 +137,7 @@ async fn folder_quiescence_cancels_a_lead_blocked_in_its_expiry_renewal() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static STARTS: AtomicUsize = AtomicUsize::new(0);
-    fn counted_spawn(config: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> Spawning {
+    fn counted_spawn(config: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64, _: bool) -> Spawning {
         Box::pin(async move {
             STARTS.fetch_add(1, Ordering::SeqCst);
             let Spare { key, child, group, server, .. } = spare(true);
@@ -198,7 +204,7 @@ async fn stale_launches_never_enter_the_pool_or_read_launch_inputs() {
     let pool: &'static Pool = Box::leak(Box::default());
     let session = format!("warm-stale-start-{}", uuid::Uuid::new_v4());
     let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
-    let life = Lifecycle { idle: IDLE, spawn: |_, _, _, _| panic!("stale launch spawned"),
+    let life = Lifecycle { idle: IDLE, spawn: |_, _, _, _, _| panic!("stale launch spawned"),
         current: |_, _, _, _, _| true, pool };
     launched(&session);
     let stale = epoch(&session);
@@ -235,14 +241,14 @@ async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
 /// `finish_empty_launch_with`, reading the switch with `enabled_now()` on this test's thread so
 /// `EnabledOverride` applies (production reads it on a blocking thread).
 async fn finish_empty(pool: &Pool, found: LaunchPool) -> Option<String> {
-    let LaunchPool::Empty { may_record_cold } = found else { panic!("no spare is pooled") };
-    finish_empty_launch_with(pool, may_record_cold, || async { enabled_now() }).await
+    let LaunchPool::Empty { may_record_cold, lead } = found else { panic!("no spare is pooled") };
+    finish_empty_launch_with(pool, may_record_cold, lead, || async { enabled_now() }).await
 }
 
 /// `finish_empty_launch_with` for an ineligible launch, failing if it reads the switch at all.
 async fn finish_ineligible(pool: &Pool) -> Option<String> {
     let read = std::cell::Cell::new(false);
-    let note = finish_empty_launch_with(pool, false, || { read.set(true); async { true } }).await;
+    let note = finish_empty_launch_with(pool, false, false, || { read.set(true); async { true } }).await;
     assert!(!read.get(), "an ineligible launch never reads the off switch");
     note
 }
@@ -253,17 +259,17 @@ async fn with_spares_off_a_launch_without_a_spare_counts_and_logs_nothing() {
     let session = format!("warm-switch-cold-off-{}", uuid::Uuid::new_v4());
     {
         let _off = EnabledOverride::new(false);
-        let (found, note) = prepare_launch_in(pool, &session, true);
-        assert_eq!(found, LaunchPool::Empty { may_record_cold: true });
+        let (found, note) = prepare_launch_in(pool, &session, true, false);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false });
         assert_eq!(note, None, "preparing a launch never logs a cold launch itself");
         assert_eq!(finish_empty(pool, found).await, None, "no `not pooled` line with spares off");
-        assert_eq!(spares(pool).cold_without_spare, 0);
+        assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
     }
     let _on = EnabledOverride::new(true);
-    let (found, _) = prepare_launch_in(pool, &session, true);
+    let (found, _) = prepare_launch_in(pool, &session, true, false);
     let note = finish_empty(pool, found).await.expect("spares on: the cold launch is logged");
     assert!(note.starts_with("Warm Claude agent not pooled; starting cold."), "{note}");
-    assert_eq!(spares(pool).cold_without_spare, 1);
+    assert_eq!(spares(pool).ordinary.cold_without_spare, 1);
     discard_from(pool, &session);
 }
 
@@ -273,19 +279,19 @@ async fn a_first_turn_or_managed_worker_never_counts_a_cold_launch() {
     let pool: &'static Pool = Box::leak(Box::default());
     let session = format!("warm-switch-ineligible-{}", uuid::Uuid::new_v4());
     let before = epoch(&session);
-    let (found, note) = prepare_launch_in(pool, &session, false);
-    assert_eq!(found, LaunchPool::Empty { may_record_cold: false });
+    let (found, note) = prepare_launch_in(pool, &session, false, false);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false });
     assert_eq!(note, None);
     assert!(epoch(&session) > before, "the launch is still counted");
     assert_eq!(finish_empty(pool, found).await, None);
     assert_eq!(finish_ineligible(pool).await, None);
     // A lead's pending gone reason is its miss, never also a cold launch.
     spares(pool).gone.insert(session.clone(), Gone::Expired);
-    let (found, note) = prepare_launch_in(pool, &session, true);
-    assert_eq!(found, LaunchPool::Empty { may_record_cold: false });
+    let (found, note) = prepare_launch_in(pool, &session, true, false);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false });
     assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it expired)")), "{note:?}");
     assert_eq!(finish_ineligible(pool).await, None);
-    assert_eq!(spares(pool).cold_without_spare, 0);
+    assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
     assert_eq!(spares(pool).lead.missed, 1);
     discard_from(pool, &session);
 }
@@ -298,21 +304,21 @@ async fn a_switch_off_during_the_key_check_never_counts_a_cold_launch() {
             let session = format!("warm-switch-race-{lead}-{keyed}-{}", uuid::Uuid::new_v4());
             launched(&session);
             assert!(register(pool, &session, epoch(&session), spare(lead)));
-            let LaunchPool::Pooled { discard_epoch } = prepare_launch_in(pool, &session, true).0 else {
+            let LaunchPool::Pooled { discard_epoch, .. } = prepare_launch_in(pool, &session, true, false).0 else {
                 panic!("the registered spare is pooled");
             };
             // Spares are switched off while the warm key is computed off the runtime.
             discard_all_from(pool);
             let note = if keyed {
-                let (adopted, note) = take_since(pool, &session, "switch-test", true, discard_epoch);
+                let (adopted, note) = take_since(pool, &session, "switch-test", true, false, discard_epoch);
                 assert!(adopted.is_none(), "a discarded spare is never adopted");
                 note
             } else {
-                launched_without_key_since(pool, &session, "its warm key check failed", true, discard_epoch)
+                launched_without_key_since(pool, &session, "its warm key check failed", true, false, discard_epoch)
             };
             // Spares are off: neither a lead's discard nor an ordinary spare is reported as a miss.
             assert_eq!(note, None, "lead={lead}, keyed={keyed}");
-            assert_eq!(spares(pool).cold_without_spare, 0);
+            assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
             assert_eq!(spares(pool).lead.missed, 0);
             await_exit(&session).await.unwrap();
         }
@@ -332,12 +338,12 @@ async fn after_a_switch_off_no_lead_reports_a_miss_or_a_cold_launch() {
     assert!(spares(pool).gone.is_empty(), "switching spares off clears every lead's `gone` note");
     let _off = EnabledOverride::new(false);
     for session in [&pooled, &expired] {
-        let (found, note) = prepare_launch_in(pool, session, true);
-        assert_eq!(found, LaunchPool::Empty { may_record_cold: true });
+        let (found, note) = prepare_launch_in(pool, session, true, false);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false });
         assert_eq!(note, None, "{session} logs no miss");
         assert_eq!(finish_empty(pool, found).await, None, "{session} logs no cold launch with spares off");
     }
     assert_eq!(spares(pool).lead.missed, 0);
-    assert_eq!(spares(pool).cold_without_spare, 0);
+    assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
     await_exit(&pooled).await.unwrap();
 }

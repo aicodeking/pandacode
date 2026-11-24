@@ -1,6 +1,7 @@
 //! Whether a checkout is busy, and how worktree merge, removal and recreation quiesce it: which
 //! sessions (running, or exiting in the background) hold a checkout, the refusals that keep a
 //! worktree operation or a checks run from racing an agent, and the shared idle guard.
+use crate::path_match::{path_in_folder, resolve_path};
 use crate::storage::Store;
 use crate::{blocking, lock_agents, providers, worktree_paths, AppState, Result};
 use std::path::{Path, PathBuf};
@@ -17,12 +18,26 @@ fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
 }
 
 /// Whether any of `others` is `root` or lies inside it (an agent working in a subfolder of the
-/// checkout), literally or once both resolve through `providers::exit::resolve_path`, which also
+/// checkout), literally or once both resolve through `path_match::resolve_path`, which also
 /// matches a deleted folder recorded under its symlinked or canonical spelling. The same matcher
-/// as folder-scoped spare discard and `await_exits_in`.
+/// as folder-scoped spare discard and `await_exits_in`, except that a path inside another git
+/// checkout nested below `root` (a worktree under `root/.claude/worktrees`) is that checkout's.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
-    let root_resolved = providers::exit::resolve_path(root);
-    others.iter().any(|other| providers::exit::path_in_folder(other, root, &root_resolved))
+    let root_resolved = resolve_path(root);
+    others.iter().any(|other| {
+        path_in_folder(other, root, &root_resolved) && !in_nested_checkout(other, root, &root_resolved)
+    })
+}
+
+/// Whether `other` (inside `root`) belongs to a git checkout strictly below `root`'s own. Only
+/// when `root` is itself in a checkout: a plain folder still counts every repository inside it.
+/// Plain subfolders, deleted paths and non-git folders resolve to `root`'s checkout or none.
+fn in_nested_checkout(other: &Path, root: &Path, root_resolved: &Path) -> bool {
+    let Some(other_root) = crate::claude_roots::git_checkout_root(other) else { return false };
+    let other_root_resolved = resolve_path(&other_root);
+    other_root_resolved != root_resolved
+        && path_in_folder(&other_root_resolved, root, root_resolved)
+        && crate::claude_roots::git_checkout_root(root).is_some()
 }
 
 /// Whether any agent (other than `exclude_session`, when given) runs or has a pending exit in any
@@ -251,6 +266,28 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
 mod tests {
     use super::any_same_checkout;
     use std::path::PathBuf;
+
+    #[test]
+    fn nested_worktrees_are_their_own_checkouts() {
+        let base = std::env::temp_dir().join(format!("pandacode-checkout-nested-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        let nested = main.join(".claude").join("worktrees").join("x");
+        for dir in [main.join(".git"), main.join("src"), nested.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
+        assert!(any_same_checkout(&main, std::slice::from_ref(&main)));
+        assert!(any_same_checkout(&main, &[main.join("src")]), "a plain subfolder is the same checkout");
+        assert!(!any_same_checkout(&main, std::slice::from_ref(&nested)), "a nested worktree is another checkout");
+        assert!(!any_same_checkout(&main, &[nested.join("src")]));
+        assert!(any_same_checkout(&nested, &[nested.join("src")]), "the nested worktree still matches itself");
+        assert!(!any_same_checkout(&nested, std::slice::from_ref(&main)));
+        assert!(any_same_checkout(&base, std::slice::from_ref(&nested)), "a plain folder counts every repository inside it");
+        // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
+        std::fs::remove_file(nested.join(".git")).unwrap();
+        assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));
+        let _ = std::fs::remove_dir_all(base);
+    }
 
     #[test]
     fn same_checkout_matches_canonical_nested_and_deleted_roots_only() {
