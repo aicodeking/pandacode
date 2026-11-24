@@ -381,9 +381,13 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   not used (<reason>); starting cold.`, from `providers/warm.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
   <started> started, <adopted> adopted, <missed> not used, <expired> expired,
-  <evicted> evicted, <replaced> replaced, <discarded> discarded.`), so spares
-  that expire or are dropped unused stay visible and the wake speed-up can be
-  measured. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
+  <evicted> evicted, <replaced> replaced, <discarded> discarded.`). An idle
+  expiry without renewal (`Team lead's warm Claude agent expired idle.`) and a
+  switch-off discard (`Team lead's warm Claude agent discarded.`) log the same
+  totals, so spares that expire or are dropped unused stay visible and the wake
+  speed-up can be measured. On the lead pool `not used` counts every wake that
+  missed its spare, including spares already counted in `expired`, `evicted`,
+  `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
   default env, ~218–243 MiB with "Turn off agent telemetry" on; Claude Code
   2.1.325, macOS arm64, n = 12). It runs your `SessionStart` hooks when it
   starts, so a renewal chain can run them in up to three processes per wake,

@@ -561,6 +561,72 @@ test('re-picking the current model while on a named team leaves the team without
   expect(await task(page)).toMatchObject({ provider: 'claude', model: 'opus' });
 });
 
+const recordCommands = (source: string) => {
+  const patched = source.replace(/switch\s*\(command\)\s*\{/, '(window.__pickerCalls ??= []).push(command); switch (command) {');
+  if (patched === source) throw new Error('preview command switch not found');
+  return patched;
+};
+const commandCount = (page: Page, name: string) => page.evaluate(n => ((window as any).__pickerCalls ?? []).filter((c: string) => c === n).length, name);
+
+test('re-picking the current reasoning effort skips set_reasoning_effort', async ({ page }) => {
+  await open(page, '/?teams', recordCommands);
+  const group = picker(page).getByRole('radiogroup', { name: 'Effort' });
+  const radio = (name: string) => group.getByRole('radio', { name, exact: true });
+  const efforts = () => commandCount(page, 'set_reasoning_effort');
+  await expect(radio('Default')).toHaveAttribute('aria-checked', 'true');
+  // Re-picking the saved Default changes nothing. The picker's saveChoice and main.ts's onEffortSelect
+  // both skip an unchanged effort; this pins the end-to-end result that no IPC is sent.
+  await radio('Default').click();
+  await expect(radio('Default')).toHaveAttribute('aria-checked', 'true');
+  expect(await efforts()).toBe(0);
+  expect((await task(page)).reasoningEffort ?? null).toBeNull();
+
+  // A real change saves, which proves the spy is live.
+  await radio('High').click();
+  await expect.poll(efforts).toBe(1);
+  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
+  await expect(radio('High')).toHaveAttribute('aria-checked', 'true');
+
+  // Re-picking the now-saved High changes nothing either.
+  await radio('High').click();
+  await expect(radio('High')).toHaveAttribute('aria-checked', 'true');
+  await expect(trigger(page).locator('.model-effort')).toHaveText('High');
+  expect(await efforts()).toBe(1);
+  expect((await task(page)).reasoningEffort).toBe('high');
+});
+
+test('re-picking the current permission mode skips update_session', async ({ page }) => {
+  await open(page, '/?teams', recordCommands);
+  await page.keyboard.press('Escape');
+  await expect(picker(page)).toHaveCount(0);
+  const mode = page.locator('#mode-picker-trigger');
+  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
+  const updates = () => commandCount(page, 'update_session');
+  const before = (await task(page)).mode as string;
+  const startUpdates = await updates();
+
+  await mode.click();
+  const current = menu.locator('[role="menuitemradio"][aria-checked="true"]');
+  await expect(current).toHaveCount(1);
+  const currentName = (await current.getAttribute('aria-label')) ?? (await current.innerText()).split('\n')[0].trim();
+  await current.click();
+  await expect(menu).toHaveCount(0);
+  await expect(mode).toHaveAttribute('data-mode', before);
+  expect(await updates()).toBe(startUpdates);
+  expect((await task(page)).mode).toBe(before);
+
+  // A different mode saves, which proves the spy is live.
+  await mode.click();
+  await expect(menu.locator('[role="menuitemradio"][aria-checked="true"]')).toHaveCount(1);
+  const other = menu.locator('[role="menuitemradio"][aria-checked="false"]:not([disabled]):not([aria-disabled="true"])').first();
+  await expect(other).not.toHaveAccessibleName(currentName);
+  await other.click();
+  await expect(menu).toHaveCount(0);
+  await expect.poll(updates).toBe(startUpdates + 1);
+  await expect.poll(async () => (await task(page)).mode).not.toBe(before);
+  await expect(mode).not.toHaveAttribute('data-mode', before);
+});
+
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
 
 async function pick(page: Page, query: string, name: string): Promise<void> {

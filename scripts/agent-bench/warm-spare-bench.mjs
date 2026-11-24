@@ -19,7 +19,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { bootstrapCi, mean, median, random, wilcoxon } from './stats.mjs';
@@ -413,7 +413,20 @@ export function seedArgs() {
 export function transcriptDigest(projectsDir) {
   let files = [];
   try { files = readdirSync(projectsDir, { recursive: true }).map(String).filter(f => f.endsWith('.jsonl')).sort(); } catch { return {}; }
-  return Object.fromEntries(files.map(f => [f.split(/[\\/]/).pop(), createHash('sha256').update(readFileSync(join(projectsDir, f))).digest('hex')]));
+  return Object.fromEntries(files.map(f => [relative(projectsDir, join(projectsDir, f)).split(sep).join('/'), createHash('sha256').update(readFileSync(join(projectsDir, f))).digest('hex')]));
+}
+
+/** The digest key of session `sessionId`'s transcript (any project subfolder), or null. */
+export function sessionTranscriptKey(digest, sessionId) {
+  const name = `${sessionId}.jsonl`;
+  return Object.keys(digest).find(key => key === name || key.endsWith(`/${name}`)) ?? null;
+}
+
+/** Why a resumed run did not load its session, or null: fails closed when the seed request was not captured. */
+export function resumeCheckError(seedMessages, resumedMessages) {
+  if (!Number.isFinite(seedMessages)) return 'resume not verified: the seed request was not captured';
+  if (!Number.isFinite(resumedMessages) || !(resumedMessages > seedMessages)) return `resume not loaded: request held ${resumedMessages} messages, seed request ${seedMessages}`;
+  return null;
 }
 
 /** Run the seed turn in `cwd` with `env` (which carries the temporary CLAUDE_CONFIG_DIR); returns its session id. */
@@ -439,7 +452,7 @@ function runSeed(cwd, env) {
 /**
  * The temporary folder's `.claude.json`: the machine's `~/.claude.json` (what the other suites read)
  * without its `projects` map. Without the cached account and feature state in it, every turn of a
- * fresh folder awaits a bootstrap fetch that a dummy key can never satisfy, which no real folder does.
+ * fresh folder awaits a bootstrap fetch that a dummy key can never satisfy, which an initialized config folder does not.
  */
 export function mirroredClaudeJson(text) {
   let parsed = null;
@@ -460,7 +473,7 @@ async function seedResumed(name, cwd, baseEnv) {
   const env = { ...baseEnv, CLAUDE_CONFIG_DIR: configDir };
   const sessionId = await runSeed(cwd, env);
   const digest = transcriptDigest(join(configDir, 'projects'));
-  if (!Object.keys(digest).some(f => f === `${sessionId}.jsonl`)) throw new Error(`seed transcript for ${sessionId} not found in the temporary config folder`);
+  if (!sessionTranscriptKey(digest, sessionId)) throw new Error(`seed transcript for ${sessionId} not found in the temporary config folder`);
   return { configDir, env, sessionId, digest, mirrored: Object.keys(mirror).length > 0 };
 }
 
@@ -481,7 +494,7 @@ async function runSuite(name, pairs, ctx) {
       ctx.counts.messageCounts = [];
       const r = await runOnce({ arm, args, env, cwd });
       const resumedMessages = seed ? Math.max(0, ...ctx.counts.messageCounts) : undefined;
-      if (seed && r.error == null && !(resumedMessages > seedMessages)) r.error = `resume not loaded: request held ${resumedMessages} messages, seed request ${seedMessages}`;
+      if (seed && r.error == null) r.error = resumeCheckError(seedMessages, resumedMessages);
       const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
       runs.push(row);
       process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
@@ -495,7 +508,7 @@ async function runSuite(name, pairs, ctx) {
     seedInfo = {
       turns: SEED_TURNS, prompt: SEED_PROMPT, seed_request_messages: seedMessages,
       resumed_request_messages: [...new Set(runs.filter(r => !r.error).map(r => r.api_messages))],
-      transcript_sha256: seed.digest[`${seed.sessionId}.jsonl`], transcript_unchanged: unchanged,
+      transcript_sha256: seed.digest[sessionTranscriptKey(seed.digest, seed.sessionId)], transcript_unchanged: unchanged,
       config_dir: 'temporary CLAUDE_CONFIG_DIR, deleted after the suite',
       config_state: seed.mirrored ? "the machine's ~/.claude.json without its projects map (cached account and feature state, as the other suites read it); no other user files" : 'empty (no ~/.claude.json found)',
     };

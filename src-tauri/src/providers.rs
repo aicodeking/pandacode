@@ -4004,14 +4004,29 @@ async fn antigravity_spawn_gate() {
 /// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
 /// is removed: on Windows a process's working directory cannot be deleted.
 pub(crate) async fn end_lingering_in(folder: &Path) {
-    let resolved = exit::resolve_path(folder);
-    let tasks: Vec<String> = lingering()
+    // Copied under the lock; matching may `canonicalize`, so it runs off the lock and the runtime.
+    let snapshot: Vec<(String, PathBuf)> = lingering()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
-        .filter(|(_, lingering)| exit::path_in_folder(&lingering.cwd, folder, &resolved))
-        .map(|(task, _)| task.clone())
+        .map(|(task, lingering)| (task.clone(), lingering.cwd.clone()))
         .collect();
+    if snapshot.is_empty() {
+        return;
+    }
+    fn lingering_in(snapshot: Vec<(String, PathBuf)>, folder: &Path) -> Vec<String> {
+        let resolved = exit::resolve_path(folder);
+        snapshot.into_iter().filter(|(_, cwd)| exit::path_in_folder(cwd, folder, &resolved)).map(|(task, _)| task).collect()
+    }
+    let (owned, copy) = (folder.to_path_buf(), snapshot.clone());
+    let tasks = match tokio::task::spawn_blocking(move || lingering_in(copy, &owned)).await {
+        Ok(tasks) => tasks,
+        Err(error) => {
+            // A lingering agent must still end before its folder goes: match here instead.
+            eprintln!("Could not check lingering agents off the runtime: {error}");
+            lingering_in(snapshot, folder)
+        }
+    };
     for task in tasks {
         end_lingering(&task).await;
     }
@@ -4626,7 +4641,9 @@ async fn run_process_launch(
         // No pooled spare: the launch is counted and the warm key's config walk skipped. Switching
         // spares off empties the pool, so this in-memory check also covers "off" without file I/O.
         Some(tools) if warm::supported(&config) => {
-            if warm::has_spare_or_record_cold(&config.session_id) {
+            // Managed workers never get spares, so they never count as cold launches without one.
+            let ordinary_eligible = config.worker.is_none();
+            if warm::has_spare_or_record_cold(&config.session_id, ordinary_eligible) {
                 // The switch and the key read files (the key: the task's switches and saved
                 // settings), so both run off the runtime. Never abort a turn over a warm key.
                 let (keyed, catalog) = (config.clone(), tools.tools.clone());
@@ -4639,19 +4656,19 @@ async fn run_process_launch(
                 })
                 .await;
                 match outcome {
-                    Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key),
+                    Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible),
                     Ok(WarmKey::Disabled) => {
                         warm::launched_without_spare(&config.session_id);
                         None
                     }
                     // No key: the config folder cannot be known, so the pooled spare is retired and logged.
                     Ok(WarmKey::NoKey) => {
-                        warm::launched_without_key(&config.session_id);
+                        warm::launched_without_key(&config.session_id, ordinary_eligible);
                         None
                     }
                     Err(err) => {
                         eprintln!("Warm Claude key check failed: {err}");
-                        warm::launched_without_key_reason(&config.session_id, "its warm key check failed");
+                        warm::launched_without_key_reason(&config.session_id, "its warm key check failed", ordinary_eligible);
                         None
                     }
                 }

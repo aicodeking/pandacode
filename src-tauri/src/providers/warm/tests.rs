@@ -2,6 +2,8 @@ use super::*;
 use super::key::*;
 use super::spawn::*;
 #[cfg(unix)]
+use super::stats::expired_note;
+#[cfg(unix)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[test]
@@ -195,43 +197,43 @@ async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     // Adopted.
     let hit = id("hit");
     admit(&mut spares(pool), hit.clone(), with_key(true, Duration::ZERO, &launch));
-    let (spare, note) = take_in(pool, &hit, &launch);
+    let (spare, note) = take_in(pool, &hit, &launch, true);
     assert!(spare.is_some());
     assert_eq!(note.as_deref(), Some("Team lead's warm Claude agent adopted. Lead spares since launch: 1 started, 1 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded."));
     // A warm-key field differed: only the field names, never their values.
     let changed = id("changed");
     admit(&mut spares(pool), changed.clone(), with_key(true, Duration::ZERO, &launch));
     let next = key(&RunConfig { model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]).unwrap();
-    let (spare, note) = take_in(pool, &changed, &next);
+    let (spare, note) = take_in(pool, &changed, &next, true);
     assert!(spare.is_none());
     assert_eq!(note.as_deref(), Some("Team lead's warm Claude agent not used (changed: model); starting cold. Lead spares since launch: 2 started, 1 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded."));
     // Expired while still in the pool.
     let old = id("old");
     admit(&mut spares(pool), old.clone(), with_key(true, IDLE, &launch));
-    assert_eq!(take_in(pool, &old, &launch).1.as_deref(), Some("Team lead's warm Claude agent not used (it expired); starting cold. Lead spares since launch: 3 started, 1 adopted, 2 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded."));
+    assert_eq!(take_in(pool, &old, &launch, true).1.as_deref(), Some("Team lead's warm Claude agent not used (it expired); starting cold. Lead spares since launch: 3 started, 1 adopted, 2 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded."));
     // Evicted by newer teams' spares.
     let evicted = id("evicted");
     admit(&mut spares(pool), evicted.clone(), with_key(true, Duration::from_secs(60), &launch));
     for _ in 0..LEAD_LIMIT {
         admit(&mut spares(pool), id("newer"), with_key(true, Duration::ZERO, &launch));
     }
-    assert_eq!(take_in(pool, &evicted, &launch).1.as_deref(), Some("Team lead's warm Claude agent not used (it was evicted by a newer team's spare); starting cold. Lead spares since launch: 6 started, 1 adopted, 3 not used, 0 expired, 1 evicted, 0 replaced, 0 discarded."));
+    assert_eq!(take_in(pool, &evicted, &launch, true).1.as_deref(), Some("Team lead's warm Claude agent not used (it was evicted by a newer team's spare); starting cold. Lead spares since launch: 6 started, 1 adopted, 3 not used, 0 expired, 1 evicted, 0 replaced, 0 discarded."));
     // Discarded (settings changed, team paused or stopped).
     let discarded = id("discarded");
     admit(&mut spares(pool), discarded.clone(), with_key(true, Duration::ZERO, &launch));
     discard_from(pool, &discarded);
-    assert_eq!(take_in(pool, &discarded, &launch).1.as_deref(), Some("Team lead's warm Claude agent not used (it was discarded); starting cold. Lead spares since launch: 7 started, 1 adopted, 4 not used, 0 expired, 2 evicted, 0 replaced, 1 discarded."));
-    // Each reason is said once; a task that never had a lead spare logs nothing.
-    assert_eq!(take_in(pool, &discarded, &launch).1, None);
+    assert_eq!(take_in(pool, &discarded, &launch, true).1.as_deref(), Some("Team lead's warm Claude agent not used (it was discarded); starting cold. Lead spares since launch: 7 started, 1 adopted, 4 not used, 0 expired, 2 evicted, 0 replaced, 1 discarded."));
+    // Each reason is said once; a managed worker (never eligible for a spare) logs nothing.
+    assert_eq!(take_in(pool, &discarded, &launch, false).1, None);
     // An ordinary spare logs its hits and misses with ordinary totals of its own.
     let plain = id("plain");
     admit(&mut spares(pool), plain.clone(), with_key(false, Duration::ZERO, &launch));
-    let (spare, note) = take_in(pool, &plain, &launch);
+    let (spare, note) = take_in(pool, &plain, &launch, true);
     assert!(spare.is_some());
     assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 1 started, 1 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare."));
     admit(&mut spares(pool), plain.clone(), with_key(false, Duration::ZERO, &launch));
     assert_eq!(
-        take_in(pool, &plain, &next).1.as_deref(),
+        take_in(pool, &plain, &next, true).1.as_deref(),
         Some("Warm Claude agent not used (changed: model); starting cold. Ordinary spares since launch: 2 started, 1 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
     );
     // Ordinary spares never move the lead counters, and lead spares never move the ordinary ones.
@@ -452,7 +454,8 @@ async fn a_replaced_spare_is_handed_back_with_its_reason() {
     let replaced = admit(&mut pool, "lead-a".into(), idle_spare(true, Duration::ZERO));
     assert_eq!(replaced.len(), 1, "the old spare is dropped by the caller, outside the lock");
     assert!(replaced[0].1.born < pool.spares["lead-a"].born, "the newer spare stays");
-    assert_eq!(pool.gone.get("lead-a"), Some(&Gone::Replaced));
+    assert!(!pool.gone.contains_key("lead-a"), "no stale `Replaced` note beside the fresh spare");
+    assert_eq!(pool.lead.replaced, 1, "the replacement is still counted");
     assert_eq!(admit(&mut pool, "task-a".into(), idle_spare(false, Duration::ZERO)).len(), 0);
     assert_eq!(admit(&mut pool, "task-a".into(), idle_spare(false, Duration::ZERO)).len(), 1);
     assert!(!pool.gone.contains_key("task-a"), "ordinary spares keep no reason");
@@ -572,17 +575,17 @@ async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     };
     let (child, group) = spawn();
     insert(child, group);
-    assert!(take_in(pool, &session, "launch-b").0.is_none(), "a different launch starts cold");
+    assert!(take_in(pool, &session, "launch-b", true).0.is_none(), "a different launch starts cold");
     assert!(!waiting_in(pool, &session), "and the stale agent is gone");
     let (child, group) = spawn();
     insert(child, group);
-    let mut adopted = take_in(pool, &session, "launch-a").0.expect("the matching agent is adopted");
+    let mut adopted = take_in(pool, &session, "launch-a", true).0.expect("the matching agent is adopted");
     adopted.0.child.kill().await.unwrap();
     let (mut child, group) = spawn();
     child.kill().await.unwrap();
     child.wait().await.unwrap();
     insert(child, group);
-    assert!(take_in(pool, &session, "launch-a").0.is_none(), "an agent that exited is never adopted");
+    assert!(take_in(pool, &session, "launch-a", true).0.is_none(), "an agent that exited is never adopted");
     discard_from(pool, &session);
 }
 
@@ -599,7 +602,7 @@ async fn a_missed_spare_is_gone_before_the_cold_launch_may_start() {
     let spare = idle_spare(false, Duration::ZERO);
     let pid = spare.child.id().unwrap();
     spares(pool).spares.insert(session.clone(), spare);
-    assert!(take_in(pool, &session, "another launch").0.is_none());
+    assert!(take_in(pool, &session, "another launch", true).0.is_none());
     // The cold launch's `await_exit` returns only once the dropped spare has exited.
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid), "the missed spare still runs after await_exit");
@@ -1190,7 +1193,7 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     };
     // Toggling Fast mode ON never adopts a standard-speed spare.
     let pid = insert(false, &standard_key);
-    let (adopted, note) = take_in(pool, &session, &fast_key);
+    let (adopted, note) = take_in(pool, &session, &fast_key, true);
     assert!(adopted.is_none());
     assert_eq!(
         note.as_deref(),
@@ -1201,7 +1204,7 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     assert!(process_gone(pid));
     // Toggling Fast mode OFF never adopts a fast-mode spare (which would overbill the next turn).
     let pid = insert(false, &fast_key);
-    let (adopted, note) = take_in(pool, &session, &off_key);
+    let (adopted, note) = take_in(pool, &session, &off_key, true);
     assert!(adopted.is_none());
     assert_eq!(
         note.as_deref(),
@@ -1212,19 +1215,19 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     assert!(process_gone(pid));
     // A lead spare also refuses a fast-mode mismatch and reports the field name.
     let pid = insert(true, &fast_key);
-    let (adopted, note) = take_in(pool, &session, &off_key);
+    let (adopted, note) = take_in(pool, &session, &off_key, true);
     assert!(adopted.is_none());
     assert!(note.as_deref().is_some_and(|line| line.contains("Team lead's warm Claude agent not used (changed: fastMode)")), "{note:?}");
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
     // Matching fast mode adopts cleanly, and standard None <-> serviceTier:null adopts cleanly.
     insert(false, &fast_key);
-    let (adopted, note) = take_in(pool, &session, &fast_key);
+    let (adopted, note) = take_in(pool, &session, &fast_key, true);
     assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 0 started, 1 adopted, 2 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare."));
     let (mut spare, _pending) = adopted.expect("matching fast-mode spare is adopted");
     spare.child.kill().await.unwrap();
     insert(false, &standard_key);
-    let (adopted, note) = take_in(pool, &session, &off_key);
+    let (adopted, note) = take_in(pool, &session, &off_key, true);
     assert_eq!(note.as_deref(), Some("Warm Claude agent adopted. Ordinary spares since launch: 0 started, 2 adopted, 2 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare."));
     let (mut spare, _pending) = adopted.expect("standard None and serviceTier:null share one warm key");
     spare.child.kill().await.unwrap();
@@ -1322,7 +1325,7 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
     drop(starting);
     assert!(waiting_in(pool, &session));
 
-    let (adopted, _) = take_in(pool, &session, &fast_key);
+    let (adopted, _) = take_in(pool, &session, &fast_key, true);
     let (mut spare, _pending) = adopted.expect("next turn adopts the fast-mode spare");
     spare.child.kill().await.unwrap();
     let _ = spare.child.wait().await;
@@ -1620,7 +1623,7 @@ async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
     let cold = format!("warm-cold-{}", uuid::Uuid::new_v4());
     spares(pool).gone.insert(cold.clone(), Gone::Expired);
     let before = epoch(&cold);
-    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold);
+    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold, true);
     assert!(!pooled);
     assert!(epoch(&cold) > before, "the launch is counted, so a spare for the old launch is refused");
     assert_eq!(
@@ -1628,16 +1631,20 @@ async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
         Some("Team lead's warm Claude agent not used (it expired); starting cold. Lead spares since launch: 0 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded.")
     );
     assert!(!spares(pool).gone.contains_key(&cold));
-    assert_eq!(has_spare_or_record_cold_in(pool, &cold), (false, None), "each reason is said once");
-    assert_eq!(spares(pool).cold_without_spare, 2, "every launch with no pooled spare is counted");
+    // Each reason is said once; the next launch is a plain cold launch without a spare.
+    assert_eq!(
+        has_spare_or_record_cold_in(pool, &cold, true),
+        (false, Some(format!("{NOT_POOLED} Ordinary spares since launch: 0 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.")))
+    );
+    assert_eq!(spares(pool).cold_without_spare, 1, "a lead's gone reason counts only as a lead miss");
 
     let warm = format!("warm-pooled-{}", uuid::Uuid::new_v4());
     admit(&mut spares(pool), warm.clone(), idle_spare(true, Duration::ZERO));
     let launch = epoch(&warm);
-    assert_eq!(has_spare_or_record_cold_in(pool, &warm), (true, None));
+    assert_eq!(has_spare_or_record_cold_in(pool, &warm, true), (true, None));
     assert!(waiting_in(pool, &warm), "the pooled spare is left for `take`");
-    assert_eq!(epoch(&warm), launch, "`take` counts the launch");
-    let (adopted, _) = take_in(pool, &warm, "launch");
+    assert!(epoch(&warm) > launch, "counted with a spare pooled too, so a stale lead renewal is refused");
+    let (adopted, _) = take_in(pool, &warm, "launch", true);
     assert!(adopted.is_some());
 }
 
@@ -1651,14 +1658,14 @@ async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_no
     admit(&mut spares(pool), session.clone(), spare);
     let before = epoch(&session);
     assert_eq!(
-        launched_without_key_in(pool, &session, NO_CONFIG).as_deref(),
+        launched_without_key_in(pool, &session, NO_CONFIG, true).as_deref(),
         Some("Team lead's warm Claude agent not used (its config folder cannot be known); starting cold. Lead spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded.")
     );
     assert!(epoch(&session) > before, "the launch is counted");
     assert!(!waiting_in(pool, &session), "the spare must not idle beside the cold process");
     assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for a later launch");
-    assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG), None, "the miss is said once");
-    assert_eq!(has_spare_or_record_cold_in(pool, &session), (false, None));
+    assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG, false), None, "the miss is said once");
+    assert_eq!(has_spare_or_record_cold_in(pool, &session, false), (false, None));
     {
         let counts = spares(pool);
         assert_eq!(counts.lead, PoolStats { started: 1, missed: 1, ..PoolStats::default() });
@@ -1677,11 +1684,11 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
     let pid = pid_of(&spare);
     admit(&mut spares(pool), session.clone(), spare);
     assert_eq!(
-        launched_without_key_in(pool, &session, NO_CONFIG).as_deref(),
+        launched_without_key_in(pool, &session, NO_CONFIG, true).as_deref(),
         Some("Warm Claude agent not used (its config folder cannot be known); starting cold. Ordinary spares since launch: 1 started, 0 adopted, 1 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 0 cold launches without a spare.")
     );
     assert!(!waiting_in(pool, &session));
-    assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG), None, "the miss is said once");
+    assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG, false), None, "the miss is said once");
     {
         let counts = spares(pool);
         assert_eq!(counts.lead, PoolStats::default(), "ordinary spares never move the lead counters");
@@ -1694,6 +1701,85 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
 /// The reason `launched_without_key` logs when the config folder cannot be resolved.
 #[cfg(unix)]
 const NO_CONFIG: &str = "its config folder cannot be known";
+
+/// What a supported launch with no pooled spare (and no lead `gone` note) logs.
+#[cfg(unix)]
+const NOT_POOLED: &str = "Warm Claude agent not pooled; starting cold.";
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cold_launch_is_counted_once_and_never_for_a_managed_worker() {
+    let pool = own_pool();
+    let id = |name: &str| format!("warm-cold-count-{name}-{}", uuid::Uuid::new_v4());
+    // A managed worker: no spare, no note, no count, but the launch still advances.
+    let worker = id("worker");
+    let before = epoch(&worker);
+    assert_eq!(has_spare_or_record_cold_in(pool, &worker, false), (false, None));
+    assert!(epoch(&worker) > before);
+    assert_eq!(spares(pool).cold_without_spare, 0, "managed workers never count as cold launches");
+    // A lead's gone note: only a lead miss, never a cold launch.
+    let lead = id("lead");
+    spares(pool).gone.insert(lead.clone(), Gone::Evicted);
+    let (pooled, note) = has_spare_or_record_cold_in(pool, &lead, true);
+    assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it was evicted")), "{note:?}");
+    assert_eq!(spares(pool).lead, PoolStats { missed: 1, ..PoolStats::default() });
+    assert_eq!(spares(pool).cold_without_spare, 0);
+    // An ordinary launch with nothing pooled.
+    assert_eq!(
+        has_spare_or_record_cold_in(pool, &id("plain"), true),
+        (false, Some(format!("{NOT_POOLED} Ordinary spares since launch: 0 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.")))
+    );
+    assert_eq!(spares(pool).ordinary, PoolStats::default());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_spare_vanishing_during_the_key_walk_still_counts_its_launch() {
+    let pool = own_pool();
+    let session = format!("warm-vanish-{}", uuid::Uuid::new_v4());
+    let spare = idle_spare(false, Duration::ZERO);
+    let pid = pid_of(&spare);
+    admit(&mut spares(pool), session.clone(), spare);
+    let before = epoch(&session);
+    assert_eq!(has_spare_or_record_cold_in(pool, &session, true), (true, None));
+    assert!(epoch(&session) > before, "the launch is counted before the key walk");
+    // Expired (or evicted) while the key was computed off the runtime.
+    let removed = spares(pool).remove(&session, Gone::Expired);
+    let (adopted, note) = take_in(pool, &session, "launch", true);
+    assert!(adopted.is_none());
+    assert_eq!(
+        note.as_deref(),
+        Some(format!("{NOT_POOLED} Ordinary spares since launch: 1 started, 0 adopted, 0 not used, 1 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.").as_str())
+    );
+    // The same race for a managed worker counts and logs nothing.
+    assert_eq!(take_in(pool, &session, "launch", false).1, None);
+    assert_eq!(spares(pool).cold_without_spare, 1);
+    if let Some((spare, pending)) = removed {
+        retire(&session, spare, pending);
+    }
+    await_exit(&session).await.unwrap();
+    assert!(process_gone(pid));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn expiry_and_discard_lines_read_the_totals_without_counting() {
+    let pool = own_pool();
+    {
+        let mut locked = spares(pool);
+        locked.lead = PoolStats { started: 3, adopted: 1, missed: 1, expired: 1, ..PoolStats::default() };
+        locked.ordinary = PoolStats { started: 2, discarded: 2, ..PoolStats::default() };
+        locked.cold_without_spare = 4;
+    }
+    assert_eq!(expired_note(pool, true), "Team lead's warm Claude agent expired idle. Lead spares since launch: 3 started, 1 adopted, 1 not used, 1 expired, 0 evicted, 0 replaced, 0 discarded.");
+    assert_eq!(expired_note(pool, false), "Warm Claude agent expired idle. Ordinary spares since launch: 2 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 2 discarded; 4 cold launches without a spare.");
+    assert_eq!(discarded_note(pool, true), "Team lead's warm Claude agent discarded. Lead spares since launch: 3 started, 1 adopted, 1 not used, 1 expired, 0 evicted, 0 replaced, 0 discarded.");
+    assert_eq!(discarded_note(pool, false), "Warm Claude agent discarded. Ordinary spares since launch: 2 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 2 discarded; 4 cold launches without a spare.");
+    let locked = spares(pool);
+    assert_eq!(locked.lead, PoolStats { started: 3, adopted: 1, missed: 1, expired: 1, ..PoolStats::default() });
+    assert_eq!(locked.ordinary, PoolStats { started: 2, discarded: 2, ..PoolStats::default() });
+    assert_eq!(locked.cold_without_spare, 4);
+}
 
 #[cfg(unix)]
 #[tokio::test]
@@ -1711,9 +1797,12 @@ async fn a_launch_without_a_spare_counts_a_discard_and_leaves_no_stale_lead_note
     assert!(!waiting_in(pool, &session), "the spare must not idle beside the cold process");
     assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for the next launch");
     assert_eq!(spares(pool).lead, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
-    // The lead's next supported launch starts cold silently, without counting a miss.
-    assert_eq!(has_spare_or_record_cold_in(pool, &session), (false, None));
-    assert_eq!(take_in(pool, &session, "launch").1, None);
+    // The lead's next supported launch starts cold without counting a lead miss.
+    let (pooled, note) = has_spare_or_record_cold_in(pool, &session, true);
+    assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
+    let note = take_in(pool, &session, "launch", true).1;
+    assert!(note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
+    assert_eq!(spares(pool).cold_without_spare, 2);
     assert_eq!(spares(pool).lead, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
     assert_eq!(spares(pool).ordinary, PoolStats::default());
     await_exit(&session).await.unwrap();
@@ -1728,7 +1817,7 @@ async fn a_failed_key_check_logs_its_own_reason() {
     let spare = idle_spare(false, Duration::ZERO);
     let pid = pid_of(&spare);
     admit(&mut spares(pool), session.clone(), spare);
-    let note = launched_without_key_in(pool, &session, "its warm key check failed").unwrap();
+    let note = launched_without_key_in(pool, &session, "its warm key check failed", true).unwrap();
     assert!(note.starts_with("Warm Claude agent not used (its warm key check failed); starting cold."), "{note}");
     assert!(!note.contains(NO_CONFIG), "{note}");
     assert!(!waiting_in(pool, &session));
@@ -1758,11 +1847,12 @@ async fn ordinary_pool_stats_count_every_lifecycle_step_apart_from_leads() {
     discard_from(pool, &c);
     // Adopted, then found unusable.
     admit(&mut spares(pool), gone.clone(), idle_spare(false, Duration::ZERO));
-    assert!(take_in(pool, &gone, "launch").0.is_some());
+    assert!(take_in(pool, &gone, "launch", true).0.is_some());
     admit(&mut spares(pool), gone.clone(), idle_spare(false, Duration::ZERO));
-    assert!(take_in(pool, &gone, "another").0.is_none());
+    assert!(take_in(pool, &gone, "another", true).0.is_none());
     // A launch with nothing pooled.
-    assert_eq!(has_spare_or_record_cold_in(pool, &cold), (false, None));
+    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold, true);
+    assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
     {
         let counts = spares(pool);
         assert_eq!(

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   bootstrapMedianCi, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
-  rssKibToMib, rustFnStr, rustStr, scrub, summarize, treeRssMib, unescapeRust,
+  resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
@@ -151,7 +151,7 @@ test('seedArgs persists exactly one short exchange with the minimal config', () 
   assert.ok(args.includes('--strict-mcp-config'));
 });
 
-test('transcriptDigest hashes every .jsonl by file name and sees any change', () => {
+test('transcriptDigest hashes every .jsonl by relative path and sees any change', () => {
   const dir = mkdtempSync(join(tmpdir(), 'warm-spare-digest-'));
   try {
     assert.deepEqual(transcriptDigest(join(dir, 'missing')), {});
@@ -159,12 +159,41 @@ test('transcriptDigest hashes every .jsonl by file name and sees any change', ()
     writeFileSync(join(dir, 'proj-a', 's1.jsonl'), '{"a":1}\n');
     writeFileSync(join(dir, 'proj-a', 'notes.txt'), 'x');
     const before = transcriptDigest(dir);
-    assert.deepEqual(Object.keys(before), ['s1.jsonl']);
-    assert.match(before['s1.jsonl'], /^[0-9a-f]{64}$/);
+    assert.deepEqual(Object.keys(before), ['proj-a/s1.jsonl']);
+    assert.match(before['proj-a/s1.jsonl'], /^[0-9a-f]{64}$/);
     assert.deepEqual(transcriptDigest(dir), before);
     writeFileSync(join(dir, 'proj-a', 's1.jsonl'), '{"a":1}\n{"b":2}\n');
     assert.notDeepEqual(transcriptDigest(dir), before);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('transcriptDigest keeps same-named transcripts in nested folders apart', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warm-spare-digest-nested-'));
+  try {
+    mkdirSync(join(dir, 'proj-a', 'sub'), { recursive: true });
+    mkdirSync(join(dir, 'proj-b'), { recursive: true });
+    writeFileSync(join(dir, 'proj-a', 's1.jsonl'), 'a');
+    writeFileSync(join(dir, 'proj-a', 'sub', 's1.jsonl'), 'b');
+    writeFileSync(join(dir, 'proj-b', 's1.jsonl'), 'c');
+    writeFileSync(join(dir, 'top.jsonl'), 'd');
+    const digest = transcriptDigest(dir);
+    assert.deepEqual(Object.keys(digest), ['proj-a/s1.jsonl', 'proj-a/sub/s1.jsonl', 'proj-b/s1.jsonl', 'top.jsonl']);
+    assert.equal(new Set(Object.values(digest)).size, 4);
+    assert.ok(Object.keys(digest).every(k => !k.includes('\\')));
+    assert.equal(sessionTranscriptKey(digest, 'top'), 'top.jsonl');
+    assert.equal(sessionTranscriptKey({ 'proj-b/abc.jsonl': 'h' }, 'abc'), 'proj-b/abc.jsonl');
+    assert.equal(sessionTranscriptKey({ 'proj-b/xabc.jsonl': 'h' }, 'abc'), null);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('resumeCheckError fails closed when the seed request was not captured', () => {
+  for (const resumed of [0, 1, 5, 100]) assert.match(resumeCheckError(null, resumed), /seed request was not captured/);
+  assert.match(resumeCheckError(undefined, 5), /not captured/);
+  assert.match(resumeCheckError(3, 3), /resume not loaded/);
+  assert.match(resumeCheckError(3, 2), /resume not loaded/);
+  assert.match(resumeCheckError(3, undefined), /resume not loaded/);
+  assert.equal(resumeCheckError(3, 5), null);
+  assert.equal(resumeCheckError(0, 1), null);
 });
 
 test('mirroredClaudeJson drops the projects map and tolerates bad input', () => {

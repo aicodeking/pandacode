@@ -198,7 +198,7 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
                 })
                 .collect();
             if snapshot.is_empty() {
-                return;
+                return Ok::<(), String>(());
             }
             let target = folder.clone();
             let matching = tokio::task::spawn_blocking(move || {
@@ -209,9 +209,10 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
                     .collect::<Vec<_>>()
             })
             .await
-            .unwrap_or_default();
+            // Fail closed: skipping the wait could let the folder go while a process still runs in it.
+            .map_err(|error| format!("Could not check exiting processes: {error}"))?;
             if matching.is_empty() {
-                return;
+                return Ok(());
             }
             if hurry {
                 for (session_id, _, _) in &matching {
@@ -227,7 +228,7 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
     };
     tokio::time::timeout(cap, wait)
         .await
-        .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())
+        .map_err(|_| "A previous run in this folder is still shutting down. Try again.".to_string())?
 }
 
 /// `await_all_exits` over a given registry. Exits registered while waiting (a pending spare

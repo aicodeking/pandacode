@@ -320,7 +320,11 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   turn; a waiting team lead can renew its spare twice. Turning the switch off
   immediately retires idle spares and cancels pending renewals. The off setting
   is the empty `warm-spares-off` file in PandaCode's app data; an unreadable setting
-  also disables spares. See [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
+  also disables spares. Each spare is a real Claude Code start, so it makes
+  Claude Code's own startup requests in the background (`HEAD /api/hello` to
+  Anthropic, plus Claude Code's telemetry and feature flags unless **Turn off
+  agent telemetry** is on) before you send anything; no prompt is sent and no
+  tokens or quota are used. See [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a
   read-only search, outline and read tool agents call with no approval prompt;
   it refuses secret files. For Claude Code, PandaCode honors user, project,
@@ -343,6 +347,7 @@ information:
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org`, `releases.openai.com`, `storage.googleapis.com`, `pypi.org` | About every 6 hours |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog, and in Settings → Providers when account pools are shown (once, then at most every 5 minutes on window focus, or when you click Refresh) |
 | Asking your Claude Code for usage when PandaCode can't read it (on by default; Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it): PandaCode runs your installed Claude Code once, `claude -p /usage` (a local command: no model call, nothing billed), with only its config folder, network and process settings (its telemetry, error reports, nonessential traffic and self-update turned off for this run), which lets Claude Code refresh and save its own login if it needs to, as when you open it (it may answer from its own snapshot instead). PandaCode never writes Claude Code's credentials | Whatever Claude Code itself contacts to refresh its login and read usage (Anthropic) | Only during a Claude usage check that can't read usage (an expired, rejected or missing login, a Keychain or network problem, a rate limit with no saved reading; never for an API-key or other non-subscription setup, a locked Keychain or a Keychain read you denied unless you press Refresh), at most once per Claude setup every 15 minutes (a Refresh you press may run it once more), less often while runs keep failing (up to every 2 hours), never two at once, and never inside a rate limit's server-set wait (after it, a new rate limit with no or an old saved reading may run it); never while the setting is off |
+| Warm Claude spares (on by default): after a plain-Claude turn PandaCode starts an idle Claude Code process in the background (up to 4 in all), which makes Claude Code's own startup requests: `HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless **Turn off agent telemetry** is on. No prompt is sent and no tokens or quota are used | Anthropic (Claude Code's API endpoint and its telemetry and feature-flag hosts) | After each successful plain-Claude turn (a waiting team lead's spare can restart twice); never while Settings → Agents → **Warm Claude spares** is off, and turning it off stops idle spares at once |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |

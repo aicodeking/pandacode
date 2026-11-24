@@ -2,6 +2,7 @@
 //! lead's renewals when its spare expires.
 use super::*;
 use super::key::{key_with_disabled, prepared};
+use super::stats::{expired_note, lead_note};
 
 pub(super) fn claude() -> Lifecycle {
     Lifecycle { idle: IDLE, spawn: spawn_claude, current: still_current, pool: &SPARES }
@@ -122,8 +123,14 @@ pub(super) async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<V
         tokio::time::sleep(life.idle).await;
         // Retired outside the lock: killed, and same-session launches wait for its exit.
         let Some((expired, pending, renewing)) = take_expired_for_renewal(life.pool, &session_id, born, renewal.is_some()) else { return };
+        let lead = expired.lead;
         retire(&session_id, expired, pending);
-        let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else { return };
+        // Expiry is already counted by its removal; the line only reports the totals.
+        let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else {
+            eprintln!("{}", expired_note(life.pool, lead));
+            return;
+        };
+        let session = session_id.clone();
         // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
         // runs on a blocking thread, never on the timer's runtime worker.
         let check = tokio::task::spawn_blocking(move || {
@@ -134,12 +141,20 @@ pub(super) async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<V
             let again = renews(Some(&renew), launch, epoch(&session_id), renewals, current);
             again.then_some((renew, inputs, config, tools, approvals))
         });
-        if let Ok(Some((renew, inputs, config, tools, approvals))) = check.await {
-            if launch == 0 || epoch(&config.session_id) != launch {
-                return;
+        let mut renewed = false;
+        match check.await {
+            Ok(Some((renew, inputs, config, tools, approvals))) if launch != 0 && epoch(&config.session_id) == launch => {
+                renewed = true;
+                // `start` logs a failure with the renewal's number.
+                let _ = start(life, config, tools, approvals, launch, Some((renew, inputs)), renewals + 1).await;
             }
-            // `start` logs a failure with the renewal's number.
-            let _ = start(life, config, tools, approvals, launch, Some((renew, inputs)), renewals + 1).await;
+            Ok(_) => {}
+            Err(error) => eprintln!("Could not check the team lead's warm Claude agent renewal: {error}"),
+        }
+        // Not renewed and not superseded by a launch (whose own log reports it): the lead's spare
+        // simply expired idle, so say so even if the wake never comes.
+        if !renewed && launch != 0 && epoch(&session) == launch {
+            eprintln!("{}", expired_note(life.pool, true));
         }
         // The old token overlaps `start`'s own guard through its entire handoff.
         drop(renewing);
@@ -289,12 +304,13 @@ pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare)
 pub(super) fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<(String, Spare, Pending)> {
     let lead = spare.lead;
     let limit = if lead { LEAD_LIMIT } else { LIMIT };
-    pool.gone.remove(&session_id);
     let mut evicted: Vec<(String, Spare, Pending)> = pool
         .remove(&session_id, Gone::Replaced)
         .map(|(old, pending)| (session_id.clone(), old, pending))
         .into_iter()
         .collect();
+    // After the replacement: a fresh spare never sits beside a stale `Gone::Replaced` note.
+    pool.gone.remove(&session_id);
     pool.stats_mut(lead).started += 1;
     pool.spares.insert(session_id, spare);
     while pool.spares.values().filter(|spare| spare.lead == lead).count() > limit {
