@@ -4,12 +4,13 @@ use super::*;
 use crate::connections::Connection;
 
 /// Everything that shapes the launch: the command line, the folder and the tool catalog.
-pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> String {
+/// `None` when the launch's Claude config folder cannot be known: no spare is started or adopted.
+pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> Option<String> {
     key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider))
 }
 
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
-pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> String {
+pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str) -> Option<String> {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id))
 }
@@ -29,9 +30,24 @@ pub(super) fn key_with_disabled(
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
-) -> String {
+) -> Option<String> {
     let named = crate::connections::for_task(&config.session_id, &config.provider);
-    json!({
+    key_for_connection(config, tools, connection, named.as_ref(), disabled, stdio)
+}
+
+/// `key_with_disabled` with the task's named connection (`named`) already looked up.
+pub(super) fn key_for_connection(
+    config: &RunConfig,
+    tools: &[Value],
+    connection: &str,
+    named: Option<&Connection>,
+    disabled: &std::collections::BTreeSet<String>,
+    stdio: &[mcp_host::Stdio],
+) -> Option<String> {
+    // Config files Claude reads only at startup: an edit while a spare idles starts cold. Not
+    // knowable at all (see `claude_config_fingerprint_with`): no key, so no spare.
+    let claude_config = claude_config_fingerprint(config, named)?;
+    let key = json!({
         "namedConnection": connection,
         "provider": config.provider, "model": config.model, "effort": config.reasoning_effort,
         "mode": config.mode, "cwd": config.cwd, "resume": config.resume_id,
@@ -52,13 +68,12 @@ pub(super) fn key_with_disabled(
         "telemetryOff": super::super::privacy::telemetry_off(),
         // So does a saved executable location (the connection's own first, as at launch), or a
         // CLI upgraded in place (in the app or not).
-        "executable": executable_stamp(&config.provider, named.as_ref()),
-        // Config files Claude reads only at startup: an edit while a spare idles starts cold.
-        "claudeConfig": claude_config_fingerprint(config, named.as_ref()),
+        "executable": executable_stamp(&config.provider, named),
+        "claudeConfig": claude_config,
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
-    })
-    .to_string()
+    });
+    Some(key.to_string())
 }
 
 /// The saved executable location, the binary a launch would run, and that binary's metadata
@@ -116,8 +131,9 @@ const CONFIG_WALK_ENTRIES: usize = 128;
 /// The variable Claude Code reads its config folder from.
 const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
-/// Metadata of the Claude config files and folders this launch's process would read.
-pub(super) fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Vec<Value> {
+/// Metadata of the Claude config files and folders this launch's process would read; `None`
+/// when that folder cannot be known (see `claude_config_fingerprint_with`).
+pub(super) fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Option<Vec<Value>> {
     let env = claude_launch_env(crate::provider_settings::environment("claude"), connection);
     // A legacy connection may hold a folder variable as a secret, which is never read here.
     let secret_config = connection.is_some_and(|connection| {
@@ -169,15 +185,6 @@ pub(super) fn user_config_root(user_dir: Option<&Path>, empty_config: bool, secr
     }
 }
 
-/// Bumped for every unresolvable fingerprint, so no two launches ever share one.
-static NEXT_UNRESOLVABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// A fingerprint no other launch matches, so a spare is never adopted (it starts cold).
-fn unadoptable_fingerprint() -> Vec<Value> {
-    let nonce = NEXT_UNRESOLVABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    vec![json!(format!("unresolvable-config:{nonce}"))]
-}
-
 /// Metadata only (never contents) of startup configuration, memory and rules. Claude Code
 /// resolves its config folder with `CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")`, so an
 /// empty value stays `""`: user settings, memory, rules, agents, commands, skills (and
@@ -185,13 +192,14 @@ fn unadoptable_fingerprint() -> Vec<Value> {
 /// and legacy IDE paths use home. Both `cwd` and `home_claude` then get the full user stamps,
 /// and the leading marker keeps the key apart from an unset variable. When the folder cannot be
 /// known (an empty value with no known home, an unresolvable home, or a folder variable kept as
-/// a secret) Claude Code may read the real home, so the fingerprint is unadoptable.
+/// a secret) the files Claude Code reads cannot be stamped, so this returns `None` and no spare
+/// is started or adopted for the launch.
 pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
     user_root: UserConfigRoot<'_>,
     home_claude: Option<&Path>,
     managed_paths: &[PathBuf],
-) -> Vec<Value> {
+) -> Option<Vec<Value>> {
     const MEMORY_FILES: [&str; 4] = [
         "CLAUDE.md",
         "CLAUDE.local.md",
@@ -210,9 +218,7 @@ pub(super) fn claude_config_fingerprint_with(
             Some(home),
             std::iter::once(cwd).chain((home != cwd).then_some(home)).collect(),
         ),
-        (UserConfigRoot::EmptyConfigDir, None) | (UserConfigRoot::Unresolvable, _) => {
-            return unadoptable_fingerprint()
-        }
+        (UserConfigRoot::EmptyConfigDir, None) | (UserConfigRoot::Unresolvable, _) => return None,
     };
     let roots = crate::turn_changes::project_config_roots(cwd);
     let above_project = roots
@@ -275,7 +281,7 @@ pub(super) fn claude_config_fingerprint_with(
         stamps.push(config_dir_stamp(&path.with_extension("d")));
     }
     stamps.push(json!(roots.error));
-    stamps
+    Some(stamps)
 }
 
 #[cfg(test)]

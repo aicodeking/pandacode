@@ -942,18 +942,19 @@ async fn configure_session(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its project, provider, or model.".into());
     }
-    let session = {
+    let (session, reconfigured) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        store.configure(
-            &session_id,
-            &provider,
-            &model,
-            project_id.as_deref(),
-        )?
+        let before = store.session(&session_id)?;
+        let session = store.configure(&session_id, &provider, &model, project_id.as_deref())?;
+        let reconfigured = session_launch_changed(&before, &session);
+        (session, reconfigured)
     };
     // A lead's spare keeps the config it launched with, so it would renew on the old provider/model.
     // Invalidate while turn admission is serialized so a new turn's epoch cannot be clobbered.
-    providers::invalidate_warm_agent(&session_id);
+    // Re-picking the current provider, model and project keeps the spare.
+    if reconfigured {
+        providers::invalidate_warm_agent(&session_id);
+    }
     drop(agents);
     Ok(session)
 }
@@ -989,16 +990,30 @@ async fn set_reasoning_effort(
 /// started with the old settings must be discarded. Re-picking the current mode, model
 /// or effort keeps the spare.
 fn session_launch_changed(before: &Session, after: &Session) -> bool {
-    before.model != after.model || before.mode != after.mode || before.reasoning_effort != after.reasoning_effort
+    before.provider != after.provider
+        || before.model != after.model
+        || before.mode != after.mode
+        || before.reasoning_effort != after.reasoning_effort
+        || before.project_id != after.project_id
 }
 #[cfg(test)]
 mod session_launch_tests {
     use super::*;
 
+    /// Removes the scratch directory even when an assertion panics.
+    struct TempDir(std::path::PathBuf);
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn only_model_mode_or_effort_changes_invalidate_a_warm_spare() {
+    fn only_launch_shaping_changes_invalidate_a_warm_spare() {
         let dir = std::env::temp_dir().join(format!("pandacode-launch-change-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
+        // Declared before `store`, so the store closes before the directory is removed.
+        let _dir = TempDir(dir.clone());
         let store = Store::open(&dir.join("pandacode.db")).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let before = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
@@ -1015,8 +1030,11 @@ mod session_launch_tests {
         assert!(session_launch_changed(&before, &mode));
         assert!(session_launch_changed(&before, &effort));
         assert!(session_launch_changed(&effort, &before));
-        drop(store);
-        let _ = std::fs::remove_dir_all(&dir);
+
+        let provider = Session { provider: "codex".into(), ..before.clone() };
+        let project = Session { project_id: format!("{}-other", before.project_id), ..before.clone() };
+        assert!(session_launch_changed(&before, &provider));
+        assert!(session_launch_changed(&before, &project));
     }
 }
 #[tauri::command]

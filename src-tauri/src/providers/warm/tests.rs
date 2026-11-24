@@ -9,6 +9,7 @@ fn a_warm_agent_is_used_only_for_the_exact_launch_it_was_started_for() {
     let base = crate::providers::tests::config("claude");
     let tools = vec![json!({"type":"function","name":"pandacode_title"})];
     let original = key(&base, &tools);
+    assert!(original.is_some(), "a resolvable config folder is keyed");
     assert_eq!(original, key(&base.clone(), &tools));
     let changed = |edit: fn(&mut RunConfig)| { let mut config = base.clone(); edit(&mut config); key(&config, &tools) };
     for different in [
@@ -180,7 +181,7 @@ async fn ordinary_tasks_never_evict_a_waiting_leads_spare() {
 async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     let pool = own_pool();
     let base = crate::providers::tests::config("claude");
-    let launch = key(&base, &[]);
+    let launch = key(&base, &[]).unwrap();
     let with_key = |lead: bool, age: Duration, key: &str| Spare { key: key.into(), ..idle_spare(lead, age) };
     let id = |name: &str| format!("warm-log-{name}-{}", uuid::Uuid::new_v4());
     // Adopted.
@@ -192,7 +193,7 @@ async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     // A warm-key field differed: only the field names, never their values.
     let changed = id("changed");
     admit(&mut spares(pool), changed.clone(), with_key(true, Duration::ZERO, &launch));
-    let next = key(&RunConfig { model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]);
+    let next = key(&RunConfig { model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]).unwrap();
     let (spare, note) = take_in(pool, &changed, &next);
     assert!(spare.is_none());
     assert_eq!(note.as_deref(), Some("Team lead's warm Claude agent not used (changed: model); starting cold. Lead spares since launch: 1 adopted, 1 not used."));
@@ -404,7 +405,7 @@ async fn a_lead_spares_renewal_check_runs_off_the_runtime_thread() {
 fn a_renewal_is_current_only_while_its_warm_key_is_unchanged() {
     let base = crate::providers::tests::config("claude");
     let tools = vec![json!({"type":"function","name":"pandacode_title"})];
-    let spare = key(&RunConfig { cwd: external_path(&base.cwd), ..base.clone() }, &tools);
+    let spare = key(&RunConfig { cwd: external_path(&base.cwd), ..base.clone() }, &tools).unwrap();
     let inputs: Inputs = Arc::new(|| "explore:true tools:Some(false)".into());
     let current = |key: &str, tools: &[Value], spawned: &str| still_current(key, &base, tools, spawned, &inputs);
     assert!(current(&spare, &tools, "explore:true tools:Some(false)"));
@@ -498,7 +499,7 @@ fn the_warm_key_reads_only_the_launch_not_the_message() {
     let base = crate::providers::tests::config("claude");
     let message = RunConfig { prompt: "Review the settled workers.".into(), images: vec![PathBuf::from("/tmp/shot.png")], ..base.clone() };
     assert_eq!(key(&base, &[]), key(&message, &[]));
-    let field_names: Vec<String> = match serde_json::from_str::<Value>(&key(&base, &[])).unwrap() {
+    let field_names: Vec<String> = match serde_json::from_str::<Value>(&key(&base, &[]).unwrap()).unwrap() {
         Value::Object(fields) => fields.keys().cloned().collect(),
         _ => unreachable!(),
     };
@@ -517,18 +518,18 @@ fn toggling_colab_mcp_starts_the_next_turn_cold() {
     let config = crate::providers::tests::config("claude");
     let none = std::collections::BTreeSet::new();
     let colab = |args: &str| vec![mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec![args.into()])];
-    let off = key_with_disabled(&config, &[], "", &none, &[]);
-    let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp"));
+    let off = key_with_disabled(&config, &[], "", &none, &[]).unwrap();
+    let on = key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")).unwrap();
     assert_ne!(off, on);
-    assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")));
-    assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other")));
+    assert_eq!(key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")).as_deref(), Some(on.as_str()));
+    assert_ne!(key_with_disabled(&config, &[], "", &none, &colab("other")).as_deref(), Some(on.as_str()));
     assert_eq!(miss(true, &off, &on, Duration::from_secs(1), IDLE).as_deref(), Some("changed: stdioMcp"));
 }
 
 #[test]
 fn a_missed_warm_agent_names_what_changed() {
     let base = crate::providers::tests::config("claude");
-    let original = key(&base, &[]);
+    let original = key(&base, &[]).unwrap();
     let fresh = Duration::from_secs(1);
     assert_eq!(miss(true, &original, &original, fresh, IDLE), None);
     assert_eq!(miss(false, &original, &original, fresh, IDLE).as_deref(), Some("its process exited"));
@@ -537,7 +538,7 @@ fn a_missed_warm_agent_names_what_changed() {
     let short = Duration::from_millis(50);
     assert_eq!(miss(true, &original, &original, short, short).as_deref(), Some("it expired"));
     assert_eq!(miss(true, &original, &original, Duration::from_millis(10), short), None);
-    let next = key(&RunConfig { resume_id: Some("another".into()), model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]);
+    let next = key(&RunConfig { resume_id: Some("another".into()), model: "claude-sonnet-5-5".into(), ..base.clone() }, &[]).unwrap();
     assert_eq!(miss(true, &original, &next, fresh, IDLE).as_deref(), Some("changed: model, resume"));
 }
 
@@ -769,7 +770,7 @@ fn claude_config_file_edits_invalidate_a_warm_launch() {
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
     let none = std::collections::BTreeSet::new();
-    let key = || key_with_disabled(&config, &[], "", &none, &[]);
+    let key = || key_with_disabled(&config, &[], "", &none, &[]).unwrap();
     let mut previous = key();
     assert_eq!(previous, key(), "unchanged config files keep the key");
     // Every write changes the byte length, so coarse mtime granularity cannot hide it.
@@ -805,7 +806,7 @@ fn claude_local_memory_rules_agents_and_commands_edits_invalidate_a_warm_launch(
     let mut config = crate::providers::tests::config("claude");
     config.cwd = cwd.clone();
     let none = std::collections::BTreeSet::new();
-    let key = || key_with_disabled(&config, &[], "", &none, &[]);
+    let key = || key_with_disabled(&config, &[], "", &none, &[]).unwrap();
     let mut previous = key();
     // Every write changes the byte length, so coarse mtime granularity cannot hide it.
     for name in ["CLAUDE.local.md", ".claude/rules/common/style.md", ".claude/agents/reviewer.md", ".claude/commands/check.md"] {
@@ -850,7 +851,7 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
     assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&relative), &cwd), Some(cwd.join("connection-config")));
 
     let user = claude_config_dir_from(provider_env, Some(&folder), &cwd).unwrap();
-    let stamp = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&user), None, &[]);
+    let stamp = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&user), None, &[]).unwrap();
     let mut previous = stamp();
     write_config(&global, "settings.json", "{}");
     write_config(&global, "rules/common/rule.md", "a");
@@ -904,7 +905,7 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     std::fs::create_dir_all(&nested).unwrap();
     let user = root.join("user");
     let home = root.join("home/.claude");
-    let stamp = |cwd: &Path| claude_config_fingerprint_with(cwd, UserConfigRoot::Resolved(&user), Some(&home), &[]);
+    let stamp = |cwd: &Path| claude_config_fingerprint_with(cwd, UserConfigRoot::Resolved(&user), Some(&home), &[]).unwrap();
     let mut previous = stamp(&nested);
     for (name, contents) in [("AGENTS.md", "a"), ("AGENTS.md", "ab"), (".claude/settings.json", "{}"), ("CLAUDE.md", "a")] {
         write_config(&repo, name, contents);
@@ -1146,11 +1147,11 @@ fn toggling_claude_fast_mode_changes_the_warm_key_identically_to_the_cli_flag() 
     assert!(!claude_fast_mode(&toggled_off));
     assert!(!claude_fast_mode(&relay_fast));
     // Standard speed variants share one key; fast mode produces a distinct key.
-    let standard_key = key(&standard, &[]);
-    let off_key = key(&toggled_off, &[]);
-    let fast_key = key(&fast, &[]);
+    let standard_key = key(&standard, &[]).unwrap();
+    let off_key = key(&toggled_off, &[]).unwrap();
+    let fast_key = key(&fast, &[]).unwrap();
     assert_eq!(standard_key, off_key);
-    assert_eq!(standard_key, key(&other_tier, &[]));
+    assert_eq!(key(&other_tier, &[]).as_deref(), Some(standard_key.as_str()));
     assert_ne!(standard_key, fast_key);
     assert_eq!(miss(true, &standard_key, &fast_key, Duration::from_secs(1), IDLE).as_deref(), Some("changed: fastMode"));
     assert_eq!(miss(true, &fast_key, &off_key, Duration::from_secs(1), IDLE).as_deref(), Some("changed: fastMode"));
@@ -1162,9 +1163,9 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     let pool = own_pool();
     let session = format!("warm-fast-mode-{}", uuid::Uuid::new_v4());
     let base = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
-    let standard_key = key(&base, &[]);
-    let off_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": null})), ..base.clone() }, &[]);
-    let fast_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": "fast"})), ..base.clone() }, &[]);
+    let standard_key = key(&base, &[]).unwrap();
+    let off_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": null})), ..base.clone() }, &[]).unwrap();
+    let fast_key = key(&RunConfig { codex_settings: Some(json!({"serviceTier": "fast"})), ..base.clone() }, &[]).unwrap();
     let insert = |lead: bool, spare_key: &str| {
         let spare = Spare { key: spare_key.into(), ..idle_spare(lead, Duration::ZERO) };
         let pid = pid_of(&spare);
@@ -1246,9 +1247,9 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
 
     let session = format!("warm-invalidate-{}", uuid::Uuid::new_v4());
     let base = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
-    let standard_key = key(&base, &[]);
+    let standard_key = key(&base, &[]).unwrap();
     let fast_cfg = RunConfig { codex_settings: Some(json!({"serviceTier": "fast"})), ..base.clone() };
-    let fast_key = key(&fast_cfg, &[]);
+    let fast_key = key(&fast_cfg, &[]).unwrap();
 
     launched(&session);
     let before = epoch(&session);
@@ -1398,7 +1399,7 @@ fn a_dotfiles_repos_own_local_settings_edits_invalidate_a_warm_launch() {
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
     let user = repo.join(".claude");
-    let stamp = || claude_config_fingerprint_with(&repo, UserConfigRoot::Resolved(&user), Some(&user), &[]);
+    let stamp = || claude_config_fingerprint_with(&repo, UserConfigRoot::Resolved(&user), Some(&user), &[]).unwrap();
     let mut previous = stamp();
     assert_eq!(previous, stamp(), "unchanged config files keep the key");
     for contents in ["{}", "{ }"] {
@@ -1479,8 +1480,8 @@ fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
     std::fs::create_dir_all(&home).unwrap();
     // `CLAUDE_CONFIG_DIR=""` makes Claude Code read user config relative to `cwd`, with legacy
     // paths under `~/.claude`; unset resolves to `~/.claude`.
-    let empty = || claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, Some(&home), &[]);
-    let unset = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&home), Some(&home), &[]);
+    let empty = || claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, Some(&home), &[]).unwrap();
+    let unset = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&home), Some(&home), &[]).unwrap();
     let mut previous = empty();
     assert_eq!(previous, empty(), "unchanged config files keep the key");
     assert_ne!(previous, unset(), "an empty CLAUDE_CONFIG_DIR never shares a spare with an unset one");
@@ -1512,43 +1513,82 @@ fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
     // Two `<cwd>` and `<home>/.claude` user stamps, under a marker no unset variable carries.
     assert_eq!(previous.first(), Some(&json!("empty-config-dir")));
     assert_eq!(unset().first(), Some(&json!("resolved")));
-    let no_home = || claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, None, &[]);
-    assert_ne!(no_home(), no_home(), "an empty CLAUDE_CONFIG_DIR with no known home is never adopted");
+    assert_eq!(
+        claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, None, &[]),
+        None,
+        "an empty CLAUDE_CONFIG_DIR with no known home starts no spare"
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A legacy connection keeping `name` (a folder variable) as a secret, whose value is never read.
+fn legacy_secret_connection(name: &str) -> crate::connections::Connection {
+    crate::connections::Connection {
+        id: "legacy".into(),
+        provider: "claude".into(),
+        name: "Legacy".into(),
+        executable: None,
+        args: vec![],
+        env: Default::default(),
+        secret_env: vec![name.into()],
+        config_dir: None,
+        revision: 1,
+    }
+}
+
+const LEGACY_SECRET_FOLDER_VARIABLES: [&str; 4] = ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "claude_config_dir"];
 
 #[test]
 fn an_unresolvable_user_config_folder_is_never_adopted() {
     let root = std::env::temp_dir().join(format!("pandacode-warm-unresolvable-{}", uuid::Uuid::new_v4().simple()));
     let (cwd, home) = (root.join("project"), root.join("home/.claude"));
     std::fs::create_dir_all(&cwd).unwrap();
-    // Saved `HOME=""` or a relative `HOME` (no `USERPROFILE`): Claude Code falls back to the
-    // real home, which PandaCode cannot see, so each launch's fingerprint is its own.
+    // Saved `HOME=""` makes Node's `os.homedir()` return `""`, so Claude Code reads
+    // `<cwd>/.claude` rather than the real home, and a relative `HOME` resolves differently
+    // across platforms: the folder is not known for certain, so no spare is keyed.
     assert_eq!(user_config_root(None, false, false), UserConfigRoot::Unresolvable);
-    let unresolved = || claude_config_fingerprint_with(&cwd, user_config_root(None, false, false), Some(&home), &[]);
-    assert_ne!(unresolved(), unresolved(), "an unresolved home never matches a spare's key");
+    assert_eq!(claude_config_fingerprint_with(&cwd, UserConfigRoot::Unresolvable, Some(&home), &[]), None);
+    assert_eq!(claude_config_fingerprint_with(&cwd, UserConfigRoot::Unresolvable, None, &[]), None);
+    assert_eq!(claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, None, &[]), None);
     // A legacy connection keeping a folder variable as a secret is unresolvable whatever the rest says.
     assert_eq!(user_config_root(Some(home.as_path()), false, true), UserConfigRoot::Unresolvable);
     assert_eq!(user_config_root(None, true, true), UserConfigRoot::Unresolvable);
     assert_eq!(user_config_root(None, true, false), UserConfigRoot::EmptyConfigDir);
     assert_eq!(user_config_root(Some(home.as_path()), false, false), UserConfigRoot::Resolved(home.as_path()));
     let base = crate::providers::tests::config("claude");
-    for name in ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "claude_config_dir"] {
-        let legacy = crate::connections::Connection {
-            id: "legacy".into(),
-            provider: "claude".into(),
-            name: "Legacy".into(),
-            executable: None,
-            args: vec![],
-            env: Default::default(),
-            secret_env: vec![name.into()],
-            config_dir: None,
-            revision: 1,
-        };
-        let stamp = || claude_config_fingerprint(&base, Some(&legacy));
-        assert_ne!(stamp(), stamp(), "a legacy secret {name} never shares a spare");
+    let none = std::collections::BTreeSet::new();
+    assert!(key_for_connection(&base, &[], "", None, &none, &[]).is_some(), "the global setup is keyed");
+    for name in LEGACY_SECRET_FOLDER_VARIABLES {
+        let legacy = legacy_secret_connection(name);
+        assert_eq!(claude_config_fingerprint(&base, Some(&legacy)), None, "a legacy secret {name} has no fingerprint");
+        assert_eq!(key_for_connection(&base, &[], "legacy#1", Some(&legacy), &none, &[]), None, "a legacy secret {name} has no warm key");
     }
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `spawn_claude_process` keyed as for a legacy connection keeping `HOME` as a secret.
+fn spawn_unresolvable(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Spawning {
+    Box::pin(spawn_claude_keyed(config, tools, approval_tools, launch, |config, catalog, disabled, stdio| {
+        key_for_connection(config, catalog, "legacy#1", Some(&legacy_secret_connection("HOME")), disabled, stdio)
+    }))
+}
+
+#[tokio::test]
+async fn an_unresolvable_user_config_folder_starts_no_spare() {
+    let session = format!("warm-unresolvable-spawn-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let tools = vec![json!({"type":"function","name":"pandacode_title"})];
+    launched(&session); // a prewarm always follows a launch, never launch 0
+    let launch = epoch(&session);
+    // Declined before the secret store, the executable search, the tool server or the process,
+    // so this holds with no Claude Code installed.
+    let spawned = spawn_unresolvable(config.clone(), tools.clone(), HashSet::new(), launch).await.unwrap();
+    assert!(spawned.is_none(), "no process is started for a launch that has no warm key");
+    let life = Lifecycle { idle: Duration::from_secs(3600), spawn: spawn_unresolvable, current: |_, _, _, _, _| true, pool: own_pool() };
+    start(life, config, tools, HashSet::new(), launch, None, 0).await.unwrap();
+    assert!(!waiting_in(life.pool, &session), "nothing is registered in the pool");
+    assert!(spares(life.pool).spares.is_empty());
+    discard(&session);
 }
 
 #[cfg(unix)]

@@ -53,7 +53,8 @@ pub(super) fn still_current(spare_key: &str, config: &RunConfig, tools: &[Value]
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
     let config = prepared(config, &disabled);
     let stdio = mcp_host::stdio_servers(&config.session_id);
-    key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled, &stdio) == spare_key && inputs() == spawned
+    key_with_disabled(&config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), &disabled, &stdio).as_deref() == Some(spare_key)
+        && inputs() == spawned
 }
 
 /// A lead's renewal check with the inputs its spare was started on.
@@ -152,10 +153,41 @@ pub(super) fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools:
     Box::pin(spawn_claude_process(config, tools, approval_tools, launch))
 }
 
-pub(super) async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
+pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<Option<Spawned>, String> {
     if !enabled_now() || !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() {
         return Ok(None);
     }
+    spawn_claude_keyed(config, tools, approval_tools, launch, |config, catalog, disabled, stdio| {
+        key_with_disabled(config, catalog, &crate::connections::warm_key(&config.session_id, &config.provider), disabled, stdio)
+    })
+    .await
+}
+
+/// The spare's process once `key_for` has keyed its prepared launch. A launch with no key (its
+/// Claude config folder cannot be known, `key_with_disabled`) is declined first: no secret is
+/// read, no executable searched for, no tool server or process started.
+pub(super) async fn spawn_claude_keyed(
+    mut config: RunConfig,
+    tools: Vec<Value>,
+    approval_tools: HashSet<String>,
+    launch: u64,
+    key_for: impl FnOnce(&RunConfig, &[Value], &std::collections::BTreeSet<String>, &[mcp_host::Stdio]) -> Option<String> + Send + 'static,
+) -> Result<Option<Spawned>, String> {
+    config.cwd = external_path(&config.cwd);
+    // Switches, settings and the reminder's skill scan are read off the runtime.
+    let catalog = tools.clone();
+    let (config, key, disabled, stdio) = crate::blocking(move || {
+        let disabled = crate::skill_manager::disabled_for(&config.session_id);
+        let config = prepared(config, &disabled);
+        let stdio = mcp_host::stdio_servers(&config.session_id);
+        let key = key_for(&config, &catalog, &disabled, &stdio);
+        Ok((config, key, disabled, stdio))
+    })
+    .await?;
+    let Some(key) = key else {
+        eprintln!("No warm Claude agent: its config folder cannot be known.");
+        return Ok(None);
+    };
     let connection = crate::connections::for_task(&config.session_id, &config.provider)
         .map(|connection| crate::connections::launch(&connection))
         .transpose()?;
@@ -164,23 +196,6 @@ pub(super) async fn spawn_claude_process(mut config: RunConfig, tools: Vec<Value
         .and_then(|connection| connection.executable.clone())
         .or_else(|| executable(&config.provider))
         .ok_or("Claude Code is not installed")?;
-    config.cwd = external_path(&config.cwd);
-    // Switches, settings and the reminder's skill scan are read off the runtime.
-    let catalog = tools.clone();
-    let (config, key, disabled, stdio) = crate::blocking(move || {
-        let disabled = crate::skill_manager::disabled_for(&config.session_id);
-        let config = prepared(config, &disabled);
-        let stdio = mcp_host::stdio_servers(&config.session_id);
-        let key = key_with_disabled(
-            &config,
-            &catalog,
-            &crate::connections::warm_key(&config.session_id, &config.provider),
-            &disabled,
-            &stdio,
-        );
-        Ok((config, key, disabled, stdio))
-    })
-    .await?;
     let mut command = command(&path)?;
     crate::provider_settings::apply_environment(&config.provider, &mut command);
     configure_command_with_skills(&mut command, &config, &disabled);

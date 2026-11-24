@@ -7205,7 +7205,17 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { provider: providerId, model, reasoningEffort: null }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its model.');
-      const previousProvider = savedSelection().provider;
+      // Re-picking the saved harness and model changes nothing: skip the IPC so the task's warm spare survives.
+      // Still configure when the pick leaves a named team, refreshes an automatic team, commits a provisional
+      // task, or clears a remote mirror's local override.
+      const saved = savedSelection();
+      const team = teams.get(selected.id)?.config;
+      const sideEffects = !!team?.rosterOnly || !!team?.auto || provisionalTasks.has(selected.id) || localChoice !== undefined;
+      if (!sideEffects && providerId === saved.provider && (model || 'default') === (saved.model || 'default')) {
+        if (!inPanel && selected.id === state.sessionId && generation === state.generation) document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
+        return;
+      }
+      const previousProvider = saved.provider;
       configuringSessions.add(selected.id);
       try {
         // A plain model leaves a named team.

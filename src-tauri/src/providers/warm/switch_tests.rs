@@ -40,7 +40,7 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     let mut prepared_config = config.clone();
     prepared_config.cwd = external_path(&config.cwd);
     let disabled = crate::skill_manager::disabled_for(&session);
-    let spare_key = key(&prepared(prepared_config, &disabled), &[]);
+    let spare_key = key(&prepared(prepared_config, &disabled), &[]).unwrap();
     let inputs: Inputs = Arc::new(|| "unchanged".into());
     assert!(still_current(&spare_key, &config, &[], "unchanged", &inputs));
     assert!(supported(&config));
