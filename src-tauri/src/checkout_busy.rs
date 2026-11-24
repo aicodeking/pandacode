@@ -5,7 +5,7 @@ use crate::storage::Store;
 use crate::{blocking, lock_agents, providers, worktree_paths, AppState, Result};
 use std::path::{Path, PathBuf};
 
-pub(crate) fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
+fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
     let task = store.session(session_id).ok()?;
     if task.remote_device.is_some() {
         return None;

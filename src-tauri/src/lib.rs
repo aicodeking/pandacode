@@ -114,8 +114,8 @@ use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, H
 #[cfg(test)]
 use app_instructions::Role;
 pub(crate) use checkout_busy::{
-    any_checkout_busy_excluding, any_same_checkout, guard_idle, prepare_checkout_for_checks, quiesce_worktree,
-    refuse_worktree_merge_busy, refuse_worktree_remove_busy, session_checkout_root,
+    any_checkout_busy_excluding, guard_idle, prepare_checkout_for_checks, quiesce_worktree,
+    refuse_worktree_merge_busy, refuse_worktree_remove_busy,
 };
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;

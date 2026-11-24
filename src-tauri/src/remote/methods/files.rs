@@ -897,10 +897,10 @@ mod tests {
         std::fs::create_dir(&root).unwrap();
         let elsewhere = dir.join("other");
         std::fs::create_dir(&elsewhere).unwrap();
-        assert!(crate::any_same_checkout(&root, std::slice::from_ref(&root)));
-        assert!(crate::any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
-        assert!(!crate::any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
-        assert!(!crate::any_same_checkout(&root, &[]));
+        assert!(crate::checkout_busy::any_same_checkout(&root, std::slice::from_ref(&root)));
+        assert!(crate::checkout_busy::any_same_checkout(&root, &[elsewhere.clone(), root.join(".")]), "the same folder, spelled differently");
+        assert!(!crate::checkout_busy::any_same_checkout(&root, &[elsewhere, dir.join("missing")]));
+        assert!(!crate::checkout_busy::any_same_checkout(&root, &[]));
         std::fs::remove_dir_all(&dir).unwrap();
         // The phone's refusal uses the one shared matcher, which canonicalizes off the async runtime.
         let source = include_str!("files.rs");

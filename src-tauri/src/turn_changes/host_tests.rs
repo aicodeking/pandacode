@@ -342,9 +342,9 @@ fn linked_worktree_config_errors_fail_closed_for_all_common_dir_names() {
         let config = common.join("config");
         for bytes in [b"[core\n bare = true".to_vec(), b"[core] garbage\n bare = true".to_vec(),
             b"[core]\n bare = perhaps".to_vec(), b"[core]\n worktree = \"unfinished".to_vec(),
-            b"[core]\n bare = true\n worktree = \"\"".to_vec(), vec![0xff], vec![b' '; 16 * 1024 + 1]] {
+            b"[core]\n bare = true\n worktree = \"\"".to_vec(), vec![0xff], vec![b' '; 1024 * 1024 + 1]] {
             std::fs::write(&config, &bytes).unwrap();
-            assert!(linked_reads_restricted(&settings, &worktree), "standard={standard} bytes={bytes:?}");
+            assert!(linked_reads_restricted(&settings, &worktree), "standard={standard} len={}", bytes.len());
         }
         std::fs::remove_file(&config).unwrap();
         assert!(linked_reads_restricted(&settings, &worktree), "missing config");
