@@ -15,7 +15,7 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).toHaveAttribute('id', 'warm-spares');
   await expect(toggle(page)).toBeEnabled();
   await expect(toggle(page)).toBeChecked();
-  await expect(settings(page).getByText('Keeps idle Claude Code processes ready (~230–255 MiB each, up to 4) and runs SessionStart hooks ahead of the next turn.')).toBeVisible();
+  await expect(settings(page).getByText('Keeps idle Claude Code processes ready (~230–255 MiB each on short sessions, more with long histories or extra MCP servers; up to 4) and runs SessionStart hooks ahead of the next turn.')).toBeVisible();
 
   // Flipped from the keyboard (WebKit does not focus a clicked checkbox), it keeps focus after the save.
   await toggle(page).focus();

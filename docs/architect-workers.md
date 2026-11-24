@@ -378,20 +378,32 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   your approval or answer, and never once the wake has launched; a "no" ends the
   renewals for good. Every adoption is logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
-  not used (<reason>); starting cold.`, from `providers/warm.rs`), followed by
+  not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
   <started> started, <adopted> adopted, <missed> not used, <expired> expired,
   <evicted> evicted, <replaced> replaced, <discarded> discarded.`). An idle
-  expiry without renewal (`Team lead's warm Claude agent expired idle.`) and a
-  switch-off discard (`Team lead's warm Claude agent discarded.`) log the same
-  totals, so spares that expire or are dropped unused stay visible and the wake
-  speed-up can be measured. On the lead pool `not used` counts every wake that
+  expiry without renewal (`Team lead's warm Claude agent expired idle.`, or
+  `Team lead's warm Claude agent expired idle (not renewed: its launch settings
+  changed).` when the renewal check finds changed settings, without counting the
+  expiry twice), a switch-off discard
+  (`Team lead's warm Claude agent discarded.`) and a refused registration (a
+  spare that finished spawning after its launch moved on, counted in both
+  `started` and `discarded` and logged as `... discarded.`) log the same totals,
+  so spares that expire or are dropped unused stay visible and the wake
+  speed-up can be measured. A wake whose spare never started (declined or
+  failed) or whose removal reason aged out of the 64-entry `gone` table is
+  counted as an ordinary cold launch instead. With **Warm Claude spares** off
+  nothing is logged or counted. On the lead pool `not used` counts every wake that
   missed its spare, including spares already counted in `expired`, `evicted`,
   `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
   default env, ~218–243 MiB with "Turn off agent telemetry" on; Claude Code
-  2.1.325, macOS arm64, n = 12). It runs your `SessionStart` hooks when it
-  starts, so a renewal chain can run them in up to three processes per wake,
-  and hook context can be up to 10 minutes old when adopted. The spare saves
+  2.1.325, macOS arm64, n = 12, measured on fresh/one-turn sessions; a 50-turn
+  synthetic resumed probe added ~3–4 MiB, and larger histories, plugins or extra
+  MCP servers can use more). It runs your `SessionStart` hooks and snapshots
+  `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
+  renewal chain can run hooks in up to three processes per wake, and both hook
+  output and initial git context can be up to 10 minutes old when adopted
+  (including after worker edits in the same checkout). The spare saves
   the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
   env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
   [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API

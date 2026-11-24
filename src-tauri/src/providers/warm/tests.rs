@@ -1,10 +1,30 @@
 use super::*;
 use super::key::*;
 use super::spawn::*;
-#[cfg(unix)]
-use super::stats::expired_note;
-#[cfg(unix)]
+use super::stats::{expired_note, not_renewed_note};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+/// `take_since` with no switch-off since the pool's current discard epoch.
+fn take_in(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool) -> (Option<(Spare, Pending)>, Option<String>) {
+    let discard_epoch = spares(pool).discard_epoch;
+    take_since(pool, session_id, key, ordinary_eligible, discard_epoch)
+}
+
+/// A supported launch as `run_process_launch` makes it with spares on: `prepare_launch_in`, then
+/// the cold launch counted when the pool allows it. Whether a spare is pooled, and the line logged.
+fn launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (bool, Option<String>) {
+    match prepare_launch_in(pool, session_id, ordinary_eligible) {
+        (LaunchPool::Pooled { .. }, note) => (true, note),
+        (LaunchPool::Empty { may_record_cold: true }, None) => (false, Some(cold_without_spare_note(&mut spares(pool)))),
+        (LaunchPool::Empty { .. }, note) => (false, note),
+    }
+}
+
+/// `launched_without_key_since` with no switch-off since the pool's current discard epoch.
+fn launched_without_key_in(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool) -> Option<String> {
+    let discard_epoch = spares(pool).discard_epoch;
+    launched_without_key_since(pool, session_id, why, ordinary_eligible, discard_epoch)
+}
 
 #[test]
 fn a_warm_agent_is_used_only_for_the_exact_launch_it_was_started_for() {
@@ -145,11 +165,8 @@ impl Drop for TempDir {
     }
 }
 
-#[cfg(unix)]
 fn idle_spare(lead: bool, age: Duration) -> Spare {
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
-    let child = command.spawn().unwrap();
+    let child = idle_sleep_command().spawn().unwrap();
     let born = std::time::Instant::now().checked_sub(age).unwrap_or_else(std::time::Instant::now);
     Spare { key: "launch".into(), child, group: ProcessGroup::register(None), server: None, born, idle: IDLE, lead, cwd: None }
 }
@@ -159,7 +176,6 @@ pub(super) fn own_pool() -> &'static Pool {
     Box::leak(Box::default())
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn ordinary_tasks_never_evict_a_waiting_leads_spare() {
     let mut pool = Spares::default();
@@ -186,7 +202,6 @@ async fn ordinary_tasks_never_evict_a_waiting_leads_spare() {
     assert!(!pool.gone.contains_key("task-0"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn every_lead_spare_hit_and_miss_is_logged_with_its_reason() {
     let pool = own_pool();
@@ -255,7 +270,6 @@ fn an_expired_lead_spare_restarts_once_per_expiry_while_the_team_waits() {
     assert!(!renews(Some(&waiting), 4, 4, 0, false), "its launch settings changed: it could never be adopted");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_spare_still_starting_when_its_task_is_discarded_never_registers() {
     let (pool, session) = (own_pool(), format!("warm-{}", uuid::Uuid::new_v4()));
@@ -277,40 +291,34 @@ async fn a_spare_still_starting_when_its_task_is_discarded_never_registers() {
 }
 
 /// Spares the stub lifecycle started, per task.
-#[cfg(unix)]
 static STUB_STARTS: LazyLock<Mutex<HashMap<String, u32>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// A stand-in for Claude Code: an idle `sleep` process, counted per task.
-#[cfg(unix)]
+/// A stand-in for Claude Code: an idle process (`idle_sleep_command`), counted per task. Its start
+/// guard is registered like production's and dropped right after `register`.
 fn stub_spawn(config: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> Spawning {
     Box::pin(async move {
         *STUB_STARTS.lock().unwrap().entry(config.session_id.clone()).or_default() += 1;
-        let mut command = Command::new("sleep");
-        command.arg("30").kill_on_drop(true);
-        let child = command.spawn().map_err(|error| error.to_string())?;
-        Ok(Some(Spawned { key: "stub".to_owned(), child, group: ProcessGroup::register(None), server: None, starting: Pending::none() }))
+        let child = idle_sleep_command().spawn().map_err(|error| error.to_string())?;
+        let starting = pending_in_cwd(&config.session_id, None);
+        Ok(Some(Spawned { key: "stub".to_owned(), child, group: ProcessGroup::register(None), server: None, starting }))
     })
 }
 
 /// A lead's renewal check whose launch inputs never change.
-#[cfg(unix)]
 fn lead(renew: Renew) -> Option<Lead> {
     Some((renew, Arc::new(String::new)))
 }
 
 /// The stub lifecycle with a pool of its own.
-#[cfg(unix)]
 fn stub() -> Lifecycle {
     Lifecycle { idle: Duration::from_millis(400), spawn: stub_spawn, current: |_, _, _, _, _| true, pool: own_pool() }
 }
 
-#[cfg(unix)]
 fn stub_starts(session: &str) -> u32 {
     STUB_STARTS.lock().unwrap().get(session).copied().unwrap_or(0)
 }
 
 /// Waits (up to 20 s) until `done` holds.
-#[cfg(unix)]
 async fn eventually(done: impl Fn() -> bool) -> bool {
     for _ in 0..400 {
         if done() {
@@ -321,7 +329,6 @@ async fn eventually(done: impl Fn() -> bool) -> bool {
     done()
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn an_expired_lead_spare_really_renews_then_the_chain_ends() {
     let session = format!("warm-renew-{}", uuid::Uuid::new_v4());
@@ -354,7 +361,6 @@ async fn an_expired_lead_spare_really_renews_then_the_chain_ends() {
     assert_eq!(MAX_RENEWALS, 2, "a lead holds an idle CLI for at most three idle windows");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn one_no_at_an_expiry_ends_the_renewals_for_good() {
     let session = format!("warm-renew-{}", uuid::Uuid::new_v4());
@@ -374,7 +380,6 @@ async fn one_no_at_an_expiry_ends_the_renewals_for_good() {
     assert!(!waiting(&session));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_lead_spare_whose_launch_settings_changed_is_not_renewed() {
     let session = format!("warm-renew-{}", uuid::Uuid::new_v4());
@@ -388,11 +393,9 @@ async fn a_lead_spare_whose_launch_settings_changed_is_not_renewed() {
     assert_eq!(stub_starts(&session), 1, "a stale spare is never started again");
 }
 
-#[cfg(unix)]
 /// Threads the renewal check ran on (`a_lead_spares_renewal_check_runs_off_the_runtime_thread`).
 static CHECK_THREADS: LazyLock<Mutex<Vec<std::thread::ThreadId>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_lead_spares_renewal_check_runs_off_the_runtime_thread() {
     let session = format!("warm-renew-{}", uuid::Uuid::new_v4());
@@ -435,7 +438,6 @@ fn a_renewal_is_current_only_while_its_warm_key_is_unchanged() {
     assert!(stale);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn evicted_spares_are_handed_back_to_drop_outside_the_lock() {
     let mut pool = Spares::default();
@@ -446,7 +448,6 @@ async fn evicted_spares_are_handed_back_to_drop_outside_the_lock() {
     assert!(!pool.spares.contains_key("task-a"), "the oldest went: {:?}", pool.spares.keys().collect::<Vec<_>>());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_replaced_spare_is_handed_back_with_its_reason() {
     let mut pool = Spares::default();
@@ -461,7 +462,6 @@ async fn a_replaced_spare_is_handed_back_with_its_reason() {
     assert!(!pool.gone.contains_key("task-a"), "ordinary spares keep no reason");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn discarding_a_task_drops_its_spare_and_launch_count() {
     let (pool, session) = (own_pool(), format!("warm-forget-{}", uuid::Uuid::new_v4()));
@@ -476,7 +476,6 @@ async fn discarding_a_task_drops_its_spare_and_launch_count() {
     assert_ne!(epoch(&session), launch, "a later launch never reuses a forgotten number");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn quiesce_leaves_no_spare_and_no_pending_exit() {
     let (pool, session) = (own_pool(), format!("warm-quiesce-{}", uuid::Uuid::new_v4()));
@@ -485,11 +484,10 @@ async fn quiesce_leaves_no_spare_and_no_pending_exit() {
     spares(pool).spares.insert(session.clone(), spare);
     quiesce_in(pool, &session).await.unwrap();
     assert!(!waiting_in(pool, &session), "no spare is left");
-    assert!(process_gone(pid), "its process has exited");
-    assert!(exit_registry().lock().unwrap().get(&session).is_none(), "no exit is pending");
+    assert_process_gone(pid);
+    assert!(super::super::exit::exit_registry().lock().unwrap().get(&session).is_none(), "no exit is pending");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_spare_that_read_launch_zero_after_a_discard_is_refused() {
     let (pool, session) = (own_pool(), format!("warm-zero-{}", uuid::Uuid::new_v4()));
@@ -559,13 +557,10 @@ fn a_missed_warm_agent_names_what_changed() {
     assert_eq!(miss(true, &original, &next, fresh, IDLE).as_deref(), Some("changed: model, resume"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     let spawn = || {
-        let mut command = Command::new("sleep");
-        command.arg("30").kill_on_drop(true);
-        let child = command.spawn().unwrap();
+        let child = idle_sleep_command().spawn().unwrap();
         let group = ProcessGroup::register(None);
         (child, group)
     };
@@ -595,7 +590,6 @@ fn process_gone(pid: u32) -> bool {
     unsafe { libc::kill(pid as i32, 0) == -1 }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_missed_spare_is_gone_before_the_cold_launch_may_start() {
     let (pool, session) = (own_pool(), format!("warm-miss-{}", uuid::Uuid::new_v4()));
@@ -605,11 +599,10 @@ async fn a_missed_spare_is_gone_before_the_cold_launch_may_start() {
     assert!(take_in(pool, &session, "another launch", true).0.is_none());
     // The cold launch's `await_exit` returns only once the dropped spare has exited.
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid), "the missed spare still runs after await_exit");
-    assert!(!exit_registry().lock().unwrap().contains_key(&session), "the registry entry is released");
+    assert_process_gone(pid);
+    assert!(!super::super::exit::exit_registry().lock().unwrap().contains_key(&session), "the registry entry is released");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_discarded_spare_is_gone_before_the_console_may_resume_the_session() {
     let (pool, session) = (own_pool(), format!("warm-console-{}", uuid::Uuid::new_v4()));
@@ -619,17 +612,15 @@ async fn a_discarded_spare_is_gone_before_the_console_may_resume_the_session() {
     discard_from(pool, &session);
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid), "the console would have overlapped the spare");
+    assert_process_gone(pid);
     // Nothing left to wait for.
     await_exit(&session).await.unwrap();
 }
 
-#[cfg(unix)]
 fn pid_of(spare: &Spare) -> u32 {
     spare.child.id().unwrap()
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_refused_spare_is_gone_before_a_same_session_launch_may_start() {
     let (pool, session) = (own_pool(), format!("warm-refused-{}", uuid::Uuid::new_v4()));
@@ -640,11 +631,10 @@ async fn a_refused_spare_is_gone_before_a_same_session_launch_may_start() {
     let pid = pid_of(&spare);
     assert!(!register(pool, &session, launch, spare));
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid), "the refused spare still runs after await_exit");
-    assert!(!exit_registry().lock().unwrap().contains_key(&session));
+    assert_process_gone(pid);
+    assert!(!super::super::exit::exit_registry().lock().unwrap().contains_key(&session));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn replaced_and_evicted_spares_are_gone_before_their_sessions_may_launch() {
     let pool = own_pool();
@@ -667,8 +657,8 @@ async fn replaced_and_evicted_spares_are_gone_before_their_sessions_may_launch()
     assert!(!waiting_in(pool, &oldest));
     await_exit(&replaced).await.unwrap();
     await_exit(&oldest).await.unwrap();
-    assert!(process_gone(first_pid), "the replaced spare outlived await_exit");
-    assert!(process_gone(old_pid), "the evicted spare outlived await_exit");
+    assert_process_gone(first_pid);
+    assert_process_gone(old_pid);
     for session in [&replaced, &b, &c] {
         discard_from(pool, session);
         await_exit(session).await.unwrap();
@@ -691,7 +681,6 @@ async fn an_expired_spare_is_gone_before_its_session_may_launch() {
     assert!(!exit_registry().lock().unwrap().contains_key(&session));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_launch_without_a_spare_retires_the_pooled_one() {
     let _serial = spare_pool_test_lock().lock().await;
@@ -702,7 +691,7 @@ async fn a_launch_without_a_spare_retires_the_pooled_one() {
     launched_without_spare(&session);
     assert!(!waiting_in(&SPARES, &session), "the spare must not idle beside the cold process");
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
 #[tokio::test]
@@ -715,14 +704,12 @@ async fn a_spare_never_spawns_once_the_app_is_quitting() {
     assert!(spawned.is_none(), "a spare waiting on an exit must not start after quit begins");
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_spare_whose_launch_moved_during_its_exit_wait_never_spawns() {
     let session = "moved-during-exit-wait";
     launched(session);
     let launch = epoch(session);
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
+    let mut command = idle_sleep_command();
     let follow_up = async { launched(session); Ok(()) };
     let spawned = spawn_when_current(session, launch, follow_up, &mut command, || false).await.unwrap();
     assert!(spawned.is_none(), "a stale spare must not start a process");
@@ -732,14 +719,12 @@ async fn a_spare_whose_launch_moved_during_its_exit_wait_never_spawns() {
     child.kill().await.unwrap();
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn an_exit_wait_started_during_a_spares_spawn_waits_until_the_spare_is_gone() {
     let session = format!("warm-spawn-window-{}", uuid::Uuid::new_v4());
     launched(&session);
     let launch = epoch(&session);
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
+    let mut command = idle_sleep_command();
     let (child, starting) = spawn_when_current(&session, launch, async { Ok(()) }, &mut command, || false).await.unwrap().expect("a current spare spawns");
     let pid = child.id().unwrap();
     // A launch or the console lands after the spawn, before the spare is registered.
@@ -755,7 +740,7 @@ async fn an_exit_wait_started_during_a_spares_spawn_waits_until_the_spare_is_gon
     assert!(!register(own_pool(), &session, launch, spare), "a spare from an older launch is refused");
     drop(starting);
     tokio::time::timeout(Duration::from_secs(10), waiter).await.unwrap().unwrap().unwrap();
-    assert!(process_gone(pid), "the wait ended before the spare's process was gone");
+    assert_process_gone(pid);
 }
 
 #[cfg(unix)]
@@ -1176,7 +1161,6 @@ fn toggling_claude_fast_mode_changes_the_warm_key_identically_to_the_cli_flag() 
     assert_eq!(miss(true, &fast_key, &off_key, Duration::from_secs(1), IDLE).as_deref(), Some("changed: fastMode"));
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     let pool = own_pool();
@@ -1201,7 +1185,7 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     );
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
     // Toggling Fast mode OFF never adopts a fast-mode spare (which would overbill the next turn).
     let pid = insert(false, &fast_key);
     let (adopted, note) = take_in(pool, &session, &off_key, true);
@@ -1212,14 +1196,14 @@ async fn a_warm_spare_is_never_adopted_across_a_claude_fast_mode_toggle() {
     );
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
     // A lead spare also refuses a fast-mode mismatch and reports the field name.
     let pid = insert(true, &fast_key);
     let (adopted, note) = take_in(pool, &session, &off_key, true);
     assert!(adopted.is_none());
     assert!(note.as_deref().is_some_and(|line| line.contains("Team lead's warm Claude agent not used (changed: fastMode)")), "{note:?}");
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
     // Matching fast mode adopts cleanly, and standard None <-> serviceTier:null adopts cleanly.
     insert(false, &fast_key);
     let (adopted, note) = take_in(pool, &session, &fast_key, true);
@@ -1261,7 +1245,6 @@ fn path_in_folder_matches_canonical_nested_and_deleted_folders() {
 
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allows_post_turn_prewarm() {
     let pool = own_pool();
@@ -1290,7 +1273,7 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
     invalidate_from(pool, &session);
     assert!(!waiting_in(pool, &session), "stale pooled spare must be retired");
     await_exit(&session).await.unwrap();
-    assert!(process_gone(stale_pid), "stale spare process must exit");
+    assert_process_gone(stale_pid);
 
     let after = epoch(&session);
     assert_ne!(after, 0, "mid-turn invalidation must keep a nonzero epoch for the running turn");
@@ -1299,8 +1282,7 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
     // Any in-flight spare or renewal from `before` is refused.
     let waiting_lead: Renew = Arc::new(|| true);
     assert!(!renews(Some(&waiting_lead), before, after, 0, true));
-    let mut cmd = Command::new("sleep");
-    cmd.arg("30").kill_on_drop(true);
+    let mut cmd = idle_sleep_command();
     assert!(spawn_when_current(&session, before, async { Ok(()) }, &mut cmd, || false).await.unwrap().is_none());
     assert!(!register(pool, &session, before, Spare { key: standard_key, ..idle_spare(true, Duration::ZERO) }));
 
@@ -1616,14 +1598,13 @@ async fn an_unresolvable_user_config_folder_starts_no_spare() {
     discard(&session);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
     let pool = own_pool();
     let cold = format!("warm-cold-{}", uuid::Uuid::new_v4());
     spares(pool).gone.insert(cold.clone(), Gone::Expired);
     let before = epoch(&cold);
-    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold, true);
+    let (pooled, note) = launch_in(pool, &cold, true);
     assert!(!pooled);
     assert!(epoch(&cold) > before, "the launch is counted, so a spare for the old launch is refused");
     assert_eq!(
@@ -1633,7 +1614,7 @@ async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
     assert!(!spares(pool).gone.contains_key(&cold));
     // Each reason is said once; the next launch is a plain cold launch without a spare.
     assert_eq!(
-        has_spare_or_record_cold_in(pool, &cold, true),
+        launch_in(pool, &cold, true),
         (false, Some(format!("{NOT_POOLED} Ordinary spares since launch: 0 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.")))
     );
     assert_eq!(spares(pool).cold_without_spare, 1, "a lead's gone reason counts only as a lead miss");
@@ -1641,14 +1622,13 @@ async fn a_launch_with_no_pooled_spare_is_counted_without_keying() {
     let warm = format!("warm-pooled-{}", uuid::Uuid::new_v4());
     admit(&mut spares(pool), warm.clone(), idle_spare(true, Duration::ZERO));
     let launch = epoch(&warm);
-    assert_eq!(has_spare_or_record_cold_in(pool, &warm, true), (true, None));
+    assert_eq!(launch_in(pool, &warm, true), (true, None));
     assert!(waiting_in(pool, &warm), "the pooled spare is left for `take`");
     assert!(epoch(&warm) > launch, "counted with a spare pooled too, so a stale lead renewal is refused");
     let (adopted, _) = take_in(pool, &warm, "launch", true);
     assert!(adopted.is_some());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_note() {
     let pool = own_pool();
@@ -1665,17 +1645,16 @@ async fn a_launch_without_a_key_retires_and_logs_a_lead_spare_without_a_stale_no
     assert!(!waiting_in(pool, &session), "the spare must not idle beside the cold process");
     assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for a later launch");
     assert_eq!(launched_without_key_in(pool, &session, NO_CONFIG, false), None, "the miss is said once");
-    assert_eq!(has_spare_or_record_cold_in(pool, &session, false), (false, None));
+    assert_eq!(launch_in(pool, &session, false), (false, None));
     {
         let counts = spares(pool);
         assert_eq!(counts.lead, PoolStats { started: 1, missed: 1, ..PoolStats::default() });
         assert_eq!(counts.ordinary, PoolStats::default(), "lead spares never move the ordinary counters");
     }
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
     let pool = own_pool();
@@ -1695,18 +1674,15 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
         assert_eq!(counts.ordinary, PoolStats { started: 1, missed: 1, ..PoolStats::default() });
     }
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
 /// The reason `launched_without_key` logs when the config folder cannot be resolved.
-#[cfg(unix)]
 const NO_CONFIG: &str = "its config folder cannot be known";
 
 /// What a supported launch with no pooled spare (and no lead `gone` note) logs.
-#[cfg(unix)]
 const NOT_POOLED: &str = "Warm Claude agent not pooled; starting cold.";
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_cold_launch_is_counted_once_and_never_for_a_managed_worker() {
     let pool = own_pool();
@@ -1714,25 +1690,24 @@ async fn a_cold_launch_is_counted_once_and_never_for_a_managed_worker() {
     // A managed worker: no spare, no note, no count, but the launch still advances.
     let worker = id("worker");
     let before = epoch(&worker);
-    assert_eq!(has_spare_or_record_cold_in(pool, &worker, false), (false, None));
+    assert_eq!(launch_in(pool, &worker, false), (false, None));
     assert!(epoch(&worker) > before);
     assert_eq!(spares(pool).cold_without_spare, 0, "managed workers never count as cold launches");
     // A lead's gone note: only a lead miss, never a cold launch.
     let lead = id("lead");
     spares(pool).gone.insert(lead.clone(), Gone::Evicted);
-    let (pooled, note) = has_spare_or_record_cold_in(pool, &lead, true);
+    let (pooled, note) = launch_in(pool, &lead, true);
     assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it was evicted")), "{note:?}");
     assert_eq!(spares(pool).lead, PoolStats { missed: 1, ..PoolStats::default() });
     assert_eq!(spares(pool).cold_without_spare, 0);
     // An ordinary launch with nothing pooled.
     assert_eq!(
-        has_spare_or_record_cold_in(pool, &id("plain"), true),
+        launch_in(pool, &id("plain"), true),
         (false, Some(format!("{NOT_POOLED} Ordinary spares since launch: 0 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.")))
     );
     assert_eq!(spares(pool).ordinary, PoolStats::default());
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_spare_vanishing_during_the_key_walk_still_counts_its_launch() {
     let pool = own_pool();
@@ -1741,7 +1716,7 @@ async fn a_spare_vanishing_during_the_key_walk_still_counts_its_launch() {
     let pid = pid_of(&spare);
     admit(&mut spares(pool), session.clone(), spare);
     let before = epoch(&session);
-    assert_eq!(has_spare_or_record_cold_in(pool, &session, true), (true, None));
+    assert_eq!(launch_in(pool, &session, true), (true, None));
     assert!(epoch(&session) > before, "the launch is counted before the key walk");
     // Expired (or evicted) while the key was computed off the runtime.
     let removed = spares(pool).remove(&session, Gone::Expired);
@@ -1758,10 +1733,9 @@ async fn a_spare_vanishing_during_the_key_walk_still_counts_its_launch() {
         retire(&session, spare, pending);
     }
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn expiry_and_discard_lines_read_the_totals_without_counting() {
     let pool = own_pool();
@@ -1781,7 +1755,6 @@ async fn expiry_and_discard_lines_read_the_totals_without_counting() {
     assert_eq!(locked.cold_without_spare, 4);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_launch_without_a_spare_counts_a_discard_and_leaves_no_stale_lead_note() {
     let pool = own_pool();
@@ -1798,7 +1771,7 @@ async fn a_launch_without_a_spare_counts_a_discard_and_leaves_no_stale_lead_note
     assert!(!spares(pool).gone.contains_key(&session), "no stale gone note for the next launch");
     assert_eq!(spares(pool).lead, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
     // The lead's next supported launch starts cold without counting a lead miss.
-    let (pooled, note) = has_spare_or_record_cold_in(pool, &session, true);
+    let (pooled, note) = launch_in(pool, &session, true);
     assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
     let note = take_in(pool, &session, "launch", true).1;
     assert!(note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
@@ -1806,10 +1779,9 @@ async fn a_launch_without_a_spare_counts_a_discard_and_leaves_no_stale_lead_note
     assert_eq!(spares(pool).lead, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
     assert_eq!(spares(pool).ordinary, PoolStats::default());
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn a_failed_key_check_logs_its_own_reason() {
     let pool = own_pool();
@@ -1822,10 +1794,9 @@ async fn a_failed_key_check_logs_its_own_reason() {
     assert!(!note.contains(NO_CONFIG), "{note}");
     assert!(!waiting_in(pool, &session));
     await_exit(&session).await.unwrap();
-    assert!(process_gone(pid));
+    assert_process_gone(pid);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn ordinary_pool_stats_count_every_lifecycle_step_apart_from_leads() {
     let pool = own_pool();
@@ -1851,7 +1822,7 @@ async fn ordinary_pool_stats_count_every_lifecycle_step_apart_from_leads() {
     admit(&mut spares(pool), gone.clone(), idle_spare(false, Duration::ZERO));
     assert!(take_in(pool, &gone, "another", true).0.is_none());
     // A launch with nothing pooled.
-    let (pooled, note) = has_spare_or_record_cold_in(pool, &cold, true);
+    let (pooled, note) = launch_in(pool, &cold, true);
     assert!(!pooled && note.as_deref().is_some_and(|line| line.starts_with(NOT_POOLED)), "{note:?}");
     {
         let counts = spares(pool);
@@ -1869,4 +1840,37 @@ async fn ordinary_pool_stats_count_every_lifecycle_step_apart_from_leads() {
     for session in [&a, &b, &c, &gone] {
         await_exit(session).await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn a_refused_registration_counts_as_started_and_discarded() {
+    let (pool, session) = (own_pool(), format!("warm-refused-count-{}", uuid::Uuid::new_v4()));
+    launched(&session);
+    let stale = epoch(&session);
+    launched(&session); // a newer launch began while the spare was starting
+    assert!(!register(pool, &session, stale, idle_spare(false, Duration::ZERO)), "a stale ordinary spare is refused");
+    assert!(!register(pool, &session, 0, idle_spare(true, Duration::ZERO)), "a forgotten task's lead spare is refused");
+    {
+        let counts = spares(pool);
+        // started == adopted + missed + expired + evicted + replaced + discarded, in both pools.
+        assert_eq!(counts.ordinary, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
+        assert_eq!(counts.lead, PoolStats { started: 1, discarded: 1, ..PoolStats::default() });
+        assert!(counts.spares.is_empty() && counts.gone.is_empty(), "nothing pooled, no stale gone note");
+        assert_eq!(counts.cold_without_spare, 0);
+    }
+    await_exit(&session).await.unwrap();
+}
+
+#[test]
+fn a_lead_spare_not_renewed_logs_an_expiry_not_a_cold_start() {
+    let pool = own_pool();
+    {
+        let mut locked = spares(pool);
+        locked.lead = PoolStats { started: 2, adopted: 1, expired: 1, ..PoolStats::default() };
+    }
+    let note = not_renewed_note(pool, "its launch settings changed");
+    assert_eq!(note, "Team lead's warm Claude agent expired idle (not renewed: its launch settings changed). Lead spares since launch: 2 started, 1 adopted, 0 not used, 1 expired, 0 evicted, 0 replaced, 0 discarded.");
+    assert!(!note.contains("starting cold"), "{note}");
+    assert!(note.contains("Lead spares since launch:"), "{note}");
+    assert_eq!(spares(pool).lead, PoolStats { started: 2, adopted: 1, expired: 1, ..PoolStats::default() }, "reading the totals counts nothing");
 }

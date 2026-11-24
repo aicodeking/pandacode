@@ -804,7 +804,7 @@ pub(super) async fn running_in_state_excluding(state: &AppState, root: &Path, ex
     .await
 }
 
-/// Whether any of `others` is `root`, literally or once both are canonical.
+/// Whether any of `others` is `root` or lies inside it (literally or once resolved).
 fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
     crate::any_same_checkout(root, others)
 }

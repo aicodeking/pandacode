@@ -2,7 +2,7 @@
 //! lead's renewals when its spare expires.
 use super::*;
 use super::key::{key_with_disabled, prepared};
-use super::stats::{expired_note, lead_note};
+use super::stats::{discarded_note_locked, expired_note, not_renewed_note};
 
 pub(super) fn claude() -> Lifecycle {
     Lifecycle { idle: IDLE, spawn: spawn_claude, current: still_current, pool: &SPARES }
@@ -133,28 +133,29 @@ pub(super) async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<V
         let session = session_id.clone();
         // The check reads files (agent-made tools) and takes the store lock (`renew`), so it
         // runs on a blocking thread, never on the timer's runtime worker.
+        // Nothing is logged in here: whether to log depends on a launch superseding it meanwhile.
         let check = tokio::task::spawn_blocking(move || {
             let current = (life.current)(&spare_key, &config, &tools, &spawned, &inputs);
-            if !current {
-                eprintln!("{}", lead_note(Some("its launch settings changed; not renewed")));
-            }
             let again = renews(Some(&renew), launch, epoch(&session_id), renewals, current);
-            again.then_some((renew, inputs, config, tools, approvals))
+            (current, again.then_some((renew, inputs, config, tools, approvals)))
         });
-        let mut renewed = false;
-        match check.await {
-            Ok(Some((renew, inputs, config, tools, approvals))) if launch != 0 && epoch(&config.session_id) == launch => {
-                renewed = true;
+        let (current, again) = check.await.unwrap_or_else(|error| {
+            eprintln!("Could not check the team lead's warm Claude agent renewal: {error}");
+            (true, None)
+        });
+        let renewed = match again {
+            Some((renew, inputs, config, tools, approvals)) if launch != 0 && epoch(&config.session_id) == launch => {
                 // `start` logs a failure with the renewal's number.
                 let _ = start(life, config, tools, approvals, launch, Some((renew, inputs)), renewals + 1).await;
+                true
             }
-            Ok(_) => {}
-            Err(error) => eprintln!("Could not check the team lead's warm Claude agent renewal: {error}"),
-        }
-        // Not renewed and not superseded by a launch (whose own log reports it): the lead's spare
-        // simply expired idle, so say so even if the wake never comes.
+            _ => false,
+        };
+        // Not renewed and not superseded by a launch (whose own log reports `it expired`): the
+        // lead's spare simply expired idle, so say so (and why) even if the wake never comes.
         if !renewed && launch != 0 && epoch(&session) == launch {
-            eprintln!("{}", expired_note(life.pool, true));
+            let note = if current { expired_note(life.pool, true) } else { not_renewed_note(life.pool, "its launch settings changed") };
+            eprintln!("{note}");
         }
         // The old token overlaps `start`'s own guard through its entire handoff.
         drop(renewing);
@@ -279,15 +280,22 @@ pub(super) async fn spawn_when_current(
 /// Keep a started spare, unless the task launched again (a team review, a queued message) or
 /// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
 /// outdated conversation, or wait for a turn that is not coming. A refused, replaced or evicted
-/// spare is retired (killed outside the lock, its exit registered).
+/// spare is retired (killed outside the lock, its exit registered). A refused one already started
+/// (and ran its `SessionStart` hooks), so it counts as started and discarded, keeping
+/// `started == adopted + missed + expired + evicted + replaced + discarded` exact.
 pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare) -> bool {
     let evicted = {
         let mut pool = spares(pool);
         // Launch 0 is a forgotten task (`discard`): a spare read from it is never current.
         if launch == 0 || epoch(session_id) != launch {
             let pending = pending_in_cwd(session_id, spare.cwd.clone());
+            let stats = pool.stats_mut(spare.lead);
+            stats.started += 1;
+            stats.discarded += 1;
+            let note = discarded_note_locked(&pool, spare.lead);
             drop(pool);
             retire(session_id, spare, pending);
+            eprintln!("{note}");
             return false;
         }
         admit(&mut pool, session_id.to_owned(), spare)

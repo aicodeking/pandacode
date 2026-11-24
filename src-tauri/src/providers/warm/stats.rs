@@ -60,13 +60,21 @@ fn record_decision(locked: &mut Spares, lead: bool, miss: Option<&str>) -> Strin
 /// workers never get spares, so they count and log nothing.
 pub(super) fn no_spare_note(locked: &mut Spares, gone: Option<Gone>, ordinary_eligible: bool) -> Option<String> {
     match gone {
-        Some(why) => Some(record_decision(locked, true, Some(why.reason()))),
-        None if ordinary_eligible => {
-            locked.cold_without_spare += 1;
-            Some(line(locked, false, "Warm Claude agent not pooled; starting cold."))
-        }
+        Some(why) => Some(record_lead_miss(locked, why)),
+        None if ordinary_eligible => Some(cold_without_spare_note(locked)),
         None => None,
     }
+}
+
+/// A lead wake whose spare left the pool before it (`why`): counted and logged as a lead miss.
+pub(super) fn record_lead_miss(locked: &mut Spares, why: Gone) -> String {
+    record_decision(locked, true, Some(why.reason()))
+}
+
+/// A cold launch without a spare: counted in `cold_without_spare`, logged with the ordinary totals.
+pub(super) fn cold_without_spare_note(locked: &mut Spares) -> String {
+    locked.cold_without_spare += 1;
+    line(locked, false, "Warm Claude agent not pooled; starting cold.")
 }
 
 /// A spare that expired idle (already counted by its removal; this only reads the totals).
@@ -75,10 +83,21 @@ pub(super) fn expired_note(pool: &Pool, lead: bool) -> String {
     line(&spares(pool), lead, message)
 }
 
+/// A lead spare that expired idle and was not renewed (`reason`); the expiry is already counted
+/// by its removal, so this only reads the totals.
+pub(super) fn not_renewed_note(pool: &Pool, reason: &str) -> String {
+    line(&spares(pool), true, &format!("Team lead's warm Claude agent expired idle (not renewed: {reason})."))
+}
+
 /// Spares discarded by switching spares off (already counted; this only reads the totals).
 pub(super) fn discarded_note(pool: &Pool, lead: bool) -> String {
+    discarded_note_locked(&spares(pool), lead)
+}
+
+/// `discarded_note` for a caller already holding the pool lock (a refused registration).
+pub(super) fn discarded_note_locked(locked: &Spares, lead: bool) -> String {
     let message = if lead { "Team lead's warm Claude agent discarded." } else { "Warm Claude agent discarded." };
-    line(&spares(pool), lead, message)
+    line(locked, lead, message)
 }
 
 /// An ordinary spare's adoption message: adopted (`None`) or why its launch starts cold.
@@ -90,7 +109,7 @@ fn ordinary_note(miss: Option<&str>) -> String {
 }
 
 /// A lead spare's adoption message: adopted (`None`) or why its wake starts cold.
-pub(super) fn lead_note(miss: Option<&str>) -> String {
+fn lead_note(miss: Option<&str>) -> String {
     match miss {
         None => "Team lead's warm Claude agent adopted.".into(),
         Some(reason) => format!("Team lead's warm Claude agent not used ({reason}); starting cold."),

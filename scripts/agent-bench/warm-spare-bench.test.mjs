@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   bootstrapMedianCi, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
-  resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
+  maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
@@ -194,6 +194,23 @@ test('resumeCheckError fails closed when the seed request was not captured', () 
   assert.match(resumeCheckError(3, undefined), /resume not loaded/);
   assert.equal(resumeCheckError(3, 5), null);
   assert.equal(resumeCheckError(0, 1), null);
+});
+
+test('maxMessageCount is the largest captured request, null when none was captured', () => {
+  assert.equal(maxMessageCount([]), null);
+  assert.equal(maxMessageCount([3]), 3);
+  assert.equal(maxMessageCount([0]), 0);
+  assert.equal(maxMessageCount([3, 5, 1]), 5, 'a smaller auxiliary request after the main one does not lower it');
+  assert.equal(maxMessageCount([1, 3]), 3);
+  const counts = [2, 4];
+  maxMessageCount(counts);
+  assert.deepEqual(counts, [2, 4], 'does not mutate its input');
+});
+
+test('a missing resumed capture fails the resume check through maxMessageCount', () => {
+  assert.match(resumeCheckError(maxMessageCount([3, 1]), maxMessageCount([])), /resume not loaded/);
+  assert.match(resumeCheckError(maxMessageCount([]), maxMessageCount([5])), /not captured/);
+  assert.equal(resumeCheckError(maxMessageCount([3, 1]), maxMessageCount([5, 1])), null);
 });
 
 test('mirroredClaudeJson drops the projects map and tolerates bad input', () => {

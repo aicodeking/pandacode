@@ -422,6 +422,9 @@ export function sessionTranscriptKey(digest, sessionId) {
   return Object.keys(digest).find(key => key === name || key.endsWith(`/${name}`)) ?? null;
 }
 
+/** The largest `messages` length among captured Messages API requests, or null when none was captured (an auxiliary request after the main one never lowers it). */
+export const maxMessageCount = counts => (counts.length ? Math.max(...counts) : null);
+
 /** Why a resumed run did not load its session, or null: fails closed when the seed request was not captured. */
 export function resumeCheckError(seedMessages, resumedMessages) {
   if (!Number.isFinite(seedMessages)) return 'resume not verified: the seed request was not captured';
@@ -438,9 +441,15 @@ function runSeed(cwd, env) {
     child.stdout.on('data', c => { stdout += c; });
     child.stderr.on('data', c => { stderr = (stderr + c).slice(-2000); });
     const timer = setTimeout(() => child.kill('SIGKILL'), RUN_TIMEOUT_MS);
-    child.on('error', reject);
+    let settled = false;
+    const settle = () => {
+      if (settled) return false;
+      settled = true; clearTimeout(timer); children.delete(child);
+      return true;
+    };
+    child.on('error', err => { if (settle()) reject(err); });
     child.on('exit', code => {
-      clearTimeout(timer); children.delete(child);
+      if (!settle()) return;
       let result = null;
       try { result = JSON.parse(stdout); } catch { /* reported below */ }
       if (code !== 0 || !result?.session_id || result.is_error) return reject(new Error(`seed turn failed (code ${code}): ${scrub(stderr.slice(-300), process.env.HOME)}`));
@@ -483,7 +492,7 @@ async function runSuite(name, pairs, ctx) {
   const { env: launch, minimal, resumed } = suiteParts(name);
   ctx.counts.api = {}; ctx.counts.mcp = {}; ctx.counts.messageCounts = [];
   const seed = resumed ? await seedResumed(name, cwd, launchEnv(ctx.apiPort, launch)) : null;
-  const seedMessages = seed ? ctx.counts.messageCounts.at(-1) ?? null : null;
+  const seedMessages = seed ? maxMessageCount(ctx.counts.messageCounts) : null;
   const args = claudeArgs({ ...ctx, minimal, resume: seed?.sessionId });
   const env = seed ? seed.env : launchEnv(ctx.apiPort, launch);
   ctx.counts.api = {}; ctx.counts.mcp = {};
@@ -493,7 +502,7 @@ async function runSuite(name, pairs, ctx) {
     for (const arm of orders[i]) {
       ctx.counts.messageCounts = [];
       const r = await runOnce({ arm, args, env, cwd });
-      const resumedMessages = seed ? Math.max(0, ...ctx.counts.messageCounts) : undefined;
+      const resumedMessages = seed ? maxMessageCount(ctx.counts.messageCounts) : undefined;
       if (seed && r.error == null) r.error = resumeCheckError(seedMessages, resumedMessages);
       const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
       runs.push(row);

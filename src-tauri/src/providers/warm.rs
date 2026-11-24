@@ -10,7 +10,7 @@ mod key;
 mod spawn;
 mod stats;
 use self::key::miss;
-use self::stats::{decision, discarded_note, no_spare_note, PoolStats};
+use self::stats::{cold_without_spare_note, decision, discarded_note, no_spare_note, record_lead_miss, PoolStats};
 pub(super) use self::key::key;
 pub use self::spawn::prewarm;
 
@@ -142,7 +142,7 @@ struct Spares {
     /// line (docs/worker-tokens.md).
     lead: PoolStats,
     ordinary: PoolStats,
-    /// Supported launches that found no pooled spare at all (`has_spare_or_record_cold`).
+    /// Eligible launches with spares on that found no pooled spare (`record_cold_without_spare`).
     cold_without_spare: u64,
 }
 
@@ -207,7 +207,7 @@ struct InFlight {
 }
 
 impl InFlight {
-    #[cfg(all(test, unix))]
+    #[cfg(test)]
     fn enter(pool: &'static Pool, session_id: String, cwd: PathBuf) -> Self {
         Self::enter_locked(pool, &mut spares(pool), session_id, cwd)
     }
@@ -259,20 +259,22 @@ pub(crate) fn launched(session_id: &str) {
 
 /// The warm agent for this turn, if one exists, is still running and was started for
 /// exactly this launch. Any other warm agent for the task is discarded.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
     if !enabled_now() {
         launched_without_spare(session_id);
         return None;
     }
-    take_checked(session_id, key, true)
+    let discard_epoch = spares(&SPARES).discard_epoch;
+    take_checked(session_id, key, true, discard_epoch)
 }
 
 /// `take` for a caller that has just checked `enabled_now()` off the runtime (with its key).
 /// Switching spares off meanwhile empties the pool (`discard_all`), so nothing is adopted then.
-/// `ordinary_eligible` (not a managed worker): a spare that vanished meanwhile counts a cold launch.
-pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool) -> Option<Adopting> {
-    let (spare, note) = take_in(&SPARES, session_id, key, ordinary_eligible);
+/// A spare that vanished meanwhile counts a cold launch only for an `ordinary_eligible` launch
+/// whose pool was not emptied by a switch-off since `prepare_launch` read `discard_epoch`.
+pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool, discard_epoch: u64) -> Option<Adopting> {
+    let (spare, note) = take_since(&SPARES, session_id, key, ordinary_eligible, discard_epoch);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every hit is
     // logged too, with lead and ordinary totals, so each pool's speed-up can be measured.
     if let Some(note) = note {
@@ -312,11 +314,12 @@ impl Drop for Adopting {
 
 /// The spare this launch adopts, if any, and what to log about it (never any contents: only
 /// the outcome and the names of warm-key fields that changed).
-fn take_in(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool) -> (Option<(Spare, Pending)>, Option<String>) {
+fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool, discard_epoch: u64) -> (Option<(Spare, Pending)>, Option<String>) {
     let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((mut spare, pending)) = removed else {
-        // Expired or evicted during the key walk: never an uncounted launch.
-        return (None, no_spare_note(&mut spares(pool), gone, ordinary_eligible));
+        // Expired or evicted during the key walk: never an uncounted launch (discarded by a
+        // switch-off: spares are off, so nothing counts as a cold launch without one).
+        return (None, no_spare_since(pool, gone, ordinary_eligible, discard_epoch));
     };
     let alive = matches!(spare.child.try_wait(), Ok(None));
     match miss(alive, &spare.key, key, spare.born.elapsed(), spare.idle) {
@@ -377,50 +380,75 @@ fn launched_without_spare_in(pool: &Pool, session_id: &str) {
 
 /// A launch whose warm key is unknowable (its config folder cannot be resolved): counts the launch,
 /// retires any pooled spare and logs the miss like `take` would, leaving no stale `gone` note.
-pub(super) fn launched_without_key(session_id: &str, ordinary_eligible: bool) {
-    launched_without_key_reason(session_id, "its config folder cannot be known", ordinary_eligible);
+pub(super) fn launched_without_key(session_id: &str, ordinary_eligible: bool, discard_epoch: u64) {
+    launched_without_key_reason(session_id, "its config folder cannot be known", ordinary_eligible, discard_epoch);
 }
 
 /// `launched_without_key`, logging `why` as the reason the spare was not used.
-pub(super) fn launched_without_key_reason(session_id: &str, why: &str, ordinary_eligible: bool) {
-    if let Some(note) = launched_without_key_in(&SPARES, session_id, why, ordinary_eligible) {
+pub(super) fn launched_without_key_reason(session_id: &str, why: &str, ordinary_eligible: bool, discard_epoch: u64) {
+    if let Some(note) = launched_without_key_since(&SPARES, session_id, why, ordinary_eligible, discard_epoch) {
         eprintln!("{note}");
     }
 }
 
-fn launched_without_key_in(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool) -> Option<String> {
+fn launched_without_key_since(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool, discard_epoch: u64) -> Option<String> {
     let (removed, gone) = remove_for_launch(pool, session_id);
     let Some((spare, pending)) = removed else {
-        return no_spare_note(&mut spares(pool), gone, ordinary_eligible);
+        return no_spare_since(pool, gone, ordinary_eligible, discard_epoch);
     };
     let note = decision(pool, spare.lead, Some(why));
     retire(session_id, spare, pending);
     Some(note)
 }
 
-/// Whether the task has a pooled spare worth keying this launch against. The launch is counted
-/// either way; with none, this logs a lead's pending gone reason or (for a launch that could hold
-/// an ordinary spare, `ordinary_eligible`) a cold launch, so a cold launch skips the warm key's
-/// config walk entirely; with one, the caller keys and `take`s.
-pub(super) fn has_spare_or_record_cold(session_id: &str, ordinary_eligible: bool) -> bool {
-    let (pooled, note) = has_spare_or_record_cold_in(&SPARES, session_id, ordinary_eligible);
+/// `no_spare_note`, counting a cold launch only if no switch-off emptied the pool since `discard_epoch`.
+fn no_spare_since(pool: &Pool, gone: Option<Gone>, ordinary_eligible: bool, discard_epoch: u64) -> Option<String> {
+    let mut locked = spares(pool);
+    let eligible = ordinary_eligible && locked.discard_epoch == discard_epoch;
+    no_spare_note(&mut locked, gone, eligible)
+}
+
+/// What `prepare_launch` found in the pool for a supported launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LaunchPool {
+    /// A spare is pooled: key the launch off the runtime, then `take_checked` with this epoch.
+    Pooled { discard_epoch: u64 },
+    /// None pooled. `may_record_cold`: an eligible launch with no lead `gone` note, whose cold start
+    /// the caller counts (`record_cold_without_spare`) once it has seen spares on, off the runtime.
+    Empty { may_record_cold: bool },
+}
+
+/// Counts the launch and says whether the task has a pooled spare worth keying it against, so a
+/// cold launch skips the warm key's config walk. With none, a lead's pending `gone` reason is
+/// logged as its miss; no file is read here, so this is safe on the async runtime.
+pub(super) fn prepare_launch(session_id: &str, ordinary_eligible: bool) -> LaunchPool {
+    let (found, note) = prepare_launch_in(&SPARES, session_id, ordinary_eligible);
     if let Some(note) = note {
         eprintln!("{note}");
     }
-    pooled
+    found
 }
 
-fn has_spare_or_record_cold_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (bool, Option<String>) {
+fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (LaunchPool, Option<String>) {
     let mut locked = spares(pool);
     // Lock order: SPARES before LAUNCHES (matching `register`), so no spare for the old launch can
     // register after this check. Advanced with a spare pooled too: a lead spare expiring during the
     // off-runtime key walk then sees a newer launch and is not renewed beside this one.
     launched(session_id);
     if locked.spares.contains_key(session_id) {
-        return (true, None);
+        return (LaunchPool::Pooled { discard_epoch: locked.discard_epoch }, None);
     }
-    let gone = locked.gone.remove(session_id);
-    (false, no_spare_note(&mut locked, gone, ordinary_eligible))
+    match locked.gone.remove(session_id) {
+        Some(why) => (LaunchPool::Empty { may_record_cold: false }, Some(record_lead_miss(&mut locked, why))),
+        None => (LaunchPool::Empty { may_record_cold: ordinary_eligible }, None),
+    }
+}
+
+/// An eligible launch that found no spare while spares are on (checked by the caller off the
+/// runtime): counted in `cold_without_spare` and logged with the ordinary totals.
+pub(super) fn record_cold_without_spare() {
+    let note = cold_without_spare_note(&mut spares(&SPARES));
+    eprintln!("{note}");
 }
 
 /// Advance `session_id`'s launch epoch when it already has one, without forgetting the task
@@ -621,7 +649,7 @@ fn take_for_discard_in(pool: &Pool, folder: &Path) -> (Vec<(String, Spare, Pendi
     discard_within(pool, InFolder::snapshot(pool).within(folder))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn has_spare_in(pool: &Pool, folder: &Path) -> bool {
     !InFolder::snapshot(pool).within(folder).is_empty()
 }
@@ -675,7 +703,7 @@ fn take_expired_for_renewal(
 }
 
 /// Non-renewing expiry used by the process-retirement tests.
-#[cfg(all(test, unix))]
+#[cfg(test)]
 fn take_expired(pool: &'static Pool, session_id: &str, born: std::time::Instant) -> Option<(Spare, Pending)> {
     take_expired_for_renewal(pool, session_id, born, false).map(|(spare, pending, _)| (spare, pending))
 }
@@ -690,17 +718,16 @@ fn waiting_in(pool: &Pool, session_id: &str) -> bool {
     spares(pool).spares.contains_key(session_id)
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn spare_pool_test_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
     &LOCK
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 pub(crate) fn insert_spare_in_cwd_for_test(session_id: &str, cwd: PathBuf, lead: bool) -> u32 {
     launched(session_id);
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
+    let mut command = idle_sleep_command();
     if cwd.exists() {
         command.current_dir(&cwd);
     }
@@ -730,6 +757,27 @@ pub(crate) fn has_spare_for_test(session_id: &str) -> bool {
 pub(crate) fn process_gone_for_test(pid: u32) -> bool {
     // SAFETY: signal 0 only checks that the process exists.
     unsafe { libc::kill(pid as i32, 0) == -1 }
+}
+
+/// After `await_exit`: on Windows the exit task already awaited the process handle (`child.wait()`).
+#[cfg(test)]
+pub(super) fn assert_process_gone(pid: u32) {
+    #[cfg(unix)]
+    assert!(process_gone_for_test(pid), "process {pid} still runs");
+    #[cfg(windows)]
+    let _ = pid;
+}
+
+/// An idle stand-in for a spare's CLI that runs about 30 s on every platform.
+#[cfg(test)]
+pub(super) fn idle_sleep_command() -> Command {
+    #[cfg(unix)]
+    let (program, args) = ("sleep", &["30"][..]);
+    #[cfg(windows)]
+    let (program, args) = ("ping", &["-n", "30", "127.0.0.1"][..]);
+    let mut command = Command::new(program);
+    command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    command
 }
 
 #[cfg(test)]

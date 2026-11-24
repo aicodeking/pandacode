@@ -4638,42 +4638,52 @@ async fn run_process_launch(
     };
     // A warm agent started after the task's last turn: same launch, tools already listed.
     let mut spare = match &host {
-        // No pooled spare: the launch is counted and the warm key's config walk skipped. Switching
-        // spares off empties the pool, so this in-memory check also covers "off" without file I/O.
+        // No pooled spare: the launch is counted and the warm key's config walk skipped. The off
+        // switch reads a file, so it is only ever checked off the runtime (`crate::blocking`).
         Some(tools) if warm::supported(&config) => {
-            // Managed workers never get spares, so they never count as cold launches without one.
-            let ordinary_eligible = config.worker.is_none();
-            if warm::has_spare_or_record_cold(&config.session_id, ordinary_eligible) {
-                // The switch and the key read files (the key: the task's switches and saved
-                // settings), so both run off the runtime. Never abort a turn over a warm key.
-                let (keyed, catalog) = (config.clone(), tools.tools.clone());
-                let outcome = crate::blocking(move || {
-                    Ok(if !warm::enabled_now() {
-                        WarmKey::Disabled
-                    } else {
-                        warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key)
+            // Managed workers never get spares, and a brand-new conversation's first turn can never
+            // have one, so neither counts as a cold launch without a spare.
+            let ordinary_eligible = config.worker.is_none() && config.resume_id.is_some();
+            match warm::prepare_launch(&config.session_id, ordinary_eligible) {
+                warm::LaunchPool::Pooled { discard_epoch } => {
+                    // The switch and the key read files (the key: the task's switches and saved
+                    // settings), so both run off the runtime. Never abort a turn over a warm key.
+                    // `discard_epoch` keeps a switch-off during this check from counting a cold launch.
+                    let (keyed, catalog) = (config.clone(), tools.tools.clone());
+                    let outcome = crate::blocking(move || {
+                        Ok(if !warm::enabled_now() {
+                            WarmKey::Disabled
+                        } else {
+                            warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key)
+                        })
                     })
-                })
-                .await;
-                match outcome {
-                    Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible),
-                    Ok(WarmKey::Disabled) => {
-                        warm::launched_without_spare(&config.session_id);
-                        None
-                    }
-                    // No key: the config folder cannot be known, so the pooled spare is retired and logged.
-                    Ok(WarmKey::NoKey) => {
-                        warm::launched_without_key(&config.session_id, ordinary_eligible);
-                        None
-                    }
-                    Err(err) => {
-                        eprintln!("Warm Claude key check failed: {err}");
-                        warm::launched_without_key_reason(&config.session_id, "its warm key check failed", ordinary_eligible);
-                        None
+                    .await;
+                    match outcome {
+                        Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible, discard_epoch),
+                        Ok(WarmKey::Disabled) => {
+                            warm::launched_without_spare(&config.session_id);
+                            None
+                        }
+                        // No key: the config folder cannot be known, so the pooled spare is retired and logged.
+                        Ok(WarmKey::NoKey) => {
+                            warm::launched_without_key(&config.session_id, ordinary_eligible, discard_epoch);
+                            None
+                        }
+                        Err(err) => {
+                            eprintln!("Warm Claude key check failed: {err}");
+                            warm::launched_without_key_reason(&config.session_id, "its warm key check failed", ordinary_eligible, discard_epoch);
+                            None
+                        }
                     }
                 }
-            } else {
-                None
+                // Counted and logged only while spares are on: with them off a launch says nothing.
+                warm::LaunchPool::Empty { may_record_cold: true } => {
+                    if crate::blocking(|| Ok(warm::enabled_now())).await.unwrap_or(false) {
+                        warm::record_cold_without_spare();
+                    }
+                    None
+                }
+                warm::LaunchPool::Empty { may_record_cold: false } => None,
             }
         }
         _ => {

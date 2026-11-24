@@ -60,7 +60,6 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     discard(&session);
 }
 
-#[cfg(unix)]
 #[tokio::test(flavor = "current_thread")]
 async fn off_switch_retires_a_matching_pooled_spare_instead_of_adopting_it() {
     let _serial = spare_pool_test_lock().lock().await;
@@ -73,21 +72,17 @@ async fn off_switch_retires_a_matching_pooled_spare_instead_of_adopting_it() {
     assert!(!waiting(&session), "the disabled take must retire its matching spare");
     assert!(epoch(&session) > launch, "pending starts for the old launch are invalidated");
     await_exit(&session).await.unwrap();
-    assert!(process_gone_for_test(pid), "retirement must reap the pooled process");
+    assert_process_gone(pid);
     discard(&session);
 }
 
-#[cfg(unix)]
 fn spare(lead: bool) -> Spare {
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
-    let child = command.spawn().unwrap();
+    let child = idle_sleep_command().spawn().unwrap();
     let group = ProcessGroup::register(child.id());
     Spare { key: "switch-test".into(), child, group, server: None,
         born: std::time::Instant::now(), idle: IDLE, lead, cwd: None }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewals() {
     let pool: &'static Pool = Box::leak(Box::default());
@@ -119,30 +114,29 @@ async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewal
     for (id, old) in ids.iter().zip(epochs) {
         assert!(epoch(id) > old, "{id}'s pending work was invalidated");
         assert!(!renews(Some(&waiting), old, epoch(id), 0, true));
-        let mut command = Command::new("sleep");
-        command.arg("30").kill_on_drop(true);
+        let mut command = idle_sleep_command();
         assert!(spawn_when_current(id, old, async { Ok(()) }, &mut command, || false).await.unwrap().is_none());
         assert!(!register(pool, id, old, spare(true)), "a late spawn must retire, never repool");
         await_exit(id).await.unwrap();
     }
-    for pid in pids { assert!(process_gone_for_test(pid)); }
+    for pid in pids { assert_process_gone(pid); }
     drop(inflight);
     drop(renewing);
     discard_all_from(pool); // idempotent, including already-expired lead notes
     for id in &ids { discard_from(pool, id); }
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn folder_quiescence_cancels_a_lead_blocked_in_its_expiry_renewal() {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static STARTS: AtomicUsize = AtomicUsize::new(0);
-    fn counted_spawn(_: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> Spawning {
-        Box::pin(async {
+    fn counted_spawn(config: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64) -> Spawning {
+        Box::pin(async move {
             STARTS.fetch_add(1, Ordering::SeqCst);
             let Spare { key, child, group, server, .. } = spare(true);
-            Ok(Some(Spawned { key, child, group, server, starting: Pending::none() }))
+            let starting = pending_in_cwd(&config.session_id, None);
+            Ok(Some(Spawned { key, child, group, server, starting }))
         })
     }
 
@@ -219,7 +213,6 @@ async fn stale_launches_never_enter_the_pool_or_read_launch_inputs() {
     discard_from(pool, &session);
 }
 
-#[cfg(unix)]
 #[tokio::test]
 async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -227,8 +220,7 @@ async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
     launched(&session);
     let off = Arc::new(AtomicBool::new(false));
     let waiting = off.clone();
-    let mut command = Command::new("sleep");
-    command.arg("30").kill_on_drop(true);
+    let mut command = idle_sleep_command();
     // The same last-moment guard as production: read after the prior CLI's exit.
     let previous_exit = async move { waiting.store(true, Ordering::SeqCst); Ok(()) };
     let stopped = || off.load(Ordering::SeqCst);
@@ -237,4 +229,80 @@ async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
     assert!(off.load(Ordering::SeqCst));
     assert!(result.is_none());
     discard_from(&SPARES, &session);
+}
+
+/// The caller's half of a launch with no pooled spare (`run_process_launch`, which reads the
+/// switch off the runtime): a cold launch is counted only while spares are on.
+fn record_cold_if_on(pool: &Pool, found: LaunchPool) -> Option<String> {
+    (found == LaunchPool::Empty { may_record_cold: true } && enabled_now()).then(|| cold_without_spare_note(&mut spares(pool)))
+}
+
+#[test]
+fn with_spares_off_a_launch_without_a_spare_counts_and_logs_nothing() {
+    let pool: &'static Pool = Box::leak(Box::default());
+    let session = format!("warm-switch-cold-off-{}", uuid::Uuid::new_v4());
+    {
+        let _off = EnabledOverride::new(false);
+        let (found, note) = prepare_launch_in(pool, &session, true);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: true });
+        assert_eq!(note, None, "preparing a launch never logs a cold launch itself");
+        assert_eq!(record_cold_if_on(pool, found), None, "no `not pooled` line with spares off");
+        assert_eq!(spares(pool).cold_without_spare, 0);
+    }
+    let _on = EnabledOverride::new(true);
+    let (found, _) = prepare_launch_in(pool, &session, true);
+    let note = record_cold_if_on(pool, found).expect("spares on: the cold launch is logged");
+    assert!(note.starts_with("Warm Claude agent not pooled; starting cold."), "{note}");
+    assert_eq!(spares(pool).cold_without_spare, 1);
+    discard_from(pool, &session);
+}
+
+#[test]
+fn a_first_turn_or_managed_worker_never_counts_a_cold_launch() {
+    let _on = EnabledOverride::new(true);
+    let pool: &'static Pool = Box::leak(Box::default());
+    let session = format!("warm-switch-ineligible-{}", uuid::Uuid::new_v4());
+    let before = epoch(&session);
+    let (found, note) = prepare_launch_in(pool, &session, false);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false });
+    assert_eq!(note, None);
+    assert!(epoch(&session) > before, "the launch is still counted");
+    assert_eq!(record_cold_if_on(pool, found), None);
+    // A lead's pending gone reason is its miss, never also a cold launch.
+    spares(pool).gone.insert(session.clone(), Gone::Expired);
+    let (found, note) = prepare_launch_in(pool, &session, true);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false });
+    assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it expired)")), "{note:?}");
+    assert_eq!(spares(pool).cold_without_spare, 0);
+    assert_eq!(spares(pool).lead.missed, 1);
+    discard_from(pool, &session);
+}
+
+#[tokio::test]
+async fn a_switch_off_during_the_key_check_never_counts_a_cold_launch() {
+    let pool: &'static Pool = Box::leak(Box::default());
+    for lead in [false, true] {
+        for keyed in [true, false] {
+            let session = format!("warm-switch-race-{lead}-{keyed}-{}", uuid::Uuid::new_v4());
+            launched(&session);
+            assert!(register(pool, &session, epoch(&session), spare(lead)));
+            let LaunchPool::Pooled { discard_epoch } = prepare_launch_in(pool, &session, true).0 else {
+                panic!("the registered spare is pooled");
+            };
+            // Spares are switched off while the warm key is computed off the runtime.
+            discard_all_from(pool);
+            let note = if keyed {
+                let (adopted, note) = take_since(pool, &session, "switch-test", true, discard_epoch);
+                assert!(adopted.is_none(), "a discarded spare is never adopted");
+                note
+            } else {
+                launched_without_key_since(pool, &session, "its warm key check failed", true, discard_epoch)
+            };
+            assert!(!note.as_deref().is_some_and(|line| line.contains("not pooled")), "{note:?}");
+            // A lead's discard reason may still be reported as its miss; an ordinary spare says nothing.
+            assert_eq!(note.is_some(), lead, "{note:?}");
+            assert_eq!(spares(pool).cold_without_spare, 0);
+            await_exit(&session).await.unwrap();
+        }
+    }
 }

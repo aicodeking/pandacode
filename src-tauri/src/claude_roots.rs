@@ -428,3 +428,121 @@ pub(crate) fn windows_registry_policy_status(root: u32, path: &str) -> i32 {
 pub(crate) fn settings_path_absent(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh folder under the temp dir, removed on drop.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("pandacode-claude-roots-{name}-{}", uuid::Uuid::new_v4().simple()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs.iter().map(|(key, value)| ((*key).to_owned(), (*value).to_owned())).collect()
+    }
+
+    #[test]
+    fn the_config_dir_override_wins_and_an_explicit_empty_one_is_unknown() {
+        let scratch = Scratch::new("env");
+        let cwd = scratch.0.join("project");
+        let custom = scratch.0.join("custom-claude");
+        let home = scratch.0.join("home");
+        let home_env = [("HOME", home.to_str().unwrap()), ("USERPROFILE", home.to_str().unwrap())];
+        // An explicit override (absolute or relative to the launch's cwd) beats the inherited value and home.
+        let with = |pairs: &[(&str, &str)]| env(&[&home_env[..], pairs].concat());
+        let inherited = Some(OsStr::new("inherited"));
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[("CLAUDE_CONFIG_DIR", custom.to_str().unwrap())]), inherited, &cwd, false), Some(custom.clone()));
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[("CLAUDE_CONFIG_DIR", "relative")]), None, &cwd, false), Some(cwd.join("relative")));
+        // Set but empty (in the launch or inherited) is not the same as unset: unknown, so callers fail closed.
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[("CLAUDE_CONFIG_DIR", "")]), inherited, &cwd, false), None);
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[]), Some(OsStr::new("")), &cwd, false), None);
+        // Inherited from PandaCode's own environment when the launch sets none.
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[]), inherited, &cwd, false), Some(cwd.join("inherited")));
+        // Unset everywhere: `<home>/.claude`.
+        assert_eq!(resolve_claude_config_dir_env_with(&with(&[]), None, &cwd, false), Some(home.join(".claude")));
+        // Windows matches variable names case-insensitively; elsewhere a lowercase name is another variable.
+        let lower = with(&[("claude_config_dir", custom.to_str().unwrap())]);
+        assert_eq!(resolve_claude_config_dir_env_with(&lower, None, &cwd, true), Some(custom));
+        assert_eq!(resolve_claude_config_dir_env_with(&lower, None, &cwd, false), Some(home.join(".claude")));
+    }
+
+    #[test]
+    fn only_a_missing_registry_policy_key_proves_absence() {
+        const NOT_FOUND: i32 = 2;
+        const ACCESS_DENIED: i32 = 5;
+        let mut asked = Vec::new();
+        assert!(!windows_registry_policy_present(|root, path| {
+            asked.push((root, path.to_owned()));
+            NOT_FOUND
+        }));
+        assert_eq!(asked.len(), 2, "both HKLM and HKCU are probed");
+        assert!(asked.iter().all(|(_, path)| path == r"SOFTWARE\Policies\ClaudeCode"));
+        assert!(windows_registry_policy_present(|_, _| 0), "an existing policy key is present");
+        assert!(windows_registry_policy_present(|root, _| if root == 0x8000_0001 { 0 } else { NOT_FOUND }), "a user policy key counts too");
+        assert!(windows_registry_policy_present(|_, _| ACCESS_DENIED), "an unreadable key fails closed");
+    }
+
+    #[test]
+    fn a_settings_path_is_absent_only_when_nothing_is_there() {
+        let scratch = Scratch::new("absent");
+        let file = scratch.0.join("managed-settings.json");
+        assert!(settings_path_absent(&file));
+        std::fs::write(&file, "{}").unwrap();
+        assert!(!settings_path_absent(&file));
+        assert!(!settings_path_absent(&scratch.0), "a folder is not absent");
+    }
+
+    #[test]
+    fn a_plain_repo_walks_to_its_root_and_has_no_main_checkout() {
+        let scratch = Scratch::new("plain");
+        let repo = scratch.0.join("repo");
+        let nested = repo.join("src").join("deep");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(&nested).unwrap();
+        let roots = project_config_roots(&nested);
+        assert_eq!(roots.ancestors, vec![nested.clone(), repo.join("src"), repo.clone()]);
+        assert_eq!(roots.main_worktree, None);
+        assert_eq!(roots.error, None);
+        assert_eq!(linked_worktree_main_root(&repo), Ok(None), "a `.git` folder is the main checkout itself");
+        assert_eq!(linked_worktree_main_root(&scratch.0), Ok(None), "no `.git` at all");
+    }
+
+    #[test]
+    fn a_linked_worktrees_gitdir_file_leads_to_its_main_checkout() {
+        let scratch = Scratch::new("linked");
+        let main = scratch.0.join("main");
+        let admin = main.join(".git").join("worktrees").join("wt");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::write(main.join(".git").join("config"), "[core]\n\tbare = false\n").unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let worktree = scratch.0.join("wt");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        let main_root = main.canonicalize().unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree), Ok(Some(main_root.clone())));
+        let roots = project_config_roots(&worktree);
+        assert_eq!(roots.ancestors, vec![worktree.clone()]);
+        assert_eq!(roots.main_worktree, Some(main_root));
+        assert_eq!(roots.error, None);
+        // A gitfile pointing nowhere is an error, never silently "no main checkout".
+        std::fs::write(worktree.join(".git"), "gitdir: missing\n").unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree), Err("unreadable gitdir"));
+        // An ordinary gitfile (a submodule's) has no commondir and so no main checkout.
+        std::fs::remove_file(admin.join("commondir")).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        assert_eq!(linked_worktree_main_root(&worktree), Ok(None));
+    }
+}
