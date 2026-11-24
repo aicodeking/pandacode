@@ -7168,6 +7168,8 @@ async function showModel(anchor: HTMLElement, target = session()): Promise<void>
       if (isBtwDraft(selected)) { saveBtwDraft(selected, { reasoningEffort }); return; }
       while (provisionalCorrections.has(selected.id)) await provisionalCorrections.get(selected.id)?.catch(() => undefined);
       if (!current() || generation !== state.generation || isRunning(selected.id) || taskBusyConfiguring(selected.id)) throw new Error('Select the task again to change its reasoning effort.');
+      // Re-picking the saved effort changes nothing; skip the IPC.
+      if ((reasoningEffort ?? null) === (savedSelection().reasoningEffort ?? null)) return;
       configuringSessions.add(selected.id);
       try {
         const updated = await call<Session>('set_reasoning_effort', { sessionId: selected.id, reasoningEffort });
@@ -7456,6 +7458,8 @@ async function showMode(anchor: HTMLElement, target = session()): Promise<void> 
     if (!live || deletedSessions.has(s.id) || !current() || generation !== state.generation || isRunning(s.id) || taskBusyConfiguring(s.id)) throw new Error('Select the task again to change its permissions.');
     const chosen = approvalModes(live.provider, live.mode).find(mode => mode.id === id);
     if (!chosen) throw new Error('Choose an available approval behavior.');
+    // Re-picking the active mode changes nothing; skip the IPC so a warm spare is never disturbed.
+    if (id === live.mode) return;
     configuringSessions.add(s.id);
     try {
       await call('update_session', { sessionId: s.id, mode: id as Mode });

@@ -5,9 +5,13 @@ use serde_json::Value;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
-#[path = "claude_roots.rs"]
-mod claude_roots;
-pub(crate) use claude_roots::*;
+#[cfg(test)]
+use super::claude_roots::managed_entries_match;
+use super::claude_roots::{
+    claude_config_dir_value, host_managed_settings_match, project_config_roots,
+    resolve_claude_config_dir_env, resolve_claude_config_dir_env_with, same_settings_directory,
+    settings_path_absent,
+};
 
 /// Whether a run's native edit tools wait for the user's approval before writing. A native
 /// edit's baseline is taken when its tool event reaches PandaCode, which only a waiting edit

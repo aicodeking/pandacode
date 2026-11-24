@@ -7,13 +7,14 @@ pub(crate) const TOOL: &str = "pandacode_track_files";
 
 #[path = "claude_policy.rs"]
 mod claude_policy;
+#[path = "claude_roots.rs"]
+mod claude_roots;
 #[cfg(test)]
 pub(crate) use claude_policy::edits_wait_for_approval;
-#[cfg(test)]
-use claude_policy::*;
-pub(crate) use claude_policy::{
-    claude_restricts_reads, edits_wait_for_run, host_managed_settings_paths, project_config_roots,
-    resolve_claude_config_dir_env,
+pub(crate) use claude_policy::{claude_restricts_reads, edits_wait_for_run};
+pub(crate) use claude_roots::{
+    claude_config_dir_value, host_managed_settings_paths, project_config_roots,
+    resolve_claude_config_dir_env, resolve_claude_config_dir_env_with,
 };
 
 /// The tracking instruction, the same for every run: every edit batch, native tools included,

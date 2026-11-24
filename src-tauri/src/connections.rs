@@ -396,8 +396,13 @@ fn validated(input: Input, existing: Option<&Connection>) -> Result<(Connection,
         if value.as_ref().is_some_and(|v| v.len() > MAX_ENV_VALUE || v.contains('\0')) {
             return Err(format!("The value of {} is too long or contains NUL.", var.name));
         }
-        if var.secret && config_dir_var(&input.provider) == Some(var.name.as_str()) {
+        // Folders are never secrets: the warm key and policy reads must see them, and Windows
+        // matches variable names without regard to case.
+        if var.secret && config_dir_var(&input.provider).is_some_and(|dir| var.name.eq_ignore_ascii_case(dir)) {
             return Err(format!("{} is a folder, not a secret. Set it as the config folder instead.", var.name));
+        }
+        if var.secret && (var.name.eq_ignore_ascii_case("HOME") || var.name.eq_ignore_ascii_case("USERPROFILE")) {
+            return Err(format!("{} is a folder, not a secret. Save it as a plain environment variable instead.", var.name));
         }
         if var.secret {
             match value {
@@ -612,6 +617,20 @@ mod tests {
         assert!(validated(Input { config_dir: Some("relative/dir".into()), ..input("claude") }, None).is_err());
         assert!(validated(Input { config_dir: Some("/tmp/x".into()), ..input("grok") }, None).is_err());
         assert!(validated(Input { executable: Some("/definitely/missing".into()), ..input("claude") }, None).is_err());
+    }
+
+    #[test]
+    fn home_and_config_folders_are_never_secret_variables() {
+        let env = |name: &str, secret: bool| vec![EnvInput { name: name.into(), value: Some("/tmp/x".into()), secret }];
+        for name in ["HOME", "USERPROFILE", "home", "UserProfile", "CLAUDE_CONFIG_DIR", "claude_config_dir"] {
+            let error = validated(Input { env: env(name, true), ..input("claude") }, None).err();
+            assert!(error.is_some_and(|e| e.starts_with(&format!("{name} is a folder"))), "{name} as a secret");
+        }
+        for name in ["HOME", "USERPROFILE"] {
+            let (saved, secrets) = validated(Input { env: env(name, false), ..input("claude") }, None).unwrap();
+            assert!(secrets.is_empty() && saved.secret_env.is_empty());
+            assert_eq!(saved.env.get(name).map(String::as_str), Some("/tmp/x"), "{name} as a plain variable");
+        }
     }
 
     #[test]

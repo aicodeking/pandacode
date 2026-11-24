@@ -850,7 +850,7 @@ fn a_named_connections_claude_folder_is_fingerprinted_instead_of_the_global_one(
     assert_eq!(claude_config_dir_from(provider_env.clone(), Some(&relative), &cwd), Some(cwd.join("connection-config")));
 
     let user = claude_config_dir_from(provider_env, Some(&folder), &cwd).unwrap();
-    let stamp = || claude_config_fingerprint_with(&cwd, Some(&user), None, &[]);
+    let stamp = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&user), None, &[]);
     let mut previous = stamp();
     write_config(&global, "settings.json", "{}");
     write_config(&global, "rules/common/rule.md", "a");
@@ -904,7 +904,7 @@ fn agents_md_ancestor_and_main_checkout_config_edits_invalidate_a_warm_launch() 
     std::fs::create_dir_all(&nested).unwrap();
     let user = root.join("user");
     let home = root.join("home/.claude");
-    let stamp = |cwd: &Path| claude_config_fingerprint_with(cwd, Some(&user), Some(&home), &[]);
+    let stamp = |cwd: &Path| claude_config_fingerprint_with(cwd, UserConfigRoot::Resolved(&user), Some(&home), &[]);
     let mut previous = stamp(&nested);
     for (name, contents) in [("AGENTS.md", "a"), ("AGENTS.md", "ab"), (".claude/settings.json", "{}"), ("CLAUDE.md", "a")] {
         write_config(&repo, name, contents);
@@ -1398,7 +1398,7 @@ fn a_dotfiles_repos_own_local_settings_edits_invalidate_a_warm_launch() {
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     std::fs::create_dir_all(repo.join(".claude")).unwrap();
     let user = repo.join(".claude");
-    let stamp = || claude_config_fingerprint_with(&repo, Some(&user), Some(&user), &[]);
+    let stamp = || claude_config_fingerprint_with(&repo, UserConfigRoot::Resolved(&user), Some(&user), &[]);
     let mut previous = stamp();
     assert_eq!(previous, stamp(), "unchanged config files keep the key");
     for contents in ["{}", "{ }"] {
@@ -1479,8 +1479,8 @@ fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
     std::fs::create_dir_all(&home).unwrap();
     // `CLAUDE_CONFIG_DIR=""` makes Claude Code read user config relative to `cwd`, with legacy
     // paths under `~/.claude`; unset resolves to `~/.claude`.
-    let empty = || claude_config_fingerprint_with(&cwd, None, Some(&home), &[]);
-    let unset = || claude_config_fingerprint_with(&cwd, Some(&home), Some(&home), &[]);
+    let empty = || claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, Some(&home), &[]);
+    let unset = || claude_config_fingerprint_with(&cwd, UserConfigRoot::Resolved(&home), Some(&home), &[]);
     let mut previous = empty();
     assert_eq!(previous, empty(), "unchanged config files keep the key");
     assert_ne!(previous, unset(), "an empty CLAUDE_CONFIG_DIR never shares a spare with an unset one");
@@ -1509,7 +1509,45 @@ fn an_empty_claude_config_dir_fingerprints_the_cwd_and_home_claude_folders() {
         assert_ne!(next, previous, "writing ~/.claude/{name} with an empty CLAUDE_CONFIG_DIR must start the next turn cold");
         previous = next;
     }
-    assert!(!claude_config_fingerprint_with(&cwd, None, None, &[]).is_empty(), "no folders at all still fingerprints");
+    // Two `<cwd>` and `<home>/.claude` user stamps, under a marker no unset variable carries.
+    assert_eq!(previous.first(), Some(&json!("empty-config-dir")));
+    assert_eq!(unset().first(), Some(&json!("resolved")));
+    let no_home = || claude_config_fingerprint_with(&cwd, UserConfigRoot::EmptyConfigDir, None, &[]);
+    assert_ne!(no_home(), no_home(), "an empty CLAUDE_CONFIG_DIR with no known home is never adopted");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn an_unresolvable_user_config_folder_is_never_adopted() {
+    let root = std::env::temp_dir().join(format!("pandacode-warm-unresolvable-{}", uuid::Uuid::new_v4().simple()));
+    let (cwd, home) = (root.join("project"), root.join("home/.claude"));
+    std::fs::create_dir_all(&cwd).unwrap();
+    // Saved `HOME=""` or a relative `HOME` (no `USERPROFILE`): Claude Code falls back to the
+    // real home, which PandaCode cannot see, so each launch's fingerprint is its own.
+    assert_eq!(user_config_root(None, false, false), UserConfigRoot::Unresolvable);
+    let unresolved = || claude_config_fingerprint_with(&cwd, user_config_root(None, false, false), Some(&home), &[]);
+    assert_ne!(unresolved(), unresolved(), "an unresolved home never matches a spare's key");
+    // A legacy connection keeping a folder variable as a secret is unresolvable whatever the rest says.
+    assert_eq!(user_config_root(Some(home.as_path()), false, true), UserConfigRoot::Unresolvable);
+    assert_eq!(user_config_root(None, true, true), UserConfigRoot::Unresolvable);
+    assert_eq!(user_config_root(None, true, false), UserConfigRoot::EmptyConfigDir);
+    assert_eq!(user_config_root(Some(home.as_path()), false, false), UserConfigRoot::Resolved(home.as_path()));
+    let base = crate::providers::tests::config("claude");
+    for name in ["HOME", "USERPROFILE", "CLAUDE_CONFIG_DIR", "claude_config_dir"] {
+        let legacy = crate::connections::Connection {
+            id: "legacy".into(),
+            provider: "claude".into(),
+            name: "Legacy".into(),
+            executable: None,
+            args: vec![],
+            env: Default::default(),
+            secret_env: vec![name.into()],
+            config_dir: None,
+            revision: 1,
+        };
+        let stamp = || claude_config_fingerprint(&base, Some(&legacy));
+        assert_ne!(stamp(), stamp(), "a legacy secret {name} never shares a spare");
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

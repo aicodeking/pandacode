@@ -14,8 +14,10 @@ fn join_claude_config_dir(cwd: &Path, value: &str) -> Option<PathBuf> {
     (!value.is_empty()).then(|| cwd.join(value))
 }
 
-/// The Claude config folder a launch with `env` (over PandaCode's own environment) uses. A set
-/// but empty `CLAUDE_CONFIG_DIR` is unknown (`None`, fail closed), never `<home>/.claude`.
+/// The Claude config folder a launch with `env` (over PandaCode's own environment) uses. Claude
+/// Code resolves a set but empty `CLAUDE_CONFIG_DIR` relative to `cwd` (not `<home>/.claude`);
+/// this deliberately returns `None` for it, so the permission and read policy checks fail
+/// closed and warm-spare callers can tell an explicit empty value from an unset one.
 pub(crate) fn resolve_claude_config_dir_env(
     env: &[(String, String)],
     cwd: &Path,

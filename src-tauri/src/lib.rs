@@ -971,14 +971,53 @@ async fn set_reasoning_effort(
     if agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its reasoning effort.".into());
     }
-    let session = {
+    let (session, reconfigured) = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        store.set_reasoning_effort(&session_id, reasoning_effort.as_deref())?
+        let before = store.session(&session_id)?;
+        let session = store.set_reasoning_effort(&session_id, reasoning_effort.as_deref())?;
+        let reconfigured = session_launch_changed(&before, &session);
+        (session, reconfigured)
     };
     // Like a model change: a lead's spare launched at the old effort could renew until its next wake.
-    providers::invalidate_warm_agent(&session_id);
+    if reconfigured {
+        providers::invalidate_warm_agent(&session_id);
+    }
     drop(agents);
     Ok(session)
+}
+/// Whether a settings change alters how the task's agent launches, so a warm spare
+/// started with the old settings must be discarded. Re-picking the current mode, model
+/// or effort keeps the spare.
+fn session_launch_changed(before: &Session, after: &Session) -> bool {
+    before.model != after.model || before.mode != after.mode || before.reasoning_effort != after.reasoning_effort
+}
+#[cfg(test)]
+mod session_launch_tests {
+    use super::*;
+
+    #[test]
+    fn only_model_mode_or_effort_changes_invalidate_a_warm_spare() {
+        let dir = std::env::temp_dir().join(format!("pandacode-launch-change-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("pandacode.db")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let before = store.create_session(&project.id, "claude", "sonnet", "ask").unwrap();
+
+        let cosmetic = Session { title: "Renamed".into(), archived: !before.archived, ..before.clone() };
+        assert!(!session_launch_changed(&before, &before));
+        assert!(!session_launch_changed(&before, &cosmetic));
+
+        let model = Session { model: "opus".into(), ..before.clone() };
+        let mode = Session { mode: "auto".into(), ..before.clone() };
+        let other_effort = if before.reasoning_effort.as_deref() == Some("high") { "low" } else { "high" };
+        let effort = Session { reasoning_effort: Some(other_effort.into()), ..before.clone() };
+        assert!(session_launch_changed(&before, &model));
+        assert!(session_launch_changed(&before, &mode));
+        assert!(session_launch_changed(&before, &effort));
+        assert!(session_launch_changed(&effort, &before));
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 #[tauri::command]
 async fn update_session(
@@ -1012,11 +1051,16 @@ async fn update_session(
         return Err("Stop the agent before changing its model or permissions.".into());
     }
     let restored = archived == Some(false);
-    let reconfigured = model.is_some() || mode.is_some();
-    {
+    let launch_settings = model.is_some() || mode.is_some();
+    let reconfigured = {
         let store = state.store.lock().map_err(|e| e.to_string())?;
+        let before = if launch_settings { Some(store.session(&session_id)?) } else { None };
         store.update(&session_id, title, archived, model, mode)?;
-    }
+        match before {
+            Some(before) => session_launch_changed(&before, &store.session(&session_id)?),
+            None => false,
+        }
+    };
     // A lead's spare launched with the old model/mode could renew until its next wake.
     if reconfigured {
         providers::invalidate_warm_agent(&session_id);

@@ -117,29 +117,78 @@ const CONFIG_WALK_ENTRIES: usize = 128;
 const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 
 /// Metadata of the Claude config files and folders this launch's process would read.
-fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Vec<Value> {
+pub(super) fn claude_config_fingerprint(config: &RunConfig, connection: Option<&Connection>) -> Vec<Value> {
     let env = claude_launch_env(crate::provider_settings::environment("claude"), connection);
-    let user_dir =
-        crate::turn_changes::resolve_claude_config_dir_env(&env, &config.cwd, cfg!(windows));
+    // A legacy connection may hold a folder variable as a secret, which is never read here.
+    let secret_config = connection.is_some_and(|connection| {
+        connection.secret_env.iter().any(|name| {
+            name.eq_ignore_ascii_case(CLAUDE_CONFIG_DIR)
+                || name.eq_ignore_ascii_case("HOME")
+                || name.eq_ignore_ascii_case("USERPROFILE")
+        })
+    });
+    let inherited = std::env::var_os(CLAUDE_CONFIG_DIR);
+    let empty_config = crate::turn_changes::claude_config_dir_value(&env, cfg!(windows))
+        .map_or_else(|| inherited.as_deref().is_some_and(std::ffi::OsStr::is_empty), str::is_empty);
+    let user_dir = crate::turn_changes::resolve_claude_config_dir_env_with(
+        &env,
+        inherited.as_deref(),
+        &config.cwd,
+        cfg!(windows),
+    );
     let home_claude = crate::account_config::home(&env).map(|home| home.join(".claude"));
     let managed = crate::turn_changes::host_managed_settings_paths();
     claude_config_fingerprint_with(
         &config.cwd,
-        user_dir.as_deref(),
+        user_config_root(user_dir.as_deref(), empty_config, secret_config),
         home_claude.as_deref(),
         managed.as_deref().unwrap_or_default(),
     )
 }
 
-/// Metadata only (never contents) of startup configuration, memory and rules. `user_dir` is
-/// `None` when `CLAUDE_CONFIG_DIR` is set but empty. Claude Code resolves its config folder with
-/// `??`, so an empty value stays `""` and user settings, memory, rules, agents, commands and
-/// skills are read relative to `cwd`, while credentials and legacy paths fall back to home
-/// (`account_config.rs`). Both `cwd` and `home_claude` then get the full user stamps, and the
-/// leading flag keeps the key apart from an unset variable.
+/// Where a launch's user-scoped Claude config lives, as far as PandaCode can tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum UserConfigRoot<'a> {
+    /// `CLAUDE_CONFIG_DIR` (or `<home>/.claude` when unset) resolved to this folder.
+    Resolved(&'a Path),
+    /// `CLAUDE_CONFIG_DIR` is set but empty.
+    EmptyConfigDir,
+    /// The folder cannot be known: an unresolvable home, or a folder variable kept as a secret.
+    Unresolvable,
+}
+
+/// `user_dir` is the resolved folder (`None` when empty or unresolvable); `empty_config` says
+/// `CLAUDE_CONFIG_DIR` is set but empty; `secret_config` says a legacy connection keeps
+/// `CLAUDE_CONFIG_DIR`, `HOME` or `USERPROFILE` as a secret, whose value is never read.
+pub(super) fn user_config_root(user_dir: Option<&Path>, empty_config: bool, secret_config: bool) -> UserConfigRoot<'_> {
+    match user_dir {
+        _ if secret_config => UserConfigRoot::Unresolvable,
+        _ if empty_config => UserConfigRoot::EmptyConfigDir,
+        Some(user) => UserConfigRoot::Resolved(user),
+        None => UserConfigRoot::Unresolvable,
+    }
+}
+
+/// Bumped for every unresolvable fingerprint, so no two launches ever share one.
+static NEXT_UNRESOLVABLE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// A fingerprint no other launch matches, so a spare is never adopted (it starts cold).
+fn unadoptable_fingerprint() -> Vec<Value> {
+    let nonce = NEXT_UNRESOLVABLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    vec![json!(format!("unresolvable-config:{nonce}"))]
+}
+
+/// Metadata only (never contents) of startup configuration, memory and rules. Claude Code
+/// resolves its config folder with `CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude")`, so an
+/// empty value stays `""`: user settings, memory, rules, agents, commands, skills (and
+/// credentials, which are never stamped) are read relative to `cwd`, while only `~/.claude.json`
+/// and legacy IDE paths use home. Both `cwd` and `home_claude` then get the full user stamps,
+/// and the leading marker keeps the key apart from an unset variable. When the folder cannot be
+/// known (an empty value with no known home, an unresolvable home, or a folder variable kept as
+/// a secret) Claude Code may read the real home, so the fingerprint is unadoptable.
 pub(super) fn claude_config_fingerprint_with(
     cwd: &Path,
-    user_dir: Option<&Path>,
+    user_root: UserConfigRoot<'_>,
     home_claude: Option<&Path>,
     managed_paths: &[PathBuf],
 ) -> Vec<Value> {
@@ -154,14 +203,17 @@ pub(super) fn claude_config_fingerprint_with(
     // `claude_policy.rs`.
     const MAIN_LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 
-    let unresolved = user_dir.is_none();
-    let user_roots: Vec<&Path> = match user_dir {
-        Some(user) => vec![user],
-        None => std::iter::once(cwd)
-            .chain(home_claude.filter(|home| *home != cwd))
-            .collect(),
+    let (marker, user_dir, user_roots): (&str, Option<&Path>, Vec<&Path>) = match (user_root, home_claude) {
+        (UserConfigRoot::Resolved(user), _) => ("resolved", Some(user), vec![user]),
+        (UserConfigRoot::EmptyConfigDir, Some(home)) => (
+            "empty-config-dir",
+            Some(home),
+            std::iter::once(cwd).chain((home != cwd).then_some(home)).collect(),
+        ),
+        (UserConfigRoot::EmptyConfigDir, None) | (UserConfigRoot::Unresolvable, _) => {
+            return unadoptable_fingerprint()
+        }
     };
-    let user_dir = user_dir.or(home_claude);
     let roots = crate::turn_changes::project_config_roots(cwd);
     let above_project = roots
         .ancestors
@@ -188,7 +240,7 @@ pub(super) fn claude_config_fingerprint_with(
         Value::Array(stamp)
     };
 
-    let mut stamps = vec![json!(unresolved)];
+    let mut stamps = vec![json!(marker)];
     for root in &roots.ancestors {
         stamps.push(stamp_project(
             root,
