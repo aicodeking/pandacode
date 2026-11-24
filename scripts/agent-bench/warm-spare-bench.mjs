@@ -75,9 +75,9 @@ export function suiteParts(name) {
   return { env, privacy: env === 'privacy', offline: env === 'offline', minimal: config === 'minimal' || resumed, resumed };
 }
 
-/** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`, `--stdio-mcp`. */
+/** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`, `--stdio-mcp`, `--park-ms <n>` (default PARK_MS). */
 export function parseArgs(argv) {
-  const opts = { pairs: 12, out: null, suites: [...SUITES], stdioMcp: false };
+  const opts = { pairs: 12, out: null, suites: [...SUITES], stdioMcp: false, parkMs: PARK_MS };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -94,6 +94,10 @@ export function parseArgs(argv) {
       opts.suites = list; i++;
     } else if (flag === '--stdio-mcp') {
       opts.stdioMcp = true;
+    } else if (flag === '--park-ms') {
+      const n = Number(value);
+      if (!Number.isInteger(n) || n < 1 || n > 60_000) throw new Error(`--park-ms needs an integer from 1 to 60000, got ${value}`);
+      opts.parkMs = n; i++;
     } else throw new Error(`unknown flag ${flag}`);
   }
   return opts;
@@ -452,25 +456,41 @@ function sampleRss(pid) {
   return { rss_mib: rss, tree_rss_mib: tree };
 }
 
-const write = (child, value) => child.stdin.write(`${JSON.stringify(value)}\n`);
+/** Write one JSON line to the child's stdin; a stdin the child already closed (EPIPE, destroyed) is dropped, never thrown. */
+const write = (child, value) => {
+  const stdin = child.stdin;
+  if (!stdin || stdin.destroyed || stdin.writableEnded) return false;
+  try { return stdin.write(`${JSON.stringify(value)}\n`); } catch { return false; }
+};
+const endStdin = child => { try { child.stdin?.end(); } catch { /* already closed */ } };
+const killPids = pids => { for (const p of pids) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } };
 
-/** One launch: cold (initialize at spawn) or warm (parked PARK_MS with stdin open first). */
-async function runOnce({ arm, args, env, cwd, stdioMcp = false }) {
+/**
+ * One launch: cold (initialize at spawn) or warm (parked `parkMs` with stdin open first). Never
+ * rejects: a spawn failure (ENOENT), an early exit or a timeout is recorded in `error`. `exited`
+ * settles on the child's `exit` or its spawn `error`, stdin errors (EPIPE after an early exit) are
+ * swallowed, and on any error the stdio MCP children sampled while parked are killed too.
+ */
+export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command = 'claude', parkMs = PARK_MS }) {
   const tSpawn = performance.now();
-  const child = spawn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   children.add(child);
   let stderr = '';
-  child.stderr.on('data', c => { stderr = (stderr + c).slice(-2000); });
-  const exited = new Promise(resolve => child.on('exit', (code, signal) => resolve({ code, signal, at: performance.now() })));
+  child.stdin?.on('error', () => {});
+  child.stderr?.on('data', c => { stderr = (stderr + c).slice(-2000); });
+  const exited = new Promise(resolve => {
+    child.once('exit', (code, signal) => resolve({ code, signal, error: null, at: performance.now() }));
+    child.once('error', error => resolve({ code: null, signal: null, error, at: performance.now() }));
+  });
   child.on('error', () => {});
   const out = { arm, init_ms: null, result_ms: null, exit_after_result_ms: null, exit_code: null, rss_mib: null, tree_rss_mib: null, result_subtype: null, error: null };
   let mcpPids = [];
   let t0 = tSpawn;
   let tResult = null;
-  const resultTimeout = cancellableDelay(RUN_TIMEOUT_MS + PARK_MS);
+  const resultTimeout = cancellableDelay(RUN_TIMEOUT_MS + parkMs);
   const done = new Promise((resolve, reject) => {
     let buffer = '';
-    child.stdout.on('data', chunk => {
+    child.stdout?.on('data', chunk => {
       buffer += chunk;
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
@@ -484,18 +504,21 @@ async function runOnce({ arm, args, env, cwd, stdioMcp = false }) {
           out.result_ms = tResult - t0;
           out.result_subtype = event.subtype ?? null;
           if (event.is_error) out.error = `result is_error: ${String(event.result ?? '').slice(0, 200)}`;
-          child.stdin.end();
+          endStdin(child);
           resolve();
         }
       }
     });
-    exited.then(e => reject(new Error(`exited before result (code ${e.code}, signal ${e.signal})`)));
+    exited.then(e => reject(new Error(e.error ? `spawn failed: ${e.error.code ?? e.error.message}` : `exited before result (code ${e.code}, signal ${e.signal})`)));
     resultTimeout.promise.then(() => reject(new Error('timed out waiting for result')));
   });
   done.catch(() => {});
   try {
     if (arm === 'warm') {
-      await delay(PARK_MS);
+      const park = cancellableDelay(parkMs, true);
+      let parked;
+      try { parked = await Promise.race([park.promise, exited.then(() => false)]); } finally { park.cancel(); }
+      if (!parked) await done; // exited (or failed to spawn) while parked: throws the exit reason
       Object.assign(out, sampleRss(child.pid));
       if (stdioMcp) {
         const tree = sampleTree(child.pid);
@@ -514,12 +537,13 @@ async function runOnce({ arm, args, env, cwd, stdioMcp = false }) {
     if (stdioMcp) {
       if (arm === 'cold') mcpPids = []; // sampled only while parked
       out.mcp_child_orphaned = await anyOrphaned(mcpPids);
-      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; for (const p of mcpPids) { try { process.kill(p, 'SIGKILL'); } catch { /* gone */ } } }
+      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(mcpPids); }
     }
   } catch (error) {
     out.error = `${error.message}; stderr: ${stderr.slice(-300)}`;
-    child.kill('SIGKILL');
+    try { child.kill('SIGKILL'); } catch { /* never spawned or already gone */ }
     await exited;
+    killPids(mcpPids.filter(alive)); // a stdio MCP child sampled while parked must not outlive an errored run
   } finally {
     resultTimeout.cancel();
     children.delete(child);
@@ -645,7 +669,7 @@ async function runSuite(name, pairs, ctx) {
   for (let i = 0; i < orders.length; i++) {
     for (const arm of orders[i]) {
       ctx.counts.messageCounts = [];
-      const r = await runOnce({ arm, args, env, cwd, stdioMcp: ctx.stdioMcp });
+      const r = await runOnce({ arm, args, env, cwd, stdioMcp: ctx.stdioMcp, parkMs: ctx.parkMs });
       const resumedMessages = seed ? maxMessageCount(ctx.counts.messageCounts) : undefined;
       if (seed && r.error == null) r.error = resumeCheckError(seedMessages, resumedMessages);
       const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
@@ -682,7 +706,7 @@ async function main() {
   const api = messagesStub(counts); const mcp = mcpServer(counts, token);
   const apiPort = await listen(api); const mcpPort = await listen(mcp);
   const mcpConfig = mcpConfigJson({ mcpPort, token, stdio: opts.stdioMcp });
-  const ctx = { instructions, mcpConfig, apiPort, counts, stdioMcp: opts.stdioMcp };
+  const ctx = { instructions, mcpConfig, apiPort, counts, stdioMcp: opts.stdioMcp, parkMs: opts.parkMs };
   const suites = {};
   try {
     for (const name of opts.suites) suites[name] = await runSuite(name, opts.pairs, ctx);
@@ -696,7 +720,7 @@ async function main() {
     claude_version: version,
     platform: process.platform, arch: process.arch, node: process.version,
     timestamp: new Date().toISOString(),
-    pairs: opts.pairs, warmup_pairs: 1, park_ms: PARK_MS, background_exit_wait_ms: BACKGROUND_EXIT_WAIT_MS, seed: SEED,
+    pairs: opts.pairs, warmup_pairs: 1, park_ms: opts.parkMs, background_exit_wait_ms: BACKGROUND_EXIT_WAIT_MS, seed: SEED,
     prompt: PROMPT,
     app_instructions_bytes: Buffer.byteLength(instructions, 'utf8'),
     flags: claudeArgs({ instructions: '<app_instructions>', mcpConfig: '<http-mcp-json>', minimal: false }),
@@ -706,7 +730,7 @@ async function main() {
     ...(opts.stdioMcp ? { stdio_mcp: { server: STDIO_SERVER_NAME, command: `node scripts/agent-bench/warm-spare-bench.mjs ${STDIO_SERVE_FLAG}`, tools: STDIO_MCP_TOOLS.map(t => t.name), sampled: 'warm arm while parked: Claude self RSS, stdio MCP child RSS (descendants whose argv holds the serve flag), descendant count; every run checks the sampled child exits within 2 s of Claude' } } : {}),
     env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:<port>', ANTHROPIC_API_KEY: DUMMY_KEY, inherited: 'PATH, HOME, USER, SHELL, TMPDIR, LANG only', privacy_extra: { ...PRIVACY_ENV }, privacy_source: 'src-tauri/src/providers/privacy.rs ENVIRONMENT', offline_extra: { ...OFFLINE_ENV } },
     suites: Object.fromEntries(Object.keys(suites).map(k => [k, suiteParts(k)])),
-    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. *-resumed suites (default or privacy env, minimal config) first run one seed turn (a single short exchange, persisted) in a fresh temporary CLAUDE_CONFIG_DIR, then launch every cold and warm run with --resume=<seed session id> plus --no-session-persistence, so each resumes the same byte-identical one-turn transcript (the temporary folder holds a copy of ~/.claude.json without its projects map, so cached account and feature state match the other suites; with an empty folder every turn awaits a bootstrap fetch the dummy key cannot satisfy) (sha256 checked after the suite; each run\'s Messages API request must carry more messages than the seed request, proving the history loaded); long real histories are unmeasured. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park 2 s, sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
+    method: 'Messages API and Streamable HTTP MCP are loopback stubs (no Messages API traffic, no cost, no API jitter; the stub answers 200 {} to any other path, such as HEAD /api/hello). default-* suites use PandaCode\'s plain-Claude env, so the CLI\'s own non-essential traffic (telemetry, feature flags, update checks) stays on and may leave the machine; privacy-* suites add exactly PandaCode\'s "Turn off agent telemetry" variables (providers/privacy.rs ENVIRONMENT: DO_NOT_TRACK, DISABLE_TELEMETRY, DISABLE_ERROR_REPORTING, CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and the other harnesses\' opt-outs) and nothing else; offline-* suites add CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1. *-resumed suites (default or privacy env, minimal config) first run one seed turn (a single short exchange, persisted) in a fresh temporary CLAUDE_CONFIG_DIR, then launch every cold and warm run with --resume=<seed session id> plus --no-session-persistence, so each resumes the same byte-identical one-turn transcript (the temporary folder holds a copy of ~/.claude.json without its projects map, so cached account and feature state match the other suites; with an empty folder every turn awaits a bootstrap fetch the dummy key cannot satisfy) (sha256 checked after the suite; each run\'s Messages API request must carry more messages than the seed request, proving the history loaded); long real histories are unmeasured. Cold: spawn, initialize at once, user message on control_response, timed from spawn. Warm: spawn with stdin open, park ' + opts.parkMs + ' ms (default 2 s), sample RSS, then initialize and the message, timed from the end of the park. stdin closed at result; exit timed from result. Pair order seeded per pair; pair 0 is a discarded warmup.',
     stub_requests: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.stub_requests])),
     seeds: Object.fromEntries(Object.entries(suites).filter(([, v]) => v.seed).map(([k, v]) => [k, v.seed])),
     summary: Object.fromEntries(Object.entries(suites).map(([k, v]) => [k, v.summary])),

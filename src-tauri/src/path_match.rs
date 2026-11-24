@@ -95,15 +95,25 @@ pub(crate) fn resolve_path(path: &Path) -> PathBuf {
     }
 }
 
+/// Whether `path` spells a `..` segment, which a literal prefix match would wrongly treat as a
+/// child name (`root/../other` starts with `root`).
+fn has_parent_dir(path: &Path) -> bool {
+    path.components().any(|component| matches!(component, Component::ParentDir))
+}
+
 /// Whether `candidate` lies inside (or equals) `folder`, literally or once both resolve
 /// through [`resolve_path`]. `folder_resolved` is `resolve_path(folder)` computed once.
+/// Literal prefix matches are trusted only when neither spelling contains `..`.
 pub(crate) fn path_in_folder(candidate: &Path, folder: &Path, folder_resolved: &Path) -> bool {
     let candidate_ext = external_path(candidate);
     let folder_ext = external_path(folder);
-    if candidate_ext == folder_ext || candidate_ext.starts_with(&folder_ext) {
+    if candidate_ext == folder_ext || candidate_ext == folder_resolved {
         return true;
     }
-    if candidate_ext == folder_resolved || candidate_ext.starts_with(folder_resolved) {
+    if !has_parent_dir(&candidate_ext)
+        && !has_parent_dir(&folder_ext)
+        && (candidate_ext.starts_with(&folder_ext) || candidate_ext.starts_with(folder_resolved))
+    {
         return true;
     }
     let resolved = resolve_path(candidate);
@@ -156,6 +166,28 @@ mod tests {
         assert!(path_in_folder(&canonical_folder, &folder, &deleted));
         assert!(path_in_folder(&canonical_nested, &folder, &deleted));
         assert!(!path_in_folder(&sibling, &folder, &deleted));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn parent_dir_segments_never_match_literally() {
+        let base = std::env::temp_dir().join(format!("pandacode-path-match-dots-{}", uuid::Uuid::new_v4().simple()));
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::create_dir_all(base.join("other")).unwrap();
+        let resolved = resolve_path(&root);
+        for (candidate, inside) in [
+            (root.join("..").join("other"), false),
+            (root.join("..").join("missing"), false),
+            (root.join("sub").join("..").join("inside"), true),
+            (root.join("sub").join("..").join("sub"), true),
+            (root.join("sub").join("..").join(".."), false),
+        ] {
+            assert_eq!(path_in_folder(&candidate, &root, &resolved), inside, "{}", candidate.display());
+        }
+        let dotted_folder = root.join("sub").join("..");
+        assert!(path_in_folder(&root.join("sub"), &dotted_folder, &resolve_path(&dotted_folder)));
+        assert!(!path_in_folder(&base.join("other"), &dotted_folder, &resolve_path(&dotted_folder)));
         let _ = std::fs::remove_dir_all(base);
     }
 }

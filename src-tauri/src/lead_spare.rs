@@ -77,13 +77,14 @@ fn live(worker: &architect::Worker) -> bool {
     !worker.abandoned && architect::unsettled(&worker.status)
 }
 
-/// Whether a live worker may still write to the lead's own checkout: the team shares one
-/// workspace and a live worker is not read-only. The lead's spare would snapshot a `gitStatus`
-/// those writes make stale (a ~230 MiB process and `SessionStart` hooks spent on a spare that
-/// cannot be adopted), so none is kept. Read-only teams (council reviews) and teams working in
-/// their own worktrees leave the lead's checkout alone.
+/// Whether a live worker may still write to the lead's own checkout. Every team shares the
+/// lead's checkout (`TeamConfig::validate` accepts only the `shared` workspace), so any live
+/// worker that is not read-only may. The lead's spare would snapshot a `gitStatus` those writes
+/// make stale (a ~230 MiB process and `SessionStart` hooks spent on a spare that cannot be
+/// adopted), so none is kept: lead spares serve only teams whose live workers are all read-only
+/// (council reviews).
 fn writes_lead_checkout(team: &architect::TeamSnapshot) -> bool {
-    team.config.workspace == "shared" && team.workers.iter().any(|worker| live(worker) && !worker.read_only)
+    team.workers.iter().any(|worker| live(worker) && !worker.read_only)
 }
 
 /// Whether a lead's review wake can come without the user: every live worker is working (or
@@ -121,9 +122,10 @@ pub(crate) enum Pool {
     /// A lead of an active team waiting on its workers: the lead pool, renewed on this check.
     Lead(WarmRenew),
     /// A lead whose team the user paused or stopped, or whose team cannot be read: no wake is
-    /// coming until the user resumes it, so no spare is kept in either pool. Also a lead whose
-    /// live workers may still write its shared checkout (`writes_lead_checkout`). A team that
-    /// ended by itself (completed, ready, failed) gets `Ordinary`: the user's follow-up is likely.
+    /// coming until the user resumes it, so no spare is kept in either pool. Also a lead with a
+    /// live worker that is not read-only, which may write the checkout every team shares
+    /// (`writes_lead_checkout`). A team that ended by itself (completed, ready, failed) gets
+    /// `Ordinary`: the user's follow-up is likely.
     Drop,
 }
 
@@ -168,17 +170,17 @@ mod tests {
     use super::*;
     use crate::*;
 
-    /// Saves `lead`'s running team with these read-only workers (`(session id, status)`) in a
-    /// shared workspace, so the lead keeps its spare; returns its generation.
+    /// Saves `lead`'s running team with these read-only workers (`(session id, status)`), so the
+    /// lead keeps its spare; returns its generation.
     fn save_team(store: &Store, lead: &str, workers: &[(&str, &str)]) -> u64 {
-        save_team_in(store, lead, workers, "shared", true)
+        save_team_in(store, lead, workers, true)
     }
 
-    /// `save_team` with the team's `workspace` and whether its workers are `read_only`.
-    fn save_team_in(store: &Store, lead: &str, workers: &[(&str, &str)], workspace: &str, read_only: bool) -> u64 {
+    /// `save_team` with whether its workers are `read_only` (every team shares the lead's checkout).
+    fn save_team_in(store: &Store, lead: &str, workers: &[(&str, &str)], read_only: bool) -> u64 {
         let config = architect::TeamConfig {
             auto: false, roster_only: false, name: None, workers: vec![], catalog: vec![],
-            max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: workspace.into(), summary_limit: 2000, lead_guidance: None, council: None,
+            max_parallel: 3, max_rounds: 5, max_assignments: 10, workspace: "shared".into(), summary_limit: 2000, lead_guidance: None, council: None,
         };
         let mut team = architect::new_team(lead.into(), config);
         team.status = "running".into();
@@ -292,26 +294,23 @@ mod tests {
     }
 
     #[test]
-    fn a_lead_whose_live_workers_write_its_shared_checkout_keeps_no_spare() {
+    fn a_lead_keeps_a_spare_only_while_its_live_workers_are_all_read_only() {
         let (store, _, lead) = lead_store();
-        // A write worker in the shared checkout: the spare's `gitStatus` would go stale.
-        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "running")], "shared", false);
+        // Every team shares the lead's checkout: a write worker would make the spare's `gitStatus` stale.
+        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "running")], false);
         let pool = pool(&store, &lead, true);
-        assert!(matches!(pool, Pool::Drop) && !pool.keeps(), "a write worker in the shared checkout drops the lead's spare");
-        // Read-only workers (a council review) leave the checkout alone.
-        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "running"), ("task-w2", "parked")], "shared", true);
-        assert!(matches!(super::pool(&store, &lead, true), Pool::Lead(_)), "read-only workers keep the lead pool");
-        // Workers in their own worktrees never touch the lead's checkout.
-        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "running")], "worktree", false);
-        assert!(matches!(super::pool(&store, &lead, true), Pool::Lead(_)), "isolated workers keep the lead pool");
+        assert!(matches!(pool, Pool::Drop) && !pool.keeps(), "a live write worker drops the lead's spare");
+        // All read-only workers (a council review) leave the checkout alone.
+        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "running"), ("task-w2", "parked")], true);
+        assert!(matches!(super::pool(&store, &lead, true), Pool::Lead(_)), "all read-only workers keep the lead pool");
         // A write worker that already settled no longer writes: the lead's next turn gets an
         // ordinary spare, as for any settled team.
-        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "completed")], "shared", false);
+        save_team_in(&store.lock().unwrap(), &lead, &[("task-w1", "completed")], false);
         assert!(matches!(super::pool(&store, &lead, true), Pool::Ordinary));
         // One live write worker among read-only ones is enough.
         let (mixed, project, other) = lead_store();
         let reader = mixed.lock().unwrap().create_session(&project, "claude", "default", "ask").unwrap().id;
-        save_team_in(&mixed.lock().unwrap(), &other, &[(&reader, "running")], "shared", true);
+        save_team_in(&mixed.lock().unwrap(), &other, &[(&reader, "running")], true);
         {
             let db = mixed.lock().unwrap();
             let mut team = architect::load(&db, &other).unwrap().unwrap();

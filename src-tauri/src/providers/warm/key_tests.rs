@@ -746,6 +746,20 @@ fn a_lead_key_carries_the_working_tree_status_and_ordinary_keys_never_do() {
     assert_eq!(miss(true, &plain, &lead, false).as_deref(), Some("changed: gitStatus"));
 }
 
+#[test]
+fn a_key_walked_beside_its_git_status_is_byte_identical_to_the_spares_key() {
+    let base = crate::providers::tests::config("claude");
+    let tools = vec![json!({"type":"function","name":"pandacode_title"})];
+    let fields = key_fields(&base, &tools).expect("a resolvable config folder is keyed");
+    assert_eq!(with_git_status(fields.clone(), None), key(&base, &tools).unwrap(), "an ordinary launch");
+    let lead = lead_key(&base, &tools, "digest-a").unwrap();
+    assert_eq!(with_git_status(fields.clone(), Some("digest-a")), lead, "a lead launch, `gitStatus` merged after the walk");
+    // The key a lead's spare is spawned and renewed with (`key_with_disabled`).
+    let (connection, disabled) = (crate::connections::warm_key(&base.session_id, &base.provider), crate::skill_manager::disabled_for(&base.session_id));
+    let spawned = key_with_disabled(&base, &tools, &connection, &disabled, &mcp_host::stdio_servers(&base.session_id), Some("digest-a"));
+    assert_eq!(spawned.as_deref(), Some(lead.as_str()));
+}
+
 #[tokio::test]
 async fn a_lead_git_status_digest_tracks_the_working_tree() {
     let outside = std::env::temp_dir().join(format!("warm-git-status-none-{}", uuid::Uuid::new_v4()));

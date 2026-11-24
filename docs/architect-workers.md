@@ -372,17 +372,20 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   relay spare is not free of network traffic, see [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)),
   an architect turn that ends while its workers are unsettled starts the next turn's process in the background (`lead_spare.rs`,
   `providers/warm.rs`), so the review wake skips the CLI's startup. Lead spares
-  sit in their own pool of 2 that ordinary tasks never evict. A lead whose team
-  writes in a shared checkout (`workspace == "shared"` with any live worker that
-  is not read-only) starts no spare, since those edits would make its git status
-  stale. An expired spare (10 idle minutes) is restarted at most 2 times, and the
+  sit in their own pool of 2 that ordinary tasks never evict. Every team works in
+  the lead's shared checkout (`architect.rs` accepts only `workspace == "shared"`),
+  so lead spares serve teams whose live workers are all read-only (such as Council
+  reviews or read-only research swarms); a team with any live write worker starts
+  no lead spare, since its edits change the shared checkout and would make the
+  spare's git status stale. An expired spare (10 idle minutes) is restarted at most 2 times, and the
   idle limit and the 30-minute renewal chain are checked against both the
   monotonic and the wall clock, so a laptop that slept overnight never adopts an
   hours-old spare. Whether to restart is asked
   once per expiry: only while every live worker still runs and none waits on
   your approval or answer, and never once the wake has launched; a "no" ends the
-  renewals for good. Settings → Agents shows each pool's live totals since
-  launch beside the **Warm Claude spares** switch. Every adoption is also logged to stderr, locally only
+  renewals for good. Settings → Agents shows each pool's current-launch totals
+  (ordinary and lead counted separately) beside the **Warm Claude spares** switch,
+  read when the page opens and when the switch is toggled, not streamed. Every adoption is also logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
   not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
@@ -400,8 +403,9 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   speed-up can be measured. A wake whose spare never started (declined or
   failed) or whose removal reason aged out of the 64-entry `gone` table is
   counted as a cold launch in the lead pool's own totals. With **Warm Claude spares** off
-  nothing is logged or counted (`discard_all` also clears pending lead `gone`
-  notes, so a later wake logs nothing either). On the lead pool `not used` counts every wake that
+  nothing is logged or counted (turning it off, `disable_all`, also clears pending
+  lead `gone` notes, so a later wake logs nothing either; a CLI update or a Colab
+  settings change only retires pooled spares, `discard_all`, and keeps those notes). On the lead pool `not used` counts every wake that
   missed its spare, including spares already counted in `expired`, `evicted`,
   `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~230–255 MiB RSS in PandaCode's
   default env, ~218–243 MiB with "Turn off agent telemetry" on; Claude Code
@@ -413,9 +417,10 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   renewal chain can run hooks in up to three processes per wake, and hook
   output can be up to 10 minutes old when adopted. A
   branch switch or commit changes the warm key's `gitHead` and starts the wake
-  fresh. For read-only and isolated-worktree teams, the spare stamps a digest of
-  `git status --porcelain` when it spawns and checks it again at adoption, so a
-  changed working tree starts the wake cold instead of adopting stale status. The spare saves
+  fresh. For all-read-only teams, the spare stamps a digest of
+  `git status --porcelain` when it spawns and checks it again at adoption (run
+  alongside the warm-key walk with a 500 ms timeout), so a changed working tree
+  starts the wake cold instead of adopting stale status. The spare saves
   the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
   env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
   [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API

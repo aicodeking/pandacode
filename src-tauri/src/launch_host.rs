@@ -376,12 +376,49 @@ impl RunSink {
 
 /// Start the next turn's agent after a clean run, so a follow-up skips the CLI's own startup.
 /// `next` is this launch and the tools it listed; `launch` the task's launch count read at run end.
+/// Only the quit flag is read here; the switch's marker file, the store and the team are read on
+/// a blocking thread, never on the async runtime.
 pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, session_id: &str, team: Option<&architect::Admission>, launch: u64, next: (RunConfig, (Vec<serde_json::Value>, HashSet<String>))) {
     // Once quitting begins (`on_run_event`), no process may start that the quit would then wait for.
-    if !providers::warm_spares_on(app) || app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
+    if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
         return;
     }
     let (next, (tools, approvals)) = next;
+    // A lead waiting on its workers keeps a spare for its review wake: in the lead pool,
+    // started again on expiry while the workers still run. A lead whose team is not
+    // running or waiting (paused by the user, settled) keeps none: a Pause that landed
+    // after this run exited but before here leaves no wake to serve.
+    let lead = team.is_some_and(|admission| admission.parent == session_id);
+    let (app, store, session_id) = (app.clone(), store.clone(), session_id.to_owned());
+    tauri::async_runtime::spawn(async move {
+        let (check_app, check_session) = (app.clone(), session_id.clone());
+        let eligible = crate::blocking(move || Ok(spare_eligibility(&check_app, &store, &check_session, lead))).await;
+        let (task, pool) = match eligible {
+            Ok(Some(eligible)) => eligible,
+            Ok(None) => return,
+            Err(error) => {
+                eprintln!("PandaCode: could not check the next turn's warm agent: {error}");
+                return;
+            }
+        };
+        let renew = pool.renewal().map(|renew| {
+            let app = app.clone();
+            Arc::new(move || providers::warm_spares_on(&app) && renew()) as providers::WarmRenew
+        });
+        let next = lead_spare::spare_config(next, task);
+        let (inputs_provider, inputs_cwd) = (next.provider.clone(), next.cwd.clone());
+        let inputs = move || launch_inputs(&app, &session_id, &inputs_provider, &inputs_cwd);
+        let _ = providers::prewarm_agent(next, tools, approvals, launch, renew, inputs).await;
+    });
+}
+
+/// The task and pool a spare starts with, or `None` when it starts none: spares are off, the turn
+/// ended without any reply, or the lead's team keeps no spare. Reads the switch's marker file and
+/// the store, so it runs on a blocking thread.
+fn spare_eligibility(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, session_id: &str, lead: bool) -> Option<(storage::Session, lead_spare::Pool)> {
+    if !providers::warm_spares_on(app) {
+        return None;
+    }
     // A turn that ended without any reply (seen after background commands) may have
     // left the session in a state a spare would inherit: start the next one fresh.
     let replied = store.lock().ok().and_then(|db| db.db.query_row(
@@ -389,25 +426,15 @@ pub(crate) fn start_spare(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, ses
         [session_id],
         |row| row.get::<_, bool>(0),
     ).ok()).unwrap_or(false);
-    // A lead waiting on its workers keeps a spare for its review wake: in the lead pool,
-    // started again on expiry while the workers still run. A lead whose team is not
-    // running or waiting (paused by the user, settled) keeps none: a Pause that landed
-    // after this run exited but before here leaves no wake to serve.
-    let lead = team.is_some_and(|admission| admission.parent == session_id);
-    let pool = lead_spare::pool(store, session_id, lead);
-    let task = store.lock().ok().filter(|_| replied && pool.keeps()).and_then(|db| db.session(session_id).ok());
-    if let Some(task) = task {
-        let renew = pool.renewal().map(|renew| {
-            let app = app.clone();
-            Arc::new(move || providers::warm_spares_on(&app) && renew()) as providers::WarmRenew
-        });
-        let next = lead_spare::spare_config(next, task);
-        let (inputs_app, inputs_session, inputs_provider, inputs_cwd) = (app.clone(), session_id.to_owned(), next.provider.clone(), next.cwd.clone());
-        let inputs = move || launch_inputs(&inputs_app, &inputs_session, &inputs_provider, &inputs_cwd);
-        tauri::async_runtime::spawn(async move {
-            let _ = providers::prewarm_agent(next, tools, approvals, launch, renew, inputs).await;
-        });
+    if !replied {
+        return None;
     }
+    let pool = lead_spare::pool(store, session_id, lead);
+    if !pool.keeps() {
+        return None;
+    }
+    let task = store.lock().ok().and_then(|db| db.session(session_id).ok())?;
+    Some((task, pool))
 }
 
 #[cfg(test)]

@@ -20,8 +20,8 @@ fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
 /// Whether any of `others` is `root` or lies inside it (an agent working in a subfolder of the
 /// checkout), literally or once both resolve through `path_match::resolve_path`, which also
 /// matches a deleted folder recorded under its symlinked or canonical spelling. The same matcher
-/// as folder-scoped spare discard and `await_exits_in`, except that a path inside another git
-/// checkout nested below `root` (a worktree under `root/.claude/worktrees`) is that checkout's.
+/// as folder-scoped spare discard and `await_exits_in`, except that a path inside a linked
+/// worktree nested below `root` (one under `root/.claude/worktrees`) is that worktree's.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
     let root_resolved = resolve_path(root);
     others.iter().any(|other| {
@@ -29,15 +29,18 @@ pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
     })
 }
 
-/// Whether `other` (inside `root`) belongs to a git checkout strictly below `root`'s own. Only
-/// when `root` is itself in a checkout: a plain folder still counts every repository inside it.
-/// Plain subfolders, deleted paths and non-git folders resolve to `root`'s checkout or none.
+/// Whether `other` (inside `root`) belongs to a linked worktree strictly below `root`'s own
+/// checkout. Only when `root` is itself in a checkout: a plain folder still counts every
+/// repository inside it. Submodules and vendored `.git` folders are part of `root`'s working tree
+/// (their writes touch it), so they still count; plain subfolders, deleted paths and non-git
+/// folders resolve to `root`'s checkout or none.
 fn in_nested_checkout(other: &Path, root: &Path, root_resolved: &Path) -> bool {
     let Some(other_root) = crate::claude_roots::git_checkout_root(other) else { return false };
     let other_root_resolved = resolve_path(&other_root);
     other_root_resolved != root_resolved
         && path_in_folder(&other_root_resolved, root, root_resolved)
         && crate::claude_roots::git_checkout_root(root).is_some()
+        && crate::claude_roots::is_linked_worktree_root(&other_root)
 }
 
 /// Whether any agent (other than `exclude_session`, when given) runs or has a pending exit in any
@@ -268,13 +271,15 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn nested_worktrees_are_their_own_checkouts() {
+    fn nested_linked_worktrees_are_their_own_checkouts() {
         let base = std::env::temp_dir().join(format!("pandacode-checkout-nested-{}", uuid::Uuid::new_v4().simple()));
         let main = base.join("main");
         let nested = main.join(".claude").join("worktrees").join("x");
-        for dir in [main.join(".git"), main.join("src"), nested.join("src")] {
+        let admin = main.join(".git").join("worktrees").join("x");
+        for dir in [admin.clone(), main.join("src"), nested.join("src")] {
             std::fs::create_dir_all(dir).unwrap();
         }
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
         std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&main)));
         assert!(any_same_checkout(&main, &[main.join("src")]), "a plain subfolder is the same checkout");
@@ -286,6 +291,24 @@ mod tests {
         // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
         std::fs::remove_file(nested.join(".git")).unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn nested_submodules_and_vendored_repositories_keep_the_checkout_busy() {
+        let base = std::env::temp_dir().join(format!("pandacode-checkout-submodule-{}", uuid::Uuid::new_v4().simple()));
+        let main = base.join("main");
+        let submodule = main.join("vendor").join("sub");
+        let vendored = main.join("third_party").join("lib");
+        for dir in [main.join(".git").join("modules").join("sub"), submodule.join("src"), vendored.join(".git"), vendored.join("src")] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        // A submodule's gitfile leads to `.git/modules/<name>`, which has no `commondir`.
+        std::fs::write(submodule.join(".git"), "gitdir: ../../.git/modules/sub\n").unwrap();
+        assert!(any_same_checkout(&main, std::slice::from_ref(&submodule)), "a submodule is part of the checkout");
+        assert!(any_same_checkout(&main, &[submodule.join("src")]));
+        assert!(any_same_checkout(&main, std::slice::from_ref(&vendored)), "a vendored `.git` folder is part of the checkout");
+        assert!(any_same_checkout(&main, &[vendored.join("src")]));
         let _ = std::fs::remove_dir_all(base);
     }
 

@@ -86,12 +86,11 @@ pub(super) fn take_in(pool: &Pool, session_id: &str, key: &str, ordinary_eligibl
 }
 
 /// A supported ordinary launch as `run_process_launch` makes it with spares on: `prepare_launch_in`,
-/// then the cold launch counted when the pool allows it. Whether a spare is pooled, and the line logged.
+/// then the cold launch or lead `gone` miss counted when the pool allows it. Whether a spare is pooled, and the line logged.
 pub(super) fn launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool) -> (bool, Option<String>) {
     match prepare_launch_in(pool, session_id, ordinary_eligible, false) {
-        (LaunchPool::Pooled { .. }, note) => (true, note),
-        (LaunchPool::Empty { may_record_cold: true, lead }, None) => (false, Some(cold_without_spare_note(&mut spares(pool), lead))),
-        (LaunchPool::Empty { .. }, note) => (false, note),
+        LaunchPool::Pooled { .. } => (true, None),
+        LaunchPool::Empty { may_record_cold, lead, gone } => (false, no_spare_note(&mut spares(pool), gone, may_record_cold, lead)),
     }
 }
 

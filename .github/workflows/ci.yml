@@ -181,14 +181,15 @@ jobs:
       # substrings of each test path: `providers::exit` covers both `providers::exit::unit_tests` and
       # `providers::exit_tests`, and Colab's settings tests live in `cloud::colab::tests`. A filter list
       # that matched little would still pass, so require at least 200 passed tests on macOS and
-      # Windows and at least one passing (`... ok`, not `... ignored`) warm, exit and claude_roots
-      # test each, so a `#[cfg]` or `#[ignore]` slip that drops them on one platform fails here.
+      # Windows and at least one passing (`... ok`, not `... ignored`) path_match, lead_spare, warm,
+      # exit and claude_roots test each, so a `#[cfg]` or `#[ignore]` slip that drops them on one
+      # platform fails here.
       # Portable to macOS BSD awk and Git Bash gawk (only `index` and a plain regex).
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
         run: |
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: session_launch_tests:: cloud::colab::tests:: 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: path_match:: lead_spare:: session_launch_tests:: cloud::colab::tests:: 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
           log="$RUNNER_TEMP/platform-tests.log"
           passed=$(awk '/^test result: ok\. [0-9]+ passed/ { sum += $4 } END { print sum + 0 }' "$log")
           echo "Platform Rust unit tests passed: $passed"
@@ -196,7 +197,7 @@ jobs:
             echo "::error::Only $passed platform Rust unit tests passed (expected at least 200): a filter or #[cfg] dropped tests"
             exit 1
           fi
-          for module in 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
+          for module in 'path_match::' 'lead_spare::' 'providers::warm::' 'providers::exit::' 'claude_roots::'; do
             if ! awk -v m="test $module" 'index($0, m) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
               echo "::error::No passing $module tests ran on this platform"
               exit 1

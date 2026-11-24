@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 
 /// Why a lead spare left the pool before its wake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Gone {
+pub(in crate::providers) enum Gone {
     /// A newer lead spare pushed it out of the bounded lead pool.
     Evicted,
-    /// Its team stopped or paused, or its task was deleted.
+    /// Its team stopped or paused, its task was deleted, or a setting or CLI behind it changed.
     Discarded,
     /// It waited `IDLE` (and was not renewed, or its renewal has not registered yet).
     Expired,

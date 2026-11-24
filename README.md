@@ -319,9 +319,9 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   (2 ordinary and 2 for team leads), about 230–255 MiB each on short sessions (long
   histories, plugins or extra MCP servers, including stdio MCP child processes, use
   more). Starts back off when spares keep being evicted unused. An ordinary spare's
-  uncommitted `git status` can be up to 10 minutes old when adopted; lead spares skip
-  shared-checkout write teams and verify `git status` when adopted. Live totals since
-  launch show in Settings → Agents. The off setting is the empty `warm-spares-off` file
+  uncommitted `git status` can be up to 10 minutes old when adopted; lead spares serve
+  only teams whose live workers are all read-only (such as Council reviews) and verify
+  `git status` when adopted. This launch's totals show in Settings → Agents. The off setting is the empty `warm-spares-off` file
   in PandaCode's app data (unreadable also means off). Background traffic: see the
   note below this list and [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a

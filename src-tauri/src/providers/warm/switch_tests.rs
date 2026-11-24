@@ -87,7 +87,7 @@ fn spare(lead: bool) -> Spare {
 }
 
 #[tokio::test]
-async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewals() {
+async fn a_switch_off_retires_both_pools_and_cancels_inflight_and_expired_renewals() {
     let pool: &'static Pool = Box::leak(Box::default());
     let ids: Vec<_> = ["ordinary", "lead", "starting", "expired"].into_iter()
         .map(|name| format!("warm-switch-{name}-{}", uuid::Uuid::new_v4())).collect();
@@ -109,7 +109,7 @@ async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewal
     assert!(chain());
     // Even losing a diagnostic note cannot let an expiry check restart after off → on.
     spares(pool).gone.clear();
-    discard_all_from(pool);
+    disable_all_from(pool);
     assert!(!chain());
     assert!(spares(pool).spares.is_empty());
     // The start and the renewal check still run until their guards drop: cancelled, not forgotten.
@@ -128,7 +128,7 @@ async fn discard_all_retires_both_pools_and_cancels_inflight_and_expired_renewal
     drop(inflight);
     drop(renewing);
     assert!(spares(pool).starting.is_empty(), "each guard removes its own entry");
-    discard_all_from(pool); // idempotent, including already-expired lead notes
+    disable_all_from(pool); // idempotent, including already-expired lead notes
     for id in &ids { discard_from(pool, id); }
 }
 
@@ -241,14 +241,14 @@ async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
 /// `finish_empty_launch_with`, reading the switch with `enabled_now()` on this test's thread so
 /// `EnabledOverride` applies (production reads it on a blocking thread).
 async fn finish_empty(pool: &Pool, found: LaunchPool) -> Option<String> {
-    let LaunchPool::Empty { may_record_cold, lead } = found else { panic!("no spare is pooled") };
-    finish_empty_launch_with(pool, may_record_cold, lead, || async { enabled_now() }).await
+    let LaunchPool::Empty { may_record_cold, lead, gone } = found else { panic!("no spare is pooled") };
+    finish_empty_launch_with(pool, may_record_cold, lead, gone, || async { enabled_now() }).await
 }
 
 /// `finish_empty_launch_with` for an ineligible launch, failing if it reads the switch at all.
 async fn finish_ineligible(pool: &Pool) -> Option<String> {
     let read = std::cell::Cell::new(false);
-    let note = finish_empty_launch_with(pool, false, false, || { read.set(true); async { true } }).await;
+    let note = finish_empty_launch_with(pool, false, false, None, || { read.set(true); async { true } }).await;
     assert!(!read.get(), "an ineligible launch never reads the off switch");
     note
 }
@@ -259,14 +259,14 @@ async fn with_spares_off_a_launch_without_a_spare_counts_and_logs_nothing() {
     let session = format!("warm-switch-cold-off-{}", uuid::Uuid::new_v4());
     {
         let _off = EnabledOverride::new(false);
-        let (found, note) = prepare_launch_in(pool, &session, true, false);
-        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false });
-        assert_eq!(note, None, "preparing a launch never logs a cold launch itself");
+        // Preparing a launch never logs a cold launch itself.
+        let found = prepare_launch_in(pool, &session, true, false);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false, gone: None });
         assert_eq!(finish_empty(pool, found).await, None, "no `not pooled` line with spares off");
         assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
     }
     let _on = EnabledOverride::new(true);
-    let (found, _) = prepare_launch_in(pool, &session, true, false);
+    let found = prepare_launch_in(pool, &session, true, false);
     let note = finish_empty(pool, found).await.expect("spares on: the cold launch is logged");
     assert!(note.starts_with("Warm Claude agent not pooled; starting cold."), "{note}");
     assert_eq!(spares(pool).ordinary.cold_without_spare, 1);
@@ -279,16 +279,17 @@ async fn a_first_turn_or_managed_worker_never_counts_a_cold_launch() {
     let pool: &'static Pool = Box::leak(Box::default());
     let session = format!("warm-switch-ineligible-{}", uuid::Uuid::new_v4());
     let before = epoch(&session);
-    let (found, note) = prepare_launch_in(pool, &session, false, false);
-    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false });
-    assert_eq!(note, None);
+    let found = prepare_launch_in(pool, &session, false, false);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false, gone: None });
     assert!(epoch(&session) > before, "the launch is still counted");
     assert_eq!(finish_empty(pool, found).await, None);
     assert_eq!(finish_ineligible(pool).await, None);
     // A lead's pending gone reason is its miss, never also a cold launch.
     spares(pool).gone.insert(session.clone(), Gone::Expired);
-    let (found, note) = prepare_launch_in(pool, &session, true, false);
-    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false });
+    let found = prepare_launch_in(pool, &session, true, false);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: false, gone: Some(Gone::Expired) });
+    assert!(!spares(pool).gone.contains_key(&session), "taken by the launch, said at most once");
+    let note = finish_empty(pool, found).await;
     assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it expired)")), "{note:?}");
     assert_eq!(finish_ineligible(pool).await, None);
     assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
@@ -304,11 +305,11 @@ async fn a_switch_off_during_the_key_check_never_counts_a_cold_launch() {
             let session = format!("warm-switch-race-{lead}-{keyed}-{}", uuid::Uuid::new_v4());
             launched(&session);
             assert!(register(pool, &session, epoch(&session), spare(lead)));
-            let LaunchPool::Pooled { discard_epoch, .. } = prepare_launch_in(pool, &session, true, false).0 else {
+            let LaunchPool::Pooled { discard_epoch, .. } = prepare_launch_in(pool, &session, true, false) else {
                 panic!("the registered spare is pooled");
             };
             // Spares are switched off while the warm key is computed off the runtime.
-            discard_all_from(pool);
+            disable_all_from(pool);
             let note = if keyed {
                 let (adopted, note) = take_since(pool, &session, "switch-test", true, false, discard_epoch);
                 assert!(adopted.is_none(), "a discarded spare is never adopted");
@@ -333,17 +334,68 @@ async fn after_a_switch_off_no_lead_reports_a_miss_or_a_cold_launch() {
     assert!(register(pool, &pooled, epoch(&pooled), spare(true)));
     // A lead whose spare already expired (its renewal, if any, not yet registered).
     spares(pool).gone.insert(expired.clone(), Gone::Expired);
-    discard_all_from(pool);
+    disable_all_from(pool);
     assert_eq!(spares(pool).lead.discarded, 1, "the pooled lead spare is still counted as discarded");
     assert!(spares(pool).gone.is_empty(), "switching spares off clears every lead's `gone` note");
     let _off = EnabledOverride::new(false);
     for session in [&pooled, &expired] {
-        let (found, note) = prepare_launch_in(pool, session, true, false);
-        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false });
-        assert_eq!(note, None, "{session} logs no miss");
+        let found = prepare_launch_in(pool, session, true, false);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: false, gone: None }, "{session} has no miss to report");
         assert_eq!(finish_empty(pool, found).await, None, "{session} logs no cold launch with spares off");
     }
     assert_eq!(spares(pool).lead.missed, 0);
     assert_eq!(spares(pool).ordinary.cold_without_spare, 0);
     await_exit(&pooled).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_settings_discard_keeps_the_switch_off_state_a_switch_off_moves() {
+    let pool: &'static Pool = Box::leak(Box::default());
+    let (pooled, expired) = (format!("warm-discard-pooled-{}", uuid::Uuid::new_v4()), format!("warm-discard-expired-{}", uuid::Uuid::new_v4()));
+    launched(&pooled);
+    let launch = epoch(&pooled);
+    assert!(register(pool, &pooled, launch, spare(true)));
+    spares(pool).gone.insert(expired.clone(), Gone::Expired);
+    let (before, chain) = (spares(pool).discard_epoch, until_discarded(pool, Arc::new(|| true)));
+    // A setting or CLI changed (Colab's MCP, an agent update): spares stay on.
+    discard_all_from(pool);
+    {
+        let locked = spares(pool);
+        assert!(locked.spares.is_empty(), "the pooled spare is retired");
+        assert_eq!(locked.lead.discarded, 1);
+        assert_eq!(locked.discard_epoch, before, "launches keyed meanwhile still count");
+        assert_eq!(locked.gone.get(&pooled), Some(&Gone::Discarded), "the lead's wake still reports its miss");
+        assert_eq!(locked.gone.get(&expired), Some(&Gone::Expired));
+    }
+    assert!(epoch(&pooled) > launch, "a start for the old settings is refused");
+    assert!(chain(), "renewal chains end only at a switch-off");
+    // Switched off: the epoch moves, every chain ends and no lead reports a miss.
+    disable_all_from(pool);
+    assert_ne!(spares(pool).discard_epoch, before);
+    assert!(spares(pool).gone.is_empty());
+    assert!(!chain());
+    await_exit(&pooled).await.unwrap();
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn with_spares_off_a_pending_lead_miss_is_neither_logged_nor_counted() {
+    let pool: &'static Pool = Box::leak(Box::default());
+    let session = format!("warm-switch-gone-off-{}", uuid::Uuid::new_v4());
+    // Off by an unreadable data folder or a marker set without `disable_all`: the note is still there.
+    spares(pool).gone.insert(session.clone(), Gone::Evicted);
+    let found = {
+        let _off = EnabledOverride::new(false);
+        let found = prepare_launch_in(pool, &session, true, true);
+        assert_eq!(found, LaunchPool::Empty { may_record_cold: false, lead: true, gone: Some(Gone::Evicted) });
+        assert_eq!(finish_empty(pool, found).await, None, "no miss line with spares off");
+        found
+    };
+    assert_eq!(spares(pool).lead, PoolStats::default(), "and no miss counted");
+    assert!(!spares(pool).gone.contains_key(&session), "the note is spent: never reported later");
+    // The same note with spares on is the lead's miss.
+    let _on = EnabledOverride::new(true);
+    let note = finish_empty(pool, found).await;
+    assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent not used (it was evicted")), "{note:?}");
+    assert_eq!(spares(pool).lead, PoolStats { missed: 1, ..PoolStats::default() });
+    discard_from(pool, &session);
 }

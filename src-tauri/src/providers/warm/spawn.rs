@@ -20,7 +20,7 @@ pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashS
         return Ok(());
     }
     start(claude(), config, tools, approval_tools, launch,
-        renew.map(|renew| (until_discarded(&SPARES, renew), Arc::new(inputs) as Inputs)), 0).await
+        renew.map(|renew| (until_discarded(&SPARES, renew), Arc::new(inputs) as Inputs)), 0).await.map(|_| ())
 }
 
 /// A switch-off ends this chain permanently, even if spares are re-enabled before an expiry
@@ -80,7 +80,8 @@ struct Chain {
     born_wall: SystemTime,
 }
 
-/// A spare's first start (`renewals == 0`) begins its chain now.
+/// A spare's first start (`renewals == 0`) begins its chain now. `Ok(true)` only once a spare
+/// registered in the pool; `Ok(false)` when none did (see `spawn_spare`).
 pub(super) fn start(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, renewals: u32) -> Starting {
     start_chain(life, config, tools, approval_tools, launch, renew, Chain { renewals, born_wall: SystemTime::now() })
 }
@@ -106,8 +107,10 @@ pub(super) fn failure_note(renewals: u32, error: &str) -> String {
 }
 
 /// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
-/// lead spare may start again (`renews`).
-async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, chain: Chain) -> Result<(), String> {
+/// lead spare may start again (`renews`). `Ok(true)` only when `register` pooled the spare;
+/// `Ok(false)` when it was skipped (launch moved on, starts in flight at the cap, churn backoff,
+/// spares off, quitting, no warm key, an unreadable git status) or its registration was refused.
+async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, chain: Chain) -> Result<bool, String> {
     let session_id = config.session_id.clone();
     let cwd_path = external_path(&config.cwd);
     let lead = renew.is_some();
@@ -116,20 +119,20 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         // SPARES -> LAUNCHES, matching folder discard: a cancelled renewal cannot insert
         // a stale token after quiescence, read inputs or invoke the spawn callback.
         if launch == 0 || epoch(&session_id) != launch {
-            return Ok(());
+            return Ok(false);
         }
         // A burst of turns ending together never starts more processes (and `SessionStart`
         // hooks) than the pool keeps. The task's own entries are not counted: a renewal holds
         // its expiry token through this start, and a newer start replaces its spare anyway.
         let limit = if lead { LEAD_LIMIT } else { LIMIT };
         if in_flight(&pool, &session_id, lead) >= limit {
-            return Ok(());
+            return Ok(false);
         }
         // Tasks taking turns round-robin each evict the next one's spare unused: after `limit`
         // evictions in a row the pool starts none until `CHURN_COOLDOWN` passes or one is adopted.
         if pool.churn_mut(lead).cooling(Instant::now()) {
             pool.stats_mut(lead).churn_skipped += 1;
-            return Ok(());
+            return Ok(false);
         }
         InFlight::enter_locked(life.pool, &mut pool, session_id.clone(), cwd_path.clone(), lead)
     };
@@ -144,10 +147,10 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         None => None,
     };
     if launch == 0 || epoch(&session_id) != launch {
-        return Ok(());
+        return Ok(false);
     }
     let cwd = Some(cwd_path);
-    let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch, lead).await? else { return Ok(()) };
+    let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch, lead).await? else { return Ok(false) };
     let spare_key = key.clone();
     let (born, born_wall) = (Instant::now(), SystemTime::now());
     let registered = register(life.pool, &session_id, launch, Spare { key, child, group, server, born, born_wall, idle: life.idle, lead, cwd });
@@ -155,7 +158,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
     // The spare is now pooled, or killed with its own exit registered (`retire`).
     drop(starting);
     if !registered {
-        return Ok(());
+        return Ok(false);
     }
     tokio::spawn(async move {
         idle_until_expired(life, &session_id, born, born_wall).await;
@@ -184,23 +187,31 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         });
         let renewed = match again {
             Some((renew, inputs, config, tools, approvals)) if launch != 0 && epoch(&config.session_id) == launch => {
-                // `start` logs a failure with the renewal's number.
+                // `start` logs a failure with the renewal's number. Renewed only if the next spare
+                // really pooled: a skipped or refused one leaves the lead with none.
                 let next = Chain { renewals: chain.renewals + 1, ..chain };
-                let _ = start_chain(life, config, tools, approvals, launch, Some((renew, inputs)), next).await;
-                true
+                matches!(start_chain(life, config, tools, approvals, launch, Some((renew, inputs)), next).await, Ok(true))
             }
             _ => false,
         };
-        // Not renewed and not superseded by a launch (whose own log reports `it expired`): the
-        // lead's spare simply expired idle, so say so (and why) even if the wake never comes.
-        if !renewed && launch != 0 && epoch(&session) == launch {
-            let note = if current { expired_note(life.pool, true) } else { not_renewed_note(life.pool, "its launch settings changed") };
+        if let Some(note) = expiry_note(life.pool, renewed, launch, epoch(&session), current) {
             eprintln!("{note}");
         }
         // The old token overlaps `start`'s own guard through its entire handoff.
         drop(renewing);
     });
-    Ok(())
+    Ok(true)
+}
+
+/// What an expired lead spare logs once its renewal check is done. Nothing when its renewal
+/// pooled (`renewed`), or when a launch superseded it (`epoch` moved on from `launch`; that
+/// launch's own log reports `it expired`). Otherwise, also when its renewal was skipped or
+/// refused, the spare simply expired idle: say so (and why) even if the wake never comes.
+pub(super) fn expiry_note(pool: &Pool, renewed: bool, launch: u64, epoch: u64, current: bool) -> Option<String> {
+    if renewed || launch == 0 || epoch != launch {
+        return None;
+    }
+    Some(if current { expired_note(pool, true) } else { not_renewed_note(pool, "its launch settings changed") })
 }
 
 /// Most a spare's idle timer sleeps at once (`idle_until_expired`).
@@ -266,7 +277,7 @@ pub(super) async fn spawn_claude_keyed(
     key_for: impl FnOnce(&RunConfig, &[Value], &std::collections::BTreeSet<String>, &[mcp_host::Stdio]) -> Option<String> + Send + 'static,
 ) -> Result<Option<Spawned>, String> {
     config.cwd = external_path(&config.cwd);
-    // Read before the switch is: a switch-off after that read moves it (`discard_all`).
+    // Read before the switch is: a switch-off after that read moves it (`disable_all`).
     let discard_epoch = spares(&SPARES).discard_epoch;
     // Switches, settings and the reminder's skill scan are read off the runtime.
     let catalog = tools.clone();

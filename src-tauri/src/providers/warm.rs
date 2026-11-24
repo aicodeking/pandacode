@@ -11,8 +11,10 @@ mod key;
 mod spawn;
 mod stats;
 use self::key::{age_expired, miss};
-use self::stats::{cold_without_spare_note, decision, discarded_note, no_spare_note, record_adopted, record_lead_miss, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
-pub(super) use self::key::{key, lead_git_status_digest, lead_key};
+use self::stats::{decision, discarded_note, no_spare_note, record_adopted, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
+pub(super) use self::key::{key_fields, lead_git_status_digest, with_git_status};
+#[cfg(test)]
+pub(super) use self::key::{key, lead_key};
 pub use self::spawn::prewarm;
 #[cfg(test)]
 mod test_support;
@@ -85,7 +87,7 @@ pub(crate) async fn set_warm_spares_enabled(app: tauri::AppHandle, enabled: bool
     crate::blocking(move || crate::app_marker::set(&app, WARM_SPARES_OFF_FILE, !enabled)).await?;
     if !enabled {
         // Keep retirement on the runtime so each killed process registers its pending exit.
-        discard_all();
+        disable_all();
     }
     Ok(())
 }
@@ -111,7 +113,8 @@ pub type Renew = Arc<dyn Fn() -> bool + Send + Sync>;
 /// explorer switch, the task's agent-made tools), read at spawn and again when a lead spare
 /// expires: a renewal started on old inputs could never be adopted.
 type Inputs = Arc<dyn Fn() -> String + Send + Sync>;
-type Starting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>;
+/// A start: `Ok(true)` once its spare registered in the pool (`spawn::spawn_spare`).
+type Starting = std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>>;
 /// A started process for a spare: its warm key, the child, its group, its tool server and the
 /// pending exit that covers the time before the spare is registered (dropped right after).
 pub(super) struct Spawned {
@@ -157,7 +160,9 @@ pub(super) struct Spare {
 #[derive(Default)]
 struct Spares {
     spares: HashMap<String, Spare>,
-    /// Cancels whole renewal chains, including expired leads whose bounded `gone` note was cleared.
+    /// Moved only by a switch-off (`disable_all`): cancels whole renewal chains, including expired
+    /// leads whose bounded `gone` note was cleared, and keeps a launch keyed meanwhile from
+    /// counting a cold start. A settings discard (`discard_all`) leaves it.
     discard_epoch: u64,
     /// In-flight starts and expiry renewal checks, keyed by a token, so `quiesce_spares_in` can
     /// advance their launch epochs before they spawn or register, and `spawn_spare` caps each
@@ -287,7 +292,7 @@ pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
 }
 
 /// `take` for a caller that has just checked `enabled_now()` off the runtime (with its key).
-/// Switching spares off meanwhile empties the pool (`discard_all`), so nothing is adopted then.
+/// Switching spares off meanwhile empties the pool (`disable_all`), so nothing is adopted then.
 /// A spare that vanished meanwhile counts a cold launch (in the lead pool for a `lead` launch)
 /// only for an `ordinary_eligible` launch whose pool was not emptied by a switch-off since
 /// `prepare_launch` read `discard_epoch`.
@@ -437,53 +442,53 @@ pub(super) enum LaunchPool {
     /// A spare is pooled: key the launch off the runtime (with the working tree's git status when
     /// the pooled spare is a `lead` one), then `take_checked` with this epoch.
     Pooled { discard_epoch: u64, lead: bool },
-    /// None pooled. `may_record_cold`: an eligible launch with no lead `gone` note, whose cold start
-    /// `finish_empty_launch` counts (in the lead pool for a `lead` launch) once it has seen spares
-    /// on, off the runtime.
-    Empty { may_record_cold: bool, lead: bool },
+    /// None pooled. `gone`: the lead's pending reason its last spare left the pool, taken from the
+    /// pool here; `may_record_cold`: an eligible launch with no such note. `finish_empty_launch`
+    /// counts and logs either (a lead miss, or a cold start in the lead pool for a `lead` launch)
+    /// once it has seen spares on, off the runtime.
+    Empty { may_record_cold: bool, lead: bool, gone: Option<Gone> },
 }
 
 /// Counts the launch and says whether the task has a pooled spare worth keying it against, so a
 /// cold launch skips the warm key's config walk. With none, a lead's pending `gone` reason is
-/// logged as its miss; no file is read here, so this is safe on the async runtime. `lead`: the
-/// launch is a team lead's (it offers `pandacode_dispatch_workers`).
+/// taken (for `finish_empty_launch`, never logged here); no file is read, so this is safe on the
+/// async runtime. `lead`: the launch is a team lead's (it offers `pandacode_dispatch_workers`).
 pub(super) fn prepare_launch(session_id: &str, ordinary_eligible: bool, lead: bool) -> LaunchPool {
-    let (found, note) = prepare_launch_in(&SPARES, session_id, ordinary_eligible, lead);
-    if let Some(note) = note {
-        eprintln!("{note}");
-    }
-    found
+    prepare_launch_in(&SPARES, session_id, ordinary_eligible, lead)
 }
 
-fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool, lead: bool) -> (LaunchPool, Option<String>) {
+fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool, lead: bool) -> LaunchPool {
     let mut locked = spares(pool);
     // Lock order: SPARES before LAUNCHES (matching `register`), so no spare for the old launch can
     // register after this check. Advanced with a spare pooled too: a lead spare expiring during the
     // off-runtime key walk then sees a newer launch and is not renewed beside this one.
     launched(session_id);
     if let Some(spare) = locked.spares.get(session_id) {
-        return (LaunchPool::Pooled { discard_epoch: locked.discard_epoch, lead: spare.lead }, None);
+        return LaunchPool::Pooled { discard_epoch: locked.discard_epoch, lead: spare.lead };
     }
-    match locked.gone.remove(session_id) {
-        Some(why) => (LaunchPool::Empty { may_record_cold: false, lead }, Some(record_lead_miss(&mut locked, why))),
-        None => (LaunchPool::Empty { may_record_cold: ordinary_eligible, lead }, None),
-    }
+    let gone = locked.gone.remove(session_id);
+    LaunchPool::Empty { may_record_cold: ordinary_eligible && gone.is_none(), lead, gone }
 }
 
-/// A launch `prepare_launch` found no spare for: an eligible one (`may_record_cold`) is counted in
-/// its pool's `cold_without_spare` and logged only while spares are on, read off the runtime.
-pub(super) async fn finish_empty_launch(may_record_cold: bool, lead: bool) {
-    if let Some(note) = finish_empty_launch_with(&SPARES, may_record_cold, lead, enabled_off_runtime).await {
+/// A launch `prepare_launch` found no spare for: a lead's `gone` reason is counted and logged as
+/// its miss, and an eligible launch (`may_record_cold`) as a cold start in its pool, both only
+/// while spares are on (read off the runtime, so an unreadable switch says nothing either).
+pub(super) async fn finish_empty_launch(may_record_cold: bool, lead: bool, gone: Option<Gone>) {
+    if let Some(note) = finish_empty_launch_with(&SPARES, may_record_cold, lead, gone, enabled_off_runtime).await {
         eprintln!("{note}");
     }
 }
 
-/// `finish_empty_launch` with its switch read by `enabled`, which an ineligible launch never calls.
-async fn finish_empty_launch_with<Fut: std::future::Future<Output = bool>>(pool: &Pool, may_record_cold: bool, lead: bool, enabled: impl FnOnce() -> Fut) -> Option<String> {
-    if !may_record_cold || !enabled().await {
+/// `finish_empty_launch` with its switch read by `enabled`, which a launch with nothing to count
+/// or log never calls.
+async fn finish_empty_launch_with<Fut: std::future::Future<Output = bool>>(pool: &Pool, may_record_cold: bool, lead: bool, gone: Option<Gone>, enabled: impl FnOnce() -> Fut) -> Option<String> {
+    if !may_record_cold && gone.is_none() {
         return None;
     }
-    Some(cold_without_spare_note(&mut spares(pool), lead))
+    if !enabled().await {
+        return None;
+    }
+    no_spare_note(&mut spares(pool), gone, may_record_cold, lead)
 }
 
 /// Advance `session_id`'s launch epoch when it already has one, without forgetting the task
@@ -530,17 +535,35 @@ pub fn discard(session_id: &str) {
     discard_from(&SPARES, session_id);
 }
 
-/// Retire both pools and invalidate starts and expiry checks already in flight. The gone
-/// entries include a lead between expiry and renewal; advancing its epoch cancels that chain
-/// even if the user switches spares back on before the check finishes.
+/// A setting or CLI behind every spare changed (Colab's MCP, an agent update): retire both pools
+/// and invalidate starts and expiry checks already in flight (the gone entries include a lead
+/// between expiry and renewal). Spares stay on: `discard_epoch` and the leads' `gone` notes are
+/// kept, so launches keyed meanwhile still count and a lead's wake still reports its miss.
 pub fn discard_all() {
     discard_all_from(&SPARES);
 }
 
+/// Spares switched off: `discard_all`, plus moving `discard_epoch` (a launch keyed meanwhile
+/// counts no cold start, and every renewal chain ends even if spares come back on before its
+/// check finishes, `until_discarded`) and clearing every lead's `gone` note.
+fn disable_all() {
+    disable_all_from(&SPARES);
+}
+
 fn discard_all_from(pool: &Pool) {
+    retire_all_from(pool, false);
+}
+
+fn disable_all_from(pool: &Pool) {
+    retire_all_from(pool, true);
+}
+
+fn retire_all_from(pool: &Pool, disable: bool) {
     let removed = {
         let mut pool = spares(pool);
-        pool.discard_epoch = pool.discard_epoch.wrapping_add(1);
+        if disable {
+            pool.discard_epoch = pool.discard_epoch.wrapping_add(1);
+        }
         let affected: HashSet<String> = pool.spares.keys().chain(pool.gone.keys())
             .chain(pool.starting.values().map(|entry| &entry.session_id)).cloned().collect();
         {
@@ -559,7 +582,9 @@ fn discard_all_from(pool: &Pool) {
         let removed = ids.into_iter().filter_map(|id| pool.remove(&id, Gone::Discarded)
             .map(|(spare, pending)| (id, spare, pending))).collect::<Vec<_>>();
         // Spares are off: no lead's next launch may report a miss (or count one) for them.
-        pool.gone.clear();
+        if disable {
+            pool.gone.clear();
+        }
         removed
     };
     let (mut ordinary, mut lead) = (false, false);

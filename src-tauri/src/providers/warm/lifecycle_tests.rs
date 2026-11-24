@@ -141,6 +141,43 @@ async fn a_lead_spare_whose_launch_settings_changed_is_not_renewed() {
     assert_eq!(stub_starts(&session), 1, "a stale spare is never started again");
 }
 
+/// A stand-in for a spawn that declines (spares off, no warm key, an unreadable git status).
+fn declined_spawn(_: RunConfig, _: Vec<Value>, _: HashSet<String>, _: u64, _: bool) -> Spawning {
+    Box::pin(async { Ok(None) })
+}
+
+#[tokio::test]
+async fn a_renewal_that_never_pools_is_not_taken_for_renewed() {
+    let session = format!("warm-renew-skip-{}", uuid::Uuid::new_v4());
+    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+    let waiting: Renew = Arc::new(|| true);
+    launched(&session);
+    let launch = epoch(&session);
+    let renewal = |life: Lifecycle| start(life, config.clone(), Vec::new(), HashSet::new(), launch, lead(waiting.clone()), 1);
+    // The spawn declined: no spare, so the expiry still says the lead's spare expired idle.
+    let declined = Lifecycle { idle: Duration::from_secs(3600), spawn: declined_spawn, ..stub() };
+    let renewed = renewal(declined).await.unwrap();
+    assert!(!renewed && !waiting_in(declined.pool, &session));
+    let note = expiry_note(declined.pool, renewed, launch, epoch(&session), true);
+    assert!(note.as_deref().is_some_and(|line| line.starts_with("Team lead's warm Claude agent expired idle.")), "{note:?}");
+    // The lead pool's churn backoff skipped it: the same.
+    let cooling = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    for _ in 0..LEAD_LIMIT {
+        spares(cooling.pool).lead_churn.evicted(LEAD_LIMIT, std::time::Instant::now());
+    }
+    let renewed = renewal(cooling).await.unwrap();
+    assert!(!renewed && stub_starts(&session) == 0 && spares(cooling.pool).lead.churn_skipped == 1);
+    assert!(expiry_note(cooling.pool, renewed, launch, epoch(&session), true).is_some());
+    // A renewal that really pooled logs nothing, and neither does one a launch superseded.
+    let pooled = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
+    let renewed = renewal(pooled).await.unwrap();
+    assert!(renewed && waiting_in(pooled.pool, &session));
+    assert_eq!(expiry_note(pooled.pool, renewed, launch, epoch(&session), true), None);
+    assert_eq!(expiry_note(pooled.pool, false, launch, launch + 1, true), None);
+    discard_from(pooled.pool, &session);
+    await_exit(&session).await.unwrap();
+}
+
 /// Threads the renewal check ran on (`a_lead_spares_renewal_check_runs_off_the_runtime_thread`).
 static CHECK_THREADS: LazyLock<Mutex<Vec<std::thread::ThreadId>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 
@@ -538,7 +575,7 @@ async fn a_switch_off_keeps_counting_starts_still_in_flight() {
     let busy = busy_starts(life.pool, LIMIT, false);
     assert_eq!(in_flight(&spares(life.pool), "warm-cap-me", false), LIMIT);
     assert!(has_spare_in(life.pool, &folder));
-    discard_all_from(life.pool);
+    disable_all_from(life.pool);
     // Their tasks still run until the guards drop: a quick off → on must not start more.
     assert_eq!(in_flight(&spares(life.pool), "warm-cap-me", false), LIMIT, "cancelled starts still count");
     assert!(spares(life.pool).starting.values().all(|entry| entry.cancelled));
@@ -620,12 +657,11 @@ async fn a_spare_past_its_idle_on_the_wall_clock_is_never_adopted() {
 async fn a_leads_cold_launch_counts_in_the_lead_pool() {
     let pool = own_pool();
     let session = format!("warm-lead-cold-{}", uuid::Uuid::new_v4());
-    let (found, note) = prepare_launch_in(pool, &session, true, true);
-    assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: true });
-    assert_eq!(note, None);
-    let LaunchPool::Empty { may_record_cold, lead } = found else { unreachable!() };
+    let found = prepare_launch_in(pool, &session, true, true);
+    assert_eq!(found, LaunchPool::Empty { may_record_cold: true, lead: true, gone: None });
+    let LaunchPool::Empty { may_record_cold, lead, gone } = found else { unreachable!() };
     assert_eq!(
-        finish_empty_launch_with(pool, may_record_cold, lead, || async { true }).await.as_deref(),
+        finish_empty_launch_with(pool, may_record_cold, lead, gone, || async { true }).await.as_deref(),
         Some("Team lead's warm Claude agent not pooled; starting cold. Lead spares since launch: 0 started, 0 adopted, 0 not used, 0 expired, 0 evicted, 0 replaced, 0 discarded; 1 cold launches without a spare.")
     );
     // Its spare vanished during the key walk: still a lead cold launch.

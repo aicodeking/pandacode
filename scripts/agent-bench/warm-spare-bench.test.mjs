@@ -10,14 +10,18 @@ import { fileURLToPath } from 'node:url';
 import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
-  mcpConfigJson, parsePsArgs, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
+  mcpConfigJson, parsePsArgs, PARK_MS, runOnce, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
-  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'], stdioMcp: false });
+  assert.deepEqual(parseArgs([]), { pairs: 12, out: null, suites: ['default-minimal', 'default-user', 'privacy-minimal', 'privacy-user', 'offline-minimal', 'offline-user', 'default-resumed', 'privacy-resumed'], stdioMcp: false, parkMs: PARK_MS });
   assert.deepEqual(parseArgs(['--suites', 'privacy-resumed,default-resumed']).suites, ['privacy-resumed', 'default-resumed']);
   assert.deepEqual(parseArgs(['--suites', 'privacy-user,privacy-minimal']).suites, ['privacy-user', 'privacy-minimal']);
-  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'], stdioMcp: false });
+  assert.deepEqual(parseArgs(['--pairs', '3', '--out', 'x.json', '--suites', 'offline-user,default-minimal']), { pairs: 3, out: 'x.json', suites: ['offline-user', 'default-minimal'], stdioMcp: false, parkMs: PARK_MS });
+  assert.equal(parseArgs(['--park-ms', '3500']).parkMs, 3500);
+  assert.throws(() => parseArgs(['--park-ms', '0']), /--park-ms needs/);
+  assert.throws(() => parseArgs(['--park-ms', 'x']), /--park-ms needs/);
+  assert.throws(() => parseArgs(['--park-ms', '60001']), /--park-ms needs/);
   assert.equal(parseArgs(['--stdio-mcp', '--pairs', '5']).stdioMcp, true);
   assert.equal(parseArgs(['--pairs', '5', '--stdio-mcp']).pairs, 5);
   assert.throws(() => parseArgs(['--suites', 'user']), /default-minimal/);
@@ -463,4 +467,67 @@ test('summarize reports stdio MCP fields only when runs carry them', () => {
   assert.equal(s.warm.mcp_child_orphaned, 0);
   const plain = summarize([row(1, 'cold', 300, 20), row(1, 'warm', 50, 10)]);
   for (const key of ['idle_self_rss_mib', 'idle_mcp_child_rss_mib', 'idle_child_count', 'mcp_child_seen', 'mcp_child_orphaned']) assert.ok(!(key in plain.warm), key);
+});
+
+const MISSING = join(tmpdir(), 'warm-spare-bench-missing-claude', 'claude');
+
+for (const arm of ['cold', 'warm']) {
+  test(`runOnce records a spawn failure (ENOENT, ${arm}) instead of hanging, and leaves no timers or children`, { timeout: 10_000 }, async () => {
+    const before = openTimeouts();
+    const processes = () => process.getActiveResourcesInfo().filter(r => r === 'ProcessWrap').length;
+    const processesBefore = processes();
+    const started = performance.now();
+    const out = await runOnce({ arm, args: [], env: process.env, cwd: tmpdir(), command: MISSING, parkMs: 30_000 });
+    assert.ok(performance.now() - started < 5_000, 'settles on the spawn error, not the 30 s park or the 92 s result timeout');
+    assert.match(out.error, /spawn failed: ENOENT/);
+    assert.equal(out.result_ms, null);
+    assert.equal(out.exit_code, null);
+    assert.equal(openTimeouts(), before, 'the result timeout (and any park timer) was cleared');
+    // libuv closes the failed process handle asynchronously; it must go within a moment.
+    for (let i = 0; i < 100 && processes() > processesBefore; i++) await new Promise(resolve => setTimeout(resolve, 10));
+    assert.ok(processes() <= processesBefore, 'no child process handle left (an earlier test\'s child may close meanwhile)');
+  });
+}
+
+test('runOnce survives a child that exits before reading stdin (no unhandled EPIPE)', { timeout: 10_000 }, async () => {
+  const before = openTimeouts();
+  const unhandled = [];
+  const onError = error => unhandled.push(error);
+  process.on('uncaughtException', onError);
+  try {
+    const out = await runOnce({ arm: 'cold', args: ['-e', 'process.stdin.destroy(); process.exit(3)'], env: process.env, cwd: tmpdir(), command: process.execPath });
+    assert.match(out.error, /exited before result \(code 3/);
+    await new Promise(resolve => setTimeout(resolve, 50));
+  } finally { process.off('uncaughtException', onError); }
+  assert.deepEqual(unhandled, []);
+  assert.equal(openTimeouts(), before);
+});
+
+// A fake CLI that starts a stdio MCP lookalike (argv carries the serve flag) that ignores stdin EOF,
+// records its pid, and exits with an error on initialize: the errored run must still kill that child.
+const FAKE_CLAUDE = `
+const { spawn } = require('node:child_process');
+const { writeFileSync } = require('node:fs');
+const kid = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', ${JSON.stringify(STDIO_SERVE_FLAG)}], { stdio: 'ignore' });
+writeFileSync(process.argv[1], String(kid.pid));
+process.stdin.once('data', () => process.exit(1));
+`;
+
+test('runOnce kills a sampled stdio MCP child when the run errors', { timeout: 15_000, skip: process.platform === 'win32' && 'needs ps' }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'warm-spare-orphan-'));
+  const pidFile = join(dir, 'mcp.pid');
+  let kidPid = null;
+  try {
+    const out = await runOnce({ arm: 'warm', args: ['-e', FAKE_CLAUDE, pidFile], env: process.env, cwd: dir, stdioMcp: true, command: process.execPath, parkMs: 600 });
+    kidPid = Number(readFileSync(pidFile, 'utf8'));
+    assert.match(out.error, /exited before result \(code 1/);
+    assert.equal(out.mcp_child_count, 1, 'the lookalike was sampled while parked');
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const deadline = Date.now() + 2_000;
+    while (alive(kidPid) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal(alive(kidPid), false, 'the stdio MCP child did not outlive the errored run');
+  } finally {
+    if (kidPid) { try { process.kill(kidPid, 'SIGKILL'); } catch { /* gone */ } }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

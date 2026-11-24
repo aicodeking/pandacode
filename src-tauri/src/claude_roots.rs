@@ -202,6 +202,13 @@ fn commondir_of(gitdir: &Path) -> std::result::Result<Option<PathBuf>, &'static 
     Ok(Some(gitdir.join(common)))
 }
 
+/// Whether `root` is a linked worktree: its `.git` is a gitfile whose gitdir holds a `commondir`.
+/// A main checkout (`.git` folder), a submodule (gitfile without `commondir`) or an unreadable
+/// `.git` is not.
+pub(crate) fn is_linked_worktree_root(root: &Path) -> bool {
+    matches!(gitdir_of(root), Ok((gitdir, true)) if std::fs::symlink_metadata(gitdir.join("commondir")).is_ok())
+}
+
 /// Linked worktrees inherit the main checkout's local settings. Ordinary gitfiles (including
 /// submodules) have no commondir, and bare common repositories have no main checkout.
 pub(crate) fn linked_worktree_main_root(root: &Path) -> std::result::Result<Option<PathBuf>, &'static str> {
@@ -700,6 +707,27 @@ mod tests {
         std::fs::remove_file(admin.join("commondir")).unwrap();
         std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
         assert_eq!(linked_worktree_main_root(&worktree), Ok(None));
+    }
+
+    #[test]
+    fn only_a_gitfile_with_a_commondir_is_a_linked_worktree() {
+        let scratch = Scratch::new("is-linked");
+        let main = scratch.0.join("main");
+        let admin = main.join(".git").join("worktrees").join("wt");
+        let module = main.join(".git").join("modules").join("sub");
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(&module).unwrap();
+        std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+        let worktree = scratch.0.join("wt");
+        let submodule = main.join("sub");
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&submodule).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::write(submodule.join(".git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        assert!(is_linked_worktree_root(&worktree));
+        assert!(!is_linked_worktree_root(&main), "a `.git` folder is a main checkout");
+        assert!(!is_linked_worktree_root(&submodule), "a submodule's gitfile has no commondir");
+        assert!(!is_linked_worktree_root(&scratch.0), "no `.git` at all");
     }
 
     #[test]

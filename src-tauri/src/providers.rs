@@ -4619,6 +4619,21 @@ enum WarmKey {
     Key(String),
 }
 
+impl WarmKey {
+    /// The check's outcome once the off-runtime walk and a lead's `git status` (run side by side)
+    /// are both in: spares off first, then an unreadable status, then an unknowable config
+    /// folder. `walked`: `None` with spares off, else the key's fields (`warm::key_fields`);
+    /// `git_status`: `None` for an ordinary spare, else the lead's digest if it could be read.
+    fn of(walked: Option<Option<Value>>, git_status: Option<Option<String>>) -> Self {
+        match (walked, git_status) {
+            (None, _) => WarmKey::Disabled,
+            (Some(_), Some(None)) => WarmKey::NoGitStatus,
+            (Some(None), _) => WarmKey::NoKey,
+            (Some(Some(fields)), status) => WarmKey::Key(warm::with_git_status(fields, status.flatten().as_deref())),
+        }
+    }
+}
+
 /// Errors carry no relay key redaction here: `run_inner` redacts every error of the run once.
 async fn run_process_launch(
     config: RunConfig,
@@ -4650,22 +4665,18 @@ async fn run_process_launch(
             let is_lead = tools.tools.iter().any(|tool| tool["name"].as_str() == Some("pandacode_dispatch_workers"));
             match warm::prepare_launch(&config.session_id, ordinary_eligible, is_lead) {
                 warm::LaunchPool::Pooled { discard_epoch, lead } => {
-                    // A lead spare is keyed by the working tree's `gitStatus` too (git runs off
-                    // the runtime); an unknown status adopts nothing.
-                    let git_status = if lead { Some(warm::lead_git_status_digest(&config.cwd).await) } else { None };
                     // The switch and the key read files (the key: the task's switches and saved
                     // settings), so both run off the runtime. Never abort a turn over a warm key.
                     // `discard_epoch` keeps a switch-off during this check from counting a cold launch.
                     let (keyed, catalog) = (config.clone(), tools.tools.clone());
-                    let outcome = crate::blocking(move || {
-                        Ok(match git_status {
-                            _ if !warm::enabled_now() => WarmKey::Disabled,
-                            Some(None) => WarmKey::NoGitStatus,
-                            Some(Some(status)) => warm::lead_key(&keyed, &catalog, &status).map_or(WarmKey::NoKey, WarmKey::Key),
-                            None => warm::key(&keyed, &catalog).map_or(WarmKey::NoKey, WarmKey::Key),
-                        })
-                    })
-                    .await;
+                    let walk = crate::blocking(move || Ok(warm::enabled_now().then(|| warm::key_fields(&keyed, &catalog))));
+                    // A lead spare is keyed by the working tree's `gitStatus` too (git runs off the
+                    // runtime, bounded, beside the walk); an unknown status adopts nothing.
+                    let git = async {
+                        if lead { Some(warm::lead_git_status_digest(&config.cwd).await) } else { None }
+                    };
+                    let (walked, git_status) = tokio::join!(walk, git);
+                    let outcome = walked.map(|walked| WarmKey::of(walked, git_status));
                     match outcome {
                         Ok(WarmKey::Key(key)) => warm::take_checked(&config.session_id, &key, ordinary_eligible, is_lead, discard_epoch),
                         Ok(WarmKey::Disabled) => {
@@ -4689,8 +4700,8 @@ async fn run_process_launch(
                     }
                 }
                 // Counted and logged only while spares are on: with them off a launch says nothing.
-                warm::LaunchPool::Empty { may_record_cold, lead } => {
-                    warm::finish_empty_launch(may_record_cold, lead).await;
+                warm::LaunchPool::Empty { may_record_cold, lead, gone } => {
+                    warm::finish_empty_launch(may_record_cold, lead, gone).await;
                     None
                 }
             }

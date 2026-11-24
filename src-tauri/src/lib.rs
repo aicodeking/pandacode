@@ -2535,8 +2535,9 @@ async fn launch_operation_admitted(
         };
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
-        // architect's, whose review turn starts as soon as they settle.
-        let warm_next = (providers::warm_spares_on(&app) && lead_spare::starts_spare(&config, managed_worker, cloud, compacts)).then(|| {
+        // architect's, whose review turn starts as soon as they settle. The off switch (a file
+        // read) is checked once, by `launch_host::start_spare`, not here on the async runtime.
+        let warm_next = lead_spare::starts_spare(&config, managed_worker, cloud, compacts).then(|| {
             let tools = host.as_ref().map(|host| (host.tools.clone(), host.approval_tools.clone())).unwrap_or_default();
             (config.clone(), tools)
         });
