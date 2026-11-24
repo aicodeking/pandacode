@@ -1,9 +1,9 @@
-//! Each pool's lifecycle: hits, misses and cold launches counted in the right pool, lead renewals,
-//! the cap on starts in flight and the round-robin churn backoff.
+//! Each pool's lifecycle: hits, misses and cold launches counted in the right pool, lead renewals
+//! and the cap on starts in flight (the churn backoff is in `churn_tests`).
 use super::*;
 use super::key::*;
 use super::spawn::*;
-use super::stats::{expired_note, not_renewed_note, CHURN_COOLDOWN, EXPIRY_BACKOFF_STREAK, EXPIRY_COOLDOWN};
+use super::stats::{expired_note, not_renewed_note};
 use super::test_support::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -573,6 +573,19 @@ async fn a_renewal_holding_its_own_token_is_not_capped_by_it() {
     await_exit(&session).await.unwrap();
 }
 
+#[test]
+fn another_tasks_renewal_counts_once_against_the_cap() {
+    let pool = own_pool();
+    let other = format!("warm-cap-renewing-{}", uuid::Uuid::new_v4());
+    // Its expiry token and its renewal's own start token: one process starting.
+    let expiry = InFlight::enter(pool, other.clone(), std::env::temp_dir(), true);
+    let renewal = InFlight::enter(pool, other, std::env::temp_dir(), true);
+    assert_eq!(in_flight(&spares(pool), "warm-cap-me", true), 1);
+    assert_eq!(in_flight(&spares(pool), "warm-cap-me", false), 0, "the ordinary pool counts its own");
+    drop((expiry, renewal));
+    assert_eq!(in_flight(&spares(pool), "warm-cap-me", true), 0);
+}
+
 #[tokio::test]
 async fn an_adoption_counts_only_once_the_launch_commits_to_its_spare() {
     let pool = own_pool();
@@ -620,120 +633,6 @@ async fn a_switch_off_keeps_counting_starts_still_in_flight() {
     drop(busy);
     assert_eq!(in_flight(&spares(life.pool), "warm-cap-me", false), 0);
     assert!(spares(life.pool).starting.is_empty(), "each guard removes its own entry");
-}
-
-#[test]
-fn a_pools_churn_backoff_starts_at_its_limit_and_lapses() {
-    let now = std::time::Instant::now();
-    let mut churn = PoolChurn::default();
-    churn.evicted(2, now);
-    assert!(!churn.cooling(now), "one eviction is ordinary turnover");
-    churn.evicted(2, now);
-    assert!(churn.cooling(now), "two in a row with no adoption between back off");
-    assert!(churn.cooling(now + CHURN_COOLDOWN / 2));
-    assert!(!churn.cooling(now + CHURN_COOLDOWN), "a lapsed backoff probes again");
-    assert_eq!(churn, PoolChurn::default(), "and starts a fresh streak");
-}
-
-#[test]
-fn unused_expiries_in_a_row_back_off_until_the_cooldown_lapses() {
-    let now = std::time::Instant::now();
-    let mut churn = PoolChurn::default();
-    for _ in 1..EXPIRY_BACKOFF_STREAK {
-        churn.expired(now);
-        assert!(!churn.cooling(now), "a follow-up that missed the window is ordinary");
-    }
-    churn.expired(now);
-    assert!(churn.cooling(now), "{EXPIRY_BACKOFF_STREAK} unused in a row with no adoption between back off");
-    assert!(churn.cooling(now + CHURN_COOLDOWN), "for longer than an eviction backoff");
-    assert!(!churn.cooling(now + EXPIRY_COOLDOWN), "a lapsed backoff probes again");
-    assert_eq!(churn, PoolChurn::default(), "and starts fresh streaks");
-    // An eviction backoff never shortens a longer expiry backoff already set.
-    let mut both = PoolChurn::default();
-    for _ in 0..EXPIRY_BACKOFF_STREAK {
-        both.expired(now);
-    }
-    both.evicted(1, now);
-    assert_eq!(both.churn_cooldown_until, now.checked_add(EXPIRY_COOLDOWN));
-}
-
-#[tokio::test]
-async fn unused_expiries_back_off_each_pool_apart_and_an_adoption_clears_it() {
-    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
-    let session = format!("warm-expiry-churn-{}", uuid::Uuid::new_v4());
-    let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
-    let turn = || {
-        launched(&session);
-        start(life, config.clone(), Vec::new(), HashSet::new(), epoch(&session), None, 0)
-    };
-    // Each spare waits out its window unused.
-    for _ in 0..EXPIRY_BACKOFF_STREAK {
-        assert!(turn().await.unwrap());
-        let born = spares(life.pool).spares.get(&session).map(|spare| spare.born).expect("pooled");
-        let (spare, pending) = take_expired(life.pool, &session, born).expect("expired");
-        retire(&session, spare, pending);
-    }
-    {
-        let locked = spares(life.pool);
-        assert_eq!(locked.ordinary.expired, u64::from(EXPIRY_BACKOFF_STREAK));
-        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
-        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
-    }
-    assert!(!turn().await.unwrap(), "no spare starts while the pool backs off");
-    assert_eq!(stub_starts(&session), EXPIRY_BACKOFF_STREAK);
-    assert_eq!(spares(life.pool).ordinary.churn_skipped, 1);
-    // A lead spare still starts in its own pool.
-    let lead_session = format!("warm-expiry-churn-lead-{}", uuid::Uuid::new_v4());
-    let lead_config = RunConfig { session_id: lead_session.clone(), ..crate::providers::tests::config("claude") };
-    launched(&lead_session);
-    assert!(start(life, lead_config, Vec::new(), HashSet::new(), epoch(&lead_session), lead(Arc::new(|| true)), 0).await.unwrap());
-    // A launch adopting a spare ends the backoff at once.
-    let evicted = admit(&mut spares(life.pool), session.clone(), idle_spare(false, Duration::ZERO));
-    assert!(evicted.is_empty());
-    let (adopted, note) = take_in(life.pool, &session, "launch", true);
-    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
-    assert_eq!(spares(life.pool).ordinary_churn, PoolChurn::default());
-    drop(adopted);
-    assert!(turn().await.unwrap(), "an adoption clears the backoff");
-    for id in [&session, &lead_session] {
-        discard_from(life.pool, id);
-        await_exit(id).await.unwrap();
-    }
-}
-
-#[tokio::test]
-async fn round_robin_turns_back_off_and_an_adoption_clears_the_backoff() {
-    let life = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
-    let id = |name: &str| format!("warm-churn-{name}-{}", uuid::Uuid::new_v4());
-    let (a, b, c) = (id("a"), id("b"), id("c"));
-    let turn = |session: &String| {
-        let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
-        launched(session);
-        start(life, config, Vec::new(), HashSet::new(), epoch(session), None, 0)
-    };
-    // A → B → C → A → B → C: each new spare evicts the next task's, which is never adopted.
-    for session in [&a, &b, &c, &a, &b, &c] {
-        turn(session).await.unwrap();
-    }
-    assert_eq!((stub_starts(&a), stub_starts(&b), stub_starts(&c)), (2, 1, 1), "after two evictions in a row no doomed spare starts");
-    {
-        let locked = spares(life.pool);
-        assert_eq!(locked.ordinary.evicted, 2);
-        assert_eq!(locked.ordinary.churn_skipped, 2);
-        assert!(locked.ordinary_churn.churn_cooldown_until.is_some());
-        assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
-    }
-    // C's turn comes and adopts its spare: the backoff ends at once.
-    let (adopted, note) = take_in(life.pool, &c, "stub", true);
-    assert!(adopted.is_some() && note.as_deref().is_some_and(|line| line.starts_with("Warm Claude agent adopted.")), "{note:?}");
-    assert_eq!(spares(life.pool).ordinary_churn, PoolChurn::default());
-    turn(&b).await.unwrap();
-    assert_eq!(stub_starts(&b), 2, "an adoption clears the backoff");
-    drop(adopted);
-    for session in [&a, &b, &c] {
-        discard_from(life.pool, session);
-        await_exit(session).await.unwrap();
-    }
 }
 
 #[tokio::test]

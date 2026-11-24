@@ -102,7 +102,7 @@ const LIMIT: usize = 2;
 const LEAD_LIMIT: usize = 2;
 /// An expired lead spare is started again at most this many times in a row, so one lead holds
 /// an idle CLI process for at most `(1 + MAX_RENEWALS) × IDLE` (30 minutes). Each spare is a
-/// whole idle Claude Code process (about 210–255 MiB resident on Claude Code 2.1.325,
+/// whole idle Claude Code process (about 195–255 MiB resident on Claude Code 2.1.325,
 /// docs/worker-tokens.md), so the chain stays short.
 const MAX_RENEWALS: u32 = 2;
 
@@ -174,7 +174,7 @@ struct Spares {
     /// line (docs/worker-tokens.md) and `warm_spare_stats`.
     lead: PoolStats,
     ordinary: PoolStats,
-    /// Each pool's eviction and unused-expiry streaks and backoff (`spawn_spare`).
+    /// Each pool's eviction, unused-expiry and launch-time miss streaks and backoff (`spawn_spare`).
     lead_churn: PoolChurn,
     ordinary_churn: PoolChurn,
 }
@@ -201,13 +201,12 @@ impl Spares {
         let spare = self.spares.remove(session_id)?;
         let pending = pending_in_cwd(session_id, spare.cwd.clone());
         self.stats_mut(spare.lead).count(why);
-        match why {
-            Gone::Evicted => {
-                let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
-                self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
-            }
-            Gone::Expired => self.churn_mut(spare.lead).expired(std::time::Instant::now()),
-            Gone::Discarded | Gone::Replaced => {}
+        // An expiry joins the expiry streak only once its spare settles unused with spares on
+        // and unrenewed (`spawn::settle_expiry`, `spawn::settle_lead_expiry`): a lead's whole
+        // renewal chain counts once, and an expiry with spares off counts nothing.
+        if why == Gone::Evicted {
+            let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
+            self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
         }
         if spare.lead {
             if self.gone.len() >= GONE_LIMIT {
@@ -763,6 +762,9 @@ mod tests;
 mod key_tests;
 #[cfg(test)]
 mod lifecycle_tests;
+/// Each pool's eviction, unused-expiry and launch-time miss backoff.
+#[cfg(test)]
+mod churn_tests;
 
 /// Regression coverage for the warm-spare switch and retirement races.
 #[cfg(test)]

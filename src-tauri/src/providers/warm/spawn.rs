@@ -2,7 +2,7 @@
 //! lead's renewals when its spare expires.
 use super::*;
 use super::key::{key_fields_with_disabled, prepared, without_git_status};
-use super::stats::{discarded_note_locked, expired_note, not_renewed_note};
+use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_unused_expiry};
 use std::time::{Instant, SystemTime};
 
 pub(super) fn claude() -> Lifecycle {
@@ -167,9 +167,12 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         let Some((expired, pending, renewing)) = take_expired_for_renewal(life.pool, &session_id, born, renewal.is_some()) else { return };
         let lead = expired.lead;
         retire(&session_id, expired, pending);
-        // Expiry is already counted by its removal; the line only reports the totals.
+        // Its removal counted it as expired; only with spares on does it also join the pool's
+        // expiry streak and log its line.
         let Some((renew, inputs, spawned, config, tools, approvals)) = renewal else {
-            eprintln!("{}", expired_note(life.pool, lead));
+            if let Some(note) = settle_expiry(life.pool, lead, enabled_off_runtime().await) {
+                eprintln!("{note}");
+            }
             return;
         };
         let session = session_id.clone();
@@ -200,7 +203,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
             }
             _ => false,
         };
-        if let Some(note) = expiry_note(life.pool, renewed, launch, epoch(&session), expiry) {
+        if let Some(note) = settle_lead_expiry(life.pool, renewed, launch, epoch(&session), expiry) {
             eprintln!("{note}");
         }
         // The old token overlaps `start`'s own guard through its entire handoff.
@@ -220,13 +223,39 @@ pub(super) enum Expiry {
     Off,
 }
 
+/// An ordinary spare that expired unused: with spares on (`enabled`), one more toward its pool's
+/// expiry backoff and its line; switched off (a headless host's marker), it counts and says nothing.
+pub(super) fn settle_expiry(pool: &Pool, lead: bool, enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    record_unused_expiry(pool, lead);
+    Some(expired_note(pool, lead))
+}
+
+/// Whether an expired lead spare ended its renewal chain unused: no renewal pooled, spares are on,
+/// and no launch superseded it (`epoch` still `launch`). Renewals in between never count, so a
+/// whole unadopted chain is one expiry toward the lead pool's backoff.
+pub(super) fn chain_ended_unused(renewed: bool, launch: u64, epoch: u64, expiry: Expiry) -> bool {
+    !renewed && expiry != Expiry::Off && launch != 0 && epoch == launch
+}
+
+/// An expired lead spare once its renewal check is done: a chain that ended unused
+/// (`chain_ended_unused`) counts once toward the lead pool's expiry backoff, then `expiry_note`.
+pub(super) fn settle_lead_expiry(pool: &Pool, renewed: bool, launch: u64, epoch: u64, expiry: Expiry) -> Option<String> {
+    if chain_ended_unused(renewed, launch, epoch, expiry) {
+        record_unused_expiry(pool, true);
+    }
+    expiry_note(pool, renewed, launch, epoch, expiry)
+}
+
 /// What an expired lead spare logs once its renewal check is done. Nothing when its renewal
 /// pooled (`renewed`), when a launch superseded it (`epoch` moved on from `launch`; that
 /// launch's own log reports `it expired`), or when spares are switched off. Otherwise, also when
 /// its renewal was skipped or refused, the spare simply expired idle: say so (and why) even if
 /// the wake never comes.
 pub(super) fn expiry_note(pool: &Pool, renewed: bool, launch: u64, epoch: u64, expiry: Expiry) -> Option<String> {
-    if renewed || launch == 0 || epoch != launch {
+    if !chain_ended_unused(renewed, launch, epoch, expiry) {
         return None;
     }
     match expiry {
@@ -254,10 +283,17 @@ async fn idle_until_expired(life: Lifecycle, session_id: &str, born: Instant, bo
     }
 }
 
-/// Other tasks' starts (and lead renewal checks) in flight for the ordinary or lead pool,
-/// cancelled ones included: their tasks run until their guards drop.
+/// Other tasks with a start (or lead renewal check) in flight for the ordinary or lead pool,
+/// cancelled ones included: their tasks run until their guards drop. Each task counts once: a
+/// lead's renewal holds its expiry token through its own start, still one process starting, so
+/// two teams whose spares expire together never cut each other's chains short.
 pub(super) fn in_flight(pool: &Spares, session_id: &str, lead: bool) -> usize {
-    pool.starting.values().filter(|entry| entry.lead == lead && entry.session_id != session_id).count()
+    pool.starting
+        .values()
+        .filter(|entry| entry.lead == lead && entry.session_id != session_id)
+        .map(|entry| entry.session_id.as_str())
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 /// Claude Code's process for a spare, with a placeholder tool server; `None` for a launch

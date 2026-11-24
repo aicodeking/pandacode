@@ -316,13 +316,20 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   started remotely on this computer.
 - **Warm Claude spares (on by default).** Settings → Agents → **Warm Claude spares**
   keeps idle Claude Code processes ready after successful turns, up to 4 in total
-  (2 ordinary and 2 for team leads), about 210–255 MiB each on short sessions (measured
-  seconds after start; long histories, plugins or extra MCP servers, including stdio MCP
-  child processes, use more). Starts pause for 5 minutes when spares keep being evicted
-  unused, and for 30 minutes after 3 spares in a row expire unused. An ordinary spare's
+  (2 ordinary and 2 for team leads), about 195–255 MiB each on short sessions (measured
+  on Claude Code 2.1.325 after 2–3.5 s of idling, from resumed one-turn sessions to a
+  full user config; RSS after up to 10 idle minutes is unmeasured, and long histories,
+  plugins or extra MCP servers, including stdio MCP child processes, use more). Starts
+  pause for 5 minutes when spares keep being evicted unused or after 3 launches in a row
+  miss their spare (`not used`), and for 30 minutes after 3 spares in a row expire unused
+  (a team lead's whole renewal chain counts as one expiry, and expiries while spares are
+  off do not count); any adoption ends the pause. An ordinary spare's
   uncommitted `git status` can be up to 10 minutes old when adopted; lead spares serve
   only teams whose live workers are all read-only (such as Council reviews) and verify
-  `git status` when adopted. This launch's totals (adopted, started, expired, not used and paused) show in Settings → Agents. The off setting is the empty `warm-spares-off` file
+  `git status` when adopted. This launch's totals (adopted/started, plus not used, expired,
+  evicted, replaced, discarded, cold and paused when nonzero, ordinary and lead spares
+  separately) show in Settings → Agents. Unused spares are stopped with `SIGKILL`, so your
+  `SessionEnd` hooks do not run for them (see the note below). The off setting is the empty `warm-spares-off` file
   in PandaCode's app data (unreadable also means off). Background traffic: see the
   note below this list and [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a
@@ -347,7 +354,9 @@ login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless
 **Turn off agent telemetry** is on), starts the user and project MCP servers
 configured in Claude Code (remote MCP servers connect when the spare starts),
 and runs your `SessionStart` hooks, which may run commands or make network
-requests of their own. No prompt is sent (verified with a local loopback stub:
+requests of their own. A spare that is never used is stopped with `SIGKILL`, so
+your `SessionEnd` hooks do **not** run for it; if you rely on paired
+`SessionStart`/`SessionEnd` hooks, turn Warm Claude spares off. No prompt is sent (verified with a local loopback stub:
 no Messages API call is made until you send a message; live Claude sign-in
 startup traffic was not measured). Nothing starts while Settings → Agents →
 **Warm Claude spares** is off, and turning it off stops idle spares at once.

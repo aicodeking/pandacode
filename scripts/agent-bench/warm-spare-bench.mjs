@@ -546,7 +546,7 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
     if (stdioMcp) {
       if (arm === 'cold') mcpPids = []; // sampled only while parked
       out.mcp_child_orphaned = await anyOrphaned(mcpPids);
-      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(mcpPids); }
+      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(mcpPids.filter(alive)); }
     }
   } catch (error) {
     out.error = `${error.message}; stderr: ${stderr.slice(-300)}`;

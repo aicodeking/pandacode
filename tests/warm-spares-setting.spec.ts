@@ -5,9 +5,11 @@ const settings = (page: Page) => page.getByRole('region', { name: 'Settings', ex
 const toggle = (page: Page) => settings(page).getByRole('checkbox', { name: 'Warm Claude spares', exact: true });
 const status = (page: Page) => settings(page).locator('.setting-row:has(#warm-spares) .setting-status');
 const hint = (page: Page) => settings(page).locator('.setting-row:has(#warm-spares) .sr-only');
-/** Lets every pending preview `invoke` settle: its promise chains resolve within a frame. */
+/** Lets an answered preview `invoke` reach its caller: its promise chain resolves within a frame. */
 const settle = (page: Page) => page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-const TOTALS = 'This launch: 3/6 adopted, 1 not used, 2 expired, 1 cold · lead 1/1 adopted';
+const TOTALS = 'This launch: 3/7 adopted, 1 not used, 2 expired, 1 replaced, 1 cold · lead 1/1 adopted';
+/** How many `warm_spare_stats` reads the preview has answered since the page loaded. */
+const statsReads = (page: Page) => page.locator('html');
 
 async function openAgents(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -22,7 +24,7 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).toBeChecked();
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
-  for (const disclosure of ['~0.17–1.71 s', 'Turn off agent telemetry', '~210–255 MiB', 'up to 4', 'MCP servers', 'SessionStart', 'all read-only', '10 min old']) {
+  for (const disclosure of ['~0.17–1.71 s', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', 'up to 4', 'MCP servers', 'SessionStart', 'SessionEnd', 'misses', 'all read-only', '10 min old']) {
     await expect(hint(page)).toContainText(disclosure);
   }
   // This launch's local totals sit on the row's status line, which is not an alert.
@@ -50,15 +52,19 @@ test('a refused save puts the warm spares switch back and says why', async ({ pa
   await expect(toggle(page)).toBeEnabled();
   await expect(toggle(page)).toBeChecked();
   await expect(status(page)).toHaveText('This launch: no spares started yet.');
-  // The re-read after the refused save now returns totals, so a re-read that covered the alert would show them.
-  await page.evaluate(() => history.replaceState(history.state, '', '/?warm-spares-fail&warm-spares-stats'));
+  await expect(statsReads(page)).toHaveAttribute('data-preview-warm-stats-reads', '1');
+  // The re-read after the refused save now returns totals, late, after the alert is up, so a
+  // re-read that covered the alert would show them.
+  await page.evaluate(() => history.replaceState(history.state, '', '/?warm-spares-fail&warm-spares-stats&warm-spares-stats-delayed'));
   await toggle(page).click();
   await expect(toggle(page)).toBeChecked();
   await expect(settings(page).getByRole('alert')).toHaveText('Could not save the setting.');
   // The error replaces the launch totals on the status line.
   await expect(status(page)).toHaveText('Could not save the setting.');
-  // The totals re-read after the save never cover the alert: let it settle, then look again.
+  // The delayed totals re-read after the save never covers the alert: wait until the preview has
+  // answered it and its result has reached the row, then look again.
   await expect(toggle(page)).toBeEnabled();
+  await expect(statsReads(page)).toHaveAttribute('data-preview-warm-stats-reads', '2');
   await settle(page);
   await expect(status(page)).toHaveText('Could not save the setting.');
   await expect(status(page)).toHaveAttribute('role', 'alert');

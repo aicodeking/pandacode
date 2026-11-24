@@ -61,16 +61,23 @@ impl PoolStats {
 /// round-robin, each pushing out the next one's spare), it starts none for this long.
 pub(super) const CHURN_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// After this many of a pool's spares in a row expire unused with no adoption between (follow-ups
-/// that rarely come within `IDLE`), it starts none for `EXPIRY_COOLDOWN`.
+/// that rarely come within `IDLE`), it starts none for `EXPIRY_COOLDOWN`. A lead's renewal chain
+/// counts once, when it ends unadopted, and an expiry with spares off counts nothing.
 pub(super) const EXPIRY_BACKOFF_STREAK: u32 = 3;
 pub(super) const EXPIRY_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+/// After this many launches in a row find their pool's pooled spare unusable with no adoption
+/// between (parallel tasks committing between each other's turns, so every follow-up misses on
+/// `gitHead`), it starts none for `CHURN_COOLDOWN`.
+pub(super) const MISS_BACKOFF_STREAK: u32 = 3;
 
-/// A pool's evictions and unused expiries since its last adoption, and the backoff they set
-/// (`CHURN_COOLDOWN`, `EXPIRY_COOLDOWN`). An adoption or a lapsed backoff clears both streaks.
+/// A pool's evictions, unused expiries and launch-time misses since its last adoption, and the
+/// backoff they set (`CHURN_COOLDOWN`, `EXPIRY_COOLDOWN`). An adoption or a lapsed backoff clears
+/// every streak.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PoolChurn {
     pub(super) consecutive_evictions: u32,
     pub(super) consecutive_expiries: u32,
+    pub(super) consecutive_misses: u32,
     pub(super) churn_cooldown_until: Option<Instant>,
 }
 
@@ -83,11 +90,21 @@ impl PoolChurn {
         }
     }
 
-    /// One more spare expired unadopted; at `EXPIRY_BACKOFF_STREAK` in a row the pool backs off.
+    /// One more spare (or a lead's whole renewal chain) expired unused with spares on; at
+    /// `EXPIRY_BACKOFF_STREAK` in a row the pool backs off.
     pub(super) fn expired(&mut self, now: Instant) {
         self.consecutive_expiries = self.consecutive_expiries.saturating_add(1);
         if self.consecutive_expiries >= EXPIRY_BACKOFF_STREAK {
             self.back_off(now, EXPIRY_COOLDOWN);
+        }
+    }
+
+    /// One more launch found its pooled spare unusable; at `MISS_BACKOFF_STREAK` in a row the
+    /// pool backs off for `CHURN_COOLDOWN` (never shortening a longer backoff already set).
+    pub(super) fn missed(&mut self, now: Instant) {
+        self.consecutive_misses = self.consecutive_misses.saturating_add(1);
+        if self.consecutive_misses >= MISS_BACKOFF_STREAK {
+            self.back_off(now, CHURN_COOLDOWN);
         }
     }
 
@@ -127,13 +144,25 @@ fn line(locked: &Spares, lead: bool, message: &str) -> String {
     format!("{message} {pool} spares since launch: {} started, {} adopted, {} not used, {} expired, {} evicted, {} replaced, {} discarded; {} cold launches without a spare.", s.started, s.adopted, s.missed, s.expired, s.evicted, s.replaced, s.discarded, s.cold_without_spare)
 }
 
-/// A launch's adoption log line, counted as adopted (`None`) or not used in its pool's totals.
+/// A launch's adoption log line, counted as adopted (`None`) or not used in its pool's totals. A
+/// launch-time miss against a pooled spare also joins its pool's miss streak (`PoolChurn::missed`);
+/// a lead wake whose spare had already left the pool (`record_lead_miss`) does not.
 pub(super) fn decision(pool: &Pool, lead: bool, miss: Option<&str>) -> String {
-    record_decision(&mut spares(pool), lead, miss)
+    let mut locked = spares(pool);
+    if miss.is_some() {
+        locked.churn_mut(lead).missed(Instant::now());
+    }
+    record_decision(&mut locked, lead, miss)
+}
+
+/// A spare (or a lead's whole renewal chain) that expired unused with spares on and was not
+/// renewed: one more toward its pool's expiry backoff (`PoolChurn::expired`).
+pub(super) fn record_unused_expiry(pool: &Pool, lead: bool) {
+    spares(pool).churn_mut(lead).expired(Instant::now());
 }
 
 /// A launch that committed to its spare (`Adopting::into_parts`): counted as adopted, which also
-/// ends the pool's eviction streak and any churn backoff.
+/// ends the pool's eviction, expiry and miss streaks and any churn backoff.
 pub(super) fn record_adopted(pool: &Pool, lead: bool) -> String {
     let mut locked = spares(pool);
     *locked.churn_mut(lead) = PoolChurn::default();

@@ -101,7 +101,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Skips Claude Code’s cold start between turns (~0.17–1.71 s; Turn off agent telemetry already removes ~1.5 s of it for free). Keeps idle Claude Code processes ready (~210–255 MiB each on short sessions, sampled after 2–3.5 s idle; more with long histories or extra MCP servers; up to 4); each starts your MCP servers, runs SessionStart hooks early and makes Claude Code’s startup requests. Pauses automatically after repeated unused expiries or evictions. Lead spares serve only teams whose workers are all read-only, such as Council reviews. Branch switches and commits start fresh; an ordinary spare’s uncommitted git status can be up to 10 min old.' },
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Skips Claude Code’s cold start between turns (~0.17–1.71 s; Turn off agent telemetry already removes ~1.5 s without idle processes). Keeps idle Claude Code processes ready (~195–255 MiB each on short sessions, sampled after 2–3.5 s idle; more with long histories or extra MCP servers; up to 4); each starts your MCP servers, runs SessionStart hooks early (unused spares are killed with SIGKILL, so SessionEnd hooks do not run) and makes Claude Code’s startup requests. Pauses automatically after repeated unused expiries, misses or evictions. Lead spares serve only teams whose workers are all read-only, such as Council reviews. Branch switches and commits start fresh; an ordinary spare’s uncommitted git status can be up to 10 min old.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
@@ -130,12 +130,13 @@ const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(
 
 /** This launch's spare adoption: the ordinary pool first, then the lead pool on its own, so a lead
  * miss is never counted as an ordinary one. Adoption shows against spares started, and unused
- * expiries, evictions, discards and churn pauses are named, so waste never reads as zero.
+ * expiries, evictions, replacements, discards and churn pauses are named, so waste never reads as zero.
  * Dock and Finder launches keep no stderr. */
 function warmStatsCaption(snapshot: WarmStatsSnapshot): string {
   const pool = (stats: WarmPoolStats | undefined) => ({
     started: count(stats?.started), adopted: count(stats?.adopted), missed: count(stats?.missed),
-    expired: count(stats?.expired), evicted: count(stats?.evicted), discarded: count(stats?.discarded),
+    expired: count(stats?.expired), evicted: count(stats?.evicted), replaced: count(stats?.replaced),
+    discarded: count(stats?.discarded),
     cold: count(stats?.coldWithoutSpare), churnSkipped: count(stats?.churnSkipped),
   });
   const ordinary = pool(snapshot?.ordinary), lead = pool(snapshot?.lead);
@@ -146,6 +147,7 @@ function warmStatsCaption(snapshot: WarmStatsSnapshot): string {
       p.missed > 0 ? `${p.missed} not used` : '',
       p.expired > 0 ? `${p.expired} expired` : '',
       p.evicted > 0 ? `${p.evicted} evicted` : '',
+      p.replaced > 0 ? `${p.replaced} replaced` : '',
       p.discarded > 0 ? `${p.discarded} discarded` : '',
       p.cold > 0 ? `${p.cold} cold` : '',
       p.churnSkipped > 0 ? `${p.churnSkipped} paused` : '',

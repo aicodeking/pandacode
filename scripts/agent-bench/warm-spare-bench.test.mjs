@@ -605,3 +605,10 @@ test('runOnce kills a sampled stdio MCP child when the run errors', { timeout: 1
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('runOnce only SIGKILLs sampled stdio MCP PIDs that are still alive (a reused PID is never hit)', () => {
+  const source = readFileSync(new URL('./warm-spare-bench.mjs', import.meta.url), 'utf8');
+  const calls = [...source.matchAll(/\bkillPids\(([^;]*?)\);/g)].map(m => m[1]);
+  assert.ok(calls.length >= 2, 'both the orphan and the error path kill sampled MCP children');
+  for (const arg of calls) assert.equal(arg, 'mcpPids.filter(alive)', `killPids(${arg}) must filter to live PIDs`);
+});

@@ -385,14 +385,20 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   your approval or answer, and never once the wake has launched; a "no" ends the
   renewals for good. Settings → Agents shows each pool's current-launch totals
   beside the **Warm Claude spares** switch: ordinary `<adopted>/<started> adopted`
-  plus `not used`, `expired`, `evicted`, `discarded`, `cold` and `paused` (starts
-  skipped by backoff; each shown when nonzero), and the lead totals separately, so unused expiries and the
+  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold` and `paused` (starts
+  skipped by backoff; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
   adoption rate are never hidden; read when the page opens and when the switch is
   toggled, not streamed. A pool that evicts `limit` spares in a row with no adoption
   between pauses its starts for 5 minutes, and one whose spares expire unused 3 times
-  in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`);
-  skipped starts count in `churn_skipped` (`paused`), and any committed adoption or
-  the cooldown lapsing ends the pause. Every adoption is also logged to stderr, locally only
+  in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`).
+  A full unadopted lead renewal chain counts as one unused expiry, recorded only when
+  the chain ends without renewal, without a wake superseding it, and with spares on,
+  so renewals never trigger the 30-minute pause mid-chain; expiries while
+  `warm-spares-off` is set never count. 3 consecutive launch-time misses (`not used`)
+  in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
+  5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
+  `churn_skipped` (`paused`); any committed adoption resets all three streaks and
+  ends the pause, and otherwise the cooldown lapsing ends it. Every adoption is also logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
   not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
@@ -415,12 +421,15 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   lead `gone` notes, so a later wake logs nothing either; a CLI update or a Colab
   settings change only retires pooled spares, `discard_all`, and keeps those notes). On the lead pool `not used` counts every wake that
   missed its spare, including spares already counted in `expired`, `evicted`,
-  `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~210–255 MiB RSS on
+  `replaced` or `discarded` when they left the pool. Each spare is an idle CLI process (~195–255 MiB RSS on
   short sessions; Claude Code 2.1.325, macOS arm64, sampled after 2–3.5 s of
-  idling on fresh/one-turn sessions, with RSS after up to 10 idle minutes
-  unmeasured; a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
+  idling, from the resumed one-turn medians (195.6 MiB telemetry off, 204.6 MiB
+  default; 50-turn probe 194.7–205.3 MiB) through fresh minimal and full user
+  config (251.8 MiB), with RSS after up to 10 idle minutes unmeasured; a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
   stdio MCP server child added ~51 MiB per spare, and larger histories, plugins
-  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks and snapshots
+  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks, but an unused spare is retired with
+  process-group `SIGKILL`, so `SessionEnd` hooks never run for it (turn **Warm
+  Claude spares** off if you rely on paired hooks), and snapshots
   `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
   renewal chain can run hooks in up to three processes per wake, and hook
   output can be up to 10 minutes old when adopted. A
@@ -430,7 +439,11 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   process has exited, so it matches Claude Code's own spawn-time snapshot), and
   checks it again at adoption (run alongside the warm-key walk with a 500 ms
   timeout), so a changed working tree
-  starts the wake cold instead of adopting stale status. The spare saves
+  starts the wake cold instead of adopting stale status. With **Turn off agent
+  telemetry** on, where an adopted spare saves only ~0.17–0.25 s, adopting a lead
+  spare in a slow repository whose `git status` takes 250–500 ms can be slower
+  than starting cold (on this 2,326-file repository it took a median of 46.3 ms,
+  max 71.2 ms). The spare saves
   the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
   env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
   [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API

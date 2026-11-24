@@ -80,7 +80,7 @@ fn live(worker: &architect::Worker) -> bool {
 /// Whether a live worker may still write to the lead's own checkout. Every team shares the
 /// lead's checkout (`TeamConfig::validate` accepts only the `shared` workspace), so any live
 /// worker that is not read-only may. The lead's spare would snapshot a `gitStatus` those writes
-/// make stale (a ~210–255 MiB process and `SessionStart` hooks spent on a spare that cannot be
+/// make stale (a ~195–255 MiB process and `SessionStart` hooks spent on a spare that cannot be
 /// adopted), so none is kept: lead spares serve only teams whose live workers are all read-only
 /// (council reviews).
 fn writes_lead_checkout(team: &architect::TeamSnapshot) -> bool {
