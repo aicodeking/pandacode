@@ -18,6 +18,10 @@ fn query(path: &str) -> HashMap<String, String> {
 fn header<'a>(request: &'a mock::Request, name: &str) -> Option<&'a str> {
     request.headers.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str())
 }
+/// Like Colab's HTTP/1.1 frontend, refuse an (empty) POST without `Content-Length: 0` with HTTP 411.
+fn length_required(request: &mock::Request) -> bool {
+    request.method == "POST" && header(request, "content-length") != Some("0")
+}
 const ASSIGNMENT: &str = r#"{"accelerator":"T4","endpoint":"gpu-t4-s-new","variant":1,"machineShape":1,"runtimeProxyInfo":{"token":"proxy","tokenExpiresInSeconds":3600,"url":"https://8080-gpu-t4-s-new.prod.colab.dev"}}"#;
 
 #[test]
@@ -127,6 +131,7 @@ fn lists_runtimes_behind_the_xssi_prefix_and_saves_them() {
 fn assigns_with_the_xsrf_token_and_retries_a_bad_gateway() {
     let posts = AtomicUsize::new(0);
     let (base, seen) = mock::serve(move |request, _| -> (u16, String) {
+        if length_required(request) { return (411, "{}".into()); }
         match (request.method.as_str(), request.path.split('?').next().unwrap()) {
             ("GET", "/tun/m/assign") => (200, ")]}'\n{\"acc\":\"T4\",\"nbh\":\"x\",\"token\":\"xsrf-1\",\"variant\":\"GPU\"}".into()),
             ("POST", "/tun/m/assign") if posts.fetch_add(1, Ordering::SeqCst) == 0 => (503, "{}".into()),
@@ -149,6 +154,7 @@ fn assigns_with_the_xsrf_token_and_retries_a_bad_gateway() {
     assert_eq!(first["nbh"].len(), 44);
     assert_eq!((first["variant"].as_str(), first["accelerator"].as_str(), first["shape"].as_str(), first["authuser"].as_str()), ("GPU", "T4", "hm", "0"));
     assert!(log.iter().filter(|r| r.method == "POST").all(|r| header(r, "x-goog-colab-token") == Some("xsrf-1")));
+    assert!(log.iter().filter(|r| r.method == "POST").all(|r| header(r, "content-length") == Some("0")), "empty POSTs carry Content-Length: 0");
     assert!(log.iter().all(|r| r.path == log[0].path), "every attempt reuses the same notebook hash");
 }
 
@@ -166,6 +172,7 @@ fn assign_returns_an_existing_assignment_and_skips_shape_for_single_shape_hardwa
 #[test]
 fn explains_assignment_refusals() {
     let (base, _) = mock::serve(|request, _| -> (u16, String) {
+        if length_required(request) { return (411, "{}".into()); }
         match request.method.as_str() {
             "GET" => (200, r#"{"token":"x"}"#.into()),
             _ if request.path.contains("accelerator=A100") => (400, "{}".into()),
@@ -180,6 +187,7 @@ fn explains_assignment_refusals() {
 #[test]
 fn unassigns_with_the_xsrf_token_and_forgets_the_runtime() {
     let (base, seen) = mock::serve(|request, _| -> (u16, String) {
+        if length_required(request) { return (411, "{}".into()); }
         match (request.method.as_str(), request.path.split('?').next().unwrap()) {
             ("GET", "/tun/m/unassign/gpu-1") => (200, ")]}'\n{\"token\":\"un-xsrf\"}".into()),
             ("POST", "/tun/m/unassign/gpu-1") => (200, String::new()),
@@ -198,6 +206,7 @@ fn unassigns_with_the_xsrf_token_and_forgets_the_runtime() {
     let log = seen.lock().unwrap();
     let post = log.iter().find(|r| r.method == "POST").unwrap();
     assert_eq!(header(post, "x-goog-colab-token"), Some("un-xsrf"));
+    assert_eq!(header(post, "content-length"), Some("0"), "an empty POST carries Content-Length: 0");
 }
 
 #[test]
