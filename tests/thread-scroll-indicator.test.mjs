@@ -206,6 +206,31 @@ test('the stylesheet uses tokens only: no literal colours or gradients', () => {
   }
 });
 
+test('the rail is bare and transparent while the preview keeps its glass', () => {
+  const css = readFileSync(new URL('../src/thread-scroll-indicator.css', import.meta.url), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(([, selector, body]) => ({ selector: selector.trim(), body }));
+  const indicatorRules = rules.filter(rule => rule.selector.split(',').some(part => /\.thread-scroll-indicator\s*$/.test(part.trim()) || /:is\([^)]*\.thread-scroll-indicator/.test(part)));
+  assert.ok(indicatorRules.length > 0, 'indicator rules exist');
+  for (const rule of indicatorRules) {
+    assert.doesNotMatch(rule.body, /backdrop-filter/, `${rule.selector}: no backdrop-filter`);
+    assert.doesNotMatch(rule.body, /box-shadow:(?!\s*none)/, `${rule.selector}: no box-shadow`);
+    assert.doesNotMatch(rule.body, /outline:/, `${rule.selector}: no outline`);
+    assert.doesNotMatch(rule.body, /border:(?!\s*0)/, `${rule.selector}: no border`);
+    const background = rule.body.match(/background:([^;}]+)/);
+    if (background) assert.equal(background[1].trim(), 'transparent', `${rule.selector}: transparent background`);
+  }
+  const base = indicatorRules.find(rule => rule.selector === '.thread-scroll-indicator' && /position:absolute/.test(rule.body));
+  assert.ok(base, 'base indicator rule');
+  assert.match(base.body, /background:transparent/);
+  assert.match(base.body, /border-radius:0(?![.\d])/);
+  const preview = rules.find(rule => rule.selector === '.thread-scroll-preview' && /--dock-fill/.test(rule.body));
+  assert.ok(preview, 'preview glass rule');
+  assert.match(preview.body, /background:var\(--dock-fill/);
+  assert.match(preview.body, /backdrop-filter:var\(--dock-blur/);
+  assert.match(preview.body, /box-shadow:var\(--dock-edge/);
+  assert.match(css, /\.thread-scroll-tick-bar\{[^}]*opacity:\.62/);
+});
+
 test('the indicator mounts beside the transcript, never inside it', () => {
   const source = readFileSync(new URL('../src/thread-scroll-indicator.ts', import.meta.url), 'utf8');
   assert.match(source, /host\.pane\.append\(/);

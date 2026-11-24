@@ -49,6 +49,9 @@ export interface TranscriptViewHost<Turn, Views> {
   /** The drawn replies left to format as they near the reader (main.ts lazyReplies), and painting those now formatted. */
   deferredReplies(): readonly Formattable[];
   paintDeferred(): void;
+  /** Whether a step up should wait (a wheel or touch momentum gesture under way, well clear of the top): drawing rows
+   *  above the reader writes scrollTop, which ends WKWebView's momentum mid-swipe. The step waits for flushPendingStep. */
+  deferCommit?(): boolean;
   /** Every loaded turn is drawn and the window is still too short to scroll: the host fetches an older page. */
   fetchOlder(): void;
   report(error: unknown): void;
@@ -112,12 +115,12 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
       fresh = swapRowNodes(drawn, host.prepare(fragment, back));
     });
     view = { ...shown, first: windowAnchor(shown.ids, from), rows: [...fresh, ...shown.rows], trimmed };
-    // Every write first (workers, threads cards), then the one pass of reads (the new replies' heights and the scroll),
-    // then the replies' clamps, already counted in the scroll: one layout a step.
+    // Every write first (workers, threads cards), then the new replies' heights and their clamps, and only then the
+    // scroll, read at the final extent: an estimate of the clamps left to the engine's anchoring lands thousands of
+    // pixels off in WebKit, which claims `overflow-anchor` yet does not anchor the transcript.
     host.rowsChanged();
-    const replies = host.watch(fresh.flatMap(row => row.nodes), farRows.isAside);
-    host.placed(restore(replies.shift));
-    replies.apply();
+    host.watch(fresh.flatMap(row => row.nodes), farRows.isAside).apply();
+    host.placed(restore());
     syncFarRows();
     fill();
   }
@@ -130,9 +133,25 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
     // A step whose text was already formatted lands in the same task, so a reader asking again (`again`) could chain
     // several in one frame: each waits for a frame of its own.
     stepWhenFormatted(preparing, shown.sessionId, host.messagesOf(shown.turns.slice(stepFrom(shown, more, budget), drawnFrom(shown))), () => inFrame(() => {
-      if (view.sessionId === shown.sessionId && view.first === shown.first && canShowOlder(view)) prepend(stepFrom(view, more, budget));
+      const commit = (): void => {
+        if (view.sessionId === shown.sessionId && view.first === shown.first && canShowOlder(view)) prepend(stepFrom(view, more, budget));
+      };
+      // Formatted already; only the drawing waits for the reader's gesture to settle.
+      if (host.deferCommit?.()) { pendingStep = commit; return; }
+      pendingStep = undefined;
+      commit();
     }), host.report, again);
     return true;
+  }
+
+  /** A step up formatted while the reader's gesture was under way (host.deferCommit), drawn once it settles. */
+  let pendingStep: (() => void) | undefined;
+  /** Draws the step held back during a gesture, if the window still wants it (the reader still near the top). */
+  function flushPendingStep(): void {
+    const step = pendingStep;
+    pendingStep = undefined;
+    if (!step || !canShowOlder(view) || scroller.scrollTop > ROWS_MARGIN) return;
+    inFrame(step);
   }
 
   const findWanted = (sessionId: string): HTMLInputElement | undefined => {
@@ -326,11 +345,10 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
     const redrawn = html !== oldest.html ? host.redrawRow(oldest, html) : undefined;
     if (redrawn) view = { ...view, rows: [redrawn, ...rest] };
     // The redrawn row lost what is drawn into it after the fact: its workers and any threads card. Then, as a step
-    // does, the reads in one pass and the replies' clamps after them.
+    // does, the replies' clamps, and the reader's place last, measured at the final layout.
     host.rowsChanged();
-    const replies = redrawn ? host.watch(redrawn.nodes, farRows.isAside) : undefined;
-    restore(replies?.shift);
-    replies?.apply();
+    if (redrawn) host.watch(redrawn.nodes, farRows.isAside).apply();
+    restore();
     host.placed(scroller.scrollTop);
     return true;
   }
@@ -409,7 +427,7 @@ export function mountTranscriptView<Turn, Views>(host: TranscriptViewHost<Turn, 
   return {
     get view(): RowsWindow<Turn, Views> { return view; },
     set view(next: RowsWindow<Turn, Views>) { view = next; },
-    onScreen, canShowOlder, showOlder, showForFind, extendFind, olderMatches, fill, scheduleTrim, joinPage, syncFarRows,
+    onScreen, canShowOlder, showOlder, flushPendingStep, showForFind, extendFind, olderMatches, fill, scheduleTrim, joinPage, syncFarRows,
     revealTurn, rowElementForMessage, drawnRowElements,
     /** Whether a step for the open thread is being formatted. */
     preparing: (sessionId: string): boolean => preparing.has(sessionId),

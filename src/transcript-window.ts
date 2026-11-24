@@ -2,7 +2,7 @@
  * the steps that widen and narrow it, and how they hold the reader's place. Everything here takes its host and
  * scroller, so the main transcript and the tiles share it; what a row holds (turn cards, folds) stays with main.ts. */
 import { markdownCache, markdownHtml } from './dom';
-import { isFollowingTranscript, restoreScrollTop, scrollAnchors, scrollRemainder } from './transcript-scroll';
+import { isFollowingTranscript, restoreScrollTop, scrollRemainder } from './transcript-scroll';
 import { widerWindow, windowAnchor, windowStart, MORE_TURNS, ROW_BUDGET, type DrawnRow, type TurnIds } from './transcript-rows';
 
 /** What a view has drawn: its thread, the anchor of its oldest drawn turn (null: all of them), every saved turn and its
@@ -67,13 +67,19 @@ export function stepWhenFormatted<Key>(busy: StepBusy<Key>, key: Key, messages: 
 }
 
 /** Reads the scroller once; the returned call puts the reader back where they were after content above them changed.
- *  An absolute position, so it lands the same whether or not the engine anchored the scroll itself. `pending` is what
- *  writes still to come (measureReplies) will change above the reader: counted now in an engine that does not anchor
- *  the scroll, so it needs no second layout; one that anchors makes up for it itself when they lay out. */
+ *  An absolute position, so it lands the same whether or not the engine anchored the scroll itself. Call it after every
+ *  write above the reader (the replies' clamps too), so it reads the final extent; `pending` is what writes still to
+ *  come will change above the reader, always counted: never trust `overflow-anchor`, which WebKit reports as supported
+ *  without anchoring the transcript. */
 export function holdPlace(scroller: HTMLElement): (pending?: number) => number {
   // Carry what a webview that rounds scrollTop dropped last time, so repeated prepends never drift a pixel at a time.
   const top = scroller.scrollTop + scrollRemainder(scroller), height = scroller.scrollHeight;
-  return (pending = 0) => { restoreScrollTop(scroller, top + scroller.scrollHeight - height + (scrollAnchors ? 0 : pending)); return scroller.scrollTop; };
+  return (later = 0) => {
+    // Nothing above the reader changed: no write at all, since any scrollTop write ends a WKWebView momentum scroll.
+    if (scroller.scrollHeight === height && later === 0) return scroller.scrollTop;
+    restoreScrollTop(scroller, top + scroller.scrollHeight - height + later);
+    return scroller.scrollTop;
+  };
 }
 
 /** Puts `rows` (parsed, not yet placed) above `anchor` in one insertion. `prepare` runs on the fragment first, so
@@ -136,7 +142,7 @@ const SHIFT_EPSILON = 0.5;
  *  again, and a row above the reader that changed size meanwhile (a worker joined its slot, the window narrowed, its
  *  reply formatted) moves the scroll by what it changed, less what the engine's scroll anchoring already moved it, so
  *  nothing on screen shifts. WebKit reports `overflow-anchor` as supported yet does not anchor the transcript, so what
- *  the engine did is measured rather than assumed from `scrollAnchors`. */
+ *  the engine did is measured rather than assumed. */
 export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(nodes: readonly ChildNode[]): void; isAside(node: Node): boolean; reveal(node: Node | null): void } {
   if (typeof IntersectionObserver === 'undefined') return { sync() {}, isAside: () => false, reveal() {} };
   const aside = new WeakMap<HTMLElement, number>(), watched = new Set<HTMLElement>();
@@ -149,7 +155,7 @@ export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(
     // All writes are done: one layout for every read below.
     const shift = rows.reduce((total, { row, height, above }) => above ? total + row.getBoundingClientRect().height - height : total, 0);
     const anchored = scroller.scrollTop - before, missing = shift - anchored;
-    if (Math.abs(missing) >= SHIFT_EPSILON) scroller.scrollTop += missing;
+    if (Math.abs(missing) >= SHIFT_EPSILON) restoreScrollTop(scroller, scroller.scrollTop + missing);
     if (Math.abs(missing) >= SHIFT_EPSILON || Math.abs(anchored) >= SHIFT_EPSILON) onShift();
   };
   const observer = new IntersectionObserver(entries => {

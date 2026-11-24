@@ -15,6 +15,8 @@
  * the pane with less than MIN_WIDTH left of it, the notice never covers the drawer: it steps aside
  * the same way (`data-crowded`) and is back, unannounced, once there is room or the drawer closes.
  * Ordinary toasts keep their corner because they leave by themselves. */
+import { hasFollowOwner, isFollowingTranscript } from './transcript-scroll';
+
 /** MIN_WIDTH: the narrowest the notice is drawn, starting GAP inside the pane. */
 const GAP = 8, INSET = 16, MIN_WIDTH = 180;
 const CROWDED = 'data-crowded';
@@ -32,11 +34,13 @@ const visible = (element: Element | null): Rect | undefined => {
   return rect && rect.width > 0 && rect.height > 0 ? rect : undefined;
 };
 
-/** Gives the transcript `room` px at its end (0: none), at once; one at its bottom stays there. */
+/** Gives the transcript `room` px at its end (0: none), at once; one following its bottom stays there. A scroller whose
+ *  owner decides its follow (the thread, followTranscriptBottom) is pinned only while that owner follows, never for
+ *  being near the end: a reader scrolling up from the bottom is a pixel or two away from it for a frame. */
 export function makeRoom(transcript: HTMLElement | null, room: number): void {
   const value = room > 0 ? `${Math.round(room)}px` : '';
   if (!transcript || transcript.style.getPropertyValue(ROOM) === value) return;
-  const atBottom = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 2;
+  const atBottom = hasFollowOwner(transcript) ? isFollowingTranscript(transcript) : transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight <= 2;
   if (value) transcript.style.setProperty(ROOM, value); else transcript.style.removeProperty(ROOM);
   if (atBottom) transcript.scrollTop = transcript.scrollHeight;
 }

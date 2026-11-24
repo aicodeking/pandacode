@@ -144,6 +144,18 @@ export function measureReplies(root: ParentNode | readonly Node[], defer?: (cont
   };
 }
 
+/** Clamps the saved reply holding `target` now, in the task its text was written (a long folded reply formatted as it
+ *  nears the reader), rather than a frame later from the observer: the reply never lays out unclamped above the reader. */
+export function syncReplyClamp(target: Element): void {
+  const reply = target.closest<HTMLElement>('.turn-card-reply');
+  const content = target.closest<HTMLElement>(REPLY_CONTENT) ?? reply?.querySelector<HTMLElement>(REPLY_CONTENT);
+  const body = content?.parentElement;
+  if (!reply || !content || !body || !content.isConnected || reply.classList.contains('is-live')) return;
+  const height = content.offsetHeight;
+  sizes.set(content, height);
+  syncOverflow(reply, height, clampHeight(body));
+}
+
 /** Read more shows only when the reply runs past the clamp by more than half a line. */
 const overflows = (height: number, limit: number): boolean => height > limit + limit / REPLY_LINES / 2;
 function syncOverflow(reply: HTMLElement, height: number, limit: number): void {

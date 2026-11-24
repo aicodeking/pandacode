@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { canNestedScrollerConsume, createSmoothScroller, decideScrollTransition, restoreScrollTop, scrollRemainder } from '../src/transcript-scroll.ts';
+import { canNestedScrollerConsume, captureTranscriptAnchor, createSmoothScroller, decideScrollTransition, onAnchorRestore, restoreScrollTop, scrollRemainder, shouldWheelRestick } from '../src/transcript-scroll.ts';
 
 /* decideScrollTransition */
 
@@ -167,6 +167,82 @@ test('content shorter than the viewport keeps a follower, and a released reader 
   assert.deepEqual(released, { stickToBottom: false, resumeFollow: true, nextLastTop: 0, action: 'keep' });
 });
 
+test('a gesture of the reader\'s never re-pins: a move up during one always releases', () => {
+  // A layout change noted mid-gesture (the old surroundings watch fired on the dock, the sky, the composer).
+  assert.deepEqual(decideScrollTransition(at({ top: 500, layoutChanged: true, userScrolling: true })),
+    { stickToBottom: false, resumeFollow: true, nextLastTop: 500, action: 'release' });
+  // Content shrinking under the reader as they scroll up a pixel from the end: still the reader leaving.
+  assert.deepEqual(decideScrollTransition(at({ top: 599, lastTop: 600, scrollHeight: 999.5, userScrolling: true })),
+    { stickToBottom: false, resumeFollow: true, nextLastTop: 599, action: 'release' });
+  assert.equal(decideScrollTransition(at({ top: 599, lastTop: 600, scrollHeight: 999, layoutChanged: true, userScrolling: true })).action, 'release');
+  // The same shrink with no gesture is a clamp, and re-pins.
+  assert.equal(decideScrollTransition(at({ top: 599, lastTop: 600, scrollHeight: 999.5, userScrolling: false })).action, 'repin');
+});
+
+test('no input combination with a gesture under way answers repin', () => {
+  for (const top of [-20, 0, 300, 598, 599, 599.7, 600, 640]) {
+    for (const lastTop of [0, 300, 599, 600, 640]) {
+      for (const scrollHeight of [800, 999, 999.5, 1000, 1200]) {
+        for (const layoutChanged of [false, true]) {
+          const result = decideScrollTransition(at({ top, lastTop, scrollHeight, layoutChanged, userScrolling: true }));
+          assert.notEqual(result.action, 'repin', JSON.stringify({ top, lastTop, scrollHeight, layoutChanged }));
+        }
+      }
+    }
+  }
+});
+
+/* shouldWheelRestick */
+
+/** A released reader at the end (gap 0), 1s after their last upward wheel, with nothing accumulated. */
+const wheel = overrides => ({ deltaY: 40, now: 2000, lastUpwardWheelAt: 1000, downAccum: 0, gap: 0, stickToBottom: false, ...overrides });
+
+test('an upward or zero wheel never resticks and resets the downward travel', () => {
+  assert.deepEqual(shouldWheelRestick(wheel({ deltaY: -10, downAccum: 30 })), { restick: false, deliberate: false, nextDownAccum: 0 });
+  assert.deepEqual(shouldWheelRestick(wheel({ deltaY: 0, downAccum: 30 })), { restick: false, deliberate: false, nextDownAccum: 0 });
+});
+
+test('tiny trackpad jitter right after an upward swipe does not restick, even at the end', () => {
+  for (const deltaY of [0.01, 0.5, 2, 3]) {
+    const result = shouldWheelRestick(wheel({ deltaY, now: 1050, lastUpwardWheelAt: 1000 }));
+    assert.equal(result.restick, false, `+${deltaY}`);
+    assert.equal(result.deliberate, false, `+${deltaY} must not arm resumeFollow either`);
+  }
+  // Several jitters adding up past the intent threshold inside the cooldown still do not.
+  let downAccum = 0;
+  for (let i = 0; i < 8; i++) {
+    const result = shouldWheelRestick(wheel({ deltaY: 2, now: 1000 + i * 20, lastUpwardWheelAt: 1000, downAccum }));
+    assert.equal(result.restick, false);
+    downAccum = result.nextDownAccum;
+  }
+  assert.equal(downAccum, 16);
+});
+
+test('elastic overscroll past the end does not restick', () => {
+  assert.equal(shouldWheelRestick(wheel({ gap: -15 })).restick, false);
+  assert.equal(shouldWheelRestick(wheel({ gap: -15, deltaY: 120 })).restick, false);
+  // Within half a pixel past the end is rounding, not a bounce.
+  assert.equal(shouldWheelRestick(wheel({ gap: -0.4 })).restick, true);
+});
+
+test('a deliberate downward wheel at the end resticks', () => {
+  // A big delta bypasses the cooldown (a fast scroll back down, or a scripted wheel right after one up).
+  assert.deepEqual(shouldWheelRestick(wheel({ deltaY: 24, now: 1010, lastUpwardWheelAt: 1000 })), { restick: true, deliberate: true, nextDownAccum: 24 });
+  // After the cooldown, accumulated travel of 12px is enough...
+  assert.equal(shouldWheelRestick(wheel({ deltaY: 4, downAccum: 8, now: 1300, lastUpwardWheelAt: 1000 })).restick, true);
+  // ...or a single 6px delta.
+  assert.equal(shouldWheelRestick(wheel({ deltaY: 6, now: 1300, lastUpwardWheelAt: 1000 })).restick, true);
+  // But a 3px delta alone after the cooldown is not yet intent.
+  assert.equal(shouldWheelRestick(wheel({ deltaY: 3, now: 1300, lastUpwardWheelAt: 1000 })).restick, false);
+  // Within the 2px restick gap counts as the end.
+  assert.equal(shouldWheelRestick(wheel({ gap: 2 })).restick, true);
+});
+
+test('a deliberate wheel short of the end, or while already following, does not restick but is still deliberate', () => {
+  assert.deepEqual(shouldWheelRestick(wheel({ gap: 2.5 })), { restick: false, deliberate: true, nextDownAccum: 40 });
+  assert.deepEqual(shouldWheelRestick(wheel({ stickToBottom: true })), { restick: false, deliberate: true, nextDownAccum: 40 });
+});
+
 /* restoreScrollTop */
 
 /** A scroller that clamps scrollTop to its extent and, with `round`, to whole pixels (as WKWebView does). */
@@ -192,11 +268,126 @@ test('restoreScrollTop carries only the rounding a webview dropped', () => {
   assert.equal(scrollRemainder(scroller), 0);
 });
 
+test('restoreScrollTop skips a write that would not move the scroller (it would end WKWebView momentum)', () => {
+  let writes = 0, scrollTop = 300;
+  const scroller = {
+    scrollHeight: 10000, clientHeight: 500,
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) { writes++; scrollTop = Math.round(value); },
+  };
+  restoreScrollTop(scroller, 300);
+  restoreScrollTop(scroller, 300.4);
+  restoreScrollTop(scroller, 299.6);
+  assert.equal(writes, 0);
+  assert.equal(scroller.scrollTop, 300);
+  // What was skipped is carried as the remainder, as a rounded write would have been.
+  assert.ok(Math.abs(scrollRemainder(scroller) - -0.4) < 1e-9);
+  restoreScrollTop(scroller, 300.5);
+  assert.equal(writes, 1);
+  restoreScrollTop(scroller, 310);
+  assert.equal(writes, 2);
+  assert.equal(scroller.scrollTop, 310);
+});
+
 test('restoreScrollTop never carries a clamp', () => {
   const scroller = fakeScroller({ round: true, scrollHeight: 1000, clientHeight: 500 });
   restoreScrollTop(scroller, 800);
   assert.equal(scroller.scrollTop, 500);
   assert.equal(scrollRemainder(scroller), 0);
+});
+
+/* onAnchorRestore */
+
+test('onAnchorRestore hears every restore that moves the scroller, with the position it landed at', () => {
+  const scroller = fakeScroller({ round: true, top: 300 }), heard = [];
+  onAnchorRestore(scroller, top => heard.push(top));
+  restoreScrollTop(scroller, 300.4);
+  restoreScrollTop(scroller, 299.6);
+  assert.deepEqual(heard, [], 'a write under half a pixel is skipped, so nothing is heard');
+  restoreScrollTop(scroller, 1234.4);
+  assert.deepEqual(heard, [1234], 'the actual (rounded) scrollTop, not the asked one');
+  restoreScrollTop(scroller, 20000);
+  assert.deepEqual(heard, [1234, 9500], 'a clamped write reports where it clamped to');
+});
+
+test('onAnchorRestore listeners are per scroller and all of them are called', () => {
+  const one = fakeScroller(), two = fakeScroller(), heard = [];
+  onAnchorRestore(one, top => heard.push(['a', top]));
+  onAnchorRestore(one, top => heard.push(['b', top]));
+  restoreScrollTop(two, 400);
+  assert.deepEqual(heard, []);
+  restoreScrollTop(one, 400);
+  assert.deepEqual(heard, [['a', 400], ['b', 400]]);
+});
+
+/* captureTranscriptAnchor, in an engine that claims overflow-anchor but does not anchor (WebKit 26) */
+
+/** A transcript of stacked rows (heights in px) in a 500px viewport at y=0; scrollTop never moves by itself. */
+function fakeTranscript(heights, top = 0) {
+  let scrollTop = top;
+  const rows = [];
+  const rowOf = (id, height) => {
+    const row = {
+      id, height,
+      matches: () => true,
+      querySelectorAll: () => [],
+      querySelector: () => null,
+      hasAttribute: name => name === 'data-message-id',
+      getAttribute: () => id,
+      getClientRects: () => [1],
+      getBoundingClientRect() {
+        const y = rows.slice(0, rows.indexOf(row)).reduce((sum, r) => sum + r.height, 0) - scrollTop;
+        return { top: y, bottom: y + row.height, height: row.height };
+      },
+    };
+    return row;
+  };
+  heights.forEach((height, index) => rows.push(rowOf(`m${index}`, height)));
+  const transcript = {
+    rows, rowOf,
+    get children() { return rows; },
+    get scrollHeight() { return rows.reduce((sum, r) => sum + r.height, 0); },
+    clientHeight: 500,
+    get scrollTop() { return scrollTop; },
+    set scrollTop(value) { scrollTop = Math.max(0, Math.min(this.scrollHeight - this.clientHeight, value)); },
+    getBoundingClientRect: () => ({ top: 0, bottom: 500, height: 500 }),
+    querySelector: selector => rows.find(row => selector === `[data-message-id="${row.id}"]`) ?? null,
+  };
+  return transcript;
+}
+
+function withLyingWebKit(run) {
+  const saved = { CSS: globalThis.CSS, getComputedStyle: globalThis.getComputedStyle };
+  globalThis.CSS = { supports: () => true, escape: value => value };
+  globalThis.getComputedStyle = () => ({ height: '500px', scrollPaddingTop: '0px' });
+  try { run(); } finally { Object.assign(globalThis, saved); }
+}
+
+test('captureTranscriptAnchor keeps the read row in place when rows land above it, though CSS.supports claims overflow-anchor', () => {
+  withLyingWebKit(() => {
+    const transcript = fakeTranscript(Array(10).fill(500), 2600);
+    const restore = captureTranscriptAnchor(transcript);
+    // Three older turns land above, each with a long reply that is clamped before the restore reads the layout.
+    transcript.rows.unshift(transcript.rowOf('old0', 5000), transcript.rowOf('old1', 5000), transcript.rowOf('old2', 5000));
+    transcript.rows.slice(0, 3).forEach(row => { row.height = 800; });
+    restore();
+    assert.equal(transcript.scrollTop, 2600 + 3 * 800);
+    assert.equal(transcript.querySelector('[data-message-id="m5"]').getBoundingClientRect().top, -100);
+  });
+});
+
+test('captureTranscriptAnchor counts what is still to come above the reader, however the engine reports overflow-anchor', () => {
+  withLyingWebKit(() => {
+    // No row in the band (an empty transcript region): the fallback is the change in extent plus `pending`.
+    const transcript = fakeTranscript([], 0);
+    let height = 4000;
+    Object.defineProperty(transcript, 'scrollHeight', { get: () => height });
+    transcript.scrollTop = 1000;
+    const restore = captureTranscriptAnchor(transcript);
+    height = 7000;
+    restore(-2000);
+    assert.equal(transcript.scrollTop, 1000 + 3000 - 2000, 'a negative pending (replies about to clamp) is never dropped');
+  });
 });
 
 /* canNestedScrollerConsume */

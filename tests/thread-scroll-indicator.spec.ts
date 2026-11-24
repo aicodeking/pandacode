@@ -38,6 +38,94 @@ function threadOf(count: number): FixtureMessage[] {
   }).flat();
 }
 
+/* Older turns whose long replies clamp under Read more (transcript-view.ts prepend and joinPage). */
+const CLAMPED_TURNS = 60;
+/** Turns whose reply runs past LAZY_REPLY_CHARS (8000), so it formats only as it nears the reader. */
+const LAZY_TURNS = [3, 25, 41];
+const CUT_TURN = 10;
+/** `count` turns of a prompt and a 24-paragraph reply (clamped under Read more), the LAZY_TURNS' replies over 9,000
+ *  characters. Turn CUT_TURN carries a tool too, so the newest 100 messages start inside it. */
+function clampedThreadOf(count: number): FixtureMessage[] {
+  let n = 0;
+  return Array.from({ length: count }, (_, turn) => {
+    const lazy = LAZY_TURNS.includes(turn);
+    const reply = Array.from({ length: lazy ? 90 : 24 }, (_, p) => `${lazy ? 'Lazy' : 'Reply'} ${label(turn)} paragraph ${p}. The quick brown fox jumps over the lazy dog again and again until the line wraps.`).join('\n\n');
+    const prompt = say(n++, 'user', `Prompt ${label(turn)}: explain part ${label(turn)}`);
+    const tool = turn === CUT_TURN ? [say(n++, 'tool', toolRecord(n, 4))] : [];
+    return [prompt, ...tool, say(n++, 'assistant', reply)];
+  }).flat();
+}
+
+/** Records, for every step up (rows inserted at the transcript's top) and every older page joined into the oldest row
+ *  (redrawRow, which first moves the row's formatted text out), how far the prompt or reply on the reading line moved
+ *  from the task's first change to the end of that task; and the tallest folded reply seen in any frame. */
+const probePrepends = (page: Page) => transcriptOf(page).evaluate(node => {
+  const probe = { shifts: [] as number[], joins: [] as number[], maxReply: 0, lazyPaints: 0, unclamped: 0 };
+  (window as any).__prependProbe = probe;
+  const line = () => node.getBoundingClientRect().top + (parseFloat(getComputedStyle(node).scrollPaddingTop) || 0);
+  const anchor = () => {
+    const at = line();
+    return [...node.querySelectorAll<HTMLElement>('.user-message, .turn-card-reply')]
+      .filter(item => item.getBoundingClientRect().bottom > at)
+      .sort((a, b) => Math.abs(a.getBoundingClientRect().top - at) - Math.abs(b.getBoundingClientRect().top - at))[0];
+  };
+  /** The reading line's content as the task found it, before its first change; measured again once the task ends. */
+  let baseline: { held: HTMLElement | undefined; top: number; first: ChildNode | null; inserted: boolean } | undefined;
+  const capture = (): NonNullable<typeof baseline> => {
+    if (baseline) return baseline;
+    const held = anchor(), taken = { held, top: held?.getBoundingClientRect().top ?? 0, first: node.firstChild, inserted: false };
+    baseline = taken;
+    // The task's own work (the clamps and the restore) runs to its end before a microtask.
+    queueMicrotask(() => {
+      baseline = undefined;
+      if (!taken.inserted || !taken.held?.isConnected) return;
+      const shift = taken.held.getBoundingClientRect().top - taken.top;
+      // A redraw takes the old first row out in the same task; a step leaves it below the new rows.
+      (taken.first?.isConnected ? probe.shifts : probe.joins).push(shift);
+    });
+    return taken;
+  };
+  const replaceWith = Element.prototype.replaceWith;
+  Element.prototype.replaceWith = function (this: Element, ...nodes: (Node | string)[]) {
+    // A formatted node kept from the row moves out of the document's row into the new one (main.ts paintSavedMarkdown).
+    if (node.contains(this) || nodes.some(moved => moved instanceof Node && node.contains(moved))) capture();
+    return replaceWith.apply(this, nodes);
+  };
+  const insert = node.insertBefore;
+  node.insertBefore = function <T extends Node>(this: HTMLElement, child: T, ref: Node | null): T {
+    if (child instanceof DocumentFragment && ref === node.firstChild) capture().inserted = true;
+    return insert.call(this, child, ref) as T;
+  };
+  // A long folded reply formats as it nears the reader: its text must never sit in the document without its clamp,
+  // checked when the task that wrote it ends (raw text first, or a clamp left to the next frame's observer, fail).
+  new MutationObserver(records => {
+    const replies = new Set(records.flatMap(record => {
+      const reply = (record.target instanceof Element ? record.target : record.target.parentElement)?.closest<HTMLElement>('.turn-card-reply');
+      return reply && !reply.hasAttribute('data-open') && reply.textContent!.includes('Lazy ') ? [reply] : [];
+    }));
+    for (const reply of replies) {
+      if (reply.querySelector('.turn-card-reply-content')!.textContent!.length < 8000) continue;
+      probe.lazyPaints++;
+      if (!reply.hasAttribute('data-overflow')) probe.unclamped++;
+    }
+  }).observe(node, { childList: true, characterData: true, subtree: true });
+  const frame = () => {
+    for (const reply of node.querySelectorAll<HTMLElement>('.turn-card-reply:not([data-open]):not(.is-live)')) probe.maxReply = Math.max(probe.maxReply, reply.offsetHeight);
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+});
+/** The prompt or reply nearest the reading line is marked; answers its top. */
+const readingAnchor = (page: Page) => transcriptOf(page).evaluate(node => {
+  const at = node.getBoundingClientRect().top + (parseFloat(getComputedStyle(node).scrollPaddingTop) || 0);
+  const held = [...node.querySelectorAll<HTMLElement>('.user-message, .turn-card-reply')]
+    .filter(item => item.getBoundingClientRect().bottom > at)
+    .sort((a, b) => Math.abs(a.getBoundingClientRect().top - at) - Math.abs(b.getBoundingClientRect().top - at))[0];
+  (window as any).__readingAnchor = held;
+  return held.getBoundingClientRect().top;
+});
+const readingAnchorTop = (page: Page) => page.evaluate(() => ((window as any).__readingAnchor as HTMLElement).getBoundingClientRect().top);
+
 async function seedMirror(page: Page): Promise<void> {
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
@@ -128,6 +216,12 @@ const growThread = (page: Page, height = 240) => page.locator('#stream-region').
   node.append(extra);
 }, height);
 
+/** The open mirror thread's agent streams `text`, as the host's events do. */
+const streamText = (page: Page, text: string) => page.evaluate(chunk => (window as any).__previewEmit('agent-event', { sessionId: 'mirror-long', kind: 'text', text: chunk }), text);
+const streamParagraph = (n: number) => `\n\nStreamed paragraph ${n}. The agent keeps writing while the reader looks back; every line wraps a few times over to grow the live reply quickly.`;
+/** Two animation frames: a scroll event and a ResizeObserver pass have both run. */
+const twoFrames = (page: Page) => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+
 test.describe('thread scroll indicator', () => {
   test.describe('scroll snap-back fixes', () => {
     test('gentle 1–2px steps up from the bottom release the follow and never snap back', async ({ page }) => {
@@ -160,6 +254,108 @@ test.describe('thread scroll indicator', () => {
       await page.waitForTimeout(300);
       expect(Math.abs(await topOf(last) - nudged)).toBeLessThanOrEqual(0.5);
       expect(await gap(page)).toBeGreaterThan(200);
+      expect(errors).toEqual([]);
+    });
+
+    test('tiny positive wheel jitter after an upward swipe never snaps back to the bottom', async ({ page }) => {
+      const errors = await openThread(page);
+      // A live turn is under way (its first chunk sizes the composer's working state), and the thread follows it.
+      await streamText(page, streamParagraph(0));
+      await expect(page.locator('#stream-region .live-text')).toContainText('Streamed paragraph 0.');
+      await expect.poll(() => gap(page)).toBeLessThanOrEqual(2);
+      await scrollSettled(page);
+      const last = promptOf(page, TURNS - 1);
+      // A real upward swipe, then the trackpad settling: a couple of tiny positive deltas straight after it.
+      const area = await plainPoint(page);
+      const before = await topOf(last);
+      await page.mouse.move(area.x, area.y);
+      await page.mouse.wheel(0, -40);
+      await page.mouse.wheel(0, 1);
+      await page.mouse.wheel(0, 2);
+      await scrollSettled(page);
+      // The thread moved with the swipe (40 up, at most the 3px of jitter back), not back to where it was. The gap alone
+      // can read 0 here: scrolling up gives back the blank room the live card left under it, the part below the window.
+      expect(await topOf(last) - before).toBeGreaterThan(30);
+      const held = await topOf(last);
+      // More of the reply streams in, and the bottom grows: the reader stays where the swipe left them.
+      for (let n = 1; n < 4; n++) { await streamText(page, streamParagraph(n)); await twoFrames(page); }
+      await expect(page.locator('#stream-region .live-text')).toContainText('Streamed paragraph 3.');
+      await growThread(page);
+      await page.waitForTimeout(300);
+      expect(Math.abs(await topOf(last) - held)).toBeLessThanOrEqual(1);
+      expect(await gap(page)).toBeGreaterThan(200);
+
+      // The tight case: the swipe left the reader within the restick gap of the end, and the settling deltas arrive
+      // there (an elastic bounce reports no movement). Before the fix the first +1 re-pinned the follow.
+      await latest(page).click();
+      await expect.poll(() => gap(page)).toBeLessThanOrEqual(2);
+      await scrollSettled(page);
+      await page.evaluate(() => {
+        const transcript = document.querySelector<HTMLElement>('#transcript')!;
+        transcript.dispatchEvent(new WheelEvent('wheel', { deltaY: -2, bubbles: true }));
+        transcript.scrollTop -= 2;
+      });
+      await twoFrames(page);
+      await page.evaluate(() => {
+        const transcript = document.querySelector<HTMLElement>('#transcript')!;
+        for (const deltaY of [1, 2]) transcript.dispatchEvent(new WheelEvent('wheel', { deltaY, bubbles: true }));
+      });
+      // WebKit scrolls by a dispatched wheel's delta (here back down to the old end, as a trackpad's settling does);
+      // Chromium does not. Either way the follow must not come back: measured once that scroll has landed.
+      await twoFrames(page);
+      const nudged = await topOf(last);
+      await growThread(page);
+      await page.waitForTimeout(300);
+      expect(Math.abs(await topOf(last) - nudged)).toBeLessThanOrEqual(1);
+      expect(await gap(page)).toBeGreaterThan(200);
+      expect(errors).toEqual([]);
+    });
+
+    test('an upward scroll during a live stream releases cleanly and stays released as more text arrives', async ({ page }) => {
+      const errors = await openThread(page);
+      await scrollSettled(page);
+      // The agent starts writing: a follower stays pinned to the growing live reply.
+      for (let n = 0; n < 4; n++) await streamText(page, streamParagraph(n));
+      const live = page.locator('#stream-region .live-text');
+      await expect(live).toContainText('Streamed paragraph 3.');
+      await expect.poll(() => gap(page)).toBeLessThanOrEqual(2);
+      await scrollSettled(page);
+      const streamHeight = () => page.locator('#stream-region').evaluate(node => node.getBoundingClientRect().height);
+      const startHeight = await streamHeight();
+
+      // The reader scrolls up while text keeps arriving, the first chunk inside the same gesture.
+      await wheelAt(page, await plainPoint(page), -300);
+      await streamText(page, streamParagraph(4));
+      await scrollSettled(page);
+      expect(await gap(page)).toBeGreaterThan(200);
+      const last = promptOf(page, TURNS - 1);
+      const held = await topOf(last), heldTop = await scrollTop(page);
+      for (let n = 5; n < 15; n++) {
+        await streamText(page, streamParagraph(n));
+        await twoFrames(page);
+        expect(Math.abs(await topOf(last) - held)).toBeLessThanOrEqual(1);
+      }
+      await expect(live).toContainText('Streamed paragraph 14.');
+      await page.waitForTimeout(300);
+      // The live reply grew under the reader, who did not move.
+      expect(await streamHeight()).toBeGreaterThan(startHeight + 100);
+      expect(Math.abs(await topOf(last) - held)).toBeLessThanOrEqual(1);
+      expect(Math.abs(await scrollTop(page) - heldTop)).toBeLessThanOrEqual(1);
+      expect(await gap(page)).toBeGreaterThan(300);
+      await expect(latest(page)).toBeVisible();
+
+      // A scripted scroll up (a scrollbar drag or keys) mid-stream lets go the same way.
+      await latest(page).click();
+      await expect.poll(() => gap(page)).toBeLessThanOrEqual(2);
+      await scrollSettled(page);
+      await transcriptOf(page).evaluate(node => { node.scrollTop -= 400; });
+      await twoFrames(page);
+      const scripted = await topOf(last);
+      for (let n = 15; n < 20; n++) { await streamText(page, streamParagraph(n)); await twoFrames(page); }
+      await expect(live).toContainText('Streamed paragraph 19.');
+      await page.waitForTimeout(300);
+      expect(Math.abs(await topOf(last) - scripted)).toBeLessThanOrEqual(1);
+      expect(await gap(page)).toBeGreaterThan(400);
       expect(errors).toEqual([]);
     });
 
@@ -290,6 +486,37 @@ test.describe('thread scroll indicator', () => {
       await expect(preview(page)).toBeHidden();
       await page.setViewportSize({ width: 1280, height: 800 });
       await expect(rail(page)).toBeVisible();
+      expect(errors).toEqual([]);
+    });
+
+    test('the rail is bare (transparent, square, no shadow) while the hover preview is a visible card', async ({ page }) => {
+      const errors = await openThread(page);
+      const railStyle = () => rail(page).evaluate(node => {
+        const style = getComputedStyle(node);
+        return { background: style.backgroundColor, image: style.backgroundImage, radius: style.borderRadius, shadow: style.boxShadow, border: style.borderTopWidth };
+      });
+      expect(await railStyle()).toEqual({ background: 'rgba(0, 0, 0, 0)', image: 'none', radius: '0px', shadow: 'none', border: '0px' });
+      // Away from the bottom (the chevron shown) and with a tick hovered it stays bare.
+      await wheelOverTranscript(page, -900);
+      await scrollSettled(page);
+      await expect(latest(page)).toBeVisible();
+      await ticks(page).nth(4).hover();
+      await expect(preview(page)).toBeVisible();
+      expect(await railStyle()).toEqual({ background: 'rgba(0, 0, 0, 0)', image: 'none', radius: '0px', shadow: 'none', border: '0px' });
+
+      // The preview bubble keeps its glass: an opaque-enough fill, a hairline edge, rounded corners and a real size.
+      const card = await preview(page).evaluate(node => {
+        const style = getComputedStyle(node), box = node.getBoundingClientRect();
+        const alpha = (color: string) => { const parts = color.match(/[\d.]+/g)?.map(Number) ?? []; return color.startsWith('rgba') || color.includes('/') ? parts[3] ?? 1 : parts.length ? 1 : 0; };
+        return { fillAlpha: alpha(style.backgroundColor), shadow: style.boxShadow, radius: parseFloat(style.borderTopLeftRadius), width: box.width, height: box.height };
+      });
+      expect(card.fillAlpha).toBeGreaterThan(0.3);
+      expect(card.shadow).not.toBe('none');
+      expect(card.radius).toBeGreaterThan(0);
+      expect(card.width).toBeGreaterThan(60);
+      expect(card.height).toBeGreaterThan(20);
+      await expect.poll(() => preview(page).evaluate(node => Number(getComputedStyle(node).opacity))).toBe(1);
+      await expect(preview(page).locator('.thread-scroll-preview-text')).toHaveText('Prompt 04: explain part 04');
       expect(errors).toEqual([]);
     });
 
@@ -518,6 +745,109 @@ test.describe('thread scroll indicator', () => {
       await expect(target).toBeInViewport();
       // The rail counts the fetched page's turns too.
       await expect(ticks(page).first()).toHaveAttribute('data-preview-title', /of 100$/);
+      expect(errors).toEqual([]);
+    });
+  });
+
+  test.describe('older turns with clamped replies', () => {
+    test('holdPlace and captureTranscriptAnchor measure the final layout, whatever CSS.supports says of overflow-anchor', async ({ page }) => {
+      await page.goto('/');
+      const result = await page.evaluate(async () => {
+        const { holdPlace } = await import(/* @vite-ignore */ `${location.origin}/src/transcript-window.ts`);
+        const { captureTranscriptAnchor } = await import(/* @vite-ignore */ `${location.origin}/src/transcript-scroll.ts`);
+        // WebKit 26 answers true here yet does not anchor the transcript: the scroller below never anchors either.
+        const claims = CSS.supports('overflow-anchor', 'auto');
+        const make = () => {
+          const scroller = document.body.appendChild(document.createElement('div'));
+          scroller.style.cssText = 'position:fixed;inset:0;overflow:auto;overflow-anchor:none;background:white;z-index:9999';
+          scroller.innerHTML = Array.from({ length: 200 }, (_, index) => `<article data-message-id="${index}" style="height:100px">${index}</article>`).join('');
+          scroller.scrollTop = 10_000;
+          return scroller;
+        };
+        const land = (scroller: HTMLElement) => {
+          // An older turn lands above with an unclamped reply (5000px) that clamps (to 300px) before the restore.
+          const added = document.createElement('article');
+          added.style.height = '5000px';
+          scroller.prepend(added);
+          added.style.height = '300px';
+        };
+        const top = (scroller: HTMLElement) => scroller.querySelector('[data-message-id="100"]')!.getBoundingClientRect().top;
+        const held = make(), before = top(held), restore = holdPlace(held);
+        land(held);
+        restore();
+        const pending = make(), pendingBefore = top(pending), restorePending = holdPlace(pending);
+        // The clamp still to come is counted, never dropped as if the engine would make up for it.
+        const late = document.createElement('article');
+        late.style.height = '5000px';
+        pending.prepend(late);
+        restorePending(-4700);
+        late.style.height = '300px';
+        const pendingMoved = top(pending) - pendingBefore;
+        const anchored = make(), anchoredBefore = top(anchored), restoreAnchor = captureTranscriptAnchor(anchored);
+        land(anchored);
+        restoreAnchor();
+        const result = { claims, held: top(held) - before, pending: pendingMoved, anchored: top(anchored) - anchoredBefore };
+        [held, pending, anchored].forEach(node => node.remove());
+        return result;
+      });
+      expect(Math.abs(result.held)).toBeLessThanOrEqual(1);
+      expect(Math.abs(result.pending)).toBeLessThanOrEqual(1);
+      expect(Math.abs(result.anchored)).toBeLessThanOrEqual(1);
+    });
+
+    test('prepending older clamped turns and an older page never snaps the reader back to the bottom', async ({ page }) => {
+      test.setTimeout(120_000);
+      const errors = watchErrors(page);
+      await page.addInitScript(() => localStorage.setItem('pandacode.wallpapers', 'false'));
+      await exposePreviewMessages(page);
+      await seedMirror(page);
+      await setThread(page, 'mirror-long', clampedThreadOf(CLAMPED_TURNS));
+      await mirrorRow(page).click();
+      await expect(promptOf(page, CLAMPED_TURNS - 1)).toBeVisible();
+      await settled(page);
+      await expect.poll(() => gap(page)).toBeLessThanOrEqual(2);
+      // The first page cuts turn 10 and the oldest turns are not loaded at all: an older page has to be fetched and joined.
+      await expect(promptOf(page, 0)).toHaveCount(0);
+      await probePrepends(page);
+
+      let reachedTop = false, lastGap = 0;
+      for (let gesture = 0; gesture < 60 && !reachedTop; gesture++) {
+        await wheelAt(page, await plainPoint(page), -1400);
+        await scrollSettled(page);
+        // Whatever lands now (a step held back for the gesture, an older page, a lazy reply formatting near the reader)
+        // must leave what is on the reading line where it is.
+        const before = await readingAnchor(page);
+        await settled(page);
+        await page.waitForTimeout(250);
+        await settled(page);
+        const after = await readingAnchorTop(page);
+        expect(Math.abs(after - before), `gesture ${gesture}: the reading line moved by ${after - before}px`).toBeLessThanOrEqual(4);
+        // Never back toward the bottom: every gesture leaves more of the thread below the reader than the last one did.
+        const below = await gap(page);
+        expect(below, `gesture ${gesture}: the reader went back toward the bottom`).toBeGreaterThan(Math.max(1000, lastGap - 4));
+        lastGap = below;
+        reachedTop = await promptOf(page, 0).count() > 0 && await scrollTop(page) <= 2;
+      }
+      expect(reachedTop).toBe(true);
+      const probe = await page.evaluate(() => (window as any).__prependProbe as { shifts: number[]; joins: number[]; maxReply: number; lazyPaints: number; unclamped: number });
+      // Several steps up landed, each keeping the reader within a few pixels; the fetched page joined the cut turn.
+      expect(probe.shifts.length).toBeGreaterThanOrEqual(2);
+      for (const shift of probe.shifts) expect(Math.abs(shift)).toBeLessThanOrEqual(4);
+      expect(probe.joins.length).toBeGreaterThanOrEqual(1);
+      for (const shift of probe.joins) expect(Math.abs(shift)).toBeLessThanOrEqual(4);
+      await expect(transcriptOf(page).locator('.user-message').filter({ hasText: 'Prompt 10:' })).toHaveCount(1);
+      // Every lazy reply formatted and clamped under Read more; its text never sat in the document unclamped (the saved
+      // markup already holds it escaped, clamped as it draws, so this guards the lazy paint rather than reproduce a spike).
+      for (const turn of LAZY_TURNS) {
+        const reply = transcriptOf(page).locator('.turn-card-reply').filter({ hasText: `Lazy ${label(turn)} paragraph 0.` });
+        await expect(reply).toHaveCount(1);
+        await expect(reply).toHaveAttribute('data-overflow', '');
+        await expect(reply.locator('p').first()).toBeAttached();
+      }
+      const clamped = await transcriptOf(page).locator('.turn-card-reply[data-overflow]:not([data-open])').evaluateAll(replies => Math.max(...replies.map(reply => (reply as HTMLElement).offsetHeight)));
+      expect(probe.maxReply).toBeLessThanOrEqual(clamped + 40);
+      expect(probe.lazyPaints).toBeGreaterThanOrEqual(1);
+      expect(probe.unclamped).toBe(0);
       expect(errors).toEqual([]);
     });
   });
