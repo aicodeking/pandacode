@@ -55,12 +55,21 @@ Settings → Agents → Model routing:
   30 to 90%, compared with the lower bound of P. A saved 0.8 (the old default)
   becomes 0.5; any other saved value is kept.
 - **Profiler**: *Ready*, *Downloading…*, *Not downloaded* or *Failed*, with
-  **Download** (or **Retry**). *Keyword heuristic: …* (no button) means the profiler
-  cannot run on this system — a build without the profiler (Intel Mac, x86_64 Linux,
-  x86_64 Windows), macOS older than 13.4, or ONNX Runtime failed to start —
-  and the heuristic routes for the rest of the session.
+  **Download** (or **Retry**). *Ready* means the verified model files are cached,
+  not that the runtime loaded in this session. *Keyword heuristic: …* (no button)
+  means the profiler cannot run on this system — a build without the profiler
+  (Intel Mac, x86_64 Linux), macOS older than 13.4, an unsupported Windows x64 CPU,
+  a missing runtime, or a fatal runtime error — and the heuristic routes for the
+  rest of the session.
 - **Route**: describe a task to see the pick and the alternatives, with
   P(success) and estimated cost.
+
+On Windows x64 the optional workspace header indicator shows the current startup
+lifecycle: `Router: Starting…`, `Router: ONNX Ready` or `Router: ONNX Unavailable`.
+When no lifecycle is current (routing off, runtime idle or unloaded, or another
+target), it keeps the historical last-batch label (`Router: —`, `Router: ONNX`,
+`Router: Keywords` or `Router: Mixed`). It does not replace **Route**, which shows
+how a particular task was classified.
 
 The prompt box's **Team** button (`showTeamMenu` in `src/main.ts`) offers *No team*,
 *Cheap team*, *Balanced team* and *Best team* while routing is on (and *Team*, where the
@@ -150,11 +159,28 @@ content from your work. It happens only while routing is enabled and only when a
 on, or a team's first routed dispatch) or when you click **Download** or **Route** in
 Settings, never at launch. After a failed attempt it waits 10 minutes before trying again
 (**Retry** works any time). On macOS older than 13.4 it never happens: the bundled ONNX
-Runtime needs 13.4, so routing keeps the keyword heuristic there. Builds for Intel Macs,
-x86_64 Linux and x86_64 Windows have no ONNX profiler at all (no baseline-compatible prebuilt ONNX Runtime;
-`panda_onnx` in `src-tauri/build.rs`), so they also route with the heuristic and never
-download it. Routing itself makes no
-network request.
+Runtime needs 13.4. Intel Macs, x86_64 Linux, and Windows x64 without the required CPU
+features or bundled DLL use keywords without downloading the profiler files. Routing
+inference makes no network request.
+
+## Windows x64 compatibility
+
+The installer bundles the CPU build of ONNX Runtime 1.31.0. PandaCode checks for AVX,
+AVX2, FMA, F16C, BMI1, BMI2 and SSE4.2 before starting a separate process. The process
+loads the DLL and runs a smoke inference before accepting tasks. When routing is
+enabled, the target is supported and the verified model files are cached, that process
+starts in the background at desktop launch; launch downloads nothing, and the process
+still unloads after idleness. Ordinary dispatch uses keywords while it starts;
+**Route** in Settings can wait and shows how that task was classified. If the runtime
+cannot start (for example, if the x64 Microsoft Visual C++ v14 Redistributable is
+missing) or the process crashes or times out, PandaCode uses keywords for the rest of
+the session. A bad model checksum can still be repaired with **Retry**.
+
+The previous static build could execute BMI2 in a C runtime initializer before
+PandaCode's entry point, causing `0xc000001d` on a CPU that lacked it
+([#205](https://github.com/aicodeking/pandacode/issues/205),
+[#207](https://github.com/aicodeking/pandacode/pull/207)). The app does not link
+the Windows x64 DLL or load it into the main process. Windows ARM64 is unchanged.
 
 ## Limits
 
@@ -168,8 +194,8 @@ network request.
 
 - `src-tauri/src/panda_router.rs` and `panda_router/`: the ONNX profiler (`ort`,
   `tokenizers`), the MIRT matcher over the model cards, the success head and the v4
-  policy with its escalation ladder. CI (macOS job) checks the
-  pinned assets: exact tokenizer ids and well-formed profiles and routes. int8 results
+  policy with its escalation ladder. CI checks the pinned assets on macOS and tests
+  real inference through PandaCode's child process on Windows x64. int8 results
   vary slightly by CPU, so numeric parity with the Python reference (1e-4) runs with
   `PANDA_ROUTER_STRICT=1` on the machine that dumped `data/parity.json`; the matcher
   is pinned exactly by the heuristic parity tests.

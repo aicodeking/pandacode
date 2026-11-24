@@ -2,6 +2,10 @@
 mod linux_fonts;
 
 fn main() {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    if pandacode_lib::handle_router_worker() {
+        return;
+    }
     // The crash guard (crash_guard.rs): no GUI, watches the app and relaunches it after a crash.
     if pandacode_lib::handle_crash_guard() {
         return;

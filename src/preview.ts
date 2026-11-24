@@ -125,6 +125,14 @@ let id = 10;
 const ROUTING_KEY = 'pandacode.preview.routing';
 let previewRouting = { enabled: true, mode: 'balanced', minP: 0.5, profiler: 'missing', error: null as string | null };
 try { previewRouting = { ...previewRouting, ...JSON.parse(localStorage.getItem(ROUTING_KEY) ?? '{}') }; } catch { /* Defaults. */ }
+let previewLastProfiler: 'heuristic' | null = null;
+// La disponibilidad la informa la app nativa; el preview no la simula salvo que una prueba la envíe.
+const previewProfilerReadiness: string | null = null;
+function reportPreviewRouting(): 'heuristic' {
+  previewLastProfiler = 'heuristic';
+  emit('model-routing-profiler', previewLastProfiler);
+  return previewLastProfiler;
+}
 let previewExclusions = { providers: [] as string[], models: [] as { provider: string; model: string }[] };
 // Two seeded tiers; keys are the mock's normalized model names.
 let previewTiers: Record<string, string> = { 'claude-sonnet-5-5': 'S', 'deepseek-v4-pro': 'B' };
@@ -148,7 +156,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
   const rated = pool.map((m, i) => ({ provider: m.provider, model: m.model, name: m.name, cardId: `${m.provider}:${m.model}`, pSuccess: Math.max(0.05, Math.min(0.99, 0.95 - difficulty * 0.6 + (i % 7) * 0.05)), estCostUsd: 0.002 * (1 + (i % 9)), estLatencyMs: 2000 + i * 100 }));
   const score = (m: typeof rated[number]) => previewRouting.mode === 'quality' ? m.pSuccess : previewRouting.mode === 'cheapest' ? (m.pSuccess >= previewRouting.minP ? 1 - m.estCostUsd : -1) : m.pSuccess - m.estCostUsd * 5;
   const ranking = [...rated].sort((a, b) => score(b) - score(a));
-  return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: 'onnx', latencyMs: 12 };
+  return { pick: ranking[0] ?? null, ranking, unrated: [], difficulty: Math.max(1, Math.round(difficulty * 10)), category: /test|bug|fix/i.test(text) ? 'debugging' : 'general coding', profiler: reportPreviewRouting(), latencyMs: 12 };
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
 let previewClaudeRefresh = true;
@@ -1826,6 +1834,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'turn_change_diff': result = turnChanges.diff(args.sessionId, args.changeId, args.path); break;
     case 'model_routing_status': result = { ...previewRouting }; break;
+    case 'model_routing_last_profiler': result = previewLastProfiler; break;
+    case 'model_routing_profiler_readiness': result = previewProfilerReadiness; break;
     case 'model_routing_configure': previewRouting = { ...previewRouting, ...(args.enabled != null ? { enabled: Boolean(args.enabled) } : {}), ...(args.mode ? { mode: args.mode } : {}), ...(args.minP != null ? { minP: Math.min(0.9, Math.max(0.3, Number(args.minP))) } : {}) }; saveRouting(); result = { ...previewRouting }; break;
     case 'model_routing_prepare': previewRouting = { ...previewRouting, profiler: 'ready', error: null }; saveRouting(); result = { ...previewRouting }; break;
     case 'model_routing_exclusions': result = structuredClone(previewExclusions); break;
@@ -1844,7 +1854,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'architect_set_lead_guidance': result = architect.setLeadGuidance(args.guidance); break;
     case 'architect_save_profile': result = architect.saveProfile(args.id, args.name, args.setup); break;
     case 'architect_delete_profile': result = architect.deleteProfile(args.id); break;
-    case 'architect_start': architect.start(args.sessionId, args.text, args.imageIds); break;
+    case 'architect_start': {
+      architect.start(args.sessionId, args.text, args.imageIds);
+      if (previewRouting.enabled && architect.get(args.sessionId)?.config.auto) reportPreviewRouting();
+      break;
+    }
     case 'architect_control': result = architect.control(args.sessionId, args.action); break;
     case 'architect_worker_messages': result = architect.workerMessages(args.sessionId, args.workerId, args.beforeId); break;
     case 'architect_team_messages': result = architect.teamMessages(args.sessionId, args.afterId, args.limit); break;

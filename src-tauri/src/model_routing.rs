@@ -12,6 +12,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tauri::Emitter;
 use tokio::io::AsyncWriteExt;
 
 use crate::panda_router::{self, Mode, PoolModel, Preferences, Route, Router, TaskContext, Tier, Tiers};
@@ -31,6 +32,8 @@ const STALE_PART: Duration = Duration::from_secs(24 * 60 * 60);
 const LANGUAGES_TTL: Duration = Duration::from_secs(600);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_ASSET_BYTES: u64 = 128 * 1024 * 1024;
+/// Ready when the profiler was actually loaded; Windows x64 desktops only.
+const READINESS_EVENT: &str = "model-routing-profiler-readiness";
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -365,9 +368,116 @@ struct Runtime {
     failed_at: Mutex<Option<Instant>>,
     /// The loaded ONNX router and when it last routed; dropped after `IDLE_UNLOAD`, reloaded on use.
     onnx: tokio::sync::Mutex<Option<Loaded>>,
-    /// Verified files that ONNX Runtime still could not load: keyword heuristic for the rest of
-    /// this process, with no re-downloads.
+    /// El runtime no se puede usar en este proceso; no volver a descargar los archivos.
     unusable: OnceLock<String>,
+    last_profiler: LastProfiler,
+    /// Windows x64 desktop readiness: an in-flight load and an actually loaded router.
+    starting: AtomicBool,
+    loaded: AtomicBool,
+    readiness: Readiness,
+}
+
+/// Indicador opcional: último lote completado, independiente de la disponibilidad.
+#[derive(Default)]
+struct LastProfiler(Mutex<Option<&'static str>>);
+
+impl LastProfiler {
+    fn get(&self) -> Option<&'static str> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn record(&self, profilers: impl IntoIterator<Item = &'static str>, emit: impl FnOnce(&'static str)) {
+        let (mut onnx, mut heuristic) = (false, false);
+        for profiler in profilers {
+            match profiler {
+                "onnx" => onnx = true,
+                "heuristic" => heuristic = true,
+                _ => return,
+            }
+        }
+        let next = match (onnx, heuristic) {
+            (true, false) => "onnx",
+            (false, true) => "heuristic",
+            (true, true) => "mixed",
+            (false, false) => return,
+        };
+        // Serializa el valor y el evento para que los lotes concurrentes no los desordenen.
+        let mut last = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if *last != Some(next) {
+            *last = Some(next);
+            emit(next);
+        }
+    }
+}
+
+/// Local profiler readiness. `Ready` only after `Router::load` (the Windows child handshake)
+/// succeeded; assets on disk or a completed batch never make it ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfilerReadiness {
+    Disabled,
+    Idle,
+    Starting,
+    Ready,
+    Unavailable,
+}
+
+impl ProfilerReadiness {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Idle => "idle",
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// `unavailable` (unsupported or a fatal runtime failure) and `disabled` win over an in-flight
+/// start; a retryable bad-asset failure removes the files and leaves `idle`.
+fn readiness_state(unavailable: bool, enabled: bool, starting: bool, loaded: bool) -> ProfilerReadiness {
+    if unavailable {
+        ProfilerReadiness::Unavailable
+    } else if !enabled {
+        ProfilerReadiness::Disabled
+    } else if starting {
+        ProfilerReadiness::Starting
+    } else if loaded {
+        ProfilerReadiness::Ready
+    } else {
+        ProfilerReadiness::Idle
+    }
+}
+
+/// Last announced readiness: one event per change, applied in observation order so a slow
+/// observer cannot overwrite a newer state.
+#[derive(Default)]
+struct Readiness {
+    seq: AtomicU64,
+    announced: Mutex<(u64, Option<ProfilerReadiness>)>,
+}
+
+impl Readiness {
+    fn next(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    fn seed(&self, value: ProfilerReadiness) {
+        let mut announced = self.announced.lock().unwrap_or_else(|e| e.into_inner());
+        announced.1 = Some(value);
+    }
+
+    fn announce(&self, seq: u64, next: ProfilerReadiness, emit: impl FnOnce(&'static str)) {
+        let mut announced = self.announced.lock().unwrap_or_else(|e| e.into_inner());
+        if seq < announced.0 {
+            return;
+        }
+        announced.0 = seq;
+        if announced.1 != Some(next) {
+            announced.1 = Some(next);
+            emit(next.as_str());
+        }
+    }
 }
 
 struct Loaded {
@@ -402,7 +512,10 @@ fn watch_idle(rt: &'static Runtime) {
             tokio::time::sleep(wait).await;
             match unload_if_idle(&mut *rt.onnx.lock().await, Instant::now()) {
                 Some(left) => wait = left,
-                None => break,
+                None => {
+                    rt.forget_loaded();
+                    break;
+                }
             }
         }
     });
@@ -410,22 +523,47 @@ fn watch_idle(rt: &'static Runtime) {
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
 static HEURISTIC: LazyLock<Arc<Router>> = LazyLock::new(|| Arc::new(Router::heuristic()));
+static PROFILER_EVENT_APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+pub(crate) fn setup_desktop_profiler_events(app: &tauri::AppHandle) {
+    let _ = PROFILER_EVENT_APP.set(app.clone());
+}
+
+/// Windows x64 desktop only: servers and other targets report no readiness.
+fn readiness_supported() -> bool {
+    cfg!(all(target_os = "windows", target_arch = "x86_64")) && !crate::headless::active()
+}
+
+/// Loads cached profiler assets once at desktop startup when routing is on and the platform is
+/// supported: no download and no route, through the same single-flight start that dispatch uses.
+pub(crate) fn warm_desktop_profiler() {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        let Some(rt) = RUNTIME.get() else { return };
+        if crate::headless::active() {
+            return;
+        }
+        if !rt.settings().enabled || rt.unavailable().is_some() {
+            return;
+        }
+        let dir = rt.assets();
+        if !assets_present(&dir) {
+            return;
+        }
+        // `start_router` holds the loaded slot while the child starts, so a route that arrives
+        // now gets the heuristic instead of starting a second child.
+        tauri::async_runtime::spawn(async move {
+            let _ = start_router(rt, dir, false, Router::load).await;
+        });
+    }
+}
 
 pub fn setup(app_data: &Path) {
-    let settings = read_settings(&app_data.join(SETTINGS_FILE));
-    let _ = RUNTIME.set(Runtime {
-        root: app_data.to_path_buf(),
-        settings: Mutex::new(settings),
-        exclusions: Mutex::new(read_exclusions(&app_data.join(EXCLUSIONS_FILE))),
-        tiers: Mutex::new(read_tiers(&app_data.join(TIERS_FILE))),
-        error: Mutex::new(None),
-        downloading: AtomicBool::new(false),
-        attempts: AtomicU64::new(0),
-        download: tokio::sync::Mutex::new(()),
-        failed_at: Mutex::new(None),
-        onnx: tokio::sync::Mutex::new(None),
-        unusable: OnceLock::new(),
-    });
+    let _ = RUNTIME.set(Runtime::new(app_data));
+    // Desktop Windows x64: the first readiness value, without an event, so later changes emit.
+    if let Some(rt) = RUNTIME.get() {
+        rt.seed_readiness();
+    }
 }
 
 fn runtime() -> Result<&'static Runtime, String> {
@@ -433,6 +571,25 @@ fn runtime() -> Result<&'static Runtime, String> {
 }
 
 impl Runtime {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            settings: Mutex::new(read_settings(&root.join(SETTINGS_FILE))),
+            exclusions: Mutex::new(read_exclusions(&root.join(EXCLUSIONS_FILE))),
+            tiers: Mutex::new(read_tiers(&root.join(TIERS_FILE))),
+            error: Mutex::new(None),
+            downloading: AtomicBool::new(false),
+            attempts: AtomicU64::new(0),
+            download: tokio::sync::Mutex::new(()),
+            failed_at: Mutex::new(None),
+            onnx: tokio::sync::Mutex::new(None),
+            unusable: OnceLock::new(),
+            last_profiler: LastProfiler::default(),
+            starting: AtomicBool::new(false),
+            loaded: AtomicBool::new(false),
+            readiness: Readiness::default(),
+        }
+    }
     fn settings(&self) -> Settings {
         self.settings.lock().map(|s| *s).unwrap_or_default()
     }
@@ -450,11 +607,67 @@ impl Runtime {
             *slot = error;
         }
     }
-    fn status(&self) -> RoutingStatus {
-        let s = self.settings();
-        if let Some(reason) = unsupported_os() {
+    fn unavailable(&self) -> Option<&str> {
+        if let Some(reason) = self.unusable.get() {
+            return Some(reason.as_str());
+        }
+        if let Some(reason) = unsupported_reason() {
             let _ = self.unusable.set(reason);
         }
+        self.unusable.get().map(String::as_str)
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    fn profiler_failed(&'static self, reason: &str) {
+        let _ = self.unusable.set(format!("The profiler stopped: {reason}"));
+        if let Ok(mut slot) = self.onnx.try_lock() {
+            slot.take();
+        } else {
+            tauri::async_runtime::spawn(async move { self.onnx.lock().await.take(); });
+        }
+        self.forget_loaded();
+    }
+    fn classify_readiness(&self) -> ProfilerReadiness {
+        readiness_state(
+            self.unavailable().is_some(),
+            self.settings().enabled,
+            self.starting.load(Ordering::SeqCst),
+            self.loaded.load(Ordering::SeqCst),
+        )
+    }
+    /// Emits `model-routing-profiler-readiness` only when the value changes.
+    fn announce_readiness(&'static self) {
+        if !readiness_supported() {
+            return;
+        }
+        let seq = self.readiness.next();
+        let next = self.classify_readiness();
+        self.readiness.announce(seq, next, |value| {
+            if let Some(app) = PROFILER_EVENT_APP.get() {
+                let _ = app.emit_to("main", READINESS_EVENT, value);
+            }
+        });
+    }
+    /// First value, without an event: a later transition is a change from this state.
+    fn seed_readiness(&self) {
+        if readiness_supported() {
+            self.readiness.seed(self.classify_readiness());
+        }
+    }
+    fn begin_loading(&'static self) {
+        self.starting.store(true, Ordering::SeqCst);
+        self.announce_readiness();
+    }
+    fn loaded_router(&'static self, loaded: bool) {
+        self.starting.store(false, Ordering::SeqCst);
+        self.loaded.store(loaded, Ordering::SeqCst);
+        self.announce_readiness();
+    }
+    fn forget_loaded(&'static self) {
+        self.loaded_router(false);
+    }
+    fn status(&self) -> RoutingStatus {
+        let s = self.settings();
+        let _ = self.unavailable();
         let error = self.error();
         let profiler = if self.unusable.get().is_some() {
             "unavailable"
@@ -579,9 +792,15 @@ async fn download_one(client: &reqwest::Client, url: &str, dest: &Path, sha: &st
 }
 
 /// Single flight: concurrent callers share one download and its outcome.
-async fn prepare(rt: &'static Runtime) -> Result<(), String> {
+async fn prepare(rt: &Runtime) -> Result<(), String> {
+    if let Some(reason) = rt.unavailable() {
+        return Err(reason.into());
+    }
     let seen = rt.attempts.load(Ordering::SeqCst);
     let _guard = rt.download.lock().await;
+    if let Some(reason) = rt.unavailable() {
+        return Err(reason.into());
+    }
     let dir = rt.assets();
     if assets_present(&dir) {
         return Ok(());
@@ -604,14 +823,19 @@ async fn prepare(rt: &'static Runtime) -> Result<(), String> {
 /// Starts (or joins) the download in the background while routing is on, unless one failed recently.
 fn background_download(rt: &'static Runtime) -> Option<tauri::async_runtime::JoinHandle<Result<(), String>>> {
     let recent_failure = rt.failed_at.lock().ok().and_then(|t| *t).is_some_and(|t| t.elapsed() < RETRY_AFTER);
-    (rt.settings().enabled && !recent_failure && rt.unusable.get().is_none() && unsupported_os().is_none()).then(|| tauri::async_runtime::spawn(prepare(rt)))
+    (rt.settings().enabled && !recent_failure && rt.unavailable().is_none()).then(|| tauri::async_runtime::spawn(prepare(rt)))
 }
 
-/// The bundled ONNX Runtime is built for macOS 13.4; older systems keep the keyword heuristic and
-/// never download or load the profiler.
-fn unsupported_os() -> Option<String> {
+/// La falta de runtime mantiene la heurística y bloquea la descarga de archivos.
+fn unsupported_reason() -> Option<String> {
     if !panda_router::ONNX_AVAILABLE {
-        return Some("This build of PandaCode has no ONNX profiler (Intel Mac, x86_64 Linux and x86_64 Windows); routing uses the keyword heuristic.".into());
+        return Some("This build of PandaCode has no ONNX profiler; routing uses the keyword heuristic.".into());
+    }
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        panda_router::isolated_profiler_failure()
+            .map(|reason| format!("The profiler stopped: {reason}"))
+            .or_else(panda_router::isolated_profiler_unsupported)
     }
     #[cfg(target_os = "macos")]
     {
@@ -626,7 +850,10 @@ fn unsupported_os() -> Option<String> {
             return Some(format!("The profiler needs macOS {}.{} or later; routing uses the keyword heuristic.", MIN_MACOS.0, MIN_MACOS.1));
         }
     }
-    None
+    #[cfg(not(all(target_os = "windows", target_arch = "x86_64")))]
+    {
+        None
+    }
 }
 
 /// Whether a `sw_vers -productVersion` string is at least `MIN_MACOS`. Unparseable fails closed:
@@ -640,17 +867,31 @@ fn macos_supported(version: &str) -> bool {
     }
 }
 
-/// The ONNX router when its files are here (loaded once), else the heuristic. A missing profiler
-/// downloads in the background; only `wait` (Settings' Try it) waits for it, up to `DOWNLOAD_WAIT`.
+type LoadedSlot = tokio::sync::MutexGuard<'static, Option<Loaded>>;
+
+async fn router_slot(rt: &'static Runtime, wait: bool) -> Option<LoadedSlot> {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) && !wait {
+        rt.onnx.try_lock().ok()
+    } else {
+        Some(rt.onnx.lock().await)
+    }
+}
+
+/// En Windows x64 solo «Try it» espera el arranque; las demás rutas usan el perfilador cuando esté listo.
 async fn router(rt: &'static Runtime, wait: bool) -> Arc<Router> {
-    if let Some(router) = touch(&mut *rt.onnx.lock().await) {
-        return router;
+    {
+        let Some(mut slot) = router_slot(rt, wait).await else { return HEURISTIC.clone() };
+        if rt.unusable.get().is_some() {
+            slot.take();
+            rt.forget_loaded();
+            return HEURISTIC.clone();
+        }
+        if let Some(router) = touch(&mut slot) {
+            return router;
+        }
     }
-    if rt.unusable.get().is_some() {
-        return HEURISTIC.clone();
-    }
-    if let Some(reason) = unsupported_os() {
-        let _ = rt.unusable.set(reason);
+    if rt.unavailable().is_some() {
+        rt.announce_readiness();
         return HEURISTIC.clone();
     }
     let dir = rt.assets();
@@ -663,23 +904,65 @@ async fn router(rt: &'static Runtime, wait: bool) -> Arc<Router> {
             return HEURISTIC.clone();
         }
     }
-    // Single flight: a concurrent caller that loaded it meanwhile wins.
-    let mut slot = rt.onnx.lock().await;
+    start_router(rt, dir, wait, Router::load).await
+}
+
+async fn start_router(
+    rt: &'static Runtime,
+    dir: PathBuf,
+    wait: bool,
+    load: impl FnOnce(&Path) -> Result<Router, String> + Send + 'static,
+) -> Arc<Router> {
+    let Some(mut slot) = router_slot(rt, wait).await else { return HEURISTIC.clone() };
+    let isolated = cfg!(all(target_os = "windows", target_arch = "x86_64"));
+    if rt.unusable.get().is_some() || (!isolated && rt.unavailable().is_some()) {
+        slot.take();
+        rt.forget_loaded();
+        return HEURISTIC.clone();
+    }
     if let Some(router) = touch(&mut slot) {
         return router;
     }
+    if isolated {
+        // Cede el guard al trabajo antes de devolver la heurística; no puede arrancar otro hijo.
+        if !rt.settings().enabled || !assets_present(&dir) {
+            return HEURISTIC.clone();
+        }
+        rt.begin_loading();
+        let pending = tauri::async_runtime::spawn(load_router(rt, dir, slot, load));
+        if wait {
+            pending.await.unwrap_or_else(|_| HEURISTIC.clone())
+        } else {
+            HEURISTIC.clone()
+        }
+    } else {
+        load_router(rt, dir, slot, load).await
+    }
+}
+
+async fn load_router(
+    rt: &'static Runtime,
+    dir: PathBuf,
+    mut slot: LoadedSlot,
+    load: impl FnOnce(&Path) -> Result<Router, String> + Send + 'static,
+) -> Arc<Router> {
     let load_dir = dir.clone();
-    let loaded = match tokio::task::spawn_blocking(move || Router::load(&load_dir)).await {
+    let loaded = match tokio::task::spawn_blocking(move || load(&load_dir)).await {
         Ok(result) => result,
         Err(e) => Err(e.to_string()),
     };
     match loaded {
+        Ok(_) if rt.unusable.get().is_some() => {
+            rt.forget_loaded();
+            HEURISTIC.clone()
+        }
         Ok(router) => {
             for old in OLD_ASSET_DIRS {
                 let _ = std::fs::remove_dir_all(rt.root.join(old));
             }
             let router = Arc::new(router);
             *slot = Some(Loaded { router: router.clone(), used: Instant::now() });
+            rt.loaded_router(true);
             watch_idle(rt);
             router
         }
@@ -694,10 +977,12 @@ async fn router(rt: &'static Runtime, wait: bool) -> Arc<Router> {
             if let Ok(mut failed_at) = rt.failed_at.lock() {
                 *failed_at = Some(Instant::now());
             }
+            rt.forget_loaded();
             HEURISTIC.clone()
         }
         Err(error) => {
             let _ = rt.unusable.set(format!("The profiler could not start: {error}"));
+            rt.forget_loaded();
             HEURISTIC.clone()
         }
     }
@@ -729,7 +1014,20 @@ pub async fn route_jobs(pool: Vec<PoolModel>, jobs: Vec<Job>, mode: Option<Mode>
 
 async fn run(rt: &'static Runtime, prefs: Preferences, pool: Vec<PoolModel>, jobs: Vec<Job>, wait: bool) -> Result<Vec<Route>, String> {
     let router = router(rt, wait).await;
-    tokio::task::spawn_blocking(move || route_with(&router, &prefs, &pool, jobs)).await.map_err(|e| e.to_string())?
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    let isolated = !Arc::ptr_eq(&router, &HEURISTIC);
+    let result = tokio::task::spawn_blocking(move || route_with(&router, &prefs, &pool, jobs)).await;
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    if let Some(reason) = panda_router::isolated_profiler_failure().filter(|_| isolated) {
+        rt.profiler_failed(reason);
+    }
+    let routes = result.map_err(|e| e.to_string())??;
+    rt.last_profiler.record(routes.iter().map(|r| r.profiler), |value| {
+        if let Some(app) = PROFILER_EVENT_APP.get() {
+            let _ = app.emit_to("main", "model-routing-profiler", value);
+        }
+    });
+    Ok(routes)
 }
 
 /// A routing pool from (provider, model, name) entries: a `default` entry is dropped when the same
@@ -807,7 +1105,7 @@ fn top_languages<'a>(paths: impl Iterator<Item = &'a str>) -> Vec<String> {
 
 pub const OFF: &str = "Model routing is off (Settings → Agents → Model routing).";
 
-/// Checks the profiler files (and once `sw_vers`): the IPC command runs it on the blocking pool.
+/// El IPC comprueba la plataforma y los archivos en el pool de bloqueo.
 pub fn model_routing_status() -> Result<RoutingStatus, String> {
     Ok(runtime()?.status())
 }
@@ -817,6 +1115,20 @@ pub fn model_routing_status() -> Result<RoutingStatus, String> {
 #[tauri::command(rename = "model_routing_status")]
 pub async fn model_routing_status_command() -> Result<RoutingStatus, String> {
     crate::blocking(model_routing_status).await
+}
+
+/// Windows x64 desktop only; `null` on other targets, in a server and before setup.
+#[tauri::command]
+pub fn model_routing_profiler_readiness() -> Option<&'static str> {
+    if !readiness_supported() {
+        return None;
+    }
+    RUNTIME.get().map(|rt| rt.classify_readiness().as_str())
+}
+
+#[tauri::command]
+pub async fn model_routing_last_profiler() -> Option<&'static str> {
+    RUNTIME.get().and_then(|rt| rt.last_profiler.get())
 }
 
 /// `model_routing_configure` for the webview, off the main thread: the settings lock across the
@@ -844,18 +1156,15 @@ pub fn model_routing_configure(enabled: Option<bool>, mode: Option<Mode>, min_p:
         write_settings(&rt.root.join(SETTINGS_FILE), &next)?;
         *settings = next;
     }
+    // Activation after launch updates readiness (disabled/idle) without starting a download.
+    rt.announce_readiness();
     Ok(rt.status())
 }
 
 #[tauri::command]
 pub async fn model_routing_prepare() -> Result<RoutingStatus, String> {
     let rt = runtime()?;
-    if let Some(reason) = unsupported_os() {
-        let _ = rt.unusable.set(reason);
-    }
-    if rt.unusable.get().is_none() {
-        let _ = prepare(rt).await;
-    }
+    let _ = prepare(rt).await;
     Ok(rt.status())
 }
 
@@ -1111,6 +1420,102 @@ mod tests {
     }
 
     #[test]
+    fn last_profiler_classifies_completed_batches_and_only_emits_changes() {
+        let cache = LastProfiler::default();
+        assert_eq!(cache.get(), None);
+        let cases: &[(&[&str], Option<&str>, bool)] = &[
+            (&[], None, false),
+            (&["onnx", "onnx"], Some("onnx"), true),
+            (&[], Some("onnx"), false),
+            (&["onnx"], Some("onnx"), false),
+            (&["onnx", "heuristic"], Some("mixed"), true),
+            (&["heuristic", "onnx", "heuristic"], Some("mixed"), false),
+            (&["heuristic", "heuristic"], Some("heuristic"), true),
+            (&["ready"], Some("heuristic"), false),
+            (&["onnx"], Some("onnx"), true),
+        ];
+        for &(batch, expected, changed) in cases {
+            let mut emitted = None;
+            cache.record(batch.iter().copied(), |value| emitted = Some(value));
+            assert_eq!(cache.get(), expected, "{batch:?}");
+            assert_eq!(emitted, if changed { expected } else { None }, "{batch:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn last_profiler_does_not_change_routes_without_a_desktop_handle() {
+        let dir = std::env::temp_dir().join(format!("pandacode-last-profiler-{}", crate::storage::id()));
+        let rt: &'static Runtime = Box::leak(Box::new(Runtime::new(&dir)));
+        rt.unusable.set("Test".into()).unwrap();
+        let prefs = Preferences::default();
+        let pool = pool_from([("claude", "sonnet", "Sonnet")]);
+        let jobs = || vec![Job { text: "Fix a typo".into(), ctx: TaskContext::default(), failed: vec![] }];
+        let route_json = |routes: Vec<Route>| {
+            let mut json = serde_json::to_value(&routes[0]).unwrap();
+            json.as_object_mut().unwrap().remove("latencyMs");
+            json
+        };
+        let expected = route_json(route_with(&Router::heuristic(), &prefs, &pool, jobs()).unwrap());
+
+        assert_eq!(rt.last_profiler.get(), None);
+        for wait in [true, false] {
+            let routes = run(rt, prefs, pool.clone(), jobs(), wait).await.unwrap();
+            assert_eq!(routes.len(), 1);
+            assert_eq!(route_json(routes), expected);
+            assert_eq!(rt.last_profiler.get(), Some("heuristic"));
+        }
+        assert!(run(rt, prefs, pool, vec![], false).await.unwrap().is_empty());
+        assert_eq!(rt.last_profiler.get(), Some("heuristic"));
+        assert!(!dir.exists());
+    }
+
+    #[test]
+    fn profiler_readiness_matches_the_serialized_contract() {
+        use ProfilerReadiness::*;
+        let cases = [
+            ((true, true, false, false), Unavailable),
+            ((true, false, false, false), Unavailable),
+            ((false, false, false, true), Disabled),
+            ((false, false, true, false), Disabled),
+            ((false, true, true, false), Starting),
+            ((false, true, true, true), Starting),
+            ((false, true, false, true), Ready),
+            ((false, true, false, false), Idle),
+        ];
+        for ((unavailable, enabled, starting, loaded), want) in cases {
+            assert_eq!(readiness_state(unavailable, enabled, starting, loaded), want);
+        }
+        assert_eq!(Disabled.as_str(), "disabled");
+        assert_eq!(Idle.as_str(), "idle");
+        assert_eq!(Starting.as_str(), "starting");
+        assert_eq!(Ready.as_str(), "ready");
+        assert_eq!(Unavailable.as_str(), "unavailable");
+        // The command's `Option`: null off Windows x64 desktops or before setup.
+        assert_eq!(serde_json::to_value(Option::<&'static str>::None).unwrap(), serde_json::Value::Null);
+        assert_eq!(serde_json::to_value(Some(Ready.as_str())).unwrap(), serde_json::json!("ready"));
+    }
+
+    #[test]
+    fn profiler_readiness_emits_changes_once_and_drops_stale_observations() {
+        let readiness = Readiness::default();
+        readiness.seed(ProfilerReadiness::Idle);
+        let mut events: Vec<&'static str> = Vec::new();
+        readiness.announce(1, ProfilerReadiness::Idle, |value| events.push(value));
+        readiness.announce(2, ProfilerReadiness::Starting, |value| events.push(value));
+        readiness.announce(3, ProfilerReadiness::Ready, |value| events.push(value));
+        // Una observación anterior que llega tarde no reemplaza un estado más nuevo.
+        readiness.announce(2, ProfilerReadiness::Idle, |value| events.push(value));
+        readiness.announce(4, ProfilerReadiness::Ready, |value| events.push(value));
+        readiness.announce(5, ProfilerReadiness::Idle, |value| events.push(value));
+        assert_eq!(events, ["starting", "ready", "idle"]);
+    }
+
+    #[test]
+    fn profiler_readiness_is_desktop_windows_x64_only() {
+        assert_eq!(readiness_supported(), cfg!(all(target_os = "windows", target_arch = "x86_64")));
+    }
+
+    #[test]
     fn pool_validation() {
         let entry = |p: &str| PoolEntry { provider: p.into(), model: "m".into(), name: "n".into() };
         assert!(validate_pool(&[entry("claude")]).is_ok());
@@ -1140,6 +1545,125 @@ mod tests {
         assert_eq!(unload_if_idle(&mut slot, used), None);
     }
 
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn windows_onnx_failure_evicts_loaded_router_and_blocks_retry() {
+        let dir = std::env::temp_dir().join(format!("pandacode-router-latch-{}", crate::storage::id()));
+        let rt: &'static Runtime = Box::leak(Box::new(Runtime::new(&dir)));
+        *rt.onnx.lock().await = Some(Loaded { router: Arc::new(Router::heuristic()), used: Instant::now() });
+        rt.profiler_failed("child timed out");
+        assert!(rt.onnx.lock().await.is_none());
+        assert_eq!(rt.status().profiler, "unavailable");
+        assert_eq!(prepare(rt).await.unwrap_err(), "The profiler stopped: child timed out");
+        assert_eq!(rt.attempts.load(Ordering::SeqCst), 0);
+        assert!(!dir.exists());
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn windows_onnx_dispatch_does_not_wait_or_duplicate_startup() {
+        let deadline = Duration::from_secs(2);
+        let dir = std::env::temp_dir().join(format!("pandacode-router-single-flight-{}", crate::storage::id()));
+        let rt: &'static Runtime = Box::leak(Box::new(Runtime::new(&dir)));
+        std::fs::create_dir_all(rt.assets()).unwrap();
+        for (file, _) in panda_router::ASSETS {
+            std::fs::write(rt.assets().join(file), b"").unwrap();
+        }
+
+        let starts = Arc::new(AtomicU64::new(0));
+        let first = starts.clone();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finish, hold) = std::sync::mpsc::channel();
+        let launch = start_router(rt, rt.assets(), false, move |_| {
+            first.fetch_add(1, Ordering::SeqCst);
+            started.send(()).unwrap();
+            hold.recv_timeout(Duration::from_secs(10)).unwrap();
+            Ok(Router::heuristic())
+        });
+        assert!(Arc::ptr_eq(&tokio::time::timeout(deadline, launch).await.unwrap(), &HEURISTIC));
+        tokio::time::timeout(deadline, ready).await.unwrap().unwrap();
+
+        for _ in 0..8 {
+            let route = tokio::time::timeout(deadline, router(rt, false)).await.unwrap();
+            assert!(Arc::ptr_eq(&route, &HEURISTIC));
+
+            // Simula una llamada que ya vio los archivos antes de que se tomara el guard.
+            let duplicate = starts.clone();
+            let raced = start_router(rt, rt.assets(), false, move |_| {
+                duplicate.fetch_add(1, Ordering::SeqCst);
+                Ok(Router::heuristic())
+            });
+            assert!(Arc::ptr_eq(&tokio::time::timeout(deadline, raced).await.unwrap(), &HEURISTIC));
+        }
+
+        finish.send(()).unwrap();
+        let duplicate = starts.clone();
+        let wait = start_router(rt, rt.assets(), true, move |_| {
+            duplicate.fetch_add(1, Ordering::SeqCst);
+            Ok(Router::heuristic())
+        });
+        let loaded = tokio::time::timeout(deadline, wait).await.unwrap();
+        assert!(!Arc::ptr_eq(&loaded, &HEURISTIC));
+        assert!(Arc::ptr_eq(&tokio::time::timeout(deadline, router(rt, false)).await.unwrap(), &loaded));
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[tokio::test]
+    async fn windows_onnx_profiles_real_assets_in_child() {
+        let assets = std::env::var_os("PANDA_ROUTER_ASSETS");
+        let exe = std::env::var_os("PANDA_ROUTER_TEST_EXE");
+        if assets.is_none() && exe.is_none() {
+            eprintln!("PANDA_ROUTER_ASSETS y PANDA_ROUTER_TEST_EXE no están definidos; se omite la inferencia real.");
+            return;
+        }
+        let assets = PathBuf::from(assets.expect("PANDA_ROUTER_ASSETS"));
+        let exe = PathBuf::from(exe.expect("PANDA_ROUTER_TEST_EXE"));
+        assert!(exe.is_absolute() && exe.is_file(), "PANDA_ROUTER_TEST_EXE: {}", exe.display());
+        let dir = std::env::temp_dir().join(format!("pandacode-router-x64-{}", crate::storage::id()));
+        let rt: &'static Runtime = Box::leak(Box::new(Runtime::new(&dir)));
+        std::fs::create_dir_all(rt.assets()).unwrap();
+        for (file, _) in panda_router::ASSETS {
+            std::fs::copy(assets.join(file), rt.assets().join(file)).unwrap_or_else(|e| panic!("{file}: {e}"));
+        }
+        assert_eq!(rt.status().profiler, "ready", "{:?}", rt.error());
+        let route_once = |wait| run(
+            rt,
+            Preferences::default(),
+            pool_from([("claude", "sonnet", "Sonnet")]),
+            vec![Job {
+                text: "Fix the flaky Rust test and run the suite".into(),
+                ctx: TaskContext { requires_tools: true, ..TaskContext::default() },
+                failed: vec![],
+            }],
+            wait,
+        );
+        let first = route_once(true).await.unwrap().remove(0);
+        assert_eq!(first.profiler, "onnx", "{:?}", rt.error());
+        assert!(first.pick.is_some());
+        assert!((1..=10).contains(&first.difficulty));
+        assert!(first.distribution.iter().all(|p| (0.0..=1.0).contains(p)));
+        assert!((first.distribution.iter().sum::<f64>() - 1.0).abs() < 1e-5);
+        let loaded = rt.onnx.lock().await.as_ref().unwrap().router.clone();
+        assert_eq!(route_once(false).await.unwrap()[0].profiler, "onnx", "{:?}", rt.error());
+        {
+            let mut slot = rt.onnx.lock().await;
+            let current = slot.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&loaded, &current.router));
+            let used = current.used;
+            assert_eq!(unload_if_idle(&mut slot, used + IDLE_UNLOAD), None);
+        }
+        drop(loaded);
+        std::fs::write(rt.assets().join(panda_router::ASSETS[0].0), b"corrupt").unwrap();
+        assert_eq!(route_once(true).await.unwrap()[0].profiler, "heuristic");
+        assert_eq!(rt.status().profiler, "failed", "{:?}", rt.error());
+        assert!(rt.error().unwrap().contains("sha256"));
+        assert!(!assets_present(&rt.assets()));
+        assert_eq!(rt.attempts.load(Ordering::SeqCst), 0);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn stale_part_files_are_removed() {
         let dir = std::env::temp_dir().join(format!("pandacode-parts-{}", std::process::id()));
@@ -1156,6 +1680,7 @@ mod tests {
 
     /// `cargo test --lib live_download -- --ignored`: downloads the profiler
     /// from GitHub into a temp dir and checks it loads.
+    #[cfg(all(panda_onnx, not(all(target_os = "windows", target_arch = "x86_64"))))]
     #[test]
     #[ignore]
     fn live_download_verifies_hashes() {
@@ -1169,6 +1694,7 @@ mod tests {
 
     /// `PANDA_ROUTER_ASSETS=<dir> cargo test --lib live_team_routing -- --ignored --nocapture`: routes
     /// realistic team assignments with the real profiler over a catalog like an installed machine's.
+    #[cfg(all(panda_onnx, not(all(target_os = "windows", target_arch = "x86_64"))))]
     #[test]
     #[ignore]
     fn live_team_routing() {

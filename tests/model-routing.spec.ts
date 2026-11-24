@@ -18,6 +18,16 @@ async function install(page: Page, init?: () => void, prepare?: (source: string)
       // Test hook: \`__routingDelay[command] = ms\` holds that command back before it runs.
       const delay = window.__routingDelay?.[command];
       if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      if (command === 'model_routing_last_profiler') {
+        const initial = window.__routingInitialProfiler ?? await invokePreview(command, args);
+        if (window.__routingHoldLastProfiler) await new Promise(resolve => { window.__routingReleaseLastProfiler = resolve; });
+        return initial;
+      }
+      if (command === 'model_routing_profiler_readiness') {
+        const initial = window.__routingInitialReadiness ?? await invokePreview(command, args);
+        if (window.__routingHoldReadiness) await new Promise(resolve => { window.__routingReleaseReadiness = resolve; });
+        return initial;
+      }
       return invokePreview(command, args);
     }
     async function invokePreview(command, args) {`) });
@@ -35,6 +45,142 @@ async function closeSettings(page: Page): Promise<void> {
   await settings(page).getByRole('button', { name: 'Back to the workspace', exact: true }).click();
   await expect(settings(page)).toBeHidden();
 }
+
+const profiler = (page: Page) => page.locator('#router-profiler-status');
+const profilerLabel = (page: Page) => profiler(page).locator('[data-router-profiler-label]');
+const profilerDetail = (page: Page) => profiler(page).locator('#router-profiler-detail');
+const pushProfiler = (page: Page, payload: unknown) => page.evaluate(value => (window as any).__previewEmit('model-routing-profiler', value), payload);
+const pushReadiness = (page: Page, payload: unknown) => page.evaluate(value => (window as any).__previewEmit('model-routing-profiler-readiness', value), payload);
+async function installProfiler(page: Page, init?: () => void): Promise<void> {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await install(page, init);
+}
+
+test('the router indicator reports routed batches and stays quiet when readiness is unknown', async ({ page }) => {
+  await installProfiler(page);
+  await expect(profilerLabel(page)).toHaveText('Router: —');
+  await expect(profilerDetail(page)).toContainText('No routed batch has been reported yet.');
+  await openAgents(page);
+  await settings(page).getByRole('button', { name: 'Download', exact: true }).click();
+  await expect(settings(page).getByText('Ready', { exact: true })).toBeVisible();
+  await expect(profilerLabel(page)).toHaveText('Router: —');
+  await settings(page).getByRole('textbox', { name: 'Task to route' }).fill('Fix a test');
+  await settings(page).getByRole('button', { name: 'Route', exact: true }).click();
+  await expect(settings(page).getByText(/keyword heuristic/)).toBeVisible();
+  await expect(profilerLabel(page)).toHaveText('Router: Keywords');
+  await closeSettings(page);
+  await expect(profiler(page)).toBeVisible();
+  expect(await calls(page, 'model_routing_last_profiler')).toHaveLength(1);
+});
+
+test('the router indicator gives live profiler details and fits compact layouts', async ({ page }) => {
+  await installProfiler(page, () => { (window as any).__routingInitialProfiler = 'onnx'; });
+  const status = page.getByRole('status', { name: 'Router profiler', exact: true });
+  await expect(status).toBeVisible();
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX');
+  await pushProfiler(page, 'mixed');
+  await expect(profilerLabel(page)).toHaveText('Router: Mixed');
+  const detail = 'Most recent routed batch: both ONNX and keyword heuristics. This is history: it does not indicate current readiness or predict the next batch.';
+  await expect(status).toHaveAccessibleDescription(detail);
+  await pushProfiler(page, 'ready');
+  await expect(profilerLabel(page)).toHaveText('Router: Mixed');
+  await page.keyboard.press('Tab');
+  await status.focus();
+  await expect(page.locator('.tip-bubble.tip-visible')).toHaveText(/Router readiness and the profiler used by the most recent routed batch\..*does not indicate current readiness/);
+  await page.keyboard.press('Escape');
+  for (const width of [860, 600, 440]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect(status).toBeVisible();
+    expect(await status.evaluate(el => {
+      const chip = el.getBoundingClientRect();
+      const header = el.closest('.workspace-header')!.getBoundingClientRect();
+      const dock = document.querySelector('#action-dock')!.getBoundingClientRect();
+      const overlaps = chip.right > dock.left && chip.left < dock.right && chip.bottom > dock.top && chip.top < dock.bottom;
+      return chip.left >= header.left && chip.right <= header.right && !overlaps;
+    })).toBe(true);
+  }
+});
+
+test('the router indicator ignores a stale initial reply after a profiler event', async ({ page }) => {
+  await installProfiler(page, () => { (window as any).__routingHoldLastProfiler = true; (window as any).__routingInitialProfiler = 'onnx'; });
+  await page.waitForFunction(() => typeof (window as any).__routingReleaseLastProfiler === 'function');
+  await expect(profilerLabel(page)).toHaveText('Router: —');
+  await pushProfiler(page, 'heuristic');
+  await expect(profilerLabel(page)).toHaveText('Router: Keywords');
+  await page.evaluate(async () => {
+    (window as any).__routingReleaseLastProfiler();
+    await new Promise(requestAnimationFrame);
+  });
+  await expect(profilerLabel(page)).toHaveText('Router: Keywords');
+  expect(await calls(page, 'model_routing_last_profiler')).toHaveLength(1);
+});
+
+test('the router indicator shows ONNX readiness from starting to ready without routing a batch', async ({ page }) => {
+  await installProfiler(page, () => { (window as any).__routingInitialReadiness = 'starting'; });
+  await expect(profilerLabel(page)).toHaveText('Router: Starting…');
+  await expect(profilerDetail(page)).toContainText('The ONNX profiler is starting; routing uses keywords until it loads.');
+  await expect(profilerDetail(page)).toContainText('No routed batch has been reported yet.');
+  await pushReadiness(page, 'ready');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Ready');
+  await expect(profilerDetail(page)).toContainText('The ONNX profiler is loaded and ready for routing.');
+  await expect(profilerDetail(page)).toContainText('No routed batch has been reported yet.');
+  expect(await calls(page, 'model_routing_route')).toHaveLength(0);
+  expect(await calls(page, 'model_routing_last_profiler')).toHaveLength(1);
+  expect(await calls(page, 'model_routing_profiler_readiness')).toHaveLength(1);
+});
+
+test('an unavailable profiler says so, and idle returns the label to the last routed batch', async ({ page }) => {
+  await installProfiler(page, () => { (window as any).__routingInitialReadiness = 'unavailable'; });
+  const status = page.getByRole('status', { name: 'Router profiler', exact: true });
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Unavailable');
+  await expect(status).toHaveAccessibleDescription(/ONNX profiler is unavailable here; routing uses keyword heuristics\./);
+  // La etiqueta más larga cabe en el encabezado estrecho.
+  await page.setViewportSize({ width: 440, height: 800 });
+  expect(await status.evaluate(el => {
+    const chip = el.getBoundingClientRect(), header = el.closest('.workspace-header')!.getBoundingClientRect();
+    return chip.left >= header.left && chip.right <= header.right;
+  })).toBe(true);
+  await page.setViewportSize({ width: 1440, height: 940 });
+  await pushProfiler(page, 'onnx');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Unavailable');
+  await expect(profilerDetail(page)).toContainText('Most recent routed batch: ONNX profiler.');
+  await pushReadiness(page, 'idle');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX');
+  await expect(profilerDetail(page)).toContainText('The ONNX profiler is idle and not loaded; the label shows the last routed batch.');
+  await expect(profilerDetail(page)).toContainText('Most recent routed batch: ONNX profiler.');
+  await pushReadiness(page, 'disabled');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX');
+  await expect(profilerDetail(page)).toContainText('Panda Router is off, so the profiler is not loaded');
+  await page.keyboard.press('Tab');
+  await status.focus();
+  await expect(page.locator('.tip-bubble.tip-visible')).toHaveText(/Panda Router is off.*Most recent routed batch: ONNX profiler/);
+});
+
+test('readiness and the last routed batch settle independently, and stale replies are ignored', async ({ page }) => {
+  await installProfiler(page, () => {
+    (window as any).__routingHoldReadiness = true;
+    (window as any).__routingInitialReadiness = 'starting';
+    (window as any).__routingInitialProfiler = 'onnx';
+  });
+  await page.waitForFunction(() => typeof (window as any).__routingReleaseReadiness === 'function');
+  // El último lote llega por su canal mientras la lectura inicial de disponibilidad sigue en vuelo.
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX');
+  await expect(profilerDetail(page)).toContainText('Most recent routed batch: ONNX profiler.');
+  await pushReadiness(page, 'ready');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Ready');
+  await expect(profilerDetail(page)).toContainText('Most recent routed batch: ONNX profiler.');
+  await page.evaluate(async () => {
+    (window as any).__routingReleaseReadiness();
+    await new Promise(requestAnimationFrame);
+  });
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Ready');
+  await expect(profilerDetail(page)).not.toContainText('is starting');
+  expect(await calls(page, 'model_routing_profiler_readiness')).toHaveLength(1);
+  // Un evento de disponibilidad no pisa el último lote, ni al revés.
+  await pushProfiler(page, 'heuristic');
+  await expect(profilerLabel(page)).toHaveText('Router: ONNX Ready');
+  await expect(profilerDetail(page)).toContainText('Most recent routed batch: keyword heuristic.');
+});
 
 test('the section renders, settings persist and the profiler downloads', async ({ page }) => {
   await install(page);
@@ -127,6 +273,18 @@ async function pickTeam(page: Page, name: string): Promise<void> {
   await kind(page, name).click();
   await expect(kind(page, name)).toBeHidden();
 }
+
+test('the router indicator changes on an automatic team batch, not on team setup', async ({ page }) => {
+  await installProfiler(page);
+  await pickTeam(page, 'Balanced team');
+  await expect(profilerLabel(page)).toHaveText('Router: —');
+  const prompt = page.locator('#prompt');
+  await prompt.fill('Build and review the feature.');
+  await prompt.press('Enter');
+  await expect(profilerLabel(page)).toHaveText('Router: Keywords');
+  expect(await calls(page, 'architect_start')).toHaveLength(1);
+  expect(await calls(page, 'model_routing_last_profiler')).toHaveLength(1);
+});
 
 test('Team opens a menu of team kinds, turns the team on with the uncapped catalog and prepares routing', async ({ page }) => {
   await install(page);

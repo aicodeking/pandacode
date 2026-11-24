@@ -2,6 +2,14 @@
 
 PandaCode includes code and data from the following third-party works.
 
+## Microsoft ONNX Runtime 1.31.0 (Windows x64)
+
+- Source: [Microsoft.ML.OnnxRuntime 1.31.0 on NuGet](https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.31.0), official CPU `win-x64` binaries from [ONNX Runtime](https://github.com/microsoft/onnxruntime) (commit `402979ac1bef89dcd55add41eaa7277c407599eb`).
+- Licence: MIT, Copyright (c) Microsoft Corporation. The package's unmodified `LICENSE` and `ThirdPartyNotices.txt` ship alongside `onnxruntime.dll` and `onnxruntime_providers_shared.dll` in `panda-router-runtime/`.
+- Used in: the isolated Panda Router profiler on Windows x64. The DLLs are staged only at build time or explicitly for local development; the app never downloads them.
+
+The profiler DLL imports `MSVCP140.dll`, `MSVCP140_1.dll`, `VCRUNTIME140.dll` and `VCRUNTIME140_1.dll`, plus Windows system libraries (including the Universal CRT). The shared provider also imports `VCRUNTIME140.dll`. If the required [Microsoft Visual C++ v14 Redistributable (x64)](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist) is absent or incompatible, Panda Router uses the keyword heuristic. PandaCode neither bundles nor downloads that redistributable.
+
 ## @handy-computer/models 0.2.3
 
 - Source: https://github.com/handy-computer/models (npm `@handy-computer/models@0.2.3`, commit `2d77f8810ee9539a90328a4c59b420326b225d39`)

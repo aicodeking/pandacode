@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory } from './common.mjs';
 import { repackAppImage } from './appimage.mjs';
+import { bundleSource, stageWindowsRouterRuntime, windowsRouterBundleResources } from './windows-router-runtime.mjs';
 
 // Never forwarded to the build: leftovers of the old license check in a developer
 // shell must not change the output.
@@ -62,9 +63,11 @@ export function buildPlan(releaseTarget, inherited, platform = process.platform,
   // Neither Windows nor Linux uses Apple credentials, even if a shell has them.
   const env = { ...withoutApple(base), ...cargoTarget };
   if (releaseTarget.startsWith('windows-')) {
-    // A local STATIC_VCRUNTIME=false must not produce an installer that only
-    // starts on machines with the Visual C++ redistributable installed.
-    return plan(config, { ...env, STATIC_VCRUNTIME: 'true' }, 'unsigned', { ...shared, windows: { webviewInstallMode: { type: 'downloadBootstrapper', silent: true }, nsis: { installMode: 'currentUser' } } });
+    // La app arranca sin el redistribuible; solo el ONNX opcional lo necesita en x64.
+    return plan(config, { ...env, STATIC_VCRUNTIME: 'true' }, 'unsigned', {
+      ...shared, ...windowsRouterBundleResources(releaseTarget),
+      windows: { webviewInstallMode: { type: 'downloadBootstrapper', silent: true }, nsis: { installMode: 'currentUser' } },
+    });
   }
   return plan(config, env, 'unsigned', shared);
 }
@@ -157,6 +160,7 @@ async function main() {
   const releaseVersion = version((await json(resolve(root, 'src-tauri/tauri.conf.json'))).version);
   await checkVersions(releaseVersion);
   const build = buildPlan(releaseTarget, process.env);
+  if (releaseTarget === 'windows-x86_64') await stageWindowsRouterRuntime(resolve(root, 'src-tauri', bundleSource));
   // Execute Node directly: npm.cmd is not an executable for spawn() on Windows.
   const tauriCli = resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
   await run(process.execPath, [tauriCli, ...build.args], { env: build.env });
