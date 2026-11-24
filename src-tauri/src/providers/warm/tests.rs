@@ -1664,9 +1664,10 @@ async fn a_launch_without_a_key_retires_and_logs_an_ordinary_spare() {
         Some("Warm Claude agent not used (its config folder cannot be known); starting cold.")
     );
     assert!(!waiting_in(pool, &session));
-    let counts = spares(pool);
-    assert_eq!((counts.lead_adopted, counts.lead_missed), (0, 0), "ordinary spares never move the lead counters");
-    drop(counts);
+    {
+        let counts = spares(pool);
+        assert_eq!((counts.lead_adopted, counts.lead_missed), (0, 0), "ordinary spares never move the lead counters");
+    }
     await_exit(&session).await.unwrap();
     assert!(process_gone(pid));
 }

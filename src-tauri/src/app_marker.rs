@@ -28,7 +28,30 @@ pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<(
 }
 
 fn exists_at(path: Result<PathBuf>) -> Result<bool> {
-    path?.try_exists().map_err(|error| format!("Could not read the setting: {error}"))
+    let path = path?;
+    match path.try_exists() {
+        Ok(true) => Ok(true),
+        Ok(false) => {
+            // On Windows, `try_exists()` maps `ERROR_PATH_NOT_FOUND` under a non-directory
+            // ancestor to `Ok(false)` instead of `ENOTDIR`. Walk up to the nearest existing
+            // ancestor and fail closed if it is not a directory.
+            for ancestor in path.ancestors().skip(1) {
+                match std::fs::metadata(ancestor) {
+                    Ok(meta) => {
+                        return if meta.is_dir() {
+                            Ok(false)
+                        } else {
+                            Err("Could not read the setting: app data path is not a directory".into())
+                        };
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(format!("Could not read the setting: {error}")),
+                }
+            }
+            Ok(false)
+        }
+        Err(error) => Err(format!("Could not read the setting: {error}")),
+    }
 }
 
 fn set_at(path: &Path, present: bool) -> Result<()> {
