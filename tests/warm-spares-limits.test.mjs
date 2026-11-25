@@ -112,3 +112,15 @@ test('every copy states the measured startup saving from warm.rs', () => {
     assert.ok(rangesIn(path, /(\d+\.\d+[–-]\d+\.\d+)\s+s\b/).includes(range), `${path} must state ${range} s`);
   }
 });
+
+test('every copy states the live signed-in startup saving from docs/worker-tokens.md', () => {
+  // The live probe's reading in docs/worker-tokens.md is the record; the offline bench range above
+  // stays beside it, and every user-facing copy repeats both.
+  const text = flat(WORKER_TOKENS);
+  const found = text.match(/on a real login a spare skips ~(\d+\.\d+[–-]\d+\.\d+) s of CLI startup/);
+  assert.ok(found, `live signed-in saving not found in ${WORKER_TOKENS}`);
+  const range = dash(found[1]);
+  for (const path of [SETTINGS, README, AGENTS, WORKER_TOKENS, ARCHITECT_WORKERS]) {
+    assert.ok(rangesIn(path, /(\d+\.\d+[–-]\d+\.\d+)\s+s\b/).includes(range), `${path} must state ${range} s`);
+  }
+});

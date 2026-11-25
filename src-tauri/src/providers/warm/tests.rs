@@ -129,7 +129,7 @@ async fn a_mismatched_or_exited_warm_agent_is_discarded() {
     };
     let (pool, session) = (own_pool(), format!("warm-test-{}", uuid::Uuid::new_v4()));
     let insert = |child: Child, group: ProcessGroup| {
-        spares(pool).spares.insert(session.clone(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead: false, cwd: None });
+        spares(pool).spares.insert(session.clone(), Spare { key: "launch-a".into(), child, group, server: None, born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead: false, renewal_due: false, cwd: None });
     };
     let (child, group) = spawn();
     insert(child, group);
@@ -289,7 +289,7 @@ async fn an_exit_wait_started_during_a_spares_spawn_waits_until_the_spare_is_gon
     assert!(!waiter.is_finished(), "the wait found nothing to wait on while the spare was starting");
     // That launch moved the epoch, so the spare is refused and killed.
     launched(&session);
-    let spare = Spare { key: "k".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead: false, cwd: None };
+    let spare = Spare { key: "k".into(), child, group: ProcessGroup::register(Some(pid)), server: None, born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead: false, renewal_due: false, cwd: None };
     assert!(!register(own_pool(), &session, launch, spare), "a spare from an older launch is refused");
     drop(starting);
     tokio::time::timeout(Duration::from_secs(10), waiter).await.unwrap().unwrap().unwrap();
@@ -621,6 +621,7 @@ async fn invalidating_a_running_turn_advances_epoch_retires_stale_spare_and_allo
         born_wall: std::time::SystemTime::now(),
         idle: IDLE,
         lead: true,
+        renewal_due: false,
         cwd: Some(external_path(&fast_cfg.cwd)),
     };
     assert!(register(pool, &session, after, fresh), "post-turn spare must register");

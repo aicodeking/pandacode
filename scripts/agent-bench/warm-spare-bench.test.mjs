@@ -11,6 +11,7 @@ import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
   anyOrphaned, matchingLivePids, MAX_PARK_MS, mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
+  parsePsCpuSeconds, parsePsRssTime, sampleCpuSeconds,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
@@ -546,6 +547,52 @@ test('summarize reports stdio MCP fields only when runs carry them', () => {
   for (const key of ['idle_self_rss_mib', 'idle_mcp_child_rss_mib', 'idle_child_count', 'mcp_child_seen', 'mcp_child_orphaned']) assert.ok(!(key in plain.warm), key);
 });
 
+test('parsePsCpuSeconds reads every ps -o time= format', () => {
+  assert.equal(parsePsCpuSeconds('0:00.12'), 0.12); // macOS MM:SS.cc
+  assert.equal(parsePsCpuSeconds('  1:02.50\n'), 62.5);
+  assert.equal(parsePsCpuSeconds('123:45.67'), 7425.67, 'BSD minutes run past 59');
+  assert.equal(parsePsCpuSeconds('0:07'), 7); // MM:SS
+  assert.equal(parsePsCpuSeconds('00:00:00'), 0); // procps HH:MM:SS
+  assert.equal(parsePsCpuSeconds('01:02:03'), 3723);
+  assert.equal(parsePsCpuSeconds('1:02:03.5'), 3723.5);
+  assert.equal(parsePsCpuSeconds('2-03:04:05'), 2 * 86_400 + 3 * 3_600 + 4 * 60 + 5); // D-HH:MM:SS
+  assert.equal(parsePsCpuSeconds('0-00:00:01.25'), 1.25);
+  assert.equal(parsePsCpuSeconds('0:00.001234'), 0.001, 'rounded to milliseconds');
+});
+
+test('parsePsCpuSeconds returns null for anything that is not a ps time', () => {
+  for (const bad of ['', '   ', 'abc', '12', '1:2', '1:60', '1:5x', '-1:00', '1:00.', '1:00.1234567', '01:60:00', '1-24:00:00', '1-02:03', '1:2:3:4', '0:00,12', ':30', '1:00 2:00'])
+    assert.equal(parsePsCpuSeconds(bad), null, JSON.stringify(bad));
+  for (const bad of [null, undefined, 12, {}, ['0:01']]) assert.equal(parsePsCpuSeconds(bad), null, String(bad));
+});
+
+test('parsePsRssTime splits ps -o rss=,time= into MiB and CPU seconds', () => {
+  assert.deepEqual(parsePsRssTime('204800   0:01.50\n'), { rss_mib: 200, idle_cpu_s: 1.5 });
+  assert.deepEqual(parsePsRssTime('102400 00:00:02'), { rss_mib: 100, idle_cpu_s: 2 });
+  assert.deepEqual(parsePsRssTime('102400 nope'), { rss_mib: 100, idle_cpu_s: null });
+  for (const bad of ['', '102400', '1 2 3', undefined]) assert.deepEqual(parsePsRssTime(bad), { rss_mib: null, idle_cpu_s: null }, String(bad));
+});
+
+test('sampleCpuSeconds reads this process and is null for a missing pid', { skip: process.platform === 'win32' && 'needs ps' }, () => {
+  const own = sampleCpuSeconds(process.pid);
+  assert.ok(typeof own === 'number' && own >= 0, `own CPU seconds: ${own}`);
+  assert.equal(sampleCpuSeconds(2 ** 30), null);
+});
+
+test('summarize reports idle_cpu_s (2 decimals) and total cost only when runs carry them', () => {
+  const runs = [row(0, 'cold', 9999, 9999, { cost_usd: 1 }), row(0, 'warm', 1, 1, { idle_cpu_s: 99, cost_usd: 1 })];
+  for (let p = 1; p <= 4; p++) runs.push(row(p, 'cold', 300, 20, { cost_usd: 0.0012 }), row(p, 'warm', 50, 10, { idle_cpu_s: [0.31, 0.42, 0.355, null][p - 1], cost_usd: 0.0011 }));
+  const s = summarize(runs);
+  assert.deepEqual(s.warm.idle_cpu_s, { n: 3, median: 0.36, mean: 0.36, min: 0.31, max: 0.42 }, 'warmup dropped, null skipped');
+  assert.ok(!('idle_cpu_s' in s.cold));
+  assert.equal(s.cost_usd_total, 0.0092, 'measured runs only');
+  const plain = summarize([row(1, 'cold', 300, 20), row(1, 'warm', 50, 10)]);
+  assert.ok(!('idle_cpu_s' in plain.warm));
+  assert.ok(!('cost_usd_total' in plain));
+  assert.equal(stats([0.123, 0.456], 2).median, 0.29, 'describe takes a digits argument');
+  assert.equal(stats([0.123, 0.456]).median, 0.3, 'describe still defaults to one decimal');
+});
+
 const MISSING = join(tmpdir(), 'warm-spare-bench-missing-claude', 'claude');
 
 for (const arm of ['cold', 'warm']) {
@@ -646,4 +693,32 @@ test('matchingLivePids drops a dead PID and a reused PID running another command
   assert.deepEqual(matchingLivePids(null, expected), [], 'ps unavailable: kill nothing');
   assert.deepEqual(matchingLivePids('', expected), []);
   assert.deepEqual(matchingLivePids(ps, []), []);
+});
+
+// A fake stream-json CLI: answers initialize, echoes the prompt as the result with a cost, exits on stdin EOF.
+const FAKE_STREAM_CLI = `
+let buf = '';
+process.stdin.on('data', c => {
+  buf += c; let nl;
+  while ((nl = buf.indexOf('\\n')) >= 0) {
+    const m = JSON.parse(buf.slice(0, nl)); buf = buf.slice(nl + 1);
+    if (m.type === 'control_request') process.stdout.write(JSON.stringify({ type: 'control_response', response: { request_id: m.request_id, subtype: 'success' } }) + '\\n');
+    if (m.type === 'user') process.stdout.write(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: m.message.content[0].text, total_cost_usd: 0.0005 }) + '\\n');
+  }
+});
+process.stdin.on('end', () => process.exit(0));
+`;
+
+test('runOnce records idle_cpu_s and RSS on a warm run, plus cost_usd and result_text, with a custom prompt', { timeout: 15_000, skip: process.platform === 'win32' && 'needs ps' }, async () => {
+  const warm = await runOnce({ arm: 'warm', args: ['-e', FAKE_STREAM_CLI], env: process.env, cwd: tmpdir(), command: process.execPath, parkMs: 300, prompt: 'Reply with only: ok' });
+  assert.equal(warm.error, null);
+  assert.equal(warm.result_text, 'Reply with only: ok');
+  assert.equal(warm.cost_usd, 0.0005);
+  assert.equal(warm.exit_code, 0);
+  assert.ok(typeof warm.idle_cpu_s === 'number' && warm.idle_cpu_s >= 0, `idle_cpu_s ${warm.idle_cpu_s}`);
+  assert.ok(warm.rss_mib > 0, `rss_mib ${warm.rss_mib}`);
+  const cold = await runOnce({ arm: 'cold', args: ['-e', FAKE_STREAM_CLI], env: process.env, cwd: tmpdir(), command: process.execPath });
+  assert.equal(cold.error, null);
+  assert.equal(cold.result_text, 'Reply with ok', 'the default prompt is unchanged');
+  assert.ok(!('idle_cpu_s' in cold), 'only the parked warm arm is sampled');
 });

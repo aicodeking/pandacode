@@ -4,7 +4,7 @@
 use super::*;
 use super::spawn::*;
 use super::adopt::{launched_without_key_streak, KEY_CHECK_FAILED};
-use super::stats::{record_lead_miss, CHURN_COOLDOWN, EXPIRY_BACKOFF_STREAK, EXPIRY_COOLDOWN, MISS_BACKOFF_STREAK};
+use super::stats::{record_lead_miss, CHURN_COOLDOWN, EXPIRY_BACKOFF_STREAK, EXPIRY_COOLDOWN, MAX_EXPIRY_COOLDOWN, MISS_BACKOFF_STREAK};
 use super::test_support::*;
 use std::time::{Instant, SystemTime};
 
@@ -38,7 +38,7 @@ fn unused_expiries_in_a_row_back_off_until_the_cooldown_lapses() {
     assert!(churn.cooling(now, wall), "{EXPIRY_BACKOFF_STREAK} unused in a row with no adoption between back off");
     assert!(churn.cooling(now + CHURN_COOLDOWN, wall + CHURN_COOLDOWN), "for longer than an eviction backoff");
     assert!(!churn.cooling(now + EXPIRY_COOLDOWN, wall + EXPIRY_COOLDOWN), "a lapsed backoff probes again");
-    assert_eq!(churn, PoolChurn::default(), "and starts fresh streaks");
+    assert_eq!(churn, lapsed_expiry_backoff(1), "one unused probe short of the next, doubled backoff");
     // An eviction backoff never shortens a longer expiry backoff already set.
     let mut both = PoolChurn::default();
     for _ in 0..EXPIRY_BACKOFF_STREAK {
@@ -47,6 +47,67 @@ fn unused_expiries_in_a_row_back_off_until_the_cooldown_lapses() {
     both.evicted(1, now, wall);
     assert_eq!(both.churn_cooldown_until, now.checked_add(EXPIRY_COOLDOWN));
     assert_eq!(both.churn_cooldown_until_wall, wall.checked_add(EXPIRY_COOLDOWN));
+}
+
+/// A pool whose `level`th expiry backoff just lapsed: no deadline, no eviction or miss streak, and
+/// the expiry streak one short, so the next unused spare pauses it again.
+fn lapsed_expiry_backoff(level: u32) -> PoolChurn {
+    PoolChurn { consecutive_expiries: EXPIRY_BACKOFF_STREAK - 1, expiry_backoff_level: level, ..PoolChurn::default() }
+}
+
+#[test]
+fn expiry_backoffs_double_after_each_lapsed_probe_up_to_the_cap_until_an_adoption() {
+    assert_eq!(MAX_EXPIRY_COOLDOWN, EXPIRY_COOLDOWN * 8, "30 → 60 → 120 → 240 min");
+    let (mut now, mut wall) = clocks();
+    let mut churn = PoolChurn::default();
+    for _ in 0..EXPIRY_BACKOFF_STREAK {
+        churn.expired(now, wall);
+    }
+    // A spare already pooled expiring a minute into the pause extends it, never doubles it.
+    let minute = Duration::from_secs(60);
+    churn.expired(now + minute, wall + minute);
+    assert_eq!((churn.expiry_backoff_level, churn.paused_secs(now, wall)), (1, (EXPIRY_COOLDOWN + minute).as_secs()));
+    (now, wall) = (now + minute, wall + minute);
+    let ladder = [EXPIRY_COOLDOWN, EXPIRY_COOLDOWN * 2, EXPIRY_COOLDOWN * 4, MAX_EXPIRY_COOLDOWN, MAX_EXPIRY_COOLDOWN];
+    for (step, cooldown) in ladder.into_iter().enumerate() {
+        let level = u32::try_from(step).unwrap() + 1;
+        assert_eq!((churn.expiry_backoff_level, churn.paused_secs(now, wall)), (level, cooldown.as_secs()), "backoff {level}");
+        let almost = cooldown - Duration::from_secs(1);
+        assert!(churn.cooling(now + almost, wall + almost), "backoff {level} still pauses");
+        (now, wall) = (now + cooldown, wall + cooldown);
+        assert!(!churn.cooling(now, wall), "backoff {level} lapsed: one probe spare may start");
+        assert_eq!(churn, lapsed_expiry_backoff(level));
+        // That single probe expires unused: the pool pauses again at once, for twice as long.
+        churn.expired(now, wall);
+    }
+    // An adoption resets the ladder: three unused spares again before a 30 min pause.
+    let pool = own_pool();
+    spares(pool).ordinary_churn = churn;
+    let _ = record_adopted(pool, false);
+    let mut locked = spares(pool);
+    assert_eq!(locked.ordinary_churn, PoolChurn::default());
+    for _ in 1..EXPIRY_BACKOFF_STREAK {
+        locked.ordinary_churn.expired(now, wall);
+        assert!(!locked.ordinary_churn.cooling(now, wall), "streaks start over after an adoption");
+    }
+    locked.ordinary_churn.expired(now, wall);
+    assert_eq!((locked.ordinary_churn.expiry_backoff_level, locked.ordinary_churn.paused_secs(now, wall)), (1, EXPIRY_COOLDOWN.as_secs()));
+}
+
+#[tokio::test]
+async fn a_lead_spare_past_its_window_joins_the_expiry_streak_only_when_its_chain_was_done() {
+    // Mid-chain (a renewal still due) says nothing about the chain running out; its last spare does.
+    for (renewal_due, expiries) in [(true, 0), (false, 1)] {
+        let pool = own_pool();
+        let session = format!("warm-miss-chain-{renewal_due}-{}", uuid::Uuid::new_v4());
+        let spare = Spare { renewal_due, ..idle_spare(true, IDLE) };
+        assert!(miss_once(pool, &session, spare, "launch").is_none(), "an expired spare is never adopted");
+        await_exit(&session).await.unwrap();
+        let locked = spares(pool);
+        assert_eq!(locked.lead.missed, 1, "renewal_due={renewal_due}: still counted as not used");
+        let churn = locked.lead_churn;
+        assert_eq!((churn.consecutive_expiries, churn.consecutive_misses), (expiries, 0), "renewal_due={renewal_due}: {churn:?}");
+    }
 }
 
 #[tokio::test]
@@ -328,7 +389,8 @@ fn a_backoff_lapses_on_the_wall_clock_while_instant_stands_still() {
         assert_eq!(churn.paused_secs(now, wall + half), (cooldown - half).as_secs(), "the shorter remainder");
         assert_eq!(churn.paused_secs(now + Duration::from_millis(1500), wall), cooldown.as_secs() - 1, "rounded up");
         assert!(!churn.cooling(now, wall + cooldown), "the wall clock says the pause is over");
-        assert_eq!(churn, PoolChurn::default(), "and the streaks start fresh");
+        let fresh = if cooldown == EXPIRY_COOLDOWN { lapsed_expiry_backoff(1) } else { PoolChurn::default() };
+        assert_eq!(churn, fresh, "and the streaks start fresh (an expiry backoff is remembered)");
         assert_eq!(churn.paused_secs(now, wall), 0);
     }
     // Streaks with no backoff yet survive a check on either clock.
@@ -404,6 +466,24 @@ async fn dead_or_stale_spares_in_a_row_back_off() {
         let mut locked = spares(pool);
         assert!(locked.ordinary_churn.cooling(Instant::now(), SystemTime::now()), "dead={dead}");
         assert_eq!(locked.ordinary.missed, u64::from(MISS_BACKOFF_STREAK));
+    }
+}
+
+#[tokio::test]
+async fn a_pooled_spare_past_its_window_is_not_idle_now() {
+    let pool = own_pool();
+    let id = |name: &str| format!("warm-stats-{name}-{}", uuid::Uuid::new_v4());
+    let (fresh, stale, slept) = (id("fresh"), id("stale"), id("slept"));
+    assert!(admit(&mut spares(pool), fresh.clone(), idle_spare(false, Duration::ZERO)).is_empty());
+    assert!(admit(&mut spares(pool), stale.clone(), idle_spare(false, IDLE)).is_empty());
+    // Past its window on the wall clock only (the machine slept), waiting for the timer's next slice.
+    let asleep = Spare { born: Instant::now(), born_wall: SystemTime::now().checked_sub(IDLE).unwrap(), ..idle_spare(true, Duration::ZERO) };
+    assert!(admit(&mut spares(pool), slept.clone(), asleep).is_empty());
+    let stats = serde_json::to_value(WarmStatsSnapshot::of(&spares(pool))).unwrap();
+    assert_eq!((stats["ordinary"]["idleNow"].as_u64(), stats["lead"]["idleNow"].as_u64()), (Some(1), Some(0)), "{stats}");
+    for session in [&fresh, &stale, &slept] {
+        discard_from(pool, session);
+        await_exit(session).await.unwrap();
     }
 }
 

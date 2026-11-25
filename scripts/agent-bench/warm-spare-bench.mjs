@@ -176,11 +176,12 @@ export function bootstrapMedianCi(values, rounds = 10_000, seed = 0x2545f491) {
 
 const round = (x, digits = 1) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 10 ** digits) / 10 ** digits);
 
-/** median, mean, min, max of a numeric list (nulls dropped). */
-export function describe(values) {
+/** median, mean, min, max of a numeric list (nulls dropped), rounded to `digits` decimals (default 1). */
+export function describe(values, digits = 1) {
   const list = values.filter(v => typeof v === 'number' && Number.isFinite(v));
   if (!list.length) return { n: 0, median: null, mean: null, min: null, max: null };
-  return { n: list.length, median: round(median(list)), mean: round(mean(list)), min: round(Math.min(...list)), max: round(Math.max(...list)) };
+  const r = x => round(x, digits);
+  return { n: list.length, median: r(median(list)), mean: r(mean(list)), min: r(Math.min(...list)), max: r(Math.max(...list)) };
 }
 
 /** Summary of one suite's measured (non-warmup) runs. */
@@ -203,6 +204,8 @@ export function summarize(runs, { exitWait = BACKGROUND_EXIT_WAIT_MS } = {}) {
     mcp_child_seen: `${warm.filter(r => r.mcp_child_count >= 1).length}/${warm.length}`,
     mcp_child_orphaned: ok.filter(r => r.mcp_child_orphaned).length,
   } : {};
+  const cpu = warm.some(r => r.idle_cpu_s !== undefined) ? { idle_cpu_s: describe(warm.map(r => r.idle_cpu_s), 2) } : {};
+  const costs = measured.map(r => r.cost_usd).filter(c => typeof c === 'number' && Number.isFinite(c));
   const sides = name => ({
     init_ms: describe(arm(name).map(r => r.init_ms)),
     result_ms: describe(arm(name).map(r => r.result_ms)),
@@ -213,7 +216,7 @@ export function summarize(runs, { exitWait = BACKGROUND_EXIT_WAIT_MS } = {}) {
     errors: measured.length - ok.length,
     exit_code_0: `${ok.filter(r => r.exit_code === 0).length}/${measured.length}`,
     cold: sides('cold'),
-    warm: { ...sides('warm'), idle_rss_mib: describe(warm.map(r => r.rss_mib)), idle_tree_rss_mib: describe(warm.map(r => r.tree_rss_mib)), ...stdio },
+    warm: { ...sides('warm'), idle_rss_mib: describe(warm.map(r => r.rss_mib)), idle_tree_rss_mib: describe(warm.map(r => r.tree_rss_mib)), ...cpu, ...stdio },
     saving_result_ms: savings.length ? {
       pairs: savings.length,
       median: round(median(savings)), mean: round(mean(savings)),
@@ -225,11 +228,36 @@ export function summarize(runs, { exitWait = BACKGROUND_EXIT_WAIT_MS } = {}) {
     saving_init_ms: initSavings.length ? { median: round(median(initSavings)), mean: round(mean(initSavings)) } : null,
     exit_after_result_ms: describe(exits),
     exited_within_wait: `${exits.filter(ms => ms <= exitWait).length}/${measured.length}`,
+    ...(costs.length ? { cost_usd_total: round(costs.reduce((a, b) => a + b, 0), 6) } : {}),
   };
 }
 
 /** Parse `ps -o rss=` (KiB) into MiB. */
 export const rssKibToMib = text => { const kib = Number(String(text).trim()); return Number.isFinite(kib) && kib > 0 ? round(kib / 1024) : null; };
+
+/**
+ * Parse one `ps -o time=` value into CPU seconds: `MM:SS.cc` or `MM:SS` (macOS/BSD, minutes may
+ * exceed 59), `HH:MM:SS[.cc]` and `D-HH:MM:SS[.cc]` (procps). Anything else (empty, negative,
+ * seconds ≥ 60, minutes ≥ 60 beside hours, hours ≥ 24 beside days, a day prefix without hours,
+ * non-strings) is null.
+ */
+export function parsePsCpuSeconds(text) {
+  if (typeof text !== 'string') return null;
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d{2})(?:\.(\d{1,6}))?$/.exec(text.trim());
+  if (!m) return null;
+  const [, days, hours, minutes, seconds, frac] = m;
+  if (days !== undefined && hours === undefined) return null;
+  if (Number(seconds) >= 60 || (hours !== undefined && Number(minutes) >= 60) || (days !== undefined && Number(hours) >= 24)) return null;
+  const total = Number(days ?? 0) * 86_400 + Number(hours ?? 0) * 3_600 + Number(minutes) * 60 + Number(seconds) + (frac ? Number(`0.${frac}`) : 0);
+  return Math.round(total * 1000) / 1000;
+}
+
+/** Parse `ps -o rss=,time= -p <pid>` (one line: KiB then CPU time) into { rss_mib, idle_cpu_s }; unreadable fields are null. */
+export function parsePsRssTime(text) {
+  const fields = String(text ?? '').trim().split(/\s+/);
+  if (fields.length !== 2) return { rss_mib: null, idle_cpu_s: null };
+  return { rss_mib: rssKibToMib(fields[0]), idle_cpu_s: parsePsCpuSeconds(fields[1]) };
+}
 
 /** Sum RSS (KiB→MiB) of `root` and its descendants from `ps -A -o pid=,ppid=,rss=` output. */
 export function treeRssMib(psText, root) {
@@ -499,14 +527,20 @@ export async function anyOrphaned(mcpChildren, readPs = readPsTable, { waitMs = 
   }
 }
 
+/** CPU seconds (user + system) `pid` has used so far, from `ps -o time=`; null when unreadable. */
+export function sampleCpuSeconds(pid) {
+  try { return parsePsCpuSeconds(execFileSync('ps', ['-o', 'time=', '-p', String(pid)], { encoding: 'utf8' })); } catch { return null; }
+}
+
 function sampleRss(pid) {
-  let rss = null; let tree = null;
-  try { rss = rssKibToMib(execFileSync('ps', ['-o', 'rss=', '-p', String(pid)], { encoding: 'utf8' })); } catch { /* fall back below */ }
+  let rss = null; let tree = null; let cpu = null;
+  try { ({ rss_mib: rss, idle_cpu_s: cpu } = parsePsRssTime(execFileSync('ps', ['-o', 'rss=,time=', '-p', String(pid)], { encoding: 'utf8' }))); } catch { /* fall back below */ }
+  if (cpu == null) cpu = sampleCpuSeconds(pid);
   if (rss == null && process.platform === 'linux') {
     try { const m = readFileSync(`/proc/${pid}/status`, 'utf8').match(/^VmRSS:\s+(\d+)/m); rss = m ? rssKibToMib(m[1]) : null; } catch { /* gone */ }
   }
   try { tree = treeRssMib(execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss='], { encoding: 'utf8' }), pid); } catch { /* unsupported */ }
-  return { rss_mib: rss, tree_rss_mib: tree };
+  return { rss_mib: rss, tree_rss_mib: tree, idle_cpu_s: cpu };
 }
 
 /** Write one JSON line to the child's stdin; a stdin the child already closed (EPIPE, destroyed) is dropped, never thrown. */
@@ -522,9 +556,11 @@ const killPids = pids => { for (const p of pids) { try { process.kill(p, 'SIGKIL
  * One launch: cold (initialize at spawn) or warm (parked `parkMs` with stdin open first). Never
  * rejects: a spawn failure (ENOENT), an early exit or a timeout is recorded in `error`. `exited`
  * settles on the child's `exit` or its spawn `error`, stdin errors (EPIPE after an early exit) are
- * swallowed, and on any error the stdio MCP children sampled while parked are killed too.
+ * swallowed, and on any error the stdio MCP children sampled while parked are killed too. A warm
+ * run samples the parked spare's RSS and CPU seconds (`idle_cpu_s`, from `ps -o rss=,time=`) just
+ * before the initialize request; `cost_usd` and `result_text` come from the `result` frame when present.
  */
-export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command = 'claude', parkMs = PARK_MS }) {
+export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command = 'claude', parkMs = PARK_MS, prompt = PROMPT }) {
   const tSpawn = performance.now();
   const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
   children.add(child);
@@ -551,11 +587,13 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
         let event; try { event = JSON.parse(line); } catch { continue; }
         if (event.type === 'control_response' && event.response?.request_id === 'pandacode-init' && out.init_ms == null) {
           out.init_ms = performance.now() - t0;
-          write(child, { type: 'user', message: { role: 'user', content: [{ type: 'text', text: PROMPT }] }, parent_tool_use_id: null, session_id: '' });
+          write(child, { type: 'user', message: { role: 'user', content: [{ type: 'text', text: prompt }] }, parent_tool_use_id: null, session_id: '' });
         } else if (event.type === 'result' && tResult == null) {
           tResult = performance.now();
           out.result_ms = tResult - t0;
           out.result_subtype = event.subtype ?? null;
+          if (typeof event.total_cost_usd === 'number') out.cost_usd = event.total_cost_usd;
+          if (typeof event.result === 'string') out.result_text = event.result.slice(0, 200);
           if (event.is_error) out.error = `result is_error: ${String(event.result ?? '').slice(0, 200)}`;
           endStdin(child);
           resolve();
@@ -748,7 +786,7 @@ async function runSuite(name, pairs, ctx) {
       if (seed && r.error == null) r.error = resumeCheckError(seedMessages, resumedMessages, ctx.seedTurns);
       const row = { suite: name, pair: i, warmup: i === 0, ...r, ...(seed ? { api_messages: resumedMessages } : {}), error: r.error && scrub(r.error, process.env.HOME) };
       runs.push(row);
-      process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.mcp_child_count != null ? `, stdio MCP ${row.mcp_child_count} child ${row.mcp_child_rss_mib} MiB, ${row.child_count} descendants` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
+      process.stderr.write(`${name} ${i === 0 ? 'warmup' : `pair ${i}`} ${arm}: result ${row.result_ms} ms, exit +${row.exit_after_result_ms} ms (code ${row.exit_code})${row.rss_mib ? `, rss ${row.rss_mib} MiB` : ''}${row.idle_cpu_s != null ? `, idle cpu ${row.idle_cpu_s} s` : ''}${row.mcp_child_count != null ? `, stdio MCP ${row.mcp_child_count} child ${row.mcp_child_rss_mib} MiB, ${row.child_count} descendants` : ''}${row.error ? `, ERROR ${row.error}` : ''}\n`);
     }
   }
   let seedInfo = null;

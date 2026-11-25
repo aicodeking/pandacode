@@ -1,7 +1,7 @@
 //! Each pool's lifecycle totals since launch (in memory only), the stderr lines that report
 //! them, and the round-robin churn backoff. The formats are documented character for character
 //! in docs/worker-tokens.md.
-use super::{spares, Pool, Spares};
+use super::{age_expired, spares, Pool, Spares};
 use serde::Serialize;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -66,6 +66,9 @@ pub(super) const CHURN_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// launch finds alive but past its window (`MissStreak::Expired`) counts here too.
 pub(super) const EXPIRY_BACKOFF_STREAK: u32 = 3;
 pub(super) const EXPIRY_COOLDOWN: Duration = Duration::from_secs(30 * 60);
+/// Each expiry backoff in a row with no adoption between doubles the last (30, 60, 120 min), up
+/// to this: once a backoff lapses, a single wasted probe spare pauses the pool again.
+pub(super) const MAX_EXPIRY_COOLDOWN: Duration = Duration::from_secs(4 * 60 * 60);
 /// After this many launches in a row find their pool's pooled spare dead or stale with no adoption
 /// between (parallel tasks committing between each other's turns, so every follow-up misses on
 /// `gitHead`), it starts none for `CHURN_COOLDOWN`. Four misses join this streak: the process
@@ -77,12 +80,16 @@ pub(super) const MISS_BACKOFF_STREAK: u32 = 3;
 /// A pool's evictions, unused expiries and launch-time misses since its last adoption, and the
 /// backoff they set (`CHURN_COOLDOWN`, `EXPIRY_COOLDOWN`) on both clocks: `Instant` may stand
 /// still while the machine sleeps, the wall clock does not, so a backoff lapses once either
-/// says it has. An adoption or a lapsed backoff clears every streak.
+/// says it has. An adoption clears every streak; a lapsed backoff clears the eviction and miss
+/// streaks, and the expiry streak too unless an expiry backoff escalated (`expiry_backoff_level`).
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PoolChurn {
     pub(super) consecutive_evictions: u32,
     pub(super) consecutive_expiries: u32,
     pub(super) consecutive_misses: u32,
+    /// Expiry backoffs set since the last adoption: each doubles `EXPIRY_COOLDOWN`, up to
+    /// `MAX_EXPIRY_COOLDOWN`. Kept when a backoff lapses; only an adoption resets it.
+    pub(super) expiry_backoff_level: u32,
     pub(super) churn_cooldown_until: Option<Instant>,
     pub(super) churn_cooldown_until_wall: Option<SystemTime>,
 }
@@ -97,11 +104,18 @@ impl PoolChurn {
     }
 
     /// One more spare (or a lead's whole renewal chain) expired unused with spares on; at
-    /// `EXPIRY_BACKOFF_STREAK` in a row the pool backs off.
+    /// `EXPIRY_BACKOFF_STREAK` in a row the pool backs off, each time for twice the last backoff
+    /// since an adoption (30, 60, 120, then 240 min at most). A spare already pooled that expires
+    /// during the pause extends it from now at the same length, never doubling it again.
     pub(super) fn expired(&mut self, now: Instant, now_wall: SystemTime) {
         self.consecutive_expiries = self.consecutive_expiries.saturating_add(1);
         if self.consecutive_expiries >= EXPIRY_BACKOFF_STREAK {
-            self.back_off(now, now_wall, EXPIRY_COOLDOWN);
+            if self.expiry_backoff_level == 0 || self.remaining(now, now_wall).is_none() {
+                self.expiry_backoff_level = self.expiry_backoff_level.saturating_add(1);
+            }
+            let shift = self.expiry_backoff_level.saturating_sub(1).min(3);
+            let cooldown = EXPIRY_COOLDOWN.saturating_mul(1u32 << shift).min(MAX_EXPIRY_COOLDOWN);
+            self.back_off(now, now_wall, cooldown);
         }
     }
 
@@ -133,13 +147,19 @@ impl PoolChurn {
     }
 
     /// Whether a start is skipped now. A lapsed backoff (on either clock) clears, so the pool
-    /// probes again; streaks with no backoff set yet are kept.
+    /// probes again; streaks with no backoff set yet are kept. After an expiry backoff the
+    /// expiry streak stays one short of `EXPIRY_BACKOFF_STREAK`, so a single unused probe pauses
+    /// the pool again for the next, doubled cooldown.
     pub(super) fn cooling(&mut self, now: Instant, now_wall: SystemTime) -> bool {
         if self.remaining(now, now_wall).is_some() {
             return true;
         }
         if self.churn_cooldown_until.is_some() || self.churn_cooldown_until_wall.is_some() {
-            *self = Self::default();
+            self.churn_cooldown_until = None;
+            self.churn_cooldown_until_wall = None;
+            self.consecutive_evictions = 0;
+            self.consecutive_misses = 0;
+            self.consecutive_expiries = if self.expiry_backoff_level > 0 { EXPIRY_BACKOFF_STREAK.saturating_sub(1) } else { 0 };
         }
         false
     }
@@ -182,7 +202,8 @@ pub(super) enum MissStreak {
     /// `take_expired_for_renewal` could count it.
     Expired,
     /// Says nothing about staleness: a launch that ended before adopting a usable spare, a key
-    /// check that failed to run.
+    /// check that failed to run, a lead spare past its window with a renewal still due (its
+    /// chain had not run out its budget).
     Neither,
 }
 
@@ -312,7 +333,12 @@ pub(crate) struct WarmPoolStatsSnapshot {
 impl WarmPoolStatsSnapshot {
     fn of(locked: &Spares, lead: bool, now: Instant, now_wall: SystemTime) -> Self {
         let s = if lead { locked.lead } else { locked.ordinary };
-        let idle_now = locked.spares.values().filter(|spare| spare.lead == lead).count();
+        // A spare past its window, waiting for the expiry timer's next slice, is not idle now.
+        let idle_now = locked
+            .spares
+            .values()
+            .filter(|spare| spare.lead == lead && !age_expired(spare.born.elapsed(), spare.born_wall.elapsed().ok(), spare.idle))
+            .count();
         Self {
             started: s.started,
             adopted: s.adopted,

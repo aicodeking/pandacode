@@ -323,19 +323,24 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   and long histories, plugins or extra MCP servers, including stdio MCP child processes, use more). Starts
   pause for 5 minutes when spares keep being evicted unused or after 3 launches in a row
   miss their spare because it went stale, its process exited or its config folder or `git status`
-  could not be read (`not used`; your own Stops do not count, and expiries join the 30-minute rule), and for 30 minutes after 3 spares in a row expire unused
-  (a team lead's whole renewal chain counts as one expiry, and expiries while spares are
+  could not be read (`not used`; your own Stops do not count, and expiries join the expiry rule), and for 30 minutes after 3 spares in a row expire unused,
+  doubling to 60, 120 and at most 240 minutes when a single probe spare after each pause also expires unused
+  (a team lead's whole renewal chain counts as one expiry, a mid-chain lead spare found expired does not count, and expiries while spares are
   off do not count); pauses are timed on both the monotonic and wall clocks, so a laptop's
-  sleep does not stretch them, and any adoption ends the pause. An ordinary spare's
+  sleep does not stretch them, and any adoption ends the pause and resets the doubling. No spare
+  starts on a computer with under 6 GiB of RAM, while under 1.5 GiB is free, or while macOS reports memory pressure. An ordinary spare's
   uncommitted `git status` can be up to 10 minutes old when adopted; lead spares serve
   only teams whose live workers are all read-only (such as Council reviews) and verify
   `git status` when adopted. Settings → Agents shows each pool's live state (`idle now`,
   and `paused (N min left)` during a pause, hidden while the switch is off; refreshed every
   30 s while Settings is open and when it becomes visible again) and this launch's totals (adopted/started, plus
   not used, expired, evicted, replaced, discarded, cold and `N starts paused` when nonzero,
-  ordinary and lead spares separately). Unused spares are force-terminated (`SIGKILL` on
-  Unix, process termination on Windows), so your `SessionEnd` hooks do not run for them on
-  any platform (see the note below). The off setting is the empty `warm-spares-off` file
+  ordinary and lead spares separately). An unused spare retired in the background (expired,
+  evicted, replaced, discarded or switched off) gets 2 s after its input closes to exit cleanly and run
+  your `SessionEnd` hooks, then is force-terminated (`SIGKILL` on Unix, process termination on Windows);
+  a launch that missed it, a folder cleanup or quitting PandaCode force-terminates it at once, without
+  `SessionEnd` (see the note below). On a real sign-in a spare skips ~0.38–0.62 s of Claude Code startup
+  (0.17–1.71 s in the offline bench) and spends ~0.4 s of CPU starting up. The off setting is the empty `warm-spares-off` file
   in PandaCode's app data (unreadable also means off). Background traffic: see the
   note below this list and [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a
@@ -360,10 +365,11 @@ login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless
 **Turn off agent telemetry** is on), starts the user and project MCP servers
 configured in Claude Code (remote MCP servers connect when the spare starts),
 and runs your `SessionStart` hooks, which may run commands or make network
-requests of their own. A spare that is never used is force-terminated (`SIGKILL` on
-Unix, process termination on Windows), so your `SessionEnd` hooks do **not** run for it
-on any platform; if you rely on paired
-`SessionStart`/`SessionEnd` hooks, turn Warm Claude spares off. No prompt is sent (verified with a local loopback stub:
+requests of their own. A spare that is never used is retired by closing its input: Claude
+Code gets 2 s to exit cleanly and run your `SessionEnd` hooks, then it is force-terminated
+(`SIGKILL` on Unix, process termination on Windows). A spare removed urgently (a launch that
+missed it, a folder cleanup, quitting PandaCode) or one that outlives the 2 s does **not** run
+`SessionEnd`; if you rely on paired `SessionStart`/`SessionEnd` hooks, turn Warm Claude spares off. No prompt is sent (verified with a local loopback stub:
 no Messages API call is made until you send a message; live Claude sign-in
 startup traffic was not measured). Nothing starts while Settings → Agents →
 **Warm Claude spares** is off, and turning it off stops idle spares at once.

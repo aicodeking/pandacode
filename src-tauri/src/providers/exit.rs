@@ -333,6 +333,44 @@ pub(super) fn retire_parts_in_cwd(
     });
 }
 
+/// How long an unused warm spare retired in the background (`retire_gracefully_in_cwd`) may take
+/// to exit on its own once its stdin closes before it is killed.
+pub(super) const SPARE_RETIRE_WAIT: Duration = Duration::from_secs(2);
+
+/// Retire an unused spare without hurting it: closing its stdin lets Claude Code exit cleanly and
+/// run its `SessionEnd` hooks on every platform. Its stdout is drained meanwhile (a closed pipe
+/// would fail it), and it is killed once `SPARE_RETIRE_WAIT` passes or a launch hurries it
+/// (`await_exit`), so the next same-session launch still waits only briefly. A child without a
+/// piped stdin has nothing to close and is killed at once (`retire_parts_in_cwd`).
+pub(super) fn retire_gracefully_in_cwd(session_id: &str, mut child: Child, group: ProcessGroup, server: Option<super::mcp_host::Server>, cwd: Option<PathBuf>) {
+    let Some(stdin) = child.stdin.take() else {
+        retire_parts_in_cwd(session_id, child, group, server, cwd);
+        return;
+    };
+    // Outside a runtime nothing can drain or wait; the process dies with its handles.
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    drop(stdin);
+    let drain = child.stdout.take().map(|mut stdout| runtime.spawn(async move { tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await.ok() }));
+    spawn_exit_hurried(session_id, cwd, move |mut hurry| async move {
+        let hurried = async {
+            while hurry.changed().await.is_ok() && !*hurry.borrow() {}
+        };
+        tokio::select! {
+            _ = child.wait() => {}
+            () = tokio::time::sleep(SPARE_RETIRE_WAIT) => {}
+            () = hurried => {}
+        }
+        // Exited: this only stops what it left in its group. Otherwise it is killed now.
+        drop(group);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
+        if let Some(drain) = &drain {
+            drain.abort();
+        }
+        drop(server);
+    });
+}
+
 /// The one log line for a reaped process that exited nonzero: session id and a short stderr
 /// tail with every known secret (relay key, named-connection values) redacted.
 pub(super) fn exit_note(

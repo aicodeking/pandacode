@@ -112,7 +112,7 @@ pub(super) fn launched_without_key_streak(pool: &Pool, session_id: &str, why: &s
         return no_spare_since(pool, gone, ordinary_eligible, lead, discard_epoch);
     };
     let note = decision_miss(pool, spare.lead, why, joins_streak);
-    retire(session_id, spare, pending);
+    retire_now(session_id, spare, pending);
     Some(note)
 }
 

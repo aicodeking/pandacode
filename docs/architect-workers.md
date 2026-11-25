@@ -391,19 +391,26 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   adoption rate are never hidden; read when the page opens, when the switch is
   toggled, every 30 s while Settings is open and when it becomes visible again, not streamed. A pool that evicts `limit` spares in a row with no adoption
   between pauses its starts for 5 minutes, and one whose spares expire unused 3 times
-  in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`).
+  in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`); when
+  that pause lapses, one unused probe spare pauses the pool again at double the length,
+  30 → 60 → 120 → 240 minutes (`MAX_EXPIRY_COOLDOWN`), and a spare already pooled that
+  expires during a pause extends it at the same length.
   A full unadopted lead renewal chain counts as one unused expiry, recorded only when
   the chain ends without renewal, without a wake superseding it, and with spares on,
-  so renewals never trigger the 30-minute pause mid-chain; expiries while
+  so renewals never trigger the expiry pause mid-chain (a mid-chain lead spare found expired
+  at launch, `renewal_due`, joins neither streak); expiries while
   `warm-spares-off` is set never count. 3 consecutive staleness or exit misses (`not used`
   because a warm-key field changed, the process exited, or the config folder or lead git
   status cannot be read; a user Stop before adoption or a blocking-task join error does not
   count, and a launch-time expiry joins the expiry streak instead) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
   5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
-  `churn_skipped` (`paused`); any committed adoption resets all three streaks and
+  `churn_skipped` (`paused`); any committed adoption resets all three streaks and the
+  doubling and
   ends the pause, and otherwise the cooldown lapsing ends it; cooldowns are checked on
   both the monotonic and wall clocks, like the idle limits, so laptop sleep does not
-  stretch a 5- or 30-minute pause. Every adoption is also logged to stderr, locally only
+  stretch a 5- or 30–240-minute pause; `idle now` leaves out spares already past their idle
+  limit. No spare starts with under 6 GiB of total RAM, under 1.5 GiB available or macOS
+  memory pressure (`providers/warm/memory.rs`; an unavailable probe never blocks). Every adoption is also logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
   not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
@@ -434,10 +441,12 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   on minimal configs (n = 1 each; one snapshot, not continuous sampling, and macOS RSS omits
   compressed pages, so it does not lower the short-session figure), a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
   stdio MCP server child added ~51 MiB per spare, and larger histories, plugins
-  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks, but an unused spare is force-terminated
-  (process-group `SIGKILL` on Unix, process termination on Windows), so `SessionEnd`
-  hooks never run for it on any platform (turn **Warm
-  Claude spares** off if you rely on paired hooks), and snapshots
+  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks; an unused spare retired in the background
+  gets 2 s after stdin EOF (`SPARE_RETIRE_WAIT`) to exit cleanly and run `SessionEnd`
+  hooks, then is force-terminated (process-group `SIGKILL` on Unix, process termination
+  on Windows), while urgent removals (a launch-time miss, folder quiesce, app quit) force-terminate
+  at once without `SessionEnd` (turn **Warm
+  Claude spares** off if you rely on paired hooks). It also snapshots
   `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
   renewal chain can run hooks in up to three processes per wake, and hook
   output can be up to 10 minutes old when adopted. A
@@ -452,9 +461,11 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   spare in a slow repository whose `git status` takes 250–500 ms can be slower
   than starting cold (on this 2,326-file repository it took a median of 46.3 ms,
   max 71.2 ms). The spare saves
-  the CLI's startup: ~0.17–1.71 s per adopted spare (~1.7 s in the default
-  env, ~0.17–0.25 s with telemetry off; loopback benchmark, details in
-  [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares)); with an API
+  the CLI's startup: ~0.17–1.71 s per adopted spare in the offline loopback benchmark
+  (~1.7 s in the default env, ~0.17–0.25 s with telemetry off) and ~0.38–0.62 s of CLI
+  startup on a real signed-in login (n = 5 live Haiku pairs, where API latency hid the
+  end-to-end saving), for ~0.4 s of CPU per parked start; details in
+  [worker-tokens.md](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares); with an API
   key the 5-minute message cache has likely expired before many review wakes, so
   it does not save the history's cache cost, and PandaCode does not set
   `ENABLE_PROMPT_CACHING_1H`. Stopping the task, or the team's Pause or Stop, drops the spare; a

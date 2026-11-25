@@ -24,7 +24,11 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).toBeChecked();
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
-  for (const disclosure of ['~0.17–1.71 s', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', 'up to 4', 'MCP servers', 'SessionStart', 'SessionEnd', 'force-terminated', 'misses', 'all read-only', '10 min old']) {
+  for (const disclosure of [
+    '~0.17–1.71 s', '~0.38–0.62 s', 'real sign-in', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', '~0.4 s of startup CPU', 'up to 4',
+    'MCP servers', 'SessionStart', 'low memory', '6 GiB', '1.5 GiB', 'memory pressure', '2 s to exit cleanly', 'SessionEnd', 'force-terminated',
+    'without SessionEnd', 'misses', '30–240 min', 'doubles', 'all read-only', '10 min old',
+  ]) {
     await expect(hint(page)).toContainText(disclosure);
   }
   // This launch's local totals sit on the row's status line, which is not an alert.

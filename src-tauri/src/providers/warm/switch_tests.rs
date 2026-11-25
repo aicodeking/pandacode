@@ -83,7 +83,7 @@ fn spare(lead: bool) -> Spare {
     let child = idle_sleep_command().spawn().unwrap();
     let group = ProcessGroup::register(child.id());
     Spare { key: "switch-test".into(), child, group, server: None,
-        born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead, cwd: None }
+        born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead, renewal_due: false, cwd: None }
 }
 
 #[tokio::test]

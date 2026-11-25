@@ -2,13 +2,14 @@
 //! so a follow-up skips the CLI's own startup (about 0.17–1.71 s, see docs/worker-tokens.md).
 //! A warm agent is adopted only when everything on its command line and in its tool catalog
 //! still matches; otherwise it is discarded and the turn starts cold as before.
-use super::exit::{pending_in_cwd, retire_parts_in_cwd, Pending};
+use super::exit::{pending_in_cwd, retire_gracefully_in_cwd, retire_parts_in_cwd, Pending};
 use super::*;
 use crate::path_match::{path_in_folder, resolve_path};
 use std::sync::LazyLock;
 
 mod adopt;
 mod key;
+mod memory;
 mod spawn;
 mod stats;
 pub(super) use self::adopt::adopt_for_launch;
@@ -149,6 +150,10 @@ pub(super) struct Spare {
     idle: Duration,
     /// Started for a team lead waiting on its workers (the lead pool).
     lead: bool,
+    /// A lead spare whose chain still had a renewal left (`renewals < MAX_RENEWALS`): expiring,
+    /// it would have started again, so a launch finding it past its window says nothing about
+    /// the chain running out unused. False for ordinary spares and a chain's last lead spare.
+    pub(super) renewal_due: bool,
     cwd: Option<PathBuf>,
 }
 
@@ -335,7 +340,7 @@ impl Drop for Adopting {
     fn drop(&mut self) {
         if let Some((spare, pending)) = self.spare.take() {
             eprintln!("{}", decision_miss(self.pool, spare.lead, "its launch ended before adoption", false));
-            retire(&self.session_id, spare, pending);
+            retire_now(&self.session_id, spare, pending);
         }
     }
 }
@@ -358,11 +363,16 @@ fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool,
         Some(reason) => {
             // A dead or stale spare joins the pool's miss streak; one that merely outlived its
             // window says only that the follow-up came late, so it joins the expiry streak (the
-            // expiry timer, or a sleeping laptop, left it for this launch to remove).
-            let streak = if alive && expired { MissStreak::Expired } else { MissStreak::Stale };
+            // expiry timer, or a sleeping laptop, left it for this launch to remove), unless it
+            // was a lead spare with a renewal still due: its chain had not run out its budget.
+            let streak = match (alive && expired, spare.renewal_due) {
+                (true, true) => MissStreak::Neither,
+                (true, false) => MissStreak::Expired,
+                (false, _) => MissStreak::Stale,
+            };
             let note = decision_miss_in(pool, spare.lead, &reason, streak);
             // The cold launch's `await_exit` waits for this process, so two never share a session.
-            retire(session_id, spare, pending);
+            retire_now(session_id, spare, pending);
             (None, Some(note))
         }
     }
@@ -381,14 +391,25 @@ fn remove_for_launch(pool: &Pool, session_id: &str) -> (Option<(Spare, Pending)>
     (removed, gone)
 }
 
-/// Kill a spare that left the pool without being adopted and register its exit under the session
-/// like a finished turn's (`exit::spawn_exit_in_cwd`), so whatever resumes the session next (a
-/// cold launch, the harness console) waits until the process is really gone instead of overlapping
-/// it. Every removal (a miss, expiry, a refused registration, eviction, replacement, discard)
-/// comes here, never holding the pool lock; `pending` was registered under the pool lock and
-/// drops only after `retire_parts_in_cwd` has chained the real exit behind it. Outside a runtime
-/// nothing can wait: dropping it still kills it.
+/// Retire a spare that left the pool without being adopted, in the background: its stdin closes so
+/// Claude Code exits on its own (running its `SessionEnd` hooks) within `exit::SPARE_RETIRE_WAIT`,
+/// or at once when a launch hurries it (`await_exit`), before it is killed. Its exit is registered
+/// under the session like a finished turn's (`exit::spawn_exit_in_cwd`), so whatever resumes the
+/// session next (a cold launch, the harness console) waits until the process is really gone
+/// instead of overlapping it. For removals nothing waits on (expiry, eviction, replacement, a
+/// discard or switch-off); a launch's own misses use `retire_now`. Never called holding the pool
+/// lock; `pending` was registered under it and drops only after the real exit is chained behind
+/// it. Outside a runtime nothing can wait: dropping it still kills it.
 fn retire(session_id: &str, spare: Spare, pending: Pending) {
+    let Spare { child, group, server, cwd, .. } = spare;
+    retire_gracefully_in_cwd(session_id, child, group, server, cwd);
+    drop(pending);
+}
+
+/// `retire`, killing the process at once: for a launch about to start cold beside it (a miss, a
+/// launch ended before adoption, a refused registration, a folder being released), which must
+/// never wait on a graceful exit.
+fn retire_now(session_id: &str, spare: Spare, pending: Pending) {
     let Spare { child, group, server, cwd, .. } = spare;
     retire_parts_in_cwd(session_id, child, group, server, cwd);
     drop(pending);
@@ -406,7 +427,7 @@ fn launched_without_spare_in(pool: &Pool, session_id: &str) {
     let (removed, _gone) = remove_for_launch(pool, session_id);
     if let Some((spare, pending)) = removed {
         spares(pool).stats_mut(spare.lead).discarded += 1;
-        retire(session_id, spare, pending);
+        retire_now(session_id, spare, pending);
     }
 }
 
@@ -714,7 +735,7 @@ async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String
             let within = InFolder::snapshot(pool).within_off_runtime(folder).await?;
             let (removed, affected) = discard_within(pool, within);
             for (id, spare, pending) in removed {
-                retire(&id, spare, pending);
+                retire_now(&id, spare, pending);
             }
             if !affected.is_empty() {
                 let results = futures_util::future::join_all(affected.iter().map(|id| await_exit(id))).await;
@@ -746,3 +767,6 @@ mod churn_tests;
 /// Regression coverage for the warm-spare switch and retirement races.
 #[cfg(test)]
 mod switch_tests;
+/// Unused spares' graceful background exit (`exit::retire_gracefully_in_cwd`).
+#[cfg(test)]
+mod retire_tests;

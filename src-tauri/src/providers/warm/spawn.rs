@@ -2,6 +2,7 @@
 //! lead's renewals when its spare expires.
 use super::*;
 use super::key::{key_fields_with_disabled, prepared, without_git_status};
+use super::memory::allows_spare_off_runtime;
 use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_unused_expiry};
 use std::time::{Instant, SystemTime};
 
@@ -110,7 +111,8 @@ pub(super) fn failure_note(renewals: u32, error: &str) -> String {
 /// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
 /// lead spare may start again (`renews`). `Ok(true)` only when `register` pooled the spare;
 /// `Ok(false)` when it was skipped (launch moved on, starts in flight at the cap, churn backoff,
-/// spares off, quitting, no warm key, an unreadable git status) or its registration was refused.
+/// spares off, quitting, low memory, no warm key, an unreadable git status) or its registration
+/// was refused.
 async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, chain: Chain) -> Result<bool, String> {
     let session_id = config.session_id.clone();
     let cwd_path = external_path(&config.cwd);
@@ -154,7 +156,10 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
     let Some(Spawned { key, child, group, server, starting }) = (life.spawn)(config, tools, approval_tools, launch, lead).await? else { return Ok(false) };
     let spare_key = key.clone();
     let (born, born_wall) = (Instant::now(), SystemTime::now());
-    let registered = register(life.pool, &session_id, launch, Spare { key, child, group, server, born, born_wall, idle: life.idle, lead, cwd });
+    // A lead spare with renewals left would start again at its expiry (`renews`).
+    let renewal_due = lead && chain.renewals < MAX_RENEWALS;
+    let spare = Spare { key, child, group, server, born, born_wall, idle: life.idle, lead, renewal_due, cwd };
+    let registered = register(life.pool, &session_id, launch, spare);
     drop(inflight);
     // The spare is now pooled, or killed with its own exit registered (`retire`).
     drop(starting);
@@ -306,6 +311,10 @@ pub(super) fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools:
 /// spawn), and none starts while that cannot be read. Ordinary spares never run git.
 pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, lead: bool) -> Result<Option<Spawned>, String> {
     if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() || !enabled_off_runtime().await {
+        return Ok(None);
+    }
+    // Each spare is a whole idle CLI: none on a small machine or one short of memory (logged).
+    if !allows_spare_off_runtime().await {
         return Ok(None);
     }
     spawn_claude_keyed(config, tools, approval_tools, launch, lead, |config, catalog, disabled, stdio| {
@@ -460,7 +469,8 @@ pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare)
             stats.discarded += 1;
             let note = discarded_note_locked(&pool, spare.lead);
             drop(pool);
-            retire(session_id, spare, pending);
+            // The launch that moved the epoch waits for this one: never a graceful exit.
+            retire_now(session_id, spare, pending);
             eprintln!("{note}");
             return false;
         }
