@@ -239,6 +239,11 @@ trait Backend: Send + Sync + 'static {
     fn listen(&self, name: &str, sink: broadcast::Sender<HubEvent>) -> ListenerId;
     fn unlisten(&self, id: ListenerId);
     fn changed(&self);
+    /// Whether [`invoke`] refuses commands missing from `WEB_ALLOWED_COMMANDS`. Every real
+    /// backend keeps the default; only test fakes that answer synthetic commands opt out.
+    fn enforces_allowlist(&self) -> bool {
+        true
+    }
 }
 
 type ListenerId = tauri::EventId;
@@ -1797,6 +1802,112 @@ fn web_blocked_command(command: &str) -> bool {
     DESKTOP_ONLY.contains(&command) || ["overlay_", "plugin:"].iter().any(|prefix| command.starts_with(prefix))
 }
 
+/// Every command the main window registers (in `main_invoke_handler`) that was reviewed
+/// as fine from a browser tab. Default-deny: [`invoke`] refuses anything not listed here
+/// (and everything `web_blocked_command` names), so a new command can't reach tabs unreviewed.
+/// `every_main_window_command_is_reviewed_for_web` keeps the two lists covering every command.
+const WEB_ALLOWED_COMMANDS: &[&str] = &[
+    "bot_set_capabilities", "bot_assign_task", "bot_task_links",
+    "voice_configuration", "voice_save_profile", "voice_select_profile", "voice_delete_profile",
+    "voice_local_catalog", "voice_local_download", "voice_local_cancel_download", "voice_local_delete",
+    "voice_local_select", "voice_local_test_model", "voice_preferences", "voice_update_preferences",
+    "agents_dock_snapshot", "agents_dock_preferences", "agents_dock_save_preferences", "support_details",
+    "model_routing_status_command", "model_routing_exclusions", "model_routing_set_exclusions",
+    "model_routing_configure_command", "model_routing_prepare", "model_routing_route", "model_routing_tiers",
+    "model_routing_set_tiers", "model_routing_tier_models", "model_health_list", "model_health_clear",
+    "crash_recovery_take", "crash_recovery_shown", "crash_restart_enabled", "set_crash_restart_enabled",
+    "sessions_missing", "app_update_install_supported", "check_agent_updates", "update_agent",
+    "list_moodboards", "create_moodboard", "read_moodboard", "rename_moodboard", "delete_moodboard",
+    "add_moodboard_image", "import_moodboard_images", "update_moodboard_image", "remove_moodboard_image",
+    "moodboard_image", "remote_status", "remote_sign_in_start", "remote_sign_in_finish",
+    "remote_sign_in_cancel", "remote_sign_out", "remote_set_host_enabled", "remote_set_notify_enabled",
+    "remote_devices", "remote_revoke_device", "remote_targets", "remote_start_task", "orchestration_status",
+    "orchestration_set_enabled", "orchestration_set_link", "orchestration_pending",
+    "orchestration_link_respond", "orchestration_children", "orchestration_threads", "remote_team",
+    "remote_worker_messages", "remote_cancel_start", "remote_reconnect", "remote_device_grants",
+    "remote_set_device_grant", "remote_pair_code", "remote_pair_code_cancel", "remote_pair_redeem",
+    "remote_diagnostics", "remote_diagnostics_export", "remote_resubscribe", "remote_workspace_image",
+    "cloud_agent_targets", "cloud_agent_start", "cloud_agent_action", "cloud_agent_set_claude_token",
+    "remote_repo_check", "provider_configuration", "connections_list", "connection_save", "connection_delete",
+    "connection_assign", "connection_pool_set", "connection_new_account", "connection_pool_member_set",
+    "account_pool_status", "account_pool_clear", "account_sign_in_start", "account_sign_in_code",
+    "account_sign_in_cancel", "agent_usage", "agent_usage_asking_claude", "tray_seen", "usage_ledger",
+    "capabilities_inventory", "cache_alignment", "prompt_activity", "set_resume_at_reset", "clear_usage_limit",
+    "discard_draft", "queue_list", "queue_add", "queue_update", "queue_remove", "queue_take_steered",
+    "queue_reorder", "queue_take", "queue_restore", "set_queue_hold", "steer_task", "bots_list", "bot_desktop_thread",
+    "bot_detail", "bot_create", "bot_update", "bot_set_paused", "bot_reset", "bot_delete", "bot_remember",
+    "bot_forget", "bot_activity", "bot_project_ids", "bot_message", "bot_shared_channels",
+    "bot_shared_channel_detail", "bot_shared_channel_create", "bot_shared_channel_update",
+    "bot_shared_channel_archive", "bot_shared_channel_post", "bot_shared_channel_stop",
+    "bot_shared_channel_continue", "bot_shared_channel_reassign", "bot_message_markers", "bot_failover_decide",
+    "bot_failover_pending", "bot_model_switches", "bot_task_brief", "bot_schedule_create",
+    "bot_schedule_set_enabled", "bot_schedule_delete", "bot_run_schedule_now", "schedules_list",
+    "schedule_create", "schedule_update", "schedule_set_enabled", "schedule_delete", "schedule_run_now",
+    "schedule_snooze", "schedule_runs", "scheduler_settings", "scheduler_set_settings", "bot_channel_add",
+    "bot_channel_test", "bot_channel_configure", "bot_channel_set_enabled", "bot_channel_remove",
+    "bot_pairing_decide", "bot_web_link", "bot_web_new_link", "bot_rule_add", "bot_rule_delete",
+    "list_importable_conversations", "import_conversations", "provider_set_claude_connection_mode",
+    "provider_set_claude_cli_refresh", "harness_privacy", "harness_privacy_set", "provider_claude_status",
+    "list_opencode_models", "save_opencode_models", "provider_set_executable",
+    "provider_set_environment_variable", "provider_remove_environment_variable",
+    "provider_set_global_environment_variable", "provider_remove_global_environment_variable",
+    "provider_set_use_global_environment", "provider_save_glm_key", "provider_remove_glm_key",
+    "provider_save_mimo_key", "provider_remove_mimo_key", "provider_save_alibaba_key",
+    "provider_remove_alibaba_key", "provider_save_deepseek_key", "provider_remove_deepseek_key",
+    "provider_save_commandcode_key", "provider_remove_commandcode_key", "provider_set_mimo_endpoint",
+    "architect_profiles", "architect_set_lead_guidance", "architect_save_profile", "architect_delete_profile",
+    "architect_get", "architect_configure", "architect_set_council", "architect_council_accept",
+    "architect_start", "architect_control", "architect_worker_messages", "architect_team_messages", "task_goal",
+    "codex_command", "codex_jobs", "set_task_preference", "fork_codex_task", "fork_session_at_message",
+    "get_message_content", "archive_codex_task", "export_task", "save_task_export", "start_harness_terminal",
+    "list_projects", "add_project", "remove_project", "relink_project", "list_sessions", "pin_session",
+    "dismiss_error_messages", "reorder_sessions", "get_task", "create_session", "create_board_task",
+    "update_task_details", "set_task_stage", "start_task", "configure_session", "set_reasoning_effort",
+    "update_session", "delete_session_with_attachment_cleanup", "chat_create", "chat_cleanup", "get_messages",
+    "turn_change_diff", "turn_change_summary", "list_subagents", "get_subagent", "send_message",
+    "list_slash_commands", "recipes_list", "recipes_save", "recipes_delete", "recipes_dry_run",
+    "provider_check_connection", "resolve_slash_command", "stop_session", "respond_approval",
+    "respond_user_input", "list_agent_integrations", "list_app_tools", "agent_ui_request_active",
+    "resolve_agent_ui_action", "list_providers", "list_provider_models", "git_status", "git_diff", "jj_status",
+    "jj_diff", "jj_describe", "jj_new", "jj_commit", "jj_log", "git_stage", "git_commit", "git_branches",
+    "git_switch_branch", "git_push", "create_worktree", "attach_worktree", "worktree_status", "remove_worktree",
+    "merge_worktree", "recreate_worktree", "github_status", "github_repos", "project_icon", "github_repo_pulls",
+    "github_repo_issues", "github_repo_runs", "github_run_details", "github_project_repos", "github_clone_repo",
+    "github_search", "github_issues", "github_resolve", "github_refresh_links", "github_create_pull_request",
+    "github_pull_request", "github_pull_request_diff", "github_merge_pull_request",
+    "github_detect_pull_request", "github_link_pull_request", "simulator_status", "simulator_select",
+    "simulator_create_duo", "simulator_pose", "simulator_power", "simulator_frame", "simulator_input",
+    "simulator_appearance", "simulator_capture", "android_setup", "vm_status", "vm_show", "vm_create",
+    "vm_power", "vm_frame", "vm_input", "vm_desktop", "vm_setup", "cloud_connections", "cloud_connect",
+    "cloud_colab_config", "cloud_colab_install_cli", "cloud_colab_runtime_action", "cloud_colab_set_config",
+    "cloud_colab_sign_in_cancel", "cloud_colab_sign_in_start", "cloud_colab_sign_in_status",
+    "cloud_colab_thread_runtimes", "cloud_colab_usage", "cloud_digitalocean_catalog",
+    "cloud_digitalocean_set_options",
+    "cloud_disconnect", "cloud_set_inherit_environment", "cloud_setup_sandboxes", "cloud_instabox_images",
+    "cloud_instabox_set_image", "cloud_machines", "cloud_create", "cloud_power", "cloud_frame", "cloud_input",
+    "themes_list", "theme_import", "theme_install", "theme_remove", "token_saver_tools", "token_saver_install",
+    "task_token_usage", "skill_manager_list", "skill_manager_set", "skill_manager_reset",
+    "skill_manager_restore", "skill_manager_uninstall", "skill_manager_undo_uninstall", "skill_manager_preview",
+    "skill_manager_add", "skill_manager_add_library", "skills_list", "skills_import_folder",
+    "skills_import_github", "skills_activate", "skills_deactivate", "skills_deactivate_all", "skills_matrix",
+    "skills_scan", "skills_remove", "set_task_link", "import_prompt_image", "prompt_image", "read_document",
+    "describe_folder", "list_files", "manage_workspace_entry", "write_workspace_file", "workspace_file_stamp",
+    "search_files", "search_text", "read_file", "read_document_file", "design_list", "design_read",
+    "design_comments", "design_save_comments", "progress_list", "progress_media", "progress_thumb",
+    "progress_clear", "workspace_image", "tool_image", "resolve_workspace_files", "prepare_file_preview",
+    "get_run_script", "get_run_script_preview", "run_turn_checks", "start_run_script_terminal",
+    "start_terminal", "write_terminal", "resize_terminal", "close_terminal", "get_terminal_activity",
+    "read_terminal_output", "get_terminal_preferences", "get_metrics", "list_local_servers",
+    "jev_configuration", "jev_save_configuration", "jev_decision_models", "jev_doctor", "jev_install_runtime",
+    "jev_start", "jev_watch_run", "jev_cancel", "jev_list_runs", "jev_read_run", "jev_assist_prepare",
+    "jev_assist_run", "jev_assist_list", "jev_assist_save_rules", "web_server_status", "web_server_configure",
+    "web_server_rotate_token", "app_version",
+];
+
+fn web_allowed_command(command: &str) -> bool {
+    WEB_ALLOWED_COMMANDS.contains(&command)
+}
+
 /// The token checked on the head may have been rotated while the body trickled in or the
 /// command ran: a held-open request on the old token must never run a command or read a
 /// reply (say, a `web_server_status` carrying the new link) after the owner revoked it.
@@ -1832,7 +1943,7 @@ async fn invoke(request: &Request, shared: &Shared) -> Response {
         args @ Value::Object(_) => args,
         _ => return Response::error(400, "`args` must be an object."),
     };
-    if web_blocked_command(&call.command) {
+    if web_blocked_command(&call.command) || (shared.backend.enforces_allowlist() && !web_allowed_command(&call.command)) {
         return Response::error(403, "This command is only available in the desktop app.");
     }
     // A tab may switch the port, never the listen address (that could expose the session).
@@ -2207,6 +2318,10 @@ mod tests {
     }
 
     impl Backend for Fake {
+        /// Answers synthetic commands (`echo`, `hang`, ...) that no real backend registers.
+        fn enforces_allowlist(&self) -> bool {
+            false
+        }
         fn rotate_if_token(&self, _expected: String) -> BoxFuture<Reply> {
             Box::pin(async { Reply::Unknown })
         }
@@ -2904,6 +3019,10 @@ mod tests {
     }
 
     impl Backend for SelfConfig {
+        /// Answers synthetic commands (`echo`, `hang`, ...) that no real backend registers.
+        fn enforces_allowlist(&self) -> bool {
+            false
+        }
         fn rotate_if_token(&self, _expected: String) -> BoxFuture<Reply> {
             Box::pin(async { Reply::Unknown })
         }
@@ -3473,107 +3592,6 @@ mod tests {
         h.server.stop().await;
     }
 
-    /// Every command the main window registers (in `main_invoke_handler`), each reviewed:
-    /// fine from a browser tab. Everything else registered there must be blocked by
-    /// `web_blocked_command`, so a new desktop-only command can't reach tabs unreviewed.
-    const WEB_ALLOWED_COMMANDS: &[&str] = &[
-        "bot_set_capabilities", "bot_assign_task", "bot_task_links",
-        "voice_configuration", "voice_save_profile", "voice_select_profile", "voice_delete_profile",
-        "voice_local_catalog", "voice_local_download", "voice_local_cancel_download", "voice_local_delete",
-        "voice_local_select", "voice_local_test_model", "voice_preferences", "voice_update_preferences",
-        "agents_dock_snapshot", "agents_dock_preferences", "agents_dock_save_preferences", "support_details",
-        "model_routing_status_command", "model_routing_exclusions", "model_routing_set_exclusions",
-        "model_routing_configure_command", "model_routing_prepare", "model_routing_route", "model_routing_tiers",
-        "model_routing_set_tiers", "model_routing_tier_models", "model_health_list", "model_health_clear",
-        "crash_recovery_take", "crash_recovery_shown", "crash_restart_enabled", "set_crash_restart_enabled",
-        "sessions_missing", "app_update_install_supported", "check_agent_updates", "update_agent",
-        "list_moodboards", "create_moodboard", "read_moodboard", "rename_moodboard", "delete_moodboard",
-        "add_moodboard_image", "import_moodboard_images", "update_moodboard_image", "remove_moodboard_image",
-        "moodboard_image", "remote_status", "remote_sign_in_start", "remote_sign_in_finish",
-        "remote_sign_in_cancel", "remote_sign_out", "remote_set_host_enabled", "remote_set_notify_enabled",
-        "remote_devices", "remote_revoke_device", "remote_targets", "remote_start_task", "orchestration_status",
-        "orchestration_set_enabled", "orchestration_set_link", "orchestration_pending",
-        "orchestration_link_respond", "orchestration_children", "orchestration_threads", "remote_team",
-        "remote_worker_messages", "remote_cancel_start", "remote_reconnect", "remote_device_grants",
-        "remote_set_device_grant", "remote_pair_code", "remote_pair_code_cancel", "remote_pair_redeem",
-        "remote_diagnostics", "remote_diagnostics_export", "remote_resubscribe", "remote_workspace_image",
-        "cloud_agent_targets", "cloud_agent_start", "cloud_agent_action", "cloud_agent_set_claude_token",
-        "remote_repo_check", "provider_configuration", "connections_list", "connection_save", "connection_delete",
-        "connection_assign", "connection_pool_set", "connection_new_account", "connection_pool_member_set",
-        "account_pool_status", "account_pool_clear", "account_sign_in_start", "account_sign_in_code",
-        "account_sign_in_cancel", "agent_usage", "agent_usage_asking_claude", "tray_seen", "usage_ledger",
-        "capabilities_inventory", "cache_alignment", "prompt_activity", "set_resume_at_reset", "clear_usage_limit",
-        "discard_draft", "queue_list", "queue_add", "queue_update", "queue_remove", "queue_take_steered",
-        "queue_reorder", "queue_take", "queue_restore", "set_queue_hold", "steer_task", "bots_list", "bot_desktop_thread",
-        "bot_detail", "bot_create", "bot_update", "bot_set_paused", "bot_reset", "bot_delete", "bot_remember",
-        "bot_forget", "bot_activity", "bot_project_ids", "bot_message", "bot_shared_channels",
-        "bot_shared_channel_detail", "bot_shared_channel_create", "bot_shared_channel_update",
-        "bot_shared_channel_archive", "bot_shared_channel_post", "bot_shared_channel_stop",
-        "bot_shared_channel_continue", "bot_shared_channel_reassign", "bot_message_markers", "bot_failover_decide",
-        "bot_failover_pending", "bot_model_switches", "bot_task_brief", "bot_schedule_create",
-        "bot_schedule_set_enabled", "bot_schedule_delete", "bot_run_schedule_now", "schedules_list",
-        "schedule_create", "schedule_update", "schedule_set_enabled", "schedule_delete", "schedule_run_now",
-        "schedule_snooze", "schedule_runs", "scheduler_settings", "scheduler_set_settings", "bot_channel_add",
-        "bot_channel_test", "bot_channel_configure", "bot_channel_set_enabled", "bot_channel_remove",
-        "bot_pairing_decide", "bot_web_link", "bot_web_new_link", "bot_rule_add", "bot_rule_delete",
-        "list_importable_conversations", "import_conversations", "provider_set_claude_connection_mode",
-        "provider_set_claude_cli_refresh", "harness_privacy", "harness_privacy_set", "provider_claude_status",
-        "list_opencode_models", "save_opencode_models", "provider_set_executable",
-        "provider_set_environment_variable", "provider_remove_environment_variable",
-        "provider_set_global_environment_variable", "provider_remove_global_environment_variable",
-        "provider_set_use_global_environment", "provider_save_glm_key", "provider_remove_glm_key",
-        "provider_save_mimo_key", "provider_remove_mimo_key", "provider_save_alibaba_key",
-        "provider_remove_alibaba_key", "provider_save_deepseek_key", "provider_remove_deepseek_key",
-        "provider_save_commandcode_key", "provider_remove_commandcode_key", "provider_set_mimo_endpoint",
-        "architect_profiles", "architect_set_lead_guidance", "architect_save_profile", "architect_delete_profile",
-        "architect_get", "architect_configure", "architect_set_council", "architect_council_accept",
-        "architect_start", "architect_control", "architect_worker_messages", "architect_team_messages", "task_goal",
-        "codex_command", "codex_jobs", "set_task_preference", "fork_codex_task", "fork_session_at_message",
-        "get_message_content", "archive_codex_task", "export_task", "save_task_export", "start_harness_terminal",
-        "list_projects", "add_project", "remove_project", "relink_project", "list_sessions", "pin_session",
-        "dismiss_error_messages", "reorder_sessions", "get_task", "create_session", "create_board_task",
-        "update_task_details", "set_task_stage", "start_task", "configure_session", "set_reasoning_effort",
-        "update_session", "delete_session_with_attachment_cleanup", "chat_create", "chat_cleanup", "get_messages",
-        "turn_change_diff", "turn_change_summary", "list_subagents", "get_subagent", "send_message",
-        "list_slash_commands", "recipes_list", "recipes_save", "recipes_delete", "recipes_dry_run",
-        "provider_check_connection", "resolve_slash_command", "stop_session", "respond_approval",
-        "respond_user_input", "list_agent_integrations", "list_app_tools", "agent_ui_request_active",
-        "resolve_agent_ui_action", "list_providers", "list_provider_models", "git_status", "git_diff", "jj_status",
-        "jj_diff", "jj_describe", "jj_new", "jj_commit", "jj_log", "git_stage", "git_commit", "git_branches",
-        "git_switch_branch", "git_push", "create_worktree", "attach_worktree", "worktree_status", "remove_worktree",
-        "merge_worktree", "recreate_worktree", "github_status", "github_repos", "project_icon", "github_repo_pulls",
-        "github_repo_issues", "github_repo_runs", "github_run_details", "github_project_repos", "github_clone_repo",
-        "github_search", "github_issues", "github_resolve", "github_refresh_links", "github_create_pull_request",
-        "github_pull_request", "github_pull_request_diff", "github_merge_pull_request",
-        "github_detect_pull_request", "github_link_pull_request", "simulator_status", "simulator_select",
-        "simulator_create_duo", "simulator_pose", "simulator_power", "simulator_frame", "simulator_input",
-        "simulator_appearance", "simulator_capture", "android_setup", "vm_status", "vm_show", "vm_create",
-        "vm_power", "vm_frame", "vm_input", "vm_desktop", "vm_setup", "cloud_connections", "cloud_connect",
-        "cloud_colab_config", "cloud_colab_install_cli", "cloud_colab_runtime_action", "cloud_colab_set_config",
-        "cloud_colab_sign_in_cancel", "cloud_colab_sign_in_start", "cloud_colab_sign_in_status",
-        "cloud_colab_thread_runtimes", "cloud_colab_usage", "cloud_digitalocean_catalog",
-        "cloud_digitalocean_set_options",
-        "cloud_disconnect", "cloud_set_inherit_environment", "cloud_setup_sandboxes", "cloud_instabox_images",
-        "cloud_instabox_set_image", "cloud_machines", "cloud_create", "cloud_power", "cloud_frame", "cloud_input",
-        "themes_list", "theme_import", "theme_install", "theme_remove", "token_saver_tools", "token_saver_install",
-        "task_token_usage", "skill_manager_list", "skill_manager_set", "skill_manager_reset",
-        "skill_manager_restore", "skill_manager_uninstall", "skill_manager_undo_uninstall", "skill_manager_preview",
-        "skill_manager_add", "skill_manager_add_library", "skills_list", "skills_import_folder",
-        "skills_import_github", "skills_activate", "skills_deactivate", "skills_deactivate_all", "skills_matrix",
-        "skills_scan", "skills_remove", "set_task_link", "import_prompt_image", "prompt_image", "read_document",
-        "describe_folder", "list_files", "manage_workspace_entry", "write_workspace_file", "workspace_file_stamp",
-        "search_files", "search_text", "read_file", "read_document_file", "design_list", "design_read",
-        "design_comments", "design_save_comments", "progress_list", "progress_media", "progress_thumb",
-        "progress_clear", "workspace_image", "tool_image", "resolve_workspace_files", "prepare_file_preview",
-        "get_run_script", "get_run_script_preview", "run_turn_checks", "start_run_script_terminal",
-        "start_terminal", "write_terminal", "resize_terminal", "close_terminal", "get_terminal_activity",
-        "read_terminal_output", "get_terminal_preferences", "get_metrics", "list_local_servers",
-        "jev_configuration", "jev_save_configuration", "jev_decision_models", "jev_doctor", "jev_install_runtime",
-        "jev_start", "jev_watch_run", "jev_cancel", "jev_list_runs", "jev_read_run", "jev_assist_prepare",
-        "jev_assist_run", "jev_assist_list", "jev_assist_save_rules", "web_server_status", "web_server_configure",
-        "web_server_rotate_token", "app_version",
-    ];
-
     fn main_window_commands() -> Vec<String> {
         let source = include_str!("lib.rs");
         let start = source.find("pub(crate) fn main_invoke_handler").expect("main_invoke_handler in lib.rs");
@@ -3610,6 +3628,60 @@ mod tests {
             assert!(commands.iter().any(|command| command == name) && web_blocked_command(name), "{name}");
         }
         assert!(WEB_ALLOWED_COMMANDS.contains(&"tray_seen") && WEB_ALLOWED_COMMANDS.contains(&"send_message"));
+    }
+
+    /// The fake's answers behind the trait's default allowlist, as every real backend runs.
+    struct Strict(Fake);
+
+    impl Backend for Strict {
+        fn rotate_if_token(&self, expected: String) -> BoxFuture<Reply> {
+            self.0.rotate_if_token(expected)
+        }
+        fn configure_if_token(&self, expected: String, args: Value) -> BoxFuture<Reply> {
+            self.0.configure_if_token(expected, args)
+        }
+        fn invoke(&self, command: String, _args: Value) -> BoxFuture<Reply> {
+            let reply = match command.as_str() {
+                "list_sessions" => Reply::Json("[]".into()),
+                _ => Reply::Unknown,
+            };
+            lock(&self.0.invoked).push(command);
+            Box::pin(async move { reply })
+        }
+        fn asset(&self, path: String, dev_proxy: bool) -> BoxFuture<Option<StaticAsset>> {
+            self.0.asset(path, dev_proxy)
+        }
+        fn listen(&self, name: &str, sink: broadcast::Sender<HubEvent>) -> ListenerId {
+            self.0.listen(name, sink)
+        }
+        fn unlisten(&self, id: ListenerId) {
+            self.0.unlisten(id)
+        }
+        fn changed(&self) {
+            self.0.changed()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_allowlist_refuses_unreviewed_commands() {
+        let backend = Arc::new(Strict(Fake::default()));
+        assert!(backend.enforces_allowlist());
+        let server = WebServer::new(temp_dir());
+        let status = server.start(backend.clone(), LOCAL, 0, false).await.unwrap();
+        let (addr, token) = (SocketAddr::new(LOCAL, status.port), token_of(&status));
+        for body in [r#"{"command":"echo"}"#, r#"{"command":"unreviewed_command"}"#] {
+            assert!(!web_allowed_command(serde_json::from_str::<Value>(body).unwrap()["command"].as_str().unwrap()));
+            let reply = request(addr, "POST", "/api/invoke", &[host(addr), bearer(&token)], body).await;
+            assert_eq!(reply.status, 403, "{body}");
+            assert_eq!(reply.text(), r#"{"error":"This command is only available in the desktop app."}"#);
+        }
+        assert!(lock(&backend.0.invoked).is_empty(), "a refused command reached the backend");
+        assert!(web_allowed_command("list_sessions"));
+        let reply = request(addr, "POST", "/api/invoke", &[host(addr), bearer(&token)], r#"{"command":"list_sessions"}"#).await;
+        assert_eq!(reply.status, 200);
+        assert_eq!(reply.text(), "[]");
+        assert_eq!(*lock(&backend.0.invoked), ["list_sessions"]);
+        server.stop().await;
     }
 
     #[tokio::test]
