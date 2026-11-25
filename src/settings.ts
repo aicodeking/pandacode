@@ -16,11 +16,12 @@ import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-import { call, subscribe } from './bridge';
+import { call, subscribe, webMode } from './bridge';
 import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountCustomTools } from './custom-tools-settings';
 import { mountRemoteSettings } from './remote-settings';
+import { mountWebServerSettings, type WebServerHost } from './web-server-settings';
 import { mountSchedulesSettings } from './schedules-settings';
 import { appUpdates } from './app-updates';
 import type { RemoteHost } from './remote-types';
@@ -359,7 +360,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'skills': return '<div id="skill-manager"></div>';
     case 'rules': return '<div id="skills-library"></div>';
     case 'cloud': return '<div id="cloud-settings"></div>';
-    case 'remote': return '<div id="remote-settings"></div>';
+    case 'remote': return '<div id="remote-settings"></div><h3 class="settings-heading">Web access</h3><div id="web-server-settings"></div><p class="web-server-notice" role="status" aria-live="polite"></p><p class="web-server-notice web-server-notice-error" role="alert"></p>';
     case 'github': return '<div id="github-settings"></div>';
     case 'about': return `${aboutSettingsHtml()}${resourceUsageHtml()}
       <div class="settings-group settings-support"><div class="setting-row"><div><strong>Help & support</strong></div><button type="button" class="secondary-button" data-action="support">Open issues${icon('forward')}</button></div><details class="support-details"><summary>App details for support${icon('chevron')}</summary><p>Only the app version, platform, and architecture. Nothing is sent automatically.</p><textarea aria-label="App details for support" rows="3" readonly spellcheck="false"></textarea><div class="support-details-actions"><button type="button" class="secondary-button support-copy" disabled>${icon('copy')}Copy app details</button><button type="button" class="secondary-button support-retry" hidden>Try again</button></div><p role="status" aria-live="polite"></p></details></div>`;
@@ -538,7 +539,9 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
       cleanups.push(() => recommended?.dispose());
     }
-    if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
+    // In a browser tab the microphone would be this device's, not the PandaCode machine's: say so instead of failing voice_* calls.
+    if (id === 'voice' && webMode) panel.querySelector<HTMLElement>('#voice-settings')!.innerHTML = '<div class="settings-group"><div class="setting-row"><div><strong>Voice input</strong><small>Voice dictation uses the microphone on the PandaCode machine and is only available in the desktop app.</small></div></div></div>';
+    else if (id === 'voice') cleanups.push(mountVoiceSettings(panel.querySelector<HTMLElement>('#voice-settings')!));
     if (id === 'appearance') {
       const stillSky = panel.querySelector<HTMLInputElement>('#still-sky')!;
       const row = stillSky.closest<HTMLElement>('.setting-row')!;
@@ -551,11 +554,34 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       stillSky.addEventListener('change', () => setStillSkyEnabled(stillSky.checked));
     }
     if (id === 'general') {
-      cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
+      // The global shortcut belongs to the desktop app; a browser tab would only show preview data.
+      if (webMode) panel.querySelector<HTMLElement>('#launcher-settings')!.innerHTML = '<div class="settings-group"><div class="setting-row"><div><strong>Quick launcher</strong><small>The global quick launcher shortcut is only available in the desktop app.</small></div></div></div>';
+      else cleanups.push(mountOverlaySettings(panel.querySelector<HTMLElement>('#launcher-settings')!));
       cleanups.push(mountAgentsDockSettings(panel.querySelector<HTMLElement>('#agents-dock-settings')!));
       cleanups.push(mountCrashRestartSettings(panel.querySelector<HTMLElement>('#crash-restart-settings')!, options.clearDrafts, options.keepDrafts));
     }
     if (id === 'remote' && options.remote) cleanups.push(mountRemoteSettings(panel.querySelector<HTMLElement>('#remote-settings')!, options.remote));
+    if (id === 'remote') {
+      // Without the app's notifier: confirmations go to a polite status that clears itself; errors to an
+      // alert that stays until the next notice or until Settings closes.
+      const notice = panel.querySelector<HTMLElement>('.web-server-notice[role="status"]');
+      const alertNotice = panel.querySelector<HTMLElement>('.web-server-notice[role="alert"]');
+      let noticeTimer: number | undefined;
+      const clearNotices = () => { window.clearTimeout(noticeTimer); if (notice) notice.textContent = ''; if (alertNotice) alertNotice.textContent = ''; };
+      const inlineNotify = (text: string) => { clearNotices(); if (!notice) return; notice.textContent = text; noticeTimer = window.setTimeout(() => { notice.textContent = ''; }, 4000); };
+      // The danger tone goes on a leading icon; the message stays a text node in normal ink (never parsed as HTML).
+      const inlineError = (text: string) => {
+        clearNotices();
+        if (!alertNotice) return;
+        const mark = document.createElement('span');
+        mark.className = 'web-server-notice-icon'; mark.dataset.stateTone = 'danger'; mark.setAttribute('aria-hidden', 'true');
+        mark.innerHTML = icon('alert');
+        alertNotice.replaceChildren(mark, document.createTextNode(text));
+      };
+      cleanups.push(clearNotices);
+      const webHost: WebServerHost = options.remote ?? { call, listen: (_name, cb) => subscribe('web-server-changed', cb), notify: inlineNotify, notifyError: inlineError, openUrl: url => call('open_external_url', { url }) };
+      cleanups.push(mountWebServerSettings(panel.querySelector<HTMLElement>('#web-server-settings')!, webHost));
+    }
     if (id === 'general' && options.projects) cleanups.push(mountProjects(panel.querySelector<HTMLElement>('#projects-settings')!, options.projects));
     if (id === 'github' && options.github) cleanups.push(options.github(panel.querySelector<HTMLElement>('#github-settings')!));
     if (id === 'routing' && options.teams) mountRouting();

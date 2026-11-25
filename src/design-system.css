@@ -184,7 +184,9 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 /* A failure: thread error rows (main.ts errorRowHtml), error toasts (notify tone 'danger'), and failed team workers
  * (rows and tally), apart from the amber of "needs you". */
 [data-state-tone="danger"]{--state-tone:var(--ds-danger)}
-@media(forced-colors:active){[data-state-tone="danger"]{--state-tone:CanvasText}}
+/* A caution that is not a failure (plain-HTTP web access off loopback). */
+[data-state-tone="warn"]{--state-tone:var(--ds-warn)}
+@media(forced-colors:active){[data-state-tone="danger"],[data-state-tone="warn"]{--state-tone:CanvasText}}
 /* Accounts (Settings → Providers): one connection-card per pooled harness, then the Connections card.
  * Lists sit 2px inside the inner card, as rows do in .ds-card-inner. */
 .named-connections-card{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}

@@ -1,4 +1,5 @@
 import './file-tabs.css';
+import { webMode } from './bridge';
 import { renderDocument } from './document-viewer';
 import { escape, fileIcon, icon, isImeKey } from './dom';
 import { createFileWindow } from './file-window';
@@ -105,7 +106,7 @@ export function createFileTabs(deps: Deps) {
     const editor = typeof active.content === 'string' ? `<button data-file-tab="save"${active.saving || !dirty(active) ? ' disabled' : ''}>${active.saving ? 'Saving…' : 'Save'}</button><button data-file-tab="discard"${active.saving || !dirty(active) ? ' disabled' : ''}>Discard</button><button data-file-tab="${active.editing ? 'reader' : 'edit'}">${active.editing ? 'Preview' : 'Edit'}</button>` : '';
     view.innerHTML = `<div class="file-view-header"><span class="file-view-path" title="${escape(active.path)}">${escape(active.path)}</span><div class="file-preview-actions">${editor}${preview}${typeof active.content === 'object' ? '' : `<button class="icon-button" data-file-tab="copy" aria-label="Copy file" title="Copy file">${icon('copy')}</button>`}${attach}</div></div>${active.editing && typeof active.content === 'string' ? '<div class="file-selection-actions"><span data-selection-lines>Select code to ask or fix</span><button data-file-tab="ask" disabled>Ask model</button><button data-file-tab="fix" disabled>Fix selection</button></div><form class="file-selection-form" aria-label="Ask about selected code" hidden><input aria-label="Question about selected code" placeholder="Ask about this code…" maxlength="2000"><button type="submit">Send question</button><button type="button" data-file-tab="cancel-question">Cancel</button><small role="alert" hidden></small></form>' : ''}<div class="file-view-body"></div>`;
     const body = view.querySelector<HTMLElement>('.file-view-body')!;
-    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}<button data-file-tab="external">Open in Default App</button></div>`; return; }
+    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}${webMode ? '' : '<button data-file-tab="external">Open in Default App</button>'}</div>`; return; }
     if (active.editing && typeof active.content === 'string') {
       body.classList.add('file-editor');
       body.innerHTML = '<div class="inspector-empty" role="status">Opening editor…</div>';
@@ -284,7 +285,7 @@ export function createFileTabs(deps: Deps) {
     if (action === 'ask' && selectedCode) { questionCode = selectedCode; const form = view.querySelector<HTMLFormElement>('.file-selection-form')!; form.hidden = false; form.querySelector<HTMLInputElement>('input')!.focus(); }
     if (action === 'fix') void requestSelection('fix', selectedCode);
     if (action === 'cancel-question') view.querySelector<HTMLFormElement>('.file-selection-form')!.hidden = true;
-    if (action === 'external') void deps.call('open_workspace_file', { ...tab.context, path: tab.path }).catch(deps.report);
+    if (action === 'external' && !webMode) void deps.call('open_workspace_file', { ...tab.context, path: tab.path }).catch(deps.report);
     // Attaching is the first step of writing about the file, so focus goes to the prompt beside it.
     if (action === 'attach') { deps.attach(tab.path); deps.focusConversation(); }
     if (action === 'preview') void deps.preview(tab.path, tab.context).catch(deps.report);

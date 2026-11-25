@@ -16,7 +16,7 @@
  * changes (`crashRestartChanged`: on, the restarts-off sentence and Crash settings go). The report stays on this
  * computer; revealing it only opens the file manager. A failing call never affects startup: it is
  * logged and nothing is shown. Once a crash notice is on screen the page calls `crash_recovery_shown`. */
-import { call } from './bridge';
+import { call, webMode } from './bridge';
 import { OPEN_THREAD, resumesAt, WINDOW_RELOADED_LINE, crashNotice, interruptedByCrash, openThreadName, reloadNotice, parseCrashRecovery, untilNextDay, type CrashRecovery, type WindowDeath } from './crash-recovery-model';
 import type { Session } from './types';
 
@@ -118,7 +118,8 @@ export async function showCrashRecovery(host: CrashRecoveryHost, now = Date.now)
     const held = host.heldBack(), nothingOpened = host.nothingOpened();
     return recovery ? crashNotice(recovery, now(), { restartsOff: off, interrupted: interrupted(), agentsHidden: !watching, heldBack: held?.title, notLast: held?.notLast, nothingOpened }) : { text: reloadNotice(held?.title, death, nothingOpened, held?.notLast), showReport: false, showSettings: false };
   };
-  const report = write().showReport;
+  // A browser tab cannot open the PandaCode machine's file manager (`crash_report_reveal` is desktop-only).
+  const report = write().showReport && !webMode;
   /** Without the kept-closed thread, the notice still has something to say: the report's button,
    * the restarts-off line and Crash settings, when restarts resume (paused), or the agents line. */
   const remains = () => report || Boolean(recovery && (recovery.restartsPaused || off || interrupted()));

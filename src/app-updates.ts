@@ -8,7 +8,7 @@
  * A Linux copy not started from an AppImage (unpacked, or a distro package) is never
  * installed over in place: it only reports the update. The request carries no personal
  * data. The browser preview never checks. */
-import { call, preview } from './bridge';
+import { call, nativeDesktop } from './bridge';
 import { CHECK_EVERY, downloadsOnItsOwn, parseUpdateMode, restartNow, updatePrompt, type UpdateMode, type UpdateState } from './app-updates-policy';
 import { PROJECT_LINKS } from './about-settings';
 import { errorText } from './error-text';
@@ -45,11 +45,11 @@ export const appUpdates = (): AppUpdates | undefined => instance;
 
 export function startAppUpdates(host: UpdatesHost): AppUpdates {
   const listeners = new Set<() => void>();
-  let state: UpdateState = preview ? { kind: 'off' } : { kind: 'idle' };
+  let state: UpdateState = nativeDesktop ? { kind: 'idle' } : { kind: 'off' };
   let mode: UpdateMode = (() => { try { return parseUpdateMode(localStorage.getItem(KEY)); } catch { return 'automatic' as const; } })();
   // Until the native answer arrives nothing has been checked, so nothing can install.
   let installable = false, approved = false;
-  const known = preview ? Promise.resolve() : call<boolean>('app_update_install_supported')
+  const known = !nativeDesktop ? Promise.resolve() : call<boolean>('app_update_install_supported')
     .then(value => { installable = value; }, cause => { console.warn('Could not tell how PandaCode was installed:', cause); });
   let pending: Pending | null = null, lastCheck = 0, lastInput = Date.now(), checking: Promise<void> | null = null;
   const set = (next: UpdateState) => { state = next; listeners.forEach(listener => listener()); };
@@ -66,7 +66,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
   }
 
   async function run(): Promise<void> {
-    if (preview || state.kind === 'downloading' || state.kind === 'ready' || state.kind === 'installing') return;
+    if (!nativeDesktop || state.kind === 'downloading' || state.kind === 'ready' || state.kind === 'installing') return;
     lastCheck = Date.now();
     set({ kind: 'checking' });
     await known;
@@ -112,7 +112,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     } catch (cause) { set({ kind: 'error', message: message(cause) }); }
   }
 
-  if (!preview) {
+  if (nativeDesktop) {
     const input = () => { lastInput = Date.now(); };
     for (const name of ['pointerdown', 'keydown', 'wheel']) addEventListener(name, input, { passive: true, capture: true });
     window.setTimeout(() => { if (mode !== 'off') void check(); }, FIRST_CHECK);
@@ -126,7 +126,7 @@ export function startAppUpdates(host: UpdatesHost): AppUpdates {
     get state() { return state; },
     get mode() { return mode; },
     get installable() { return installable; },
-    supported: !preview,
+    supported: nativeDesktop,
     subscribe: listener => { listeners.add(listener); return () => listeners.delete(listener); },
     setMode(next) {
       mode = next;

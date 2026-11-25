@@ -1,0 +1,43 @@
+/* Settings → Remote access → Web access (web-server-settings.ts). Tokens only: no literal colours. */
+.web-server-state{display:flex;align-items:center;flex-wrap:wrap;gap:0 4px;min-width:0}
+.web-server-state .remote-dot{margin-right:4px}
+.web-server-port-controls{display:flex;align-items:center;gap:8px;flex:none}
+.setting-row .web-server-port-controls input.web-server-port-input{width:76px;height:32px;padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-control-radius);background:var(--ds-card-inset);color:var(--text);font:var(--type-body)/var(--type-body-leading) var(--mono);text-align:center}
+.web-server-port-controls .secondary-button{padding:0 12px;min-height:32px}
+.web-server-link{display:flex;flex-direction:column;gap:8px;margin:4px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 4px;padding:10px 12px;border:1px solid var(--ds-border);border-radius:var(--ds-inner-radius);background:var(--ds-card-inset);min-width:0}
+.web-server-link-head{display:flex;align-items:center;gap:6px;min-width:0}
+.web-server-url{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--type-body)/var(--type-body-leading) var(--mono);color:var(--text)}
+.web-server-link .remote-badge{margin-left:0;flex:none}
+.web-server-link-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.web-server-link-actions .primary-button,.web-server-link-actions .secondary-button{padding:0 12px;min-height:32px}
+.web-server-note{margin:0;color:var(--muted);font-size:var(--type-meta);overflow-wrap:anywhere}
+.web-server-note code{font-family:var(--mono);font-size:var(--code-inline-size);color:var(--text)}
+.web-server-settings :is(input,button):focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+@media (prefers-contrast:more){.web-server-link,.setting-row .web-server-port-controls input.web-server-port-input{border-color:var(--border)}}
+/* Not on loopback: plain HTTP warning in the warn tone. */
+.web-server-note.web-server-note-warn{display:flex;align-items:flex-start;gap:6px;color:var(--text)}
+/* The warn tone sits on the leading icon (data-state-tone="warn"); the text keeps normal ink. */
+.web-server-note-icon,.web-server-notice-icon{display:inline-flex;flex:none;margin-top:1px}
+.web-server-note-icon>.icon,.web-server-notice-icon>.icon{width:15px;height:15px}
+.setting-row .web-server-port-controls input.web-server-port-input[aria-invalid="true"]{border-color:var(--ds-danger)}
+/* Browser tab asking before it stops the server that serves it. */
+/* Scoped like settings.css's .setting-row reset (transparent, no border) so the inset surface wins. */
+.settings-page-root .setting-row.web-server-confirm{background:var(--ds-card-inset);border:1px solid var(--ds-border);border-radius:var(--ds-inner-radius);margin:4px calc(var(--ds-row-pad-x) - var(--ds-card-pad))}
+.web-server-confirm-actions{display:flex;align-items:center;gap:8px;flex:none}
+.web-server-confirm-actions .secondary-button{padding:0 12px;min-height:32px}
+/* The danger tone sits on a leading icon (data-state-tone); the label keeps the normal ink. */
+.web-server-confirm-actions .secondary-button:is([data-web-stop-confirm],[data-web-confirm-port],[data-web-confirm-rotate]){display:inline-flex;align-items:center;gap:6px;color:var(--text)}
+.web-server-confirm-icon{display:inline-flex;flex:none}
+.web-server-confirm-icon>.icon{width:15px;height:15px}
+/* settings.ts fallback when no app notifier is wired: a polite inline status under the section. */
+.web-server-notice{margin:6px var(--ds-row-pad-x) 0;color:var(--muted);font-size:var(--type-meta)}
+.web-server-notice:empty{display:none}
+.web-server-notice.web-server-notice-error{display:flex;align-items:flex-start;gap:6px;color:var(--text)}
+.web-server-notice.web-server-notice-error:empty{display:none}
+/* A start failure: the danger tone on a leading icon, the message in normal ink. */
+.web-server-state-icon{display:inline-flex;flex:none;align-items:center;margin-right:2px}
+.web-server-state-icon>.icon{width:14px;height:14px}
+/* After the confirm surface rule (same specificity), so Increase Contrast wins. */
+@media (prefers-contrast:more){.settings-page-root .setting-row.web-server-confirm{border:1px solid var(--border)}}
+/* remote-settings.css stretches every .remote-load-error>span into a column; the icon wrapper stays compact. */
+.remote-load-error>.web-server-state-icon{display:inline-flex;flex-direction:row;flex:none}

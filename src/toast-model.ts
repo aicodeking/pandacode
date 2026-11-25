@@ -1,6 +1,7 @@
 import { errorText } from './error-text.ts';
 
-export type ToastTone = 'danger' | undefined;
+/** `danger`: an error (takes Escape, see escapeClosesToast); `warn`: a caution that is not an error. */
+export type ToastTone = 'danger' | 'warn' | undefined;
 /** The count a toast shows: an identical plain message (no Undo or action button) in the same tone while a plain one is
  * still visible bumps it, anything else restarts at 1 (a toast with a button keeps its own closure and longer timer; a
  * failure repeating a plain notice needs its danger icon and a fresh Escape grace). */
@@ -47,10 +48,10 @@ export function escapeClosesToast(state: { visible: boolean; focusInToast: boole
 
 /** At most this many plain notices wait behind a dismissal's Undo toast; older plain ones are dropped (a plain notice
  * asks nothing of the user). Notices that need the user (`important`: an approval or a question), notices with an
- * action button and danger notices are never dropped. */
+ * action button and danger or warning notices are never dropped. */
 export const TOAST_QUEUE_MAX = 3;
 type Queued = { text: string; tone?: ToastTone; undo?: unknown; important?: boolean };
-const plainNotice = (entry: Queued): boolean => !entry.important && entry.tone !== 'danger' && !entry.undo;
+const plainNotice = (entry: Queued): boolean => !entry.important && entry.tone === undefined && !entry.undo;
 /** Whether a new notice shows now, and what waits. While a dismissal's Undo toast shows (`holding`), replacing it would
  * commit the dismissal early, so other notices wait (deduped by text and tone) and show once it settles. Another
  * dismissal (`dismissal`) or any other Undo toast (`undo` a function) replaces it at once, which commits the first:

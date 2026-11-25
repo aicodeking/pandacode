@@ -1,5 +1,5 @@
 import './provider-settings.css';
-import { call, preview } from './bridge';
+import { call, nativeDesktop, preview } from './bridge';
 import { escape, icon } from './dom';
 import { providerLogo } from './provider-logos';
 import { infoMark } from './tooltip';
@@ -311,6 +311,12 @@ export function mountProviderSettings(host: HTMLElement, saved: () => Promise<un
     if (target.dataset.chooseExecutable) {
       event.preventDefault();
       if (preview) { message('Choose executable is available in the desktop app.'); return; }
+      if (!nativeDesktop) {
+        // A browser tab cannot browse the host's disk: the path is typed into the field instead.
+        host.querySelector<HTMLInputElement>(`[data-executable="${target.dataset.chooseExecutable}"]`)?.focus();
+        message('Type the full path of the executable on the PandaCode machine, then save.');
+        return;
+      }
       try {
         const path = await (await import('@tauri-apps/plugin-dialog')).open({ directory: false, multiple: false, title: 'Choose agent executable' });
         if (!disposed && typeof path === 'string') {

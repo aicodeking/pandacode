@@ -1,5 +1,5 @@
 import './agents-dock.css';
-import { call, subscribe } from './bridge';
+import { call, subscribe, webMode } from './bridge';
 import { icon } from './dom';
 import { materializeIn } from './motion';
 
@@ -99,7 +99,7 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
   host.classList.add('agents-dock-host');
   host.innerHTML = `<button type="button" class="icon-button agents-dock-trigger" aria-label="Running agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-dock-popover" data-tip="Running agents">${icon('bot')}<span class="agents-dock-count" aria-hidden="true" hidden></span></button>
     <section class="agents-dock-popover" id="agents-dock-popover" role="dialog" aria-label="Running agents" hidden>
-      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" data-tip="Pin widget">${icon('pin')}</button></header>
+      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" data-tip="Pin widget"${webMode ? ' hidden' : ''}>${icon('pin')}</button></header>
       <div class="agents-dock-list"></div>
     </section>`;
   const trigger = host.querySelector<HTMLButtonElement>('.agents-dock-trigger')!;
@@ -158,7 +158,8 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     if (target.closest('.agents-dock-trigger')) { window.clearTimeout(intentTimer); setOpen(!open); return; }
-    if (target.closest('[data-action="pin"]')) {
+    // A browser tab (web mode) has no desktop window to pin; the button is hidden there.
+    if (target.closest('[data-action="pin"]') && !webMode) {
       try { await call('agents_dock_pin'); preferences = { ...preferences, pinned: true }; draw(); }
       catch { /* The header remains usable if a native window cannot be created. */ }
       return;
