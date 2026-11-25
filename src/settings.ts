@@ -16,7 +16,7 @@ import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
 import { mountCloudSettings, type CloudSettingsHost } from './cloud-settings';
 import { mountSkillsLibrary, type SkillsLibraryHost } from './skills-library';
-import { call, subscribe, webMode } from './bridge';
+import { call, preview, subscribe, webMode } from './bridge';
 import { settleIn, trackSegment } from './motion';
 import { mount as mountCapabilities } from './capabilities-panel';
 import { mountCustomTools } from './custom-tools-settings';
@@ -102,7 +102,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Skips Claude Code’s startup (~0.38–0.62 s on a real sign-in, ~0.17–1.71 s offline; Turn off agent telemetry removes ~1.5 s without idle processes). Keeps up to 4 idle processes (~195–255 MiB and ~0.4 s CPU each on short sessions), starting MCP servers and SessionStart hooks early; skipped under 6 GiB RAM, 1.5 GiB free (Linux/Windows), or macOS memory pressure. Unused spares get 2 s for SessionEnd before force-termination (urgent misses/quit kill at once); pauses on repeated misses/evictions and 30–240 min on unused expiries. Lead spares: all-read-only teams only; ordinary uncommitted git status up to 10 min old.' },
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Skips Claude Code’s startup (~0.38–0.62 s on a real sign-in, ~0.17–1.71 s offline; Turn off agent telemetry removes ~0.26 s startup and ~1.14 s exit on a real sign-in, ~1.5 s offline, without idle processes, leaving ~0.38 s for spares). Keeps up to 4 idle processes (~195–255 MiB, ~0.4 s CPU each on short sessions), starting MCP servers and SessionStart early; skipped under 6 GiB RAM, 1.5 GiB free (Linux/Windows), or macOS memory pressure. Unused spares get 2 s for SessionEnd before force-termination (urgent removals kill at once); pauses on churn and 30–240 min on unused expiries. Lead spares: all-read-only teams; ordinary uncommitted git status up to 10 min old.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
@@ -173,10 +173,12 @@ function warmStatsCaption(snapshot: WarmStatsSnapshot, enabled = true): string {
 
 const warmStatsLine = async (enabled: boolean) => warmStatsCaption(await call<WarmStatsSnapshot>('warm_spare_stats'), enabled);
 
-/** How often an open Agents page re-reads the warm spare totals; the browser preview accepts
- * `?warm-spares-refresh-ms=N` (N ≥ 50) so a spec need not wait 30 s. */
+/** How often an open Agents page re-reads the warm spare totals; only the browser preview (not
+ * the desktop app or a remote web tab) accepts `?warm-spares-refresh-ms=N` (N ≥ 50) so a spec
+ * need not wait 30 s. */
 const WARM_STATS_REFRESH_MS = 30_000;
 const warmStatsRefreshMs = () => {
+  if (!preview) return WARM_STATS_REFRESH_MS;
   const raw = new URLSearchParams(location.search).get('warm-spares-refresh-ms');
   const value = raw === null ? NaN : Number(raw);
   return Number.isFinite(value) && value >= 50 ? value : WARM_STATS_REFRESH_MS;

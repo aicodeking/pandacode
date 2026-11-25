@@ -386,10 +386,10 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   renewals for good. Settings → Agents shows each pool's current-launch totals
   beside the **Warm Claude spares** switch: the live `idle now` count and, during a
   backoff, `paused (N min left)` (hidden while the switch is off), then ordinary `<adopted>/<started> adopted`
-  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold` and `N starts paused` (starts
-  skipped by backoff; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
+  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold`, `N starts paused` (starts
+  skipped by backoff) and `N skipped (low memory)` (starts skipped by `warm/memory.rs`; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
   adoption rate are never hidden; read when the page opens, when the switch is
-  toggled, every 30 s while Settings is open and when it becomes visible again, not streamed. A pool that evicts `limit` spares in a row with no adoption
+  toggled, every 30 s while Settings → Agents is open and when it becomes visible again, not streamed. A pool that evicts `limit` spares in a row with no adoption
   between pauses its starts for 5 minutes, and one whose spares expire unused 3 times
   in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`); when
   that pause lapses, one unused probe spare pauses the pool again at double the length,
@@ -409,7 +409,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   ends the pause, and otherwise the cooldown lapsing ends it; cooldowns are checked on
   both the monotonic and wall clocks, like the idle limits, so laptop sleep does not
   stretch a 5- or 30–240-minute pause; `idle now` leaves out spares already past their idle
-  limit. No spare starts with under 6 GiB of total RAM, under 1.5 GiB available or macOS
+  limit. No spare starts with under 6 GiB of total RAM, under 1.5 GiB available (Linux/Windows) or macOS
   memory pressure (`providers/warm/memory.rs`; an unavailable probe never blocks). Every adoption is also logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
   not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
@@ -444,7 +444,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks; an unused spare retired in the background
   gets 2 s after stdin EOF (`SPARE_RETIRE_WAIT`) to exit cleanly and run `SessionEnd`
   hooks, then is force-terminated (process-group `SIGKILL` on Unix, process termination
-  on Windows), while urgent removals (a launch-time miss, folder quiesce, app quit) force-terminate
+  on Windows), while urgent removals (a launch-time miss, a same-task replacement, session or folder quiesce, app quit) force-terminate
   at once without `SessionEnd` (turn **Warm
   Claude spares** off if you rely on paired hooks). It also snapshots
   `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
@@ -457,7 +457,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   checks it again at adoption (run alongside the warm-key walk with a 500 ms
   timeout), so a changed working tree
   starts the wake cold instead of adopting stale status. With **Turn off agent
-  telemetry** on, where an adopted spare saves only ~0.17–0.25 s, adopting a lead
+  telemetry** on, where an adopted spare saves ~0.38 s on a real sign-in (~0.17–0.25 s in the offline bench), adopting a lead
   spare in a slow repository whose `git status` takes 250–500 ms can be slower
   than starting cold (on this 2,326-file repository it took a median of 46.3 ms,
   max 71.2 ms). The spare saves

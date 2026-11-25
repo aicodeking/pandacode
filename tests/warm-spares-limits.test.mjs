@@ -204,3 +204,59 @@ test('every copy states the graceful retire wait from exit.rs', () => {
     assert.ok(near, `${path} must state the ${secs} s graceful retire wait beside SessionEnd or retirement`);
   }
 });
+
+// The live signed-in probe in docs/worker-tokens.md is the record for what the telemetry switch
+// saves on a real login; the offline dummy-key bench (~1.5 s) must not stand in for it.
+function liveProbeMs(text, pattern, what) {
+  const found = text.match(pattern);
+  assert.ok(found, `live signed-in probe ${what} not found in ${WORKER_TOKENS}`);
+  return Number(found[1].replace(/,/g, ''));
+}
+
+test('telemetry-off signed-in savings in Settings and docs/worker-tokens.md match the live probe', () => {
+  const text = flat(WORKER_TOKENS);
+  const start = text.indexOf('Live signed-in probe');
+  assert.ok(start >= 0, `Live signed-in probe section not found in ${WORKER_TOKENS}`);
+  const probe = text.slice(start);
+  const defaultLine = probe.slice(probe.indexOf('Default env:'));
+  const privacyLine = probe.slice(probe.indexOf('Telemetry switch'));
+  const defaultInit = liveProbeMs(defaultLine, /`init_ms` cold median ([\d,]+) ms/, 'default init_ms');
+  const defaultExit = liveProbeMs(defaultLine, /stdin-EOF exit after `result` ([\d,]+) ms/, 'default exit');
+  const privacyInit = liveProbeMs(privacyLine, /`init_ms` cold ([\d,]+) ms/, 'telemetry-switch init_ms');
+  const privacyWarm = liveProbeMs(privacyLine, /`init_ms` cold [\d,]+ ms → warm ([\d,]+) ms/, 'telemetry-switch warm init_ms');
+  const privacyExit = liveProbeMs(privacyLine, /stdin-EOF exit ([\d,]+) ms/, 'telemetry-switch exit');
+  const startupSaved = ((defaultInit - privacyInit) / 1000).toFixed(2);
+  const exitSaved = ((defaultExit - privacyExit) / 1000).toFixed(2);
+  const warmSaved = ((privacyInit - privacyWarm) / 1000).toFixed(2);
+
+  const hint = settingsHint();
+  for (const saved of [startupSaved, exitSaved, warmSaved]) {
+    assert.ok(hint.includes(`~${saved} s`), `${SETTINGS} warm-spares hint must state ~${saved} s from the live probe`);
+  }
+  assert.doesNotMatch(hint, /Turn off agent telemetry removes ~1\.5 s/, `${SETTINGS} must not present the offline ~1.5 s as the signed-in saving`);
+
+  const label = '**Trade-off with "Turn off agent telemetry".**';
+  const at = text.indexOf(label);
+  assert.ok(at >= 0, `telemetry trade-off bullet not found in ${WORKER_TOKENS}`);
+  const rest = text.slice(at + label.length);
+  const ends = [rest.indexOf(' - **'), rest.indexOf('**Git state')].filter((i) => i >= 0);
+  const bullet = rest.slice(0, Math.min(...ends)).trim();
+  for (const saved of [startupSaved, exitSaved, warmSaved]) {
+    assert.ok(bullet.includes(`~${saved} s`), `${WORKER_TOKENS} telemetry trade-off must state ~${saved} s from the live probe`);
+  }
+  assert.ok(!bullet.startsWith('That switch alone removes ~1.5 s'), `${WORKER_TOKENS} telemetry trade-off must lead with the signed-in figures`);
+});
+
+test('Settings refresh scope and preview-only refresh override stay aligned', () => {
+  for (const path of [README, WORKER_TOKENS, ARCHITECT_WORKERS]) {
+    const text = flat(path);
+    assert.ok(text.includes('every 30 s while Settings → Agents is open'), `${path} must say the totals refresh every 30 s while Settings → Agents is open`);
+    assert.ok(!text.includes('every 30 s while Settings is open'), `${path} must not say every 30 s while Settings is open`);
+  }
+  const source = readFileSync(SETTINGS, 'utf8');
+  const fn = source.match(/const warmStatsRefreshMs = \(\) => \{([\s\S]*?)\n\};/);
+  assert.ok(fn, `warmStatsRefreshMs not found in ${SETTINGS}`);
+  const guard = fn[1].indexOf('if (!preview) return WARM_STATS_REFRESH_MS;');
+  const override = fn[1].indexOf('warm-spares-refresh-ms');
+  assert.ok(guard >= 0 && override > guard, `${SETTINGS} warmStatsRefreshMs must return WARM_STATS_REFRESH_MS outside preview before reading warm-spares-refresh-ms`);
+});

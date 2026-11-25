@@ -25,9 +25,10 @@ test('the warm spares switch is on by default, explains itself and saves', async
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
   for (const disclosure of [
-    '~0.38–0.62 s', '~0.17–1.71 s', 'real sign-in', 'Turn off agent telemetry', 'without idle processes', 'up to 4', '~195–255 MiB', '~0.4 s CPU',
-    'MCP servers', 'SessionStart', '6 GiB', '1.5 GiB', 'Linux/Windows', 'macOS memory pressure', '2 s', 'SessionEnd', 'force-termination',
-    '30–240 min', 'all-read-only', '10 min old',
+    '~0.38–0.62 s', '~0.17–1.71 s', 'real sign-in', 'Turn off agent telemetry', '~0.26 s', '~1.14 s', '~1.5 s offline',
+    'without idle processes', '~0.38 s', 'up to 4', '~195–255 MiB', '~0.4 s CPU', 'MCP servers', 'SessionStart', '6 GiB', '1.5 GiB',
+    'Linux/Windows', 'macOS memory pressure', '2 s', 'SessionEnd', 'force-termination', 'urgent removals', '30–240 min', 'all-read-only',
+    '10 min old',
   ]) {
     await expect(hint(page)).toContainText(disclosure);
   }

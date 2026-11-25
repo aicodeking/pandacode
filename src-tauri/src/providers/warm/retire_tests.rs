@@ -157,3 +157,57 @@ async fn session_quiescence_kills_a_pooled_spare_before_its_eof_hook_can_run() {
     test_support::assert_process_gone(pid);
     assert!(!dir.0.join("exited").exists());
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn same_task_replacement_kills_the_old_spare_before_its_eof_hook_can_run() {
+    let (dir, session) = scratch("replace");
+    let pool = Pool::default();
+    let old_child = Command::new("sh")
+        .args(["-c", "echo ready > ready; cat >/dev/null; sleep 0.3; echo done > exited"])
+        .current_dir(&dir.0)
+        .process_group(0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let old_pid = old_child.id().unwrap();
+    let spare = |child: Child, pid: u32| Spare {
+        key: "test-spare".into(),
+        child,
+        group: ProcessGroup::register(Some(pid)),
+        server: None,
+        born: Instant::now(),
+        born_wall: std::time::SystemTime::now(),
+        idle: IDLE,
+        lead: false,
+        renewal_due: false,
+        cwd: Some(dir.0.clone()),
+    };
+    launched(&session);
+    assert!(super::spawn::register(&pool, &session, epoch(&session), spare(old_child, old_pid)));
+    assert!(test_support::eventually(|| dir.0.join("ready").exists()).await);
+
+    // Until the earlier exit clears, the reaper cannot hurry a graceful retirement, and the
+    // old spare's hook (about 0.3 s after stdin closes) would finish well inside 600 ms.
+    let previous = pending_in_cwd(&session, None);
+    let new_child = stubborn(&dir.0).stderr(Stdio::piped()).kill_on_drop(true).spawn().unwrap();
+    let new_pid = new_child.id().unwrap();
+    assert!(super::spawn::register(&pool, &session, epoch(&session), spare(new_child, new_pid)));
+    tokio::time::timeout(SPARE_RETIRE_WAIT * 3 / 4, async {
+        let (result, ()) = tokio::join!(await_exit_patiently(&session), async {
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            drop(previous);
+        });
+        result.unwrap();
+    })
+    .await
+    .expect("the replaced spare was left to a graceful retirement");
+    test_support::assert_process_gone(old_pid);
+    assert!(!dir.0.join("exited").exists(), "the replaced spare was killed, not left to finish its hook");
+
+    quiesce_in(&pool, &session).await.unwrap();
+    test_support::assert_process_gone(new_pid);
+}

@@ -460,15 +460,18 @@ pub(super) async fn spawn_when_current(
 
 /// Keep a started spare, unless the task launched again (a team review, a queued message) or
 /// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
-/// outdated conversation, or wait for a turn that is not coming. A refused, replaced or evicted
-/// spare is retired (killed outside the lock, its exit registered). A refused one already started
+/// outdated conversation, or wait for a turn that is not coming. Displaced spares are retired
+/// outside the lock with their exit registered: a refused spare and one replaced for the same
+/// task are killed at once (`retire_now`), so two processes for one session never overlap and
+/// the old spare's `SessionEnd` hook never runs after the new spare's `SessionStart`; a spare
+/// evicted for another task retires gracefully (`retire`). A refused one already started
 /// (and ran its `SessionStart` hooks), so it counts as started and discarded, keeping the ordinary
 /// pool's `started == adopted + missed + expired + evicted + replaced + discarded` exact once no
 /// spare is pooled or being adopted. On the lead pool `missed` overlaps the removal counters: a
 /// wake arriving after its spare left the pool counts a miss (its `gone` reason) on top of the
 /// `expired`, `evicted`, `replaced` or `discarded` its removal already counted.
 pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare) -> bool {
-    let evicted = {
+    let (replaced, evicted) = {
         let mut pool = spares(pool);
         // Launch 0 is a forgotten task (`discard`): a spare read from it is never current.
         if launch == 0 || epoch(session_id) != launch {
@@ -483,8 +486,12 @@ pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare)
             eprintln!("{note}");
             return false;
         }
-        admit(&mut pool, session_id.to_owned(), spare)
+        admit_classified(&mut pool, session_id.to_owned(), spare)
     };
+    // Same task: the new spare already runs, so the old one must not linger beside it.
+    if let Some((old, pending)) = replaced {
+        retire_now(session_id, old, pending);
+    }
     for (id, spare, pending) in evicted {
         retire(&id, spare, pending);
     }
@@ -492,25 +499,35 @@ pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare)
 }
 
 /// Add a spare, keeping only the newest few in its pool (ordinary or lead); returns the spares
-/// it pushed out (including one it replaced for the same task) with their tasks and `Pending`
-/// guards, which the caller retires after releasing the lock.
+/// it pushed out (a same-task replacement first, then other tasks' evictions) with their tasks
+/// and `Pending` guards, which the caller retires after releasing the lock. `register` kills the
+/// replaced one at once (`retire_now`) and retires evicted ones gracefully (`retire`).
+/// Test-only: production goes through `register`, which needs the two apart.
+#[cfg(test)]
 pub(super) fn admit(pool: &mut Spares, session_id: String, spare: Spare) -> Vec<(String, Spare, Pending)> {
+    let (replaced, evicted) = admit_classified(pool, session_id.clone(), spare);
+    replaced.map(|(old, pending)| (session_id, old, pending)).into_iter().chain(evicted).collect()
+}
+
+/// A spare evicted for another task: its task, the spare and its `Pending` guard.
+type Evicted = (String, Spare, Pending);
+
+/// `admit`, keeping the spare it replaced for the same task apart from the spares it evicted
+/// for other tasks.
+fn admit_classified(pool: &mut Spares, session_id: String, spare: Spare) -> (Option<(Spare, Pending)>, Vec<Evicted>) {
     let lead = spare.lead;
     let limit = if lead { LEAD_LIMIT } else { LIMIT };
-    let mut evicted: Vec<(String, Spare, Pending)> = pool
-        .remove(&session_id, Gone::Replaced)
-        .map(|(old, pending)| (session_id.clone(), old, pending))
-        .into_iter()
-        .collect();
+    let replaced = pool.remove(&session_id, Gone::Replaced);
     // After the replacement: a fresh spare never sits beside a stale `Gone::Replaced` note.
     pool.gone.remove(&session_id);
     pool.stats_mut(lead).started += 1;
     pool.spares.insert(session_id, spare);
+    let mut evicted: Vec<Evicted> = Vec::new();
     while pool.spares.values().filter(|spare| spare.lead == lead).count() > limit {
         let Some(oldest) = pool.spares.iter().filter(|(_, spare)| spare.lead == lead).min_by_key(|(_, spare)| spare.born).map(|(id, _)| id.clone()) else { break };
         evicted.extend(pool.remove(&oldest, Gone::Evicted).map(|(old, pending)| (oldest, old, pending)));
     }
-    evicted
+    (replaced, evicted)
 }
 
 /// Keep the renewal visible to folder discard from the moment its expired spare leaves the

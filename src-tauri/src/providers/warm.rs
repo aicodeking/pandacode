@@ -396,8 +396,9 @@ fn remove_for_launch(pool: &Pool, session_id: &str) -> (Option<(Spare, Pending)>
 /// or at once when a launch hurries it (`await_exit`), before it is killed. Its exit is registered
 /// under the session like a finished turn's (`exit::spawn_exit_in_cwd`), so whatever resumes the
 /// session next (a cold launch, the harness console) waits until the process is really gone
-/// instead of overlapping it. For removals nothing waits on (expiry, eviction, replacement, a
-/// discard or switch-off); a launch's own misses use `retire_now`. Never called holding the pool
+/// instead of overlapping it. For removals nothing waits on (expiry, eviction, a discard or
+/// switch-off); urgent removals (a launch's own misses, a same-task replacement, a refused
+/// registration, quiesce) use `retire_now`. Never called holding the pool
 /// lock; `pending` was registered under it and drops only after the real exit is chained behind
 /// it. Outside a runtime nothing can wait: dropping it still kills it.
 fn retire(session_id: &str, spare: Spare, pending: Pending) {
@@ -406,8 +407,8 @@ fn retire(session_id: &str, spare: Spare, pending: Pending) {
     drop(pending);
 }
 
-/// Kill the process at once for a launch about to start cold, a refused registration,
-/// or a session or folder being quiesced.
+/// Kill the process at once for a launch about to start cold, a same-task replacement,
+/// a refused registration, or a session or folder being quiesced.
 fn retire_now(session_id: &str, spare: Spare, pending: Pending) {
     let Spare { child, group, server, cwd, .. } = spare;
     retire_parts_in_cwd(session_id, child, group, server, cwd);
