@@ -1,7 +1,7 @@
 //! Tool files and their usage stats in app data: `<base>/global/<name>.json` and
 //! `<base>/projects/<projectId>/<name>.json`, with `stats.json` beside them so a run never
 //! rewrites a tool file. Every write is a temp file renamed into place.
-use super::{valid_name, Stats, Tool};
+use super::{same_identity, valid_name, Scope, Stats, Tool};
 use std::{
     collections::BTreeMap,
     fs,
@@ -167,8 +167,27 @@ pub(super) fn write_stats(dir: &Path, stats: &BTreeMap<String, Stats>) -> Result
 }
 
 /// Counts one run of `name` by `session`; `exit` is `None` when it never finished.
+#[cfg(test)]
 pub(super) fn record(dir: &Path, name: &str, session: &str, exit: Option<i32>, now: i64) -> Result<(), String> {
     let _guard = lock();
+    record_locked(dir, name, session, exit, now)
+}
+
+/// Credits a run to the same tool, even if it moved while the run was in flight.
+pub(super) fn record_for_tool(base: &Path, project: &str, initial_scope: Scope, tool: &Tool, session: &str, exit: Option<i32>, now: i64) -> Result<bool, String> {
+    let _guard = lock();
+    let project_first = initial_scope == Scope::Project;
+    for in_project in [project_first, !project_first] {
+        let dir = scope_dir(base, in_project.then_some(project))?;
+        if try_load(&dir, &tool.name)?.is_some_and(|current| same_identity(&current, tool)) {
+            record_locked(&dir, &tool.name, session, exit, now)?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn record_locked(dir: &Path, name: &str, session: &str, exit: Option<i32>, now: i64) -> Result<(), String> {
     let mut all = try_read_stats(dir)?;
     let stats = all.entry(name.to_owned()).or_default();
     stats.uses += 1;

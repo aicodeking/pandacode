@@ -12,7 +12,8 @@
 //! which also waits for and finishes a background write in progress). A tool listing is written
 //! at once (`update_now`; the launch runs it on a blocking thread beside the harness's start and
 //! joins it before the turn ends). One that cannot be written is forgotten (the listing only),
-//! in memory and on disk, so a restart never trusts an older, narrower listing. Only `flush`
+//! and the file is rewritten or invalidated to keep a restart from trusting an older, narrower
+//! listing. A failed invalidation is logged and leaves the state dirty for another write. Only `flush`
 //! writes under the state lock; the others write outside it. Writes are atomic (synced temp
 //! file, then rename). A missing, oversized or corrupt file is an empty one, which behaves
 //! exactly as a fresh process did: unknown history keeps everything listed. Without `init`
@@ -136,8 +137,8 @@ impl Snapshot {
         Ok(())
     }
 
-    /// `write`, removing the file if it fails (every task unknown is still safe; a stale listing
-    /// is not). Either way this snapshot counts as written, so an older one taken before it
+    /// `write`, invalidating the file by removing or truncating it if replacement fails.
+    /// This snapshot counts as written even on failure, so an older one taken before it
     /// (holding a listing it dropped) can never recreate the file.
     fn write_or_remove(&self) -> std::io::Result<()> {
         let mut written = self.written.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -145,9 +146,17 @@ impl Snapshot {
             return Ok(());
         }
         *written = self.number;
-        write(&self.path, &self.bytes).inspect_err(|_| {
-            let _ = std::fs::remove_file(&self.path);
-        })
+        let Err(write_err) = write(&self.path, &self.bytes) else { return Ok(()) };
+        let Err(remove_err) = std::fs::remove_file(&self.path) else { return Err(write_err) };
+        if remove_err.kind() == std::io::ErrorKind::NotFound {
+            return Err(write_err);
+        }
+        match std::fs::write(&self.path, b"") {
+            Ok(()) => Err(write_err),
+            Err(trunc_err) => Err(std::io::Error::other(format!(
+                "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
+            ))),
+        }
     }
 }
 
@@ -452,8 +461,7 @@ impl Shared {
     /// `update`, writing the file before returning when anything changed (a tool listing): the
     /// change is snapshotted under the state lock and written under the write lock only, so no
     /// fsync holds up other tasks. If the write fails, the task's listing is dropped in memory and
-    /// on disk (rewritten without it, else the file is removed), so nothing trusts an older,
-    /// narrower listing; its other fields stay.
+    /// the state is rewritten without it. If that fails too, invalidate the file and retry the save.
     // ponytail: the write (one fsync of the whole file) runs on the caller's thread. The launch
     // moves `remember_catalog_listed` to a blocking thread; `History::of` still writes inline,
     // only when it binds a new conversation's listing (once per conversation).
@@ -463,8 +471,7 @@ impl Shared {
         eprintln!("PandaCode: could not save session state, forgetting task {id}: {error}");
         let retry = self.lock().forget_unsaved(id);
         if let Some(Err(error)) = retry.map(|retry| retry.write_or_remove()) {
-            eprintln!("PandaCode: could not save session state, removed it: {error}");
-            // The file is gone: a background write (retried once) puts the rest back.
+            eprintln!("PandaCode: could not save session state after forgetting task {id}: {error}");
             let mut state = self.lock();
             state.failed();
             self.schedule(&state);

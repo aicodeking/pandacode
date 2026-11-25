@@ -630,17 +630,12 @@ fn untrusted_for(hooks: Hooks, level: Untrusted) -> Untrusted {
     if hooks == Hooks::Skip { level } else { Untrusted::No }
 }
 
-/// One desktop `git status` for a warm spare's working-tree digest. The caller inspected its
-/// local config with [`crate::git_config::checkout_status_filters`]. Switch those filters off,
-/// skip submodules, and run with [`Untrusted::Local`] and the full `timeout`.
-pub(crate) fn run_git_status_safe(
-    root: &Path, filters: &[String], args: &[&str], limit: usize, timeout: Duration,
-) -> Result<GitOutput, String> {
-    let prefix = filter_disable_args(filters)?;
-    let mut all: Vec<&str> = prefix.iter().map(String::as_str).collect();
-    all.extend(skip_submodule_args());
+/// One isolated desktop `git status` for a warm spare's working-tree digest. The caller
+/// checked local config and attributes with [`crate::git_config::check_status_config_safe`].
+pub(crate) fn run_git_status_safe(root: &Path, args: &[&str], limit: usize, timeout: Duration) -> Result<GitOutput, String> {
+    let mut all = skip_submodule_args();
     all.extend_from_slice(args);
-    run_git_with(root, &all, limit, false, Untrusted::Local, timeout)
+    run_git_with(root, &all, limit, false, Untrusted::Isolated, timeout)
 }
 
 /// A read-only call with `untrusted` set when it carries [`inspection_args`]' prefix.
@@ -741,6 +736,8 @@ enum Untrusted {
     /// A phone call with hooks skipped that needs no network: [`UNTRUSTED_ENV`] and
     /// [`UNTRUSTED_ARGS`], so no lazy fetch, credential helper or askpass program runs.
     Local,
+    /// A local call that also skips system and user global config.
+    Isolated,
     /// A phone push with hooks skipped: [`UNTRUSTED_ENV`] only, since it must reach the remote
     /// with the user's own (global) credential helper; local `credential.*` and
     /// `core.sshCommand` keys are refused by the allowlist before it runs.
@@ -776,7 +773,7 @@ fn run_git_with(
         }
     }
     command.args(git_global_args(commit));
-    if untrusted == Untrusted::Local {
+    if matches!(untrusted, Untrusted::Local | Untrusted::Isolated) {
         command.args(UNTRUSTED_ARGS);
     }
     if untrusted != Untrusted::No {
@@ -785,6 +782,11 @@ fn run_git_with(
     }
     #[cfg(test)]
     tests::apply_test_env(&mut command);
+    if untrusted == Untrusted::Isolated {
+        command
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", if cfg!(windows) { "NUL" } else { "/dev/null" });
+    }
     command
         .arg("-C")
         .arg(git_path(root))
@@ -4379,6 +4381,41 @@ mod tests {
         plain_git(dir, &["add", "--", name]);
         plain_git(dir, &["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "-q", "-m", name]);
         plain_git(dir, &["rev-parse", "HEAD"])
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_git_status_safe_ignores_global_and_system_config() {
+        let fixture = Fixture::new(false);
+        plain_git(&fixture.root, &["init", "-q"]);
+        commit_file(&fixture.root, "tracked.txt", "initial\n");
+        let tracked = fixture.root.join("tracked.txt");
+        // A new mtime and unchanged size force Git to hash through the clean filter.
+        fs::write(&tracked, "updated\n").unwrap();
+        assert!(Command::new("touch").args(["-t", "200001010000"]).arg(&tracked).status().unwrap().success());
+        fs::write(fixture.root.join(".gitattributes"), "*.txt filter=probe\n").unwrap();
+        let marker = fixture.base.join("filter-ran");
+        let config = fixture.base.join("probe.gitconfig");
+        fs::write(&config, "[filter \"probe\"]\n clean = \"touch ../filter-ran; cat\"\n").unwrap();
+        let config_path = config.to_str().unwrap();
+        let args = ["status", "--porcelain", "--untracked-files=no"];
+        let timeout = Duration::from_secs(5);
+        for env in [
+            [("GIT_CONFIG_GLOBAL", config_path), ("GIT_CONFIG_NOSYSTEM", "1")],
+            [("GIT_CONFIG_GLOBAL", "/dev/null"), ("GIT_CONFIG_SYSTEM", config_path)],
+        ] {
+            with_test_env(&env, || {
+                let isolated = run_git_status_safe(&fixture.root, &args, 1024, timeout).unwrap();
+                assert!(isolated.status.success());
+                assert_eq!(isolated.stdout.bytes.as_slice(), b" M tracked.txt\n");
+                assert!(!marker.exists(), "{env:?}");
+
+                let control = run_git_with(&fixture.root, &args, 1024, false, Untrusted::Local, timeout).unwrap();
+                assert!(control.status.success());
+                assert!(marker.exists(), "the unisolated command must run the configured filter: {env:?}");
+                fs::remove_file(&marker).unwrap();
+            });
+        }
     }
 
     /// Deletes a loose object, as a partial clone that never fetched it would lack it.

@@ -303,6 +303,47 @@ fn stats_count_runs_and_keep_the_last_fifty_tasks() {
 }
 
 #[test]
+fn in_flight_stats_follow_a_tool_to_either_scope() {
+    let base = temp();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let name = "deploy-it";
+    let original = save(&project, draft(name, "echo p", Vec::new()), author("s"), 1).unwrap();
+    assert!(!original.id.is_empty());
+    let updated = save(&project, draft(name, "echo updated", Vec::new()), author("s"), 2).unwrap();
+    assert_eq!(updated.id, original.id);
+    store::set_disabled(&project, name, true).unwrap();
+    assert_eq!(store::load(&project, name).unwrap().id, original.id);
+
+    store::move_tool(&project, &global, name).unwrap();
+    assert_eq!(store::record_for_tool(&base.0, "p1", Scope::Project, &original, "s", Some(0), 3), Ok(true));
+    assert_eq!(store::read_stats(&global)[name].uses, 1);
+    assert!(!store::read_stats(&project).contains_key(name));
+
+    store::move_tool(&global, &project, name).unwrap();
+    assert_eq!(store::record_for_tool(&base.0, "p1", Scope::Global, &updated, "s", Some(0), 4), Ok(true));
+    assert_eq!(store::read_stats(&project)[name].uses, 2);
+    assert!(!store::read_stats(&global).contains_key(name));
+}
+
+#[test]
+fn in_flight_stats_skip_a_deleted_tool_and_its_same_name_replacement() {
+    let base = temp();
+    let project = store::scope_dir(&base.0, Some("p1")).unwrap();
+    let name = "deploy-it";
+    let original = save(&project, draft(name, "echo p", Vec::new()), author("s"), 1).unwrap();
+    store::delete(&project, name).unwrap();
+    let record = || store::record_for_tool(&base.0, "p1", Scope::Project, &original, "s", Some(0), 2);
+    assert_eq!(record(), Ok(false));
+    assert!(!store::read_stats(&project).contains_key(name));
+
+    let replacement = save(&project, draft(name, "echo p", Vec::new()), author("s"), 1).unwrap();
+    assert_ne!(replacement.id, original.id);
+    assert_eq!(record(), Ok(false));
+    assert_eq!(visible(&base.0, "p1")[0].1.uses, 0);
+}
+
+#[test]
 fn moving_carries_stats_and_refuses_a_taken_name() {
     let base = temp();
     let project = store::scope_dir(&base.0, Some("p1")).unwrap();

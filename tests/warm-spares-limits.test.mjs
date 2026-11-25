@@ -271,12 +271,18 @@ test('the Settings hint is a concise plain-English summary that points to the fu
   const text = hint[1];
   const { total } = limits();
   assert.ok(text.length <= 340, `${SETTINGS} warm-spares hint must stay concise (<= 340 chars), got ${text.length}`);
-  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'Anthropic startup requests', 'git status']) {
+  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'Anthropic or your configured Claude endpoint', 'git status']) {
     assert.ok(text.includes(phrase), `${SETTINGS} warm-spares hint must state "${phrase}"`);
   }
   // A tooltip cannot open a repository path; the full limits are a link button on the row instead.
   assert.ok(!text.includes('docs/worker-tokens.md'), `${SETTINGS} warm-spares hint must not carry the raw docs/worker-tokens.md path`);
   assert.doesNotMatch(text, /~?1\.5 s/, `${SETTINGS} warm-spares hint must not claim ~1.5 s as the signed-in saving`);
+});
+
+test('the README and privacy page disclose configured Claude endpoints for warm spares', () => {
+  for (const path of [README, PRIVACY]) {
+    assert.match(readFileSync(path, 'utf8'), /configured Claude endpoint/, `${path} must disclose configured Claude endpoints for warm spares`);
+  }
 });
 
 test('the warm-spares row links to the full limits in docs/worker-tokens.md', () => {

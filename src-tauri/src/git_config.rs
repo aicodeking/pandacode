@@ -25,14 +25,13 @@ pub(crate) fn read_git_core_checkout(config_path: &Path) -> std::result::Result<
     Ok(checkout)
 }
 
-/// Inspect `<common_dir>/config` and `<git_dir>/config.worktree` when present, returning sorted,
-/// deduplicated checkout-local filter names to switch off before running `git status`.
-///
-/// Fails closed on unreadable, oversized or malformed config, includes, `core.worktree`,
-/// `core.sshCommand`, `core.askPass`, credential keys, a non-empty `extensions.partialClone`,
-/// a promisor remote that is not explicitly false, or a filter name that cannot be switched off.
-pub(crate) fn checkout_status_filters(git_dir: &Path, common_dir: &Path) -> std::result::Result<Vec<String>, &'static str> {
-    let mut filters = Vec::new();
+/// Inspect checkout-local config and attributes under one byte budget before running
+/// isolated status. Filters can execute programs or hide changes if switched off.
+pub(crate) fn check_status_config_safe(
+    git_dir: &Path,
+    common_dir: &Path,
+    worktree_root: Option<&Path>,
+) -> std::result::Result<(), &'static str> {
     let mut remaining = MAX_GIT_CONFIG_BYTES;
     for path in [common_dir.join("config"), git_dir.join("config.worktree")] {
         if crate::claude_roots::settings_path_absent(&path) {
@@ -40,14 +39,53 @@ pub(crate) fn checkout_status_filters(git_dir: &Path, common_dir: &Path) -> std:
         }
         let config = read_git_file(&path, remaining)?;
         remaining -= config.len() as u64;
-        parse_status_filters(&config, &mut filters)?;
+        check_status_config(&config)?;
     }
-    filters.sort();
-    filters.dedup();
-    Ok(filters)
+    let attributes = [
+        worktree_root.map(|root| root.join(".gitattributes")),
+        Some(git_dir.join("info").join("attributes")),
+    ];
+    for path in attributes.into_iter().flatten() {
+        if crate::claude_roots::settings_path_absent(&path) {
+            continue;
+        }
+        let attributes = read_git_file(&path, remaining)?;
+        remaining -= attributes.len() as u64;
+        check_status_attributes(&attributes)?;
+    }
+    Ok(())
 }
 
-fn parse_status_filters(config: &str, filters: &mut Vec<String>) -> std::result::Result<(), &'static str> {
+fn check_status_attributes(attributes: &str) -> std::result::Result<(), &'static str> {
+    let attributes = attributes.strip_prefix('\u{feff}').unwrap_or(attributes);
+    for line in attributes.lines().map(str::trim_start) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let mut tokens = line.split_ascii_whitespace();
+        if let Some(quoted) = line.strip_prefix('"') {
+            // Git allows attributes immediately after a quoted pattern.
+            let mut chars = quoted.char_indices();
+            let end = loop {
+                match chars.next() {
+                    Some((index, '"')) => break index + 1,
+                    Some((_, '\\')) => { let _ = chars.next(); }
+                    Some(_) => (),
+                    None => return Err("invalid git attributes pattern"),
+                }
+            };
+            tokens = quoted[end..].split_ascii_whitespace();
+        } else {
+            let _ = tokens.next();
+        }
+        if tokens.any(|token| token.starts_with("filter=")) {
+            return Err("unsupported git attributes filter");
+        }
+    }
+    Ok(())
+}
+
+fn check_status_config(config: &str) -> std::result::Result<(), &'static str> {
     visit_git_config(config, |name, subsection, item| {
         let GitConfigItem::Entry { key, value } = item else {
             // Git flattens a mixed dotted/quoted header into one subsection. Refuse this form
@@ -59,9 +97,10 @@ fn parse_status_filters(config: &str, filters: &mut Vec<String>) -> std::result:
                 return Err("unsupported git config include");
             }
             if name.eq_ignore_ascii_case("filter") {
-                let filter = subsection.filter(|name| !name.is_empty() && !name.contains(['=', '\n']))
-                    .ok_or("unsupported git filter name")?;
-                filters.push(filter.to_owned());
+                return Err("unsupported git filter section");
+            }
+            if name.eq_ignore_ascii_case("credential") {
+                return Err("unsupported git credential key");
             }
             return Ok(());
         };
@@ -72,8 +111,9 @@ fn parse_status_filters(config: &str, filters: &mut Vec<String>) -> std::result:
             if key.eq_ignore_ascii_case("sshcommand") || key.eq_ignore_ascii_case("askpass") {
                 return Err("unsupported git program key");
             }
-        } else if name.eq_ignore_ascii_case("credential") {
-            return Err("unsupported git credential key");
+            if key.eq_ignore_ascii_case("attributesfile") {
+                return Err("unsupported git core.attributesFile");
+            }
         } else if name.eq_ignore_ascii_case("extensions") && subsection.is_none() && key.eq_ignore_ascii_case("partialclone") {
             if value.as_deref().is_none_or(|value| !value.trim().is_empty()) {
                 return Err("unsupported git partial clone");
@@ -324,15 +364,23 @@ fn git_config_value(value: &str) -> std::result::Result<String, &'static str> {
 /// the pointer files (16 KiB is only ~180 branches), and an oversize one disables explore.
 pub(crate) const MAX_GIT_CONFIG_BYTES: u64 = 1024 * 1024;
 
-/// A regular UTF-8 file of at most `limit` bytes, checked at stat and again while reading.
+/// A regular UTF-8 file of at most `limit` bytes, checked on the open handle and again while reading.
 pub(crate) fn read_git_file(path: &Path, limit: u64) -> std::result::Result<String, &'static str> {
     use std::io::Read;
-    let metadata = std::fs::metadata(path).map_err(|_| "unreadable worktree metadata")?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(|_| "unreadable worktree metadata")?;
+    let metadata = file.metadata().map_err(|_| "unreadable worktree metadata")?;
     if !metadata.is_file() || metadata.len() > limit {
         return Err("invalid worktree metadata file");
     }
     let mut bytes = Vec::new();
-    std::fs::File::open(path).and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
+    file.take(limit + 1).read_to_end(&mut bytes)
         .map_err(|_| "unreadable worktree metadata")?;
     if bytes.len() as u64 > limit {
         return Err("oversized worktree metadata");
@@ -361,40 +409,71 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
-    fn status_filters_reads_common_and_linked_worktree_config() {
+    fn read_git_file_rejects_fifo_without_waiting_for_a_writer() {
+        let scratch = Scratch::new("fifo");
+        let fifo = scratch.0.join("pipe");
+        assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || sender.send(read_git_file(&fifo, 1024)));
+        assert_eq!(receiver.recv_timeout(std::time::Duration::from_secs(5)), Ok(Err("invalid worktree metadata file")));
+        reader.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn status_config_checks_common_and_linked_worktree_config() {
         let common = Scratch::new("status-common");
         let worktree = Scratch::new("status-worktree");
         let config = common.0.join("config");
         let worktree_config = worktree.0.join("config.worktree");
-        std::fs::write(&config, "[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n").unwrap();
-        assert_eq!(checkout_status_filters(&worktree.0, &common.0), Ok(vec![]));
+        let check = || check_status_config_safe(&worktree.0, &common.0, None);
+        std::fs::write(&config, "[core]\n repositoryformatversion = 0\n filemode = true\n bare = false\n logallrefupdates = true\n").unwrap();
+        assert_eq!(check(), Ok(()));
 
-        std::fs::write(&config, concat!(
-            "[filter \"x\"]\n clean = a\\\n# continued comment\n",
-            "[filter \"a.b\"]\n[Filter \"Up\"]\n[filter.Legacy]\n",
-            "[filter \"a\\\\b\\\"c\"]\n",
-        )).unwrap();
-        std::fs::write(&worktree_config, "[filter \"x\"]\n[filter \"worktree\"]\n").unwrap();
-        assert_eq!(
-            checkout_status_filters(&worktree.0, &common.0).unwrap(),
-            ["Up", "a.b", "a\\b\"c", "legacy", "worktree", "x"].map(str::to_owned),
-        );
-
+        std::fs::write(&worktree_config, "[filter \"worktree\"]\n").unwrap();
+        assert_eq!(check(), Err("unsupported git filter section"));
         std::fs::write(&worktree_config, "[core]\n worktree = ../other\n").unwrap();
-        assert_eq!(checkout_status_filters(&worktree.0, &common.0), Err("unsupported git core.worktree"));
+        assert_eq!(check(), Err("unsupported git core.worktree"));
     }
 
     #[test]
-    fn status_filters_refuse_risky_or_malformed_config() {
+    fn status_config_refuses_active_filter_attributes() {
+        let git = Scratch::new("status-git");
+        let root = Scratch::new("status-root");
+        let info = git.0.join("info");
+        std::fs::create_dir(&info).unwrap();
+        std::fs::write(git.0.join("config"), "[core]\n bare = false\n").unwrap();
+        let check = || check_status_config_safe(&git.0, &git.0, Some(&root.0));
+        for path in [root.0.join(".gitattributes"), info.join("attributes")] {
+            std::fs::write(&path, "tests/fixtures/*.pdf binary\n* text=auto\n*.txt -filter\n*.txt !filter\n  # *.txt filter=x\n").unwrap();
+            assert_eq!(check(), Ok(()));
+            for rule in [
+                "*.txt filter=norm\n",
+                "\"file name.txt\" text=auto filter=norm\n",
+                "\u{feff}\"file name.txt\"filter=norm\n",
+            ] {
+                std::fs::write(&path, rule).unwrap();
+                assert_eq!(check(), Err("unsupported git attributes filter"));
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn status_config_refuses_risky_or_malformed_config() {
         let scratch = Scratch::new("status-refusals");
         let path = scratch.0.join("config");
         for (config, error) in [
-            ("[filter \"a=b\"]\n", "unsupported git filter name"),
+            ("[filter \"x\"]\n", "unsupported git filter section"),
+            ("[filter.legacy]\n", "unsupported git filter section"),
+            ("[core]\n attributesFile = /elsewhere\n", "unsupported git core.attributesFile"),
+            ("[credential]\n", "unsupported git credential key"),
+            ("[filter \"a=b\"]\n", "unsupported git filter section"),
             ("[filter \"a\\nb\"]\n", "invalid git config subsection escape"),
             ("[filter \"a\nb\"]\n", "invalid git config section"),
-            ("[filter \"\"]\n", "unsupported git filter name"),
-            ("[filter]\n", "unsupported git filter name"),
+            ("[filter \"\"]\n", "unsupported git filter section"),
+            ("[filter]\n", "unsupported git filter section"),
             ("[filter.]\n", "invalid git config subsection"),
             ("[filter.a \"b\"]\n clean = cat\n", "unsupported git config section"),
             ("[include]\n", "unsupported git config include"),
@@ -415,29 +494,33 @@ mod tests {
             ("[user]\n name = a\\", "unterminated git config continuation"),
         ] {
             std::fs::write(&path, config).unwrap();
-            assert_eq!(checkout_status_filters(&scratch.0, &scratch.0), Err(error), "{config:?}");
+            assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Err(error), "{config:?}");
         }
         let inert = "[extensions]\n partialClone = \"\"\n[remote.origin]\n promisor = fal\\\nse\n promisor = \" Off \"\n";
         std::fs::write(&path, inert).unwrap();
-        assert_eq!(checkout_status_filters(&scratch.0, &scratch.0), Ok(vec![]));
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Ok(()));
     }
 
     #[test]
-    fn status_filters_share_one_byte_budget_and_refuse_nonfiles() {
+    fn status_config_shares_one_byte_budget_and_refuse_nonfiles() {
         let scratch = Scratch::new("status-budget");
         let config = scratch.0.join("config");
         let worktree_config = scratch.0.join("config.worktree");
         let limit = MAX_GIT_CONFIG_BYTES as usize;
         std::fs::write(&config, " ".repeat(limit)).unwrap();
         std::fs::write(&worktree_config, "").unwrap();
-        assert_eq!(checkout_status_filters(&scratch.0, &scratch.0), Ok(vec![]));
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Ok(()));
+        let attributes = scratch.0.join(".gitattributes");
+        std::fs::write(&attributes, "\n").unwrap();
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Err("invalid worktree metadata file"));
+        std::fs::remove_file(attributes).unwrap();
         std::fs::write(&worktree_config, "\n").unwrap();
-        assert_eq!(checkout_status_filters(&scratch.0, &scratch.0), Err("invalid worktree metadata file"));
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Err("invalid worktree metadata file"));
 
         std::fs::remove_file(&config).unwrap();
         std::fs::remove_file(&worktree_config).unwrap();
         std::fs::create_dir(&worktree_config).unwrap();
-        assert_eq!(checkout_status_filters(&scratch.0, &scratch.0), Err("invalid worktree metadata file"));
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Err("invalid worktree metadata file"));
     }
 
     #[test]

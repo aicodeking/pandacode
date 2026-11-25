@@ -223,6 +223,32 @@ fn a_removed_file_is_rewritten_in_the_background_without_the_listing() {
 }
 
 #[test]
+fn failed_invalidation_reports_all_errors_and_flush_recovers() {
+    let (_dir, path) = temp();
+    // A directory cannot be replaced with a file, removed by remove_file, or truncated.
+    std::fs::create_dir(&path).unwrap();
+    let mut state = SessionState::open(path.clone());
+    state.update("task", |task| task.owed = true);
+    let snapshot = state.snapshot().unwrap();
+    fail_writes(&path, 1);
+    let error = snapshot.write_or_remove().unwrap_err().to_string();
+    assert!(error.starts_with("injected failure; could not invalidate stale session state (remove: "), "{error}");
+    assert!(error.contains("; truncate: "), "{error}");
+
+    let state = Shared::leak(state);
+    // Keep the scheduled retry from racing the dirty check and the explicit flush.
+    state.pending.store(true, Ordering::Release);
+    state.update_now("task", |task| task.listed = listing(&["a", "b"]));
+    let mut current = state.lock();
+    assert!(current.dirty);
+    assert!(current.get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none())));
+    std::fs::remove_dir(&path).unwrap();
+    current.flush().unwrap();
+    assert!(!current.dirty);
+    assert!(SessionState::open(path).get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none())));
+}
+
+#[test]
 fn startup_wiring_inits_prunes_and_flushes() {
     let (dir, path) = temp();
     let mut stored = SessionState::open(path.clone());

@@ -548,24 +548,25 @@ const GIT_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
 /// waits. `--untracked-files=all` lists every untracked file, so a file added inside a folder that
 /// was already untracked changes the digest too. `NOT_GIT` outside a repository; `None` when it
 /// cannot be known (an unreadable repository, a failed, timed-out or truncated `git status`), so
-/// no spare starts or is adopted on an unknown status. `git_config::checkout_status_filters`
-/// inspects local config in Rust and refuses includes, `core.worktree`, and keys that run a
-/// program or fetch. `workspace::run_git_status_safe` runs one bounded Git process with the
-/// checkout's filters, hooks, fsmonitor, lazy fetches, credential helpers and askpass switched
-/// off and no optional locks. Checkouts with submodules also return `None`, since skipping
-/// their status would hide changes in them. Runs off the async runtime for pooled launches.
+/// no spare starts or is adopted on an unknown status. Local config and root and Git-directory
+/// attributes are checked before running status. Includes, filters, and settings that could run
+/// a program or fetch fail closed. The bounded Git process ignores global and system config,
+/// suppresses hooks, fsmonitor, lazy fetches, credential helpers, askpass and optional locks.
+/// Checkouts with submodules also return `None`, since skipping their status would hide changes
+/// in them. Runs off the async runtime for pooled launches.
 pub(super) fn git_status(cwd: &Path) -> Option<String> {
     let (git_dir, common_dir) = match crate::claude_roots::git_dirs_for(cwd) {
         None => return Some(NOT_GIT.into()),
         Some(Err(_)) => return None,
         Some(Ok(dirs)) => dirs,
     };
-    if has_submodules(cwd, &git_dir, &common_dir) {
+    let worktree_root = cwd.ancestors().find(|ancestor| !path_absent(&ancestor.join(".git")));
+    if has_submodules(worktree_root, &git_dir, &common_dir) {
         return None;
     }
-    let filters = crate::git_config::checkout_status_filters(&git_dir, &common_dir).ok()?;
+    crate::git_config::check_status_config_safe(&git_dir, &common_dir, worktree_root).ok()?;
     let args = ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"];
-    let output = crate::workspace::run_git_status_safe(cwd, &filters, &args, GIT_STATUS_LIMIT, GIT_STATUS_TIMEOUT).ok()?;
+    let output = crate::workspace::run_git_status_safe(cwd, &args, GIT_STATUS_LIMIT, GIT_STATUS_TIMEOUT).ok()?;
     if !output.status.success() || output.stdout.truncated {
         return None;
     }
@@ -577,13 +578,11 @@ pub(super) fn git_status(cwd: &Path) -> Option<String> {
 /// or the common git directory, or a `.gitmodules` at the root of its working tree (the nearest
 /// ancestor holding `.git`, as `claude_roots::git_dirs_for` finds it). Anything at those paths
 /// counts, unreadable entries included, so the check fails closed.
-fn has_submodules(cwd: &Path, git_dir: &Path, common_dir: &Path) -> bool {
+fn has_submodules(worktree_root: Option<&Path>, git_dir: &Path, common_dir: &Path) -> bool {
     if !path_absent(&git_dir.join("modules")) || !path_absent(&common_dir.join("modules")) {
         return true;
     }
-    cwd.ancestors()
-        .find(|ancestor| !path_absent(&ancestor.join(".git")))
-        .is_some_and(|root| !path_absent(&root.join(".gitmodules")))
+    worktree_root.is_some_and(|root| !path_absent(&root.join(".gitmodules")))
 }
 
 /// A spare's key without its `gitStatus`: a renewal reads the working tree again right

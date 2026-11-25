@@ -837,37 +837,52 @@ fn a_checkout_with_config_includes_has_no_git_status_digest() {
     assert_eq!(git_status(&repo), None, "even a missing include fails closed");
 }
 
+#[test]
+fn git_status_allows_binary_and_refuses_root_filter_attributes() {
+    let (repo, _cleanup) = init_status_repo("attributes");
+    let attributes = repo.join(".gitattributes");
+    std::fs::write(&attributes, "*.pdf binary\n").unwrap();
+    assert!(git_status(&repo).is_some(), "a binary attribute leaves status available");
+
+    std::fs::write(&attributes, "*.txt filter=g\n").unwrap();
+    let subdirectory = repo.join("src");
+    std::fs::create_dir(&subdirectory).unwrap();
+    assert_eq!(git_status(&repo), None, "a root filter may rely on global configuration");
+    assert_eq!(git_status(&subdirectory), None, "a subdirectory probe still checks root attributes");
+}
+
 #[cfg(unix)]
 #[test]
-fn git_status_switches_off_checkout_clean_filters() {
+fn git_status_fails_closed_on_local_content_transforming_clean_filter() {
     use std::process::Command;
     let (repo, _cleanup) = init_status_repo("filter");
     let git = |args: &[&str]| {
-        let status = Command::new("git")
-            .args(["-c", "user.name=PandaCode", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"])
+        let output = Command::new("git")
+            .args(["-c", "user.name=PandaCode", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .args(args)
             .current_dir(&repo)
-            .status()
+            .output()
             .unwrap();
-        assert!(status.success(), "git {args:?}");
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        output.stdout
     };
-    std::fs::write(repo.join("tracked.txt"), "one").unwrap();
-    git(&["add", "tracked.txt"]);
-    git(&["commit", "-q", "--no-verify", "-m", "Tracked"]);
-    let marker_dir = std::env::temp_dir().join(format!("warm-git-status-marker-{}", uuid::Uuid::new_v4()));
-    let _marker_cleanup = TempDir(marker_dir.clone());
-    std::fs::create_dir_all(&marker_dir).unwrap();
-    let marker = marker_dir.join("filter-ran");
-    std::fs::write(repo.join(".gitattributes"), "*.txt filter=x\n").unwrap();
-    let clean = format!("touch '{}'; cat", marker.display());
-    git(&["config", "filter.x.clean", clean.as_str()]);
-    git(&["config", "filter.x.required", "true"]);
-    // Same size, older mtime: status must hash the file, through its clean filter.
-    assert!(Command::new("touch").args(["-t", "200001010000"]).arg(repo.join("tracked.txt")).status().unwrap().success());
-    assert!(git_status(&repo).is_some(), "the status is known with the filter switched off");
+    let marker = repo.join(".git").join("filter-ran");
+    std::fs::write(repo.join(".gitattributes"), "*.txt filter=norm\n").unwrap();
+    git(&["config", "filter.norm.clean", "touch '.git/filter-ran'; tr a-z A-Z"]);
+    git(&["config", "filter.norm.required", "true"]);
+    let tracked = repo.join("tracked.txt");
+    std::fs::write(&tracked, "one\n").unwrap();
+    git(&["add", ".gitattributes", "tracked.txt"]);
+    git(&["commit", "-q", "-m", "Tracked"]);
+    std::fs::remove_file(&marker).unwrap();
+
+    // A case-only edit and a distinct mtime make status hash the file through the filter.
+    std::fs::write(&tracked, "One\n").unwrap();
+    assert!(Command::new("touch").args(["-t", "200001010000"]).arg(&tracked).status().unwrap().success());
+    assert_eq!(git_status(&repo), None, "a transforming filter makes the probe unreliable");
     assert!(!marker.exists(), "no checkout filter ran");
-    // Plain `git status` does run it: the check above means something.
-    let plain = Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
-    assert!(plain.status.success());
-    assert!(marker.exists(), "the fixture reaches the clean filter");
+    assert!(git(&["status", "--porcelain"]).is_empty(), "the clean filter normalizes the edit");
+    assert!(marker.exists(), "plain status ran the clean filter");
 }

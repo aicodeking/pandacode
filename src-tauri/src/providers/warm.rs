@@ -192,7 +192,13 @@ struct StartingEntry {
     cancelled: bool,
 }
 
-type Pool = Mutex<Spares>;
+#[derive(Default)]
+pub(super) struct Pool {
+    /// Serializes the final check and process spawn with switch-off.
+    /// Lock order: spawn_gate, inner, then launch epochs or exit registry.
+    spawn_gate: Mutex<()>,
+    inner: Mutex<Spares>,
+}
 
 /// `gone` keeps at most this many reasons (tasks deleted with a reason pending never read it).
 const GONE_LIMIT: usize = 64;
@@ -272,7 +278,7 @@ pub fn epoch(session_id: &str) -> u64 {
 }
 
 fn spares(pool: &Pool) -> std::sync::MutexGuard<'_, Spares> {
-    pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    pool.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Plain Claude only: an idle relay spare made a network request (see docs/worker-tokens.md).
@@ -564,6 +570,7 @@ fn disable_all_from(pool: &Pool) {
 
 fn retire_all_from(pool: &Pool, disable: bool) {
     let removed = {
+        let _gate = disable.then(|| pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner()));
         let mut pool = spares(pool);
         if disable {
             pool.discard_epoch = pool.discard_epoch.wrapping_add(1);

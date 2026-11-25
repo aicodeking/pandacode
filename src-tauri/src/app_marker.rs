@@ -80,12 +80,12 @@ pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<(
 
 fn exists_at(path: Result<PathBuf>) -> Result<bool> {
     let path = path?;
-    match path.try_exists() {
-        Ok(true) => Ok(true),
-        Ok(false) => {
-            // On Windows, `try_exists()` maps `ERROR_PATH_NOT_FOUND` under a non-directory
-            // ancestor to `Ok(false)` instead of `ENOTDIR`. Walk up to the nearest existing
-            // ancestor and fail closed if it is not a directory.
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => Ok(true),
+        Ok(_) => Err("Could not read the setting: marker path is not a regular file".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // Windows reports ERROR_PATH_NOT_FOUND under a non-directory ancestor.
+            // Walk up to the nearest existing ancestor and fail closed if it is not a directory.
             for ancestor in path.ancestors().skip(1) {
                 match std::fs::metadata(ancestor) {
                     Ok(meta) => {
@@ -140,6 +140,20 @@ mod tests {
         let deep = dir.join("file").join("missing").join("flag");
         assert!(exists_at(Ok(deep)).is_err());
         assert!(set_at(&unreadable, true).unwrap_err().starts_with("Could not save the setting"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_directory_is_not_a_marker() {
+        let dir = std::env::temp_dir().join(format!("app-marker-dir-{}", uuid::Uuid::new_v4()));
+        let name = "warm-spares-on";
+        let marker = dir.join(name);
+        std::fs::create_dir_all(&marker).unwrap();
+
+        assert_eq!(exists_at(Ok(marker.clone())).unwrap_err(), "Could not read the setting: marker path is not a regular file");
+        assert!(!opt_in_in(Ok(dir.clone()), name));
+        assert!(!default_on_in(Ok(dir.clone()), name));
+        assert!(set_at(&marker, false).is_err());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

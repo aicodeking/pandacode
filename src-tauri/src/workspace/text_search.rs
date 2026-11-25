@@ -197,7 +197,7 @@ fn open_regular(path: &Path) -> Option<(std::fs::File, std::fs::Metadata)> {
 
 /// `refused` judges the opened file's real path, relative to `root`.
 pub(crate) fn read_inside_up_to(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool) -> Option<Vec<u8>> {
-    read_checked(root, path, limit, refused, false)
+    read_checked(root, path, limit, refused, true)
 }
 
 fn read_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool, skip_links: bool) -> Option<Vec<u8>> {
@@ -211,7 +211,7 @@ fn read_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> 
 /// `read_inside_up_to`'s checks without the read: the opened file and its size, for a caller
 /// that streams it.
 pub(crate) fn open_inside_up_to(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool) -> Option<(std::fs::File, u64)> {
-    open_checked(root, path, limit, refused, false)
+    open_checked(root, path, limit, refused, true)
 }
 
 fn open_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> bool, skip_links: bool) -> Option<(std::fs::File, u64)> {
@@ -240,9 +240,51 @@ fn open_checked(root: &Path, path: &Path, limit: u64, refused: impl Fn(&str) -> 
             return None;
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    if skip_links && !has_at_most_one_link(&file) {
+        return None;
+    }
+    #[cfg(not(any(unix, windows)))]
     let _ = skip_links;
     Some((file, opened.len()))
+}
+
+#[cfg(windows)]
+fn has_at_most_one_link(file: &std::fs::File) -> bool {
+    use std::{ffi::c_void, mem::MaybeUninit, os::windows::io::AsRawHandle};
+
+    #[repr(C)]
+    struct Filetime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: Filetime,
+        last_access_time: Filetime,
+        last_write_time: Filetime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(handle: *mut c_void, info: *mut ByHandleFileInformation) -> i32;
+    }
+
+    let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: the file owns the open handle, and info points to writable storage of the required size.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+        return false;
+    }
+    // SAFETY: a successful call initialized the structure.
+    unsafe { info.assume_init() }.number_of_links <= 1
 }
 
 /// The real path of the file `file` has open (macOS `F_GETPATH`, Linux `/proc/self/fd`).
@@ -520,6 +562,22 @@ mod tests {
         let f = Fixture::new();
         std::os::unix::fs::symlink(&outside.0, f.0.join("link")).unwrap();
         assert!(f.search("needle", false, false, false).files.is_empty());
+    }
+
+    #[test]
+    fn read_inside_up_to_and_open_inside_up_to_refuse_hard_linked_files() {
+        let outside = Fixture::new();
+        outside.write("id_rsa", "secret");
+        let f = Fixture::new();
+        f.write("plain.txt", "plain");
+        let linked = f.0.join("notes.txt");
+        let plain = f.0.join("plain.txt");
+        fs::hard_link(outside.0.join("id_rsa"), &linked).unwrap();
+
+        assert!(read_inside_up_to(&f.0, &linked, 16, |_| false).is_none());
+        assert!(open_inside_up_to(&f.0, &linked, 16, |_| false).is_none());
+        assert_eq!(read_inside_up_to(&f.0, &plain, 16, |_| false).as_deref(), Some(b"plain".as_slice()));
+        assert!(open_inside_up_to(&f.0, &plain, 16, |_| false).is_some_and(|(_, size)| size == 5));
     }
 
     #[cfg(unix)]

@@ -77,6 +77,11 @@ impl History {
     pub(crate) fn holding(names: &[&str]) -> Self {
         Self { known: Some(names.iter().map(|name| (*name).to_owned()).collect()), codex: false, resumed: true }
     }
+    /// Whether this conversation may already hold at least one tool in `names`.
+    pub(crate) fn may_hold_any(&self, names: &[&str]) -> bool {
+        self.known.as_ref().is_none_or(|known| names.iter().any(|name| known.contains(*name)))
+    }
+
     /// Whether an unwanted family may still have to be listed (before building it).
     pub(crate) fn may_hold(&self, flips: bool) -> bool {
         (self.codex && flips) || self.known.as_ref().is_none_or(|known| !known.is_empty())
@@ -386,6 +391,15 @@ pub(crate) mod fake {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[test]
+    fn history_matches_known_custom_tools_or_unknown_history() {
+        let custom = &["pandacode_tool_list", "pandacode_tool_save", "pandacode_tool_run"];
+        assert!(!History::holding(&["pandacode_explore"]).may_hold_any(custom));
+        assert!(History::holding(&["pandacode_tool_run"]).may_hold_any(custom));
+        assert!(History::unknown(false).may_hold_any(&["pandacode_tool_run"]));
+        assert!(!History::fresh(false).may_hold_any(&["pandacode_tool_run"]));
+    }
 
     fn host_of(names: &[&str]) -> Option<ToolHost> {
         let tools = names.iter().map(|name| serde_json::json!({"name": name})).collect();

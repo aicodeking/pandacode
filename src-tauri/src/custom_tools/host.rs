@@ -171,8 +171,12 @@ impl Catalog {
     }
     /// Every tool's real definition for this catalog (`definitions`).
     pub(crate) fn definitions(&self) -> Vec<Value> {
-        specs(false)
+        super::definitions()
     }
+}
+
+pub(crate) fn definitions() -> Vec<Value> {
+    specs(false)
 }
 
 /// The turn's catalog, or `None` when the task has no checkout here (a mirror) or no app data:
@@ -289,14 +293,17 @@ pub(super) async fn run_call(ctx: Arc<Ctx>, mut args: Value, stopped: Arc<Atomic
     if tool.disabled {
         return Err(format!("The tool {name} is disabled in Settings."));
     }
+    let tool_for_stats = tool.clone();
     let outcome = run::execute_async(ctx.root.clone(), tool, args["args"].clone(), stopped).await;
     if outcome.exit.is_some() || outcome.timed_out {
-        let dir = store::scope_dir(&ctx.base, (scope == Scope::Project).then_some(ctx.project.as_str()))?;
+        let base = ctx.base.clone();
+        let project = ctx.project.clone();
         let session = ctx.author.session_id.clone();
         let exit = outcome.exit;
-        let recorded = crate::blocking(move || store::record(&dir, &name, &session, exit, crate::storage::now())).await;
+        let recorded = crate::blocking(move || store::record_for_tool(&base, &project, scope, &tool_for_stats, &session, exit, crate::storage::now())).await;
         match recorded {
-            Ok(()) => (ctx.changed)(),
+            Ok(true) => (ctx.changed)(),
+            Ok(false) => {}
             Err(error) => eprintln!("PandaCode: could not record tool stats: {error}"),
         }
     }

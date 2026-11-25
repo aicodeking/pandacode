@@ -17,7 +17,7 @@ pub(crate) use approval::run_ended;
 /// A temp dir removed on drop, even when a test panics.
 #[cfg(test)]
 pub(crate) use tests::temp;
-pub(crate) use host::{catalog, forget, has_catalog, message_note, offered, standard_names, with_custom_tools};
+pub(crate) use host::{catalog, definitions, forget, has_catalog, message_note, offered, standard_names, with_custom_tools};
 #[cfg(test)]
 pub(crate) use host::{test_note, test_noted};
 #[cfg(test)]
@@ -112,6 +112,8 @@ pub(crate) struct Author {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Tool {
     pub name: String,
+    #[serde(default)]
+    pub id: String,
     pub description: String,
     pub when: String,
     #[serde(default)]
@@ -131,6 +133,14 @@ pub(crate) struct Tool {
     pub updated_by: Option<Author>,
     #[serde(default)]
     pub disabled: bool,
+}
+
+pub(super) fn same_identity(a: &Tool, b: &Tool) -> bool {
+    if !a.id.is_empty() || !b.id.is_empty() {
+        a.id == b.id
+    } else {
+        a.created_at == b.created_at && a.created_by == b.created_by
+    }
 }
 
 fn default_timeout() -> u64 {
@@ -249,6 +259,7 @@ struct Draft {
 fn save(dir: &Path, draft: Draft, author: Author, now: i64) -> Result<Tool, String> {
     let mut tool = Tool {
         name: draft.name,
+        id: String::new(),
         description: draft.description,
         when: draft.when,
         params: draft.params,
@@ -265,11 +276,14 @@ fn save(dir: &Path, draft: Draft, author: Author, now: i64) -> Result<Tool, Stri
     run::syntax_check(&tool.script)?;
     let _guard = store::lock();
     if let Some(old) = store::try_load(dir, &tool.name)? {
+        tool.id = old.id;
         tool.version = old.version + 1;
         tool.created_at = old.created_at;
         tool.created_by = old.created_by;
         tool.updated_by = Some(author);
         tool.disabled = old.disabled;
+    } else {
+        tool.id = uuid::Uuid::new_v4().simple().to_string();
     }
     store::store(dir, &tool)?;
     Ok(tool)

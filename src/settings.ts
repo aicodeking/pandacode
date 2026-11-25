@@ -105,7 +105,7 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup. Makes signed-in Anthropic startup requests, starts MCP servers and runs SessionStart hooks before you send a message; checks git status, skips low memory, and backs off when unused.' },
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup. Makes pre-prompt startup requests to Anthropic or your configured Claude endpoint, starts MCP servers and SessionStart hooks early; checks git status, skips low memory, and backs off when unused.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },

@@ -3,8 +3,86 @@
 //! worktree operation or a checks run from racing an agent, and the shared idle guard.
 use crate::path_match::{path_in_folder, resolve_path};
 use crate::storage::Store;
-use crate::{blocking, lock_agents, providers, worktree_paths, AppState, Result};
+use crate::{blocking, lock_agents, providers, worktree_paths, Agents, AppState, Result};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
+
+static RESERVATIONS: LazyLock<Mutex<Reservations>> =
+    LazyLock::new(|| Mutex::new(Reservations::default()));
+
+#[derive(Default)]
+struct Reservations {
+    next: u64,
+    active: Vec<(usize, u64, Vec<PathBuf>)>,
+}
+
+impl Reservations {
+    fn conflicts(&self, owner: usize, checkout: &Path) -> bool {
+        self.active.iter().any(|(reserved_owner, _, roots)| {
+            *reserved_owner == owner && roots.iter().any(|root| checkout_overlaps(root, checkout))
+        })
+    }
+
+    fn reserve_for(&mut self, owner: usize, roots: Vec<PathBuf>, busy_message: &str) -> Result<u64> {
+        if roots.iter().any(|root| self.conflicts(owner, root)) {
+            return Err(busy_message.into());
+        }
+        let token = self.next;
+        self.next += 1;
+        self.active.push((owner, token, roots));
+        Ok(token)
+    }
+
+    fn release(&mut self, token: u64) {
+        self.active.retain(|(_, reserved_token, _)| *reserved_token != token);
+    }
+}
+
+pub(crate) struct Reservation {
+    token: u64,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        RESERVATIONS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).release(self.token);
+    }
+}
+
+/// Called with the agents lock held during admission.
+pub(crate) fn checkout_reserved(agents: &Agents, checkout: &Path) -> bool {
+    RESERVATIONS.lock().map_or(true, |reservations| {
+        reservations.conflicts(Arc::as_ptr(agents) as usize, checkout)
+    })
+}
+
+/// Check and reserve under the same agents lock used to admit local runs.
+pub(crate) async fn reserve_idle_checkouts(
+    state: &AppState,
+    roots: Vec<PathBuf>,
+    busy_message: &'static str,
+) -> Result<Reservation> {
+    let agents = state.agents.clone();
+    let store = state.store.clone();
+    blocking(move || {
+        let agents_guard = lock_agents(&agents).map_err(|e| e.to_string())?;
+        let exiting = providers::pending_exits();
+        let others: Vec<PathBuf> = {
+            let store = store.lock().map_err(|e| e.to_string())?;
+            agents_guard.keys().filter_map(|id| session_checkout_root(&store, id))
+                .chain(exiting.into_iter().flat_map(|(id, cwd)| {
+                    cwd.into_iter().chain(session_checkout_root(&store, &id))
+                }))
+                .collect()
+        };
+        if roots.iter().any(|root| any_same_checkout(root, &others)) {
+            return Err(busy_message.into());
+        }
+        let token = RESERVATIONS.lock().map_err(|e| e.to_string())?
+            .reserve_for(Arc::as_ptr(&agents) as usize, roots, busy_message)?;
+        Ok(Reservation { token })
+    })
+    .await
+}
 
 fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
     let task = store.session(session_id).ok()?;
@@ -24,9 +102,15 @@ fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
 /// worktree nested below `root` (one under `root/.claude/worktrees`) is that worktree's.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
     let root_resolved = resolve_path(root);
-    others.iter().any(|other| {
-        path_in_folder(other, root, &root_resolved) && !in_nested_checkout(other, root, &root_resolved)
-    })
+    others.iter().any(|other| path_in_checkout(other, root, &root_resolved))
+}
+
+fn path_in_checkout(other: &Path, root: &Path, resolved: &Path) -> bool {
+    path_in_folder(other, root, resolved) && !in_nested_checkout(other, root, resolved)
+}
+
+fn checkout_overlaps(a: &Path, b: &Path) -> bool {
+    path_in_checkout(b, a, &resolve_path(a)) || path_in_checkout(a, b, &resolve_path(b))
 }
 
 /// Whether `other` (inside `root`) belongs to a linked worktree strictly below `root`'s own
@@ -270,7 +354,7 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
 
 #[cfg(test)]
 mod tests {
-    use super::any_same_checkout;
+    use super::{any_same_checkout, checkout_reserved, Reservation, RESERVATIONS};
     use std::path::PathBuf;
 
     #[test]
@@ -291,6 +375,31 @@ mod tests {
         assert!(any_same_checkout(&nested, &[nested.join("src")]), "the nested worktree still matches itself");
         assert!(!any_same_checkout(&nested, std::slice::from_ref(&main)));
         assert!(any_same_checkout(&base, std::slice::from_ref(&nested)), "a plain folder counts every repository inside it");
+        let agents = crate::Agents::default();
+        let other_agents = crate::Agents::default();
+        let owner = std::sync::Arc::as_ptr(&agents) as usize;
+        let reserve = |path| RESERVATIONS.lock().unwrap().reserve_for(owner, vec![path], "busy")
+            .map(|token| Reservation { token });
+        let reservation = reserve(main.clone()).unwrap();
+        for overlap in [main.clone(), main.join("src"), base.clone()] {
+            assert!(checkout_reserved(&agents, &overlap));
+            assert!(reserve(overlap).is_err());
+        }
+        assert!(!checkout_reserved(&other_agents, &main));
+        let sibling = base.join("sibling");
+        for independent in [&nested, &sibling] {
+            assert!(!checkout_reserved(&agents, independent));
+            let _independent = reserve(independent.to_path_buf()).unwrap();
+        }
+        drop(reservation);
+        assert!(!checkout_reserved(&agents, &main));
+        let sub_reservation = reserve(main.join("src")).unwrap();
+        assert!(checkout_reserved(&agents, &main));
+        drop(sub_reservation);
+        let nested_reservation = reserve(nested.clone()).unwrap();
+        assert!(!checkout_reserved(&agents, &main));
+        drop(nested_reservation);
+        assert!(reserve(main.clone()).is_ok());
         // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
         std::fs::remove_file(nested.join(".git")).unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));

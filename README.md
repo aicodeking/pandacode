@@ -353,7 +353,7 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   secret-file rules; their harness deny rules are not parsed. It is on by default only for
   Claude Code, the one harness it was measured on (Claude Sonnet in Claude Code 2.1.317;
   enabled across Claude models): there it took 12% fewer localization steps and 14% less
-  wall time on tuned tasks and 21% fewer steps on held-out tasks, with held-out precision
+  wall time on tuned tasks and 21% fewer steps on the descriptive 8-task held-out set, with held-out precision
   and edit pass rate holding up, but tuned precision missed its non-inferiority gate and
   edit steps were not shown unchanged ([caveats and why it stays on](docs/agent-tools.md),
   [benchmark](docs/agent-loop-benchmark.md)). Other harnesses (GLM, MiMo and
@@ -367,8 +367,8 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
 background traffic, start no idle processes and run no early `SessionStart` hooks
 until you turn them on. Once on, they make background startup traffic that is
 not anonymous, so they are not in the table below. Each spare is a real Claude
-Code start, so before you send anything it contacts Anthropic under your Claude
-login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless
+Code start, so before you send anything it contacts Anthropic (or your configured Claude endpoint,
+such as a named connection's `ANTHROPIC_BASE_URL`) under your Claude login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless
 **Turn off agent telemetry** is on), starts the user and project MCP servers
 configured in Claude Code (remote MCP servers connect when the spare starts),
 and runs your `SessionStart` hooks, which may run commands or make network

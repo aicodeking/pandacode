@@ -1921,6 +1921,9 @@ fn prepare_task_run_in_project(
         return Err("Message and attached context must be under 16 MiB.".into());
     }
     let cwd = store.workspace_root(&session.project_id, Some(&session_id))?;
+    if checkout_busy::checkout_reserved(&state.agents, &cwd) {
+        return Err("A worktree operation is in progress for this checkout. Try again once it finishes.".into());
+    }
     // Discovery awaits outside the locks. Recheck the exact command and checkout
     // when claiming the task so changing its harness/project cannot run stale metadata.
     let (prompt, skill, maintenance, compacts, native_command) = match admission.command {
@@ -2435,7 +2438,7 @@ async fn launch_operation_admitted(
     let custom_offered = custom_tools_offered(cloud, managed_worker) && custom_tools::ipc::enabled_for(&app);
     // Read once, so the instructions, the note and the host see the same tools this turn; the
     // tool files are read on a blocking thread, off the async launch path.
-    let catalog = if custom_offered || (custom_tools::offered(cloud) && history.may_hold(false)) {
+    let catalog = if custom_offered {
         let (app, session_id) = (app.clone(), session_id.clone());
         tauri::async_runtime::spawn_blocking(move || custom_tools::catalog(&app, &session_id)).await.unwrap_or_else(|error| {
             eprintln!("PandaCode: reading agent-made tools failed: {error}");
@@ -2518,7 +2521,15 @@ async fn launch_operation_admitted(
             own_run, team_worker, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
         }
         .sink();
-        let custom_definitions = catalog.as_ref().map(|catalog| catalog.definitions()).unwrap_or_default();
+        let custom_definitions = if let Some(catalog) = catalog.as_ref() {
+            catalog.definitions()
+        } else if custom_tools::offered(cloud)
+            && history.may_hold_any(&[custom_tools::TOOL_LIST, custom_tools::TOOL_SAVE, custom_tools::TOOL_RUN])
+        {
+            custom_tools::definitions()
+        } else {
+            Vec::new()
+        };
         let custom = catalog.map(|catalog| {
             let author = custom_tools::Author { session_id: session_id.clone(), harness: config.provider.clone(), model: config.model.clone() };
             let (app, stopped, mode) = (app.clone(), stopped.clone(), config.mode.clone());
@@ -3415,12 +3426,16 @@ pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, tr
         "Wait for the agent to finish before merging its worktree.",
     )
     .await?;
-    // Re-check after awaiting `session_id`'s exit: another session may have started or entered
-    // background reaping in `&main` or `&path` meanwhile.
-    refuse_worktree_merge_busy(state, &session_id).await?;
     let store = state.store.clone();
+    let (main, path, _) = blocking(move || worktree_paths(&store, &session_id)).await?;
+    let reservation = checkout_busy::reserve_idle_checkouts(
+        state,
+        vec![main.clone(), path.clone()],
+        "Wait for the agent to finish before merging its worktree.",
+    ).await?;
     blocking(move || {
-        let (main, path, _) = worktree_paths(&store, &session_id)?;
+        // The Git operation can outlive its awaiting caller.
+        let _reservation = reservation;
         workspace::merge_worktree(&main, &path, trust)
     })
     .await
@@ -3450,8 +3465,15 @@ pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, d
     // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
     providers::end_lingering_in(&path).await;
     providers::quiesce_spares_in(&path).await?;
-    refuse_worktree_remove_busy(state, &session_id).await?;
-    let removed = blocking(move || workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)).await;
+    let reservation = checkout_busy::reserve_idle_checkouts(
+        state,
+        vec![path.clone()],
+        "Stop the agent before removing its worktree.",
+    ).await?;
+    let removed = blocking(move || {
+        let _reservation = reservation;
+        workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)
+    }).await;
     skill_manager::projects_changed();
     removed
 }
@@ -3468,7 +3490,7 @@ async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<
     if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
         return Err(BUSY.into());
     }
-    let (_, path, _) = worktree_paths(&state.store, &session_id)?;
+    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
     quiesce_worktree(
         state,
@@ -3485,9 +3507,10 @@ async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<
         Some(&path),
     )
     .await?;
+    let reservation = checkout_busy::reserve_idle_checkouts(state, vec![path.clone()], BUSY).await?;
     let store = state.store.clone();
     blocking(move || {
-        let (main, path, branch) = worktree_paths(&store, &session_id)?;
+        let _reservation = reservation;
         workspace::recreate_worktree(&main, &path, branch.as_deref())?;
         skill_manager::projects_changed();
         store.lock().map_err(|e| e.to_string())?.session(&session_id)

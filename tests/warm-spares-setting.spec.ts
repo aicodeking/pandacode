@@ -25,7 +25,7 @@ test('the warm spares switch is off by default, explains itself and saves', asyn
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
   for (const disclosure of [
-    'Off by default', 'up to 4', '~195–255 MiB', '~0.38–0.62 s', 'signed-in', 'Anthropic startup requests', 'MCP',
+    'Off by default', 'up to 4', '~195–255 MiB', '~0.38–0.62 s', 'signed-in', 'Anthropic or your configured Claude endpoint', 'MCP',
     'SessionStart', 'git status', 'low memory', 'backs off',
   ]) {
     await expect(hint(page)).toContainText(disclosure);

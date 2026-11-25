@@ -496,9 +496,22 @@ pub(super) async fn spawn_when_current(
     command: &mut Command,
     quitting: impl Fn() -> bool,
 ) -> Result<Option<(tokio::process::Child, Pending)>, String> {
+    spawn_when_current_in(&SPARES, session_id, launch, exit, command, quitting).await
+}
+
+pub(super) async fn spawn_when_current_in(
+    pool: &Pool,
+    session_id: &str,
+    launch: u64,
+    exit: impl std::future::Future<Output = Result<(), String>>,
+    command: &mut Command,
+    quitting: impl Fn() -> bool,
+) -> Result<Option<(tokio::process::Child, Pending)>, String> {
     if exit.await.is_err() {
         return Ok(None);
     }
+    // Keep the final check and spawn together until switch-off can advance the pool epoch.
+    let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
     let starting = pending_in_cwd(session_id, command.as_std().get_current_dir().map(Path::to_path_buf));
     // Checked after registering: a launch before this point moved the epoch and is refused here;
     // one after it waits for `starting`, and `register` kills the child (epoch moved).

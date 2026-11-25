@@ -33,6 +33,46 @@ fn on_marker_is_opt_in_and_fails_closed_on_read_errors() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn switch_off_and_the_final_spawn_check_use_the_same_gate() {
+    let pool: &'static Pool = Box::leak(Box::default());
+    let session = format!("warm-switch-spawn-gate-{}", uuid::Uuid::new_v4());
+    launched(&session);
+    let launch = epoch(&session);
+    let _in_flight = InFlight::enter(pool, session.clone(), PathBuf::new(), false);
+    let mut command = Command::new("unused-warm-spawn-gate-test-command");
+    let refused = spawn_when_current_in(pool, &session, launch, async { Ok(()) }, &mut command, || {
+        assert!(matches!(pool.spawn_gate.try_lock(), Err(std::sync::TryLockError::WouldBlock)));
+        true
+    }).await.unwrap();
+    assert!(refused.is_none());
+    assert_eq!(epoch(&session), launch);
+
+    // Disable must acquire the spawn gate before waiting for the inner pool lock.
+    let (disable, gate_taken) = {
+        let _inner = spares(pool);
+        let disable = std::thread::spawn(move || disable_all_from(pool));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let gate_taken = loop {
+            if matches!(pool.spawn_gate.try_lock(), Err(std::sync::TryLockError::WouldBlock)) {
+                break true;
+            }
+            if std::time::Instant::now() >= deadline {
+                break false;
+            }
+            std::thread::yield_now();
+        };
+        (disable, gate_taken)
+    };
+    disable.join().unwrap();
+    assert!(gate_taken, "switch-off must wait on the same gate used by spawn");
+    assert_ne!(epoch(&session), launch);
+    let refused = spawn_when_current_in(pool, &session, launch, async { Ok(()) }, &mut command, || false)
+        .await.unwrap();
+    assert!(refused.is_none(), "the disabled in-flight spare cannot spawn");
+    discard_from(pool, &session);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     // Thread-local overrides cannot affect concurrent tests; this runtime keeps the
     // guard on the same thread across awaits, and Drop restores it even on a panic.
