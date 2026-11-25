@@ -520,7 +520,12 @@ mod tests {
         std::fs::remove_file(&config).unwrap();
         std::fs::remove_file(&worktree_config).unwrap();
         std::fs::create_dir(&worktree_config).unwrap();
-        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), Err("invalid worktree metadata file"));
+        // Windows refuses opening a directory handle without backup semantics before `file.metadata()`.
+        #[cfg(windows)]
+        let expected = Err("unreadable worktree metadata");
+        #[cfg(not(windows))]
+        let expected = Err("invalid worktree metadata file");
+        assert_eq!(check_status_config_safe(&scratch.0, &scratch.0, Some(&scratch.0)), expected);
     }
 
     #[test]
