@@ -155,7 +155,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const flowSuccess = $<HTMLInputElement>('.workflow-success'), flowMax = $<HTMLInputElement>('.workflow-max');
 
   let schedules: TaskSchedule[] = [], runs: ScheduleRun[] = [], settings: SchedulerSettings | null = null;
-  let sessions: Session[] = [], known: Session[] = [], projects: Project[] = [];
+  let sessions: Session[] = [], known: Session[] = [], projects: Project[] = [], chipRuns = new Map<string, ScheduleRun[]>();
   let filter: Filter = 'all', kind: ScheduleKind = 'weekdays', start: Start = 'now', editing: TaskSchedule | null = null;
   let repeat: 'next' | 'every' = 'next', confirming: string | null = null;
   let loaded = false, disposed = false, busy = false, intent = options.intent, menu: (() => void) | undefined;
@@ -195,7 +195,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const spansProjects = () => new Set(schedules.map(s => s.projectId)).size > 1;
   /** The latest runs of a new-task schedule, each a link to the task it started. */
   function recentRunsHtml(schedule: TaskSchedule): string {
-    const recent = runs.filter(run => run.scheduleId === schedule.id).sort((a, b) => b.at - a.at).slice(0, RUN_CHIPS);
+    const recent = [...chipRuns.get(schedule.id) ?? []].sort((a, b) => b.at - a.at).slice(0, RUN_CHIPS);
     if (!recent.length) return '<small class="schedule-no-runs">No runs yet.</small>';
     return `<span class="schedule-runs">${recent.map(run => {
       const name = known.find(session => session.id === run.sessionId)?.title;
@@ -277,7 +277,9 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     try {
       const [nextSchedules, nextRuns, nextSettings, nextSessions, nextProjects] = await Promise.all([
         schedulesApi.list(), schedulesApi.runs({ limit: 50 }), schedulesApi.settings(), call<Session[]>('list_sessions'), call<Project[]>('list_projects')]);
+      const chips = await Promise.all(nextSchedules.filter(s => s.newTask).map(async s => [s.id, await schedulesApi.runs({ scheduleId: s.id, limit: RUN_CHIPS })] as const));
       if (disposed) return;
+      chipRuns = new Map(chips);
       schedules = nextSchedules; runs = nextRuns; settings = nextSettings; projects = nextProjects;
       known = nextSessions; sessions = nextSessions.filter(session => !session.archived && !session.draft);
       loaded = true;

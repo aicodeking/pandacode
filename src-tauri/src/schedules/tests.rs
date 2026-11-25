@@ -556,3 +556,12 @@ fn a_new_task_run_copies_the_template_and_is_never_held_by_its_console() {
     store.db.execute("DELETE FROM sessions WHERE id=?1", [&task_id]).unwrap();
     assert_eq!(get(&store, &schedule.id).unwrap().last_task_id, None);
 }
+
+#[test]
+fn a_new_task_run_is_not_told_it_set_the_schedule_itself() {
+    let store = store();
+    let schedule = create(&store, &ScheduleInput { title: "Daily".into(), run_at: Some(NOW + MINUTE), new_task: true, ..input("once") }, "agent", Some("a"), NOW).unwrap();
+    let text = message(&schedule, false, NOW);
+    assert!(!text.contains("You set this earlier"), "{text}");
+    assert!(text.contains("\nFrom: "), "{text}");
+}

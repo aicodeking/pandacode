@@ -91,7 +91,7 @@ Limits and approvals:
 - Each creating thread may have up to `agentLimitPerTask` active agent schedules (default 10).
 - Agent schedules without `maxRuns`: `after` runs once, other recurring kinds stop after 20 runs. Create results include `stopsAfter` ("runs once; pass maxRuns for repeats", "stops after 20 runs; pass maxRuns up to 1000 to keep going").
 - Wake-up, list and cancel need no approval. They are `schedules::tools::self_scoped`, which the Claude allow-list in `providers.rs` checks.
-- `pandacode_schedule_task` is an approval tool while `askBeforeMessagingOtherTasks` is on too, since it starts turns outside the calling thread. It is not `self_scoped` and, unlike `pandacode_schedule_message`, is not in `ALWAYS_ASK`.
+- `pandacode_schedule_task` is an approval tool while `askBeforeMessagingOtherTasks` is on too, since it starts turns outside the calling thread. It is not `self_scoped` and, like `pandacode_schedule_message`, is in `ALWAYS_ASK`.
 - `pandacode_schedule_message` is an approval tool while `askBeforeMessagingOtherTasks` is on. It is in `cloud::deploy::ALWAYS_ASK`, so it asks even in Full mode, but only while the setting makes it an approval tool.
 - `TURN_ENDS` in `lib.rs` tells agents that `pandacode_schedule_wakeup`, when listed, survives the turn.
 

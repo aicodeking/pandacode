@@ -73,7 +73,7 @@ function glyphs(): string {
 }
 
 function upcoming(sessionId: string): TaskSchedule | undefined {
-  return schedules.filter(s => s.sessionId === sessionId && s.enabled && s.nextRunAt !== null)
+  return schedules.filter(s => s.sessionId === sessionId && !s.newTask && s.enabled && s.nextRunAt !== null)
     .sort((a, b) => a.nextRunAt! - b.nextRunAt!)[0];
 }
 

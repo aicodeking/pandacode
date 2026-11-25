@@ -583,7 +583,7 @@ pub(super) fn new_task_title(title: &str, stamp: &str) -> String {
 pub(crate) fn message(schedule: &TaskSchedule, manual: bool, at: i64) -> String {
     let of = schedule.max_runs.map(|max| format!(" of {max}")).unwrap_or_default();
     let creator = schedule.created_by_session.as_deref();
-    let own = creator == Some(schedule.session_id.as_str());
+    let own = !schedule.new_task && creator == Some(schedule.session_id.as_str());
     let agent = schedule.created_by == "agent";
     let by = match (agent, own, creator) {
         (false, _, _) => "the user".to_owned(),
