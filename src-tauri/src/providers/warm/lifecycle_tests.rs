@@ -481,7 +481,7 @@ async fn ordinary_pool_stats_count_every_lifecycle_step_apart_from_leads() {
         let counts = spares(pool);
         assert_eq!(
             counts.ordinary,
-            PoolStats { started: 6, adopted: 1, missed: 1, expired: 1, evicted: 1, replaced: 1, discarded: 1, cold_without_spare: 1, churn_skipped: 0 }
+            PoolStats { started: 6, adopted: 1, missed: 1, expired: 1, evicted: 1, replaced: 1, discarded: 1, cold_without_spare: 1, churn_skipped: 0, memory_skipped: 0 }
         );
         assert_eq!(counts.lead, PoolStats::default(), "ordinary spares never move the lead counters");
         assert_eq!(counts.ordinary.cold_without_spare, 1);
@@ -680,13 +680,14 @@ async fn warm_spare_stats_reports_both_pools_in_camel_case() {
     let pool = own_pool();
     {
         let mut locked = spares(pool);
-        locked.ordinary = PoolStats { started: 3, adopted: 2, cold_without_spare: 4, churn_skipped: 1, ..PoolStats::default() };
+        locked.ordinary = PoolStats { started: 3, adopted: 2, cold_without_spare: 4, churn_skipped: 1, memory_skipped: 2, ..PoolStats::default() };
         locked.lead = PoolStats { started: 1, missed: 1, cold_without_spare: 2, ..PoolStats::default() };
     }
     let stats = serde_json::to_value(WarmStatsSnapshot::of(&spares(pool))).unwrap();
-    assert_eq!(stats["ordinary"], json!({"started": 3, "adopted": 2, "missed": 0, "expired": 0, "evicted": 0, "replaced": 0, "discarded": 0, "coldWithoutSpare": 4, "churnSkipped": 1, "idleNow": 0, "pausedSecs": 0}));
+    assert_eq!(stats["ordinary"], json!({"started": 3, "adopted": 2, "missed": 0, "expired": 0, "evicted": 0, "replaced": 0, "discarded": 0, "coldWithoutSpare": 4, "churnSkipped": 1, "memorySkipped": 2, "idleNow": 0, "pausedSecs": 0}));
     assert_eq!(stats["lead"]["coldWithoutSpare"], 2);
     assert_eq!(stats["lead"]["missed"], 1);
+    assert_eq!(stats["lead"]["memorySkipped"], 0);
     let live = serde_json::to_value(warm_spare_stats().await).unwrap();
     assert!(live["ordinary"].is_object() && live["lead"].is_object(), "{live}");
 }

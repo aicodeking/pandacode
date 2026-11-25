@@ -56,6 +56,45 @@ fn lapsed_expiry_backoff(level: u32) -> PoolChurn {
 }
 
 #[test]
+fn a_miss_or_eviction_pause_cannot_stop_a_lapsed_expiry_backoff_from_doubling() {
+    let (now, wall) = clocks();
+    for miss_pause in [true, false] {
+        let mut churn = PoolChurn::default();
+        for _ in 0..EXPIRY_BACKOFF_STREAK {
+            churn.expired(now, wall);
+        }
+        assert!(churn.paused_by_expiry);
+        let (lapsed, lapsed_wall) = (now + EXPIRY_COOLDOWN, wall + EXPIRY_COOLDOWN);
+        assert!(!churn.cooling(lapsed, lapsed_wall));
+        assert_eq!(churn, lapsed_expiry_backoff(1));
+
+        if miss_pause {
+            for _ in 0..MISS_BACKOFF_STREAK {
+                churn.missed(lapsed, lapsed_wall);
+            }
+        } else {
+            churn.evicted(1, lapsed, lapsed_wall);
+        }
+        assert!(!churn.paused_by_expiry);
+        assert_eq!(churn.paused_secs(lapsed, lapsed_wall), CHURN_COOLDOWN.as_secs());
+
+        let minute = Duration::from_secs(60);
+        let (probe, probe_wall) = (lapsed + minute, lapsed_wall + minute);
+        churn.expired(probe, probe_wall);
+        assert!(churn.paused_by_expiry);
+        assert_eq!(churn.expiry_backoff_level, 2);
+        let doubled = EXPIRY_COOLDOWN * 2;
+        assert_eq!(churn.paused_secs(probe, probe_wall), doubled.as_secs());
+
+        // Another expiry during that expiry pause extends it at the same level.
+        let (later, later_wall) = (probe + minute, probe_wall + minute);
+        churn.expired(later, later_wall);
+        assert_eq!(churn.expiry_backoff_level, 2);
+        assert_eq!(churn.paused_secs(probe, probe_wall), (doubled + minute).as_secs());
+    }
+}
+
+#[test]
 fn expiry_backoffs_double_after_each_lapsed_probe_up_to_the_cap_until_an_adoption() {
     assert_eq!(MAX_EXPIRY_COOLDOWN, EXPIRY_COOLDOWN * 8, "30 → 60 → 120 → 240 min");
     let (mut now, mut wall) = clocks();

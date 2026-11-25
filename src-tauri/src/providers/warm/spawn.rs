@@ -3,7 +3,7 @@
 use super::*;
 use super::key::{key_fields_with_disabled, prepared, without_git_status};
 use super::memory::allows_spare_off_runtime;
-use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_unused_expiry};
+use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_memory_skip, record_unused_expiry};
 use std::time::{Instant, SystemTime};
 
 pub(super) fn claude() -> Lifecycle {
@@ -313,8 +313,17 @@ pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, a
     if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() || !enabled_off_runtime().await {
         return Ok(None);
     }
-    // Each spare is a whole idle CLI: none on a small machine or one short of memory (logged).
+    // Probe after the previous turn has released its memory.
+    if await_exit_patiently(&config.session_id).await.is_err()
+        || epoch(&config.session_id) != launch
+        || quitting()
+        || !enabled_off_runtime().await
+    {
+        eprintln!("{NOT_PREPARED}");
+        return Ok(None);
+    }
     if !allows_spare_off_runtime().await {
+        record_memory_skip(&SPARES, lead);
         return Ok(None);
     }
     spawn_claude_keyed(config, tools, approval_tools, launch, lead, |config, catalog, disabled, stdio| {

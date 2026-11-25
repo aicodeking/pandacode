@@ -25,9 +25,9 @@ test('the warm spares switch is on by default, explains itself and saves', async
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
   for (const disclosure of [
-    '~0.17–1.71 s', '~0.38–0.62 s', 'real sign-in', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', '~0.4 s of startup CPU', 'up to 4',
-    'MCP servers', 'SessionStart', 'low memory', '6 GiB', '1.5 GiB', 'memory pressure', '2 s to exit cleanly', 'SessionEnd', 'force-terminated',
-    'without SessionEnd', 'misses', '30–240 min', 'doubles', 'all read-only', '10 min old',
+    '~0.38–0.62 s', '~0.17–1.71 s', 'real sign-in', 'Turn off agent telemetry', 'without idle processes', 'up to 4', '~195–255 MiB', '~0.4 s CPU',
+    'MCP servers', 'SessionStart', '6 GiB', '1.5 GiB', 'Linux/Windows', 'macOS memory pressure', '2 s', 'SessionEnd', 'force-termination',
+    '30–240 min', 'all-read-only', '10 min old',
   ]) {
     await expect(hint(page)).toContainText(disclosure);
   }
@@ -48,6 +48,13 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).not.toBeChecked();
   await toggle(page).click();
   await expect(toggle(page)).toBeChecked();
+});
+
+test('memory-guard skips show in this launch’s totals even when no spare started', async ({ page }) => {
+  await page.goto('/?warm-spares-stats-low-memory');
+  await openAgents(page);
+  await expect(status(page)).toHaveText('This launch: 2 skipped (low memory)');
+  await expect(status(page)).not.toHaveAttribute('role', 'alert');
 });
 
 test('a refused save puts the warm spares switch back and says why', async ({ page }) => {

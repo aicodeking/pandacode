@@ -2138,18 +2138,21 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'warm_spare_stats': {
       // `?warm-spares-stats`: this launch already started, adopted, missed, expired and replaced spares in both pools; one ordinary spare is idle now.
       // `?warm-spares-stats-expired`: every ordinary spare expired unused and churn backoff paused warming (29 min left).
+      // `?warm-spares-stats-low-memory`: no spare started; the low-memory guard skipped 2 ordinary starts.
       // `?warm-spares-stats-delayed`: the read answers after 15 ms, as a slow native read would.
       // Each answered read bumps `data-preview-warm-stats-reads` on <html>, so a spec can wait for it.
       // The query is read afresh on every call, so a spec can swap it with `history.replaceState` and,
       // with `?warm-spares-refresh-ms=N` (read by Settings), watch the open row re-read it live.
-      const pool = (counts: Partial<Record<string, number>> = {}) => ({ started: 0, adopted: 0, missed: 0, expired: 0, evicted: 0, replaced: 0, discarded: 0, coldWithoutSpare: 0, churnSkipped: 0, idleNow: 0, pausedSecs: 0, ...counts });
+      const pool = (counts: Partial<Record<string, number>> = {}) => ({ started: 0, adopted: 0, missed: 0, expired: 0, evicted: 0, replaced: 0, discarded: 0, coldWithoutSpare: 0, churnSkipped: 0, idleNow: 0, pausedSecs: 0, memorySkipped: 0, ...counts });
       const query = new URLSearchParams(location.search);
       if (query.has('warm-spares-stats-delayed')) await new Promise(resolve => setTimeout(resolve, 15));
       result = query.has('warm-spares-stats-expired')
         ? { ordinary: pool({ started: 6, adopted: 0, expired: 6, churnSkipped: 2, pausedSecs: 1740 }), lead: pool() }
-        : query.has('warm-spares-stats')
-          ? { ordinary: pool({ started: 7, adopted: 3, idleNow: 1, missed: 1, expired: 2, replaced: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
-          : { ordinary: pool(), lead: pool() };
+        : query.has('warm-spares-stats-low-memory')
+          ? { ordinary: pool({ memorySkipped: 2 }), lead: pool() }
+          : query.has('warm-spares-stats')
+            ? { ordinary: pool({ started: 7, adopted: 3, idleNow: 1, missed: 1, expired: 2, replaced: 1, coldWithoutSpare: 1 }), lead: pool({ started: 1, adopted: 1 }) }
+            : { ordinary: pool(), lead: pool() };
       const root = document.documentElement;
       root.dataset.previewWarmStatsReads = String((Number(root.dataset.previewWarmStatsReads) || 0) + 1);
       break;

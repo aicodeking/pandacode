@@ -1,5 +1,6 @@
 use super::*;
 use super::key::*;
+use super::memory::MemoryOverride;
 use super::spawn::*;
 use super::test_support::*;
 
@@ -61,6 +62,38 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     }
     assert!(enabled_now(), "the guard restores the previous setting");
     discard(&session);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn low_memory_skips_both_kinds_of_spare_after_the_previous_exit() {
+    let _serial = test_support::spare_pool_test_lock().lock().await;
+    let _enabled = EnabledOverride::new(true);
+    let _low_memory = MemoryOverride::new(false);
+    let (ordinary, lead, ordinary_churn, lead_churn) = {
+        let locked = spares(&SPARES);
+        (locked.ordinary, locked.lead, locked.ordinary_churn, locked.lead_churn)
+    };
+
+    for is_lead in [false, true] {
+        let session = format!("warm-memory-wait-{is_lead}-{}", uuid::Uuid::new_v4());
+        let config = RunConfig { session_id: session.clone(), ..crate::providers::tests::config("claude") };
+        launched(&session);
+        let previous = pending_in_cwd(&session, None);
+        let mut spawn = std::pin::pin!(spawn_claude_process(config, Vec::new(), HashSet::new(), epoch(&session), is_lead));
+        tokio::select! {
+            biased;
+            _ = &mut spawn => panic!("the spare checked memory before the previous exit"),
+            () = tokio::time::sleep(Duration::from_millis(50)) => {}
+        }
+        drop(previous);
+        assert!(spawn.await.unwrap().is_none(), "low memory must prevent a spare from spawning");
+        discard(&session);
+    }
+
+    let locked = spares(&SPARES);
+    assert_eq!(locked.ordinary, PoolStats { memory_skipped: ordinary.memory_skipped + 1, ..ordinary });
+    assert_eq!(locked.lead, PoolStats { memory_skipped: lead.memory_skipped + 1, ..lead });
+    assert_eq!((locked.ordinary_churn, locked.lead_churn), (ordinary_churn, lead_churn));
 }
 
 #[tokio::test(flavor = "current_thread")]

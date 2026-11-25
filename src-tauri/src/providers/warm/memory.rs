@@ -28,6 +28,24 @@ thread_local! {
     static MEMORY_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
+/// A test override scoped to the current thread. Use a current-thread runtime across awaits.
+#[cfg(test)]
+pub(super) struct MemoryOverride(Option<bool>);
+
+#[cfg(test)]
+impl MemoryOverride {
+    pub(super) fn new(allowed: bool) -> Self {
+        Self(MEMORY_OVERRIDE.with(|value| value.replace(Some(allowed))))
+    }
+}
+
+#[cfg(test)]
+impl Drop for MemoryOverride {
+    fn drop(&mut self) {
+        MEMORY_OVERRIDE.with(|value| value.set(self.0));
+    }
+}
+
 /// Unit tests never read the machine's memory (runner memory varies): a healthy host unless the
 /// thread-local override declines (reported as memory pressure).
 #[cfg(test)]
@@ -192,13 +210,13 @@ mod tests {
         assert_eq!(probe, Probe::default());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn unit_tests_allow_spares_unless_overridden() {
         assert!(allows_spare_off_runtime().await, "runner memory never flakes a test");
         for allowed in [false, true] {
-            MEMORY_OVERRIDE.with(|value| value.set(Some(allowed)));
+            let _override = MemoryOverride::new(allowed);
             assert_eq!(allows_spare_off_runtime().await, allowed);
         }
-        MEMORY_OVERRIDE.with(|value| value.set(None));
+        assert!(allows_spare_off_runtime().await, "the override restores the original decision");
     }
 }

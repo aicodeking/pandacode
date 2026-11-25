@@ -1,8 +1,9 @@
 // Guards the native command surface: every `#[tauri::command]` in this branch's
 // modules stays registered in `main_invoke_handler` (a merge can silently drop a
-// line from `generate_handler!`), and every registered command is reviewed for
-// web tabs in `web_server.rs` (mirrors
-// `web_server::tests::every_main_window_command_is_reviewed_for_web`).
+// line from `generate_handler!`). The web-tab review of every registered command
+// (`WEB_ALLOWED_COMMANDS` / `DESKTOP_ONLY`) is checked only by the Rust test
+// `web_server::tests::every_main_window_command_is_reviewed_for_web`, which CI
+// runs; this file only checks that guard still exists, so its parser is not duplicated here.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -55,32 +56,6 @@ export function parseMainInvokeHandler(source) {
     .map((path) => path.split("::").pop());
 }
 
-function parseStringArray(source, header) {
-  const start = source.indexOf(header);
-  assert.ok(start >= 0, `${header} not found`);
-  const open = source.indexOf("[", source.indexOf("=", start));
-  const close = source.indexOf("];", open);
-  assert.ok(open > start && close > open, `unterminated ${header}`);
-  const body = source
-    .slice(open + 1, close)
-    .split("\n")
-    .map(stripLineComment)
-    .join("\n");
-  return [...body.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-}
-
-export function parseWebServer(source) {
-  const blockedFn = source.indexOf("fn web_blocked_command(");
-  assert.ok(blockedFn >= 0, "web_blocked_command not found");
-  const desktopOnly = parseStringArray(source.slice(blockedFn), "const DESKTOP_ONLY");
-  const allowed = parseStringArray(source, "const WEB_ALLOWED_COMMANDS");
-  return { desktopOnly, allowed };
-}
-
-const BLOCKED_PREFIXES = ["overlay_", "plugin:"];
-const isBlocked = (desktopOnly, name) =>
-  desktopOnly.includes(name) || BLOCKED_PREFIXES.some((prefix) => name.startsWith(prefix));
-
 export function missingRegistrations(commands, registered) {
   const set = new Set(registered);
   return commands.filter((name) => !set.has(name));
@@ -89,14 +64,6 @@ export function missingRegistrations(commands, registered) {
 export function duplicates(names) {
   const seen = new Set();
   return [...new Set(names.filter((name) => (seen.has(name) ? true : (seen.add(name), false))))];
-}
-
-export function webReview(registered, { desktopOnly, allowed }) {
-  return {
-    unreviewed: registered.filter((name) => !isBlocked(desktopOnly, name) && !allowed.includes(name)),
-    contradictory: allowed.filter((name) => isBlocked(desktopOnly, name)),
-    stale: allowed.filter((name) => !registered.includes(name)),
-  };
 }
 
 const lib = read("src-tauri/src/lib.rs");
@@ -116,16 +83,17 @@ test("main_invoke_handler parses sanely and has no duplicates", () => {
   assert.deepEqual(duplicates(registered), []);
 });
 
-test("every main_invoke_handler command is reviewed for web tabs", () => {
-  const lists = parseWebServer(web);
-  assert.ok(lists.desktopOnly.length >= 20, `parsed only ${lists.desktopOnly.length} DESKTOP_ONLY`);
-  assert.ok(lists.allowed.length > 200, `parsed only ${lists.allowed.length} WEB_ALLOWED_COMMANDS`);
-  const { unreviewed, contradictory, stale } = webReview(registered, lists);
-  assert.deepEqual(unreviewed, [], "allow in WEB_ALLOWED_COMMANDS or block in web_blocked_command");
-  assert.deepEqual(contradictory, [], "allowed and blocked");
-  assert.deepEqual(stale, [], "no longer registered");
-  assert.ok(isBlocked(lists.desktopOnly, "voice_start") && isBlocked(lists.desktopOnly, "overlay_toggle"));
-  assert.ok(lists.allowed.includes("tray_seen"));
+test("the Rust web-tab review guard still exists", () => {
+  const guard = web.match(/#\[test\]\s*fn every_main_window_command_is_reviewed_for_web\(\)\s*\{/);
+  assert.ok(guard, "web_server.rs must keep #[test] fn every_main_window_command_is_reviewed_for_web()");
+  const rest = web.slice(guard.index + guard[0].length);
+  const next = rest.search(/\n\s*#\[(?:tokio::)?test\]/);
+  const body = next >= 0 ? rest.slice(0, next) : rest;
+  for (const name of ["main_window_commands()", "WEB_ALLOWED_COMMANDS", "web_blocked_command("]) {
+    assert.ok(body.includes(name), `the web review guard no longer references ${name}`);
+  }
+  assert.match(web, /fn main_window_commands\(\)[\s\S]*?main_invoke_handler/, "main_window_commands must read main_invoke_handler");
+  assert.match(web, /const DESKTOP_ONLY\b/, "web_blocked_command must keep its DESKTOP_ONLY list");
 });
 
 test("guards catch synthetic drift", () => {
@@ -151,6 +119,5 @@ test("guards catch synthetic drift", () => {
   const reg = parseMainInvokeHandler(handler);
   assert.deepEqual(missingRegistrations(commands, reg), ["beta"]);
   assert.deepEqual(duplicates(reg), ["alpha"]);
-  const review = webReview(reg, { desktopOnly: ["gamma"], allowed: ["gamma", "gone"] });
-  assert.deepEqual(review, { unreviewed: ["alpha", "alpha"], contradictory: ["gamma"], stale: ["gone"] });
+  assert.deepEqual(reg, ["alpha", "alpha", "gamma", "overlay_show"]);
 });

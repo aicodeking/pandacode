@@ -2,13 +2,19 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-// The warm-spare pool sizes live in `providers/warm.rs`; Settings, the README, AGENTS.md and
-// docs/worker-tokens.md repeat the totals by hand, so a changed limit must change them too.
+// The warm-spare pool sizes live in `providers/warm.rs`; Settings, the README, the privacy page,
+// AGENTS.md and docs/worker-tokens.md repeat the totals by hand, so a changed limit must change them too.
 const WARM = 'src-tauri/src/providers/warm.rs';
+const MEMORY = 'src-tauri/src/providers/warm/memory.rs';
+const STATS = 'src-tauri/src/providers/warm/stats.rs';
+const EXIT = 'src-tauri/src/providers/exit.rs';
 const SETTINGS = 'src/settings.ts';
 const README = 'README.md';
+const PRIVACY = 'website/src/pages/privacy.astro';
 const AGENTS = 'AGENTS.md';
 const WORKER_TOKENS = 'docs/worker-tokens.md';
+// Every hand-written copy of the warm-spare limits, in the order a reader meets them.
+const COPIES = [SETTINGS, README, PRIVACY, WORKER_TOKENS, AGENTS];
 
 function rustLimit(source, name) {
   const match = source.match(new RegExp(`^const ${name}: usize = (\\d+);`, 'm'));
@@ -35,27 +41,22 @@ test('warm.rs declares both pool limits', () => {
   assert.equal(total, limit + lead);
 });
 
-test('the Settings switch states the total pool size', () => {
-  const { total } = limits();
-  const source = readFileSync(SETTINGS, 'utf8');
-  const entry = source.match(/\{\s*id:\s*'warm-spares'[^\n]*\}/);
+// The Settings hint is one string on the `warm-spares` switch; checked on its own so a match
+// elsewhere in settings.ts cannot stand in for it.
+function settingsHint() {
+  const entry = readFileSync(SETTINGS, 'utf8').match(/\{\s*id:\s*'warm-spares'[^\n]*\}/);
   assert.ok(entry, `warm-spares switch not found in ${SETTINGS}`);
-  assert.match(entry[0], new RegExp(`\\bup to ${total}\\)`));
-});
+  return entry[0].replace(/\s+/g, ' ');
+}
 
-test('the README states the total pool size', () => {
-  const { total } = limits();
-  const text = flat(README);
-  const start = text.indexOf('**Warm Claude spares');
-  assert.ok(start >= 0, `Warm Claude spares entry not found in ${README}`);
-  assert.match(text.slice(start, start + 400), new RegExp(`\\bup to ${total} in total\\b`));
-});
+/** The warm-spare text of a copy: the Settings hint, or the whole file with whitespace collapsed. */
+const textOf = (path) => (path === SETTINGS ? settingsHint() : flat(path));
 
-test('AGENTS.md states the total pool size', () => {
+test('every copy states the total pool size', () => {
   const { total } = limits();
-  const line = readFileSync(AGENTS, 'utf8').split('\n').find((l) => l.includes('warm-spares-off'));
-  assert.ok(line, `warm spares summary not found in ${AGENTS}`);
-  assert.match(line, new RegExp(`\\bup to ${total}, run\\b`));
+  for (const path of [SETTINGS, README, PRIVACY, AGENTS]) {
+    assert.match(textOf(path), new RegExp(`\\bup to ${total}\\b`), `${path} must state "up to ${total}"`);
+  }
 });
 
 test('docs/worker-tokens.md states both limits and the total', () => {
@@ -122,5 +123,84 @@ test('every copy states the live signed-in startup saving from docs/worker-token
   const range = dash(found[1]);
   for (const path of [SETTINGS, README, AGENTS, WORKER_TOKENS, ARCHITECT_WORKERS]) {
     assert.ok(rangesIn(path, /(\d+\.\d+[–-]\d+\.\d+)\s+s\b/).includes(range), `${path} must state ${range} s`);
+  }
+});
+
+// Rust constants written as integer products (`6 * 1024 * 1024 * 1024`, `Duration::from_secs(30 * 60)`).
+function product(expr, what) {
+  const factors = expr.replace(/_/g, '').split('*').map((f) => Number(f.trim()));
+  assert.ok(factors.length > 0 && factors.every((f) => Number.isInteger(f) && f > 0), `${what}: not an integer product: ${expr}`);
+  return factors.reduce((a, b) => a * b, 1);
+}
+
+function rustBytes(path, name) {
+  const match = readFileSync(path, 'utf8').match(new RegExp(`const ${name}: u64 = ([\\d_ *]+);`));
+  assert.ok(match, `const ${name} not found in ${path}`);
+  return product(match[1], name);
+}
+
+function rustSecs(path, name) {
+  const match = readFileSync(path, 'utf8').match(new RegExp(`const ${name}: Duration = Duration::from_secs\\(([\\d_ *]+)\\);`));
+  assert.ok(match, `const ${name}: Duration::from_secs(..) not found in ${path}`);
+  return product(match[1], name);
+}
+
+const GIB = 1024 ** 3;
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function memoryThresholds() {
+  const total = rustBytes(MEMORY, 'MIN_TOTAL_RAM_BYTES') / GIB;
+  const available = rustBytes(MEMORY, 'MIN_AVAILABLE_RAM_BYTES') / GIB;
+  // Copies write GiB with at most one decimal; a threshold that is not one must change the copies' form too.
+  for (const value of [total, available]) assert.equal(Number(value.toFixed(1)), value, `${value} GiB is not a one-decimal GiB figure`);
+  return { total: String(total), available: String(available) };
+}
+
+test('every copy states the low-memory thresholds from warm/memory.rs in GiB', () => {
+  const { total, available } = memoryThresholds();
+  assert.equal(Number(available) < Number(total), true, 'the available-RAM floor sits below the total-RAM floor');
+  const totalAt = new RegExp(`\\b${escape(total)} GiB\\b`, 'g');
+  for (const path of COPIES) {
+    const text = textOf(path);
+    // GiB, not GB: the thresholds are binary (`* 1024`), and a decimal-unit copy reads ~7% low.
+    for (const value of [total, available]) {
+      assert.doesNotMatch(text, new RegExp(`\\b${escape(value)} ?GB\\b`), `${path} must write ${value} GiB, not GB`);
+    }
+    // One statement names both floors, says the free-RAM floor is read on Linux and Windows, and
+    // that macOS uses memory pressure instead.
+    const windows = [...text.matchAll(totalAt)].map((m) => text.slice(m.index, m.index + 500));
+    assert.ok(windows.length > 0, `${path} must state ${total} GiB`);
+    const ok = windows.some((w) =>
+      w.includes(`${available} GiB`) && /\bLinux\b/.test(w) && /\bWindows\b/.test(w) && /\bmacOS\b[^.;]{0,40}\bpressure\b/.test(w));
+    assert.ok(ok, `${path} must state ${total} GiB total, ${available} GiB free on Linux/Windows and macOS memory pressure together`);
+  }
+});
+
+test('every copy states the expiry backoff range from warm/stats.rs', () => {
+  const minMinutes = rustSecs(STATS, 'EXPIRY_COOLDOWN') / 60;
+  const maxMinutes = rustSecs(STATS, 'MAX_EXPIRY_COOLDOWN') / 60;
+  assert.ok(Number.isInteger(minMinutes) && Number.isInteger(maxMinutes) && minMinutes < maxMinutes, 'cooldowns are whole minutes, min below max');
+  // The pause doubles from the first cooldown to the cap, so the cap is a power-of-two multiple.
+  assert.ok(Number.isInteger(Math.log2(maxMinutes / minMinutes)), `${maxMinutes} min is not ${minMinutes} min doubled`);
+  const maxHours = maxMinutes / 60;
+  const min = new RegExp(`\\b${minMinutes}(?:\\s*(?:min|minutes)\\b|\\s*[–-]\\s*${maxMinutes}\\b|\\s*→)`);
+  const max = Number.isInteger(maxHours)
+    ? new RegExp(`\\b(?:${maxMinutes}\\s*(?:min|minutes)|${maxHours}\\s*(?:h|hours))\\b`)
+    : new RegExp(`\\b${maxMinutes}\\s*(?:min|minutes)\\b`);
+  for (const path of COPIES) {
+    const text = textOf(path);
+    assert.match(text, min, `${path} must state the ${minMinutes}-minute first pause`);
+    assert.match(text, max, `${path} must state the ${maxMinutes}-minute cap`);
+  }
+});
+
+test('every copy states the graceful retire wait from exit.rs', () => {
+  const secs = rustSecs(EXIT, 'SPARE_RETIRE_WAIT');
+  const wait = new RegExp(`\\b${secs} (?:s|seconds)\\b`, 'g');
+  for (const path of COPIES) {
+    const text = textOf(path);
+    // Anchored to the retirement it describes, so an unrelated "2 s" elsewhere cannot satisfy it.
+    const near = [...text.matchAll(wait)].some((m) => /SessionEnd|retire/i.test(text.slice(Math.max(0, m.index - 200), m.index + 200)));
+    assert.ok(near, `${path} must state the ${secs} s graceful retire wait beside SessionEnd or retirement`);
   }
 });

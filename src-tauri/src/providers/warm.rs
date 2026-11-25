@@ -406,9 +406,8 @@ fn retire(session_id: &str, spare: Spare, pending: Pending) {
     drop(pending);
 }
 
-/// `retire`, killing the process at once: for a launch about to start cold beside it (a miss, a
-/// launch ended before adoption, a refused registration, a folder being released), which must
-/// never wait on a graceful exit.
+/// Kill the process at once for a launch about to start cold, a refused registration,
+/// or a session or folder being quiesced.
 fn retire_now(session_id: &str, spare: Spare, pending: Pending) {
     let Spare { child, group, server, cwd, .. } = spare;
     retire_parts_in_cwd(session_id, child, group, server, cwd);
@@ -602,7 +601,7 @@ fn retire_all_from(pool: &Pool, disable: bool) {
     }
 }
 
-/// `discard`, then wait (bounded by `await_exit`'s hard cap) until every process of the session
+/// Kill the pooled spare, then wait (bounded by `await_exit`'s hard cap) until every process of the session
 /// has exited, so nothing holds its conversation or checkout open afterwards: the harness
 /// console, a worktree removal and a task deletion all need that. Never call with a lock held.
 pub async fn quiesce(session_id: &str) -> Result<(), String> {
@@ -619,12 +618,14 @@ pub async fn quiesce_spares_in(folder: &Path) -> Result<(), String> {
 }
 
 async fn quiesce_in(pool: &Pool, session_id: &str) -> Result<(), String> {
-    discard_from(pool, session_id);
+    if let Some((spare, pending)) = take_for_discard(pool, session_id) {
+        retire_now(session_id, spare, pending);
+    }
     await_exit(session_id).await
 }
 
 fn discard_from(pool: &Pool, session_id: &str) {
-    // Killed outside the lock; `Pending` was registered under the pool lock so `await_exit`
+    // Retired outside the lock; `Pending` was registered under the pool lock so `await_exit`
     // waits even before `retire` registers the real exit.
     if let Some((spare, pending)) = take_for_discard(pool, session_id) {
         retire(session_id, spare, pending);
@@ -767,6 +768,6 @@ mod churn_tests;
 /// Regression coverage for the warm-spare switch and retirement races.
 #[cfg(test)]
 mod switch_tests;
-/// Unused spares' graceful background exit (`exit::retire_gracefully_in_cwd`).
+/// Graceful background retirement and urgent session quiescence.
 #[cfg(test)]
 mod retire_tests;

@@ -31,7 +31,8 @@ impl Gone {
 
 /// One pool's spares since launch: registered, adopted or found unusable at launch, and every
 /// other way one left the pool unadopted. `cold_without_spare` counts eligible launches with
-/// spares on that found none pooled; `churn_skipped`, starts skipped by the churn backoff.
+/// spares on that found none pooled. `churn_skipped` and `memory_skipped` count starts skipped
+/// by the churn backoff and memory guard, respectively.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PoolStats {
     pub(super) started: u64,
@@ -43,6 +44,7 @@ pub(super) struct PoolStats {
     pub(super) discarded: u64,
     pub(super) cold_without_spare: u64,
     pub(super) churn_skipped: u64,
+    pub(super) memory_skipped: u64,
 }
 
 impl PoolStats {
@@ -90,6 +92,8 @@ pub(super) struct PoolChurn {
     /// Expiry backoffs set since the last adoption: each doubles `EXPIRY_COOLDOWN`, up to
     /// `MAX_EXPIRY_COOLDOWN`. Kept when a backoff lapses; only an adoption resets it.
     pub(super) expiry_backoff_level: u32,
+    /// Whether an expiry set the active pause.
+    pub(super) paused_by_expiry: bool,
     pub(super) churn_cooldown_until: Option<Instant>,
     pub(super) churn_cooldown_until_wall: Option<SystemTime>,
 }
@@ -99,6 +103,9 @@ impl PoolChurn {
     pub(super) fn evicted(&mut self, limit: usize, now: Instant, now_wall: SystemTime) {
         self.consecutive_evictions = self.consecutive_evictions.saturating_add(1);
         if self.consecutive_evictions >= u32::try_from(limit).unwrap_or(u32::MAX) {
+            if self.remaining(now, now_wall).is_none() {
+                self.paused_by_expiry = false;
+            }
             self.back_off(now, now_wall, CHURN_COOLDOWN);
         }
     }
@@ -106,15 +113,16 @@ impl PoolChurn {
     /// One more spare (or a lead's whole renewal chain) expired unused with spares on; at
     /// `EXPIRY_BACKOFF_STREAK` in a row the pool backs off, each time for twice the last backoff
     /// since an adoption (30, 60, 120, then 240 min at most). A spare already pooled that expires
-    /// during the pause extends it from now at the same length, never doubling it again.
+    /// during an active expiry pause extends it from now at the same length.
     pub(super) fn expired(&mut self, now: Instant, now_wall: SystemTime) {
         self.consecutive_expiries = self.consecutive_expiries.saturating_add(1);
         if self.consecutive_expiries >= EXPIRY_BACKOFF_STREAK {
-            if self.expiry_backoff_level == 0 || self.remaining(now, now_wall).is_none() {
+            if self.expiry_backoff_level == 0 || !self.paused_by_expiry || self.remaining(now, now_wall).is_none() {
                 self.expiry_backoff_level = self.expiry_backoff_level.saturating_add(1);
             }
             let shift = self.expiry_backoff_level.saturating_sub(1).min(3);
             let cooldown = EXPIRY_COOLDOWN.saturating_mul(1u32 << shift).min(MAX_EXPIRY_COOLDOWN);
+            self.paused_by_expiry = true;
             self.back_off(now, now_wall, cooldown);
         }
     }
@@ -124,6 +132,9 @@ impl PoolChurn {
     pub(super) fn missed(&mut self, now: Instant, now_wall: SystemTime) {
         self.consecutive_misses = self.consecutive_misses.saturating_add(1);
         if self.consecutive_misses >= MISS_BACKOFF_STREAK {
+            if self.remaining(now, now_wall).is_none() {
+                self.paused_by_expiry = false;
+            }
             self.back_off(now, now_wall, CHURN_COOLDOWN);
         }
     }
@@ -157,6 +168,7 @@ impl PoolChurn {
         if self.churn_cooldown_until.is_some() || self.churn_cooldown_until_wall.is_some() {
             self.churn_cooldown_until = None;
             self.churn_cooldown_until_wall = None;
+            self.paused_by_expiry = false;
             self.consecutive_evictions = 0;
             self.consecutive_misses = 0;
             self.consecutive_expiries = if self.expiry_backoff_level > 0 { EXPIRY_BACKOFF_STREAK.saturating_sub(1) } else { 0 };
@@ -231,6 +243,10 @@ pub(super) fn decision_miss_in(pool: &Pool, lead: bool, reason: &str, streak: Mi
 /// renewed: one more toward its pool's expiry backoff (`PoolChurn::expired`).
 pub(super) fn record_unused_expiry(pool: &Pool, lead: bool) {
     spares(pool).churn_mut(lead).expired(Instant::now(), SystemTime::now());
+}
+
+pub(super) fn record_memory_skip(pool: &Pool, lead: bool) {
+    spares(pool).stats_mut(lead).memory_skipped += 1;
 }
 
 /// A launch that committed to its spare (`Adopting::into_parts`): counted as adopted, which also
@@ -324,6 +340,7 @@ pub(crate) struct WarmPoolStatsSnapshot {
     discarded: u64,
     cold_without_spare: u64,
     churn_skipped: u64,
+    memory_skipped: u64,
     /// Spares pooled right now, idle and waiting for their follow-up.
     idle_now: u64,
     /// Whole seconds left of the pool's churn backoff (0 when it starts spares).
@@ -349,6 +366,7 @@ impl WarmPoolStatsSnapshot {
             discarded: s.discarded,
             cold_without_spare: s.cold_without_spare,
             churn_skipped: s.churn_skipped,
+            memory_skipped: s.memory_skipped,
             idle_now: u64::try_from(idle_now).unwrap_or(u64::MAX),
             paused_secs: locked.churn(lead).paused_secs(now, now_wall),
         }
