@@ -62,13 +62,16 @@ impl PoolStats {
 pub(super) const CHURN_COOLDOWN: Duration = Duration::from_secs(5 * 60);
 /// After this many of a pool's spares in a row expire unused with no adoption between (follow-ups
 /// that rarely come within `IDLE`), it starts none for `EXPIRY_COOLDOWN`. A lead's renewal chain
-/// counts once, when it ends unadopted, and an expiry with spares off counts nothing.
+/// counts once, when it ends unadopted, and an expiry with spares off counts nothing. A spare a
+/// launch finds alive but past its window (`MissStreak::Expired`) counts here too.
 pub(super) const EXPIRY_BACKOFF_STREAK: u32 = 3;
 pub(super) const EXPIRY_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 /// After this many launches in a row find their pool's pooled spare dead or stale with no adoption
 /// between (parallel tasks committing between each other's turns, so every follow-up misses on
-/// `gitHead`), it starts none for `CHURN_COOLDOWN`. A spare that merely expired, a launch that
-/// ended before adopting a usable spare and a key check that failed to run join no streak.
+/// `gitHead`), it starts none for `CHURN_COOLDOWN`. Four misses join this streak: the process
+/// exited, the key or launch changed, the config folder was unreadable, or the lead's git status
+/// was unreadable. A spare that merely expired joins the expiry streak instead; a launch that
+/// ended before adopting a usable spare (a Stop) and a key check that failed to run join neither.
 pub(super) const MISS_BACKOFF_STREAK: u32 = 3;
 
 /// A pool's evictions, unused expiries and launch-time misses since its last adoption, and the
@@ -168,14 +171,37 @@ fn line(locked: &Spares, lead: bool, message: &str) -> String {
     format!("{message} {pool} spares since launch: {} started, {} adopted, {} not used, {} expired, {} evicted, {} replaced, {} discarded; {} cold launches without a spare.", s.started, s.adopted, s.missed, s.expired, s.evicted, s.replaced, s.discarded, s.cold_without_spare)
 }
 
+/// Which backoff streak a launch-time miss joins, updated under the same pool lock that counts
+/// it as not used.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MissStreak {
+    /// Dead or stale (`PoolChurn::missed`).
+    Stale,
+    /// Alive but past its idle window: the follow-up came late (`PoolChurn::expired`). The 60 s
+    /// expiry timer or a sleeping laptop left it in the pool, so the launch removed it before
+    /// `take_expired_for_renewal` could count it.
+    Expired,
+    /// Says nothing about staleness: a launch that ended before adopting a usable spare, a key
+    /// check that failed to run.
+    Neither,
+}
+
 /// A launch-time miss against a pooled spare: counted as not used in its pool's totals and
-/// logged with `reason`. `joins_streak`: the spare was dead or stale (`PoolChurn::missed`); an
-/// expired spare, a launch that ended before adopting one or a failed key check join no streak,
-/// and neither does a lead wake whose spare had already left the pool (`record_lead_miss`).
+/// logged with `reason`. `joins_streak`: the spare was dead or stale (`MissStreak::Stale`),
+/// otherwise it joins no streak (`MissStreak::Neither`).
 pub(super) fn decision_miss(pool: &Pool, lead: bool, reason: &str, joins_streak: bool) -> String {
+    decision_miss_in(pool, lead, reason, if joins_streak { MissStreak::Stale } else { MissStreak::Neither })
+}
+
+/// `decision_miss` with the streak spelled out. A lead wake whose spare had already left the pool
+/// joins none either (`record_lead_miss`).
+pub(super) fn decision_miss_in(pool: &Pool, lead: bool, reason: &str, streak: MissStreak) -> String {
     let mut locked = spares(pool);
-    if joins_streak {
-        locked.churn_mut(lead).missed(Instant::now(), SystemTime::now());
+    let (now, now_wall) = (Instant::now(), SystemTime::now());
+    match streak {
+        MissStreak::Stale => locked.churn_mut(lead).missed(now, now_wall),
+        MissStreak::Expired => locked.churn_mut(lead).expired(now, now_wall),
+        MissStreak::Neither => {}
     }
     record_decision(&mut locked, lead, Some(reason))
 }

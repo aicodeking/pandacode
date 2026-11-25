@@ -430,27 +430,20 @@ async fn wait_natural_exit(child: &mut Child, mut hurry: tokio::sync::watch::Rec
 /// clean run finishes its process before returning, as managed workers and cloud runs always do.
 const BACKGROUND_REAP_OFF_FILE: &str = "background-reap-off";
 
-/// On while the marker is absent; an unreadable settings folder fails closed (finish in the run).
-fn background_reap_enabled_in(dir: Result<PathBuf, String>) -> bool {
-    crate::app_marker::exists_in(dir, BACKGROUND_REAP_OFF_FILE).is_ok_and(|present| !present)
-}
-
 #[cfg(test)]
 thread_local! {
     static BACKGROUND_REAP_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// The switch read through the app handle both entry points initialize (`warm::app_data_dir`).
-/// Without one, production fails closed and unit tests default on unless overridden.
+/// On while the marker is absent, read through the handle both entry points save
+/// (`app_marker::init`). An unreadable settings folder, or no handle in production, fails closed
+/// (finish in the run); unit tests default on unless overridden.
 pub(super) fn background_reap_enabled_now() -> bool {
     #[cfg(test)]
     if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    match super::warm::app_data_dir() {
-        Some(dir) => background_reap_enabled_in(dir),
-        None => cfg!(test),
-    }
+    crate::app_marker::default_on_now(BACKGROUND_REAP_OFF_FILE)
 }
 
 /// `background_reap_enabled_now` on a blocking thread, so a launch never waits on the marker
@@ -460,7 +453,7 @@ pub(super) async fn background_reap_enabled_off_runtime() -> bool {
     if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    crate::blocking(|| Ok(background_reap_enabled_now())).await.unwrap_or(false)
+    crate::app_marker::default_on_off_runtime(BACKGROUND_REAP_OFF_FILE).await
 }
 
 #[cfg(test)]
@@ -494,6 +487,7 @@ mod unit_tests {
     #[tokio::test]
     async fn the_background_reap_marker_defaults_on_and_fails_closed() {
         let dir = Scratch::new("reap-marker");
+        let background_reap_enabled_in = |dir: Result<PathBuf, String>| crate::app_marker::default_on_in(dir, BACKGROUND_REAP_OFF_FILE);
         assert!(background_reap_enabled_in(Ok(dir.0.clone())), "absent: on");
         std::fs::write(dir.0.join(BACKGROUND_REAP_OFF_FILE), b"").unwrap();
         assert!(!background_reap_enabled_in(Ok(dir.0.clone())), "present: off");

@@ -113,3 +113,32 @@ test('warm spares that all expired unused, with warming paused, show as waste an
   await expect(status(page)).toHaveText('This launch: 0/6 adopted, paused (29 min left), 6 expired, 2 starts paused');
   await expect(status(page)).not.toHaveAttribute('role', 'alert');
 });
+
+test('the open warm spares row re-reads this launch’s totals live and stops when Settings closes', async ({ page }) => {
+  await page.goto('/?warm-spares-stats-expired&warm-spares-refresh-ms=80');
+  await openAgents(page);
+  await expect(toggle(page)).toBeChecked();
+  await expect(status(page)).toHaveText('This launch: 0/6 adopted, paused (29 min left), 6 expired, 2 starts paused');
+  // New totals reach the row with no click and no reopening.
+  await page.evaluate(() => history.replaceState(history.state, '', '/?warm-spares-stats&warm-spares-refresh-ms=80'));
+  await expect(status(page)).toHaveText(TOTALS);
+  expect(Number(await statsReads(page).getAttribute('data-preview-warm-stats-reads'))).toBeGreaterThan(1);
+  // Closed, Settings leaves no timer behind: the read count holds still across several periods.
+  await page.keyboard.press('Escape');
+  await expect(settings(page)).toBeHidden();
+  const closedAt = await statsReads(page).getAttribute('data-preview-warm-stats-reads');
+  await page.waitForTimeout(400);
+  await expect(statsReads(page)).toHaveAttribute('data-preview-warm-stats-reads', closedAt!);
+});
+
+test('turning warm spares off hides the live pause but keeps this launch’s historical totals', async ({ page }) => {
+  await page.goto('/?warm-spares-stats-expired');
+  await openAgents(page);
+  await expect(toggle(page)).toBeChecked();
+  await expect(status(page)).toHaveText('This launch: 0/6 adopted, paused (29 min left), 6 expired, 2 starts paused');
+  await toggle(page).click();
+  await expect(toggle(page)).not.toBeChecked();
+  // A pause is moot with warming off, so "29 min left" would mislead; the starts it skipped stay counted.
+  await expect(status(page)).toHaveText('This launch: 0/6 adopted, 6 expired, 2 starts paused');
+  await expect(status(page)).not.toHaveAttribute('role', 'alert');
+});

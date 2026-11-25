@@ -385,11 +385,11 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   your approval or answer, and never once the wake has launched; a "no" ends the
   renewals for good. Settings → Agents shows each pool's current-launch totals
   beside the **Warm Claude spares** switch: the live `idle now` count and, during a
-  backoff, `paused (N min left)`, then ordinary `<adopted>/<started> adopted`
+  backoff, `paused (N min left)` (hidden while the switch is off), then ordinary `<adopted>/<started> adopted`
   plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold` and `N starts paused` (starts
   skipped by backoff; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
-  adoption rate are never hidden; read when the page opens and when the switch is
-  toggled, not streamed. A pool that evicts `limit` spares in a row with no adoption
+  adoption rate are never hidden; read when the page opens, when the switch is
+  toggled, every 30 s while Settings is open and when it becomes visible again, not streamed. A pool that evicts `limit` spares in a row with no adoption
   between pauses its starts for 5 minutes, and one whose spares expire unused 3 times
   in a row (`EXPIRY_BACKOFF_STREAK`) pauses them for 30 minutes (`EXPIRY_COOLDOWN`).
   A full unadopted lead renewal chain counts as one unused expiry, recorded only when
@@ -397,8 +397,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   so renewals never trigger the 30-minute pause mid-chain; expiries while
   `warm-spares-off` is set never count. 3 consecutive staleness or exit misses (`not used`
   because a warm-key field changed, the process exited, or the config folder or lead git
-  status cannot be read; a user Stop before adoption, a blocking-task join error or an
-  expiry does not count) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
+  status cannot be read; a user Stop before adoption or a blocking-task join error does not
+  count, and a launch-time expiry joins the expiry streak instead) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
   5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
   `churn_skipped` (`paused`); any committed adoption resets all three streaks and
   ends the pause, and otherwise the cooldown lapsing ends it; cooldowns are checked on
@@ -430,7 +430,9 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   short sessions; Claude Code 2.1.325, macOS arm64, sampled after 2–3.5 s of
   idling, from the resumed one-turn medians (195.6 MiB telemetry off, 204.6 MiB
   default; 50-turn probe 194.7–205.3 MiB) through fresh minimal and full user
-  config (251.8 MiB); a 10-minute idle probe on minimal configs sat at 93–235 MiB with no growth, a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
+  config (251.8 MiB); a single end-of-window `ps` RSS sample after 10 idle minutes read 93–235 MiB
+  on minimal configs (n = 1 each; one snapshot, not continuous sampling, and macOS RSS omits
+  compressed pages, so it does not lower the short-session figure), a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
   stdio MCP server child added ~51 MiB per spare, and larger histories, plugins
   or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks, but an unused spare is force-terminated
   (process-group `SIGKILL` on Unix, process termination on Windows), so `SessionEnd`

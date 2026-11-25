@@ -70,3 +70,45 @@ test('docs/worker-tokens.md states both limits and the total', () => {
   assert.match(text, new RegExp(`\\(${limit} ordinary spares,`));
   assert.ok(text.includes(`(\`LEAD_LIMIT\` ${lead})`), `LEAD_LIMIT ${lead} not stated`);
 });
+
+// The measured figures are written once in `providers/warm.rs` (from the bench recorded in
+// docs/worker-tokens.md) and repeated by hand elsewhere; a re-measurement must update every copy.
+const LEAD_SPARE = 'src-tauri/src/lead_spare.rs';
+const ARCHITECT_WORKERS = 'docs/architect-workers.md';
+// Normalize hyphen/en dash so only the numbers are compared.
+const dash = (range) => range.replace(/-/g, '–');
+
+function canonical(pattern, anchor, what) {
+  const source = readFileSync(WARM, 'utf8');
+  const at = source.indexOf(anchor);
+  assert.ok(at >= 0, `${anchor} not found in ${WARM}`);
+  const match = source.slice(at).match(pattern);
+  assert.ok(match, `${what} not found near ${anchor} in ${WARM}`);
+  return dash(match[1]);
+}
+
+function rangesIn(path, pattern) {
+  return [...flat(path).matchAll(new RegExp(pattern.source, 'g'))].map((m) => dash(m[1]));
+}
+
+test('every copy states the measured idle memory range from warm.rs', () => {
+  // The comment above `MAX_RENEWALS` carries the canonical short-session RSS envelope.
+  const source = readFileSync(WARM, 'utf8');
+  const decl = source.indexOf('const MAX_RENEWALS');
+  assert.ok(decl >= 0, `MAX_RENEWALS not found in ${WARM}`);
+  const comment = source.slice(source.lastIndexOf('const LEAD_LIMIT', decl), decl);
+  const found = comment.match(/(\d+[–-]\d+)\s+MiB/);
+  assert.ok(found, `MiB range not found in the MAX_RENEWALS comment of ${WARM}`);
+  const range = dash(found[1]);
+  for (const path of [LEAD_SPARE, SETTINGS, README, AGENTS, WORKER_TOKENS, ARCHITECT_WORKERS]) {
+    assert.ok(rangesIn(path, /~?(\d+[–-]\d+)\s+MiB/).includes(range), `${path} must state ${range} MiB`);
+  }
+});
+
+test('every copy states the measured startup saving from warm.rs', () => {
+  // The module doc comment at the top of warm.rs carries the canonical saving range.
+  const range = canonical(/(\d+\.\d+[–-]\d+\.\d+)\s+s\b/, '//!', 'startup saving range');
+  for (const path of [SETTINGS, WORKER_TOKENS]) {
+    assert.ok(rangesIn(path, /(\d+\.\d+[–-]\d+\.\d+)\s+s\b/).includes(range), `${path} must state ${range} s`);
+  }
+});

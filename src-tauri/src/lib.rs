@@ -27,6 +27,7 @@ mod child_env;
 mod checks;
 mod checkout_busy;
 mod claude_roots;
+mod git_config;
 mod path_match;
 mod code_search;
 mod connections;
@@ -4402,7 +4403,7 @@ fn setup_common(app: &tauri::App) -> crate::Result<PathBuf> {
         shutdown: AtomicU8::new(0),
     });
     cloud_agents::init(app.handle());
-    providers::warm::init(app.handle());
+    app_marker::init(app.handle());
     remote::setup(app.handle(), &dir);
     app.manage(browser::BrowserState::default());
     app.manage(simulator::Simulators::default());

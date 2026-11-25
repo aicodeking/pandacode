@@ -15,7 +15,7 @@ pub(super) use self::adopt::adopt_for_launch;
 #[cfg(test)]
 use self::adopt::launched_without_key_since;
 use self::key::{age_expired, miss};
-use self::stats::{decision_miss, discarded_note, no_spare_note, record_adopted, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
+use self::stats::{decision_miss, decision_miss_in, discarded_note, no_spare_note, record_adopted, Gone, MissStreak, PoolChurn, PoolStats, WarmStatsSnapshot};
 pub(super) use self::key::{key_fields, lead_git_status_digest, with_git_status};
 #[cfg(test)]
 pub(super) use self::key::{key, lead_key};
@@ -27,18 +27,6 @@ pub(super) use self::test_support::waiting;
 #[cfg(all(test, unix))]
 pub(crate) use self::test_support::{has_spare_for_test, insert_spare_in_cwd_for_test, process_gone_for_test, spare_pool_test_lock};
 
-static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
-
-pub(crate) fn init(app: &tauri::AppHandle) {
-    let _ = APP.set(app.clone());
-}
-
-/// The app data folder through the handle both entry points set (`init`), for the other
-/// launch-path marker switches (`exit::background_reap_enabled_now`); `None` before `init`.
-pub(super) fn app_data_dir() -> Option<Result<PathBuf, String>> {
-    APP.get().map(crate::app_marker::data_dir)
-}
-
 /// Default-on switch shared by the desktop app and headless host.
 const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
 
@@ -49,7 +37,7 @@ pub fn enabled(app: &tauri::AppHandle) -> bool {
 
 /// The one on/off decision, also exercised directly by the unit tests.
 fn enabled_in(dir: Result<PathBuf, String>) -> bool {
-    crate::app_marker::exists_in(dir, WARM_SPARES_OFF_FILE).is_ok_and(|present| !present)
+    crate::app_marker::default_on_in(dir, WARM_SPARES_OFF_FILE)
 }
 
 #[cfg(test)]
@@ -57,18 +45,16 @@ thread_local! {
     static ENABLED_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// Provider launch paths have no handle argument; both app entry points initialize this handle.
-/// Unreadable settings (or a missing handle in production) fail closed. Unit tests without an
-/// app handle default to enabled so warm-pool and adoption tests run directly, unless overridden.
+/// Provider launch paths have no handle argument: this reads through the one both app entry
+/// points save (`app_marker::init`). Unreadable settings (or a missing handle in production)
+/// fail closed. Unit tests without an app handle default to enabled so warm-pool and adoption
+/// tests run directly, unless overridden.
 pub(super) fn enabled_now() -> bool {
     #[cfg(test)]
     if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    match APP.get() {
-        Some(app) => enabled(app),
-        None => cfg!(test),
-    }
+    crate::app_marker::default_on_now(WARM_SPARES_OFF_FILE)
 }
 
 /// `enabled_now`, read on a blocking thread so the async runtime never waits on the marker file.
@@ -78,7 +64,7 @@ async fn enabled_off_runtime() -> bool {
     if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    crate::blocking(|| Ok(enabled_now())).await.unwrap_or(false)
+    crate::app_marker::default_on_off_runtime(WARM_SPARES_OFF_FILE).await
 }
 
 /// Each pool's lifecycle totals since launch: a pure in-memory read (no file, no network).
@@ -371,8 +357,10 @@ fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool,
         None => (Some((spare, pending)), None),
         Some(reason) => {
             // A dead or stale spare joins the pool's miss streak; one that merely outlived its
-            // window says only that the follow-up came late (the expiry streak counts those).
-            let note = decision_miss(pool, spare.lead, &reason, !(alive && expired));
+            // window says only that the follow-up came late, so it joins the expiry streak (the
+            // expiry timer, or a sleeping laptop, left it for this launch to remove).
+            let streak = if alive && expired { MissStreak::Expired } else { MissStreak::Stale };
+            let note = decision_miss_in(pool, spare.lead, &reason, streak);
             // The cold launch's `await_exit` waits for this process, so two never share a session.
             retire(session_id, spare, pending);
             (None, Some(note))

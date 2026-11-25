@@ -133,15 +133,16 @@ const count = (value: unknown) => (typeof value === 'number' && Number.isFinite(
 /** This launch's spare adoption: the ordinary pool first, then the lead pool on its own, so a lead
  * miss is never counted as an ordinary one. Adoption shows against spares started, and unused
  * expiries, evictions, replacements, discards and starts skipped by churn pauses are named, so waste
- * never reads as zero. Live state (spares idle now, time left in a pause) follows adoption.
+ * never reads as zero. Live state (spares idle now, time left in a pause) follows adoption; with the
+ * switch off the pause is moot, so its time left is hidden while the historical starts it skipped stay.
  * Dock and Finder launches keep no stderr. */
-function warmStatsCaption(snapshot: WarmStatsSnapshot): string {
+function warmStatsCaption(snapshot: WarmStatsSnapshot, enabled = true): string {
   const pool = (stats: WarmPoolStats | undefined) => ({
     started: count(stats?.started), adopted: count(stats?.adopted), missed: count(stats?.missed),
     expired: count(stats?.expired), evicted: count(stats?.evicted), replaced: count(stats?.replaced),
     discarded: count(stats?.discarded),
     cold: count(stats?.coldWithoutSpare), churnSkipped: count(stats?.churnSkipped),
-    idleNow: count(stats?.idleNow), pausedSecs: count(stats?.pausedSecs),
+    idleNow: count(stats?.idleNow), pausedSecs: enabled ? count(stats?.pausedSecs) : 0,
   });
   const ordinary = pool(snapshot?.ordinary), lead = pool(snapshot?.lead);
   const empty = (p: ReturnType<typeof pool>) => p.started === 0 && p.cold === 0 && p.idleNow === 0 && p.pausedSecs === 0;
@@ -166,16 +167,26 @@ function warmStatsCaption(snapshot: WarmStatsSnapshot): string {
   return `This launch: ${[formatPool(ordinary), formatPool(lead, 'lead')].filter(Boolean).join(' · ')}`;
 }
 
-const warmStatsLine = async () => warmStatsCaption(await call<WarmStatsSnapshot>('warm_spare_stats'));
+const warmStatsLine = async (enabled: boolean) => warmStatsCaption(await call<WarmStatsSnapshot>('warm_spare_stats'), enabled);
+
+/** How often an open Agents page re-reads the warm spare totals; the browser preview accepts
+ * `?warm-spares-refresh-ms=N` (N ≥ 50) so a spec need not wait 30 s. */
+const WARM_STATS_REFRESH_MS = 30_000;
+const warmStatsRefreshMs = () => {
+  const raw = new URLSearchParams(location.search).get('warm-spares-refresh-ms');
+  const value = raw === null ? NaN : Number(raw);
+  return Number.isFinite(value) && value >= 50 ? value : WARM_STATS_REFRESH_MS;
+};
 
 // IDs distinguish harnesses and keep a reopened Settings view behind any unfinished save.
 const nativeSwitchSaves = new Map<string, Promise<void>>();
 
 /** One native switch: disabled until read, so an unreadable value is never shown; read at each
  * run, so it needs nothing from the window; a refused save puts the switch back and says why.
- * An optional \`caption\` fills the status line while no error shows, read at mount and after
- * each save; failing, it shows nothing. */
-function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: () => Promise<string> }): () => void {
+ * An optional \`caption\` fills the status line while no error shows, read once the switch's value
+ * is known and after each save (given that value); failing, it shows nothing. With \`refreshMs\`
+ * it is also re-read on that interval and when the window becomes visible, while the page is open. */
+function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = false, caption: readCaption, refreshMs }: { id: string; name: string; hint?: string; args?: Record<string, unknown>; locked?: boolean; caption?: (enabled: boolean) => Promise<string>; refreshMs?: number }): () => void {
   const input = panel.querySelector<HTMLInputElement>(`#${id}`)!;
   let disposed = false;
   // The hint sits behind the title's mark; the row's status line shows an error, else the caption.
@@ -189,21 +200,20 @@ function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = f
     if (error?.alert) status.setAttribute('role', 'alert'); else status.removeAttribute('role');
   };
   const say = (message: string, alert = false) => { error = message ? { message, alert } : null; render(); };
-  // Read at mount and again after every save (turning spares off changes the totals); only the
-  // newest read lands, and an error on the line always outranks it.
+  // Read once the value is known and again after every save (turning spares off changes the
+  // totals); only the newest read lands, and an error on the line always outranks it.
   let captionReads = 0;
   const refreshCaption = () => {
-    if (!readCaption) return;
+    if (!readCaption || disposed) return;
     const read = ++captionReads;
-    void readCaption().then(text => { if (!disposed && read === captionReads) { caption = text; render(); } }, (err) => { console.warn('Setting status read failed:', err); });
+    void readCaption(input.checked).then(text => { if (!disposed && read === captionReads) { caption = text; render(); } }, (err) => { console.warn('Setting status read failed:', err); });
   };
-  refreshCaption();
   input.setAttribute('aria-busy', 'true');
   void (async () => {
     try {
       await nativeSwitchSaves.get(id);
       const on = await call<boolean>(`${name}_enabled`, args);
-      if (!disposed) { input.checked = on === true; input.disabled = locked; }
+      if (!disposed) { input.checked = on === true; input.disabled = locked; refreshCaption(); }
     } catch {
       if (!disposed) say(UNREADABLE);
     } finally {
@@ -230,7 +240,25 @@ function mountNativeSwitch(panel: HTMLElement, { id, name, args = {}, locked = f
     nativeSwitchSaves.set(id, save);
   };
   panel.addEventListener('change', change);
-  return () => { disposed = true; panel.removeEventListener('change', change); };
+  // Live while visible: skipped while the document or this Settings panel is hidden, unread or saving;
+  // visibility and tab-switch observers catch up at once.
+  const refreshLive = () => { if (!document.hidden && !panel.hidden && !input.disabled) refreshCaption(); };
+  const timer = readCaption && refreshMs ? window.setInterval(refreshLive, refreshMs) : 0;
+  let panelObserver: MutationObserver | null = null;
+  if (timer) {
+    document.addEventListener('visibilitychange', refreshLive);
+    panelObserver = new MutationObserver(refreshLive);
+    panelObserver.observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+  }
+  return () => {
+    disposed = true;
+    panel.removeEventListener('change', change);
+    if (timer) {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refreshLive);
+      panelObserver?.disconnect();
+    }
+  };
 }
 
 function mountAgentsDockSettings(host: HTMLElement): () => void {
@@ -547,7 +575,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
-    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row.id === 'warm-spares' ? { ...row, caption: warmStatsLine } : row)));
+    if (id === 'agents') cleanups.push(...NATIVE_SWITCHES.map(row => mountNativeSwitch(panel, row.id === 'warm-spares' ? { ...row, caption: warmStatsLine, refreshMs: warmStatsRefreshMs() } : row)));
     if (id === 'agents') cleanups.push(...EXPLORE_HARNESSES.map(({ id: provider }) => mountNativeSwitch(panel, { id: `explore-${provider}`, name: 'explore_harness', hint: '', args: { provider }, locked: provider === 'claude' })));
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {

@@ -318,18 +318,20 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   keeps idle Claude Code processes ready after successful turns, up to 4 in total
   (2 ordinary and 2 for team leads), about 195–255 MiB each on short sessions (measured
   on Claude Code 2.1.325 after 2–3.5 s of idling, from resumed one-turn sessions to a
-  full user config; a 10-minute idle probe sat at 93–235 MiB with no growth, and long histories,
-  plugins or extra MCP servers, including stdio MCP child processes, use more). Starts
+  full user config; one end-of-window `ps` RSS sample after 10 idle minutes read 93–235 MiB
+  (n = 1 per minimal config; macOS RSS omits compressed pages, so this is not a lower figure),
+  and long histories, plugins or extra MCP servers, including stdio MCP child processes, use more). Starts
   pause for 5 minutes when spares keep being evicted unused or after 3 launches in a row
-  miss their spare because it went stale or its process exited (`not used`; your own Stops
-  and expiries do not count), and for 30 minutes after 3 spares in a row expire unused
+  miss their spare because it went stale, its process exited or its config folder or `git status`
+  could not be read (`not used`; your own Stops do not count, and expiries join the 30-minute rule), and for 30 minutes after 3 spares in a row expire unused
   (a team lead's whole renewal chain counts as one expiry, and expiries while spares are
   off do not count); pauses are timed on both the monotonic and wall clocks, so a laptop's
   sleep does not stretch them, and any adoption ends the pause. An ordinary spare's
   uncommitted `git status` can be up to 10 minutes old when adopted; lead spares serve
   only teams whose live workers are all read-only (such as Council reviews) and verify
   `git status` when adopted. Settings → Agents shows each pool's live state (`idle now`,
-  and `paused (N min left)` during a pause) and this launch's totals (adopted/started, plus
+  and `paused (N min left)` during a pause, hidden while the switch is off; refreshed every
+  30 s while Settings is open and when it becomes visible again) and this launch's totals (adopted/started, plus
   not used, expired, evicted, replaced, discarded, cold and `N starts paused` when nonzero,
   ordinary and lead spares separately). Unused spares are force-terminated (`SIGKILL` on
   Unix, process termination on Windows), so your `SessionEnd` hooks do not run for them on

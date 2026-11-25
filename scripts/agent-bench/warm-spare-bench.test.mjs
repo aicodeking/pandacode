@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
-  matchingLivePids, MAX_PARK_MS, mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
+  anyOrphaned, matchingLivePids, MAX_PARK_MS, mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
@@ -614,6 +614,28 @@ test('matchingLivePids keeps a live matching child even after it is reparented t
   assert.deepEqual(matchingLivePids('   11    10  40960 node bench.mjs --serve-stdio-mcp\n', expected), [11], 'still under Claude');
   assert.deepEqual(matchingLivePids('    1     0   1000 /sbin/launchd\n   11     1  40960 node bench.mjs --serve-stdio-mcp  \n', expected), [11], 'orphaned: ppid 1, trailing spaces trimmed');
   assert.deepEqual(matchingLivePids('   11 node bench.mjs --serve-stdio-mcp\n', expected), [11], 'pid=,args= tables work too');
+});
+
+test('matchingLivePids parses each ps line on its own, so a header or garbage line does not break valid rows', () => {
+  const expected = [{ pid: 11, args: 'node bench.mjs --serve-stdio-mcp' }, { pid: 13, args: 'node bench.mjs --serve-stdio-mcp' }];
+  const ps = '  PID  PPID   RSS ARGS\n   11     1  40960 node bench.mjs --serve-stdio-mcp\n garbage ?? line\n   13    10  40960 node bench.mjs --serve-stdio-mcp\n';
+  assert.deepEqual(matchingLivePids(ps, expected), [11, 13], 'header and garbage lines are skipped; 4-column rows still match');
+  assert.deepEqual(matchingLivePids('   11     1  40960 node bench.mjs --serve-stdio-mcp\n   13 node bench.mjs --serve-stdio-mcp\n', expected), [11, 13], 'mixed 4- and 2-column lines each parse by their own shape');
+});
+
+test('anyOrphaned fails closed: null when ps is unreadable, false when verified gone or nothing sampled, true when verified alive', async () => {
+  const child = { pid: 11, args: 'node bench.mjs --serve-stdio-mcp' };
+  assert.equal(await anyOrphaned([child], () => null), null, 'ps unavailable is unknown, never a clean false');
+  assert.deepEqual(matchingLivePids(null, [child]), [], 'and nothing unverified is killed');
+  assert.equal(await anyOrphaned([], () => null), false, 'no sampled children: nothing to orphan');
+  assert.equal(await anyOrphaned(undefined, () => { throw new Error('ps must not be read'); }), false);
+  assert.equal(await anyOrphaned([child], () => '    1     0   1000 /sbin/launchd\n'), false, 'verified gone');
+  const alive = '   11     1  40960 node bench.mjs --serve-stdio-mcp\n';
+  assert.equal(await anyOrphaned([child], () => alive, { waitMs: 20, pollMs: 5 }), true, 'verified still running at the deadline');
+  let reads = 0;
+  assert.equal(await anyOrphaned([child], () => (++reads < 3 ? alive : ''), { waitMs: 1_000, pollMs: 5 }), false, 'exits during the wait');
+  reads = 0;
+  assert.equal(await anyOrphaned([child], () => (++reads < 2 ? alive : null), { waitMs: 1_000, pollMs: 5 }), null, 'ps failing mid-wait is still unknown');
 });
 
 test('matchingLivePids drops a dead PID and a reused PID running another command, and never guesses without ps', () => {

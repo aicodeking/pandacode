@@ -1,5 +1,5 @@
 //! Each pool's churn backoff: evictions, unused expiries (a lead's renewal chain counted once,
-//! nothing with spares off) and launch-time misses in a row, each cleared by an adoption or a
+//! nothing with spares off, a launch-time expired spare too) and launch-time misses in a row, each cleared by an adoption or a
 //! lapsed cooldown.
 use super::*;
 use super::spawn::*;
@@ -359,13 +359,32 @@ async fn misses_that_say_nothing_about_staleness_never_join_the_miss_streak() {
         let discard_epoch = spares(pool).discard_epoch;
         let note = launched_without_key_streak(pool, &session, KEY_CHECK_FAILED, false, true, false, discard_epoch);
         assert!(note.is_some_and(|line| line.contains(KEY_CHECK_FAILED)));
-        // A spare that outlived its window on the sleep-proof clock.
-        assert!(miss_once(pool, &session, idle_spare(false, IDLE), "launch").is_none());
     }
     await_exit(&session).await.unwrap();
     let locked = spares(pool);
-    assert_eq!(locked.ordinary.missed, u64::from(3 * MISS_BACKOFF_STREAK), "each still counts as not used");
-    assert_eq!(locked.ordinary_churn, PoolChurn::default(), "but none joins the streak or backs off");
+    assert_eq!(locked.ordinary.missed, u64::from(2 * MISS_BACKOFF_STREAK), "each still counts as not used");
+    assert_eq!(locked.ordinary_churn, PoolChurn::default(), "but none joins either streak or backs off");
+}
+
+#[tokio::test]
+async fn launch_time_expired_spares_join_the_expiry_streak_not_the_miss_streak() {
+    let pool = own_pool();
+    let session = format!("warm-miss-expired-{}", uuid::Uuid::new_v4());
+    // Alive but past its window on the sleep-proof clock: the 60 s expiry timer (or a sleeping
+    // laptop) left it in the pool, so the launch removes it before any renewal could count it.
+    for streak in 1..=EXPIRY_BACKOFF_STREAK {
+        assert!(miss_once(pool, &session, idle_spare(false, IDLE), "launch").is_none());
+        let churn = spares(pool).ordinary_churn;
+        assert_eq!((churn.consecutive_misses, churn.consecutive_expiries), (0, streak), "{churn:?}");
+    }
+    await_exit(&session).await.unwrap();
+    let mut locked = spares(pool);
+    assert_eq!(locked.ordinary.missed, u64::from(EXPIRY_BACKOFF_STREAK), "each counts as not used");
+    let (now, wall) = clocks();
+    assert!(locked.ordinary_churn.cooling(now, wall), "the expiry streak backs off");
+    let paused = locked.ordinary_churn.paused_secs(now, wall);
+    assert!((EXPIRY_COOLDOWN.as_secs() - 5..=EXPIRY_COOLDOWN.as_secs()).contains(&paused), "the expiry cooldown, not the churn one: {paused}");
+    assert_eq!(locked.lead_churn, PoolChurn::default(), "the lead pool keeps its own streak");
 }
 
 #[tokio::test]

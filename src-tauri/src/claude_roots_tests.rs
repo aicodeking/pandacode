@@ -1,4 +1,5 @@
 use super::*;
+use crate::git_config::MAX_GIT_CONFIG_BYTES;
 
 /// A fresh folder under the temp dir, removed on drop.
 struct Scratch(PathBuf);
@@ -184,43 +185,4 @@ fn git_dirs_follow_plain_repos_subfolders_and_linked_worktrees() {
     assert_eq!(git_dirs_for(&worktree), Some(Err("empty commondir")));
     std::fs::write(worktree.join(".git"), "nonsense\n").unwrap();
     assert_eq!(git_dirs_for(&worktree), Some(Err("invalid gitfile")));
-}
-
-#[test]
-fn git_config_values_continue_after_an_unescaped_trailing_backslash() {
-    let main = Ok((false, Some("../main".to_owned())));
-    for config in ["[core]\n worktree = ../ma\\\nin\n", "[core]\r\n worktree = \"../ma\\\r\nin\" # c\r\n", "[core]\n worktree = \\\n  ../main\n"] {
-        assert_eq!(git_core_checkout(config), main, "{config:?}");
-    }
-    // A continued value in another section swallows what would otherwise be a `[core]` header.
-    assert_eq!(git_core_checkout("[remote \"origin\"]\n url = a\\\n[core]\n worktree = ../main\n"), Ok((false, None)));
-    // Neither a backslash in a comment nor an escaped one continues; a dangling one at the end fails closed.
-    assert_eq!(git_core_checkout("[core]\n bare = true # note \\\n worktree = ../main\n"), Ok((true, Some("../main".to_owned()))));
-    assert_eq!(git_core_checkout("[core]\n worktree = C:\\\\\n bare\n"), Ok((true, Some("C:\\".to_owned()))));
-    assert_eq!(git_core_checkout("[core]\n worktree = a\\"), Err("unterminated git config continuation"));
-}
-
-#[test]
-fn git_config_includes_apply_in_place_skip_missing_files_and_refuse_cycles() {
-    let scratch = Scratch::new("include");
-    let (config, extra) = (scratch.0.join("config"), scratch.0.join("extra").join("checkout.config"));
-    std::fs::create_dir_all(scratch.0.join("extra")).unwrap();
-    std::fs::write(&extra, "[core]\n\tworktree = ../main\n").unwrap();
-    let text = "[core]\n bare = true\n[InClUdE]\n PaTh = extra/checkout.config\n path = missing.config\n";
-    std::fs::write(&config, text).unwrap();
-    assert_eq!(read_git_core_checkout(&config), Ok((true, Some("../main".to_owned()))));
-    assert_eq!(git_core_checkout(text), Err("unsupported git config include"), "text alone has no folder to resolve against");
-    // Later lines override included ones, as if the file were pasted in place.
-    std::fs::write(&config, "[include]\n path = extra/checkout.config\n[core]\n worktree = ../other\n").unwrap();
-    assert_eq!(read_git_core_checkout(&config), Ok((false, Some("../other".to_owned()))));
-    std::fs::write(&extra, "[include]\n path = ../config\n").unwrap();
-    assert_eq!(read_git_core_checkout(&config), Err("cyclic git config include"));
-    std::fs::write(&config, "[includeIf \"gitdir:/x/\"]\n path = missing.config\n").unwrap();
-    assert_eq!(read_git_core_checkout(&config), Err("unsupported git config include"));
-    // d2 through d5 nest four deep (d6 is missing); starting at d1 is one too many.
-    (1..=5).for_each(|n| std::fs::write(scratch.0.join(format!("d{n}")), format!("[include]\n path = d{}\n", n + 1)).unwrap());
-    std::fs::write(&config, "[include]\n path = d2\n").unwrap();
-    assert_eq!(read_git_core_checkout(&config), Ok((false, None)));
-    std::fs::write(&config, "[include]\n path = d1\n").unwrap();
-    assert_eq!(read_git_core_checkout(&config), Err("git config include too deep"));
 }

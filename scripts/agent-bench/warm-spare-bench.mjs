@@ -286,13 +286,16 @@ export function treeBreakdown(psText, root, marker = STDIO_SERVE_FLAG) {
   };
 }
 
-/** Rows of `ps -A -o pid=,ppid=,rss=,args=` or `ps -A -o pid=,args=` as { pid, args } with trimmed args. */
+/**
+ * Rows of `ps -A -o pid=,ppid=,rss=,args=` or `ps -A -o pid=,args=` as { pid, args } with trimmed args.
+ * Each line is parsed on its own (4-column first, then 2-column), so one header, truncated or garbage
+ * line is skipped without demoting every other row to the 2-column reading.
+ */
 function parsePidArgs(psText) {
-  const lines = String(psText).split('\n').map(line => line.trim()).filter(Boolean);
-  const full = parsePsArgs(psText);
-  if (full.length && full.length === lines.length) return full.map(r => ({ pid: r.pid, args: r.args.trim() }));
-  return lines.map(line => line.match(/^(\d+)(?:\s+(.*))?$/)).filter(Boolean)
-    .map(([, pid, args]) => ({ pid: Number(pid), args: (args ?? '').trim() }));
+  return String(psText).split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+    const m = line.match(/^(\d+)\s+\d+\s+\d+(?:\s+(.*))?$/) ?? line.match(/^(\d+)(?:\s+(.*))?$/);
+    return m ? { pid: Number(m[1]), args: (m[2] ?? '').trim() } : null;
+  }).filter(Boolean);
 }
 
 /**
@@ -478,14 +481,22 @@ function readPsTable() {
 /** The sampled stdio MCP children still running as the same command (pid and args verified). */
 const liveMcpPids = mcpChildren => (mcpChildren.length ? matchingLivePids(readPsTable(), mcpChildren) : []);
 
-/** Whether any of `mcpChildren` is still running ORPHAN_WAIT_MS after Claude exited (polled, so a fast exit returns at once). */
-async function anyOrphaned(mcpChildren) {
-  const deadline = performance.now() + ORPHAN_WAIT_MS;
-  while (liveMcpPids(mcpChildren).length > 0) {
+/**
+ * Whether any of `mcpChildren` is still running `waitMs` after Claude exited, polled so a fast exit
+ * returns at once: false when none was sampled or all are verified gone, true when one is verified
+ * still running at the deadline, and null when `readPs` cannot read the table (unknown: never a
+ * false clean reading, and the caller must not kill unverified pids).
+ */
+export async function anyOrphaned(mcpChildren, readPs = readPsTable, { waitMs = ORPHAN_WAIT_MS, pollMs = 50 } = {}) {
+  if (!mcpChildren?.length) return false;
+  const deadline = performance.now() + waitMs;
+  for (;;) {
+    const ps = readPs();
+    if (ps == null) return null;
+    if (matchingLivePids(ps, mcpChildren).length === 0) return false;
     if (performance.now() >= deadline) return true;
-    await delay(50);
+    await delay(pollMs);
   }
-  return false;
 }
 
 function sampleRss(pid) {
@@ -579,7 +590,8 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
     if (stdioMcp) {
       if (arm === 'cold') mcpChildren = []; // sampled only while parked
       out.mcp_child_orphaned = await anyOrphaned(mcpChildren);
-      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(liveMcpPids(mcpChildren)); }
+      if (out.mcp_child_orphaned === true) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(liveMcpPids(mcpChildren)); }
+      else if (out.mcp_child_orphaned === null) out.error = out.error ?? 'could not verify stdio MCP child exit (ps unavailable)';
     }
   } catch (error) {
     out.error = `${error.message}; stderr: ${stderr.slice(-300)}`;
