@@ -67,6 +67,7 @@ function botScheduleCard(f: Fields): string {
 export const CATALOG: Record<string, Spec> = {
   schedule_wakeup: { family: 'task', icon: 'clock', verbs: ['Scheduling', 'Scheduled'], row: scheduleRow('a wake-up'), card: promptCard('note') },
   schedule_message: { family: 'task', icon: 'clock', verbs: ['Scheduling', 'Scheduled'], row: scheduleRow('a message'), card: promptCard('text') },
+  schedule_task: { family: 'task', icon: 'clock', verbs: ['Scheduling', 'Scheduled'], row: scheduleRow('a new task'), card: promptCard('prompt') },
   cancel_schedule: { family: 'task', icon: 'clock', verbs: ['Cancelling', 'Cancelled'], row: () => ({ object: 'a schedule' }), card: rowOnly },
   list_schedules: { family: 'task', icon: 'clock', verbs: ['Checking', 'Checked'], row: () => ({ object: 'schedules' }), card: rowOnly },
   dispatch_workers: {

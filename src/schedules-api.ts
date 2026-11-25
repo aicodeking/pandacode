@@ -43,6 +43,10 @@ export interface TaskSchedule {
   /** For a workflow's `after` step: the previous step. The step fires only when the watched
    *  thread's run ends after that previous step fired since this one last ran. */
   chainFromId: string | null;
+  /** Each run starts a new task in the project; `sessionId` is then the template whose harness, model and mode it copies. */
+  newTask: boolean;
+  /** The task the latest new-task run started. */
+  lastTaskId: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -78,6 +82,8 @@ export interface ScheduleInput {
   maxRuns?: number | null;
   workflowId?: string | null;
   chainFromId?: string | null;
+  /** Not for `after`. */
+  newTask?: boolean;
 }
 
 export interface SchedulerSettings {

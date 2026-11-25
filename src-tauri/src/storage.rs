@@ -164,7 +164,7 @@ pub struct Store {
 type Result<T> = std::result::Result<T, String>;
 /// The newest `PRAGMA user_version`. Every migration step below must run for any
 /// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 37;
+pub const SCHEMA_VERSION: i64 = 38;
 /// A team snapshot's `status` parsed from its row, NULL for a corrupt snapshot.
 macro_rules! team_status_sql {
     () => { "CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END" };
@@ -724,6 +724,15 @@ impl Store {
                   UPDATE task_schedules SET saved_remotely=1 WHERE id IN (SELECT j.value FROM scheduler_settings s, json_each(CASE WHEN json_valid(s.content) THEN s.content ELSE '{}' END,'$.remoteSaved') j WHERE s.id=1);
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
+            }
+            if version < 38 {
+                for (name, definition) in [("new_task", "INTEGER NOT NULL DEFAULT 0"), ("last_task_id", "TEXT REFERENCES sessions(id) ON DELETE SET NULL")] {
+                    let exists: bool = migration.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_schedules') WHERE name=?1)", [name], |r| r.get(0)).map_err(|e| e.to_string())?;
+                    if !exists {
+                        migration.execute_batch(&format!("ALTER TABLE task_schedules ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+                    }
+                }
+                migration.execute_batch("PRAGMA user_version=38;").map_err(|e| e.to_string())?;
             }
             migration.commit().map_err(|e| e.to_string())?;
         }

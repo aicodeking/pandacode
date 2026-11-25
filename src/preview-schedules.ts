@@ -21,13 +21,18 @@ function seed(host: PreviewSchedulesHost): TaskSchedule[] {
   const [first, second] = host.sessions();
   if (!first) return [];
   const now = Date.now();
-  const base = { projectId: first.projectId, projectName: '', sessionTitle: '', watchSessionTitle: null, days: [] as number[], intervalMinutes: null, timeOfDay: null, watchSessionId: null, onlyOnSuccess: false, lastRunAt: null, enabled: true, createdBySession: null, runCount: 0, maxRuns: null, workflowId: null, chainFromId: null, createdAt: now - 3600_000, updatedAt: now - 3600_000 } as const;
+  const base = { projectId: first.projectId, projectName: '', sessionTitle: '', watchSessionTitle: null, days: [] as number[], intervalMinutes: null, timeOfDay: null, watchSessionId: null, onlyOnSuccess: false, lastRunAt: null, enabled: true, createdBySession: null, runCount: 0, maxRuns: null, workflowId: null, chainFromId: null, newTask: false, lastTaskId: null, createdAt: now - 3600_000, updatedAt: now - 3600_000 } as const;
   const list: TaskSchedule[] = [
     { ...base, id: 'sched-1', sessionId: first.id, title: 'Check the CI run', prompt: 'Check whether CI passed on this branch and fix anything red.', kind: 'once', nextRunAt: now + 12 * MINUTE, createdBy: 'agent', createdBySession: first.id, maxRuns: 1 },
     { ...base, id: 'sched-2', sessionId: first.id, title: 'Morning summary', prompt: 'Summarize what changed overnight.', kind: 'weekdays', timeOfDay: '09:00', nextRunAt: nextAt({ sessionId: first.id, title: '', prompt: '', kind: 'weekdays', timeOfDay: '09:00' }, now), createdBy: 'user', runCount: 4, lastRunAt: now - 8 * 60 * MINUTE },
   ];
   if (second) list.push({ ...base, id: 'sched-3', sessionId: second.id, projectId: second.projectId, title: 'Review after build', prompt: 'Review the build output and report regressions.', kind: 'after', watchSessionId: first.id, onlyOnSuccess: true, nextRunAt: null, createdBy: 'user' });
-  runs = [{ id: 'run-1', scheduleId: 'sched-2', sessionId: first.id, title: 'Morning summary', at: now - 8 * 60 * MINUTE, outcome: 'started', detail: 'Woke the thread', sequence: 4, manual: false }];
+  const started = second ?? first;
+  list.push({ ...base, id: 'sched-4', sessionId: started.id, projectId: started.projectId, title: 'Daily check', prompt: 'Check the deploy and report anything red.', kind: 'daily', timeOfDay: '09:00', nextRunAt: nextAt({ sessionId: started.id, title: '', prompt: '', kind: 'daily', timeOfDay: '09:00' }, now), createdBy: 'user', newTask: true, lastTaskId: started.id, runCount: 1, lastRunAt: now - 15 * 60 * MINUTE });
+  runs = [
+    { id: 'run-1', scheduleId: 'sched-2', sessionId: first.id, title: 'Morning summary', at: now - 8 * 60 * MINUTE, outcome: 'started', detail: 'Woke the thread', sequence: 4, manual: false },
+    { id: 'run-2', scheduleId: 'sched-4', sessionId: started.id, title: 'Daily check', at: now - 15 * 60 * MINUTE, outcome: 'started', detail: 'Started a new task', sequence: 1, manual: false },
+  ];
   return list;
 }
 
@@ -67,6 +72,7 @@ function validate(input: ScheduleInput, now: number): void {
   if (['daily', 'weekdays', 'weekly'].includes(input.kind) && !/^([01]\d|2[0-3]):[0-5]\d$/.test(input.timeOfDay ?? '')) throw new Error('Times are HH:MM, 24-hour.');
   if (input.kind === 'weekly' && !input.days?.length) throw new Error('Pick at least one day.');
   if (input.kind === 'once' && !(input.runAt && input.runAt > now - MINUTE)) throw new Error('Pick a time in the future.');
+  if (input.newTask && input.kind === 'after') throw new Error('A new-task schedule needs a clock: once, interval, daily, weekdays or weekly.');
   if (input.kind === 'after' && (!input.watchSessionId || input.watchSessionId === input.sessionId)) throw new Error('Pick another task to follow.');
 }
 
@@ -100,6 +106,7 @@ export async function invokeSchedules<T>(command: string, args: Record<string, a
         intervalMinutes: input.intervalMinutes ?? null, timeOfDay: input.timeOfDay ?? null, days: input.days ?? [], watchSessionId: input.watchSessionId ?? null,
         onlyOnSuccess: input.onlyOnSuccess ?? false, maxRuns: input.maxRuns ?? null, nextRunAt: nextAt(input, now), updatedAt: now,
         workflowId: input.workflowId ?? previous?.workflowId ?? null, chainFromId: input.chainFromId ?? previous?.chainFromId ?? null,
+        newTask: input.newTask ?? false, lastTaskId: previous?.lastTaskId ?? null,
       } as TaskSchedule);
       if (previous) return replace(next);
       schedules = [...schedules, next]; host.emit('schedules-changed', { sessionId: next.sessionId });

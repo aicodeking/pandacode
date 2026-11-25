@@ -29,10 +29,10 @@ fn once(store: &Store) -> TaskSchedule {
 }
 
 #[test]
-fn schema_version_is_37_with_schedule_tables() {
+fn schema_version_is_38_with_schedule_tables() {
     let store = store();
-    assert_eq!(crate::storage::SCHEMA_VERSION, 37);
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(crate::storage::SCHEMA_VERSION, 38);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
     assert!(list(&store, None).unwrap().is_empty());
     assert_eq!(settings(&store).unwrap(), SchedulerSettings::default());
 }
@@ -49,7 +49,7 @@ fn version_37_survives_malformed_settings_json() {
         id
     };
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
     // Version 36 recorded nothing, so a user-made schedule fails closed.
     assert!(saved_remotely(&store, &id).unwrap());
     drop(store);
@@ -68,7 +68,7 @@ fn version_37_moves_remotely_saved_ids_into_a_column() {
         id
     };
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
     assert!(saved_remotely(&store, &id).unwrap());
     assert!(settings(&store).unwrap().paused);
     let content: String = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).unwrap();
@@ -471,4 +471,88 @@ fn an_agents_remote_message_and_its_mark_land_together_or_not_at_all() {
     assert!(failed.contains("injected mark failure"), "{failed}");
     let count: i64 = store.db.query_row("SELECT COUNT(*) FROM task_schedules", [], |r| r.get(0)).unwrap();
     assert_eq!(count, 0, "no unmarked schedule left behind");
+}
+
+#[test]
+fn version_38_adds_the_new_task_columns_to_a_version_37_database() {
+    let path = std::env::temp_dir().join(format!("pandacode-schedules-{}.sqlite3", uuid::Uuid::new_v4()));
+    let id = {
+        let store = store_at(&path);
+        let id = once(&store).id;
+        store.db.execute_batch("ALTER TABLE task_schedules DROP COLUMN new_task; ALTER TABLE task_schedules DROP COLUMN last_task_id; PRAGMA user_version=37;").unwrap();
+        id
+    };
+    let store = Store::open(&path).unwrap();
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
+    let columns: i64 = store.db.query_row("SELECT COUNT(*) FROM pragma_table_info('task_schedules') WHERE name IN ('new_task','last_task_id')", [], |r| r.get(0)).unwrap();
+    assert_eq!(columns, 2);
+    let schedule = get(&store, &id).unwrap();
+    assert!(!schedule.new_task);
+    assert_eq!(schedule.last_task_id, None);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn a_new_task_schedule_needs_a_clock_and_keeps_its_flag() {
+    let store = store();
+    let refused = create(&store, &ScheduleInput { watch_session_id: Some("b".into()), new_task: true, ..input("after") }, "user", None, NOW).unwrap_err();
+    assert_eq!(refused, "A new-task schedule needs a clock: once, interval, daily, weekdays or weekly.");
+    let made = create(&store, &ScheduleInput { run_at: Some(NOW + MINUTE), new_task: true, ..input("once") }, "user", None, NOW).unwrap();
+    assert!(made.new_task && made.last_task_id.is_none());
+    assert_eq!(serde_json::to_value(&made).unwrap()["newTask"], true);
+    let after = ScheduleInput { watch_session_id: Some("b".into()), new_task: true, ..input("after") };
+    assert!(update(&store, &made.id, &after, NOW).is_err());
+    let plain = update(&store, &made.id, &ScheduleInput { run_at: Some(NOW + MINUTE), ..input("once") }, NOW).unwrap();
+    assert!(!plain.new_task);
+}
+
+#[test]
+fn schedule_task_starts_new_tasks_from_this_thread_and_refuses_after() {
+    let store = store();
+    let running = std::collections::HashSet::new();
+    let call = |name: &str, args: Value| tools::dispatch(&store, "a", name, &args, &running, false, NOW);
+    let (made, changed) = call("pandacode_schedule_task", json!({"title": "Daily check", "prompt": "Check the deploy", "timeOfDay": "09:00"})).unwrap();
+    assert_eq!(changed.as_deref(), Some("a"));
+    let schedule = &made["scheduled"]["schedule"];
+    assert_eq!((schedule["newTask"].clone(), schedule["createdBy"].clone(), schedule["createdBySession"].clone(), schedule["sessionId"].clone()), (json!(true), json!("agent"), json!("a"), json!("a")));
+    assert_eq!((schedule["kind"].clone(), schedule["maxRuns"].clone(), schedule["title"].clone(), schedule["prompt"].clone()), (json!("daily"), json!(20), json!("Daily check"), json!("Check the deploy")));
+    let flagged: i64 = store.db.query_row("SELECT new_task FROM task_schedules WHERE id=?1", [made["scheduled"]["id"].as_str().unwrap()], |r| r.get(0)).unwrap();
+    assert_eq!(flagged, 1);
+    let (listed, _) = call("pandacode_list_schedules", json!({})).unwrap();
+    assert_eq!(listed["schedules"][0]["schedule"]["newTask"], true);
+    assert!(crate::agent_tools::validate_spec(&tools::catalog(), "pandacode_schedule_task", &json!({"prompt": "x", "inMinutes": 5})).unwrap_err().contains("title"));
+    let clock = "A new-task schedule needs a clock";
+    assert!(call("pandacode_schedule_task", json!({"title": "T", "prompt": "x", "afterTaskId": "b"})).unwrap_err().starts_with(clock));
+    assert!(call("pandacode_schedule_task", json!({"title": "T", "prompt": "x", "kind": "after"})).unwrap_err().starts_with(clock));
+    set_settings(&store, &SchedulerSettings { agent_limit_per_task: 1, ..Default::default() }).unwrap();
+    assert!(call("pandacode_schedule_task", json!({"title": "T", "prompt": "x", "inMinutes": 5})).unwrap_err().contains("limit 1"));
+    assert!(!tools::self_scoped("pandacode_schedule_task") && tools::self_scoped("pandacode_list_schedules"));
+}
+
+#[test]
+fn new_task_titles_carry_the_start_time_and_fit_a_task_title() {
+    assert_eq!(new_task_title("Daily check", "2026-11-25 09:00"), "Daily check · 2026-11-25 09:00");
+    let long = new_task_title(&"é".repeat(120), "2026-11-25 09:00");
+    assert!(long.len() <= 200 && long.ends_with(" · 2026-11-25 09:00"), "{long}");
+    assert_eq!(local_stamp(NOW).len(), "2026-11-25 09:00".len());
+}
+
+#[test]
+fn a_new_task_run_copies_the_template_and_is_never_held_by_its_console() {
+    let store = store();
+    store.db.execute("UPDATE sessions SET provider='codex',model='gpt-x',mode='full',archived=1 WHERE id='a'", []).unwrap();
+    let schedule = create(&store, &ScheduleInput { title: "Daily check".into(), run_at: Some(NOW + MINUTE), new_task: true, ..input("once") }, "user", None, NOW).unwrap();
+    let held: std::collections::HashSet<String> = ["a".to_owned()].into();
+    let fired = firing::take_due(&store, NOW + MINUTE, &held).unwrap();
+    assert_eq!(fired.len(), 1, "a new-task run sends nothing to the held thread");
+    let task_id = firing::create_run_task(&store, &fired[0], NOW + MINUTE).unwrap();
+    let task = store.session(&task_id).unwrap();
+    assert_eq!((task.project_id.as_str(), task.provider.as_str(), task.model.as_str(), task.mode.as_str()), ("p1", "codex", "gpt-x", "full"));
+    assert!(task.title.starts_with("Daily check · "), "{}", task.title);
+    assert_eq!(get(&store, &schedule.id).unwrap().last_task_id.as_deref(), Some(task_id.as_str()));
+    let run = record_run(&store, &TaskSchedule { session_id: task_id.clone(), ..fired[0].clone() }, NOW + MINUTE, "started", "Started a new task", false).unwrap();
+    assert_eq!(runs(&store, None, Some(&schedule.id), 5).unwrap(), vec![run]);
+    store.db.execute("DELETE FROM sessions WHERE id=?1", [&task_id]).unwrap();
+    assert_eq!(get(&store, &schedule.id).unwrap().last_task_id, None);
 }
