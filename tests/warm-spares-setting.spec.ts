@@ -50,7 +50,7 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).toBeChecked();
 });
 
-test('memory-guard skips show in this launch’s totals even when no spare started', async ({ page }) => {
+test('warm spares memory-guard skips show in this launch’s totals even when no spare started', async ({ page }) => {
   await page.goto('/?warm-spares-stats-low-memory');
   await openAgents(page);
   await expect(status(page)).toHaveText('This launch: 2 skipped (low memory)');
