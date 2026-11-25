@@ -426,6 +426,43 @@ async fn wait_natural_exit(child: &mut Child, mut hurry: tokio::sync::watch::Rec
     }
 }
 
+/// Default-on marker switch (shared by the desktop app and headless host): with it present every
+/// clean run finishes its process before returning, as managed workers and cloud runs always do.
+const BACKGROUND_REAP_OFF_FILE: &str = "background-reap-off";
+
+/// On while the marker is absent; an unreadable settings folder fails closed (finish in the run).
+fn background_reap_enabled_in(dir: Result<PathBuf, String>) -> bool {
+    crate::app_marker::exists_in(dir, BACKGROUND_REAP_OFF_FILE).is_ok_and(|present| !present)
+}
+
+#[cfg(test)]
+thread_local! {
+    static BACKGROUND_REAP_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// The switch read through the app handle both entry points initialize (`warm::app_data_dir`).
+/// Without one, production fails closed and unit tests default on unless overridden.
+pub(super) fn background_reap_enabled_now() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
+        return enabled;
+    }
+    match super::warm::app_data_dir() {
+        Some(dir) => background_reap_enabled_in(dir),
+        None => cfg!(test),
+    }
+}
+
+/// `background_reap_enabled_now` on a blocking thread, so a launch never waits on the marker
+/// file on the runtime. A test's thread-local override is read here first.
+pub(super) async fn background_reap_enabled_off_runtime() -> bool {
+    #[cfg(test)]
+    if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
+        return enabled;
+    }
+    crate::blocking(|| Ok(background_reap_enabled_now())).await.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -452,6 +489,24 @@ mod unit_tests {
 
     fn unique(name: &str) -> String {
         format!("exit-x-{name}-{}", uuid::Uuid::new_v4().simple())
+    }
+
+    #[tokio::test]
+    async fn the_background_reap_marker_defaults_on_and_fails_closed() {
+        let dir = Scratch::new("reap-marker");
+        assert!(background_reap_enabled_in(Ok(dir.0.clone())), "absent: on");
+        std::fs::write(dir.0.join(BACKGROUND_REAP_OFF_FILE), b"").unwrap();
+        assert!(!background_reap_enabled_in(Ok(dir.0.clone())), "present: off");
+        let file = dir.0.join("not-a-folder");
+        std::fs::write(&file, b"").unwrap();
+        assert!(!background_reap_enabled_in(Ok(file)), "an unreadable settings folder fails closed");
+        assert!(!background_reap_enabled_in(Err("no app data".into())), "an unknown one too");
+        assert!(background_reap_enabled_off_runtime().await, "tests without an app handle default on");
+        for enabled in [false, true] {
+            BACKGROUND_REAP_OVERRIDE.with(|value| value.set(Some(enabled)));
+            assert_eq!(background_reap_enabled_off_runtime().await, enabled);
+        }
+        BACKGROUND_REAP_OVERRIDE.with(|value| value.set(None));
     }
 
     /// A child that idles for 30 s, ignores stdin closing and dies only when stopped.

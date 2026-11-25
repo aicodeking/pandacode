@@ -7,11 +7,15 @@ use super::*;
 use crate::path_match::{path_in_folder, resolve_path};
 use std::sync::LazyLock;
 
+mod adopt;
 mod key;
 mod spawn;
 mod stats;
+pub(super) use self::adopt::adopt_for_launch;
+#[cfg(test)]
+use self::adopt::launched_without_key_since;
 use self::key::{age_expired, miss};
-use self::stats::{decision, discarded_note, no_spare_note, record_adopted, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
+use self::stats::{decision_miss, discarded_note, no_spare_note, record_adopted, Gone, PoolChurn, PoolStats, WarmStatsSnapshot};
 pub(super) use self::key::{key_fields, lead_git_status_digest, with_git_status};
 #[cfg(test)]
 pub(super) use self::key::{key, lead_key};
@@ -27,6 +31,12 @@ static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
 
 pub(crate) fn init(app: &tauri::AppHandle) {
     let _ = APP.set(app.clone());
+}
+
+/// The app data folder through the handle both entry points set (`init`), for the other
+/// launch-path marker switches (`exit::background_reap_enabled_now`); `None` before `init`.
+pub(super) fn app_data_dir() -> Option<Result<PathBuf, String>> {
+    APP.get().map(crate::app_marker::data_dir)
 }
 
 /// Default-on switch shared by the desktop app and headless host.
@@ -206,7 +216,7 @@ impl Spares {
         // renewal chain counts once, and an expiry with spares off counts nothing.
         if why == Gone::Evicted {
             let limit = if spare.lead { LEAD_LIMIT } else { LIMIT };
-            self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now());
+            self.churn_mut(spare.lead).evicted(limit, std::time::Instant::now(), std::time::SystemTime::now());
         }
         if spare.lead {
             if self.gone.len() >= GONE_LIMIT {
@@ -312,9 +322,9 @@ pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool,
 }
 
 /// A spare taken for adoption, counted as adopted only once `into_parts` commits to it. Dropping
-/// it first (a failed rebind, a Stop before the launch owned its streams) counts a miss and
-/// retires the process like any other removal, so the next same-session launch waits for it
-/// instead of resuming beside it.
+/// it first (a failed rebind, a Stop before the launch owned its streams) counts a miss, outside
+/// the pool's miss streak (the spare was usable), and retires the process like any other
+/// removal, so the next same-session launch waits for it instead of resuming beside it.
 pub(super) struct Adopting {
     pool: &'static Pool,
     session_id: String,
@@ -338,7 +348,7 @@ impl Adopting {
 impl Drop for Adopting {
     fn drop(&mut self) {
         if let Some((spare, pending)) = self.spare.take() {
-            eprintln!("{}", decision(self.pool, spare.lead, Some("its launch ended before adoption")));
+            eprintln!("{}", decision_miss(self.pool, spare.lead, "its launch ended before adoption", false));
             retire(&self.session_id, spare, pending);
         }
     }
@@ -360,8 +370,10 @@ fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool,
         // Counted and logged only once the launch commits to it (`Adopting::into_parts`).
         None => (Some((spare, pending)), None),
         Some(reason) => {
+            // A dead or stale spare joins the pool's miss streak; one that merely outlived its
+            // window says only that the follow-up came late (the expiry streak counts those).
+            let note = decision_miss(pool, spare.lead, &reason, !(alive && expired));
             // The cold launch's `await_exit` waits for this process, so two never share a session.
-            let note = decision(pool, spare.lead, Some(&reason));
             retire(session_id, spare, pending);
             (None, Some(note))
         }
@@ -408,29 +420,6 @@ fn launched_without_spare_in(pool: &Pool, session_id: &str) {
         spares(pool).stats_mut(spare.lead).discarded += 1;
         retire(session_id, spare, pending);
     }
-}
-
-/// A launch whose warm key is unknowable (its config folder cannot be resolved): counts the launch,
-/// retires any pooled spare and logs the miss like `take` would, leaving no stale `gone` note.
-pub(super) fn launched_without_key(session_id: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) {
-    launched_without_key_reason(session_id, "its config folder cannot be known", ordinary_eligible, lead, discard_epoch);
-}
-
-/// `launched_without_key`, logging `why` as the reason the spare was not used.
-pub(super) fn launched_without_key_reason(session_id: &str, why: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) {
-    if let Some(note) = launched_without_key_since(&SPARES, session_id, why, ordinary_eligible, lead, discard_epoch) {
-        eprintln!("{note}");
-    }
-}
-
-fn launched_without_key_since(pool: &Pool, session_id: &str, why: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> Option<String> {
-    let (removed, gone) = remove_for_launch(pool, session_id);
-    let Some((spare, pending)) = removed else {
-        return no_spare_since(pool, gone, ordinary_eligible, lead, discard_epoch);
-    };
-    let note = decision(pool, spare.lead, Some(why));
-    retire(session_id, spare, pending);
-    Some(note)
 }
 
 /// `no_spare_note`, counting a cold launch only if no switch-off emptied the pool since `discard_epoch`.

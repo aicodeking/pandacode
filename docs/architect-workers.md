@@ -384,8 +384,9 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   once per expiry: only while every live worker still runs and none waits on
   your approval or answer, and never once the wake has launched; a "no" ends the
   renewals for good. Settings → Agents shows each pool's current-launch totals
-  beside the **Warm Claude spares** switch: ordinary `<adopted>/<started> adopted`
-  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold` and `paused` (starts
+  beside the **Warm Claude spares** switch: the live `idle now` count and, during a
+  backoff, `paused (N min left)`, then ordinary `<adopted>/<started> adopted`
+  plus `not used`, `expired`, `evicted`, `replaced`, `discarded`, `cold` and `N starts paused` (starts
   skipped by backoff; each shown whenever nonzero), and the lead totals separately, so unused expiries and the
   adoption rate are never hidden; read when the page opens and when the switch is
   toggled, not streamed. A pool that evicts `limit` spares in a row with no adoption
@@ -394,11 +395,15 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   A full unadopted lead renewal chain counts as one unused expiry, recorded only when
   the chain ends without renewal, without a wake superseding it, and with spares on,
   so renewals never trigger the 30-minute pause mid-chain; expiries while
-  `warm-spares-off` is set never count. 3 consecutive launch-time misses (`not used`)
-  in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
+  `warm-spares-off` is set never count. 3 consecutive staleness or exit misses (`not used`
+  because a warm-key field changed, the process exited, or the config folder or lead git
+  status cannot be read; a user Stop before adoption, a blocking-task join error or an
+  expiry does not count) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
   5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
   `churn_skipped` (`paused`); any committed adoption resets all three streaks and
-  ends the pause, and otherwise the cooldown lapsing ends it. Every adoption is also logged to stderr, locally only
+  ends the pause, and otherwise the cooldown lapsing ends it; cooldowns are checked on
+  both the monotonic and wall clocks, like the idle limits, so laptop sleep does not
+  stretch a 5- or 30-minute pause. Every adoption is also logged to stderr, locally only
   (`Team lead's warm Claude agent adopted.` or `Team lead's warm Claude agent
   not used (<reason>); starting cold.`, from `providers/warm/stats.rs`), followed by
   the pool's running lifecycle totals since launch (`Lead spares since launch:
@@ -425,10 +430,11 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   short sessions; Claude Code 2.1.325, macOS arm64, sampled after 2–3.5 s of
   idling, from the resumed one-turn medians (195.6 MiB telemetry off, 204.6 MiB
   default; 50-turn probe 194.7–205.3 MiB) through fresh minimal and full user
-  config (251.8 MiB), with RSS after up to 10 idle minutes unmeasured; a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
+  config (251.8 MiB); a 10-minute idle probe on minimal configs sat at 93–235 MiB with no growth, a 50-turn synthetic resumed probe added ~3–4 MiB, a minimal Node
   stdio MCP server child added ~51 MiB per spare, and larger histories, plugins
-  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks, but an unused spare is retired with
-  process-group `SIGKILL`, so `SessionEnd` hooks never run for it (turn **Warm
+  or heavier/multiple MCP servers can use more). It runs your `SessionStart` hooks, but an unused spare is force-terminated
+  (process-group `SIGKILL` on Unix, process termination on Windows), so `SessionEnd`
+  hooks never run for it on any platform (turn **Warm
   Claude spares** off if you rely on paired hooks), and snapshots
   `gitStatus` (branch, working-tree status, recent commits) when it starts, so a
   renewal chain can run hooks in up to three processes per wake, and hook

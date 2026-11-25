@@ -7,7 +7,7 @@ const status = (page: Page) => settings(page).locator('.setting-row:has(#warm-sp
 const hint = (page: Page) => settings(page).locator('.setting-row:has(#warm-spares) .sr-only');
 /** Lets an answered preview `invoke` reach its caller: its promise chain resolves within a frame. */
 const settle = (page: Page) => page.evaluate(() => new Promise<void>(done => requestAnimationFrame(() => requestAnimationFrame(() => done()))));
-const TOTALS = 'This launch: 3/7 adopted, 1 not used, 2 expired, 1 replaced, 1 cold · lead 1/1 adopted';
+const TOTALS = 'This launch: 3/7 adopted, 1 idle now, 1 not used, 2 expired, 1 replaced, 1 cold · lead 1/1 adopted';
 /** How many `warm_spare_stats` reads the preview has answered since the page loaded. */
 const statsReads = (page: Page) => page.locator('html');
 
@@ -24,7 +24,7 @@ test('the warm spares switch is on by default, explains itself and saves', async
   await expect(toggle(page)).toBeChecked();
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
-  for (const disclosure of ['~0.17–1.71 s', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', 'up to 4', 'MCP servers', 'SessionStart', 'SessionEnd', 'misses', 'all read-only', '10 min old']) {
+  for (const disclosure of ['~0.17–1.71 s', 'Turn off agent telemetry', 'without idle processes', '~195–255 MiB', 'up to 4', 'MCP servers', 'SessionStart', 'SessionEnd', 'force-terminated', 'misses', 'all read-only', '10 min old']) {
     await expect(hint(page)).toContainText(disclosure);
   }
   // This launch's local totals sit on the row's status line, which is not an alert.
@@ -105,10 +105,11 @@ test('flipping the warm spares switch re-reads this launch’s totals', async ({
   await expect(toggle(page)).toBeChecked();
 });
 
-test('warm spares that all expired unused, with warming paused, show as waste rather than zero', async ({ page }) => {
+test('warm spares that all expired unused, with warming paused, show as waste and the time left in the pause', async ({ page }) => {
   await page.goto('/?warm-spares-stats-expired');
   await openAgents(page);
   await expect(toggle(page)).toBeChecked();
-  await expect(status(page)).toHaveText('This launch: 0/6 adopted, 6 expired, 2 paused');
+  // Live pause time follows adoption; starts the pause skipped are a separate, historical count.
+  await expect(status(page)).toHaveText('This launch: 0/6 adopted, paused (29 min left), 6 expired, 2 starts paused');
   await expect(status(page)).not.toHaveAttribute('role', 'alert');
 });

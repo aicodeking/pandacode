@@ -163,7 +163,7 @@ async fn a_renewal_that_never_pools_is_not_taken_for_renewed() {
     // The lead pool's churn backoff skipped it: the same.
     let cooling = Lifecycle { idle: Duration::from_secs(3600), ..stub() };
     for _ in 0..LEAD_LIMIT {
-        spares(cooling.pool).lead_churn.evicted(LEAD_LIMIT, std::time::Instant::now());
+        spares(cooling.pool).lead_churn.evicted(LEAD_LIMIT, std::time::Instant::now(), std::time::SystemTime::now());
     }
     let renewed = renewal(cooling).await.unwrap();
     assert!(!renewed && stub_starts(&session) == 0 && spares(cooling.pool).lead.churn_skipped == 1);
@@ -684,7 +684,7 @@ async fn warm_spare_stats_reports_both_pools_in_camel_case() {
         locked.lead = PoolStats { started: 1, missed: 1, cold_without_spare: 2, ..PoolStats::default() };
     }
     let stats = serde_json::to_value(WarmStatsSnapshot::of(&spares(pool))).unwrap();
-    assert_eq!(stats["ordinary"], json!({"started": 3, "adopted": 2, "missed": 0, "expired": 0, "evicted": 0, "replaced": 0, "discarded": 0, "coldWithoutSpare": 4, "churnSkipped": 1}));
+    assert_eq!(stats["ordinary"], json!({"started": 3, "adopted": 2, "missed": 0, "expired": 0, "evicted": 0, "replaced": 0, "discarded": 0, "coldWithoutSpare": 4, "churnSkipped": 1, "idleNow": 0, "pausedSecs": 0}));
     assert_eq!(stats["lead"]["coldWithoutSpare"], 2);
     assert_eq!(stats["lead"]["missed"], 1);
     let live = serde_json::to_value(warm_spare_stats().await).unwrap();

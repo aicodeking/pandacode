@@ -51,16 +51,19 @@ use tauri::{Emitter, Manager, State};
 const TOOL_CATALOG_VERSION: u32 = 14;
 /// Auto teams carry a roster of installed models the lead may choose from.
 const AUTO_ROSTER_MAX: usize = 24;
+/// The lead's (and a direct worker's) dispatch tool: a launch offering it is a team lead's, whose
+/// warm spare waits in the lead pool (`providers::warm::adopt_for_launch`).
+pub(crate) const DISPATCH_WORKERS_TOOL: &str = "pandacode_dispatch_workers";
 /// Team tools only change this team's own state, and every call is checked against the
 /// caller's team, generation and role, so a harness may run them without asking.
 const TEAM_TOOLS: [&str; 13] = [
-    "pandacode_dispatch_workers", "pandacode_route_models", "pandacode_list_workers", "pandacode_read_worker",
+    DISPATCH_WORKERS_TOOL, "pandacode_route_models", "pandacode_list_workers", "pandacode_read_worker",
     "pandacode_followup_worker", "pandacode_cancel_worker", "pandacode_finish_team",
     "pandacode_team_directory", "pandacode_send_team_message", "pandacode_read_team_mailbox",
     "pandacode_checkpoint_worker", "pandacode_team_notes", "pandacode_sub_workers",
 ];
 /// The worker tools a direct worker gets for its own sub-workers (depth 1: sub-workers get none).
-const SUB_WORKER_TOOLS: [&str; 2] = ["pandacode_dispatch_workers", "pandacode_sub_workers"];
+const SUB_WORKER_TOOLS: [&str; 2] = [DISPATCH_WORKERS_TOOL, "pandacode_sub_workers"];
 pub(crate) fn team_tool(name: &str) -> bool {
     TEAM_TOOLS.contains(&name)
 }
@@ -1665,7 +1668,7 @@ pub fn host(
                         let (config, langs, _, _) = routing::team_context(&app, &sid, generation, &json!({})).await?;
                         routing::route_models(&config, &langs, args).await?
                     } else {
-                        let routes = if name == "pandacode_dispatch_workers" && routing::has_auto(&args, crate::model_routing::enabled()) {
+                        let routes = if name == DISPATCH_WORKERS_TOOL && routing::has_auto(&args, crate::model_routing::enabled()) {
                             let (config, langs, chains, reviewers) = routing::team_context(&app, &sid, generation, &args).await?;
                             routing::auto_routes(&config, &langs, &chains, &reviewers, &args).await
                         } else {

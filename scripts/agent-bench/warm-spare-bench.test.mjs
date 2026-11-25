@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import {
   bootstrapMedianCi, cancellableDelay, claudeArgs, mirroredClaudeJson, seedArgs, SEED_PROMPT, SEED_TURNS, transcriptDigest, launchEnv, LAUNCH_ENVS, OFFLINE_ENV, PRIVACY_ENV, rustEnvTable, SUITES, suiteParts, describe as stats, leadInstructions, mcpReply, MCP_TOOLS, pairOrders, parseArgs,
   maxMessageCount, resumeCheckError, rssKibToMib, rustFnStr, rustStr, scrub, sessionTranscriptKey, summarize, treeRssMib, unescapeRust,
-  mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
+  matchingLivePids, MAX_PARK_MS, mcpConfigJson, parsePsArgs, PARK_MS, runOnce, INHERITED_ENV_KEYS, MAX_SEED_TURNS, reportEnv, runSeedTurns, serveStdioMcp, STDIO_MCP_TOOLS, STDIO_SERVE_FLAG, STDIO_SERVER_NAME, treeBreakdown,
 } from './warm-spare-bench.mjs';
 
 test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => {
@@ -21,7 +21,10 @@ test('parseArgs reads --pairs, --out and --suites and rejects bad input', () => 
   assert.equal(parseArgs(['--park-ms', '3500']).parkMs, 3500);
   assert.throws(() => parseArgs(['--park-ms', '0']), /--park-ms needs/);
   assert.throws(() => parseArgs(['--park-ms', 'x']), /--park-ms needs/);
-  assert.throws(() => parseArgs(['--park-ms', '60001']), /--park-ms needs/);
+  assert.equal(MAX_PARK_MS, 600_000, 'the park can span PandaCode\'s 10-minute warm spare IDLE window');
+  assert.equal(parseArgs(['--park-ms', '600000']).parkMs, 600_000);
+  assert.equal(parseArgs(['--park-ms', '60001']).parkMs, 60_001, 'the old 60 s cap is gone');
+  assert.throws(() => parseArgs(['--park-ms', '600001']), /--park-ms needs an integer from 1 to 600000/);
   assert.equal(parseArgs(['--stdio-mcp', '--pairs', '5']).stdioMcp, true);
   assert.equal(parseArgs(['--pairs', '5', '--stdio-mcp']).pairs, 5);
   assert.throws(() => parseArgs(['--suites', 'user']), /default-minimal/);
@@ -524,8 +527,8 @@ test('treeBreakdown splits Claude, its stdio MCP child and other descendants', (
   ].join('\n');
   assert.equal(parsePsArgs(ps).length, 6);
   assert.deepEqual(parsePsArgs('  7 1 8')[0], { pid: 7, ppid: 1, kib: 8, args: '' });
-  assert.deepEqual(treeBreakdown(ps, 10), { self_rss_mib: 200, tree_rss_mib: 251, child_count: 3, mcp_child_count: 1, mcp_child_rss_mib: 40, mcp_child_pids: [11] });
-  assert.deepEqual(treeBreakdown(ps, 15), { self_rss_mib: 0, tree_rss_mib: 0, child_count: 0, mcp_child_count: 0, mcp_child_rss_mib: 0, mcp_child_pids: [] });
+  assert.deepEqual(treeBreakdown(ps, 10), { self_rss_mib: 200, tree_rss_mib: 251, child_count: 3, mcp_child_count: 1, mcp_child_rss_mib: 40, mcp_child_pids: [11], mcp_children: [{ pid: 11, args: '/opt/node /x/warm-spare-bench.mjs --serve-stdio-mcp' }] });
+  assert.deepEqual(treeBreakdown(ps, 15), { self_rss_mib: 0, tree_rss_mib: 0, child_count: 0, mcp_child_count: 0, mcp_child_rss_mib: 0, mcp_child_pids: [], mcp_children: [] });
   assert.equal(treeBreakdown(ps, 99), null);
   assert.equal(treeBreakdown('  20 1 100 node --serve-stdio-mcpX\n  21 20 100 node x --serve-stdio-mcp-other', 20).mcp_child_count, 0, 'the marker matches a whole argument only');
 });
@@ -606,9 +609,19 @@ test('runOnce kills a sampled stdio MCP child when the run errors', { timeout: 1
   }
 });
 
-test('runOnce only SIGKILLs sampled stdio MCP PIDs that are still alive (a reused PID is never hit)', () => {
-  const source = readFileSync(new URL('./warm-spare-bench.mjs', import.meta.url), 'utf8');
-  const calls = [...source.matchAll(/\bkillPids\(([^;]*?)\);/g)].map(m => m[1]);
-  assert.ok(calls.length >= 2, 'both the orphan and the error path kill sampled MCP children');
-  for (const arg of calls) assert.equal(arg, 'mcpPids.filter(alive)', `killPids(${arg}) must filter to live PIDs`);
+test('matchingLivePids keeps a live matching child even after it is reparented to PID 1', () => {
+  const expected = [{ pid: 11, args: 'node bench.mjs --serve-stdio-mcp' }];
+  assert.deepEqual(matchingLivePids('   11    10  40960 node bench.mjs --serve-stdio-mcp\n', expected), [11], 'still under Claude');
+  assert.deepEqual(matchingLivePids('    1     0   1000 /sbin/launchd\n   11     1  40960 node bench.mjs --serve-stdio-mcp  \n', expected), [11], 'orphaned: ppid 1, trailing spaces trimmed');
+  assert.deepEqual(matchingLivePids('   11 node bench.mjs --serve-stdio-mcp\n', expected), [11], 'pid=,args= tables work too');
+});
+
+test('matchingLivePids drops a dead PID and a reused PID running another command, and never guesses without ps', () => {
+  const expected = [{ pid: 11, args: 'node bench.mjs --serve-stdio-mcp' }, { pid: 12, args: 'node bench.mjs --serve-stdio-mcp' }, { pid: 13, args: 'node bench.mjs --serve-stdio-mcp' }];
+  const ps = ['    1     0   1000 /sbin/launchd', '   12     1  30000 /usr/bin/vim notes.txt', '   13     1  40960 node bench.mjs --serve-stdio-mcp'].join('\n');
+  assert.deepEqual(matchingLivePids(ps, expected), [13], '11 is gone and 12 was reused by an unrelated command: neither is killed');
+  assert.deepEqual(matchingLivePids('   12     1  30000 node bench.mjs --serve-stdio-mcp --other\n', expected), [], 'changed args are a different process');
+  assert.deepEqual(matchingLivePids(null, expected), [], 'ps unavailable: kill nothing');
+  assert.deepEqual(matchingLivePids('', expected), []);
+  assert.deepEqual(matchingLivePids(ps, []), []);
 });

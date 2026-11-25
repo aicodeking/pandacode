@@ -131,7 +131,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         }
         // Tasks taking turns round-robin each evict the next one's spare unused: after `limit`
         // evictions in a row the pool starts none until `CHURN_COOLDOWN` passes or one is adopted.
-        if pool.churn_mut(lead).cooling(Instant::now()) {
+        if pool.churn_mut(lead).cooling(Instant::now(), SystemTime::now()) {
             pool.stats_mut(lead).churn_skipped += 1;
             return Ok(false);
         }

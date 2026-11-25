@@ -81,6 +81,9 @@ export function suiteParts(name) {
 }
 
 /** Parse CLI flags: `--pairs <n>` (default 12), `--out <path>`, `--suites a,b`, `--stdio-mcp`, `--park-ms <n>` (default PARK_MS), `--seed-turns <n>` (default SEED_TURNS). */
+/** Longest `--park-ms`: PandaCode's 10-minute warm spare IDLE window. */
+export const MAX_PARK_MS = 600_000;
+
 export function parseArgs(argv) {
   const opts = { pairs: 12, out: null, suites: [...SUITES], stdioMcp: false, parkMs: PARK_MS, seedTurns: SEED_TURNS };
   for (let i = 0; i < argv.length; i++) {
@@ -101,7 +104,7 @@ export function parseArgs(argv) {
       opts.stdioMcp = true;
     } else if (flag === '--park-ms') {
       const n = Number(value);
-      if (!Number.isInteger(n) || n < 1 || n > 60_000) throw new Error(`--park-ms needs an integer from 1 to 60000, got ${value}`);
+      if (!Number.isInteger(n) || n < 1 || n > MAX_PARK_MS) throw new Error(`--park-ms needs an integer from 1 to ${MAX_PARK_MS}, got ${value}`);
       opts.parkMs = n; i++;
     } else if (flag === '--seed-turns') {
       const n = Number(value);
@@ -253,7 +256,8 @@ export function parsePsArgs(psText) {
 /**
  * Split `root`'s process tree from `ps -A -o pid=,ppid=,rss=,args=` into Claude's own RSS, its
  * descendants, and the descendants whose command line contains `marker` (the stdio MCP server).
- * Null when `root` is not listed. Command lines never leave this function, only pids and sizes.
+ * Null when `root` is not listed. `mcp_children` keeps each marked child's trimmed command line
+ * only so `matchingLivePids` can verify its identity before a kill; it never reaches the results file.
  */
 export function treeBreakdown(psText, root, marker = STDIO_SERVE_FLAG) {
   const rows = parsePsArgs(psText);
@@ -278,7 +282,29 @@ export function treeBreakdown(psText, root, marker = STDIO_SERVE_FLAG) {
     mcp_child_count: marked.length,
     mcp_child_rss_mib: mib(sum(marked)),
     mcp_child_pids: marked.map(r => r.pid).sort((a, b) => a - b),
+    mcp_children: marked.map(r => ({ pid: r.pid, args: r.args.trim() })).sort((a, b) => a.pid - b.pid),
   };
+}
+
+/** Rows of `ps -A -o pid=,ppid=,rss=,args=` or `ps -A -o pid=,args=` as { pid, args } with trimmed args. */
+function parsePidArgs(psText) {
+  const lines = String(psText).split('\n').map(line => line.trim()).filter(Boolean);
+  const full = parsePsArgs(psText);
+  if (full.length && full.length === lines.length) return full.map(r => ({ pid: r.pid, args: r.args.trim() }));
+  return lines.map(line => line.match(/^(\d+)(?:\s+(.*))?$/)).filter(Boolean)
+    .map(([, pid, args]) => ({ pid: Number(pid), args: (args ?? '').trim() }));
+}
+
+/**
+ * The pids from `expected` ({ pid, args }) still listed in `psText` with the same trimmed command
+ * line. The parent is deliberately not compared: an orphaned child is reparented (to 1 or a
+ * subreaper) when Claude exits. A pid now running another command (reused) is excluded, so it is
+ * never signalled; a null or unreadable `psText` yields [] (kill nothing rather than guess).
+ */
+export function matchingLivePids(psText, expected) {
+  if (psText == null || !expected?.length) return [];
+  const live = new Map(parsePidArgs(psText).map(r => [r.pid, r.args]));
+  return expected.filter(c => live.has(c.pid) && live.get(c.pid) === String(c.args ?? '').trim()).map(c => c.pid);
 }
 
 /** Remove the user's home directory from text bound for the results file. */
@@ -440,15 +466,22 @@ export function cancellableDelay(ms, value) {
 
 /** Claude's own RSS, the stdio MCP child's RSS and the descendant count; null fields when `ps` is unavailable. */
 function sampleTree(pid) {
-  try { return treeBreakdown(execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss=,args='], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }), pid); } catch { return null; }
+  const ps = readPsTable();
+  return ps == null ? null : treeBreakdown(ps, pid);
 }
 
-const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+/** The full `ps -A -o pid=,ppid=,rss=,args=` table, or null when `ps` is unavailable. */
+function readPsTable() {
+  try { return execFileSync('ps', ['-A', '-o', 'pid=,ppid=,rss=,args='], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }); } catch { return null; }
+}
 
-/** Whether any of `pids` is still running ORPHAN_WAIT_MS after Claude exited (polled, so a fast exit returns at once). */
-async function anyOrphaned(pids) {
+/** The sampled stdio MCP children still running as the same command (pid and args verified). */
+const liveMcpPids = mcpChildren => (mcpChildren.length ? matchingLivePids(readPsTable(), mcpChildren) : []);
+
+/** Whether any of `mcpChildren` is still running ORPHAN_WAIT_MS after Claude exited (polled, so a fast exit returns at once). */
+async function anyOrphaned(mcpChildren) {
   const deadline = performance.now() + ORPHAN_WAIT_MS;
-  while (pids.some(alive)) {
+  while (liveMcpPids(mcpChildren).length > 0) {
     if (performance.now() >= deadline) return true;
     await delay(50);
   }
@@ -493,7 +526,7 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
   });
   child.on('error', () => {});
   const out = { arm, init_ms: null, result_ms: null, exit_after_result_ms: null, exit_code: null, rss_mib: null, tree_rss_mib: null, result_subtype: null, error: null };
-  let mcpPids = [];
+  let mcpChildren = [];
   let t0 = tSpawn;
   let tResult = null;
   const resultTimeout = cancellableDelay(RUN_TIMEOUT_MS + parkMs);
@@ -531,7 +564,7 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
       Object.assign(out, sampleRss(child.pid));
       if (stdioMcp) {
         const tree = sampleTree(child.pid);
-        mcpPids = tree?.mcp_child_pids ?? [];
+        mcpChildren = tree?.mcp_children ?? [];
         Object.assign(out, { self_rss_mib: tree?.self_rss_mib ?? null, mcp_child_rss_mib: tree?.mcp_child_rss_mib ?? null, child_count: tree?.child_count ?? null, mcp_child_count: tree?.mcp_child_count ?? null, tree_rss_mib: tree?.tree_rss_mib ?? out.tree_rss_mib });
       }
       t0 = performance.now();
@@ -544,15 +577,15 @@ export async function runOnce({ arm, args, env, cwd, stdioMcp = false, command =
     if (!exit) { out.error = out.error ?? `no exit within ${EXIT_TIMEOUT_MS} ms of result`; child.kill('SIGKILL'); await exited; }
     else { out.exit_after_result_ms = exit.at - tResult; out.exit_code = exit.code; }
     if (stdioMcp) {
-      if (arm === 'cold') mcpPids = []; // sampled only while parked
-      out.mcp_child_orphaned = await anyOrphaned(mcpPids);
-      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(mcpPids.filter(alive)); }
+      if (arm === 'cold') mcpChildren = []; // sampled only while parked
+      out.mcp_child_orphaned = await anyOrphaned(mcpChildren);
+      if (out.mcp_child_orphaned) { out.error = out.error ?? `stdio MCP child outlived Claude by ${ORPHAN_WAIT_MS} ms`; killPids(liveMcpPids(mcpChildren)); }
     }
   } catch (error) {
     out.error = `${error.message}; stderr: ${stderr.slice(-300)}`;
     try { child.kill('SIGKILL'); } catch { /* never spawned or already gone */ }
     await exited;
-    killPids(mcpPids.filter(alive)); // a stdio MCP child sampled while parked must not outlive an errored run
+    killPids(liveMcpPids(mcpChildren)); // a stdio MCP child sampled while parked must not outlive an errored run
   } finally {
     resultTimeout.cancel();
     children.delete(child);

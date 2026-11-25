@@ -44,6 +44,12 @@ alone: each retires when its task's next turn launches (cold), when its 10-minut
 idle timer expires, or when the host stops (restarting `pandacode serve` retires
 them at once; on desktop, turning the Settings switch off calls `disable_all`,
 which retires pooled spares immediately).
+Background reaping of a finished turn's Claude CLI has a similar switch: an empty
+`background-reap-off` file in the same app data directory makes every Claude-family
+launch exit inline at turn end (as managed workers do) instead of being reaped in the
+background. It is read at each launch, so it takes effect at once without a rebuild
+or restart; an unreadable marker fails closed to inline exit. Delete it to restore
+background reaping.
 Disabling spares avoids idle Claude processes and ahead-of-turn `SessionStart`
 hooks; cost estimates and caveats are in
 [worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
