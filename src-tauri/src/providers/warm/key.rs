@@ -538,8 +538,8 @@ fn path_absent(path: &Path) -> bool {
 pub(super) const NOT_GIT: &str = "not-git";
 /// At most this much `git status` output is digested; a larger status is unknown.
 const GIT_STATUS_LIMIT: usize = 1024 * 1024;
-/// How long that `git status` (with its local config inspection) may run: a launch with a pooled
-/// spare waits on it (beside its warm key's config walk), so a slow one starts cold instead.
+/// How long the single `git status` process may run after local config inspection in Rust.
+/// A launch with a pooled spare waits on it beside its config walk, so a slow one starts cold.
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// The SHA-256 digest of the working tree's bounded
@@ -548,13 +548,12 @@ const GIT_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
 /// waits. `--untracked-files=all` lists every untracked file, so a file added inside a folder that
 /// was already untracked changes the digest too. `NOT_GIT` outside a repository; `None` when it
 /// cannot be known (an unreadable repository, a failed, timed-out or truncated `git status`), so
-/// no spare starts or is adopted on an unknown status. Git runs through
-/// `workspace::run_git_status_safe`, with the checkout's own filters, hooks, fsmonitor, lazy
-/// fetches, credential helpers and askpass switched off and no optional locks; a config it
-/// refuses (includes, `core.worktree`, keys that run a program or fetch) is `None` too, and so
-/// is a checkout with submodules (`has_submodules`): their own config is never read and their
-/// status is skipped, so the digest could not see them change. Never on the async runtime; cold
-/// launches never call this.
+/// no spare starts or is adopted on an unknown status. `git_config::checkout_status_filters`
+/// inspects local config in Rust and refuses includes, `core.worktree`, and keys that run a
+/// program or fetch. `workspace::run_git_status_safe` runs one bounded Git process with the
+/// checkout's filters, hooks, fsmonitor, lazy fetches, credential helpers and askpass switched
+/// off and no optional locks. Checkouts with submodules also return `None`, since skipping
+/// their status would hide changes in them. Runs off the async runtime for pooled launches.
 pub(super) fn git_status(cwd: &Path) -> Option<String> {
     let (git_dir, common_dir) = match crate::claude_roots::git_dirs_for(cwd) {
         None => return Some(NOT_GIT.into()),
@@ -564,8 +563,9 @@ pub(super) fn git_status(cwd: &Path) -> Option<String> {
     if has_submodules(cwd, &git_dir, &common_dir) {
         return None;
     }
+    let filters = crate::git_config::checkout_status_filters(&git_dir, &common_dir).ok()?;
     let args = ["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"];
-    let output = crate::workspace::run_git_status_safe(cwd, &args, GIT_STATUS_LIMIT, GIT_STATUS_TIMEOUT).ok()?;
+    let output = crate::workspace::run_git_status_safe(cwd, &filters, &args, GIT_STATUS_LIMIT, GIT_STATUS_TIMEOUT).ok()?;
     if !output.status.success() || output.stdout.truncated {
         return None;
     }

@@ -434,23 +434,10 @@ fn program_config_keys(listing: &[u8]) -> Vec<String> {
 /// The checkout's own config entries (repository and worktree files; includes are not
 /// followed, and any `include.*` key refuses anyway), as `git config --null --list` bytes.
 fn local_config_listings(root: &Path) -> Result<Vec<Vec<u8>>, String> {
-    local_config_listings_within(root, Instant::now() + Duration::from_secs(30))
-}
-
-/// What is left of a bounded run of Git calls before `deadline`; the timeout error once it passed.
-fn remaining_within(deadline: Instant) -> Result<Duration, String> {
-    deadline
-        .checked_duration_since(Instant::now())
-        .filter(|left| !left.is_zero())
-        .ok_or_else(|| "Git operation timed out. Check the repository before retrying.".to_string())
-}
-
-/// [`local_config_listings`] with both reads finishing by `deadline`.
-fn local_config_listings_within(root: &Path, deadline: Instant) -> Result<Vec<Vec<u8>>, String> {
     const LIMIT: usize = 256 * 1024;
     let mut listings = Vec::new();
     for scope in ["--local", "--worktree"] {
-        let output = run_git_bounded(root, &["config", scope, "--null", "--list"], LIMIT, false, remaining_within(deadline)?)?;
+        let output = run_git(root, &["config", scope, "--null", "--list"], LIMIT, false)?;
         // --worktree fails without extensions.worktreeConfig in a linked worktree: nothing to read.
         // --local exits 1 with no entries only when the file is empty or missing.
         if !output.status.success() {
@@ -499,12 +486,7 @@ pub fn refuse_repo_config_programs_for(root: &Path, action: &str) -> Result<(), 
 /// status refresh may run clean filters and recurse into submodules with their own config.
 /// Refuses a config that includes other files: their filters are not in the local listing.
 fn untrusted_inspection_args(root: &Path) -> Result<Vec<String>, String> {
-    untrusted_inspection_args_within(root, Instant::now() + Duration::from_secs(30))
-}
-
-/// [`untrusted_inspection_args`] with its config reads finishing by `deadline`.
-fn untrusted_inspection_args_within(root: &Path, deadline: Instant) -> Result<Vec<String>, String> {
-    let listings = local_config_listings_within(root, deadline)?;
+    let listings = local_config_listings(root)?;
     let entries: Vec<String> = listings.iter().flat_map(|listing| String::from_utf8_lossy(listing).split('\0').map(str::to_owned).collect::<Vec<_>>()).collect();
     if entries.iter().any(|entry| config_entry_includes(entry)) {
         return Err(INCLUDES_REFUSED.into());
@@ -524,16 +506,22 @@ fn untrusted_inspection_args_within(root: &Path, deadline: Instant) -> Result<Ve
     let mut names: Vec<String> = entries.iter().filter_map(|entry| filter_name(entry)).collect();
     names.sort();
     names.dedup();
-    let mut args: Vec<String> = Vec::new();
-    for name in &names {
-        if name.contains('=') || name.contains('\n') {
+    let mut args = filter_disable_args(&names)?;
+    args.extend(skip_submodule_args().into_iter().map(String::from));
+    Ok(args)
+}
+
+/// Command-line overrides for checkout-local filters in status and diff.
+fn filter_disable_args(names: &[String]) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    for name in names {
+        if name.is_empty() || name.contains(['=', '\n']) {
             return Err("This repository's git config defines a filter PandaCode cannot switch off; turn on Full access for remote tasks on this computer to see its changes from the phone.".into());
         }
         for (option, value) in [("clean", ""), ("smudge", ""), ("process", ""), ("required", "false")] {
             args.extend(["-c".to_string(), format!("filter.{name}.{option}={value}")]);
         }
     }
-    args.extend(skip_submodule_args().into_iter().map(String::from));
     Ok(args)
 }
 
@@ -642,18 +630,17 @@ fn untrusted_for(hooks: Hooks, level: Untrusted) -> Untrusted {
     if hooks == Hooks::Skip { level } else { Untrusted::No }
 }
 
-/// A desktop `git status` on a checkout PandaCode does not vouch for (a warm spare's
-/// working-tree digest), all within `timeout`: the [`untrusted_inspection_args`] prefix before
-/// `args` (refusing includes, `core.worktree` and keys that run a program or fetch, switching
-/// every checkout-local filter off and skipping submodules) and the hooks-skipped runner with
-/// [`Untrusted::Local`], so no hook, fsmonitor, filter, lazy fetch, credential helper or askpass
-/// program from the checkout's own config runs.
-pub(crate) fn run_git_status_safe(root: &Path, args: &[&str], limit: usize, timeout: Duration) -> Result<GitOutput, String> {
-    let deadline = Instant::now() + timeout;
-    let prefix = untrusted_inspection_args_within(root, deadline)?;
+/// One desktop `git status` for a warm spare's working-tree digest. The caller inspected its
+/// local config with [`crate::git_config::checkout_status_filters`]. Switch those filters off,
+/// skip submodules, and run with [`Untrusted::Local`] and the full `timeout`.
+pub(crate) fn run_git_status_safe(
+    root: &Path, filters: &[String], args: &[&str], limit: usize, timeout: Duration,
+) -> Result<GitOutput, String> {
+    let prefix = filter_disable_args(filters)?;
     let mut all: Vec<&str> = prefix.iter().map(String::as_str).collect();
+    all.extend(skip_submodule_args());
     all.extend_from_slice(args);
-    run_git_with(root, &all, limit, false, Untrusted::Local, remaining_within(deadline)?)
+    run_git_with(root, &all, limit, false, Untrusted::Local, timeout)
 }
 
 /// A read-only call with `untrusted` set when it carries [`inspection_args`]' prefix.
@@ -4643,8 +4630,8 @@ mod tests {
     const LIB_TRUST_HELPERS: [&str; 7] = ["stage_files", "task_branches", "switch_branch", "task_worktree_status", "remove_task_worktree", "merge_task_worktree", "push_and_open_pull"];
     /// Calls PandaConnect code must never make: the untrusted-unaware runners, a raw Git
     /// command, the desktop-only workspace wrappers, and the desktop's own Tauri commands.
-    const DESKTOP_ONLY: [&str; 18] = [
-        "run_git(", "run_git_bounded(", "run_git_with(", "run_git_inspecting(", "run_git_changing(", "Command::new(\"git\")",
+    const DESKTOP_ONLY: [&str; 19] = [
+        "run_git(", "run_git_bounded(", "run_git_with(", "run_git_inspecting(", "run_git_status_safe(", "run_git_changing(", "Command::new(\"git\")",
         "workspace::create_worktree_with(", "workspace::remove_worktree(", "workspace::recreate_worktree(",
         "crate::git_status(", "crate::git_diff(", "crate::git_stage(", "crate::git_commit(", "crate::git_push(", "crate::git_branches(",
         "crate::git_switch_branch(", "crate::worktree_status(", "crate::remove_worktree(",

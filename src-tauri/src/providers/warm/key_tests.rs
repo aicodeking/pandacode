@@ -830,6 +830,13 @@ fn a_checkout_with_submodules_has_no_git_status_digest() {
     assert_eq!(git_status(&repo), None, "a git directory's submodules fail closed");
 }
 
+#[test]
+fn a_checkout_with_config_includes_has_no_git_status_digest() {
+    let (repo, _cleanup) = init_status_repo("include");
+    std::fs::write(repo.join(".git").join("config"), "[include]\n path = missing\n").unwrap();
+    assert_eq!(git_status(&repo), None, "even a missing include fails closed");
+}
+
 #[cfg(unix)]
 #[test]
 fn git_status_switches_off_checkout_clean_filters() {
