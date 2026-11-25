@@ -52,7 +52,13 @@ const nav = (step: 'prev' | 'next', label: string, key: string) =>
 // (Reveal, then Copy) are their own group, and Previous/Next/Close a fixed group pinned to the end. A Reveal that
 // does not apply leaves the layout (no gap), and since it sits before Copy, Copy and the end group never move
 // under the pointer while stepping.
-function viewerHtml(reveal: boolean): string {
+/** A browser tab served by PandaCode's web server (bridge.ts `webMode`), which cannot reveal host files. Read
+ *  lazily rather than imported from bridge.ts, which touches `window` on load and Node tests import this module. */
+function inWebTab(): boolean {
+  return typeof window !== 'undefined' && !('__TAURI_INTERNALS__' in window) && Boolean(document.querySelector('meta[name="pandacode-web"]'));
+}
+function viewerHtml(launcherless: boolean): string {
+  const reveal = launcherless && !inWebTab();
   return `<div class="tool-image-viewer-plate">
     <header class="tool-image-viewer-head"><div class="tool-image-viewer-titles"><h2 class="tool-image-viewer-name"></h2>
       <p class="tool-image-viewer-meta"><span class="tool-image-viewer-path"></span><span class="tool-image-viewer-size"></span><span class="tool-image-viewer-notice" role="status" aria-live="polite"></span></p></div>
@@ -108,7 +114,7 @@ function createViewer(items: readonly ViewerItem[], clicked: ViewerItem, load: T
   document.body.append(dialog);
   const find = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   return {
-    dialog, items, load, returnFocus, canReveal: !launcher,
+    dialog, items, load, returnFocus, canReveal: !launcher && !inWebTab(),
     image: find<HTMLImageElement>('.tool-image-viewer-image'),
     zoom: find<HTMLButtonElement>('[data-tool-image-action="zoom"]'),
     stage: find('.tool-image-viewer-stage'),

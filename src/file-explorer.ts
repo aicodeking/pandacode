@@ -1,4 +1,5 @@
 import './file-explorer.css';
+import { webMode } from './bridge';
 import { escape, isImeKey } from './dom';
 import type { openChoiceMenu } from './choice-menu';
 import { onWindowFocus, windowFocused } from './window-focus';
@@ -172,8 +173,9 @@ export function createFileExplorer(deps: Deps) {
       { id: 'new-folder', label: 'New Folder', icon: 'folder' },
       ...(path ? [{ id: 'rename', label: 'Rename', icon: 'edit', separator: true }, { id: 'delete', label: 'Delete', icon: 'trash', danger: true }] : []),
       { id: 'copy-path', label: 'Copy Path', icon: 'copy', separator: true },
-      { id: 'reveal', label: 'Reveal in OS', icon: 'folder' },
-      ...(!directory ? [{ id: 'open-external', label: 'Open in Default App', icon: 'external' }] : []),
+      // Revealing or opening in a default app happens on the PandaCode machine, never from a browser tab.
+      ...(webMode ? [] : [{ id: 'reveal', label: 'Reveal in OS', icon: 'folder' }]),
+      ...(!directory && !webMode ? [{ id: 'open-external', label: 'Open in Default App', icon: 'external' }] : []),
     ], onSelect: async action => {
       if (['copy-path', 'reveal', 'open-external'].includes(action)) {
         if (action === 'open-external') { await deps.call('open_workspace_file', { ...context, path }); return; }

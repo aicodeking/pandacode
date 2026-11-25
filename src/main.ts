@@ -57,7 +57,13 @@ import { mountThreadTiles } from './thread-tiles';
 import { parseSkyTime } from './sky-math';
 import type { AgentEvent, BrowserAttachment, ContextUsage, FileEntry, GitStatus, Message, MessagePage, Mode, Project, Provider, ProviderId, ProviderModel, Session, TaskLink, TaskStage, ToolActivity, TurnChanges, TurnChangeDiff } from './types';
 import type { BrowserPanel } from './browser';
-import { call, chooseFolder, preview, subscribe } from './bridge';
+import { call, chooseFolder, nativeDesktop, preview, subscribe, webMode } from './bridge';
+// Take the access token out of the address bar as early as possible.
+if (webMode) void import('./web-bridge');
+/** Opens a link for the person at this screen; in a browser tab `call` opens it there (bridge.ts). */
+function openExternalUrl(url: string): Promise<void> {
+  return call<void>('open_external_url', { url });
+}
 import { isNetworkPath, MAX_RETRIES, NETWORK_PATH_ERROR, retryLater, toolImageCache, type ToolImageLoader } from './tool-images';
 import { attachToolImages, REVEAL_LABEL } from './tool-image-viewer';
 import { jjChip, showJjPanel, type JjStatus } from './jj';
@@ -71,6 +77,7 @@ import type { Activity as BotActivity, FailoverAsk } from './bots';
 import { mountExternalLinks } from './external-links';
 import { mountDesktopBrand } from './brand-mark';
 import { starPanda } from './star-panda';
+import { PROJECT_LINKS } from './about-settings';
 import { bindMessageActions, messageActionsHtml } from './message-actions';
 import { providerLogo } from './provider-logos';
 import { decodeToolActivity, groupToolRuns, renderToolActivity, renderToolGroup, renderToolStatus, toolStackHtml } from './tool-activity';
@@ -876,7 +883,7 @@ document.querySelector<HTMLElement>('#inspector-content')!.addEventListener('key
 });
 const pullView = createPullView({
   call,
-  openUrl: url => call('open_external_url', { url }),
+  openUrl: url => openExternalUrl(url),
   unlink: async task => {
     const saved = await call<Session>('set_task_link', { sessionId: task.id, kind: 'pull', link: null });
     upsertSession(saved); pullView.forget(task.id);
@@ -951,8 +958,66 @@ function promptDescription(): string {
   const references = task && github.connected(task.projectId) ? ', issue, or pull request' : '';
   return `${enter} Shift Enter for a new line. Type @ to mention a project file${references}.`;
 }
+const COPY_LINK_FAILED = 'Couldn’t copy the link; open Settings → Connections → Remote access → Web access instead.';
+/** Copies text inside the click that asked for it: WKWebView only honours a clipboard write made during the user
+ *  gesture, so nothing may be awaited before it. A link still on its way goes in as a ClipboardItem promise. */
+function copyInGesture(text: string | Promise<string | null>, done: string, failed: string): void {
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+  const fail = (error?: unknown) => { if (error) console.warn('Copying failed:', error); notifyError(failed); };
+  try {
+    if (typeof text === 'string') {
+      if (typeof clipboard?.writeText !== 'function') { fail(); return; }
+      clipboard.writeText(text).then(() => notify(done), fail);
+      return;
+    }
+    if (typeof ClipboardItem === 'undefined' || typeof clipboard?.write !== 'function') { fail(); return; }
+    const blob = text.then(value => { if (!value) throw new Error('No link to copy.'); return new Blob([value], { type: 'text/plain' }); });
+    clipboard.write([new ClipboardItem({ 'text/plain': blob })]).then(() => notify(done), fail);
+  } catch (error) { fail(error); }
+}
+/** `pandacode --port` reached this open app: say where, warn off loopback, and offer the session link. The event
+ *  carries no token (it is redacted), so the live status is read before the toast shows, ready for a gesture copy. */
+async function webServerCliStarted(event: unknown): Promise<void> {
+  // Loaded on demand: the helpers live with the Settings section, outside the startup bundle.
+  const { formatHost, isLoopbackHost, reachableDisplayUrl, reachableSessionUrl } = await import('./web-server-settings');
+  const status = (event && typeof event === 'object' ? event : {}) as { url?: unknown; tokenUrl?: unknown; host?: unknown };
+  const url = typeof event === 'string' ? event : typeof status.url === 'string' ? status.url : '';
+  const host = typeof status.host === 'string' ? status.host : '';
+  const shown = url ? reachableDisplayUrl(url, location.origin, webMode) : '';
+  const where = shown ? `Web access listening on ${shown}` : 'Web access started';
+  const exposed = Boolean(host) && !isLoopbackHost(host);
+  const text = exposed ? `${where} — plain HTTP on ${formatHost(host)}: traffic and access token are unencrypted unless on a private Tailscale/WireGuard network. Prefer 127.0.0.1 with an SSH tunnel.` : where;
+  const fetchLink = async (): Promise<string | null> => {
+    const link = typeof status.tokenUrl === 'string' && status.tokenUrl ? status.tokenUrl
+      : (await call<{ tokenUrl?: string | null }>('web_server_status')).tokenUrl;
+    return link ? reachableSessionUrl(link, location.origin, webMode) : null;
+  };
+  const sessionUrl = await fetchLink().catch(error => { console.warn('Could not read the web access status:', error); return null; });
+  const actions: ToastAction[] = [
+    { label: 'Copy link', run: () => copyInGesture(sessionUrl ?? fetchLink(), 'Session link copied', COPY_LINK_FAILED) },
+    { label: 'Open', run: () => {
+      (async () => {
+        const link = sessionUrl ?? await fetchLink();
+        if (!link) { notifyError('Web access is not running.'); return; }
+        await openExternalUrl(link);
+      })().catch(error => notifyError(errorText(error)));
+    } },
+  ];
+  // Off loopback the session token travels unencrypted: the toast carries the warning mark and is not a passing notice.
+  notify(text, actions, exposed ? { tone: 'warn', important: true } : {});
+}
+/** Voice input records on the PandaCode machine; a browser tab never starts it (the server refuses `voice_*`). */
+const VOICE_DESKTOP_ONLY = 'Voice input is available in the desktop app.';
+const voiceCall: typeof call = webMode
+  ? (command, args) => command.startsWith('voice_') ? Promise.reject(new Error(VOICE_DESKTOP_ONLY)) : call(command, args)
+  : call;
+// Ahead of the dictation keys (document capture): ⌘/Ctrl+Shift+D does nothing in a browser tab.
+if (webMode) window.addEventListener('keydown', event => {
+  // preventDefault too: Chrome's own ⌘/Ctrl+Shift+D (bookmark all tabs) must not fire either.
+  if ((event.metaKey || event.ctrlKey) && event.shiftKey && !event.altKey && event.key.toLowerCase() === 'd') { event.preventDefault(); event.stopPropagation(); }
+}, true);
 const voiceDictation = createVoiceDictation({
-  call, subscribe: callback => subscribe('voice-event', callback),
+  call: voiceCall, subscribe: callback => webMode ? Promise.resolve(() => {}) : subscribe('voice-event', callback),
   thread: () => state.sharedChannelId ? null : session()?.id ?? null,
   threadTitle: id => state.sessions.find(task => task.id === id)?.title || 'New task',
   showThread: id => run(selectSession(id)),
@@ -1083,14 +1148,17 @@ async function instruction(task: Session, text: string): Promise<void> {
   prompt.value = text; state.drafts.set(task.id, text); await send();
 }
 async function exportTask(task: Session, name?: string): Promise<void> {
-  if (!preview) {
-    const path = await (await import('@tauri-apps/plugin-dialog')).save({ title: 'Export task', defaultPath: name || `${task.title.replace(/[^a-z0-9 -]/gi, '').slice(0, 80) || 'task'}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+  // One default name for the save dialog and the browser download: the task title, made safe for a file name.
+  const fileName = name || `${task.title.replace(/[^a-z0-9 -]/gi, '').trim().slice(0, 80) || 'task'}.md`;
+  // Only the desktop saves through a native dialog; browsers download the Markdown.
+  if (nativeDesktop) {
+    const path = await (await import('@tauri-apps/plugin-dialog')).save({ title: 'Export task', defaultPath: fileName, filters: [{ name: 'Markdown', extensions: ['md'] }] });
     if (path) { await call('save_task_export', { sessionId: task.id, path }); notify('Task exported'); }
     return;
   }
   const text = await call<string>('export_task', { sessionId: task.id });
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
-  const link = document.createElement('a'); link.href = url; link.download = name || 'task.md'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 const disposeMessageActions = bindMessageActions($('#transcript'), {
@@ -1828,9 +1896,11 @@ function notify(text: string, undo?: (() => void) | ToastAction | readonly Toast
   // `quiet`: shown again after another toast, already announced once.
   for (const live of [toast, label]) if (options.quiet) live.setAttribute('aria-live', 'off'); else live.removeAttribute('aria-live');
   toast.toggleAttribute('data-danger', options.tone === 'danger');
-  if (options.tone === 'danger') {
+  // A warning carries the alert mark in the warn tone but is not urgent: Escape priority stays with danger and Undo.
+  toast.toggleAttribute('data-warn', options.tone === 'warn');
+  if (options.tone === 'danger' || options.tone === 'warn') {
     const mark = document.createElement('span');
-    mark.className = 'toast-icon'; mark.dataset.stateTone = 'danger'; mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = icon('alert');
+    mark.className = 'toast-icon'; mark.dataset.stateTone = options.tone; mark.setAttribute('aria-hidden', 'true'); mark.innerHTML = icon('alert');
     toast.prepend(mark);
   }
   if (typeof undo === 'function') {
@@ -1952,7 +2022,8 @@ async function openSupport(): Promise<void> {
     button.title = 'Opening support…';
     button.innerHTML = `<span class="support-spinner" aria-hidden="true"></span>${button.id === 'support-button' ? '' : '<span>Opening…</span>'}`;
   }
-  try { await call<void>('open_support'); }
+  // A browser tab opens the issue tracker itself; the support bundle is written on the desktop only.
+  try { await (webMode ? openExternalUrl(PROJECT_LINKS.issues) : call<void>('open_support')); }
   finally {
     openingSupport = false;
     for (const { button, html, label, title, disabled } of buttons) {
@@ -3218,7 +3289,7 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
   const message = element.closest('.btw-panel') ? btwPanel.message(Number(element.dataset.messageId)) : state.messages.find(m => String(m.id) === element.dataset.messageId);
   const item = message && parseAttachments(contextBlocks(message.content).blocks)[Number(element.dataset.index)];
   if (!item) return;
-  if (item.kind === 'github') { await call('open_external_url', { url: item.url }); return; }
+  if (item.kind === 'github') { await openExternalUrl(item.url); return; }
   if (item.kind === 'image') {
     const url = item.imageId ? sentImages.get(item.imageId) : null;
     if (url) { modal(item.name, `<img class="message-attachment-image" src="${escape(url)}" alt="${escape(item.name)}">`, 'message-attachment-dialog'); return; }
@@ -3231,6 +3302,11 @@ async function openMessageAttachment(element: HTMLElement): Promise<void> {
     : root && [root + '/', root + '\\'].some(prefix => item.path.startsWith(prefix)) ? item.path.slice(root.length + 1) : '';
   if (relative && item.kind !== 'folder') { await openFile(relative, 'file'); return; }
   if (!/^(?:\/|[A-Za-z]:[\\/])/.test(item.path)) throw new Error(`${item.name} was dropped from a browser, so its location is unknown.`);
+  if (webMode) {
+    const dialog = modal(item.name, `<p class="dialog-description">This path is on the PandaCode machine and can’t be revealed from a browser tab.</p><pre class="message-attachment-raw">${escape(item.path)}</pre><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Close</button><button type="button" class="primary-button" data-copy-attachment-path>${icon('copy')}Copy path</button></div>`, 'message-attachment-dialog');
+    dialog.querySelector<HTMLButtonElement>('[data-copy-attachment-path]')?.addEventListener('click', () => copyInGesture(item.path, 'Path copied', 'Couldn’t copy the path. Select it above and copy it instead.'));
+    return;
+  }
   await call('reveal_path', { path: item.path });
 }
 /** A saved tool's folds and scroll offsets, put back after a redraw (transcript-host.ts restoreToolViews). */
@@ -4235,7 +4311,7 @@ function renderComposer(): void {
     : `<button type="submit" class="send-button" title="Send message (${shortcut('Enter')})" aria-label="Send message" ${togglingTeam ? 'disabled' : ''}>${icon('arrow')}</button>`;
   // The composer redraws on every session change; the orchestration slot's nodes outlive it.
   const orchestrationSlot = document.querySelector('#machine-orchestration');
-  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
+  $('#composer-area').innerHTML = `<form id="composer" class="composer ${running ? 'composer-running' : ''}">${wakeStrip(s.id)}${queuePanel({ entries: state.queues.get(s.id) ?? [], hold: state.queueHolds.get(s.id) ?? null, running, steerable: !team && !offline, sendable: !botProjects.has(s.projectId) && !offline, editingId: state.queueEditing || null, busy: state.queueBusy.has(s.id), steering: steeringQueued, notSteered, agentName: botForThread()?.name ?? provider(s.provider)?.name })}${s.remoteDevice ? '' : council.strip(s.id)}<div id="attachments" class="attachments">${attachmentBar(s)}</div>${running && !team ? `<div class="composer-steer-bar"><button type="button" class="icon-button composer-steer-edit" data-action="steer-edit" title="Edit draft" aria-label="Edit draft">${icon('edit')}</button><button type="button" class="steer-button" data-action="steer" title="Steer: send into the running turn (${shortcut('Enter')})" aria-label="Steer the running turn">${STEER_ICON}<span class="sr-only">Steer</span></button><button type="button" class="icon-button composer-steer-clear" data-action="steer-clear" title="Clear draft" aria-label="Clear draft">${icon('close')}</button></div>` : !team && finishingStreams.has(s.id) && !finishingStreams.get(s.id)!.error ? '<div class="composer-steer-bar" data-holding aria-hidden="true"></div>' : ''}<div class="composer-input"><textarea id="prompt" dir="auto" data-session-id="${escape(s.id)}" aria-label="Message your coding agent" placeholder="${running ? (team ? 'Queue a follow-up…' : 'Queue a follow-up · ⌘↩ steers now') : composerPlaceholder()}" aria-description="${escape(promptDescription())}" rows="2"></textarea><div class="composer-actions">${button('attach', 'Attach files for context', 'attach', '', 'type="button"')}${webMode ? '' : voiceButtonHtml}<span class="composer-pill">${sendControl}</span></div></div><div class="composer-toolbar composer-tray"><div class="composer-tools">${modelTriggerHtml(s, modelLocked, true)}${modeTriggerHtml(s, running || togglingTeam, true)}${teamButton(s)}${tokenSaver.button(s.id)}${s.remoteDevice ? '' : council.button(s.id)}</div>${contextBarHtml(s, newTaskView())}</div></form>`;
   // A refresh replaces the textarea and its native undo history with it (#277); the same thread's node goes back in carrying the refresh's attributes.
   if (oldPrompt && oldPrompt.dataset.sessionId === s.id) {
     const fresh = document.querySelector<HTMLTextAreaElement>('#prompt');
@@ -5017,6 +5093,16 @@ async function selectProject(id: string): Promise<void> {
   const generation = ++state.generation; activateProject(id, false); clearOpenSession(); restoreThreadPanel(); renderInspector(); state.messages = []; state.attachments = [];
   render(); if (generation !== state.generation) return; await refreshInspector();
 }
+/** After a reconnect or lagged event stream (web mode): nothing shown may be stale. */
+async function webResync(): Promise<void> {
+  await reloadSessions();
+  const id = state.sessionId;
+  if (!id) return;
+  await mirrorMessages({ sessionId: id });
+  if (id !== state.sessionId) return;
+  setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
+  renderComposer();
+}
 /** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
 function reloadSessions(): Promise<void> {
   if (!sessionsLoading) {
@@ -5556,6 +5642,9 @@ async function maybeTurnChecks(id: string): Promise<void> {
 /** Sends a task's next queued message once it is idle and its queue is not held (Send now skips the hold). */
 async function dispatchQueue(id: string): Promise<void> {
   if (!queueOf(id).length) return;
+  // A browser tab never drains on its own: the desktop window (or the headless host) already does, and two
+  // drainers would race for the same entry. Explicit Send now (sendFirst) still goes out from here.
+  if (webMode && !sendFirst.has(id)) return;
   await ensureBotProjects();
   const task = state.sessions.find(item => item.id === id);
   const first = sendFirst.get(id), next = queueOf(id).find(item => item.id === first?.id) ?? queueOf(id)[0];
@@ -5572,8 +5661,23 @@ async function dispatchQueue(id: string): Promise<void> {
     setQueue(id, queueOf(id).filter(item => item.id !== entry.id));
     await deliverQueued(task, entry);
   } catch (error) {
+    // Another client (the host window, another tab) took the entry first: show the queue as it is now, no failure.
+    if (await queueEntryClaimed(id, next.id, error)) return;
     setQueueHold(id, 'failed'); if (!remoteRefusal(task, error)) notifyError(errorText(error));
   } finally { state.queueBusy.delete(id); if (id === state.sessionId) renderComposer(); renderNavigation(); }
+}
+/** Whether a failed `queue_take` lost the entry to another client; refreshes the queue when it did. */
+async function queueEntryClaimed(id: string, entryId: string, error: unknown): Promise<boolean> {
+  if (!/not found|already|missing/i.test(errorText(error))) return false;
+  try {
+    const fresh = await call<QueuedMessage[]>('queue_list', { sessionId: id });
+    if (fresh.some(item => item.id === entryId)) return false;
+    setQueue(id, fresh);
+    return true;
+  } catch (cause) {
+    console.warn('Could not refresh the queue after a claimed entry:', cause);
+    return false;
+  }
 }
 /** Starts a turn with a queued message, for the open task or one in the background. */
 async function deliverQueued(task: Session, entry: QueuedMessage): Promise<void> {
@@ -7667,7 +7771,8 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
   await showChoices(anchor, { title: 'Project actions', point, actions: true, width: 280, items: [
     { id: 'new', label: 'New task', icon: 'plus' },
     { id: 'collapse', label: 'Collapse other projects', icon: 'folder' },
-    { id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true },
+    // A browser tab cannot reveal a folder on the PandaCode machine.
+    ...(webMode ? [] : [{ id: 'reveal', label: REVEAL_LABEL, icon: 'folder', separator: true }]),
     { id: 'remove', label: 'Remove project…', icon: 'trash', danger: true, separator: true },
   ], onSelect: async choice => {
     closeChoiceMenu();
@@ -8210,7 +8315,7 @@ const userProjects = (): Project[] => state.projects.filter(project => !botProje
 const chatTask = (task: Session | undefined): boolean => Boolean(task && isChatProject(state.projects.find(p => p.id === task.projectId)));
 /* PandaCode Connect. A new task can start on another computer: the context bar offers the
  * signed-in account's targets; the started task is an ordinary session with `remoteDevice`. */
-const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, notifyError, openUrl: url => call('open_external_url', { url }) };
+const remoteHost: RemoteHost = { call, listen: (name, callback) => subscribe(name as 'remote://status', callback), notify, notifyError, openUrl: url => openExternalUrl(url) };
 type RemoteAccountDevice = Omit<RemoteTarget, 'deviceId'> & { id: string; current: boolean; host: boolean };
 let remoteTargets: RemoteTarget[] = [], remoteChoice = LOCAL, remoteSignedIn = false, remoteConnected = false, remotePresenceReady = false;
 /** The chosen computer's last known name, for when it leaves the list (signed out or revoked). */
@@ -9003,7 +9108,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'rename': showRename(); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new'); break;
     case 'branch-menu': await worktrees.showMenu(element); break;
-    case 'open-url': if (element.dataset.url) await call('open_external_url', { url: element.dataset.url }); break;
+    case 'open-url': if (element.dataset.url) await openExternalUrl(element.dataset.url); break;
     case 'board-import': github.showImport(state.projectFilter || project()?.id || state.projects[0]?.id || ''); break;
     case 'model': await showModel(element, actionTask(element)); break;
     case 'change-task-project': await showProjectPicker(element); break;
@@ -9089,7 +9194,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'suggest': { const prompt = document.querySelector<HTMLTextAreaElement>('#prompt'); if (prompt) { prompt.value = element.dataset.text!; prompt.dispatchEvent(new Event('input', { bubbles: true })); prompt.focus(); } break; }
   }
 }
-mountExternalLinks(document, url => call('open_external_url', { url }), report);
+mountExternalLinks(document, url => openExternalUrl(url), report);
 document.addEventListener('click', event => {
   const button = (event.target as Element | null)?.closest<HTMLButtonElement>('[data-shared-action]');
   if (!button || !state.sharedChannelId) return;
@@ -9312,9 +9417,20 @@ async function boot(): Promise<void> {
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
   ];
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
+  // A dropped or lagged event stream may have missed anything: reload the list, the open thread and its queue.
+  if (webMode) window.addEventListener('pandacode:web-resync', () => run(webResync()));
+  // `pandacode --port` run while this app is open starts web access here instead of a second app. Only the desktop
+  // window says so (the preview listens too, for its tests): remote browser tabs did not run the command.
+  if (!webMode) {
+    listening.push(
+      subscribe('web-server-cli-started' as 'web-server-changed', event => run(webServerCliStarted(event))),
+      subscribe('web-server-cli-failed' as 'web-server-changed', (event: { error?: unknown } | null) => notifyError(typeof event?.error === 'string' && event.error.trim() ? event.error : 'Could not start web access.')),
+    );
+  }
   // An agent booted or asked to show a simulator: bring the panel forward.
   // An agent started or asked to show a VM: bring the panel forward.
-  run(subscribe('vm-changed', event => { if (event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
+  // A panel the desktop pops (show) stays on the desktop; browser tabs only refresh what they show.
+  run(subscribe('vm-changed', event => { if (!webMode && event && !Array.isArray(event) && event.show) openVm(); void vmPanel?.refresh(); }).then(() => undefined));
   run((subscribe as (name: string, callback: () => void) => Promise<() => void>)('design-changed', () => void designPanel?.refresh()).then(() => undefined));
   run(subscribe('agent-event', (event: AgentEvent) => {
     if (event.kind !== 'done') return;
@@ -9323,7 +9439,8 @@ async function boot(): Promise<void> {
     progressPip?.refresh(event.sessionId);
     if (document.hasFocus()) markTraySeen(event.sessionId);
   }).then(() => undefined));
-  run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {
+  // The menu bar item is the desktop's: a connected browser tab never follows it to another task.
+  if (!webMode) run((subscribe as (name: string, callback: (event: unknown) => void) => Promise<() => void>)('tray-open-session', sessionId => run((async () => {
     if (typeof sessionId !== 'string') return;
     if (!state.sessions.some(s => s.id === sessionId)) await reloadSessions();
     if (state.view !== 'conversation') state.boardPanel = true;
@@ -9331,7 +9448,7 @@ async function boot(): Promise<void> {
   })())).then(() => undefined));
   run((subscribe as (name: string, callback: (event: { sessionId?: string } | null) => void) => Promise<() => void>)('progress-changed', event => progressPip?.refresh(event?.sessionId)).then(() => undefined));
   run((subscribe as (name: string, callback: typeof onColabRuntime) => Promise<() => void>)('colab-runtime', onColabRuntime).then(() => undefined));
-  run(subscribe('simulator-changed', event => { if (event?.show) openSimulator(); void simulatorPanel?.refresh(); }).then(() => undefined));
+  run(subscribe('simulator-changed', event => { if (!webMode && event?.show) openSimulator(); void simulatorPanel?.refresh(); }).then(() => undefined));
   run(subscribe('bots-changed', () => run((async () => { botProjectsLoad = reloadBotProjects(); await botProjectsLoad; botsView?.refresh(); })())).then(() => undefined));
   run(subscribe('bot-shared-channel-changed', event => { run(reloadBotProjects(false)); if (state.sharedChannelId && (!event?.channelId || event.channelId === state.sharedChannelId)) void refreshSharedChannel(); }).then(() => undefined));
   run(subscribe('bot-messages-changed', () => {
@@ -9379,7 +9496,8 @@ async function boot(): Promise<void> {
     if (id === state.sessionId) renderComposer();
     await dispatchQueue(id);
   })())));
-  listening.push(subscribe('overlay-open-task', event => run((async () => {
+  // The launcher and Agents dock open a task in the desktop window; connected browser tabs keep their own.
+  if (!webMode) listening.push(subscribe('overlay-open-task', event => run((async () => {
     const request = ++overlayOpenRequest, initialGeneration = state.generation;
     await reloadSessions();
     if (request !== overlayOpenRequest || initialGeneration !== state.generation) return;
@@ -9396,7 +9514,8 @@ async function boot(): Promise<void> {
       await subagents.showAgent(event.subagentId);
     }
   })())));
-  listening.push(connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction));
+  // Agent UI actions drive the desktop window; a browser tab answering too would race it to resolve them.
+  if (!webMode) listening.push(connectAgentUiActions(() => transcriptVisible() ? state.sessionId : '', performAgentUiAction));
   await Promise.all(listening);
   [state.projects, state.sessions] = await Promise.all([call<Project[]>('list_projects'), call<Session[]>('list_sessions')]);
   projectsListed = true;
@@ -9729,4 +9848,5 @@ void bootPending.catch(() => undefined).then(showCrashNotice);
 // The diff engine (module, highlighter workers, themes) starts once a diff is likely: the Changes tab or a diff
 // view open (renderInspector), a change row hovered or focused, or after boot has gone idle for a while.
 preloadDiffsWhenWanted();
+// In a browser tab this only marks the surface solid with no traffic-light gutter.
 if (!preview) initializeNativeAppearance();

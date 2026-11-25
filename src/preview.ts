@@ -1542,6 +1542,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
   if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
+  if (command === 'app_version' || command.startsWith('web_server_')) return (await import('./preview-web-server')).invokeWebServer<T>(command, args, emit);
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {

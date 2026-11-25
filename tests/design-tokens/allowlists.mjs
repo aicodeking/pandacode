@@ -430,6 +430,7 @@ export const MARKDOWN_OUTSIDE = [
   ...outside('src/voice-settings.css', LABEL, ['.voice-model-facts strong']),
   ...outside('src/wallpaper-settings.css', HEADING, ['.wallpaper-section-heading h3']),
   ...outside('src/wallpaper-settings.css', LABEL, ['.wallpaper-preview-composer b']),
+  ...outside('src/web-bridge.css', HEADING, ['.web-modal-card h2']),
   ...outside('src/worktrees.css', DESC_CODE, ['.worktree-preview code,.worktree-cleanup-option code,.worktree-dialog .dialog-description code']),
 ];
 

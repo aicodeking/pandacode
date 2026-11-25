@@ -1100,8 +1100,8 @@ html[data-theme="dark"] body .dialog-plate{box-shadow:0 40px 100px -30px rgb(0 0
 .toast-close:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .toast-close .icon{width:14px;height:14px}
 .toast-count{margin-left:.35em;color:var(--muted);font-variant-numeric:tabular-nums}
-/* Error toasts (notify tone 'danger'): a danger alert mark (data-state-tone="danger", design-system.css) takes the accent dot's place. */
-.toast[data-danger]::before{content:none}
+/* Error and warning toasts (notify tone 'danger' / 'warn'): an alert mark in that state tone (data-state-tone, design-system.css) takes the accent dot's place. */
+.toast:is([data-danger],[data-warn])::before{content:none}
 .toast-icon{position:absolute;left:9px;top:calc(10px + .725em - 7px);display:grid;width:14px;height:14px}
 .toast-icon .icon{width:14px;height:14px}
 @media(forced-colors:active){.toast-icon{color:CanvasText}}

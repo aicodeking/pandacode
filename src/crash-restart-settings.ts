@@ -3,7 +3,7 @@
  * read fails), writes
  * `set_crash_restart_enabled` (then tells a showing crash notice, `crashRestartChanged`), and puts itself back with the error shown when either call fails.
  * The button asks `crash_report_reveal` to show a report in the file manager: the one of this launch's crash notice, else the newest. */
-import { call } from './bridge';
+import { call, webMode } from './bridge';
 import { crashRestartChanged } from './crash-recovery';
 import { DRAFT_MAX_AGE } from './launch-restore';
 
@@ -34,7 +34,7 @@ const reason = (error: unknown) => error instanceof Error ? error.message : type
 
 /** A switch row like its neighbours: visible one-line description, tied to the switch for screen readers. */
 export function crashRestartSettingsHtml(): string {
-  return `<div class="settings-group" id="crash-restart-settings"><div class="setting-row"><div><strong>${CRASH_RESTART_TITLE}</strong><small id="crash-restart-about">${CRASH_RESTART_DETAIL}</small></div><input type="checkbox" role="switch" class="settings-switch" id="crash-restart-enabled" aria-label="${CRASH_RESTART_TITLE}" aria-describedby="crash-restart-about" aria-disabled="true" aria-busy="true"></div><div class="setting-row"><div><strong>Crash reports</strong><small id="crash-reports-about">${CRASH_REPORTS_DETAIL}</small></div><button type="button" class="ds-btn" id="crash-reports-reveal" aria-describedby="crash-reports-about">${SHOW_REPORTS}</button></div><div class="setting-row"><div><strong>${KEEP_DRAFTS}</strong></div><input type="checkbox" role="switch" class="settings-switch" id="crash-drafts-keep" aria-label="${KEEP_DRAFTS}" aria-describedby="crash-drafts-note" checked></div><div class="crash-drafts"><small class="settings-group-note" id="crash-drafts-note">${DRAFTS_KEPT_DETAIL}</small><button type="button" class="ds-btn" id="crash-drafts-clear" aria-describedby="crash-drafts-note">${CLEAR_DRAFTS}</button></div><small class="crash-reports-status" role="status" hidden></small><small class="settings-embed-error" role="alert" hidden></small></div>`;
+  return `<div class="settings-group" id="crash-restart-settings"><div class="setting-row"><div><strong>${CRASH_RESTART_TITLE}</strong><small id="crash-restart-about">${CRASH_RESTART_DETAIL}</small></div><input type="checkbox" role="switch" class="settings-switch" id="crash-restart-enabled" aria-label="${CRASH_RESTART_TITLE}" aria-describedby="crash-restart-about" aria-disabled="true" aria-busy="true"></div>${webMode ? '' : `<div class="setting-row"><div><strong>Crash reports</strong><small id="crash-reports-about">${CRASH_REPORTS_DETAIL}</small></div><button type="button" class="ds-btn" id="crash-reports-reveal" aria-describedby="crash-reports-about">${SHOW_REPORTS}</button></div>`}<div class="setting-row"><div><strong>${KEEP_DRAFTS}</strong></div><input type="checkbox" role="switch" class="settings-switch" id="crash-drafts-keep" aria-label="${KEEP_DRAFTS}" aria-describedby="crash-drafts-note" checked></div><div class="crash-drafts"><small class="settings-group-note" id="crash-drafts-note">${DRAFTS_KEPT_DETAIL}</small><button type="button" class="ds-btn" id="crash-drafts-clear" aria-describedby="crash-drafts-note">${CLEAR_DRAFTS}</button></div><small class="crash-reports-status" role="status" hidden></small><small class="settings-embed-error" role="alert" hidden></small></div>`;
 }
 
 /** Keep unsent drafts: the stored choice and its setter (main.ts, through PersistedDrafts). */

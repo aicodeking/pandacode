@@ -1,4 +1,4 @@
-import { call, preview } from './bridge';
+import { call, preview, webMode } from './bridge';
 import { icon } from './dom';
 import { appUpdates, describeUpdate, type UpdateMode } from './app-updates';
 
@@ -29,6 +29,8 @@ export function aboutSettingsHtml(): string {
 /** Reads the bundle version from Tauri; the browser preview has no app bundle. */
 async function appVersion(): Promise<string> {
   if (preview) return 'Preview';
+  // A browser tab has no bundle of its own: ask the PandaCode it is connected to.
+  if (webMode) return call<string>('app_version');
   return (await import('@tauri-apps/api/app')).getVersion();
 }
 
@@ -49,7 +51,7 @@ export function mountAboutSettings(host: HTMLElement): () => void {
 /** Opens the notices bundled with the app; the preview (no bundle) opens the GitHub copy. */
 function openNotices(): void {
   const online = () => call('open_external_url', { url: PROJECT_LINKS.notices });
-  void (preview ? online() : call('open_third_party_notices').catch(error => {
+  void (preview || webMode ? online() : call('open_third_party_notices').catch(error => {
     console.error('Could not open the bundled third-party notices', error);
     return online();
   })).catch(error => console.error('Could not open the third-party notices', error));

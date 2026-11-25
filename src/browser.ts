@@ -1,5 +1,5 @@
 import './browser.css';
-import { call, preview, subscribe } from './bridge';
+import { call, preview, subscribe, webMode } from './bridge';
 import { escape, icon } from './dom';
 import { mountJevLive, type JevLiveView } from './jev-live';
 import { pageZoom } from './ui-size';
@@ -13,6 +13,15 @@ type Options = { task(): string | undefined; session(): string | undefined; navi
 // ponytail: system browser on Linux; embed again once the guest sits in a GtkOverlay.
 export const embedsGuest = (platform: string, sample: boolean): boolean => sample || !/Linux/i.test(platform);
 const LINUX_NOTICE = 'Opened in your system browser. Linux cannot show pages inside this pane yet.';
+// The pop-up may be blocked, so this never claims the tab opened.
+const WEB_NOTICE = 'Opening in a new browser tab. If nothing opened, allow pop-ups for this site. The embedded browser is available in the desktop app.';
+/** The pane never embeds a page: Linux, or a browser tab (web mode), whose host's child webview is not this screen's. */
+const opensOutside = (): boolean => webMode || !embedsGuest(navigator.platform, preview);
+/** Every `browser_*` command goes through here: a browser tab never drives the host window's embedded webview. */
+function guest<T = unknown>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (webMode) return Promise.resolve(undefined as T);
+  return call<T>(command, args);
+}
 const emptyStatus = (): BrowserStatus => ({ url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false });
 
 export function normalizeUrl(input: string): string {
@@ -94,7 +103,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     // Remember attempted geometry even on failure: rendering its notice must
     // not create a timer retry loop. Reload/focus/navigation explicitly retry.
     lastBounds = key;
-    void enqueue(async () => { if (!disposed) await call('browser_bounds', { bounds: rect, visible }); }).catch(fail);
+    void enqueue(async () => { if (!disposed) await guest('browser_bounds', { bounds: rect, visible }); }).catch(fail);
   }
   function scheduleBounds(): void {
     if (disposed || frame) return;
@@ -116,12 +125,12 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
   }
   async function navigate(input: string): Promise<void> {
     const url = normalizeUrl(input);
-    if (!embedsGuest(navigator.platform, preview)) { await call('open_external_url', { url }); if (!disposed) { address.value = ''; tell(LINUX_NOTICE); } return; }
+    if (opensOutside()) { await call('open_external_url', { url }); if (!disposed) { address.value = ''; tell(webMode ? WEB_NOTICE : LINUX_NOTICE); } return; }
     options.navigated?.(url);
     live?.leave();
     busy = true; tell(''); updateControls();
     try {
-      const next = await enqueue(() => call<BrowserStatus>('browser_open', { url, bounds: bounds() }));
+      const next = await enqueue(() => guest<BrowserStatus>('browser_open', { url, bounds: bounds() }));
       if (disposed) return;
       status = next; home = false; pickTask = undefined; lastBounds = ''; options.navigated?.(status.url);
       address.blur();
@@ -152,7 +161,7 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     watching = next; jevAvailable = available;
     if (watching && status.picking) {
       pickTask = undefined; status.picking = false;
-      void enqueue(() => call('browser_pick', { enabled: false })).catch(fail);
+      void enqueue(() => guest('browser_pick', { enabled: false })).catch(fail);
     }
     updateControls(); syncBounds();
   } });
@@ -162,21 +171,21 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     if (action === 'watch-jev') { await live?.watch(); return; }
     if (action === 'close') { options.close(); return; }
     if (action === 'refresh-ports') { await refreshServers(); return; }
-    if (action === 'home') { options.navigated?.(''); live?.leave(); await enqueue(() => call('browser_close')); if (disposed) return; home = true; status = emptyStatus(); pickTask = undefined; tell(''); updateControls(); await refreshServers(); return; }
+    if (action === 'home') { options.navigated?.(''); live?.leave(); await enqueue(() => guest('browser_close')); if (disposed) return; home = true; status = emptyStatus(); pickTask = undefined; tell(''); updateControls(); await refreshServers(); return; }
     if (action === 'pick') {
       const target = options.task(); if (!target) return;
       pickTask = status.picking ? undefined : target;
-      await enqueue(() => call('browser_pick', { enabled: !status.picking }));
+      await enqueue(() => guest('browser_pick', { enabled: !status.picking }));
       return;
     }
     if (action === 'capture') {
       const target = options.task(); if (!target) return;
       busy = true; tell(''); updateControls();
-      try { const screenshot = await enqueue(() => call<BrowserScreenshot>('browser_capture')); options.attach(target, { ...screenshot, kind: 'screenshot' }); if (!disposed) tell('Screenshot attached to your message.'); }
+      try { const screenshot = await enqueue(() => guest<BrowserScreenshot>('browser_capture')); options.attach(target, { ...screenshot, kind: 'screenshot' }); if (!disposed) tell('Screenshot attached to your message.'); }
       finally { busy = false; updateControls(); }
       return;
     }
-    await enqueue(() => call('browser_action', { action: action === 'reload' && status.loading ? 'stop' : action }));
+    await enqueue(() => guest('browser_action', { action: action === 'reload' && status.loading ? 'stop' : action }));
     // An explicit page action is also a recovery point for native visibility;
     // identical geometry must not keep a hidden guest hidden after a task switch.
     syncBounds(true);
@@ -187,12 +196,12 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
     else if (preview && status.picking && (event.target as Element).closest('.browser-sample')) {
       const element = event.target as HTMLElement;
       attachElement({ url: status.url, title: status.title, tag: element.tagName.toLowerCase(), selector: element.className ? '.' + element.className : element.tagName.toLowerCase(), text: element.textContent?.slice(0, 4000) || '', html: element.outerHTML.slice(0, 8000), bounds: { x: 0, y: 0, width: 180, height: 44 } });
-      void enqueue(() => call('browser_pick', { enabled: false })).catch(fail);
+      void enqueue(() => guest('browser_pick', { enabled: false })).catch(fail);
     }
   }
   function submit(event: SubmitEvent): void { if (event.target === query('.browser-address')) { event.preventDefault(); event.stopPropagation(); void navigate(address.value).catch(fail); } }
   function keydown(event: KeyboardEvent): void {
-    if (event.key === 'Escape' && status.picking) { event.preventDefault(); event.stopPropagation(); pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); }
+    if (event.key === 'Escape' && status.picking) { event.preventDefault(); event.stopPropagation(); pickTask = undefined; void enqueue(() => guest('browser_pick', { enabled: false })).catch(fail); }
   }
   host.addEventListener('click', click); host.addEventListener('submit', submit); host.addEventListener('keydown', keydown);
   const resize = new ResizeObserver(scheduleBounds); resize.observe(viewport);
@@ -227,19 +236,19 @@ export async function mountBrowser(host: HTMLElement, options: Options): Promise
       if (disposed) throw new Error('Browser is closed.');
       await navigate(url);
       // Agents must not drive a page they cannot read; tell them where it went.
-      if (!embedsGuest(navigator.platform, preview)) throw new Error(LINUX_NOTICE);
+      if (opensOutside()) throw new Error(webMode ? WEB_NOTICE : LINUX_NOTICE);
       return status;
     },
     async watchJev(runId) { if (disposed) throw new Error('Browser is closed.'); await live?.watch(runId); },
-    refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => call('browser_pick', { enabled: false })).catch(fail); } updateControls(); scheduleBounds(); },
+    refresh() { live?.refresh(); if (pickTask && pickTask !== options.task()) { pickTask = undefined; void enqueue(() => guest('browser_pick', { enabled: false })).catch(fail); } updateControls(); scheduleBounds(); },
     async close() {
       disposed = true; ++request; clearTimeout(frame); resize.disconnect(); menus.clear(); overlays.disconnect();
       // Hide promptly even when a navigation operation has not returned yet.
-      const hiding = call('browser_bounds', { bounds: bounds(), visible: false }).catch(() => {});
+      const hiding = guest('browser_bounds', { bounds: bounds(), visible: false }).catch(() => {});
       unlisten.forEach(stop => stop()); window.removeEventListener('resize', scheduleBounds);
       window.removeEventListener('focus', restoreVisibility); document.removeEventListener('visibilitychange', restoreVisibility);
       host.removeEventListener('click', click); host.removeEventListener('submit', submit); host.removeEventListener('keydown', keydown);
-      await Promise.all([hiding, live?.close(), enqueue(() => call('browser_close'))]); host.replaceChildren();
+      await Promise.all([hiding, live?.close(), enqueue(() => guest('browser_close'))]); host.replaceChildren();
     },
   };
 }
