@@ -435,19 +435,9 @@ thread_local! {
     static BACKGROUND_REAP_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
 }
 
-/// On while the marker is absent, read through the handle both entry points save
-/// (`app_marker::init`). An unreadable settings folder, or no handle in production, fails closed
-/// (finish in the run); unit tests default on unless overridden.
-pub(super) fn background_reap_enabled_now() -> bool {
-    #[cfg(test)]
-    if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
-        return enabled;
-    }
-    crate::app_marker::default_on_now(BACKGROUND_REAP_OFF_FILE)
-}
-
-/// `background_reap_enabled_now` on a blocking thread, so a launch never waits on the marker
-/// file on the runtime. A test's thread-local override is read here first.
+/// On while the marker is absent, read off the async runtime through the handle both entry points
+/// save (`app_marker::init`). An unreadable settings folder, or no handle in production, fails
+/// closed (finish in the run); unit tests default on unless overridden via the thread-local.
 pub(super) async fn background_reap_enabled_off_runtime() -> bool {
     #[cfg(test)]
     if let Some(enabled) = BACKGROUND_REAP_OVERRIDE.with(std::cell::Cell::get) {
