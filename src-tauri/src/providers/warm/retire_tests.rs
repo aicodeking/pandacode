@@ -211,3 +211,46 @@ async fn same_task_replacement_kills_the_old_spare_before_its_eof_hook_can_run()
     quiesce_in(&pool, &session).await.unwrap();
     test_support::assert_process_gone(new_pid);
 }
+
+/// Every platform: a spare replaced for the same task is killed by `retire_now`, never left to
+/// the graceful wait, which a stubborn spare ignoring stdin EOF would run out (`SPARE_RETIRE_WAIT`).
+#[tokio::test]
+async fn same_task_replacement_kills_the_old_spare_at_once() {
+    let (dir, session) = scratch("replace-any");
+    let pool = Pool::default();
+    let spare = |child: Child, pid: u32| Spare {
+        key: "test-spare".into(),
+        child,
+        group: ProcessGroup::register(Some(pid)),
+        server: None,
+        born: Instant::now(),
+        born_wall: std::time::SystemTime::now(),
+        idle: IDLE,
+        lead: false,
+        renewal_due: false,
+        cwd: Some(dir.0.clone()),
+    };
+    let old_child = stubborn(&dir.0).kill_on_drop(true).spawn().unwrap();
+    let old_pid = old_child.id().unwrap();
+    launched(&session);
+    assert!(super::spawn::register(&pool, &session, epoch(&session), spare(old_child, old_pid)));
+
+    // Until the earlier exit clears, the reaper cannot hurry a graceful retirement.
+    let previous = pending_in_cwd(&session, None);
+    let new_child = stubborn(&dir.0).kill_on_drop(true).spawn().unwrap();
+    let new_pid = new_child.id().unwrap();
+    assert!(super::spawn::register(&pool, &session, epoch(&session), spare(new_child, new_pid)));
+    tokio::time::timeout(SPARE_RETIRE_WAIT * 3 / 4, async {
+        let (result, ()) = tokio::join!(await_exit_patiently(&session), async {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            drop(previous);
+        });
+        result.unwrap();
+    })
+    .await
+    .expect("the replaced spare was left to a graceful retirement");
+    test_support::assert_process_gone(old_pid);
+
+    quiesce_in(&pool, &session).await.unwrap();
+    test_support::assert_process_gone(new_pid);
+}

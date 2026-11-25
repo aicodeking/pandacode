@@ -462,8 +462,9 @@ pub(super) async fn spawn_when_current(
 /// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
 /// outdated conversation, or wait for a turn that is not coming. Displaced spares are retired
 /// outside the lock with their exit registered: a refused spare and one replaced for the same
-/// task are killed at once (`retire_now`), so two processes for one session never overlap and
-/// the old spare's `SessionEnd` hook never runs after the new spare's `SessionStart`; a spare
+/// task are killed at once (`retire_now`), so two processes for one session do not overlap past
+/// the new spare's start and the old spare's `SessionEnd` hook never runs after the new spare's
+/// `SessionStart`; a spare
 /// evicted for another task retires gracefully (`retire`). A refused one already started
 /// (and ran its `SessionStart` hooks), so it counts as started and discarded, keeping the ordinary
 /// pool's `started == adopted + missed + expired + evicted + replaced + discarded` exact once no

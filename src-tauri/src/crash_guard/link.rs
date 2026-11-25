@@ -509,7 +509,14 @@ mod tests {
         *slot = Some(Link { writer, child });
         let respawns = RESPAWNS.load(Ordering::SeqCst);
         EXITING.store(true, Ordering::SeqCst);
-        let sent = deliver(&mut slot, &Message::Unchild(5));
+        // A concurrent test's fork can briefly hold the pipe's read end until its exec closes it,
+        // so retry while EXITING is set (a respawn on the first broken pipe would still fail below).
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let mut sent = deliver(&mut slot, &Message::Unchild(5));
+        while sent == Sent::Delivered && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+            sent = deliver(&mut slot, &Message::Unchild(5));
+        }
         EXITING.store(false, Ordering::SeqCst);
         assert_eq!(sent, Sent::NoGuard);
         assert!(slot.is_none() && !NEEDS_RESPAWN.load(Ordering::SeqCst));
