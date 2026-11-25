@@ -270,6 +270,8 @@ jobs:
           else
             echo "::warning::No signed update files; this release will not update installed apps."
           fi
+      - name: Verify publish assets
+        run: node scripts/release/verify-publish.mjs assets "$VERSION" "releases/$VERSION.md"
       - name: Create GitHub Release
         run: |
           ls -l assets

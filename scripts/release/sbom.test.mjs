@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { advisories, coverage, dbBuiltAt, inventoryStatus, markdown, packagedAssets, platformOf, scanStatus } from './sbom.mjs';
+import { NOTES, NPM_EXCLUDES, advisories, coverage, dbBuiltAt, inventoryStatus, markdown, packagedAssets, platformOf, scanStatus } from './sbom.mjs';
 
 // Windows checkouts may convert the workflow to CRLF; compare against LF only.
 const workflow = (await readFile(new URL('../../.github/workflows/release.yml', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
@@ -128,4 +128,25 @@ test('lists Critical and High advisories once, sorted, in JSON and Markdown', ()
   assert.match(md, /## Critical and High advisories\n\n- `pandacode-npm`: \*\*Critical\*\* `zip` 2\.4\.2: GHSA-m665-v7pm-7grj; \*\*High\*\* `node-forge` 1\.4\.0: GHSA-5x38-2vff-x55p, GHSA-86w9-cpqp-85rv; \*\*High\*\* `zip` 2\.4\.2: GHSA-q7v9-x93c-xqv3; \*\*High\*\* `zod` 3\.25\.76: GHSA-mrhx-c7xc-m3w5\n\n## Limits/);
   assert.doesNotMatch(md, /`pandacode-rust`:/);
   assert.doesNotMatch(markdown(coverage({ ...base, entries: [clean] })), /Critical and High advisories/);
+});
+
+test('a duplicate advisory keeps its highest severity regardless of order', () => {
+  const critical = match('GHSA-dup', 'Critical', 'zip', '2.4.2');
+  const high = match('GHSA-dup', 'High', 'zip', '2.4.2');
+  const expected = [{ id: 'GHSA-dup', severity: 'Critical', package: 'zip', version: '2.4.2' }];
+  assert.deepEqual(advisories([critical, high]), expected);
+  assert.deepEqual(advisories([high, critical]), expected);
+});
+
+test('the npm inventory excludes the mobile app and other unshipped code, and the notes say so', () => {
+  assert.deepEqual(NPM_EXCLUDES, ['./mobile/**', './website/**', './packages/**', './relay/**', './node_modules/**']);
+  assert.ok(NOTES.includes('The mobile app, the website, the relay and the npx package are not shipped in the desktop app and are excluded.'));
+});
+
+test('a missing database build time is reported as unknown with a warning', async () => {
+  const base = { version: '1.2.3', commit: 'abc', scanners: { syft: '1', grype: '2' }, entries: [], notes: ['n'] };
+  assert.equal(coverage(base).vulnerabilityDbBuilt, 'unknown');
+  assert.match(markdown(coverage(base)), /Vulnerability database built: unknown\./);
+  const source = await readFile(new URL('./sbom.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(!dbBuilt\) console\.log\('::warning::Could not determine grype vulnerability database build time; reporting "unknown"\.'\);/);
 });

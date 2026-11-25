@@ -31,6 +31,23 @@ export function macosSigning(env) {
   return { mode: 'developer-id', identity };
 }
 
+const API_KEY_CREDENTIALS = ['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH'];
+const APPLE_ID_CREDENTIALS = ['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'];
+
+// Tauri notarizes only the app; the disk image around it needs its own ticket.
+export function notarytoolArgs(dmg, env) {
+  const value = name => (typeof env[name] === 'string' ? env[name].trim() : '');
+  const complete = names => names.every(value);
+  if (complete(API_KEY_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--key', value('APPLE_API_KEY_PATH'), '--key-id', value('APPLE_API_KEY'), '--issuer', value('APPLE_API_ISSUER'), '--wait'];
+  if (complete(APPLE_ID_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--apple-id', value('APPLE_ID'), '--password', value('APPLE_PASSWORD'), '--team-id', value('APPLE_TEAM_ID'), '--wait'];
+  throw new Error(`Notarizing the disk image needs ${API_KEY_CREDENTIALS.join(', ')} or ${APPLE_ID_CREDENTIALS.join(', ')}.`);
+}
+
+export async function notarizeDmg(dmg, env, commands = { run }) {
+  await commands.run('/usr/bin/xcrun', notarytoolArgs(dmg, env));
+  await commands.run('/usr/bin/xcrun', ['stapler', 'staple', dmg]);
+}
+
 function withoutApple(env) {
   return Object.fromEntries(Object.entries(env).filter(([name]) => !name.startsWith('APPLE_')));
 }
@@ -118,6 +135,11 @@ async function verifyPackagedMacApp(installed, { app, releaseVersion, mode }, la
 
 async function verifyDmg(artifacts, commands) {
   await commands.run('/usr/bin/hdiutil', ['verify', artifacts.dmg, '-quiet']);
+  if (artifacts.mode === 'developer-id') {
+    // The container itself must carry a ticket and pass Gatekeeper's open check.
+    await commands.run('/usr/bin/xcrun', ['stapler', 'validate', artifacts.dmg]);
+    await commands.run('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose', '--ignore-cache', '--no-cache', artifacts.dmg]);
+  }
   const scratch = await mkdtemp(resolve(tmpdir(), 'pandacode-dmg-verify-'));
   const mount = resolve(scratch, 'volume');
   await mkdir(mount);
@@ -166,6 +188,7 @@ async function main() {
   const updater = build.updater ? resolve(bundleRoot, config.updater(releaseVersion)) : undefined;
   if (releaseTarget.startsWith('darwin-')) {
     const app = resolve(bundleRoot, 'macos/PandaCode.app');
+    if (build.signing.mode === 'developer-id') await notarizeDmg(source, build.env);
     await verifyMacArtifacts({ dmg: source, app, releaseVersion, mode: build.signing.mode, updater });
   }
   if (releaseTarget.startsWith('linux-')) {

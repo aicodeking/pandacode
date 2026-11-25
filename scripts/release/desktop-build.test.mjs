@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildPlan, builtArtifact, checksumLine, macosSigning, verifyMacArtifacts } from './build.mjs';
+import { buildPlan, builtArtifact, checksumLine, macosSigning, notarizeDmg, notarytoolArgs, verifyMacArtifacts } from './build.mjs';
 import { appImageBundleOptions } from './common.mjs';
 
 const env = { PANDACODE_LICENSE_PUBLIC_KEY: 'stale', PANDACODE_UPDATE_PUBLIC_KEY: 'stale', TAURI_SIGNING_PRIVATE_KEY: 'stale', APPLE_ID: 'someone', APPLE_SIGNING_IDENTITY: 'Developer ID Application: Someone', PATH: 'test-path' };
@@ -77,6 +77,29 @@ test('checksum sidecars use the sha256sum format', () => {
   assert.throws(() => checksumLine('nothex', 'x'), /SHA-256/);
 });
 
+test('notarytool uses App Store Connect API keys first, then an Apple ID', () => {
+  const apiKey = { APPLE_API_KEY: ' KEY ', APPLE_API_ISSUER: 'issuer ', APPLE_API_KEY_PATH: ' /k.p8', APPLE_ID: 'a', APPLE_PASSWORD: 'p', APPLE_TEAM_ID: 't' };
+  assert.deepEqual(notarytoolArgs('/x.dmg', apiKey), ['notarytool', 'submit', '/x.dmg', '--key', '/k.p8', '--key-id', 'KEY', '--issuer', 'issuer', '--wait']);
+  const appleId = { APPLE_API_KEY: 'KEY', APPLE_API_ISSUER: ' ', APPLE_ID: ' me@example.com', APPLE_PASSWORD: 'secret ', APPLE_TEAM_ID: 'TEAM' };
+  assert.deepEqual(notarytoolArgs('/x.dmg', appleId), ['notarytool', 'submit', '/x.dmg', '--apple-id', 'me@example.com', '--password', 'secret', '--team-id', 'TEAM', '--wait']);
+  for (const partial of [{}, { APPLE_ID: 'me', APPLE_PASSWORD: 'hunter2' }, { APPLE_API_KEY: 'key-secret', APPLE_API_ISSUER: 'issuer-secret', APPLE_API_KEY_PATH: 7 }]) {
+    assert.throws(() => notarytoolArgs('/x.dmg', partial), error => /Notarizing the disk image/.test(error.message) && !/hunter2|secret/.test(error.message));
+  }
+});
+
+test('the disk image is submitted for notarization, then stapled', async () => {
+  const calls = [];
+  await notarizeDmg('/x.dmg', { APPLE_ID: 'a', APPLE_PASSWORD: 'p', APPLE_TEAM_ID: 't' }, { run: async (command, args) => { calls.push([command, ...args]); } });
+  assert.deepEqual(calls, [
+    ['/usr/bin/xcrun', 'notarytool', 'submit', '/x.dmg', '--apple-id', 'a', '--password', 'p', '--team-id', 't', '--wait'],
+    ['/usr/bin/xcrun', 'stapler', 'staple', '/x.dmg'],
+  ]);
+  const failing = [];
+  await assert.rejects(notarizeDmg('/x.dmg', {}, { run: async (...args) => { failing.push(args); } }), /Notarizing/);
+  assert.equal(failing.length, 0, 'nothing runs without credentials');
+  await assert.rejects(notarizeDmg('/x.dmg', { APPLE_ID: 'a', APPLE_PASSWORD: 'p', APPLE_TEAM_ID: 't' }, { run: async (command, args) => { failing.push(args); if (args[0] === 'notarytool') throw new Error('Invalid'); } }), /Invalid/);
+  assert.equal(failing.length, 1, 'a rejected submission is never stapled');
+});
 
 test('macOS validates the app inside each Developer ID download and cleans up on failure', { skip: process.platform === 'win32' }, async (t) => {
   const scratch = await mkdtemp(join(tmpdir(), 'pandacode-release-test-'));
@@ -93,6 +116,8 @@ test('macOS validates the app inside each Developer ID download and cleans up on
 
   for (const [name, badPayload, failure, expectedError] of [
     ['valid'],
+    ['missing DMG container ticket', 'container', 'ticket', /missing ticket/],
+    ['DMG container Gatekeeper rejection', 'container', 'assessment', /assessment failed/],
     ['missing DMG ticket', 'dmg', 'ticket', /missing ticket/],
     ['missing updater ticket', 'updater', 'ticket', /missing ticket/],
     ['wrong DMG binary', 'dmg', 'binary', /disk image contains a different app build/],
@@ -102,7 +127,7 @@ test('macOS validates the app inside each Developer ID download and cleans up on
     ['no updater'],
   ]) {
     await t.test(name, async () => {
-      const payloads = new Map();
+      const payloads = new Map([[dmg, { kind: 'container' }]]);
       const checks = [];
       const unpack = async (dir, kind) => {
         const path = join(dir, 'PandaCode.app');
@@ -132,6 +157,8 @@ test('macOS validates the app inside each Developer ID download and cleans up on
           } else if (command === '/usr/bin/xcrun' || command === '/usr/sbin/spctl') {
             const { kind } = payloads.get(path);
             if (command === '/usr/bin/xcrun') assert.deepEqual(args.slice(0, -1), ['stapler', 'validate']);
+            else if (kind === 'container') assert.deepEqual(args.slice(0, -1), ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose', '--ignore-cache', '--no-cache']);
+            else assert.deepEqual(args.slice(0, 4), ['--assess', '--type', 'execute', '--verbose']);
             const check = command === '/usr/bin/xcrun' ? 'ticket' : 'assessment';
             checks.push([kind, check]);
             if (kind === badPayload && check === failure) throw new Error(check === 'ticket' ? 'missing ticket' : 'assessment failed');
@@ -156,9 +183,10 @@ test('macOS validates the app inside each Developer ID download and cleans up on
       } else {
         await verify();
         const kinds = name === 'no updater' ? ['dmg'] : ['dmg', 'updater'];
-        assert.deepEqual(checks, kinds.flatMap(kind => ['signature', 'ticket', 'assessment'].map(check => [kind, check])));
+        assert.deepEqual(checks, [['container', 'ticket'], ['container', 'assessment'], ...kinds.flatMap(kind => ['signature', 'ticket', 'assessment'].map(check => [kind, check]))]);
       }
       for (const { dir } of payloads.values()) {
+        if (!dir) continue;
         await assert.rejects(lstat(dir), { code: 'ENOENT' });
       }
     });

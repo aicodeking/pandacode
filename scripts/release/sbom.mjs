@@ -62,7 +62,9 @@ export function advisories(matches) {
     const id = text(match?.vulnerability?.id);
     if (!REPORTED.includes(severity) || !id) continue;
     const entry = { id, severity, package: text(match?.artifact?.name) ?? 'unknown', version: text(match?.artifact?.version) ?? 'unknown' };
-    seen.set([entry.id, entry.package, entry.version].join('\0'), entry);
+    const key = [entry.id, entry.package, entry.version].join('\0');
+    const prior = seen.get(key);
+    if (!prior || REPORTED.indexOf(severity) < REPORTED.indexOf(prior.severity)) seen.set(key, entry);
   }
   const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   return [...seen.values()].sort((a, b) => REPORTED.indexOf(a.severity) - REPORTED.indexOf(b.severity)
@@ -124,10 +126,13 @@ export function markdown(report) {
   ].join('\n');
 }
 
-const NOTES = [
+/** Paths kept out of the `pandacode-npm` scan: none of them ship in the desktop app. */
+export const NPM_EXCLUDES = ['./mobile/**', './website/**', './packages/**', './relay/**', './node_modules/**'];
+
+export const NOTES = [
   'Artifact SBOMs list only what syft can identify inside the installer; compressed installers (DMG, NSIS, AppImage) often yield little or nothing, which is reported as incomplete.',
   'The Rust and npm SBOMs come from Cargo.lock and package-lock.json at the release commit and describe build dependencies, not a verified inventory of any one installer.',
-  'The website, the relay and the npx package are not shipped in the desktop app and are excluded.',
+  'The mobile app, the website, the relay and the npx package are not shipped in the desktop app and are excluded.',
   'The WebView and other operating-system libraries (WebKitGTK, WebView2, WKWebView, glibc) are supplied by the host, are not bundled, and are not scanned.',
   'Findings are reported, not gating. Checksums and signatures are separate provenance checks and are unchanged.',
 ];
@@ -164,7 +169,7 @@ async function main() {
 
   const subjects = [
     ...packagedAssets(await readdir(assets)).map(name => ({ name, kind: 'artifact', platform: platformOf(name), source: [`file:${resolve(assets, name)}`], path: resolve(assets, name) })),
-    { name: 'pandacode-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', '--exclude', './website/**', '--exclude', './packages/**', '--exclude', './relay/**', '--exclude', './node_modules/**'] },
+    { name: 'pandacode-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', ...NPM_EXCLUDES.flatMap(glob => ['--exclude', glob])] },
     { name: 'pandacode-rust', kind: 'Cargo.lock', platform: 'all', source: ['dir:.', '--select-catalogers', 'rust'] },
   ];
   const entries = [];
@@ -177,6 +182,7 @@ async function main() {
   }
   // After the scans: on a fresh runner the first scan downloads the database.
   const dbBuilt = dbBuiltAt((await tool('grype', ['db', 'status', '-o', 'json'])).out);
+  if (!dbBuilt) console.log('::warning::Could not determine grype vulnerability database build time; reporting "unknown".');
   const report = coverage({ version: releaseVersion, commit, scanners: { syft: syftVersion ?? 'unknown', grype: grypeVersion ?? 'unknown' }, dbBuilt, entries, notes: NOTES });
   await writeFile(resolve(out, 'SBOM-COVERAGE.json'), `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(resolve(out, 'SBOM-COVERAGE.md'), markdown(report));

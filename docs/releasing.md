@@ -68,11 +68,16 @@ release (it never blocks publishing; a failed job just means they are missing):
 - `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
   (`.dmg`, `-setup.exe`, `.AppImage`) and macOS updater archive;
 - `pandacode-npm.cdx.json` and `pandacode-rust.cdx.json`: inventories of
-  `package-lock.json` and `Cargo.lock` at the release commit. The website, relay and
-  npx package are not shipped in the app and are excluded;
+  `package-lock.json` and `Cargo.lock` at the release commit. The mobile app
+  (`mobile/`), website, relay and npx package are excluded from the npm inventory;
+  none of them is shipped in the desktop app;
 - `SBOM-COVERAGE.json` and `SBOM-COVERAGE.md`: scanner names and versions, the
   vulnerability database build time, the commit, the version, each artifact's SHA-256
   and platform, the component count, grype's finding counts by severity, and the limits.
+  `SBOM-COVERAGE.json` also lists each subject's `advisories` (Critical and High
+  advisories by ID, severity, package and version), and `SBOM-COVERAGE.md` adds a
+  `Critical and High advisories` section when any are found. If grype's database build
+  time cannot be read, it is reported as `unknown` and the job logs a warning.
 
 An inventory that errors or finds no components is listed as **incomplete** and its scan
 as `not-scanned`; it is never reported as clean. Compressed installers often end up
