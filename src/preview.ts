@@ -653,6 +653,25 @@ let browserHistory: string[] = [], browserIndex = -1;
 let browserState: BrowserStatus = { url: '', title: '', loading: false, canGoBack: false, canGoForward: false, picking: false };
 function browserChanged(): void { browserState.canGoBack = browserIndex > 0; browserState.canGoForward = browserIndex < browserHistory.length - 1; emit('browser-state', { ...browserState }); }
 function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn => fn(event)); }
+/** Feature request cards (feature_requests.rs): `?featurerequest` seeds one for the first task, which opens first. */
+type PreviewFeatureRequest = { id: string; sessionId: string; title: string; description: string; createdAt: number };
+let featureRequestItems: PreviewFeatureRequest[] = [];
+let featureRequestsOn = true;
+function addFeatureRequest(sessionId: string, title: string, description: string): PreviewFeatureRequest {
+  const item = { id: crypto.randomUUID(), sessionId, title, description, createdAt: Date.now() };
+  featureRequestItems = [...featureRequestItems, item];
+  emit('feature-requests-changed', { sessionId });
+  return item;
+}
+function featureRequestFields(title: unknown, description: unknown): { title: string; description: string } {
+  const head = String(title ?? '').trim(), body = String(description ?? '').trim();
+  if (!head || head.length > 120) throw new Error('Title must be 1 to 120 characters.');
+  if (!body || body.length > 4000) throw new Error('Description must be 1 to 4000 characters.');
+  return { title: head, description: body };
+}
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('featurerequest')) featureRequestItems = [{ id: 'feature-request-1', sessionId: 'session-1', title: 'Pin a thread to the top of the sidebar', description: 'While working on several tasks I keep losing the one I come back to most. A pin on a thread would keep it above the rest of the list, whatever its stage or date.', createdAt: now - 60000 }];
+/** tests: an agent's suggestion arrives live (`__previewFeatureRequest(sessionId, title, description)`). */
+(window as any).__previewFeatureRequest = addFeatureRequest;
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
@@ -2103,6 +2122,21 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'agent_ui_request_active': result = true; break;
     case 'resolve_agent_ui_action': break;
     case 'open_external_url': { const url = new URL(args.url); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Use an HTTP or HTTPS URL.'); window.open(url.href, '_blank', 'noopener,noreferrer'); break; }
+    case 'feature_requests_list': result = featureRequestItems.filter(item => item.sessionId === args.sessionId).sort((a, b) => a.createdAt - b.createdAt); break;
+    case 'feature_request_update': {
+      const item = featureRequestItems.find(entry => entry.id === args.id);
+      if (!item) throw new Error('Feature request not found.');
+      Object.assign(item, featureRequestFields(args.title, args.description));
+      emit('feature-requests-changed', { sessionId: item.sessionId }); result = item; break;
+    }
+    case 'feature_request_dismiss': {
+      const item = featureRequestItems.find(entry => entry.id === args.id);
+      featureRequestItems = featureRequestItems.filter(entry => entry.id !== args.id);
+      if (item) emit('feature-requests-changed', { sessionId: item.sessionId });
+      break;
+    }
+    case 'feature_requests_enabled': result = featureRequestsOn; break;
+    case 'feature_requests_set_enabled': featureRequestsOn = Boolean(args.enabled); emit('feature-requests-changed', {}); break;
     case 'open_support': window.open('https://github.com/aicodeking/pandacode/issues', '_blank', 'noopener,noreferrer'); break;
     case 'local_sign_app': break;
     case 'app_update_install_supported': result = true; break;
@@ -2139,6 +2173,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       sessions = sessions.filter(task => !deletedSessionIds.includes(task.id));
       saveThreadOrder(sessions.map(threadOrder));
       for (const id of deletedSessionIds) delete messages[id];
+      featureRequestItems = featureRequestItems.filter(item => !deletedSessionIds.includes(item.sessionId));
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }

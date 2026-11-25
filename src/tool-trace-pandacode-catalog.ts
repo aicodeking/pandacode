@@ -301,6 +301,11 @@ export const CATALOG: Record<string, Spec> = {
     row: f => ({ object: field(f, 'title') ? `the task “${clip(field(f, 'title'), ROW_TEXT)}”` : 'the task' }),
     card: rowOnly,
   },
+  suggest_feature: {
+    family: 'meta', icon: 'chat', verbs: ['Suggesting a feature', 'Suggested a feature'],
+    row: f => ({ object: field(f, 'title') ? `“${clip(field(f, 'title'), ROW_TEXT)}”` : 'request' }),
+    card: rowOnly,
+  },
   coordination: { family: 'team', icon: 'chat', verbs: ['Coordinating', 'Coordinated'] },
   test: { family: 'meta', icon: 'check', verbs: ['Testing tools', 'Tested tools'] },
 
