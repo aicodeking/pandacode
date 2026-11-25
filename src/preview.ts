@@ -1537,6 +1537,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     projects: () => projects,
     emit,
     send: async (sessionId, text) => { await invoke('send_message', { sessionId, text }); },
+    createTask: async (templateId, title, description) => {
+      const template = sessions.find(s => s.id === templateId);
+      if (!template) throw new Error('The template thread no longer exists.');
+      return (await invoke<Session>('create_board_task', { projectId: template.projectId, provider: template.provider, model: template.model, mode: template.mode, title, description })).id;
+    },
   });
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.

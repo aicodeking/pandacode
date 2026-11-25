@@ -24,6 +24,8 @@ const STARTS: [Start, string][] = [['now', 'Now'], ['once', 'At a time'], ['dail
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const REFRESH_MS = 30_000;
 const SNOOZE_MINUTES = 60;
+const RUN_CHIPS = 3;
+const OUTCOME = { started: 'Started', queued: 'Queued', skipped: 'Skipped', failed: 'Failed' };
 const LIMIT_MIN = 1, LIMIT_MAX = 50;
 const INTERVAL_MIN = 5, INTERVAL_MAX = 7 * 24 * 60;
 const STEPS_MIN = 2, STEPS_MAX = 6;
@@ -100,7 +102,10 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     <span id="schedules-held-note" hidden>Paused for all schedules</span>
     <div class="settings-heading schedules-heading"><h3>Upcoming</h3>${infoMark(SCHEDULES_ABOUT, 'About schedules')}<span class="sr-only">${SCHEDULES_ABOUT}</span>${segmented('schedules-filter', 'Show schedules', FILTERS, 'filter')}<button type="button" class="secondary-button schedules-new-workflow">${icon('branch')}New workflow</button><button type="button" class="secondary-button schedules-new">${icon('plus')}New schedule</button></div>
     <form class="schedules-editor schedules-card" aria-label="Schedule" novalidate hidden>
-      ${field('Thread', '<select class="schedules-thread" aria-label="Thread"></select>')}
+      ${field('New task each time', '<input type="checkbox" class="settings-switch schedules-new-task" aria-label="New task each time">', 'schedules-new-task-field')}
+      <p class="schedules-note">Each run starts its own task instead of messaging one thread.</p>
+      ${field('Thread', '<select class="schedules-thread" aria-label="Thread"></select>', 'schedules-thread-field')}
+      <p class="schedules-note schedules-thread-note" hidden>Harness and model come from it. The thread itself isn’t messaged.</p>
       ${field('Title', '<input type="text" class="schedules-title" maxlength="120" autocomplete="off" aria-label="Title" placeholder="Optional; the message’s first words otherwise">')}
       ${field('Message', '<textarea class="schedules-message" rows="3" aria-label="Message" placeholder="What should the thread be asked?"></textarea>', 'schedules-field-top')}
       <div class="schedules-field"><span>When</span>${segmented('schedules-kinds', 'When', KINDS, 'kind')}</div>
@@ -138,6 +143,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const filterGroup = $<HTMLElement>('.schedules-filter'), create = $<HTMLButtonElement>('.schedules-new'), createFlow = $<HTMLButtonElement>('.schedules-new-workflow');
   const list = $<HTMLElement>('.schedules-list'), activity = $<HTMLElement>('.schedules-activity'), error = $<HTMLElement>('.schedules-error');
   const editor = $<HTMLFormElement>('.schedules-editor'), formError = editor.querySelector<HTMLElement>('.schedules-form-error')!, preview = editor.querySelector<HTMLElement>('.schedules-preview')!;
+  const newTask = $<HTMLInputElement>('.schedules-new-task'), threadLabel = $<HTMLElement>('.schedules-thread-field>span'), threadNote = $<HTMLElement>('.schedules-thread-note');
   const thread = $<HTMLSelectElement>('.schedules-thread'), title = $<HTMLInputElement>('.schedules-title'), prompt = $<HTMLTextAreaElement>('.schedules-message');
   const kinds = $<HTMLElement>('.schedules-kinds'), runAt = $<HTMLInputElement>('.schedules-run-at'), every = $<HTMLInputElement>('.schedules-every'), unit = $<HTMLSelectElement>('.schedules-unit');
   const time = $<HTMLInputElement>('.schedules-time'), days = $<HTMLElement>('.schedules-days'), watch = $<HTMLSelectElement>('.schedules-watch');
@@ -149,7 +155,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const flowSuccess = $<HTMLInputElement>('.workflow-success'), flowMax = $<HTMLInputElement>('.workflow-max');
 
   let schedules: TaskSchedule[] = [], runs: ScheduleRun[] = [], settings: SchedulerSettings | null = null;
-  let sessions: Session[] = [], projects: Project[] = [];
+  let sessions: Session[] = [], known: Session[] = [], projects: Project[] = [];
   let filter: Filter = 'all', kind: ScheduleKind = 'weekdays', start: Start = 'now', editing: TaskSchedule | null = null;
   let repeat: 'next' | 'every' = 'next', confirming: string | null = null;
   let loaded = false, disposed = false, busy = false, intent = options.intent, menu: (() => void) | undefined;
@@ -186,16 +192,32 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   const held = () => settings?.paused ? 'aria-describedby="schedules-held-note" title="Paused for all schedules"' : '';
   const confirmHtml = (name: string) => `<span class="schedule-confirm">Remove?</span><button type="button" class="secondary-button schedule-confirm-yes" data-remove-yes aria-label="Remove ${escape(name)}">Remove</button><button type="button" class="secondary-button" data-remove-no aria-label="Keep ${escape(name)}">Keep</button>`;
   /** One schedule; steps inside a workflow have no switch of their own (the workflow's switch covers them). */
+  const spansProjects = () => new Set(schedules.map(s => s.projectId)).size > 1;
+  /** The latest runs of a new-task schedule, each a link to the task it started. */
+  function recentRunsHtml(schedule: TaskSchedule): string {
+    const recent = runs.filter(run => run.scheduleId === schedule.id).sort((a, b) => b.at - a.at).slice(0, RUN_CHIPS);
+    if (!recent.length) return '<small class="schedule-no-runs">No runs yet.</small>';
+    return `<span class="schedule-runs">${recent.map(run => {
+      const name = known.find(session => session.id === run.sessionId)?.title;
+      const body = `<span class="schedule-dot" aria-hidden="true"></span><span class="schedule-chip-title">${escape(name ?? 'Task removed')}</span>${whenHtml(run.at)}`;
+      const detail = run.outcome === 'failed' ? `<small class="schedule-run-detail">${escape(run.detail)}</small>` : '';
+      return (name ? `<button type="button" class="schedule-run-chip" data-thread="${escape(run.sessionId)}" data-outcome="${run.outcome}" aria-label="Open task: ${escape(name)}, ${OUTCOME[run.outcome]}">${body}</button>`
+        : `<span class="schedule-run-chip" data-outcome="${run.outcome}"><span class="sr-only">${OUTCOME[run.outcome]}: </span>${body}</span>`) + detail;
+    }).join('')}</span>`;
+  }
   function rowHtml(schedule: TaskSchedule, step = false): string {
     const max = schedule.maxRuns, done = Math.min(schedule.runCount, max ?? 0);
     const progress = max && max > 1 ? `<span class="schedule-progress"><span class="schedule-bar" role="progressbar" aria-label="Runs" aria-valuemin="0" aria-valuemax="${max}" aria-valuenow="${done}"><span style="width:${(done / max) * 100}%"></span></span><small>${done} / ${max} runs</small></span>` : '';
     const spent = isFinished(schedule);
     const next = spent ? `<span class="schedule-when">Done · ran ${schedule.runCount === 1 ? 'once' : `${schedule.runCount} times`}</span>` : !schedule.enabled ? '<span class="schedule-when">Paused</span>' : whenHtml(schedule.nextRunAt, CLOCK_KINDS.includes(schedule.kind));
     const how = schedule.kind === 'after' && !step && schedule.maxRuns === 1 ? `Next time ${cadence(schedule).replace(/^A/, 'a')}` : cadence(schedule);
+    const target = schedule.newTask ? `<span class="schedule-target">${icon('plus')}New task each time</span>`
+      : `<button type="button" class="schedule-thread" data-thread="${escape(schedule.sessionId)}" title="Open thread">${escape(schedule.sessionTitle)}</button>`;
+    const project = schedule.projectName && spansProjects() ? `<span class="schedule-project">${escape(schedule.projectName)}</span>` : '';
     const controls = confirming === schedule.id ? confirmHtml(schedule.title)
       : `${step || spent ? '' : `<input type="checkbox" class="settings-switch" data-toggle aria-label="${escape(schedule.title)}" ${held()} ${schedule.enabled ? 'checked' : ''}>`}<button type="button" class="icon-button" data-more aria-haspopup="menu" aria-label="More for ${escape(schedule.title)}" title="More">${icon('more')}</button>`;
     return `<li class="schedule-row" data-id="${escape(schedule.id)}" data-origin="${schedule.createdBy}" data-enabled="${schedule.enabled}">
-      <div class="schedule-main"><strong>${escape(schedule.title)}</strong><span class="schedule-meta"><button type="button" class="schedule-thread" data-thread="${escape(schedule.sessionId)}" title="Open thread">${escape(schedule.sessionTitle)}</button><span>${escape(how)}</span>${next}</span>${progress}</div>
+      <div class="schedule-main"><strong>${escape(schedule.title)}</strong><span class="schedule-meta">${target}<span>${escape(how)}</span>${next}${project}</span>${progress}${schedule.newTask ? recentRunsHtml(schedule) : ''}</div>
       <span class="schedule-origin">${schedule.createdBy === 'agent' ? `${icon('bot')}Agent` : 'You'}</span>${controls}
     </li>`;
   }
@@ -227,20 +249,24 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     }
     const shown = schedules.filter(s => filter === 'all' || (filter === 'paused' ? !s.enabled : s.createdBy === filter));
     if (!shown.length) { list.innerHTML = '<p class="schedules-none">No schedules match.</p>'; return; }
-    const groups = new Map<string, string[]>(), placed = new Set<string>();
+    const entries: { repeating: boolean; rank: number; at: number; html: string }[] = [], placed = new Set<string>();
     for (const schedule of shown) {
       if (schedule.workflowId && placed.has(schedule.workflowId)) continue;
-      const name = schedule.projectName || 'Threads';
+      const unit = schedule.workflowId ? stepsInOrder(schedules.filter(s => s.workflowId === schedule.workflowId)) : [schedule], first = unit[0];
       if (schedule.workflowId) placed.add(schedule.workflowId);
-      groups.set(name, [...groups.get(name) ?? [], schedule.workflowId ? flowHtml(schedule.workflowId) : rowHtml(schedule)]);
+      const live = unit.filter(item => !isFinished(item));
+      entries.push({ repeating: first.kind !== 'once', rank: !live.length ? 2 : live.every(item => item.enabled) ? 0 : 1, at: first.nextRunAt ?? Infinity, html: schedule.workflowId ? flowHtml(schedule.workflowId) : rowHtml(schedule) });
     }
-    list.innerHTML = [...groups].map(([name, rows]) => `<section class="schedules-group settings-group" aria-label="${escape(name)}"><h4>${escape(name)}</h4><ul>${rows.join('')}</ul></section>`).join('');
+    entries.sort((a, b) => a.rank - b.rank || a.at - b.at);
+    list.innerHTML = ([['Repeating', true], ['Once', false]] as const).map(([name, repeating]) => {
+      const rows = entries.filter(entry => entry.repeating === repeating);
+      return rows.length ? `<section class="schedules-group settings-group" aria-label="${name}"><h4>${name}<small class="schedules-count">${rows.length}</small></h4><ul>${rows.map(entry => entry.html).join('')}</ul></section>` : '';
+    }).join('');
     host.querySelector<HTMLElement>('[data-remove-no]')?.focus();
   }
   function renderActivity(): void {
-    const outcome = { started: 'Started', queued: 'Queued', skipped: 'Skipped', failed: 'Failed' };
     activity.innerHTML = runs.length ? runs.map(run => `<li><button type="button" class="schedule-run" data-thread="${escape(run.sessionId)}" data-outcome="${run.outcome}">
-      <span class="schedule-dot" role="img" aria-label="${outcome[run.outcome]}"></span>
+      <span class="schedule-dot" role="img" aria-label="${OUTCOME[run.outcome]}"></span>
       <span class="schedule-run-text"><strong>${escape(run.title)}</strong><small>${escape(threadName(run.sessionId))} · ${escape(run.detail)}</small></span>
       ${run.manual ? '<span class="schedule-manual">Run now</span>' : ''}${whenHtml(run.at)}</button></li>`).join('')
       : '<li class="schedules-none">No runs yet.</li>';
@@ -253,7 +279,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
         schedulesApi.list(), schedulesApi.runs({ limit: 50 }), schedulesApi.settings(), call<Session[]>('list_sessions'), call<Project[]>('list_projects')]);
       if (disposed) return;
       schedules = nextSchedules; runs = nextRuns; settings = nextSettings; projects = nextProjects;
-      sessions = nextSessions.filter(session => !session.archived && !session.draft);
+      known = nextSessions; sessions = nextSessions.filter(session => !session.archived && !session.draft);
       loaded = true;
       renderSettings(); renderList(); renderActivity();
       if (intent) { const wanted = intent; intent = undefined; applyIntent(wanted); }
@@ -266,6 +292,15 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
   }
 
   // Schedule editor
+  /** A new-task schedule needs a clock: the "after" kind is off while the switch is on. */
+  function syncNewTask(): void {
+    const on = newTask.checked, after = kinds.querySelector<HTMLButtonElement>('[data-kind="after"]')!;
+    after.disabled = on; if (on) after.title = 'Needs a clock'; else after.removeAttribute('title');
+    threadLabel.textContent = on ? 'Template thread' : 'Thread';
+    thread.setAttribute('aria-label', threadLabel.textContent);
+    threadNote.hidden = !on;
+    if (on && kind === 'after') setKind('once'); else updatePreview();
+  }
   function setKind(next: ScheduleKind): void {
     kind = next;
     choose(kinds, 'kind', kind);
@@ -290,13 +325,14 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
       runAt: kind === 'once' && Number.isFinite(at) ? at : null,
       watchSessionId: kind === 'after' ? watch.value || null : null,
       onlyOnSuccess: kind === 'after' && success.checked,
+      newTask: newTask.checked,
       maxRuns: kind === 'after' && repeat === 'next' ? 1 : stop ? Math.max(1, Math.round(Number(stop))) || null : null,
     };
   }
   /** The first thing that would stop this schedule from saving, and the field to fix. */
   function problem(input: ScheduleInput): { text: string; field: HTMLElement } | null {
     const minutes = input.intervalMinutes ?? 0;
-    if (!input.sessionId) return { text: 'Pick a thread to send to.', field: thread };
+    if (!input.sessionId) return { text: input.newTask ? 'Pick a template thread.' : 'Pick a thread to send to.', field: thread };
     if (kind === 'interval' && !(minutes >= INTERVAL_MIN && minutes <= INTERVAL_MAX)) return { text: 'Intervals are 5 minutes to 7 days.', field: every };
     if (CLOCK_KINDS.includes(kind) && !input.timeOfDay) return { text: 'Pick a time of day.', field: time };
     if (kind === 'weekly' && !input.days?.length) return { text: 'Pick at least one day.', field: days.querySelector('button')! };
@@ -312,7 +348,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     const name = sessions.find(session => session.id === input.sessionId)?.title ?? 'a thread';
     const next = nextRun(input);
     const stop = input.maxRuns && !stopField.hidden ? ` · stops after ${input.maxRuns} run${input.maxRuns === 1 ? '' : 's'}` : '';
-    preview.textContent = `Sends to ${quote(name)} ${phrase(input, input.watchSessionId ? threadName(input.watchSessionId) : null)}${next ? ` · next: ${when(next)}` : ''}${stop}`;
+    preview.textContent = `${input.newTask ? `Starts a new task each time, from ${quote(name)},` : `Sends to ${quote(name)}`} ${phrase(input, input.watchSessionId ? threadName(input.watchSessionId) : null)}${next ? ` · next: ${when(next)}` : ''}${stop}`;
   }
   function openEditor(schedule: TaskSchedule | null, seed: Partial<ScheduleInput> = {}): void {
     menu?.(); closeWorkflow(false);
@@ -331,7 +367,8 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
     maxRuns.value = source.maxRuns && !(source.kind === 'after' && repeat === 'next') ? String(source.maxRuns) : '';
     watch.innerHTML = `<option value="">Choose a thread…</option>${sessionOptions(source.watchSessionId ?? '', sessionId, projectOf(sessionId))}`;
     formError.hidden = true; editor.hidden = false; renderList();
-    setKind(source.kind ?? 'weekdays');
+    newTask.checked = Boolean(source.newTask);
+    setKind(source.kind ?? 'weekdays'); syncNewTask();
     (sessionId ? prompt : thread).focus();
   }
   function closeEditor(focus = true): void {
@@ -519,6 +556,7 @@ export function mountSchedulesSettings(host: HTMLElement, options: SchedulesSett
       renderSteps(readSteps());
       stepList.querySelector<HTMLElement>(`select[aria-label="${label}"]`)?.focus();
     }
+    if (target === newTask) syncNewTask();
     if (editor.contains(target)) { if (target === thread && kind === 'after') setKind(kind); updatePreview(); }
     if (flow.contains(target)) updateFlowPreview();
   });

@@ -8,6 +8,8 @@ export interface PreviewSchedulesHost {
   emit(name: string, payload: unknown): void;
   /** Delivers a fired schedule's message to its thread. */
   send(sessionId: string, text: string): Promise<void>;
+  /** Creates a task in the template's project with its harness and model; returns its id. */
+  createTask(templateId: string, title: string, description: string): Promise<string>;
 }
 
 const MINUTE = 60_000;
@@ -117,12 +119,14 @@ export async function invokeSchedules<T>(command: string, args: Record<string, a
     case 'schedule_delete': { const s = find(args.scheduleId); schedules = schedules.filter(item => item.id !== s.id); host.emit('schedules-changed', { sessionId: s.sessionId }); return undefined as T; }
     case 'schedule_run_now': {
       const s = find(args.scheduleId);
-      const run: ScheduleRun = { id: `run-${crypto.randomUUID()}`, scheduleId: s.id, sessionId: s.sessionId, title: s.title, at: now, outcome: 'started', detail: 'Woke the thread', sequence: s.runCount + 1, manual: true };
+      const d = new Date(now), pad = (n: number) => String(n).padStart(2, '0');
+      const target = s.newTask ? await host.createTask(s.sessionId, `${s.title} · ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`, s.prompt) : s.sessionId;
+      const run: ScheduleRun = { id: `run-${crypto.randomUUID()}`, scheduleId: s.id, sessionId: target, title: s.title, at: now, outcome: 'started', detail: s.newTask ? 'Started a new task' : 'Woke the thread', sequence: s.runCount + 1, manual: true };
       runs = [run, ...runs];
       // Like the native advance: a once schedule is spent after it runs, and so is one at its run limit.
       const spent = s.kind === 'once' || (s.maxRuns !== null && s.runCount + 1 >= s.maxRuns);
-      replace({ ...s, runCount: s.runCount + 1, lastRunAt: now, ...(spent ? { enabled: false, nextRunAt: null } : {}) });
-      await host.send(s.sessionId, trace(s, run.sequence, now));
+      replace({ ...s, runCount: s.runCount + 1, lastRunAt: now, ...(s.newTask ? { lastTaskId: target } : {}), ...(spent ? { enabled: false, nextRunAt: null } : {}) });
+      await host.send(target, trace(s, run.sequence, now));
       return run as T;
     }
     case 'schedule_runs': return runs.filter(r => (!args.sessionId || r.sessionId === args.sessionId) && (!args.scheduleId || r.scheduleId === args.scheduleId)).slice(0, args.limit ?? 50) as T;

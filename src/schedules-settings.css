@@ -20,6 +20,7 @@
 .schedules-segmented>button,.schedules-days>button{position:relative;z-index:1;min-height:24px;padding:0 10px;border:0;background:transparent;color:var(--muted);font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight);line-height:var(--type-body-leading);letter-spacing:var(--tracking-none);cursor:pointer;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
 .schedules-segmented>button{border-radius:var(--ds-control-radius)}
 .schedules-segmented>button:hover{color:var(--text);transition-duration:var(--ds-ease-in)}
+.schedules-segmented>button:disabled{color:var(--faint);cursor:default}
 .schedules-segmented>button[aria-pressed=true]{color:var(--text)}
 .schedules-segmented>.segment-thumb{border-radius:var(--ds-control-radius);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
 .schedules-days{display:inline-flex;flex-wrap:wrap;gap:4px}
@@ -38,6 +39,9 @@
 .schedules-inline{display:flex;align-items:center;gap:8px}
 .schedules-inline input{width:6rem}
 .schedules-unit-label{color:var(--muted)}
+.schedules-note{margin:-6px 0 0 calc(7.5rem + 12px);font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);color:var(--muted)}
+.schedules-new-task-field>span:first-child{width:auto}
+.schedules-new-task-field+.schedules-note{margin-left:0}
 .schedules-when,.workflow-when{display:flex;flex-direction:column;gap:12px}
 :is(.schedules-when,.workflow-when,.schedules-segmented)[hidden]{display:none}
 .schedules-hint{color:var(--muted);font-size:var(--type-meta);font-weight:var(--type-meta-weight);white-space:nowrap}
@@ -58,6 +62,7 @@
 
 /* Upcoming rows */
 .schedules-group+.schedules-group{margin-top:12px}
+.schedules-count{margin-left:6px;font-size:var(--type-caption);font-weight:var(--type-caption-weight);line-height:var(--type-caption-leading);font-variant-numeric:tabular-nums}
 .schedules-group h4{margin:0;padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 2px;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);color:var(--muted);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 .schedules-group ul{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}
 .schedule-row{display:flex;align-items:center;gap:var(--ds-row-gap);padding:6px 8px 6px calc(var(--ds-row-pad-x) - var(--ds-card-pad));min-height:var(--ds-row-h-sub);border-radius:var(--ds-control-radius);transition:background-color var(--ds-ease-out) ease-out}
@@ -70,6 +75,21 @@ li.schedule-row:hover,.schedule-flow-head:hover{background:var(--ds-row-hover);t
 .schedule-meta>*+*::before{content:"·";margin-right:6px}
 .schedule-thread{min-width:0;max-width:14rem;padding:0;border:0;background:none;color:var(--muted);font:inherit;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
 .schedule-thread:hover{color:var(--text);text-decoration:underline;text-underline-offset:3px}
+.schedule-target{display:inline-flex;align-items:center;gap:4px}
+.schedule-target .icon{flex:none;width:12px;height:12px}
+.schedule-runs{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:4px;min-width:0}
+.schedule-run-chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-height:24px;overflow:hidden;white-space:nowrap;padding:0 8px;border:0;border-radius:var(--radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font:inherit;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+button.schedule-run-chip{cursor:pointer}
+button.schedule-run-chip:hover{background:var(--ds-fill-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
+button.schedule-run-chip:active{scale:var(--ds-press)}
+span.schedule-run-chip{color:var(--faint)}
+.schedule-run-chip .schedule-dot{margin:0}
+.schedule-chip-title{min-width:0;max-width:14rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+span.schedule-run-chip .schedule-chip-title{color:inherit}
+.schedule-run-chip .schedule-when{flex:none;font-variant-numeric:tabular-nums}
+.schedule-run-detail,.schedule-no-runs{font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);color:var(--muted)}
+.schedule-run-detail{color:var(--ds-danger)}
+.schedule-no-runs{margin-top:2px;font-size:var(--type-caption);line-height:var(--type-caption-leading)}
 .schedule-progress{display:flex;align-items:center;gap:8px;margin-top:4px}
 .schedule-progress small{font-size:var(--type-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 .schedule-bar{display:block;width:6rem;height:4px;border-radius:var(--radius-hair);background:var(--ds-track-strong);overflow:hidden}
@@ -106,10 +126,10 @@ li.schedule-row:hover,.schedule-flow-head:hover{background:var(--ds-row-hover);t
 .schedule-run:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 .schedule-run:active{background:var(--ds-row-press);scale:var(--ds-press)}
 .schedule-dot{flex:none;width:8px;height:8px;margin:0 6px;border-radius:50%;background:var(--muted)}
-.schedule-run[data-outcome=started] .schedule-dot{background:var(--ds-success)}
-.schedule-run[data-outcome=queued] .schedule-dot{background:transparent;box-shadow:inset 0 0 0 2px var(--ds-info)}
-.schedule-run[data-outcome=skipped] .schedule-dot{background:var(--faint)}
-.schedule-run[data-outcome=failed] .schedule-dot{background:var(--ds-danger)}
+:is(.schedule-run,.schedule-run-chip)[data-outcome=started] .schedule-dot{background:var(--ds-success)}
+:is(.schedule-run,.schedule-run-chip)[data-outcome=queued] .schedule-dot{background:transparent;box-shadow:inset 0 0 0 2px var(--ds-info)}
+:is(.schedule-run,.schedule-run-chip)[data-outcome=skipped] .schedule-dot{background:var(--faint)}
+:is(.schedule-run,.schedule-run-chip)[data-outcome=failed] .schedule-dot{background:var(--ds-danger)}
 .schedule-run-text{display:flex;flex-direction:column;flex:1;min-width:0}
 .schedule-run-text strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 .schedule-run-text small{font-size:var(--type-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -117,8 +137,8 @@ li.schedule-row:hover,.schedule-flow-head:hover{background:var(--ds-row-hover);t
 .schedule-run .schedule-when{flex:none;font-size:var(--type-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 
 @media(prefers-contrast:more){.schedules-template,.workflow-step{box-shadow:inset 0 0 0 1px var(--border)}}
-@media(prefers-reduced-motion:reduce){.schedule-row,.schedule-run,.schedules-template,.schedules-segmented>button{transition:none}}
-@media(max-width:560px){.schedules-field{flex-direction:column;align-items:stretch;gap:4px}.schedules-field>span:first-child{width:auto}.schedule-meta{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce){.schedule-row,.schedule-run,.schedule-run-chip,.schedules-template,.schedules-segmented>button{transition:none}}
+@media(max-width:560px){.schedules-field{flex-direction:column;align-items:stretch;gap:4px}.schedules-field>span:first-child{width:auto}.schedule-meta{flex-wrap:wrap}.schedules-note{margin-left:0}}
 /* A narrow row keeps one subtitle line: every part may give way with an ellipsis, the thread name
    (a centred button by default, so it is pinned to its start) first. */
 .schedule-meta{overflow:hidden}
@@ -132,6 +152,6 @@ li.schedule-row:hover,.schedule-flow-head:hover{background:var(--ds-row-hover);t
   .schedule-meta{flex-wrap:wrap;row-gap:0}
   .schedule-meta>*{max-width:100%}
   /* The thread takes its own line, so the next part starts its line without a separator. */
-  .schedule-meta>.schedule-thread{flex:1 1 100%;min-width:0}
-  .schedule-meta>.schedule-thread+*::before{content:none}
+  .schedule-meta>:is(.schedule-thread,.schedule-target){flex:1 1 100%;min-width:0}
+  .schedule-meta>:is(.schedule-thread,.schedule-target)+*::before{content:none}
 }
