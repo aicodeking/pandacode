@@ -17,7 +17,7 @@ pub(super) use self::adopt::adopt_for_launch;
 use self::adopt::launched_without_key_since;
 use self::key::{age_expired, miss};
 use self::stats::{decision_miss, decision_miss_in, discarded_note, no_spare_note, record_adopted, Gone, MissStreak, PoolChurn, PoolStats, WarmStatsSnapshot};
-pub(super) use self::key::{key_fields, lead_git_status_digest, with_git_status};
+pub(super) use self::key::{git_status_digest, key_fields, with_git_status};
 #[cfg(test)]
 pub(super) use self::key::{key, lead_key};
 pub use self::spawn::prewarm;
@@ -28,8 +28,8 @@ pub(super) use self::test_support::waiting;
 #[cfg(all(test, unix))]
 pub(crate) use self::test_support::{has_spare_for_test, insert_spare_in_cwd_for_test, process_gone_for_test, spare_pool_test_lock};
 
-/// Default-on switch shared by the desktop app and headless host.
-const WARM_SPARES_OFF_FILE: &str = "warm-spares-off";
+/// Opt-in switch shared by the desktop app and `pandacode serve`: spares stay off until it is set.
+const WARM_SPARES_ON_FILE: &str = "warm-spares-on";
 
 /// Unreadable settings fail closed: no idle CLI or ahead-of-turn SessionStart hooks.
 pub fn enabled(app: &tauri::AppHandle) -> bool {
@@ -38,7 +38,7 @@ pub fn enabled(app: &tauri::AppHandle) -> bool {
 
 /// The one on/off decision, also exercised directly by the unit tests.
 fn enabled_in(dir: Result<PathBuf, String>) -> bool {
-    crate::app_marker::default_on_in(dir, WARM_SPARES_OFF_FILE)
+    crate::app_marker::opt_in_in(dir, WARM_SPARES_ON_FILE)
 }
 
 #[cfg(test)]
@@ -55,7 +55,7 @@ pub(super) fn enabled_now() -> bool {
     if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    crate::app_marker::default_on_now(WARM_SPARES_OFF_FILE)
+    crate::app_marker::opt_in_now(WARM_SPARES_ON_FILE)
 }
 
 /// `enabled_now`, read on a blocking thread so the async runtime never waits on the marker file.
@@ -65,7 +65,7 @@ async fn enabled_off_runtime() -> bool {
     if let Some(enabled) = ENABLED_OVERRIDE.with(std::cell::Cell::get) {
         return enabled;
     }
-    crate::app_marker::default_on_off_runtime(WARM_SPARES_OFF_FILE).await
+    crate::app_marker::opt_in_off_runtime(WARM_SPARES_ON_FILE).await
 }
 
 /// Each pool's lifecycle totals since launch: a pure in-memory read (no file, no network).
@@ -77,12 +77,12 @@ pub(crate) async fn warm_spare_stats() -> WarmStatsSnapshot {
 
 #[tauri::command]
 pub(crate) async fn warm_spares_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    crate::blocking(move || Ok(!crate::app_marker::exists(&app, WARM_SPARES_OFF_FILE)?)).await
+    crate::blocking(move || crate::app_marker::exists(&app, WARM_SPARES_ON_FILE)).await
 }
 
 #[tauri::command]
 pub(crate) async fn set_warm_spares_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    crate::blocking(move || crate::app_marker::set(&app, WARM_SPARES_OFF_FILE, !enabled)).await?;
+    crate::blocking(move || crate::app_marker::set(&app, WARM_SPARES_ON_FILE, enabled)).await?;
     if !enabled {
         // Keep retirement on the runtime so each killed process registers its pending exit.
         disable_all();
@@ -441,9 +441,9 @@ fn no_spare_since(pool: &Pool, gone: Option<Gone>, ordinary_eligible: bool, lead
 /// What `prepare_launch` found in the pool for a supported launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LaunchPool {
-    /// A spare is pooled: key the launch off the runtime (with the working tree's git status when
-    /// the pooled spare is a `lead` one), then `take_checked` with this epoch.
-    Pooled { discard_epoch: u64, lead: bool },
+    /// A spare is pooled: key the launch off the runtime (with the working tree's git status),
+    /// then `take_checked` with this epoch.
+    Pooled { discard_epoch: u64 },
     /// None pooled. `gone`: the lead's pending reason its last spare left the pool, taken from the
     /// pool here; `may_record_cold`: an eligible launch with no such note. `finish_empty_launch`
     /// counts and logs either (a lead miss, or a cold start in the lead pool for a `lead` launch)
@@ -465,8 +465,8 @@ fn prepare_launch_in(pool: &Pool, session_id: &str, ordinary_eligible: bool, lea
     // register after this check. Advanced with a spare pooled too: a lead spare expiring during the
     // off-runtime key walk then sees a newer launch and is not renewed beside this one.
     launched(session_id);
-    if let Some(spare) = locked.spares.get(session_id) {
-        return LaunchPool::Pooled { discard_epoch: locked.discard_epoch, lead: spare.lead };
+    if locked.spares.contains_key(session_id) {
+        return LaunchPool::Pooled { discard_epoch: locked.discard_epoch };
     }
     let gone = locked.gone.remove(session_id);
     LaunchPool::Empty { may_record_cold: ordinary_eligible && gone.is_none(), lead, gone }

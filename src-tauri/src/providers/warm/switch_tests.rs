@@ -19,13 +19,13 @@ impl Drop for EnabledOverride {
 }
 
 #[test]
-fn off_marker_is_default_on_and_fail_closed_on_read_errors() {
+fn on_marker_is_opt_in_and_fails_closed_on_read_errors() {
     let dir = std::env::temp_dir().join(format!("warm-switch-marker-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
-    assert!(enabled_in(Ok(dir.clone())), "an absent marker enables spares");
-    let marker = dir.join(WARM_SPARES_OFF_FILE);
+    assert!(!enabled_in(Ok(dir.clone())), "an absent marker leaves spares off");
+    let marker = dir.join(WARM_SPARES_ON_FILE);
     std::fs::write(&marker, "").unwrap();
-    assert!(!enabled_in(Ok(dir.clone())), "a present marker disables spares");
+    assert!(enabled_in(Ok(dir.clone())), "a present marker enables spares");
     // A regular file cannot contain the marker: checking it must fail closed.
     assert!(!enabled_in(Ok(marker)));
     assert!(!enabled_in(Err("app data is unavailable".into())));
@@ -42,8 +42,8 @@ async fn off_switch_blocks_matching_renewals_prewarm_and_process_spawn() {
     let mut prepared_config = config.clone();
     prepared_config.cwd = external_path(&config.cwd);
     let disabled = crate::skill_manager::disabled_for(&session);
-    // Only lead spares renew, and a lead's key carries its working tree's status.
-    let git_status = lead_git_status(&prepared_config.cwd).expect("the test folder's git status is known");
+    // Only lead spares renew, and every spare's key carries its working tree's status.
+    let git_status = git_status(&prepared_config.cwd).expect("the test folder's git status is known");
     let spare_key = lead_key(&prepared(prepared_config, &disabled), &[], &git_status).unwrap();
     let inputs: Inputs = Arc::new(|| "unchanged".into());
     assert!(still_current(&spare_key, &config, &[], "unchanged", &inputs));

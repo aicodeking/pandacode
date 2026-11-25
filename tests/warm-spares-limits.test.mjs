@@ -13,8 +13,12 @@ const README = 'README.md';
 const PRIVACY = 'website/src/pages/privacy.astro';
 const AGENTS = 'AGENTS.md';
 const WORKER_TOKENS = 'docs/worker-tokens.md';
-// Every hand-written copy of the warm-spare limits, in the order a reader meets them.
-const COPIES = [SETTINGS, README, PRIVACY, WORKER_TOKENS, AGENTS];
+// Every hand-written copy that carries the full warm-spare limits, in the order a reader meets
+// them. The Settings hint is a concise summary that points to docs/worker-tokens.md instead; its
+// own test below checks what it must and must not say.
+const FULL_COPIES = [README, PRIVACY, WORKER_TOKENS, AGENTS];
+const HEADLESS = 'docs/headless.md';
+const AGENT_REFERENCE = 'docs/agent-reference.md';
 
 function rustLimit(source, name) {
   const match = source.match(new RegExp(`^const ${name}: usize = (\\d+);`, 'm'));
@@ -109,7 +113,7 @@ test('every copy states the measured idle memory range from warm.rs', () => {
 test('every copy states the measured startup saving from warm.rs', () => {
   // The module doc comment at the top of warm.rs carries the canonical saving range.
   const range = canonical(/(\d+\.\d+[–-]\d+\.\d+)\s+s\b/, '//!', 'startup saving range');
-  for (const path of [SETTINGS, WORKER_TOKENS]) {
+  for (const path of [README, AGENTS, WORKER_TOKENS]) {
     assert.ok(rangesIn(path, /(\d+\.\d+[–-]\d+\.\d+)\s+s\b/).includes(range), `${path} must state ${range} s`);
   }
 });
@@ -160,7 +164,7 @@ test('every copy states the low-memory thresholds from warm/memory.rs in GiB', (
   const { total, available } = memoryThresholds();
   assert.equal(Number(available) < Number(total), true, 'the available-RAM floor sits below the total-RAM floor');
   const totalAt = new RegExp(`\\b${escape(total)} GiB\\b`, 'g');
-  for (const path of COPIES) {
+  for (const path of FULL_COPIES) {
     const text = textOf(path);
     // GiB, not GB: the thresholds are binary (`* 1024`), and a decimal-unit copy reads ~7% low.
     for (const value of [total, available]) {
@@ -187,7 +191,7 @@ test('every copy states the expiry backoff range from warm/stats.rs', () => {
   const max = Number.isInteger(maxHours)
     ? new RegExp(`\\b(?:${maxMinutes}\\s*(?:min|minutes)|${maxHours}\\s*(?:h|hours))\\b`)
     : new RegExp(`\\b${maxMinutes}\\s*(?:min|minutes)\\b`);
-  for (const path of COPIES) {
+  for (const path of FULL_COPIES) {
     const text = textOf(path);
     assert.match(text, min, `${path} must state the ${minMinutes}-minute first pause`);
     assert.match(text, max, `${path} must state the ${maxMinutes}-minute cap`);
@@ -197,7 +201,7 @@ test('every copy states the expiry backoff range from warm/stats.rs', () => {
 test('every copy states the graceful retire wait from exit.rs', () => {
   const secs = rustSecs(EXIT, 'SPARE_RETIRE_WAIT');
   const wait = new RegExp(`\\b${secs} (?:s|seconds)\\b`, 'g');
-  for (const path of COPIES) {
+  for (const path of FULL_COPIES) {
     const text = textOf(path);
     // Anchored to the retirement it describes, so an unrelated "2 s" elsewhere cannot satisfy it.
     const near = [...text.matchAll(wait)].some((m) => /SessionEnd|retire/i.test(text.slice(Math.max(0, m.index - 200), m.index + 200)));
@@ -229,11 +233,9 @@ test('telemetry-off signed-in savings in Settings and docs/worker-tokens.md matc
   const exitSaved = ((defaultExit - privacyExit) / 1000).toFixed(2);
   const warmSaved = ((privacyInit - privacyWarm) / 1000).toFixed(2);
 
-  const hint = settingsHint();
-  for (const saved of [startupSaved, exitSaved, warmSaved]) {
-    assert.ok(hint.includes(`~${saved} s`), `${SETTINGS} warm-spares hint must state ~${saved} s from the live probe`);
-  }
-  assert.doesNotMatch(hint, /Turn off agent telemetry removes ~1\.5 s/, `${SETTINGS} must not present the offline ~1.5 s as the signed-in saving`);
+  // The concise Settings hint leaves the telemetry trade-off to docs/worker-tokens.md, but must
+  // never present the offline ~1.5 s as a signed-in figure.
+  assert.doesNotMatch(settingsHint(), /~?1\.5 s/, `${SETTINGS} must not present the offline ~1.5 s as the signed-in saving`);
 
   const label = '**Trade-off with "Turn off agent telemetry".**';
   const at = text.indexOf(label);
@@ -259,4 +261,37 @@ test('Settings refresh scope and preview-only refresh override stay aligned', ()
   const guard = fn[1].indexOf('if (!preview) return WARM_STATS_REFRESH_MS;');
   const override = fn[1].indexOf('warm-spares-refresh-ms');
   assert.ok(guard >= 0 && override > guard, `${SETTINGS} warmStatsRefreshMs must return WARM_STATS_REFRESH_MS outside preview before reading warm-spares-refresh-ms`);
+});
+
+test('the Settings hint is a concise plain-English summary that points to the full limits', () => {
+  const hint = settingsHint().match(/hint:\s*'([^']*)'/);
+  assert.ok(hint, `warm-spares hint text not found in ${SETTINGS}`);
+  const text = hint[1];
+  const { total } = limits();
+  assert.ok(text.length <= 340, `${SETTINGS} warm-spares hint must stay concise (<= 340 chars), got ${text.length}`);
+  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'git status', 'docs/worker-tokens.md']) {
+    assert.ok(text.includes(phrase), `${SETTINGS} warm-spares hint must state "${phrase}"`);
+  }
+  assert.doesNotMatch(text, /~?1\.5 s/, `${SETTINGS} warm-spares hint must not claim ~1.5 s as the signed-in saving`);
+});
+
+test('the warm-spares-on opt-in marker in warm.rs matches every doc and Settings', () => {
+  const found = readFileSync(WARM, 'utf8').match(/^const WARM_SPARES_ON_FILE: &str = "([^"]+)";/m);
+  assert.ok(found, `const WARM_SPARES_ON_FILE not found in ${WARM}`);
+  const marker = found[1];
+  assert.equal(marker, 'warm-spares-on');
+  for (const path of [README, AGENTS, HEADLESS, AGENT_REFERENCE, WORKER_TOKENS, ARCHITECT_WORKERS, PRIVACY, SETTINGS]) {
+    const text = flat(path);
+    assert.ok(!text.includes('warm-spares-off'), `${path} must not mention the retired warm-spares-off marker`);
+    if (path === SETTINGS) {
+      assert.ok(settingsHint().includes('Off by default'), `${SETTINGS} warm-spares hint must say Off by default`);
+    } else if (path !== PRIVACY && path !== ARCHITECT_WORKERS) {
+      assert.ok(text.includes(`\`${marker}\``), `${path} must name the \`${marker}\` marker`);
+    }
+  }
+  for (const path of [README, PRIVACY, WORKER_TOKENS, HEADLESS, AGENT_REFERENCE]) {
+    assert.match(flat(path), /\boff by default\b/i, `${path} must say Warm Claude spares are off by default`);
+  }
+  assert.ok(!flat(README).includes('Warm Claude spares (on by default)'), `${README} must not call Warm Claude spares on by default`);
+  assert.ok(!flat(PRIVACY).includes('<strong>Warm Claude spares</strong> (on by default)'), `${PRIVACY} must not call Warm Claude spares on by default`);
 });

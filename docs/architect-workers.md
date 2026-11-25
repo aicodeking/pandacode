@@ -399,8 +399,8 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   the chain ends without renewal, without a wake superseding it, and with spares on,
   so renewals never trigger the expiry pause mid-chain (a mid-chain lead spare found expired
   at launch, `renewal_due`, joins neither streak); expiries while
-  `warm-spares-off` is set never count. 3 consecutive staleness or exit misses (`not used`
-  because a warm-key field changed, the process exited, or the config folder or lead git
+  `warm-spares-on` is absent (spares off) never count. 3 consecutive staleness or exit misses (`not used`
+  because a warm-key field changed, the process exited, or the config folder or git
   status cannot be read; a user Stop before adoption or a blocking-task join error does not
   count, and a launch-time expiry joins the expiry streak instead) in a pool with no adoption between (`MISS_BACKOFF_STREAK` 3) pause its starts for
   5 minutes (`CHURN_COOLDOWN`), like eviction churn. Skipped starts count in
@@ -421,7 +421,7 @@ latest 200 messages and 64 KiB); the full visible transcript remains unchanged.
   `Team lead's warm Claude agent expired idle (not renewed: its launch settings
   changed).` when the renewal check finds changed launch inputs or non-`gitStatus`
   settings, without counting the expiry twice; a renewal re-reads `git status` fresh at
-  spawn, and with `warm-spares-off` present a renewal just ends without that line), a switch-off discard
+  spawn, and with `warm-spares-on` absent a renewal just ends without that line), a switch-off discard
   (`Team lead's warm Claude agent discarded.`) and a refused registration (a
   spare that finished spawning after its launch moved on, counted in both
   `started` and `discarded` and logged as `... discarded.`) log the same totals,

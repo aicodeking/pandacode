@@ -36,6 +36,27 @@ pub(crate) async fn default_on_off_runtime(off_file: &'static str) -> bool {
     crate::blocking(move || Ok(default_on_now(off_file))).await.unwrap_or(false)
 }
 
+/// An opt-in switch turned on by marker `on_file`: on only while the marker is known to be
+/// present, so an absent marker or an unreadable or unknown settings folder fails closed.
+pub(crate) fn opt_in_in(dir: Result<PathBuf>, on_file: &str) -> bool {
+    exists_in(dir, on_file).unwrap_or(false)
+}
+
+/// `opt_in_in` through the handle `init` saved. Without one, production fails closed and unit
+/// tests (which never call `init`) default on.
+pub(crate) fn opt_in_now(on_file: &str) -> bool {
+    match APP.get() {
+        Some(app) => opt_in_in(data_dir(app), on_file),
+        None => cfg!(test),
+    }
+}
+
+/// `opt_in_now` on a blocking thread, so the async runtime never waits on the marker file.
+/// Callers with a test-only thread-local override check it first: this thread would not see it.
+pub(crate) async fn opt_in_off_runtime(on_file: &'static str) -> bool {
+    crate::blocking(move || Ok(opt_in_now(on_file))).await.unwrap_or(false)
+}
+
 pub(crate) fn data_dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     app.path().app_data_dir().map_err(|e| e.to_string())
 }
@@ -136,6 +157,23 @@ mod tests {
         // Unit tests never call `init`: without a handle, switches default on.
         assert!(default_on_now("feature-off"));
         assert!(default_on_off_runtime("feature-off").await);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn opt_in_switches_are_on_only_while_the_marker_is_known_present() {
+        let dir = std::env::temp_dir().join(format!("app-marker-opt-in-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(!opt_in_in(Ok(dir.clone()), "feature-on"), "absent: off");
+        std::fs::write(dir.join("feature-on"), "").unwrap();
+        assert!(opt_in_in(Ok(dir.clone()), "feature-on"), "present: on");
+        let file = dir.join("not-a-folder");
+        std::fs::write(&file, "").unwrap();
+        assert!(!opt_in_in(Ok(file), "feature-on"), "an unreadable settings folder fails closed");
+        assert!(!opt_in_in(Err("no app data".into()), "feature-on"), "an unknown one too");
+        // Unit tests never call `init`: without a handle, switches default on.
+        assert!(opt_in_now("feature-on"));
+        assert!(opt_in_off_runtime("feature-on").await);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

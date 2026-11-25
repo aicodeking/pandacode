@@ -11,8 +11,8 @@ pub(in crate::providers) fn key(config: &RunConfig, tools: &[Value]) -> Option<S
     key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), None)
 }
 
-/// `key` for a launch adopting a team lead's spare, whose key also carries the working tree's
-/// `git_status` digest (`lead_git_status`).
+/// `key` completed with the working tree's `git_status` digest, as every spare's key (ordinary
+/// and lead) carries it.
 #[cfg(test)]
 pub(in crate::providers) fn lead_key(config: &RunConfig, tools: &[Value], git_status: &str) -> Option<String> {
     key_with(config, tools, &crate::connections::warm_key(&config.session_id, &config.provider), Some(git_status))
@@ -20,9 +20,9 @@ pub(in crate::providers) fn lead_key(config: &RunConfig, tools: &[Value], git_st
 
 /// `connection` is the task's named connection and its revision, or empty for the global setup.
 #[cfg(test)]
-pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str, lead_git_status: Option<&str>) -> Option<String> {
+pub(super) fn key_with(config: &RunConfig, tools: &[Value], connection: &str, git_status: Option<&str>) -> Option<String> {
     let disabled = crate::skill_manager::disabled_for(&config.session_id);
-    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id), lead_git_status)
+    key_with_disabled(config, tools, connection, &disabled, &mcp_host::stdio_servers(&config.session_id), git_status)
 }
 
 /// Whether this launch passes `--settings {"fastMode":true}` (`configure_command_with_agents`).
@@ -34,7 +34,7 @@ pub(super) fn claude_fast_mode(config: &RunConfig) -> bool {
             .is_some_and(|settings| settings["serviceTier"] == "fast")
 }
 
-/// `key_fields_with_disabled` completed with a lead's `gitStatus` (`with_git_status`).
+/// `key_fields_with_disabled` completed with a `gitStatus` digest (`with_git_status`).
 #[cfg(test)]
 pub(super) fn key_with_disabled(
     config: &RunConfig,
@@ -42,12 +42,12 @@ pub(super) fn key_with_disabled(
     connection: &str,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
-    lead_git_status: Option<&str>,
+    git_status: Option<&str>,
 ) -> Option<String> {
-    key_fields_with_disabled(config, tools, connection, disabled, stdio).map(|fields| with_git_status(fields, lead_git_status))
+    key_fields_with_disabled(config, tools, connection, disabled, stdio).map(|fields| with_git_status(fields, git_status))
 }
 
-/// The warm key's fields (no lead `gitStatus`) with the task's named connection looked up: what a
+/// The warm key's fields (no `gitStatus`) with the task's named connection looked up: what a
 /// spare is spawned and a renewal checked with. `None` when the Claude config folder cannot be known.
 pub(super) fn key_fields_with_disabled(
     config: &RunConfig,
@@ -61,7 +61,7 @@ pub(super) fn key_fields_with_disabled(
 }
 
 /// The key with the task's named connection (`named`) already looked up.
-/// `lead_git_status`: a team lead's working-tree digest, `None` (and never read) otherwise.
+/// `git_status`: the working tree's digest (`git_status`), or `None` to leave it out.
 #[cfg(test)]
 pub(super) fn key_for_connection(
     config: &RunConfig,
@@ -70,13 +70,13 @@ pub(super) fn key_for_connection(
     named: Option<&Connection>,
     disabled: &std::collections::BTreeSet<String>,
     stdio: &[mcp_host::Stdio],
-    lead_git_status: Option<&str>,
+    git_status: Option<&str>,
 ) -> Option<String> {
-    key_fields_for_connection(config, tools, connection, named, disabled, stdio).map(|fields| with_git_status(fields, lead_git_status))
+    key_fields_for_connection(config, tools, connection, named, disabled, stdio).map(|fields| with_git_status(fields, git_status))
 }
 
-/// The warm key's fields for a launch keyed against a pooled spare, without any lead `gitStatus`,
-/// so the config walk can run beside the lead's `git status`; `with_git_status` completes it.
+/// The warm key's fields for a launch keyed against a pooled spare, without its `gitStatus`, so
+/// the config walk can run beside the working tree's `git status`; `with_git_status` completes it.
 /// `None` when the launch's Claude config folder cannot be known. Reads files: off the runtime.
 pub(in crate::providers) fn key_fields(config: &RunConfig, tools: &[Value]) -> Option<Value> {
     let connection = crate::connections::warm_key(&config.session_id, &config.provider);
@@ -85,17 +85,18 @@ pub(in crate::providers) fn key_fields(config: &RunConfig, tools: &[Value]) -> O
     key_fields_for_connection(config, tools, &connection, named.as_ref(), &disabled, &mcp_host::stdio_servers(&config.session_id))
 }
 
-/// A lead waits while its workers edit files, and Claude Code also snapshots the working tree's
-/// status in `gitStatus`: a lead spare is adopted only if that is unchanged too. A lead's spawn
-/// completes its key the same way, with the status read once its previous turn has exited.
-pub(in crate::providers) fn with_git_status(mut fields: Value, lead_git_status: Option<&str>) -> String {
-    if let (Some(status), Value::Object(map)) = (lead_git_status, &mut fields) {
+/// Claude Code snapshots the working tree's status in `gitStatus` at spawn, and files may change
+/// while a spare waits (a lead's workers, the user, another tool): every spare is adopted only if
+/// that is unchanged too. A spawn completes its key the same way, with the status read once the
+/// previous turn has exited.
+pub(in crate::providers) fn with_git_status(mut fields: Value, git_status: Option<&str>) -> String {
+    if let (Some(status), Value::Object(map)) = (git_status, &mut fields) {
         map.insert("gitStatus".into(), json!(status));
     }
     fields.to_string()
 }
 
-/// The warm key's fields before any lead `gitStatus` is added.
+/// The warm key's fields before its `gitStatus` is added.
 pub(super) fn key_fields_for_connection(
     config: &RunConfig,
     tools: &[Value],
@@ -130,8 +131,9 @@ pub(super) fn key_fields_for_connection(
         // CLI upgraded in place (in the app or not).
         "executable": executable_stamp(&config.provider, named),
         "claudeConfig": claude_config,
-        // Claude Code snapshots `gitStatus` (branch, recent commits) at spawn: a branch switch,
-        // detach or commit starts the next turn cold, while ordinary edits still adopt the spare.
+        // Claude Code snapshots `gitStatus` (branch, recent commits, working tree) at spawn:
+        // `gitHead` catches branch switches, detaches and commits; `gitStatus` (added via
+        // `with_git_status`) catches uncommitted working-tree edits on every spare.
         "gitHead": git_head_stamp(&config.cwd),
         // So does turning Colab's MCP on or off: its server rides `--mcp-config`.
         "stdioMcp": stdio.iter().map(|server| json!([server.name, server.command, server.args])).collect::<Vec<_>>(),
@@ -532,21 +534,22 @@ fn path_absent(path: &Path) -> bool {
     matches!(std::fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
 }
 
-/// What a lead spare's working-tree digest is outside a repository.
+/// What a spare's working-tree digest is outside a repository.
 pub(super) const NOT_GIT: &str = "not-git";
 /// At most this much `git status` output is digested; a larger status is unknown.
 const GIT_STATUS_LIMIT: usize = 1024 * 1024;
-/// How long that `git status` may run: a lead's launch waits on it (beside its warm key's
-/// config walk), so a slow one starts cold instead.
+/// How long that `git status` may run: a launch with a pooled spare waits on it (beside its warm
+/// key's config walk), so a slow one starts cold instead.
 const GIT_STATUS_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// A digest of the working tree's `git status` for a team lead's spare: Claude Code snapshots it
-/// (`gitStatus`) at spawn, while a lead waits for workers that may change files. `NOT_GIT` outside
-/// a repository; `None` when it cannot be known (an unreadable repository, a failed or timed-out
-/// or oversized `git status`), so no lead spare starts or is adopted on an unknown status. Runs
-/// git through the bounded runner (`workspace::run_process`, no hooks or fsmonitor, no optional
-/// locks): never on the async runtime. Ordinary spares never call this.
-pub(super) fn lead_git_status(cwd: &Path) -> Option<String> {
+/// The SHA-256 digest of the working tree's bounded
+/// `git status --porcelain=v1 -z --untracked-files=normal`, stamped on every spare (ordinary and
+/// lead): Claude Code snapshots it (`gitStatus`) at spawn, and files may change while a spare
+/// waits. `NOT_GIT` outside a repository; `None` when it cannot be known (an unreadable
+/// repository, a failed, timed-out or truncated `git status`), so no spare starts or is adopted
+/// on an unknown status. Runs git through the bounded runner (`workspace::run_process`, no hooks
+/// or fsmonitor, no optional locks): never on the async runtime. Cold launches never call this.
+pub(super) fn git_status(cwd: &Path) -> Option<String> {
     match crate::claude_roots::git_dirs_for(cwd) {
         None => return Some(NOT_GIT.into()),
         Some(Err(_)) => return None,
@@ -561,7 +564,7 @@ pub(super) fn lead_git_status(cwd: &Path) -> Option<String> {
     Some(format!("{:x}", sha2::Sha256::digest(&output.stdout.bytes)))
 }
 
-/// A spare's key without its lead `gitStatus`: a renewal reads the working tree again right
+/// A spare's key without its `gitStatus`: a renewal reads the working tree again right
 /// before it spawns, so only the other fields decide whether it is current. `None` when the key
 /// is not a JSON object.
 pub(super) fn without_git_status(key: &str) -> Option<Value> {
@@ -570,10 +573,10 @@ pub(super) fn without_git_status(key: &str) -> Option<Value> {
     Some(Value::Object(fields))
 }
 
-/// `lead_git_status` on a blocking thread.
-pub(in crate::providers) async fn lead_git_status_digest(cwd: &Path) -> Option<String> {
+/// `git_status` on a blocking thread.
+pub(in crate::providers) async fn git_status_digest(cwd: &Path) -> Option<String> {
     let cwd = cwd.to_path_buf();
-    crate::blocking(move || Ok(lead_git_status(&cwd))).await.ok().flatten()
+    crate::blocking(move || Ok(git_status(&cwd))).await.ok().flatten()
 }
 
 /// The spare launches with the instructions a cold launch would use (`run_inner` applies the

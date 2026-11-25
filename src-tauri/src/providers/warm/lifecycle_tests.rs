@@ -209,9 +209,9 @@ async fn a_lead_spares_renewal_check_runs_off_the_runtime_thread() {
 fn a_renewal_is_current_only_while_its_launch_settings_are_unchanged() {
     let base = crate::providers::tests::config("claude");
     let tools = vec![json!({"type":"function","name":"pandacode_title"})];
-    // Only lead spares renew, and a lead's key carries its working tree's status.
+    // Only lead spares renew, and every spare's key carries its working tree's status.
     let keyed = RunConfig { cwd: external_path(&base.cwd), ..base.clone() };
-    let git_status = lead_git_status(&keyed.cwd).expect("the test folder's git status is known");
+    let git_status = git_status(&keyed.cwd).expect("the test folder's git status is known");
     let spare = lead_key(&keyed, &tools, &git_status).unwrap();
     let inputs: Inputs = Arc::new(|| "explore:true tools:Some(false)".into());
     let current = |key: &str, tools: &[Value], spawned: &str| still_current(key, &base, tools, spawned, &inputs);

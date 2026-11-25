@@ -314,8 +314,8 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   choice with your Google account. With the switch on, Claude Code also stops
   fetching remote feature flags (it uses its defaults) and can't take sessions
   started remotely on this computer.
-- **Warm Claude spares (on by default).** Settings → Agents → **Warm Claude spares**
-  keeps idle Claude Code processes ready after successful turns, up to 4 in total
+- **Warm Claude spares (off by default, opt-in).** Settings → Agents → **Warm Claude spares**,
+  once you turn it on, keeps idle Claude Code processes ready after successful turns, up to 4 in total
   (2 ordinary and 2 for team leads), about 195–255 MiB each on short sessions (measured
   on Claude Code 2.1.325 after 2–3.5 s of idling, from resumed one-turn sessions to a
   full user config; one end-of-window `ps` RSS sample after 10 idle minutes read 93–235 MiB
@@ -329,10 +329,10 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   off do not count); pauses are timed on both the monotonic and wall clocks, so a laptop's
   sleep does not stretch them, and any adoption ends the pause and resets the doubling. No spare
   starts on a computer with under 6 GiB of RAM, while under 1.5 GiB is free on Linux or Windows, or while macOS reports
-  memory pressure; skipped starts appear in Settings → Agents as `N skipped (low memory)`. An ordinary spare's
-  uncommitted `git status` can be up to 10 minutes old when adopted; lead spares serve
-  only teams whose live workers are all read-only (such as Council reviews) and verify
-  `git status` when adopted. Settings → Agents shows each pool's live state (`idle now`,
+  memory pressure; skipped starts appear in Settings → Agents as `N skipped (low memory)`. Both ordinary
+  and lead spares record a bounded `git status` digest right before they spawn and check it again
+  when adopted, so uncommitted edits start cold instead of reusing stale status; lead spares still
+  serve only teams whose live workers are all read-only (such as Council reviews). Settings → Agents shows each pool's live state (`idle now`,
   and `paused (N min left)` during a pause, hidden while the switch is off; refreshed every
   30 s while Settings → Agents is open and when it becomes visible again) and this launch's totals (adopted/started, plus
   not used, expired, evicted, replaced, discarded, cold, `N starts paused` and `N skipped (low memory)` when nonzero,
@@ -341,8 +341,8 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   your `SessionEnd` hooks, then is force-terminated (`SIGKILL` on Unix, process termination on Windows);
   a launch that missed it, a same-task replacement, a session or folder cleanup or quitting PandaCode force-terminates it at once, without
   `SessionEnd` (see the note below). On a real sign-in a spare skips ~0.38–0.62 s of Claude Code startup
-  (0.17–1.71 s in the offline bench) and spends ~0.4 s of CPU starting up. The off setting is the empty `warm-spares-off` file
-  in PandaCode's app data (unreadable also means off). Background traffic: see the
+  (0.17–1.71 s in the offline bench) and spends ~0.4 s of CPU starting up. The on setting is the empty `warm-spares-on` file
+  in PandaCode's app data; absent or unreadable means off. Background traffic: see the
   note below this list and [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 - **The local code explorer reads without asking.** `pandacode_explore` is a
   read-only search, outline and read tool agents call with no approval prompt;
@@ -359,7 +359,9 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   create by hand). That main switch turns it off for every harness. See
   [Agent tools](docs/agent-tools.md).
 
-**Warm Claude spares** (on by default) make background startup traffic that is
+**Warm Claude spares** (off by default; opt-in in Settings → Agents) make no
+background traffic, start no idle processes and run no early `SessionStart` hooks
+until you turn them on. Once on, they make background startup traffic that is
 not anonymous, so they are not in the table below. Each spare is a real Claude
 Code start, so before you send anything it contacts Anthropic under your Claude
 login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless

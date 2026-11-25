@@ -111,8 +111,8 @@ pub(super) fn failure_note(renewals: u32, error: &str) -> String {
 /// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
 /// lead spare may start again (`renews`). `Ok(true)` only when `register` pooled the spare;
 /// `Ok(false)` when it was skipped (launch moved on, starts in flight at the cap, churn backoff,
-/// spares off, quitting, low memory, no warm key, an unreadable git status) or its registration
-/// was refused.
+/// spares off, quitting, an alive spare of the same kind already pooled for the task, low memory,
+/// no warm key, an unreadable git status) or its registration was refused.
 async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, chain: Chain) -> Result<bool, String> {
     let session_id = config.session_id.clone();
     let cwd_path = external_path(&config.cwd);
@@ -122,6 +122,15 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         // SPARES -> LAUNCHES, matching folder discard: a cancelled renewal cannot insert
         // a stale token after quiescence, read inputs or invoke the spawn callback.
         if launch == 0 || epoch(&session_id) != launch {
+            return Ok(false);
+        }
+        // An alive, unexpired spare of the same kind is already pooled for this task: a second
+        // start (a duplicate prewarm for one launch) would only replace it with an identical one.
+        if pool.spares.get_mut(&session_id).is_some_and(|existing| {
+            existing.lead == lead
+                && matches!(existing.child.try_wait(), Ok(None))
+                && !age_expired(existing.born.elapsed(), existing.born_wall.elapsed().ok(), existing.idle)
+        }) {
             return Ok(false);
         }
         // A burst of turns ending together never starts more processes (and `SessionStart`
@@ -307,8 +316,8 @@ pub(super) fn spawn_claude(config: RunConfig, tools: Vec<Value>, approval_tools:
     Box::pin(spawn_claude_process(config, tools, approval_tools, launch, lead))
 }
 
-/// A `lead` spare is keyed by its working tree's `gitStatus` as well (Claude Code snapshots it at
-/// spawn), and none starts while that cannot be read. Ordinary spares never run git.
+/// Every spare (ordinary and `lead`) is keyed by its working tree's `gitStatus` as well (Claude
+/// Code snapshots it at spawn), and none starts while that cannot be read.
 pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, lead: bool) -> Result<Option<Spawned>, String> {
     if !supported(&config) || launch == 0 || epoch(&config.session_id) != launch || quitting() || !enabled_off_runtime().await {
         return Ok(None);
@@ -335,8 +344,9 @@ pub(super) async fn spawn_claude_process(config: RunConfig, tools: Vec<Value>, a
 
 /// The spare's process once `key_for` has given its prepared launch's warm-key fields. A launch
 /// with no key (its Claude config folder cannot be known, `key_fields_with_disabled`) is declined
-/// first: no secret is read, no executable searched for, no tool server or process started. A
-/// `lead`'s `gitStatus` is read only once the previous turn has exited, right before the spawn.
+/// first: no secret is read, no executable searched for, no tool server or process started. Every
+/// spare's `gitStatus` (ordinary and `lead`) is read only once the previous turn has exited, right
+/// before the spawn; an unreadable status starts none.
 pub(super) async fn spawn_claude_keyed(
     mut config: RunConfig,
     tools: Vec<Value>,
@@ -408,18 +418,17 @@ pub(super) async fn spawn_claude_keyed(
         eprintln!("{NOT_PREPARED}");
         return Ok(None);
     }
-    // Claude Code snapshots `gitStatus` at spawn, so a lead's is read now, after the exit wait
-    // during which the exiting turn or the user may still have changed the working tree.
-    let git_status = if lead {
-        let Some(status) = lead_git_status_digest(&config.cwd).await else {
+    // Claude Code snapshots `gitStatus` at spawn, so every spare's is read now, after the exit
+    // wait during which the exiting turn or the user may still have changed the working tree.
+    let Some(git_status) = git_status_digest(&config.cwd).await else {
+        if lead {
             eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
-            return Ok(None);
-        };
-        Some(status)
-    } else {
-        None
+        } else {
+            eprintln!("No warm Claude agent: its git status cannot be read.");
+        }
+        return Ok(None);
     };
-    let key = with_git_status(fields, git_status.as_deref());
+    let key = with_git_status(fields, Some(&git_status));
     // Launch, switch-off and quit are checked again after the status read, as the spawn registers.
     let stopped = || quitting() || spares(&SPARES).discard_epoch != discard_epoch;
     let Some((child, starting)) = spawn_when_current(&config.session_id, launch, std::future::ready(Ok(())), &mut command, stopped).await? else {
@@ -462,14 +471,14 @@ pub(super) async fn spawn_when_current(
 /// its spare was discarded (settings changed, team stopped) since `launch`: it would carry an
 /// outdated conversation, or wait for a turn that is not coming. Displaced spares are retired
 /// outside the lock with their exit registered: a refused spare and one replaced for the same
-/// task are killed at once (`retire_now`), so two processes for one session do not overlap past
-/// the new spare's start and the old spare's `SessionEnd` hook never runs after the new spare's
-/// `SessionStart`; a spare
-/// evicted for another task retires gracefully (`retire`). A refused one already started
-/// (and ran its `SessionStart` hooks), so it counts as started and discarded, keeping the ordinary
-/// pool's `started == adopted + missed + expired + evicted + replaced + discarded` exact once no
-/// spare is pooled or being adopted. On the lead pool `missed` overlaps the removal counters: a
-/// wake arriving after its spare left the pool counts a miss (its `gone` reason) on top of the
+/// task are killed at once (`retire_now`), so overlap between two processes for one session is
+/// bounded to the registration handoff and the old spare's `SessionEnd` hook never runs after the
+/// new spare's `SessionStart`; a spare evicted for another task retires gracefully (`retire`).
+/// A refused one already started (and ran its `SessionStart` hooks), so it counts as started and
+/// discarded, keeping the ordinary pool's
+/// `started == adopted + missed + expired + evicted + replaced + discarded` exact once no spare is
+/// pooled or being adopted. On the lead pool `missed` overlaps the removal counters: a wake
+/// arriving after its spare left the pool counts a miss (its `gone` reason) on top of the
 /// `expired`, `evicted`, `replaced` or `discarded` its removal already counted.
 pub(super) fn register(pool: &Pool, session_id: &str, launch: u64, spare: Spare) -> bool {
     let (replaced, evicted) = {

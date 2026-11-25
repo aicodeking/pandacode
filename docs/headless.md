@@ -34,14 +34,15 @@ file in the app data directory (on Linux `~/.local/share/ai.pandacode.desktop/` 
 service user, e.g. `touch ~/.local/share/ai.pandacode.desktop/explore-off`); delete it
 to turn the tool back on. Each run start reads it, so no restart is needed.
 
-Warm Claude spares are on by default, as in Settings → Agents → **Warm Claude
-spares** on desktop. To disable them for `pandacode serve`, create an empty
-`warm-spares-off` file in the service user's app data directory (on Linux, for
-example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-off`); delete it
-to enable them again. An unreadable marker means off. On a running host the
-marker takes effect without a restart for new work: from then on no spare is
-started, adopted or renewed. Spares already pooled are not stopped by the file
-alone: each retires when its task's next turn launches (cold), when its 10-minute
+Warm Claude spares are off by default, as in Settings → Agents → **Warm Claude
+spares** on desktop. To enable them for `pandacode serve`, create an empty
+`warm-spares-on` file in the service user's app data directory (on Linux, for
+example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-on`); delete it
+to turn them off again. An absent or unreadable marker means off. On a running
+host the marker takes effect without a restart for new work: creating it lets the
+next successful turn start a spare, and deleting it means no spare is started,
+adopted or renewed from then on. Spares already pooled are not stopped by deleting
+the file alone: each retires when its task's next turn launches (cold), when its 10-minute
 idle timer expires, or when the host stops (restarting `pandacode serve` retires
 them at once; on desktop, turning the Settings switch off calls `disable_all`,
 which retires pooled spares immediately).
@@ -51,8 +52,8 @@ launch exit inline at turn end (as managed workers do) instead of being reaped i
 background. It is read at each launch, so it takes effect at once without a rebuild
 or restart; an unreadable marker fails closed to inline exit. Delete it to restore
 background reaping.
-Disabling spares avoids idle Claude processes and ahead-of-turn `SessionStart`
-hooks; cost estimates and caveats are in
+Leaving spares off avoids idle Claude processes, their startup traffic and
+ahead-of-turn `SessionStart` hooks; cost estimates and caveats are in
 [worker tokens](worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
 
 Agent-made tools follow the same `custom-tools-on` switch as the desktop. With no window,

@@ -736,14 +736,19 @@ fn a_renewal_chain_is_bounded_on_the_wall_clock() {
 }
 
 #[test]
-fn a_lead_key_carries_the_working_tree_status_and_ordinary_keys_never_do() {
+fn every_spare_key_carries_the_working_tree_status() {
     let base = crate::providers::tests::config("claude");
+    let fields = key_fields(&base, &[]).expect("a resolvable config folder is keyed");
+    let stamped = with_git_status(fields.clone(), Some("digest-a"));
+    assert!(stamped.contains("gitStatus"), "an ordinary spare's key carries its working tree's status");
+    assert_eq!(lead_key(&base, &[], "digest-a").unwrap(), stamped, "a lead's key carries the same stamp");
+    let edited = with_git_status(fields, Some("digest-b"));
+    assert_eq!(miss(true, &stamped, &edited, false).as_deref(), Some("changed: gitStatus"));
+    assert_eq!(miss(true, &stamped, &lead_key(&base, &[], "digest-b").unwrap(), false).as_deref(), Some("changed: gitStatus"));
+    // Fields without a stamp (`key`) never match a stamped spare.
     let plain = key(&base, &[]).unwrap();
-    assert!(!plain.contains("gitStatus"), "ordinary spares never read git status");
-    let lead = lead_key(&base, &[], "digest-a").unwrap();
-    assert_eq!(lead_key(&base, &[], "digest-a").unwrap(), lead);
-    assert_eq!(miss(true, &lead, &lead_key(&base, &[], "digest-b").unwrap(), false).as_deref(), Some("changed: gitStatus"));
-    assert_eq!(miss(true, &plain, &lead, false).as_deref(), Some("changed: gitStatus"));
+    assert!(!plain.contains("gitStatus"));
+    assert_eq!(miss(true, &plain, &stamped, false).as_deref(), Some("changed: gitStatus"));
 }
 
 #[test]
@@ -751,37 +756,37 @@ fn a_key_walked_beside_its_git_status_is_byte_identical_to_the_spares_key() {
     let base = crate::providers::tests::config("claude");
     let tools = vec![json!({"type":"function","name":"pandacode_title"})];
     let fields = key_fields(&base, &tools).expect("a resolvable config folder is keyed");
-    assert_eq!(with_git_status(fields.clone(), None), key(&base, &tools).unwrap(), "an ordinary launch");
+    assert_eq!(with_git_status(fields.clone(), None), key(&base, &tools).unwrap(), "fields without a stamp");
     let lead = lead_key(&base, &tools, "digest-a").unwrap();
-    assert_eq!(with_git_status(fields.clone(), Some("digest-a")), lead, "a lead launch, `gitStatus` merged after the walk");
-    // The key a lead's spare is spawned and renewed with (`key_with_disabled`).
+    assert_eq!(with_git_status(fields.clone(), Some("digest-a")), lead, "`gitStatus` merged after the walk");
+    // The key a spare is spawned (and a lead's renewed) with (`key_with_disabled`).
     let (connection, disabled) = (crate::connections::warm_key(&base.session_id, &base.provider), crate::skill_manager::disabled_for(&base.session_id));
     let spawned = key_with_disabled(&base, &tools, &connection, &disabled, &mcp_host::stdio_servers(&base.session_id), Some("digest-a"));
     assert_eq!(spawned.as_deref(), Some(lead.as_str()));
 }
 
 #[tokio::test]
-async fn a_lead_git_status_digest_tracks_the_working_tree() {
+async fn a_git_status_digest_tracks_the_working_tree() {
     let outside = std::env::temp_dir().join(format!("warm-git-status-none-{}", uuid::Uuid::new_v4()));
     let _outside = TempDir(outside.clone());
     std::fs::create_dir_all(&outside).unwrap();
-    assert_eq!(lead_git_status(&outside).as_deref(), Some(NOT_GIT), "outside a repository");
+    assert_eq!(git_status(&outside).as_deref(), Some(NOT_GIT), "outside a repository");
     let repo = std::env::temp_dir().join(format!("warm-git-status-{}", uuid::Uuid::new_v4()));
     let _repo = TempDir(repo.clone());
     std::fs::create_dir_all(&repo).unwrap();
     let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
     assert!(init.success());
-    let clean = lead_git_status(&repo).expect("a fresh repository's status is known");
+    let clean = git_status(&repo).expect("a fresh repository's status is known");
     assert_ne!(clean, NOT_GIT);
-    assert_eq!(lead_git_status(&repo).as_deref(), Some(clean.as_str()), "an unchanged tree keeps its digest");
-    // A worker's new or edited file changes what Claude Code would snapshot as `gitStatus`.
+    assert_eq!(git_status(&repo).as_deref(), Some(clean.as_str()), "an unchanged tree keeps its digest");
+    // A new or edited file (a worker's, the user's) changes what Claude Code would snapshot as `gitStatus`.
     std::fs::write(repo.join("new.rs"), "fn main() {}").unwrap();
-    let edited = lead_git_status(&repo).unwrap();
+    let edited = git_status(&repo).unwrap();
     assert_ne!(edited, clean);
-    assert_eq!(lead_git_status_digest(&repo).await.as_deref(), Some(edited.as_str()), "the async form reads the same digest");
+    assert_eq!(git_status_digest(&repo).await.as_deref(), Some(edited.as_str()), "the async form reads the same digest");
     // An unreadable repository is unknown, never a stale or "not a repository" digest.
     let broken = repo.join("broken");
     std::fs::create_dir_all(&broken).unwrap();
     std::fs::write(broken.join(".git"), "gitdir: missing\n").unwrap();
-    assert_eq!(lead_git_status(&broken), None);
+    assert_eq!(git_status(&broken), None);
 }

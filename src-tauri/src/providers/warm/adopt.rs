@@ -1,5 +1,5 @@
 //! A supported launch's warm-spare check: which pool it counts in, its warm key (read off the
-//! runtime, with a lead's working-tree status beside it) and the spare it adopts, if any.
+//! runtime, with the working tree's status beside it) and the spare it adopts, if any.
 use super::*;
 
 /// Why a pooled spare went unused for want of a warm key. An unknowable config folder or
@@ -10,8 +10,7 @@ const NO_GIT_STATUS: &str = "its git status cannot be read";
 pub(super) const KEY_CHECK_FAILED: &str = "its warm key check failed";
 
 /// A pooled warm spare's launch check, made off the runtime: spares switched off, no key (the
-/// config folder cannot be known, or a lead spare's working-tree status), or the warm key to
-/// adopt against.
+/// config folder cannot be known, or the working-tree status), or the warm key to adopt against.
 #[derive(Debug, PartialEq, Eq)]
 enum WarmKey {
     Disabled,
@@ -21,16 +20,16 @@ enum WarmKey {
 }
 
 impl WarmKey {
-    /// The check's outcome once the off-runtime walk and a lead's `git status` (run side by side)
-    /// are both in: spares off first, then an unreadable status, then an unknowable config
-    /// folder. `walked`: `None` with spares off, else the key's fields (`key_fields`);
-    /// `git_status`: `None` for an ordinary spare, else the lead's digest if it could be read.
-    fn of(walked: Option<Option<Value>>, git_status: Option<Option<String>>) -> Self {
+    /// The check's outcome once the off-runtime walk and the working tree's `git status` (run
+    /// side by side) are both in: spares off first, then an unreadable status, then an
+    /// unknowable config folder. `walked`: `None` with spares off, else the key's fields
+    /// (`key_fields`); `git_status`: the working tree's digest, `None` if it could not be read.
+    fn of(walked: Option<Option<Value>>, git_status: Option<String>) -> Self {
         match (walked, git_status) {
             (None, _) => WarmKey::Disabled,
-            (Some(_), Some(None)) => WarmKey::NoGitStatus,
+            (Some(_), None) => WarmKey::NoGitStatus,
             (Some(None), _) => WarmKey::NoKey,
-            (Some(Some(fields)), status) => WarmKey::Key(with_git_status(fields, status.flatten().as_deref())),
+            (Some(Some(fields)), Some(status)) => WarmKey::Key(with_git_status(fields, Some(&status))),
         }
     }
 }
@@ -49,8 +48,8 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
     let ordinary_eligible = config.worker.is_none() && config.resume_id.is_some();
     // A team lead's launch offers the dispatch tool; its cold launches count in the lead pool.
     let is_lead = tools.tools.iter().any(|tool| tool["name"].as_str() == Some(crate::architect::DISPATCH_WORKERS_TOOL));
-    let (discard_epoch, lead) = match prepare_launch(session_id, ordinary_eligible, is_lead) {
-        LaunchPool::Pooled { discard_epoch, lead } => (discard_epoch, lead),
+    let discard_epoch = match prepare_launch(session_id, ordinary_eligible, is_lead) {
+        LaunchPool::Pooled { discard_epoch } => discard_epoch,
         // Counted and logged only while spares are on: with them off a launch says nothing.
         LaunchPool::Empty { may_record_cold, lead, gone } => {
             finish_empty_launch(may_record_cold, lead, gone).await;
@@ -62,7 +61,7 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
         launched_without_key_reason(session_id, why, joins_streak, ordinary_eligible, is_lead, discard_epoch);
         None
     };
-    match launch_key(config, &tools.tools, lead).await {
+    match launch_key(config, &tools.tools).await {
         Ok(WarmKey::Key(key)) => take_checked(session_id, &key, ordinary_eligible, is_lead, discard_epoch),
         Ok(WarmKey::Disabled) => {
             launched_without_spare(session_id);
@@ -79,15 +78,13 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
 }
 
 /// The switch and the key read files (the key: the task's switches and saved settings), so both
-/// run off the runtime. A `lead` spare is keyed by the working tree's `gitStatus` too (git runs
-/// off the runtime, bounded, beside the walk); an unknown status adopts nothing.
-async fn launch_key(config: &RunConfig, catalog: &[Value], lead: bool) -> Result<WarmKey, String> {
+/// run off the runtime. Every spare is keyed by the working tree's `gitStatus` too (git runs off
+/// the runtime, bounded, beside the walk); an unknown status adopts nothing. Only a launch with a
+/// pooled spare gets here, so a cold launch never runs git.
+async fn launch_key(config: &RunConfig, catalog: &[Value]) -> Result<WarmKey, String> {
     let (keyed, catalog) = (config.clone(), catalog.to_vec());
     let walk = crate::blocking(move || Ok(enabled_now().then(|| key_fields(&keyed, &catalog))));
-    let git = async {
-        if lead { Some(lead_git_status_digest(&config.cwd).await) } else { None }
-    };
-    let (walked, git_status) = tokio::join!(walk, git);
+    let (walked, git_status) = tokio::join!(walk, git_status_digest(&config.cwd));
     walked.map(|walked| WarmKey::of(walked, git_status))
 }
 
@@ -123,13 +120,13 @@ mod tests {
     #[test]
     fn a_launch_check_settles_off_then_status_then_folder() {
         let fields = || Some(serde_json::json!({ "model": "m" }));
-        assert_eq!(WarmKey::of(None, Some(None)), WarmKey::Disabled, "spares off wins");
-        assert_eq!(WarmKey::of(Some(fields()), Some(None)), WarmKey::NoGitStatus);
-        assert_eq!(WarmKey::of(Some(None), Some(None)), WarmKey::NoGitStatus, "an unreadable status first");
-        assert_eq!(WarmKey::of(Some(None), None), WarmKey::NoKey);
-        let plain = with_git_status(fields().unwrap(), None);
-        assert_eq!(WarmKey::of(Some(fields()), None), WarmKey::Key(plain));
-        let lead = with_git_status(fields().unwrap(), Some("digest"));
-        assert_eq!(WarmKey::of(Some(fields()), Some(Some("digest".into()))), WarmKey::Key(lead));
+        let status = || Some("digest".to_string());
+        assert_eq!(WarmKey::of(None, None), WarmKey::Disabled, "spares off wins");
+        assert_eq!(WarmKey::of(None, status()), WarmKey::Disabled, "spares off wins over a status too");
+        assert_eq!(WarmKey::of(Some(fields()), None), WarmKey::NoGitStatus);
+        assert_eq!(WarmKey::of(Some(None), None), WarmKey::NoGitStatus, "an unreadable status first");
+        assert_eq!(WarmKey::of(Some(None), status()), WarmKey::NoKey);
+        let keyed = with_git_status(fields().unwrap(), Some("digest"));
+        assert_eq!(WarmKey::of(Some(fields()), status()), WarmKey::Key(keyed));
     }
 }
