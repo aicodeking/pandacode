@@ -143,6 +143,8 @@ pub(super) struct Spare {
     pub(super) child: Child,
     pub(super) group: ProcessGroup,
     pub(super) server: Option<mcp_host::Server>,
+    /// Launch epoch this spare was prepared for (`spawn_spare`).
+    launch: u64,
     born: std::time::Instant,
     /// `born` on the wall clock, which keeps running while the machine sleeps (`Instant` may not).
     born_wall: std::time::SystemTime,

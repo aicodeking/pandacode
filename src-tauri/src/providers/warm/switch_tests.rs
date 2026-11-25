@@ -115,7 +115,7 @@ async fn off_switch_retires_a_matching_pooled_spare_instead_of_adopting_it() {
 fn spare(lead: bool) -> Spare {
     let child = idle_sleep_command().spawn().unwrap();
     let group = ProcessGroup::register(child.id());
-    Spare { key: "switch-test".into(), child, group, server: None,
+    Spare { key: "switch-test".into(), child, group, server: None, launch: 0,
         born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead, renewal_due: false, cwd: None }
 }
 

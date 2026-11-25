@@ -29,6 +29,7 @@ pub(crate) fn insert_spare_in_cwd_for_test(session_id: &str, cwd: PathBuf, lead:
         child,
         group: ProcessGroup::register(Some(pid)),
         server: None,
+        launch: epoch(session_id),
         born: std::time::Instant::now(),
         born_wall: std::time::SystemTime::now(),
         idle: IDLE,
@@ -121,7 +122,7 @@ pub(super) fn idle_spare(lead: bool, age: Duration) -> Spare {
     let child = idle_sleep_command().spawn().unwrap();
     let born = std::time::Instant::now().checked_sub(age).unwrap_or_else(std::time::Instant::now);
     let born_wall = std::time::SystemTime::now().checked_sub(age).unwrap_or_else(std::time::SystemTime::now);
-    Spare { key: "launch".into(), child, group: ProcessGroup::register(None), server: None, born, born_wall, idle: IDLE, lead, renewal_due: false, cwd: None }
+    Spare { key: "launch".into(), child, group: ProcessGroup::register(None), server: None, launch: 0, born, born_wall, idle: IDLE, lead, renewal_due: false, cwd: None }
 }
 
 /// A pool of the test's own, so tests running in parallel never share spares.

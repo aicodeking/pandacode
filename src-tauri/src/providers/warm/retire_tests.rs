@@ -36,6 +36,7 @@ fn test_spare(child: Child, cwd: &Path) -> Spare {
         child,
         group,
         server: None,
+        launch: 0,
         born: Instant::now(),
         born_wall: std::time::SystemTime::now(),
         idle: IDLE,
@@ -244,11 +245,21 @@ async fn a_second_start_for_the_same_launch_is_skipped_while_an_alive_spare_is_p
         let first = super::spawn::start(life, config.clone(), Vec::new(), HashSet::new(), launch, renew.clone(), 0).await;
         assert_eq!(first, Ok(true), "the first start pools a spare");
         let pid = test_support::pid_of(&spares(life.pool).spares[&session]);
-        let second = super::spawn::start(life, config, Vec::new(), HashSet::new(), launch, renew, 0).await;
+        let second = super::spawn::start(life, config.clone(), Vec::new(), HashSet::new(), launch, renew.clone(), 0).await;
         assert_eq!(second, Ok(false), "the duplicate start is skipped");
         assert_eq!(test_support::stub_starts(&session), 1, "the duplicate never spawned a process");
         assert_eq!(test_support::pid_of(&spares(life.pool).spares[&session]), pid, "the pooled spare was kept");
-        quiesce_in(life.pool, &session).await.unwrap();
+        // A newer launch is not a duplicate: it replaces the old-launch spare cleanly.
+        launched(&session);
+        let next_launch = epoch(&session);
+        let replaced = super::spawn::start(life, config, Vec::new(), HashSet::new(), next_launch, renew, 0).await;
+        assert_eq!(replaced, Ok(true), "a newer launch still prepares a fresh spare");
+        assert_eq!(test_support::stub_starts(&session), 2);
+        let next_pid = test_support::pid_of(&spares(life.pool).spares[&session]);
+        assert_ne!(next_pid, pid);
+        await_exit_patiently(&session).await.unwrap();
         test_support::assert_process_gone(pid);
+        quiesce_in(life.pool, &session).await.unwrap();
+        test_support::assert_process_gone(next_pid);
     }
 }

@@ -111,7 +111,7 @@ pub(super) fn failure_note(renewals: u32, error: &str) -> String {
 /// Starts a spare's process and keeps it until it is adopted, replaced or expires; an expired
 /// lead spare may start again (`renews`). `Ok(true)` only when `register` pooled the spare;
 /// `Ok(false)` when it was skipped (launch moved on, starts in flight at the cap, churn backoff,
-/// spares off, quitting, an alive spare of the same kind already pooled for the task, low memory,
+/// spares off, quitting, an alive spare of the same kind already pooled for this launch, low memory,
 /// no warm key, an unreadable git status) or its registration was refused.
 async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64, renew: Option<Lead>, chain: Chain) -> Result<bool, String> {
     let session_id = config.session_id.clone();
@@ -124,10 +124,11 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
         if launch == 0 || epoch(&session_id) != launch {
             return Ok(false);
         }
-        // An alive, unexpired spare of the same kind is already pooled for this task: a second
-        // start (a duplicate prewarm for one launch) would only replace it with an identical one.
+        // An alive, unexpired spare of the same kind is already pooled for this exact launch: a
+        // duplicate prewarm for the same launch would only replace it with an identical one.
         if pool.spares.get_mut(&session_id).is_some_and(|existing| {
-            existing.lead == lead
+            existing.launch == launch
+                && existing.lead == lead
                 && matches!(existing.child.try_wait(), Ok(None))
                 && !age_expired(existing.born.elapsed(), existing.born_wall.elapsed().ok(), existing.idle)
         }) {
@@ -167,7 +168,7 @@ async fn spawn_spare(life: Lifecycle, config: RunConfig, tools: Vec<Value>, appr
     let (born, born_wall) = (Instant::now(), SystemTime::now());
     // A lead spare with renewals left would start again at its expiry (`renews`).
     let renewal_due = lead && chain.renewals < MAX_RENEWALS;
-    let spare = Spare { key, child, group, server, born, born_wall, idle: life.idle, lead, renewal_due, cwd };
+    let spare = Spare { key, child, group, server, launch, born, born_wall, idle: life.idle, lead, renewal_due, cwd };
     let registered = register(life.pool, &session_id, launch, spare);
     drop(inflight);
     // The spare is now pooled, or killed with its own exit registered (`retire`).
