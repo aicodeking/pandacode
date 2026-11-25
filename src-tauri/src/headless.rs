@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 static SERVE: AtomicBool = AtomicBool::new(false);
 
@@ -334,12 +334,18 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
         let next = {
             let state = app.state::<AppState>();
             let Ok(store) = state.store.lock() else { return };
+            if message_queue::is_queue_held(&session_id) {
+                return;
+            }
             message_queue::list(&store, Some(&session_id)).ok().and_then(|entries| entries.into_iter().next())
         };
         let Some(entry) = next else { return };
         let entry = {
             let state = app.state::<AppState>();
             let Ok(store) = state.store.lock() else { return };
+            if message_queue::is_queue_held(&session_id) {
+                return;
+            }
             match message_queue::take(&store, &entry.id) {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -348,6 +354,7 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
                 }
             }
         };
+        let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
         let (context, image_ids) = crate::bots::gateway::queued_prompt(&entry.attachments);
         let images = (!image_ids.is_empty()).then_some(image_ids);
         println!("serve: sending the next queued message to {session_id}");
@@ -369,6 +376,8 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
                     eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
                 }
             }
+            message_queue::set_queue_held(&session_id, true);
+            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true }));
             eprintln!("serve: couldn't send the next queued message: {error}");
         }
     });
@@ -607,6 +616,29 @@ mod tests {
         assert!(hook.find("if !drains_natively(active())").unwrap() < hook.find("drain_queue(").unwrap());
         let drain = &source[source.find("pub(crate) fn drain_queue").unwrap()..];
         assert!(drain.find("agents.contains_key(&session_id)").unwrap() < drain.find("message_queue::take(").unwrap());
+    }
+
+    #[test]
+    fn queue_drain_checks_holds_and_notifies_after_unlocking() {
+        let source = include_str!("headless.rs");
+        let drain = source.split_once("pub(crate) fn drain_queue").unwrap().1;
+        let drain = drain.split_once("\n}\n").unwrap().0;
+        let guard = "if message_queue::is_queue_held(&session_id) {\n                return;\n            }";
+        let (before_list, after_list) = drain.split_once("message_queue::list(").unwrap();
+        let (before_take, after_take) = after_list.split_once("message_queue::take(").unwrap();
+        assert!(before_list.contains(guard));
+        assert!(before_take.trim_end().ends_with(&format!("{guard}\n            match")));
+        let (claim, after_claim) = after_take.split_once("\n        };").unwrap();
+        assert!(claim.contains("Ok(entry) => entry"));
+        assert!(after_claim.trim_start().starts_with(
+            r#"let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));"#,
+        ));
+        let (_, restore) = after_claim.split_once("message_queue::restore(").unwrap();
+        let (_, after_restore) = restore.split_once("\n            }").unwrap();
+        assert!(after_restore.trim_start().starts_with(concat!(
+            "message_queue::set_queue_held(&session_id, true);\n            ",
+            r#"let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true }));"#,
+        )));
     }
 
     #[test]

@@ -1027,8 +1027,12 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     Ok(())
 }
 #[tauri::command]
-fn set_queue_hold(session_id: String, held: bool) {
+fn set_queue_hold(app: tauri::AppHandle, session_id: String, held: bool) {
     message_queue::set_queue_held(&session_id, held);
+    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": held }));
+    if !held {
+        crate::headless::queue_changed(&app, &session_id);
+    }
 }
 /// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]

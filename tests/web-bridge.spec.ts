@@ -3,15 +3,15 @@ import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
 /*
  * Browser mode (web-bridge.ts) against the Vite dev server. The page gets `<meta name="pandacode-web">`, so it
  * talks HTTP/WS instead of using the preview: `/api/auth` accepts the token, `/api/invoke` is answered by the
- * preview's in-memory backend (src/preview.ts, imported in the page), and `/api/events` is a mocked WebSocket
- * that records subscriptions and lets the test push events, as a desktop PandaCode would.
+ * preview's in-memory backend (src/preview.ts, optionally in a separate desktop page), and `/api/events` is
+ * a mocked WebSocket that records subscriptions and forwards host events.
  */
 /** `fail`: commands answered with this status and body instead (closing the socket with `closeFirst` before replying);
  *  `refuseSockets`: new event sockets are closed at once, so the tab stays offline. */
 type Controls = { fail: Map<string, { status: number; body: unknown; closeFirst?: number }>; refuseSockets: boolean };
 type WebPage = { page: Page; subscriptions: Set<string>; commands: string[]; socket: () => WebSocketRoute; controls: Controls };
 
-async function openWebMode(page: Page): Promise<WebPage> {
+async function openWebMode(page: Page, host = page): Promise<WebPage> {
   await page.route(url => url.pathname === '/', async route => {
     const response = await route.fetch();
     const html = (await response.text()).replace('<head>', '<head><meta name="pandacode-web" content="1"/>');
@@ -30,7 +30,7 @@ async function openWebMode(page: Page): Promise<WebPage> {
       await route.fulfill({ status: failure.status, contentType: 'application/json', body: JSON.stringify(failure.body) });
       return;
     }
-    const reply = await page.evaluate(async ([name, values]) => {
+    const reply = await host.evaluate(async ([name, values]) => {
       const preview = await import('/src/preview.ts');
       try { return { ok: true, value: await preview.invoke(name, values) }; } catch (error) { return { ok: false, value: String((error as Error)?.message ?? error) }; }
     }, [command, args] as const).catch(error => ({ ok: false, value: String(error) }));
@@ -56,6 +56,39 @@ async function openWebMode(page: Page): Promise<WebPage> {
 }
 
 const selected = (page: Page) => page.locator('#navigation .task-item.selected');
+
+const queueRows = (page: Page) => page.getByRole('region', { name: 'Queued messages' }).locator('.queue-row .queue-text');
+
+async function openQueueClients(page: Page) {
+  const host = await page.context().newPage();
+  await host.goto('/');
+  await expect(host.locator('#prompt')).toBeEnabled();
+  const sessionId = (await selected(host).getAttribute('data-id'))!;
+  const web = await openWebMode(page, host);
+  await expect.poll(() => web.subscriptions.has('queue-changed')).toBe(true);
+  const queueEvents: { sessionId: string; held?: boolean }[] = [];
+  const finishedRuns: string[] = [];
+  await host.exposeFunction('forwardHostEvent', (name: string, payload: { sessionId: string; held?: boolean; kind?: string }) => {
+    if (name === 'queue-changed') queueEvents.push(payload);
+    if (name === 'agent-event' && payload.kind === 'done') finishedRuns.push(payload.sessionId);
+    if (web.subscriptions.has(name)) web.socket().send(JSON.stringify({ type: 'event', name, payload }));
+  });
+  await host.evaluate(async () => {
+    const { listen } = await import('/src/preview.ts');
+    const forward = (window as any).forwardHostEvent;
+    for (const name of ['queue-changed', 'agent-event']) listen(name, payload => void forward(name, payload));
+  });
+  const agentStatus = (running: boolean) => host.evaluate(({ id, running }) => {
+    (window as any).__previewSetStatus(id, running ? 'running' : 'idle');
+    (window as any).__previewEmit('agent-event', { sessionId: id, kind: running ? 'status' : 'done', text: '' });
+  }, { id: sessionId, running });
+  const sentCount = (text: string) => host.evaluate(async ({ sessionId, text }) => {
+    const { invoke } = await import('/src/preview.ts');
+    const { messages } = await invoke<{ messages: { role: string; content: string }[] }>('get_messages', { sessionId });
+    return messages.filter(message => message.role === 'user' && message.content === text).length;
+  }, { sessionId, text });
+  return { host, sessionId, web, queueEvents, finishedRuns, agentStatus, sentCount };
+}
 
 /** The sidebar renders no project heading today, so a stand-in row drives the real handler (thread-order.ts:
  *  a right-click on `.folder-row` opens the project menu for its `.folder-heading`). */
@@ -89,6 +122,50 @@ async function projectMenuItems(page: Page): Promise<string[]> {
 test.describe('web mode', () => {
   // Reconnect backoff and the 2 s offline notice need room under a 4-worker run (as web-server-settings.spec.ts).
   test.setTimeout(40_000);
+
+  test('a browser follow-up notifies the desktop host and runs once after the current run', async ({ page }) => {
+    const { host, sessionId, web, queueEvents, finishedRuns, agentStatus, sentCount } = await openQueueClients(page);
+    await agentStatus(true);
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+    const prompt = page.locator('#prompt'), text = 'Follow up from the browser';
+    await prompt.fill(text);
+    await prompt.press('Enter');
+    await expect.poll(() => queueEvents).toEqual([{ sessionId }]);
+    await expect(queueRows(page)).toHaveText([text]);
+    await expect(queueRows(host)).toHaveText([text]);
+    expect(await sentCount(text)).toBe(0);
+
+    await agentStatus(false);
+    await expect.poll(() => finishedRuns).toEqual([sessionId, sessionId]);
+    await expect(queueRows(page)).toHaveCount(0);
+    await expect(queueRows(host)).toHaveCount(0);
+    expect(await sentCount(text)).toBe(1);
+    expect(web.commands.filter(command => ['queue_take', 'send_message'].includes(command))).toEqual([]);
+  });
+
+  test('browser Resume clears the host hold and the desktop drains the queue once', async ({ page }) => {
+    const { host, sessionId, web, queueEvents, finishedRuns, sentCount } = await openQueueClients(page);
+    const text = 'Resume this follow-up';
+    await host.evaluate(async ({ sessionId, text }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: true });
+      await invoke('queue_add', { sessionId, text, attachments: [] });
+    }, { sessionId, text });
+    const resume = page.getByRole('button', { name: 'Resume', exact: true });
+    await expect(resume).toBeVisible();
+    await expect(host.getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
+    expect(await sentCount(text)).toBe(0);
+
+    const holdCall = page.waitForRequest(request => request.url().endsWith('/api/invoke') && request.postDataJSON().command === 'set_queue_hold');
+    await resume.click();
+    expect((await holdCall).postDataJSON()).toEqual({ command: 'set_queue_hold', args: { sessionId, held: false } });
+    await expect.poll(() => finishedRuns).toEqual([sessionId]);
+    await expect(queueRows(page)).toHaveCount(0);
+    await expect(queueRows(host)).toHaveCount(0);
+    expect(queueEvents.filter(event => event.held !== undefined)).toEqual([{ sessionId, held: true }, { sessionId, held: false }]);
+    expect(await sentCount(text)).toBe(1);
+    expect(web.commands.filter(command => ['set_queue_hold', 'queue_take', 'send_message'].includes(command))).toEqual(['set_queue_hold']);
+  });
 
   test('connects with the session token and strips it from the address bar', async ({ page }) => {
     await openWebMode(page);

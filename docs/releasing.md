@@ -51,8 +51,9 @@ returns false and the app only reports new versions.
 
 The app reads `releases/latest/download/latest.json`, so publishing a release is what
 ships the update. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
-and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; without them the installers still build but
-the release updates nobody. The matching public key is in `tauri.conf.json`.
+and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Forks without these secrets can still
+publish installers without automatic updates. The matching public key is in
+`tauri.conf.json`.
 
 **Keep the private key safe.** Installed apps accept only updates signed by it. If it
 is lost, existing installs can no longer update and people must reinstall a build with
@@ -209,7 +210,14 @@ and collect their contents into one assets directory. Before tagging, require:
   Inspect the version, all six platform entries, signatures and versioned asset
   URLs; the generator permits partial manifests, so explicitly require all six.
 
-These are official-release gates; local and fork signing remains optional.
+For official `aicodeking/pandacode` publishes, the `prepare` job in `release.yml`
+requires a successful `workflow_dispatch` run on `main` for the exact commit.
+Start that preflight with `publish=false` as shown above. The `publish` job runs
+`node scripts/release/verify-publish.mjs --require-signed` to check all six updater
+signatures and `latest.json`. It writes signed macOS install notes only when both
+`APPLE_CERTIFICATE` and `APPLE_SIGNING_IDENTITY` are configured. Signing remains
+optional for local builds and forks without signing secrets.
+
 If `main` drifts or the release commit changes, repeat CI and this preflight for
 the new final commit. Once all gates pass, recheck remote `main` immediately
 before tagging the frozen commit (the tag workflow rebuilds and publishes):
@@ -250,8 +258,9 @@ version.
 To try the build without publishing, run the workflow manually (Actions →
 Release → Run workflow) and leave **publish** unchecked: the installers are kept
 as workflow artifacts for 14 days, and the CI check is skipped. Checking
-**publish** on a manual run requires the same green CI run, then creates the
-release and the `vX.Y.Z` tag at the selected commit.
+**publish** on a manual run requires green CI and, for the official repository,
+green preflight for that commit. The workflow then creates the release and the
+`vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 

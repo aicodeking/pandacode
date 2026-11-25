@@ -1,11 +1,12 @@
 // Checks a release's assets before they are published: every platform installer with a
-// matching SHA-256 sidecar and, when the build was signed for the in-app updater, every
+// matching SHA-256 sidecar and, when updater signing is required or detected, every
 // update file verified against its `.sig` and a latest.json that names them all.
 //
-//   node scripts/release/verify-publish.mjs <assets-dir> <version> <notes.md>
+//   node scripts/release/verify-publish.mjs [--require-signed] <assets-dir> <version> <notes.md>
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 import { root, json, digest, targets, version } from './common.mjs';
 import { verifyMinisign } from '../../packages/npx/installer.mjs';
 
@@ -62,6 +63,7 @@ export async function verifyPublishAssets({
   notes,
   pubkey,
   repository = process.env.GITHUB_REPOSITORY || 'aicodeking/pandacode',
+  requireSigned = false,
   warn = console.warn,
 }) {
   const v = version(releaseVersion);
@@ -70,7 +72,8 @@ export async function verifyPublishAssets({
     if (!names.has(asset)) throw new Error(`Installer ${asset} is missing.`);
     await verifyChecksum(directory, asset);
   }
-  const signed = names.has(MANIFEST) || [...names].some(name => name.endsWith('.sig'));
+  const hasUpdaterArchive = Object.values(targets).some(t => t.updaterAsset !== t.asset && names.has(t.updaterAsset));
+  const signed = Boolean(requireSigned) || names.has(MANIFEST) || hasUpdaterArchive || [...names].some(name => name.endsWith('.sig'));
   if (signed) {
     const signatures = await verifyUpdaterSignatures(directory, names, pubkey ?? await defaultPubkey());
     await verifyManifest(directory, names, { releaseVersion: v, notes: String(notes ?? ''), repository, signatures });
@@ -80,9 +83,17 @@ export async function verifyPublishAssets({
 }
 
 async function main() {
-  const [directory, releaseVersion, notesFile] = process.argv.slice(2);
-  if (!directory || !releaseVersion || !notesFile) throw new Error('Usage: verify-publish.mjs <assets-dir> <version> <notes.md>');
-  const { signed } = await verifyPublishAssets({ directory, releaseVersion, notes: await readFile(notesFile, 'utf8') });
+  const { values, positionals } = parseArgs({
+    options: { 'require-signed': { type: 'boolean' } },
+    allowPositionals: true,
+  });
+  const [directory, releaseVersion, notesFile] = positionals;
+  if (positionals.length !== 3 || !directory || !releaseVersion || !notesFile) {
+    throw new Error('Usage: verify-publish.mjs [--require-signed] <assets-dir> <version> <notes.md>');
+  }
+  const { signed } = await verifyPublishAssets({
+    directory, releaseVersion, notes: await readFile(notesFile, 'utf8'), requireSigned: values['require-signed'],
+  });
   console.log(`Verified ${Object.keys(targets).length} installers${signed ? ', updater signatures and latest.json' : ' (unsigned: no updater files)'}.`);
 }
 

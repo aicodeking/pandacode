@@ -1069,7 +1069,7 @@ async function openRecipes(): Promise<void> {
   mountRecipes($('#recipes-body'), {
     call, projectId: s.projectId, provider: s.provider,
     slashCommands: async () => (await call<{ commands: { name: string }[] }>('list_slash_commands', { sessionId: s.id })).commands.map(c => c.name),
-    enqueue: async text => { const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }); setQueue(s.id, [...queueOf(s.id), entry]); },
+    enqueue: async text => { const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }); setQueue(s.id, [...queueOf(s.id).filter(item => item.id !== entry.id), entry]); },
     done: () => { closeModal(); if (s.id === state.sessionId) renderComposer(); void run(dispatchQueue(s.id)); },
   });
 }
@@ -5419,7 +5419,7 @@ async function enqueueDraft(forceQueue: boolean): Promise<void> {
   clearComposer(s); renderComposer(); document.querySelector<HTMLTextAreaElement>('#prompt')?.focus();
   try {
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: items });
-    setQueue(s.id, [...queueOf(s.id), entry]);
+    setQueue(s.id, [...queueOf(s.id).filter(item => item.id !== entry.id), entry]);
   } catch (error) {
     restoreComposer(s, text, promptItems, paths);
     throw error;
@@ -5510,7 +5510,7 @@ async function requeueSteer(sessionId: string, text: string, reason: string): Pr
   const entry = await call<QueuedMessage>('queue_add', { sessionId, text, attachments: [] }).catch(() => null);
   const s = state.sessions.find(item => item.id === sessionId);
   if (entry) notSteered.set(entry.id, reason);
-  if (entry) { setQueue(sessionId, [...queueOf(sessionId), entry]); notifyError('The agent could not take that message, so it was queued.'); }
+  if (entry) { setQueue(sessionId, [...queueOf(sessionId).filter(item => item.id !== entry.id), entry]); notifyError('The agent could not take that message, so it was queued.'); }
   else { if (s) restoreComposer(s, text, [], []); notifyError('The agent could not take that message; it is back in the prompt.'); }
   if (sessionId === state.sessionId) renderComposer();
 }
@@ -5551,7 +5551,7 @@ async function steerOrQueue(s: Session, text: string): Promise<void> {
   const starting = remoteStart(s.id);
   if (starting && starting.stage !== 'error') {
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
-    if (entry) { setQueue(s.id, [...queueOf(s.id), entry]); notify(`${starting.device} is still starting this task; your message is queued for after it.`); }
+    if (entry) { setQueue(s.id, [...queueOf(s.id).filter(item => item.id !== entry.id), entry]); notify(`${starting.device} is still starting this task; your message is queued for after it.`); }
     else restoreComposer(s, text, [], []);
     refreshComposer(s);
     return;
@@ -5566,7 +5566,7 @@ async function steerOrQueue(s: Session, text: string): Promise<void> {
     notifyError(/\bqueued\b/i.test(reason) ? reason : `${reason} Queued instead.`);
     const entry = await call<QueuedMessage>('queue_add', { sessionId: s.id, text, attachments: [] }).catch(() => null);
     if (entry) notSteered.set(entry.id, reason);
-    if (entry) setQueue(s.id, [...queueOf(s.id), entry]); else restoreComposer(s, text, [], []);
+    if (entry) setQueue(s.id, [...queueOf(s.id).filter(item => item.id !== entry.id), entry]); else restoreComposer(s, text, [], []);
     refreshComposer(s);
   }
 }
@@ -5604,7 +5604,12 @@ async function queueAction(action: string, element: HTMLElement): Promise<void> 
   if (action === 'queue-cancel') { state.queueEditing = ''; refreshComposer(s); return; }
   if (action === 'queue-save') return saveQueueEdit(s);
   if (action === 'queue-remove') { await call('queue_remove', { id }); setQueue(s.id, queueOf(s.id).filter(item => item.id !== id)); refreshComposer(s); return; }
-  if (action === 'queue-resume') { setQueueHold(s.id); refreshComposer(s); await dispatchQueue(s.id); }
+  if (action === 'queue-resume') {
+    state.queueHolds.delete(s.id);
+    refreshComposer(s);
+    await call('set_queue_hold', { sessionId: s.id, held: false }).catch(() => undefined);
+    await dispatchQueue(s.id);
+  }
 }
 /** Sends this entry now: right away when idle, into the running turn when it can steer, otherwise after stopping the run. */
 async function sendQueuedNow(s: Session, id: string): Promise<void> {
@@ -6144,7 +6149,7 @@ const btwPanel = new BtwPanel({
 });
 async function btwPanelQueue(side: Session, text: string): Promise<void> {
   const entry = await call<QueuedMessage>('queue_add', { sessionId: side.id, text, attachments: [] });
-  setQueue(side.id, [...queueOf(side.id), entry]);
+  setQueue(side.id, [...queueOf(side.id).filter(item => item.id !== entry.id), entry]);
   // The run may have ended while this was saved: send it now.
   if (!isRunning(side.id)) run(dispatchQueue(side.id));
 }
@@ -9489,12 +9494,14 @@ async function boot(): Promise<void> {
     sessionId: () => state.sessionId, showChoices, notify, report, changed: scheduleNavigation,
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
-  // Agents can queue or remove follow-ups through their tools; an idle, unheld task sends right away.
+  // Follow-up changes are shared across clients. On the host, an idle, unheld task sends right away.
   listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
+    if (payload.held === false) state.queueHolds.delete(id);
+    else if (payload.held === true && !state.queueHolds.has(id)) state.queueHolds.set(id, 'stopped');
     setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
     if (id === state.sessionId) renderComposer();
-    await dispatchQueue(id);
+    if (payload.held !== true) await dispatchQueue(id);
   })())));
   // The launcher and Agents dock open a task in the desktop window; connected browser tabs keep their own.
   if (!webMode) listening.push(subscribe('overlay-open-task', event => run((async () => {

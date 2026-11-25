@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { targets, updaterManifest } from './common.mjs';
 import { verifyPublishAssets } from './verify-publish.mjs';
 
@@ -46,7 +48,10 @@ async function release(t, { signed = true, sbom = true } = {}) {
   if (signed) await write('latest.json', JSON.stringify(updaterManifest(releaseVersion, notes, signatures, '2026-01-01T00:00:00Z', repository)));
   if (sbom) await write('SBOM-COVERAGE.json', '{}');
   const warnings = [];
-  const verify = () => verifyPublishAssets({ directory, releaseVersion, notes, pubkey: key.pubkey, repository, warn: message => warnings.push(message) });
+  const verify = ({ requireSigned } = {}) => verifyPublishAssets({
+    directory, releaseVersion, notes, pubkey: key.pubkey, repository, requireSigned,
+    warn: message => warnings.push(message),
+  });
   const editManifest = async edit => {
     const manifest = JSON.parse(await readFile(join(directory, 'latest.json'), 'utf8'));
     edit(manifest);
@@ -131,10 +136,38 @@ test('a latest.json without any signatures still requires the signed update file
   await assert.rejects(verify, /Updater file PandaCode-macOS-arm64.app.tar.gz is missing/);
 });
 
+test('updater archives without any signatures or manifest fail even when signing is optional', async (t) => {
+  const { directory, verify } = await release(t);
+  for (const { updaterAsset } of Object.values(targets)) {
+    await unlink(join(directory, `${updaterAsset}.sig`));
+  }
+  await unlink(join(directory, 'latest.json'));
+  await assert.rejects(() => verify({ requireSigned: false }), /Updater signature PandaCode-macOS-arm64\.app\.tar\.gz\.sig is missing/);
+});
+
+test('required signing fails when all updater archives, signatures and the manifest are missing', async (t) => {
+  const { verify } = await release(t, { signed: false });
+  await assert.rejects(() => verify({ requireSigned: true }), /Updater file PandaCode-macOS-arm64\.app\.tar\.gz is missing/);
+});
+
 test('an unsigned fork release publishes without updater files and warns about a missing SBOM', async (t) => {
   const { verify, warnings } = await release(t, { signed: false, sbom: false });
-  assert.deepEqual(await verify(), { signed: false });
+  assert.deepEqual(await verify({ requireSigned: false }), { signed: false });
   assert.deepEqual(warnings, ['::warning::SBOM-COVERAGE.json is missing from publish assets.']);
+});
+
+test('the CLI requires updater artifacts when passed --require-signed', async (t) => {
+  const { directory, write } = await release(t, { signed: false });
+  await write('notes.md', notes);
+  const script = fileURLToPath(new URL('./verify-publish.mjs', import.meta.url));
+  const args = [directory, releaseVersion, join(directory, 'notes.md')];
+  const unsigned = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+  assert.equal(unsigned.status, 0, unsigned.stderr);
+  assert.match(unsigned.stdout, /Verified 6 installers \(unsigned/);
+
+  const required = spawnSync(process.execPath, [script, '--require-signed', ...args], { encoding: 'utf8' });
+  assert.equal(required.status, 1, required.stderr);
+  assert.match(required.stderr, /Updater file PandaCode-macOS-arm64\.app\.tar\.gz is missing/);
 });
 
 test('signatures are checked against the app updater key by default', async (t) => {
