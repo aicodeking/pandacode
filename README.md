@@ -351,8 +351,12 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   `Glob` and explore `deny` and `ask` rules (including tool-name wildcards) by
   withholding the explorer when present. Opt-in non-Claude harnesses rely on the
   secret-file rules; their harness deny rules are not parsed. It is on by default only for
-  Claude Code, the one harness it was measured on (measured on Claude Sonnet in Claude
-  Code 2.1.317; enabled across Claude models); other harnesses (GLM, MiMo and
+  Claude Code, the one harness it was measured on (Claude Sonnet in Claude Code 2.1.317;
+  enabled across Claude models): there it took 12% fewer localization steps and 14% less
+  wall time on tuned tasks and 21% fewer steps on held-out tasks, with held-out precision
+  and edit pass rate holding up, but tuned precision missed its non-inferiority gate and
+  edit steps were not shown unchanged ([caveats and why it stays on](docs/agent-tools.md),
+  [benchmark](docs/agent-loop-benchmark.md)). Other harnesses (GLM, MiMo and
   Alibaba Token Plan included) get it only after you turn on their own switch listed under
   Settings → Agents → **Local code explorer (pandacode_explore)** (stored as an
   empty `explore-on-<provider>` file in PandaCode's app data, which you can also

@@ -434,10 +434,23 @@ fn program_config_keys(listing: &[u8]) -> Vec<String> {
 /// The checkout's own config entries (repository and worktree files; includes are not
 /// followed, and any `include.*` key refuses anyway), as `git config --null --list` bytes.
 fn local_config_listings(root: &Path) -> Result<Vec<Vec<u8>>, String> {
+    local_config_listings_within(root, Instant::now() + Duration::from_secs(30))
+}
+
+/// What is left of a bounded run of Git calls before `deadline`; the timeout error once it passed.
+fn remaining_within(deadline: Instant) -> Result<Duration, String> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|left| !left.is_zero())
+        .ok_or_else(|| "Git operation timed out. Check the repository before retrying.".to_string())
+}
+
+/// [`local_config_listings`] with both reads finishing by `deadline`.
+fn local_config_listings_within(root: &Path, deadline: Instant) -> Result<Vec<Vec<u8>>, String> {
     const LIMIT: usize = 256 * 1024;
     let mut listings = Vec::new();
     for scope in ["--local", "--worktree"] {
-        let output = run_git(root, &["config", scope, "--null", "--list"], LIMIT, false)?;
+        let output = run_git_bounded(root, &["config", scope, "--null", "--list"], LIMIT, false, remaining_within(deadline)?)?;
         // --worktree fails without extensions.worktreeConfig in a linked worktree: nothing to read.
         // --local exits 1 with no entries only when the file is empty or missing.
         if !output.status.success() {
@@ -486,7 +499,12 @@ pub fn refuse_repo_config_programs_for(root: &Path, action: &str) -> Result<(), 
 /// status refresh may run clean filters and recurse into submodules with their own config.
 /// Refuses a config that includes other files: their filters are not in the local listing.
 fn untrusted_inspection_args(root: &Path) -> Result<Vec<String>, String> {
-    let listings = local_config_listings(root)?;
+    untrusted_inspection_args_within(root, Instant::now() + Duration::from_secs(30))
+}
+
+/// [`untrusted_inspection_args`] with its config reads finishing by `deadline`.
+fn untrusted_inspection_args_within(root: &Path, deadline: Instant) -> Result<Vec<String>, String> {
+    let listings = local_config_listings_within(root, deadline)?;
     let entries: Vec<String> = listings.iter().flat_map(|listing| String::from_utf8_lossy(listing).split('\0').map(str::to_owned).collect::<Vec<_>>()).collect();
     if entries.iter().any(|entry| config_entry_includes(entry)) {
         return Err(INCLUDES_REFUSED.into());
@@ -622,6 +640,20 @@ fn run_git_changing(root: &Path, args: &[&str], limit: usize, hooks: Hooks) -> R
 /// `level` for a hooks-skipped call, nothing extra when hooks run (the desktop).
 fn untrusted_for(hooks: Hooks, level: Untrusted) -> Untrusted {
     if hooks == Hooks::Skip { level } else { Untrusted::No }
+}
+
+/// A desktop `git status` on a checkout PandaCode does not vouch for (a warm spare's
+/// working-tree digest), all within `timeout`: the [`untrusted_inspection_args`] prefix before
+/// `args` (refusing includes, `core.worktree` and keys that run a program or fetch, switching
+/// every checkout-local filter off and skipping submodules) and the hooks-skipped runner with
+/// [`Untrusted::Local`], so no hook, fsmonitor, filter, lazy fetch, credential helper or askpass
+/// program from the checkout's own config runs.
+pub(crate) fn run_git_status_safe(root: &Path, args: &[&str], limit: usize, timeout: Duration) -> Result<GitOutput, String> {
+    let deadline = Instant::now() + timeout;
+    let prefix = untrusted_inspection_args_within(root, deadline)?;
+    let mut all: Vec<&str> = prefix.iter().map(String::as_str).collect();
+    all.extend_from_slice(args);
+    run_git_with(root, &all, limit, false, Untrusted::Local, remaining_within(deadline)?)
 }
 
 /// A read-only call with `untrusted` set when it carries [`inspection_args`]' prefix.

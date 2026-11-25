@@ -10,6 +10,8 @@ export const PROJECT_LINKS = {
   license: 'https://github.com/aicodeking/pandacode/blob/main/LICENSE',
   /** The browser preview's fallback; the app opens its bundled copy (tauri.conf.json resources). */
   notices: 'https://github.com/aicodeking/pandacode/blob/main/THIRD_PARTY_NOTICES.md',
+  /** Settings → Agents → Warm Claude spares: its full limits and trade-offs. */
+  warmSpares: 'https://github.com/aicodeking/pandacode/blob/main/docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares',
 } as const;
 
 const link = (label: string, url: string) =>

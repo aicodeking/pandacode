@@ -790,3 +790,77 @@ async fn a_git_status_digest_tracks_the_working_tree() {
     std::fs::write(broken.join(".git"), "gitdir: missing\n").unwrap();
     assert_eq!(git_status(&broken), None);
 }
+
+/// A fresh repository at a new temp folder, removed when the returned guard drops.
+fn init_status_repo(name: &str) -> (PathBuf, TempDir) {
+    let repo = std::env::temp_dir().join(format!("warm-git-status-{name}-{}", uuid::Uuid::new_v4()));
+    let cleanup = TempDir(repo.clone());
+    std::fs::create_dir_all(&repo).unwrap();
+    let init = std::process::Command::new("git").args(["init", "-q"]).current_dir(&repo).status().unwrap();
+    assert!(init.success());
+    (repo, cleanup)
+}
+
+#[test]
+fn a_file_added_inside_an_untracked_folder_changes_the_git_status_digest() {
+    let (repo, _cleanup) = init_status_repo("untracked");
+    std::fs::create_dir_all(repo.join("untracked")).unwrap();
+    std::fs::write(repo.join("untracked/a.txt"), "a").unwrap();
+    let one = git_status(&repo).expect("the status is known");
+    // `--untracked-files=normal` would list only `untracked/` both times.
+    std::fs::write(repo.join("untracked/b.txt"), "b").unwrap();
+    let two = git_status(&repo).expect("the status is known");
+    assert_ne!(one, two, "a new file inside an already-untracked folder changes the digest");
+}
+
+#[test]
+fn a_checkout_with_submodules_has_no_git_status_digest() {
+    // `.gitmodules` at the working tree's root, even read from a subfolder.
+    let (repo, _cleanup) = init_status_repo("gitmodules");
+    let sub = repo.join("src");
+    std::fs::create_dir_all(&sub).unwrap();
+    assert!(git_status(&sub).is_some(), "a plain checkout's status is known");
+    std::fs::write(repo.join(".gitmodules"), "[submodule \"x\"]\n\tpath = x\n\turl = https://example.com/x.git\n").unwrap();
+    assert_eq!(git_status(&repo), None, "submodules fail closed");
+    assert_eq!(git_status(&sub), None, "submodules fail closed from a subfolder too");
+    // A `modules` folder in the git directory.
+    let (repo, _cleanup) = init_status_repo("modules");
+    assert!(git_status(&repo).is_some(), "a plain checkout's status is known");
+    std::fs::create_dir_all(repo.join(".git").join("modules")).unwrap();
+    assert_eq!(git_status(&repo), None, "a git directory's submodules fail closed");
+}
+
+#[cfg(unix)]
+#[test]
+fn git_status_switches_off_checkout_clean_filters() {
+    use std::process::Command;
+    let (repo, _cleanup) = init_status_repo("filter");
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .args(["-c", "user.name=PandaCode", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(&repo)
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    std::fs::write(repo.join("tracked.txt"), "one").unwrap();
+    git(&["add", "tracked.txt"]);
+    git(&["commit", "-q", "--no-verify", "-m", "Tracked"]);
+    let marker_dir = std::env::temp_dir().join(format!("warm-git-status-marker-{}", uuid::Uuid::new_v4()));
+    let _marker_cleanup = TempDir(marker_dir.clone());
+    std::fs::create_dir_all(&marker_dir).unwrap();
+    let marker = marker_dir.join("filter-ran");
+    std::fs::write(repo.join(".gitattributes"), "*.txt filter=x\n").unwrap();
+    let clean = format!("touch '{}'; cat", marker.display());
+    git(&["config", "filter.x.clean", clean.as_str()]);
+    git(&["config", "filter.x.required", "true"]);
+    // Same size, older mtime: status must hash the file, through its clean filter.
+    assert!(Command::new("touch").args(["-t", "200001010000"]).arg(repo.join("tracked.txt")).status().unwrap().success());
+    assert!(git_status(&repo).is_some(), "the status is known with the filter switched off");
+    assert!(!marker.exists(), "no checkout filter ran");
+    // Plain `git status` does run it: the check above means something.
+    let plain = Command::new("git").args(["status", "--porcelain"]).current_dir(&repo).output().unwrap();
+    assert!(plain.status.success());
+    assert!(marker.exists(), "the fixture reaches the clean filter");
+}

@@ -80,12 +80,27 @@ pub(in crate::providers) async fn adopt_for_launch(config: &RunConfig, host: Opt
 /// The switch and the key read files (the key: the task's switches and saved settings), so both
 /// run off the runtime. Every spare is keyed by the working tree's `gitStatus` too (git runs off
 /// the runtime, bounded, beside the walk); an unknown status adopts nothing. Only a launch with a
-/// pooled spare gets here, so a cold launch never runs git.
+/// pooled spare gets here, so a cold launch never runs git. The switch is read again once both
+/// are in (`settle_launch_key`).
 async fn launch_key(config: &RunConfig, catalog: &[Value]) -> Result<WarmKey, String> {
     let (keyed, catalog) = (config.clone(), catalog.to_vec());
     let walk = crate::blocking(move || Ok(enabled_now().then(|| key_fields(&keyed, &catalog))));
     let (walked, git_status) = tokio::join!(walk, git_status_digest(&config.cwd));
-    walked.map(|walked| WarmKey::of(walked, git_status))
+    Ok(settle_launch_key(walked?, git_status, enabled_off_runtime).await)
+}
+
+/// Settle the parallel walk and `git status` read, re-checking the opt-in switch once both
+/// finish so deleting `warm-spares-on` on a headless host during `git status` still
+/// settles to `WarmKey::Disabled` and retires the pooled spare instead of adopting it.
+async fn settle_launch_key<E, EFut>(walked: Option<Option<Value>>, git_status: Option<String>, still_enabled: E) -> WarmKey
+where
+    E: FnOnce() -> EFut,
+    EFut: std::future::Future<Output = bool>,
+{
+    if walked.is_none() || !still_enabled().await {
+        return WarmKey::Disabled;
+    }
+    WarmKey::of(walked, git_status)
 }
 
 /// A launch with no warm key: counts the launch, retires any pooled spare and logs the miss
@@ -128,5 +143,37 @@ mod tests {
         assert_eq!(WarmKey::of(Some(None), status()), WarmKey::NoKey);
         let keyed = with_git_status(fields().unwrap(), Some("digest"));
         assert_eq!(WarmKey::of(Some(fields()), status()), WarmKey::Key(keyed));
+    }
+
+    #[tokio::test]
+    async fn removing_the_opt_in_during_git_status_retires_instead_of_adopting() {
+        let dir = std::env::temp_dir().join(format!("warm-adopt-switch-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(WARM_SPARES_ON_FILE);
+        // The switch read again after the walk and `git status`, from this folder's marker.
+        let enabled = || {
+            let dir = dir.clone();
+            move || async move { enabled_in(Ok(dir)) }
+        };
+        let fields = || Some(Some(serde_json::json!({ "model": "m" })));
+        std::fs::write(&marker, "").unwrap();
+        let keyed = with_git_status(serde_json::json!({ "model": "m" }), Some("digest"));
+        assert_eq!(settle_launch_key(fields(), Some("digest".into()), enabled()).await, WarmKey::Key(keyed), "still on: the key to adopt against");
+        // The walk saw spares on; the marker is removed while `git status` runs.
+        std::fs::remove_file(&marker).unwrap();
+        for git_status in [Some("digest".to_string()), None] {
+            assert_eq!(settle_launch_key(fields(), git_status.clone(), enabled()).await, WarmKey::Disabled, "status {git_status:?}");
+        }
+        // Spares already off at the walk: the switch is not read again.
+        std::fs::write(&marker, "").unwrap();
+        let read = std::cell::Cell::new(false);
+        let settled = settle_launch_key(None, Some("digest".into()), || {
+            read.set(true);
+            async { true }
+        })
+        .await;
+        assert_eq!(settled, WarmKey::Disabled);
+        assert!(!read.get(), "a walk with spares off never reads the switch again");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

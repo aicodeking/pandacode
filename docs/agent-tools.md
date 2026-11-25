@@ -294,6 +294,30 @@ stays disabled, and a refused save puts it back with the reason. The opt-in coun
 marker cannot be checked, explore stays off for that harness. Off for a harness, its
 runs behave exactly as with the switch off.
 
+**What the benchmark showed, and its caveats.** Batch Fv2 in
+[agent-loop-benchmark.md](agent-loop-benchmark.md) (Claude Sonnet in Claude Code 2.1.317)
+measured, with the tool on: 12% fewer localization steps (4.92 → 4.20, Wilcoxon `p = 0.003`)
+and 14% less wall time (max-T `p = 0.004`) on the 20 tuned tasks, and 21% fewer steps on the
+8 held-out tasks (`p = 0.016`), where localization precision cleared the −0.05
+non-inferiority margin (0.703 → 0.702, 95% CI −0.041 to +0.034). Edit pass rate passed its
+gates (9/12 → 12/12 on the 6 edits, 27/28 → 27/28 on the 14 `edit2` tasks). The caveats:
+- Tuned localization precision missed its preregistered non-inferiority gate (0.574 → 0.562,
+  95% CI −0.066 to +0.040). The post-hoc gate calibration passes that gate in only ~70% of
+  batches with no true effect, so it misses ~30% of the time even with no real loss; the
+  result reads as "not shown non-inferior", not as shown harm.
+- The edit-steps gate did not pass: +2% steps (95% CI −10% to +14%), so edits are not shown
+  to take no more steps with the tool.
+- The engine was tuned on the 20 tuned tasks, which can flatter it; the held-out set is 8 tasks.
+- Only Sonnet was measured, but the default covers every Claude Code model.
+- The shipped tool description and the Claude edit instruction (`EDIT_CLAUDE`) got minor
+  wording refinements after the Fv2 run, which have no paid-batch measurement of their own.
+
+**Why it stays on by default for Claude Code.** The step and wall-time savings are
+statistically significant on both the tuned and the held-out tasks, and held-out precision
+and edit pass rate held up; that outweighs a tuned-precision gate miss inside the gate's own
+noise. Turning it off is one switch: Settings → Agents → **Local code explorer
+(pandacode_explore)**, or the `explore-off` marker on a headless server (below).
+
 **Turning it off.** **Settings → Agents → Local code explorer (pandacode_explore)**
 is on by default. Off, runs get no instruction line for it and a new conversation
 does not list the tool; a resumed conversation that may already hold it keeps it

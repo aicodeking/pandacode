@@ -9,13 +9,14 @@ const MEMORY = 'src-tauri/src/providers/warm/memory.rs';
 const STATS = 'src-tauri/src/providers/warm/stats.rs';
 const EXIT = 'src-tauri/src/providers/exit.rs';
 const SETTINGS = 'src/settings.ts';
+const ABOUT = 'src/about-settings.ts';
 const README = 'README.md';
 const PRIVACY = 'website/src/pages/privacy.astro';
 const AGENTS = 'AGENTS.md';
 const WORKER_TOKENS = 'docs/worker-tokens.md';
 // Every hand-written copy that carries the full warm-spare limits, in the order a reader meets
-// them. The Settings hint is a concise summary that points to docs/worker-tokens.md instead; its
-// own test below checks what it must and must not say.
+// them. The Settings hint is a concise summary whose row links to docs/worker-tokens.md instead; its
+// own tests below check what it must and must not say and that the link is wired.
 const FULL_COPIES = [README, PRIVACY, WORKER_TOKENS, AGENTS];
 const HEADLESS = 'docs/headless.md';
 const AGENT_REFERENCE = 'docs/agent-reference.md';
@@ -68,7 +69,8 @@ test('docs/worker-tokens.md states both limits and the total', () => {
   const text = flat(WORKER_TOKENS);
   const switchStart = text.indexOf('**Warm spare switch');
   assert.ok(switchStart >= 0, 'Warm spare switch section not found');
-  assert.match(text.slice(switchStart, switchStart + 800), new RegExp(`\\bup to ${total};`));
+  // The section opens with what off means (including the post-`git status` re-check), then the sizes.
+  assert.match(text.slice(switchStart, switchStart + 1200), new RegExp(`\\bup to ${total};`));
   const costStart = text.indexOf('**What a spare costs and saves.**');
   assert.ok(costStart >= 0, 'What a spare costs and saves section not found');
   assert.match(text.slice(costStart, costStart + 300), new RegExp(`\\bat most ${total} in all\\b`));
@@ -269,10 +271,44 @@ test('the Settings hint is a concise plain-English summary that points to the fu
   const text = hint[1];
   const { total } = limits();
   assert.ok(text.length <= 340, `${SETTINGS} warm-spares hint must stay concise (<= 340 chars), got ${text.length}`);
-  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'git status', 'docs/worker-tokens.md']) {
+  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'Anthropic startup requests', 'git status']) {
     assert.ok(text.includes(phrase), `${SETTINGS} warm-spares hint must state "${phrase}"`);
   }
+  // A tooltip cannot open a repository path; the full limits are a link button on the row instead.
+  assert.ok(!text.includes('docs/worker-tokens.md'), `${SETTINGS} warm-spares hint must not carry the raw docs/worker-tokens.md path`);
   assert.doesNotMatch(text, /~?1\.5 s/, `${SETTINGS} warm-spares hint must not claim ~1.5 s as the signed-in saving`);
+});
+
+test('the warm-spares row links to the full limits in docs/worker-tokens.md', () => {
+  const about = readFileSync(ABOUT, 'utf8');
+  const links = about.match(/export const PROJECT_LINKS = \{([\s\S]*?)\n\} as const;/);
+  assert.ok(links, `PROJECT_LINKS not found in ${ABOUT}`);
+  const url = links[1].match(/^\s*warmSpares:\s*'([^']+)'/m);
+  assert.ok(url, `${ABOUT} PROJECT_LINKS must define warmSpares`);
+  assert.ok(url[1].endsWith('/docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares'), `${ABOUT} PROJECT_LINKS.warmSpares must point to docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares, got ${url[1]}`);
+  assert.ok(url[1].startsWith('https://github.com/'), `${ABOUT} PROJECT_LINKS.warmSpares must be a public https URL, got ${url[1]}`);
+  // That anchor must still exist above the preregistered tail.
+  assert.match(readFileSync(WORKER_TOKENS, 'utf8'), /^#+ Turn speed: cached instructions and warm spares$/m, `${WORKER_TOKENS} must keep the heading PROJECT_LINKS.warmSpares points to`);
+
+  const settings = readFileSync(SETTINGS, 'utf8');
+  assert.match(settings, /import\s*\{[^}]*\bPROJECT_LINKS\b[^}]*\}\s*from\s*'\.\/about-settings'/, `${SETTINGS} must import PROJECT_LINKS from ./about-settings`);
+  const uses = [...settings.matchAll(/PROJECT_LINKS\.warmSpares\b/g)].map(m => m.index);
+  assert.ok(uses.length > 0, `${SETTINGS} must use PROJECT_LINKS.warmSpares`);
+  const openUrl = /data-action="open-url"|dataset\.action\s*=\s*['"]open-url['"]|setAttribute\(\s*['"]data-action['"]\s*,\s*['"]open-url['"]\s*\)/;
+  // Either the button is built inline next to the warm-spares row, or it is a named constant
+  // (`const NAME = `...open-url...PROJECT_LINKS.warmSpares...``) that the warm-spares row uses.
+  const wired = uses.some(at => {
+    const lineStart = settings.lastIndexOf('\n', at) + 1;
+    const line = settings.slice(lineStart, settings.indexOf('\n', at));
+    const named = line.match(/^\s*const\s+(\w+)\s*=/);
+    if (named && openUrl.test(line)) {
+      const name = named[1];
+      return new RegExp(`'warm-spares'[^\\n]{0,120}\\b${name}\\b|\\b${name}\\b[^\\n]{0,120}'warm-spares'`).test(settings);
+    }
+    const near = settings.slice(Math.max(0, at - 600), at + 600);
+    return openUrl.test(near) && near.includes('warm-spares');
+  });
+  assert.ok(wired, `${SETTINGS} must put PROJECT_LINKS.warmSpares on a data-action="open-url" button on the warm-spares row`);
 });
 
 test('the warm-spares-on opt-in marker in warm.rs matches every doc and Settings', () => {

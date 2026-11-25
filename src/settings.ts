@@ -10,7 +10,7 @@ import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountVoiceSettings } from './voice-settings';
 import { mountSupportDetails } from './support-settings';
-import { aboutSettingsHtml, mountAboutSettings } from './about-settings';
+import { aboutSettingsHtml, mountAboutSettings, PROJECT_LINKS } from './about-settings';
 import { mountResourceUsage, resourceUsageHtml } from './resource-usage-settings';
 import { mountModelRouting } from './model-routing';
 import { mountAgentTeams, type AgentTeamsOptions } from './agent-teams';
@@ -92,9 +92,12 @@ const PLANS = new Set<ProviderId>(['glm', 'mimo', 'alibaba']);
  * text stays in the DOM for screen readers. */
 const settingRow = (title: string, control: string, detail = '', status = false) =>
   `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}${status ? '<small class="setting-status" hidden></small>' : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
-/** \`native\` switches start disabled (until their value is read) and keep a status line for errors. */
-const switchRow = (id: string, title: string, detail: string, checked: boolean, native = false) =>
-  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''} ${native ? 'disabled' : ''}>`, detail, native);
+/** \`native\` switches start disabled (until their value is read) and keep a status line for errors.
+  * An \`action\` (such as a docs button) sits before the switch in the row's actions group. */
+const switchRow = (id: string, title: string, detail: string, checked: boolean, native = false, action = '') => {
+  const input = `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''} ${native ? 'disabled' : ''}>`;
+  return settingRow(title, action ? `<div class="settings-row-actions">${action}${input}</div>` : input, detail, native);
+};
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
 
@@ -102,11 +105,13 @@ const UNREADABLE = 'Couldn’t read this setting.';
 /** Settings → Agents switches read and saved natively, each as `<name>_enabled` /
  * `set_<name>_enabled`; the row's id and default hint. */
 const NATIVE_SWITCHES = [
-  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup; starts MCP servers and SessionStart hooks early, checks git status on adoption, skips low memory, and backs off when unused. Full limits and telemetry trade-offs: docs/worker-tokens.md.' },
+  { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup. Makes signed-in Anthropic startup requests, starts MCP servers and runs SessionStart hooks before you send a message; checks git status, skips low memory, and backs off when unused.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
   { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
 ] as const;
+/** The warm spares row's docs button: full limits and trade-offs, opened in the browser. */
+const WARM_SPARES_DOCS = `<button type="button" class="secondary-button" data-action="open-url" data-url="${PROJECT_LINKS.warmSpares}" aria-label="Warm Claude spares limits and trade-offs">Docs${icon('forward')}</button>`;
 /** The explorer's harnesses (`providers::explore_name`): Claude Code is on by default, each other
  * one opts in with its own switch, stored natively as an `explore-on-<provider>` marker. */
 const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
@@ -343,7 +348,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
-        ${NATIVE_SWITCHES.map(row => switchRow(row.id, row.title, row.hint, false, true)).join('')}
+        ${NATIVE_SWITCHES.map(row => switchRow(row.id, row.title, row.hint, false, true, row.id === 'warm-spares' ? WARM_SPARES_DOCS : '')).join('')}
         ${EXPLORE_HARNESSES.map(exploreHarnessRow).join('')}
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>

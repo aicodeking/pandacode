@@ -421,13 +421,23 @@ pub(super) async fn spawn_claude_keyed(
     }
     // Claude Code snapshots `gitStatus` at spawn, so every spare's is read now, after the exit
     // wait during which the exiting turn or the user may still have changed the working tree.
-    let Some(git_status) = git_status_digest(&config.cwd).await else {
-        if lead {
-            eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
-        } else {
-            eprintln!("No warm Claude agent: its git status cannot be read.");
+    // The opt-in is read again once the status is in: removing `warm-spares-on` on a headless
+    // host while `git status` runs moves no `discard_epoch`, so it is caught here, before
+    // `spawn_when_current`.
+    let git_status = match gate_git_status(git_status_digest(&config.cwd), enabled_off_runtime).await {
+        StatusGate::Ready(git_status) => git_status,
+        StatusGate::Disabled => {
+            eprintln!("{NOT_PREPARED}");
+            return Ok(None);
         }
-        return Ok(None);
+        StatusGate::Unreadable => {
+            if lead {
+                eprintln!("No warm Claude agent for the team lead: its git status cannot be read.");
+            } else {
+                eprintln!("No warm Claude agent: its git status cannot be read.");
+            }
+            return Ok(None);
+        }
     };
     let key = with_git_status(fields, Some(&git_status));
     // Launch, switch-off and quit are checked again after the status read, as the spawn registers.
@@ -442,6 +452,36 @@ pub(super) async fn spawn_claude_keyed(
 
 /// What a spare that waited on its turn's exit and was then not spawned logs.
 const NOT_PREPARED: &str = "No warm Claude agent prepared: its launch changed or the previous turn did not exit.";
+
+/// What a spare's working-tree status read settled to, with the opt-in read again after it.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum StatusGate {
+    /// Spares are still on and the status was read: its digest.
+    Ready(String),
+    /// Spares were switched off (the opt-in marker removed) by the time the read finished.
+    Disabled,
+    /// Spares are still on but the status could not be read.
+    Unreadable,
+}
+
+/// Read the working tree's `gitStatus` digest and re-check the opt-in switch after it
+/// completes, so removing `warm-spares-on` on a headless host while `git status` runs
+/// still stops the spawn even without `disable_all` bumping `discard_epoch`.
+pub(super) async fn gate_git_status<S, E, EFut>(status: S, enabled: E) -> StatusGate
+where
+    S: std::future::Future<Output = Option<String>>,
+    E: FnOnce() -> EFut,
+    EFut: std::future::Future<Output = bool>,
+{
+    let digest = status.await;
+    if !enabled().await {
+        return StatusGate::Disabled;
+    }
+    match digest {
+        Some(digest) => StatusGate::Ready(digest),
+        None => StatusGate::Unreadable,
+    }
+}
 
 /// Spawn once the previous process has exited, unless the task launched again meanwhile: that
 /// follow-up missed the pool and waits on the same exit, so spawning now would overlap it on one

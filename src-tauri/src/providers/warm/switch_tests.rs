@@ -253,6 +253,33 @@ async fn stale_launches_never_enter_the_pool_or_read_launch_inputs() {
 }
 
 #[tokio::test]
+async fn removing_the_opt_in_during_git_status_stops_the_spawn() {
+    let dir = std::env::temp_dir().join(format!("warm-switch-status-{}", uuid::Uuid::new_v4()));
+    let _cleanup = TempDir(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join(WARM_SPARES_ON_FILE);
+    // The switch read again once the status is in, from this folder's marker.
+    let enabled = || {
+        let dir = dir.clone();
+        move || async move { enabled_in(Ok(dir)) }
+    };
+    std::fs::write(&marker, "").unwrap();
+    assert_eq!(gate_git_status(async { Some("digest".to_string()) }, enabled()).await, StatusGate::Ready("digest".into()));
+    assert_eq!(gate_git_status(async { None::<String> }, enabled()).await, StatusGate::Unreadable, "still on: an unreadable status");
+    for digest in [Some("digest".to_string()), None] {
+        std::fs::write(&marker, "").unwrap();
+        let removed = marker.clone();
+        let status = async move {
+            // A headless host's opt-out while `git status` runs: no `disable_all`, no epoch move.
+            std::fs::remove_file(&removed).unwrap();
+            digest
+        };
+        assert_eq!(gate_git_status(status, enabled()).await, StatusGate::Disabled);
+        assert!(!marker.exists());
+    }
+}
+
+#[tokio::test]
 async fn an_off_switch_during_exit_wait_prevents_the_process_from_spawning() {
     use std::sync::atomic::{AtomicBool, Ordering};
     let session = format!("warm-switch-wait-{}", uuid::Uuid::new_v4());

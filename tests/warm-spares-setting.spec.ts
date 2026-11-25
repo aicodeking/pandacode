@@ -25,11 +25,17 @@ test('the warm spares switch is off by default, explains itself and saves', asyn
   // The hint names each cost and limit; checked by phrase so rewording elsewhere stays free.
   await expect(hint(page)).toHaveCount(1);
   for (const disclosure of [
-    'Off by default', 'up to 4', '~195–255 MiB', '~0.38–0.62 s', 'signed-in', 'MCP', 'SessionStart', 'git status',
-    'low memory', 'backs off', 'docs/worker-tokens.md',
+    'Off by default', 'up to 4', '~195–255 MiB', '~0.38–0.62 s', 'signed-in', 'Anthropic startup requests', 'MCP',
+    'SessionStart', 'git status', 'low memory', 'backs off',
   ]) {
     await expect(hint(page)).toContainText(disclosure);
   }
+  // The full limits are a real link on the row, not a repository path in the tooltip.
+  await expect(hint(page)).not.toContainText('docs/worker-tokens.md');
+  const docs = settings(page).locator('.setting-row:has(#warm-spares)').getByRole('button', { name: 'Warm Claude spares limits and trade-offs', exact: true });
+  await expect(docs).toBeVisible();
+  await expect(docs).toHaveAttribute('data-action', 'open-url');
+  await expect(docs).toHaveAttribute('data-url', 'https://github.com/aicodeking/pandacode/blob/main/docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares');
   // This launch's local totals sit on the row's status line, which is not an alert.
   await expect(status(page)).toHaveText('This launch: no spares started yet.');
   await expect(status(page)).not.toHaveAttribute('role', 'alert');

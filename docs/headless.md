@@ -41,7 +41,10 @@ example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-on`); delete it
 to turn them off again. An absent or unreadable marker means off. On a running
 host the marker takes effect without a restart for new work: creating it lets the
 next successful turn start a spare, and deleting it means no spare is started,
-adopted or renewed from then on. Spares already pooled are not stopped by deleting
+adopted or renewed from then on. Both spawning a spare and adopting a pooled one
+check the marker again right after reading `git status`, just before they spawn or
+adopt, so deleting it also stops a start or adoption still waiting on `git status`.
+Spares already pooled are not stopped by deleting
 the file alone: each retires when its task's next turn launches (cold), when its 10-minute
 idle timer expires, or when the host stops (restarting `pandacode serve` retires
 them at once; on desktop, turning the Settings switch off calls `disable_all`,
