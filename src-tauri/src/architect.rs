@@ -3922,6 +3922,69 @@ mod team_meta_heal_tests {
         assert!(store.team_meta_usable(), "an unrelated failure leaves the tracker usable");
     }
 
+    /// A drop that itself fails must leave the process able to heal on a later save, not
+    /// disabled with the dangling triggers still attached.
+    #[test]
+    fn a_failed_trigger_drop_keeps_the_process_healable() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+        // Refuse the DROP TRIGGER the heal needs, so `drop_dangling` reports an error.
+        store.db.execute_batch(
+            "CREATE TRIGGER refuse_trigger_drop BEFORE DELETE ON sqlite_master BEGIN SELECT RAISE(IGNORE); END;",
+        ).unwrap_or(());
+
+        team.status = "waiting".into();
+        let first = save(&store, &mut team);
+
+        // Whatever happened, the process must not be left disabled with live dangling triggers:
+        // either the heal succeeded (trackers off, triggers gone) or it failed cleanly and the
+        // next save still runs the savepoint path.
+        let triggers: i64 = store.db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('architect_team_meta_insert','architect_team_meta_update_clear','architect_team_meta_update_sync')",
+            [], |row| row.get(0)).unwrap();
+        if first.is_err() {
+            assert!(store.team_meta_usable(), "a failed heal leaves the tracker usable so the next save retries");
+            assert_eq!(triggers, 3, "the triggers are still attached");
+        } else {
+            assert!(!store.team_meta_usable());
+            assert_eq!(triggers, 0, "the heal only completes once the triggers are gone");
+        }
+    }
+
+    /// The heal is per process. A reopen must rebuild the tracker from the snapshots, so the
+    /// status written while trackers were off is visible again.
+    #[test]
+    fn reopening_rebuilds_the_tracker_after_a_heal() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-heal-reopen-{}", crate::storage::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        let sid;
+        {
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+            let mut team = new_team(sid.clone(), config());
+            team.status = "running".into();
+            save(&store, &mut team).unwrap();
+            store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+            team.status = "completed".into();
+            save(&store, &mut team).expect("the heal persists the snapshot without the tracker");
+            assert!(!store.team_meta_usable());
+        }
+        let store = Store::open(&path).unwrap();
+        assert!(store.team_meta_usable(), "a reopen rebuilds the trackers");
+        let status: Option<String> = store.db
+            .query_row("SELECT status FROM architect_team_meta WHERE session_id=?1", [&sid], |row| row.get(0))
+            .ok();
+        assert_eq!(status.as_deref(), Some("completed"), "the tracker is resynced from the snapshot");
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     /// `save` is called inside a caller's transaction on the warm-up paths, so the heal has to
     /// work there too: dropping the triggers and retrying must not need a fresh connection.
     #[test]
