@@ -812,7 +812,7 @@ const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a rep
 const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
 
 /// Wishes for PandaCode itself become a card the user decides on; the agent never sends one.
-const FEATURE_REQUESTS: &str = "\n\nFeature requests: when the user wants something PandaCode itself does not do (a feature of the app, not a change to their project), call pandacode_suggest_feature once with a short title and a description of the problem and your proposal. The user decides on the card shown in this thread; never open an issue or send anything yourself.";
+const FEATURE_REQUESTS: &str = "\n\nFeature requests: when the user wants something PandaCode itself does not do (a feature of the app, not a change to their project), call pandacode_suggest_feature once with a short title and a description of the problem and your proposal. The user decides on the card shown in this thread; write it in general terms about PandaCode, with no file paths, code, names or secrets from the user's project (the text goes to GitHub if the user sends it); never open an issue or send anything yourself.";
 
 /// Harnesses without a system prompt hear the app instructions again every few turns.
 const INSTRUCTION_REMINDER_EVERY: i64 = 8;
@@ -836,6 +836,7 @@ mod instruction_tests {
         assert!(text.contains("wait for every subagent you started"), "a harness whose turn end closes its subagents waits for them");
         let chat = app_instructions(true, false);
         assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:") && chat.contains("pandacode_suggest_feature"));
+        assert!(text.contains("no file paths, code, names or secrets from the user's project"), "feature requests stay general");
     }
 
     #[test]

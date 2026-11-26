@@ -191,13 +191,21 @@ pub async fn feature_requests_enabled(app: tauri::AppHandle) -> Result<bool> {
 }
 #[tauri::command]
 pub async fn feature_requests_set_enabled(app: tauri::AppHandle, enabled: bool) -> Result<()> {
-    crate::blocking(move || set_enabled(&data_dir(&app)?, enabled)).await
+    let emit_app = app.clone();
+    crate::blocking(move || switch(&data_dir(&app)?, enabled, |payload| { let _ = emit_app.emit(EVENT, payload); })).await
+}
+
+/// Saves the switch, then tells every thread to read it again (no session id).
+fn switch(dir: &Path, enabled: bool, emit: impl FnOnce(Value)) -> Result<()> {
+    set_enabled(dir, enabled)?;
+    emit(json!({}));
+    Ok(())
 }
 
 // ---- Agent tool ----
 
 pub fn catalog() -> Vec<Value> {
-    vec![spec("suggest_feature", "Suggest a feature of PandaCode itself, when the user wants something the app does not do (an app feature, not a change to their project). PandaCode shows the user a card in this thread; the user decides whether to send it to the PandaCode project, do it themselves or hide it. Call it once per idea. Never open an issue or send anything yourself.", json!({
+    vec![spec("suggest_feature", "Suggest a feature of PandaCode itself, when the user wants something the app does not do (an app feature, not a change to their project). PandaCode shows the user a card in this thread; the user decides whether to open a GitHub issue draft with this text, do it themselves or hide it. Call it once per idea. Write in general terms about PandaCode: no file paths, code, names or secrets from the user\'s project. Never open an issue or send anything yourself.", json!({
         "title":{"type":"string","maxLength":MAX_TITLE,"description":"Short name of the feature."},
         "description":{"type":"string","maxLength":MAX_DESCRIPTION,"description":"The problem the user has and what you propose."},
     }), &["title", "description"])]
@@ -333,6 +341,18 @@ mod tests {
         assert!(enabled(&t.0).unwrap());
         fs::write(t.0.join(FILE), "not json").unwrap();
         assert!(enabled(&t.0).is_err() && add(&t.0, SID, "t", "d").is_err());
+    }
+
+    #[test]
+    fn the_switch_tells_every_thread_and_stays_quiet_when_it_fails() {
+        let t = temp();
+        let mut sent = Vec::new();
+        switch(&t.0, false, |payload| sent.push(payload)).unwrap();
+        assert_eq!(sent, vec![json!({})]);
+        assert!(!enabled(&t.0).unwrap());
+        fs::write(t.0.join(FILE), "not json").unwrap();
+        assert!(switch(&t.0, true, |payload| sent.push(payload)).is_err());
+        assert_eq!(sent.len(), 1, "no event without a saved change");
     }
 
     #[test]

@@ -96,7 +96,7 @@ const switchRow = (id: string, title: string, detail: string, checked: boolean) 
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
 
-const FEATURE_REQUEST_DETAIL = 'When you ask for something PandaCode can’t do yet, an agent can offer a card to send it as a feature request. Nothing is sent until you submit it on GitHub. The Feedback button stays available.';
+const FEATURE_REQUEST_DETAIL = 'When you ask for something PandaCode can’t do yet, an agent can offer a card to turn it into a feature request. Send request opens a draft on GitHub in your browser with the text in the link; it becomes an issue only when you submit it there. The Feedback button stays available.';
 
 /** The Feature request cards switch: its state lives in the app, so the row draws once that answers. */
 function mountFeatureRequestSettings(host: HTMLElement): () => void {

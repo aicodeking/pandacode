@@ -1,7 +1,8 @@
 import { escape, icon, isImeKey } from './dom.ts';
 
 /* Feature request cards: an agent that notices a missing feature leaves a card above the prompt. The user sends it as a
- * GitHub issue draft (nothing is sent until they submit it there), turns it into a task, edits it, or hides it. */
+ * GitHub issue draft (the text travels in the link the browser opens; it is an issue only once they submit it there),
+ * turns it into a task, edits it, or hides it. */
 
 export type FeatureRequest = { id: string; sessionId: string; title: string; description: string; createdAt: number };
 
@@ -10,8 +11,8 @@ export const DESCRIPTION_LIMIT = 4000;
 /** Longest URL sent to the browser; GitHub and browsers refuse much more. */
 export const FEATURE_REQUEST_URL_LIMIT = 7000;
 const ISSUE_BASE = 'https://github.com/aicodeking/pandacode/issues/new?template=feature_request.yml';
-const SENT = 'Opened a draft on GitHub. Submit it there to send it.';
-const SENT_SHORTENED = 'Opened a draft on GitHub with a shortened description. Submit it there to send it.';
+const SENT = 'Opened a draft on GitHub with this text. It becomes an issue when you submit it there.';
+const SENT_SHORTENED = 'Opened a draft on GitHub with a shortened description. It becomes an issue when you submit it there.';
 const NO_PROJECT = 'Open a project to create a task.';
 
 const draftUrl = (title: string, problem: string): string =>
@@ -77,14 +78,14 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
   const body = element.querySelector<HTMLElement>('.fr-body')!, live = element.querySelector<HTMLElement>('.fr-live')!;
 
   let enabled = true, loadedFor = '', requested = '\0', items: FeatureRequest[] = [];
-  let shownId = '', listOpen = false, textOpen = false, editing: Edit | null = null;
+  let shownId = '', listOpen = false, editing: Edit | null = null;
   let busy = false, error = '', invalid: Field | null = null, enter = false, loads = 0, disposed = false;
   let feedbackDraft: Edit = { title: '', description: '' };
   let unlisten: (() => void) | undefined;
 
   const shown = (): FeatureRequest | undefined => items.find(item => item.id === shownId);
   const hasProject = (): boolean => host.canCreateTask();
-  const reset = (): void => { listOpen = false; textOpen = false; editing = null; busy = false; error = ''; invalid = null; };
+  const reset = (): void => { listOpen = false; editing = null; busy = false; error = ''; invalid = null; };
 
   function apply(sessionId: string, on: boolean, next: FeatureRequest[]): void {
     const sameThread = loadedFor === sessionId;
@@ -129,15 +130,14 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
         <span class="fr-count" data-fr-count="title" ${count(edit.title, TITLE_LIMIT, 100) ? '' : 'hidden'}>${count(edit.title, TITLE_LIMIT, 100)}</span>${alert('title')}
         <textarea class="fr-input fr-area" data-fr="description" data-fr-field="description" rows="${rowsFor(edit.description)}" maxlength="${DESCRIPTION_LIMIT}" aria-label="Description" ${invalid === 'description' ? `aria-invalid="true" aria-describedby="fr-error-description"` : ''} spellcheck="true">${escape(edit.description)}</textarea>
         <span class="fr-count" data-fr-count="description" ${count(edit.description, DESCRIPTION_LIMIT, 3600) ? '' : 'hidden'}>${count(edit.description, DESCRIPTION_LIMIT, 3600)}</span>${alert('description')}`
-      : `<h3 class="fr-title" id="${titleId}">${escape(item.title)}</h3>
-        <p class="fr-text${textOpen ? ' is-open' : ''}">${escape(item.description)}</p>
-        <button type="button" class="fr-more" data-fr="more" data-fr-action="more" aria-expanded="${textOpen}" ${textOpen ? '' : 'hidden'}>${textOpen ? 'Show less' : 'Show more'}</button>`;
+      : `<h3 class="fr-title" id="${titleId}" tabindex="-1" data-fr="title">${escape(item.title)}</h3>
+        <p class="fr-text" tabindex="0">${escape(item.description)}</p>`;
     const off = busy ? 'disabled' : '';
     const noProject = !hasProject();
     return `<article class="fr-card" aria-labelledby="${titleId}" aria-busy="${busy}" data-request="${escape(item.id)}">
       <div class="fr-eyebrow">${icon('chat', 'fr-mark')}<span>Suggested feature request</span></div>
       ${content}
-      <p class="fr-hint">Send request opens a draft on GitHub. You submit it there.</p>
+      <p class="fr-hint">Send request opens a draft on GitHub in your browser, with this text in the link. It becomes an issue only when you submit it there.</p>
       <div class="fr-actions">
         <span class="fr-group"><button type="button" class="fr-ghost" data-fr="edit" data-fr-action="edit" ${off}>${edit ? 'Done' : 'Edit'}</button><button type="button" class="fr-ghost fr-trash" data-fr="trash" data-fr-action="trash" aria-label="Don't show feature requests again" title="Don't show feature requests again" ${off}>${icon('trash')}</button></span>
         <span class="fr-group fr-group-main"><button type="button" class="fr-raised" data-fr="do" data-fr-action="do" ${noProject ? `aria-disabled="true" aria-describedby="fr-no-project" title="${NO_PROJECT}"` : ''} ${off}>${busy ? '<span class="support-spinner" aria-hidden="true"></span>Creating…' : 'Do it myself'}</button><button type="button" class="fr-send" data-fr="send" data-fr-action="send" ${off}>Send request${icon('external')}</button></span>
@@ -180,17 +180,8 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
         if (focus.start !== null && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) target.setSelectionRange(focus.start, focus.end ?? focus.start);
       }
     }
-    measure();
     if (enter) { enter = false; const card = body.querySelector<HTMLElement>('.fr-card'); if (card) host.settle(card); }
   }
-
-  /** Show more only when the text is cut. */
-  function measure(): void {
-    const text = body.querySelector<HTMLElement>('.fr-text:not(.is-open)'), more = body.querySelector<HTMLButtonElement>('.fr-more');
-    if (text && more) more.hidden = text.scrollHeight <= text.clientHeight + 1;
-  }
-  const resize = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => { if (!disposed) measure(); });
-  resize?.observe(element);
 
   function focusField(field: Field): void {
     body.querySelector<HTMLElement>(`[data-fr-field="${field}"]`)?.focus({ preventScroll: true });
@@ -201,7 +192,7 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
     if (!editing) return { title: item.title, description: item.description };
     const { title, description } = editing;
     const missing = requestProblem(title, description);
-    if (missing) { invalid = title.trim() ? 'description' : 'title'; error = ''; render(); focusField(invalid); return null; }
+    if (missing) { invalid = title.trim() ? 'description' : 'title'; error = ''; busy = false; render(); focusField(invalid); return null; }
     const next = { title: title.trim(), description: description.trim() };
     if (next.title === item.title && next.description === item.description) return next;
     try {
@@ -209,7 +200,7 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
       items = items.map(entry => entry.id === item.id ? saved : entry);
       return next;
     } catch {
-      error = 'Couldn’t save your edit. Try again.'; render();
+      error = 'Couldn’t save your edit. Try again.'; busy = false; render();
       return null;
     }
   }
@@ -228,37 +219,42 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
   async function send(): Promise<void> {
     const item = shown();
     if (!item || busy) return;
-    error = '';
-    const content = await commit(item);
-    if (!content) return;
-    const draft = issueDraft(content.title, content.description);
-    try { await host.openUrl(draft.url); }
-    catch {
-      host.notify('Couldn’t open your browser.', [{ label: 'Copy text', run: () => { void host.copy(`${content.title}\n\n${content.description}`).then(() => host.notify('Copied.')); } }]);
-      return;
-    }
-    host.notify(draft.shortened ? SENT_SHORTENED : SENT);
-    await remove(item.id);
+    busy = true; error = '';
+    try {
+      const content = await commit(item);
+      if (!content) return;
+      const draft = issueDraft(content.title, content.description);
+      try { await host.openUrl(draft.url); }
+      catch {
+        host.notify('Couldn’t open your browser.', [{ label: 'Copy text', run: () => { void host.copy(`${content.title}\n\n${content.description}`).then(() => host.notify('Copied.')); } }]);
+        return;
+      }
+      host.notify(draft.shortened ? SENT_SHORTENED : SENT);
+      await remove(item.id);
+    } finally { busy = false; }
   }
 
   async function doItMyself(): Promise<void> {
     const item = shown();
     if (!item || busy || !hasProject()) return;
-    error = '';
-    const content = await commit(item);
-    if (!content) return;
-    busy = true; render();
+    busy = true; error = '';
     try {
-      const task = await host.createTask(content.title, content.description);
-      busy = false;
-      host.notify(`Task created in ${task.project}`, [{ label: 'Open', run: () => host.openTask(task.id) }]);
-      await remove(item.id);
-    } catch (failure) {
-      busy = false;
-      const reason = failure instanceof Error ? failure.message : String(failure);
-      error = `Couldn’t create the task: ${reason.replace(/\.$/, '')}. Try again, or use Send request.`;
+      const content = await commit(item);
+      if (!content) return;
       render();
-    }
+      try {
+        const task = await host.createTask(content.title, content.description);
+        busy = false;
+        host.notify(`Task created in ${task.project}`, [{ label: 'Open', run: () => host.openTask(task.id) }]);
+        await remove(item.id);
+      } catch (failure) {
+        busy = false;
+        const reason = failure instanceof Error ? failure.message : String(failure);
+        error = `Couldn’t create the task: ${reason.replace(/\.$/, '')}. Try again, or use Send request.`;
+        render();
+        body.querySelector<HTMLElement>('[data-fr="do"]')?.focus({ preventScroll: true });
+      }
+    } finally { busy = false; }
   }
 
   async function switchOff(): Promise<void> {
@@ -297,13 +293,12 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[data-fr-action]') : null;
     if (!target || !body.contains(target)) return;
     switch (target.dataset.frAction) {
-      case 'more': textOpen = !textOpen; render(); break;
       case 'edit': void toggleEdit(); break;
       case 'trash': void switchOff(); break;
       case 'do': if (target.getAttribute('aria-disabled') !== 'true') void doItMyself(); break;
       case 'send': void send(); break;
       case 'queue': listOpen = !listOpen; render(); break;
-      case 'pick': shownId = target.dataset.request ?? shownId; reset(); render(); break;
+      case 'pick': shownId = target.dataset.request ?? shownId; reset(); render(); body.querySelector<HTMLElement>('.fr-title')?.focus({ preventScroll: true }); break;
     }
   });
 
@@ -327,7 +322,7 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
   element.addEventListener('keydown', event => {
     const target = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement ? event.target : null;
     if (!target || !editing || !target.dataset.frField || isImeKey(event)) return;
-    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void send(); }
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); if (!event.repeat) void send(); }
     else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); cancelEdit(); }
   });
 
@@ -335,7 +330,7 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
   function feedback(): void {
     const noProject = !hasProject();
     const dialog = host.dialog.open('Feedback', `<div class="fr-dialog">
-      <p class="fr-dialog-sub">Tell us what PandaCode is missing. Send request opens a draft on GitHub, where you submit it.</p>
+      <p class="fr-dialog-sub">Tell us what PandaCode is missing. Send request opens a draft on GitHub in your browser with this text in the link; it becomes an issue when you submit it there.</p>
       <label class="field-label" for="fr-dialog-title">Title</label>
       <input id="fr-dialog-title" data-fr-dialog="title" maxlength="${TITLE_LIMIT}" placeholder="What should PandaCode do?" autocomplete="off" spellcheck="true" value="${escape(feedbackDraft.title)}">
       <p class="fr-field-error" id="fr-dialog-error-title" hidden>Add a title</p>
@@ -372,11 +367,14 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
       feedbackDraft[field] = target.value;
       if (target.value.trim() && target.getAttribute('aria-invalid')) { target.removeAttribute('aria-invalid'); show(`error-${field}`); }
     });
+    let sending = false;
     const sendDialog = async (): Promise<void> => {
-      if (!check()) return;
+      if (sending || !check()) return;
+      sending = true;
       const draft = issueDraft(feedbackDraft.title, feedbackDraft.description);
       try { await host.openUrl(draft.url); }
       catch {
+        sending = false;
         const text = `${feedbackDraft.title.trim()}\n\n${feedbackDraft.description.trim()}`;
         host.notify('Couldn’t open your browser.', [{ label: 'Copy text', run: () => { void host.copy(text).then(() => host.notify('Copied.')); } }]);
         return;
@@ -420,9 +418,8 @@ export function mountFeatureRequests(host: FeatureRequestsHost): FeatureRequests
     sync() {
       const sessionId = host.sessionId();
       if (sessionId !== requested) { requested = sessionId; loadedFor = ''; reset(); items = []; shownId = ''; render(); void load(); }
-      else measure();
     },
     feedback,
-    dispose() { disposed = true; unlisten?.(); resize?.disconnect(); element.remove(); },
+    dispose() { disposed = true; unlisten?.(); element.remove(); },
   };
 }

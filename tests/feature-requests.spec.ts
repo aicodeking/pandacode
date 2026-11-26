@@ -4,6 +4,8 @@ const prompt = (page: Page) => page.getByRole('textbox', { name: 'Message your c
 const card = (page: Page) => page.locator('#feature-requests .fr-card');
 const send = (page: Page) => page.getByRole('button', { name: 'Send request', exact: true });
 const toast = (page: Page) => page.locator('#toast');
+/** A toast hides on a timer unless the pointer rests on it, so a test that reads it first points at its button: under load the checks in between can outlast the timer. */
+const hold = (page: Page, name: string) => toast(page).getByRole('button', { name }).hover();
 test.beforeEach(() => { test.slow(); });
 
 const TITLE = 'Pin a thread to the top of the sidebar';
@@ -45,7 +47,7 @@ test('feature request card shows the agent text, a hint and one primary action',
   await expect(page.getByRole('region', { name: 'Feature request suggestion' })).toBeVisible();
   await expect(card(page).getByRole('heading', { name: TITLE })).toBeVisible();
   await expect(card(page)).toContainText('Suggested feature request');
-  await expect(card(page)).toContainText('Send request opens a draft on GitHub. You submit it there.');
+  await expect(card(page)).toContainText('Send request opens a draft on GitHub in your browser, with this text in the link. It becomes an issue only when you submit it there.');
   for (const name of ['Edit', 'Do it myself', 'Send request']) await expect(card(page).getByRole('button', { name, exact: true })).toBeVisible();
   await expect(card(page).getByRole('button', { name: 'Don\'t show feature requests again' })).toBeVisible();
   expect(await opened(page)).toEqual([]);
@@ -109,17 +111,16 @@ test('feature request Send request opens the GitHub draft with the edited text a
   expect(await calls(page, 'feature_request_update')).toHaveLength(1);
   expect(await calls(page, 'feature_request_dismiss')).toEqual([{ id: 'feature-request-1' }]);
   await expect(card(page)).toHaveCount(0);
-  await expect(toast(page)).toContainText('Opened a draft on GitHub. Submit it there to send it.');
+  await expect(toast(page)).toContainText('Opened a draft on GitHub with this text. It becomes an issue when you submit it there.');
   await expect(prompt(page)).toBeFocused();
 });
 
 test('feature request Send request keeps the card and offers the text when the browser does not open', async ({ page }) => {
   await open(page, '?featurerequest', { openFails: true });
   await send(page).click();
-  await expect(toast(page)).toContainText('Couldn’t open your browser.');
+  await toast(page).filter({ hasText: 'Couldn’t open your browser.' }).getByRole('button', { name: 'Copy text' }).click();
   await expect(card(page)).toBeVisible();
   expect(await calls(page, 'feature_request_dismiss')).toEqual([]);
-  await toast(page).getByRole('button', { name: 'Copy text' }).click();
   await expect.poll(() => page.evaluate(() => (window as any).__clipboard)).toContain(TITLE);
 });
 
@@ -159,6 +160,7 @@ test('feature request Do it myself checks an empty description first', async ({ 
 test('feature request trash turns the cards off, Settings shows it and the switch turns them back on', async ({ page }) => {
   await open(page);
   await card(page).getByRole('button', { name: 'Don\'t show feature requests again' }).click();
+  await hold(page, 'Settings');
   await expect(card(page)).toHaveCount(0);
   await expect(toast(page)).toContainText('Feature request cards turned off');
   expect(await calls(page, 'feature_requests_set_enabled')).toEqual([{ enabled: false }]);
@@ -196,31 +198,60 @@ test('feature request cards queue behind the one being read', async ({ page }) =
   await expect(queue).toHaveAttribute('aria-expanded', 'false');
   await queue.click();
   await page.getByRole('button', { name: 'Third idea' }).click();
-  await expect(card(page).getByRole('heading', { name: 'Third idea' })).toBeVisible();
+  await expect(card(page).getByRole('heading', { name: 'Third idea' })).toBeFocused();
   await expect(page.getByRole('button', { name: '2 more feature requests' })).toBeVisible();
   await send(page).click();
   await expect(card(page).getByRole('heading', { name: TITLE })).toBeVisible();
   await expect(page.getByRole('button', { name: '1 more feature request', exact: true })).toBeVisible();
 });
 
-test('feature request text beyond three lines gets Show more', async ({ page }) => {
+test('feature request shows the whole text before Send, in a scroll area with no Show more', async ({ page }) => {
   await open(page);
-  await page.evaluate(() => (window as any).__previewFeatureRequest('session-1', 'Long one', Array.from({ length: 14 }, (_, index) => `Line ${index + 1} of a long description.`).join('\n')));
-  await card(page).getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.keyboard.press('Escape');
-  await queueFirstToLong(page);
-  const more = card(page).getByRole('button', { name: 'Show more', exact: true });
-  await expect(more).toBeVisible();
-  await more.click();
-  await expect(card(page).getByRole('button', { name: 'Show less', exact: true })).toHaveAttribute('aria-expanded', 'true');
-  const text = card(page).locator('.fr-text');
-  expect(await text.evaluate(node => node.clientHeight)).toBeLessThanOrEqual(10 * 1.4 * 16 + 2);
-});
-
-async function queueFirstToLong(page: Page): Promise<void> {
+  const lines = Array.from({ length: 30 }, (_, index) => `Line ${index + 1} of a long description.`);
+  await suggest(page, 'session-1', 'Long one', lines.join('\n'));
   await page.getByRole('button', { name: '1 more feature request', exact: true }).click();
   await page.getByRole('button', { name: 'Long one' }).click();
-}
+  const text = card(page).locator('.fr-text');
+  await expect(text).toContainText('Line 30 of a long description.');
+  expect(await text.evaluate(node => node.textContent)).toBe(lines.join('\n'));
+  const box = await text.evaluate(node => ({ client: node.clientHeight, scroll: node.scrollHeight, overflow: getComputedStyle(node).overflowY }));
+  expect(box.overflow).toBe('auto');
+  expect(box.scroll).toBeGreaterThan(box.client);
+  expect(box.client).toBeGreaterThan(3 * 1.4 * 16);
+  await expect(card(page).getByRole('button', { name: /^Show (more|less)$/ })).toHaveCount(0);
+  await text.focus();
+  await page.keyboard.press('End');
+  expect(await text.evaluate(node => node.scrollTop)).toBeGreaterThan(0);
+});
+
+test('feature request clicks and Ctrl+Enter repeated at once open one draft and make one task', async ({ page }) => {
+  await open(page);
+  await card(page).getByRole('button', { name: 'Edit', exact: true }).click();
+  await card(page).getByRole('textbox', { name: 'Title' }).fill('Edited once');
+  await page.evaluate(() => {
+    const area = document.querySelector<HTMLElement>('#feature-requests textarea')!;
+    for (const repeat of [false, false, true]) area.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, repeat, bubbles: true, cancelable: true }));
+  });
+  await expect(card(page)).toHaveCount(0);
+  expect(await opened(page)).toHaveLength(1);
+  expect(await calls(page, 'feature_request_update')).toHaveLength(1);
+  expect(await calls(page, 'feature_request_dismiss')).toHaveLength(1);
+});
+
+test('feature request double Send request and double Do it myself act once', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => { const button = document.querySelector<HTMLButtonElement>('#feature-requests [data-fr="send"]')!; button.click(); button.click(); });
+  await expect(card(page)).toHaveCount(0);
+  expect(await opened(page)).toHaveLength(1);
+  await suggest(page, 'session-1', 'Again', 'A second card.');
+  await expect(card(page).getByRole('heading', { name: 'Again' })).toBeVisible();
+  await card(page).getByRole('button', { name: 'Edit', exact: true }).click();
+  await card(page).getByRole('textbox', { name: 'Title' }).fill('Again, edited');
+  await page.evaluate(() => { const button = document.querySelector<HTMLButtonElement>('#feature-requests [data-fr="do"]')!; button.click(); button.click(); });
+  await expect(card(page)).toHaveCount(0);
+  expect(await calls(page, 'create_board_task')).toHaveLength(1);
+  expect(await calls(page, 'feature_request_update')).toHaveLength(1);
+});
 
 test('feature request Feedback opens an empty dialog and sends or cancels it', async ({ page }) => {
   await open(page, '');
@@ -230,7 +261,7 @@ test('feature request Feedback opens an empty dialog and sends or cancels it', a
   await page.keyboard.press('Enter');
   const dialog = page.getByRole('dialog', { name: 'Feedback' });
   await expect(dialog).toBeVisible();
-  await expect(dialog).toContainText('Send request opens a draft on GitHub, where you submit it.');
+  await expect(dialog).toContainText('Send request opens a draft on GitHub in your browser with this text in the link; it becomes an issue when you submit it there.');
   const title = dialog.getByRole('textbox', { name: 'Title' }), details = dialog.getByRole('textbox', { name: 'Details' });
   await expect(title).toHaveValue('');
   await expect(details).toHaveValue('');
@@ -255,7 +286,7 @@ test('feature request Feedback opens an empty dialog and sends or cancels it', a
   const url = new URL((await opened(page))[0]);
   expect(url.searchParams.get('title')).toBe('Faster search');
   expect(url.searchParams.get('problem')).toBe('Search should answer while I type.');
-  await expect(toast(page)).toContainText('Opened a draft on GitHub. Submit it there to send it.');
+  await expect(toast(page)).toContainText('Opened a draft on GitHub with this text. It becomes an issue when you submit it there.');
   await feedback.click();
   await expect(title).toHaveValue('');
   await title.fill('Make it a task');
@@ -282,7 +313,7 @@ test('feature request Settings switch is on by default and describes what it doe
   const settings = page.getByRole('region', { name: 'Settings', exact: true });
   await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
   await expect(settings.getByRole('checkbox', { name: 'Feature request cards' })).toBeChecked();
-  await expect(settings.locator('#settings-panel-agents')).toContainText('Nothing is sent until you submit it on GitHub');
+  await expect(settings.locator('#settings-panel-agents')).toContainText('it becomes an issue only when you submit it there');
 });
 
 const PNG = process.env.FR_PNG_DIR;

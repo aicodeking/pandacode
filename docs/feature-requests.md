@@ -1,20 +1,24 @@
 # Feature requests
 
 An agent that notices PandaCode is missing something can leave a card above the prompt
-(`pandacode_suggest_feature`, title and description). The user decides; nothing is sent
-anywhere by the app.
+(`pandacode_suggest_feature`, title and description). The user decides; the app itself makes
+no network request. Send request opens a draft on GitHub in the browser, and the text is in
+that link.
 
 ## What you see
 
 - **The card** (`src/feature-requests.ts`, `src/feature-requests.css`): "Suggested feature request",
-  the agent's title and text (three lines, then Show more), and a line saying that Send request
-  opens a draft on GitHub which you submit there. It sits in `#feature-requests`, directly above
+  the agent's whole title and text (an area that scrolls past eight lines, so all of it can be
+  read before Send), and a line saying that Send request opens a draft on GitHub in the browser
+  with this text in the link, and that it becomes an issue only when you submit it there. It sits in `#feature-requests`, directly above
   `#approval-bar` in the composer area, and takes no height when there is no card.
 - **Send request** opens `issueUrl(title, description)` through `open_external_url`: GitHub's
   `feature_request.yml` form with the title and "What problem would this solve?" filled in and
   the proposal left to the user. The URL is cut at 7,000 characters (whole characters, ending in
-  an ellipsis; the toast says the description was shortened). The card goes away. If the browser
+  an ellipsis; the toast says the description was shortened). The card goes away. Clicks and
+  Ctrl+Enter that repeat while it works are ignored, so one draft opens. If the browser
   does not open, a toast offers Copy text and the card stays.
+- Choosing a card from the queue moves focus to that card's title.
 - **Do it myself** creates a pending task with `create_board_task` in the open task's project,
   with that task's agent and model, and hides the card. Without a project (a chat) the button is
   `aria-disabled` with a reason.
@@ -37,7 +41,8 @@ anywhere by the app.
 - Native (`src-tauri/src/feature_requests.rs`): storage in `feature-requests.json`, the tool,
   the commands `feature_requests_list`, `feature_request_update`, `feature_request_dismiss`,
   `feature_requests_enabled`, `feature_requests_set_enabled`, and the event
-  `feature-requests-changed` (`{ sessionId }`). Deleting a task deletes its requests.
+  `feature-requests-changed` (`{ sessionId }`; `{}` after the switch changes, so every thread
+  reads it again). Deleting a task deletes its requests.
 - Frontend: `mountFeatureRequests(host)` keeps one host element alive across composer redraws
   (`renderComposer` re-attaches it and calls `sync()`, which reloads when the thread changed).
   `main.ts` supplies the host (task creation, toasts, dialog); `settings.ts` draws the switch.
@@ -47,9 +52,13 @@ anywhere by the app.
 
 ## Privacy
 
-No telemetry and no network traffic from the app: the draft opens in the user's browser and
-is sent only if they submit it on GitHub. The text of the request is the agent's; the app adds
-no version, system or path.
+No telemetry and no network request from the app itself. Send request opens the user's browser
+at a github.com address that carries the title and text (up to 7,000 characters), so GitHub
+receives that text when the page opens, before anything is submitted; it becomes an issue only
+when the user submits it there. The text is the agent's: the instruction and the tool ask for
+general terms about PandaCode, with no paths, code, names or secrets from the user's project,
+and the user can read all of it on the card and edit it first. The app adds no version, system
+or path. Turning a card into a task or hiding it sends nothing.
 
 ## Preview and tests
 
