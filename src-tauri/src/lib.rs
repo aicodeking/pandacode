@@ -85,6 +85,8 @@ mod slash_commands;
 mod recipes;
 mod schedules;
 mod storage;
+#[cfg(test)]
+mod storage_bench;
 mod subagent_state;
 mod support;
 mod task_controls;
@@ -402,11 +404,36 @@ mod concurrent_task_tests;
 fn reconcile_inactive_task(
     store: &Store,
     agents: &HashMap<String, RunningAgent>,
+    task: Session,
+) -> Session {
+    reconcile_inactive_task_with_active(store, agents, None, task)
+}
+
+/// `tasks` as a listing shows them: every working team is read once
+/// (`architect::active_team_session_ids`) instead of once per task; if that read fails, each task
+/// falls back to its own lookup.
+pub(crate) fn reconcile_listed(store: &Store, agents: &HashMap<String, RunningAgent>, tasks: Vec<Session>) -> Vec<Session> {
+    let active_teams = architect::active_team_session_ids(store).ok();
+    tasks
+        .into_iter()
+        .map(|task| reconcile_inactive_task_with_active(store, agents, active_teams.as_ref(), task))
+        .collect()
+}
+
+/// `reconcile_inactive_task` with the working teams already known (`None` reads this task's).
+fn reconcile_inactive_task_with_active(
+    store: &Store,
+    agents: &HashMap<String, RunningAgent>,
+    active_teams: Option<&HashSet<String>>,
     mut task: Session,
 ) -> Session {
+    let team_active = match active_teams {
+        Some(leads) => leads.contains(&task.id),
+        None => architect::is_active(store, &task.id),
+    };
     // Team coordination continues while the architect process is between review rounds.
     // The raw row remains idle for internal admission; the UI sees logical activity.
-    if architect::is_active(store, &task.id) {
+    if team_active {
         if !agents.contains_key(&task.id) {
             task.status = "waiting".into();
         }
@@ -524,11 +551,14 @@ struct AppState {
     shutdown: AtomicU8,
 }
 impl AppState {
+    /// `Store::workspace_root`, with only its rows read under the store lock: the folder checks
+    /// (`canonicalize`, `is_dir`, `.git`) touch the disk and run after the lock is released.
     fn root(&self, project_id: &str, session_id: Option<&str>) -> Result<PathBuf> {
-        self.store
-            .lock()
-            .map_err(|e| e.to_string())?
-            .workspace_root(project_id, session_id)
+        let (project_path, worktree) = {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            store.workspace_paths(project_id, session_id)?
+        };
+        storage::resolve_workspace_root(project_path, worktree)
     }
 }
 /// The largest prompt, steer or task description PandaCode accepts: large enough for long
@@ -626,39 +656,65 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
     skill_manager::projects_changed();
     project
 }
+fn check_project_teams(store: &Store, project_id: &str) -> Result<()> {
+    // Check the saved snapshots directly, even if tracker rows are missing.
+    let team_checks = "SELECT EXISTS(
+         SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+         WHERE s.project_id=?1
+           AND CASE WHEN json_valid(t.content, 6) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
+     ), EXISTS(
+         SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+         WHERE s.project_id=?1 AND NOT json_valid(t.content, 6)
+     )";
+    let (active_team, malformed_team): (bool, bool) = store
+        .db
+        .prepare_cached(team_checks)
+        .and_then(|mut query| query.query_row([project_id], |row| Ok((row.get(0)?, row.get(1)?))))
+        .map_err(|error| error.to_string())?;
+    if active_team {
+        return Err("Stop this project's architect teams first.".into());
+    }
+    if malformed_team {
+        return Err(
+            "Cannot remove this project: a saved architect team snapshot is malformed JSON.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn project_removal_sessions(
     agents: &HashMap<String, RunningAgent>,
     store: &Store,
     project_id: &str,
 ) -> Result<Vec<String>> {
-    for session_id in agents.keys() {
-        if store.session(session_id).ok().is_some_and(|session| session.project_id == project_id) {
-            return Err("Stop this project's agents first.".into());
+    {
+        use rusqlite::OptionalExtension;
+        // Only each running task's project is needed, never its full row.
+        let mut project_of = store
+            .db
+            .prepare_cached("SELECT project_id FROM sessions WHERE id=?1")
+            .map_err(|e| e.to_string())?;
+        for session_id in agents.keys() {
+            if project_of
+                .query_row([session_id], |r| r.get::<_, String>(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .is_some_and(|owner| owner == project_id)
+            {
+                return Err("Stop this project's agents first.".into());
+            }
         }
     }
-    let active_team: bool = store
-        .db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",
-            [project_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if active_team {
-        return Err("Stop this project's architect teams first.".into());
-    }
+    check_project_teams(store, project_id)?;
     let mut query = store
         .db
-        .prepare("SELECT id FROM sessions WHERE project_id=?1 ORDER BY id")
+        .prepare_cached("SELECT id FROM sessions WHERE project_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([project_id], |row| row.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
-    let mut ids = Vec::new();
-    for row in rows {
-        ids.push(row.map_err(|e| e.to_string())?);
-    }
-    Ok(ids)
+    rows.collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|e| e.to_string())
 }
 
 async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<()> {
@@ -686,7 +742,7 @@ async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<(
         let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
         let store = state.store.lock().map_err(|e| e.to_string())?;
         let mut final_ids = project_removal_sessions(&agents, &store, project_id)?;
-        let removed = store.remove_project(project_id);
+        let removed = remove_project_with_team_check(&store, project_id);
         if removed.is_ok() {
             for sid in session_ids {
                 if !final_ids.contains(&sid) {
@@ -711,6 +767,130 @@ async fn remove_project_in_state(state: &AppState, project_id: &str) -> Result<(
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
     remove_project_in_state(&state, &project_id).await
 }
+
+pub(crate) fn remove_project_with_team_check(store: &Store, project_id: &str) -> Result<()> {
+    store.in_transaction_immediate(|| {
+        check_project_teams(store, project_id)?;
+        store.remove_project(project_id)
+    })
+}
+
+#[cfg(test)]
+mod project_removal_tests {
+    use super::*;
+
+    fn assert_removal_rejects_untracked_team(snapshot: &str, expected: &str) {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(store.team_meta_usable());
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        store.db.execute(
+            "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+            [session.id.as_str(), snapshot],
+        ).unwrap();
+        assert_eq!(store.db.execute("DELETE FROM architect_team_meta", []).unwrap(), 1);
+
+        assert_eq!(remove_project_with_team_check(&store, &project.id), Err(expected.into()));
+        assert!(store.project(&project.id).is_ok());
+        let content: String = store.db.query_row(
+            "SELECT content FROM architect_teams WHERE session_id=?1",
+            [&session.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, snapshot);
+    }
+
+    #[test]
+    fn project_removal_rejects_untracked_running_team() {
+        assert_removal_rejects_untracked_team(
+            r#"{"status":"running"}"#,
+            "Stop this project's architect teams first.",
+        );
+    }
+
+    #[test]
+    fn project_removal_rejects_untracked_json5_team() {
+        assert_removal_rejects_untracked_team(
+            "{status:'running',}",
+            "Stop this project's architect teams first.",
+        );
+    }
+
+    #[test]
+    fn project_removal_allows_completed_json5_team_snapshots() {
+        use crate::storage::{id, SCHEMA_VERSION};
+
+        for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
+            let path = std::env::temp_dir().join(format!("pandacode-project-removal-{}.db", id()));
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                [session.id.as_str(), "{status:'completed',}"],
+            ).unwrap();
+            store.db.pragma_update(None, "user_version", version).unwrap();
+            drop(store);
+
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.team_meta_usable(), version == SCHEMA_VERSION);
+            let result = remove_project_with_team_check(&store, &project.id);
+            let project_preserved = store.project(&project.id).is_ok();
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(
+                result,
+                Ok(()),
+                "schema v{version}",
+            );
+            assert!(!project_preserved, "schema v{version}");
+        }
+    }
+
+    #[test]
+    fn project_removal_guards_active_and_malformed_team_snapshots() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        let save_snapshot = |content: &str| {
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)
+                 ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",
+                [session.id.as_str(), content],
+            ).unwrap();
+        };
+        for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
+            save_snapshot(snapshot);
+            assert_eq!(
+                remove_project_with_team_check(&store, &project.id),
+                Err("Stop this project's architect teams first.".into()),
+            );
+        }
+
+        let malformed = r#"{"status":"completed""#;
+        save_snapshot(malformed);
+        assert!(remove_project_with_team_check(&store, &project.id).unwrap_err().contains("malformed JSON"));
+        assert!(store.project(&project.id).is_ok());
+        assert!(store.session(&session.id).is_ok());
+        let content: String = store.db.query_row(
+            "SELECT content FROM architect_teams WHERE session_id=?1",
+            [&session.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, malformed);
+
+        save_snapshot(r#"{"status":"completed"}"#);
+        remove_project_with_team_check(&store, &project.id).unwrap();
+        assert!(store.project(&project.id).is_err());
+        assert!(store.session(&session.id).is_err());
+        assert!(!store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)",
+            [&session.id],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+}
+
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
     let (project, worktrees) = {
@@ -754,11 +934,8 @@ async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Resul
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    Ok(store
-        .sessions()?
-        .into_iter()
-        .map(|task| reconcile_inactive_task(&store, &agents, task))
-        .collect())
+    let tasks = store.sessions()?;
+    Ok(reconcile_listed(&store, &agents, tasks))
 }
 #[tauri::command]
 async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, enabled: bool) -> Result<Session> {
@@ -1452,10 +1629,8 @@ fn save_agent_activity(
                 return Err("Task settings are too large.".into());
             }
             db.db
-                .execute(
-                    "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-                    rusqlite::params![activity.session_id, data],
-                )
+                .prepare_cached("UPDATE sessions SET codex_settings=?2 WHERE id=?1")
+                .and_then(|mut update| update.execute(rusqlite::params![activity.session_id, data]))
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -1488,11 +1663,12 @@ fn save_agent_activity(
             // updates must not split that response. Reuse the persisted unique
             // tool index instead of keeping an unbounded per-turn ID cache.
             let starts_tool = match &activity.tool {
-                Some(tool) => db.db.query_row(
+                Some(tool) => db.db.prepare_cached(
                     "SELECT NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND tool_id=?2)",
+                ).and_then(|mut query| query.query_row(
                     rusqlite::params![activity.session_id, tool.id],
                     |row| row.get::<_, bool>(0),
-                ).map_err(|error| error.to_string())?,
+                )).map_err(|error| error.to_string())?,
                 None => true,
             };
             let flushed = if activity.kind == "error" || starts_tool {
@@ -1542,12 +1718,12 @@ fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: 
     if scope == "global" {
         return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
     }
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(project_id, None)?;
+    let root = state.root(project_id, None)?;
     Ok(recipes::project_dir(&root))
 }
 #[tauri::command]
 async fn recipes_list(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String) -> Result<Vec<recipes::Recipe>> {
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(&project_id, None).ok();
+    let root = state.root(&project_id, None).ok();
     let global = recipes_dir(&app, &state, &project_id, "global")?;
     blocking(move || Ok(recipes::list(root.as_deref(), &global))).await
 }
@@ -2755,8 +2931,14 @@ async fn launch_operation_admitted(
                 .lock()
                 .map(|error| error.is_none())
                 .unwrap_or(false);
-            if let Ok(task) = db.session(&session_id) {
-                if let Some(mut goal) = task.goal_state.filter(|g| g.status == "active") {
+            // Only the goal is read here, parsed as `Store::session` does (unreadable is none).
+            let saved_goal = db
+                .db
+                .prepare_cached("SELECT goal_state FROM sessions WHERE id=?1")
+                .and_then(|mut query| query.query_row([&session_id], |row| row.get::<_, Option<String>>(0)));
+            if let Ok(saved_goal) = saved_goal {
+                let saved_goal = goal_state::GoalState::parse(saved_goal.as_deref());
+                if let Some(mut goal) = saved_goal.filter(|g| g.status == "active") {
                     goal.status = "paused".into();
                     if db.record_goal(&session_id, Some(&goal)).is_ok() {
                         let mut e = event(&session_id, "goal", "");
@@ -2781,8 +2963,10 @@ async fn launch_operation_admitted(
             if successful {
                 if let Some(through) = context_handoff {
                     let resumed = db
-                        .session(&session_id)
-                        .is_ok_and(|task| task.resume_id.is_some_and(|id| !id.trim().is_empty()));
+                        .db
+                        .prepare_cached("SELECT resume_id FROM sessions WHERE id=?1")
+                        .and_then(|mut query| query.query_row([&session_id], |row| row.get::<_, Option<String>>(0)))
+                        .is_ok_and(|resume_id| resume_id.is_some_and(|id| !id.trim().is_empty()));
                     if resumed {
                         if let Err(error) = context_recovery::acknowledge(&db, &session_id, through)
                         {

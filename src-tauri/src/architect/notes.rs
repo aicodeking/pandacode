@@ -12,8 +12,32 @@ const LAUNCH_BUDGET: usize = 3 * 1024;
 /// Bytes of `key (author): preview` lines for the notes after those (full text through `get`).
 const PREVIEW_BUDGET: usize = 1024;
 
-/// Creates the side tables if missing (idempotent DDL; every team prompt calls this).
+/// Defines `TABLES` and `PRESENT_SQL` (how many of them exist) from one list of names.
+macro_rules! side_tables {
+    ($first:literal $(, $rest:literal)* $(,)?) => {
+        const TABLES: &[&str] = &[$first $(, $rest)*];
+        const PRESENT_SQL: &str = concat!("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('", $first, "'", $(",'", $rest, "'",)* ")");
+    };
+}
+// The side tables `ensure` creates: keep this list in step with its DDL.
+side_tables!(
+    "architect_notes",
+    "architect_mailbox_cursors",
+    "architect_message_replies",
+    "architect_brief_marks",
+    "architect_note_previews",
+    "architect_note_revisions",
+);
+
+/// The side tables, created on first use. Every team tool result asks, so once all of `TABLES`
+/// exist one cached lookup of the schema answers instead of running the DDL again.
 pub(in crate::architect) fn ensure(store: &Store) -> Result<()> {
+    let present: i64 = store.db.prepare_cached(PRESENT_SQL)
+        .and_then(|mut query| query.query_row([], |r| r.get(0)))
+        .map_err(|e| e.to_string())?;
+    if present == TABLES.len() as i64 {
+        return Ok(());
+    }
     store.db.execute_batch("CREATE TABLE IF NOT EXISTS architect_notes(parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,key TEXT NOT NULL,value TEXT NOT NULL,author TEXT NOT NULL,updated_at INTEGER NOT NULL,rev INTEGER NOT NULL,PRIMARY KEY(parent_session_id,key));
         CREATE TABLE IF NOT EXISTS architect_mailbox_cursors(parent_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,actor TEXT NOT NULL,message_id INTEGER NOT NULL DEFAULT 0,notes_seen INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(parent_session_id,actor));
         CREATE TABLE IF NOT EXISTS architect_message_replies(message_id INTEGER PRIMARY KEY REFERENCES architect_messages(id) ON DELETE CASCADE,reply_to INTEGER NOT NULL);
@@ -52,18 +76,27 @@ fn valid_key(key: &str) -> bool {
 /// a reused revision can never read as already seen. Teams from before the counter start past both
 /// their notes and what any member has seen.
 fn next_rev(store: &Store, parent: &str) -> Result<i64> {
-    let rev: i64 = store.db.query_row("SELECT 1+MAX(COALESCE((SELECT rev FROM architect_note_revisions WHERE parent_session_id=?1),0),COALESCE((SELECT MAX(rev) FROM architect_notes WHERE parent_session_id=?1),0),COALESCE((SELECT MAX(notes_seen) FROM architect_mailbox_cursors WHERE parent_session_id=?1),0))", [parent], |r| r.get(0)).map_err(|e| e.to_string())?;
-    store.db.execute("INSERT INTO architect_note_revisions(parent_session_id,rev) VALUES(?1,?2) ON CONFLICT(parent_session_id) DO UPDATE SET rev=excluded.rev", params![parent, rev]).map_err(|e| e.to_string())?;
+    let rev: i64 = store.db.prepare_cached("SELECT 1+MAX(COALESCE((SELECT rev FROM architect_note_revisions WHERE parent_session_id=?1),0),COALESCE((SELECT MAX(rev) FROM architect_notes WHERE parent_session_id=?1),0),COALESCE((SELECT MAX(notes_seen) FROM architect_mailbox_cursors WHERE parent_session_id=?1),0))")
+        .and_then(|mut query| query.query_row([parent], |r| r.get(0)))
+        .map_err(|e| e.to_string())?;
+    store.db.prepare_cached("INSERT INTO architect_note_revisions(parent_session_id,rev) VALUES(?1,?2) ON CONFLICT(parent_session_id) DO UPDATE SET rev=excluded.rev")
+        .and_then(|mut query| query.execute(params![parent, rev]))
+        .map_err(|e| e.to_string())?;
     Ok(rev)
 }
 fn write(store: &Store, parent: &str, key: &str, value: &str, author: &str) -> Result<()> {
     let rev = next_rev(store, parent)?;
-    store.db.execute("INSERT INTO architect_notes(parent_session_id,key,value,author,updated_at,rev) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(parent_session_id,key) DO UPDATE SET value=excluded.value,author=excluded.author,updated_at=excluded.updated_at,rev=excluded.rev", params![parent, key, value, author, storage::now(), rev]).map(|_| ()).map_err(|e| e.to_string())
+    store.db.prepare_cached("INSERT INTO architect_notes(parent_session_id,key,value,author,updated_at,rev) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(parent_session_id,key) DO UPDATE SET value=excluded.value,author=excluded.author,updated_at=excluded.updated_at,rev=excluded.rev")
+        .and_then(|mut query| query.execute(params![parent, key, value, author, storage::now(), rev]))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 /// Whether PandaCode itself wrote this reserved note: an agent's note under the key (from before it
 /// was reserved) is not the text turns point at.
 pub(in crate::architect) fn exists(store: &Store, parent: &str, key: &str) -> Result<bool> {
-    store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_notes WHERE parent_session_id=?1 AND key=?2 AND author=?3)", params![parent, key, APP], |r| r.get(0)).map_err(|e| e.to_string())
+    store.db.prepare_cached("SELECT EXISTS(SELECT 1 FROM architect_notes WHERE parent_session_id=?1 AND key=?2 AND author=?3)")
+        .and_then(|mut query| query.query_row(params![parent, key, APP], |r| r.get(0)))
+        .map_err(|e| e.to_string())
 }
 /// Writes a reserved note, or deletes PandaCode's own with `None`; an agent's note is left alone.
 pub(in crate::architect) fn set_reserved(store: &Store, parent: &str, key: &str, value: Option<&str>) -> Result<()> {
@@ -82,9 +115,13 @@ pub(in crate::architect) fn tool(store: &Store, parent: &str, author: &str, args
     match args.action.as_str() {
         "get" => {
             // The full text is seen now: a preview it stood behind no longer needs delivering.
-            store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3", params![parent, author, key]).map_err(|e| e.to_string())?;
+            store.db.prepare_cached("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3")
+                .and_then(|mut query| query.execute(params![parent, author, key]))
+                .map_err(|e| e.to_string())?;
             super::note_fetched(parent, author, &key);
-            let note = store.db.query_row("SELECT value,author,updated_at FROM architect_notes WHERE parent_session_id=?1 AND key=?2", params![parent, key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).optional().map_err(|e| e.to_string())?;
+            let note = store.db.prepare_cached("SELECT value,author,updated_at FROM architect_notes WHERE parent_session_id=?1 AND key=?2")
+                .and_then(|mut query| query.query_row(params![parent, key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))).optional())
+                .map_err(|e| e.to_string())?;
             // A long value is read a page at a time from `offset`.
             let note = note.map(|(value, author, at)| {
                 let (page, next) = escaped_page(&value, args.offset, PAGE_BYTES - GET_OVERHEAD);
@@ -116,14 +153,14 @@ pub(in crate::architect) fn tool(store: &Store, parent: &str, author: &str, args
 type Note = (String, String, String, i64, i64);
 /// Newest first, with `rev` after `after`.
 fn rows(store: &Store, parent: &str, after: i64) -> Result<Vec<Note>> {
-    let mut query = store.db.prepare("SELECT key,value,author,updated_at,rev FROM architect_notes WHERE parent_session_id=?1 AND rev>?2 ORDER BY rev DESC").map_err(|e| e.to_string())?;
+    let mut query = store.db.prepare_cached("SELECT key,value,author,updated_at,rev FROM architect_notes WHERE parent_session_id=?1 AND rev>?2 ORDER BY rev DESC").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![parent, after], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(|e| e.to_string())?;
     rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
 }
 /// One page of previews in key order, up to `PAGE_BYTES` serialized (at least one note). The cursor is
 /// the last key, so updating a note mid-listing never moves it past the cursor; briefs announce changes.
 fn list(store: &Store, parent: &str, cursor: Option<&str>) -> Result<Value> {
-    let mut query = store.db.prepare("SELECT key,substr(value,1,161),author,updated_at FROM architect_notes WHERE parent_session_id=?1 AND key>?2 ORDER BY key").map_err(|e| e.to_string())?;
+    let mut query = store.db.prepare_cached("SELECT key,substr(value,1,161),author,updated_at FROM architect_notes WHERE parent_session_id=?1 AND key>?2 ORDER BY key").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![parent, cursor.unwrap_or("")], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, i64>(3)?))).map_err(|e| e.to_string())?;
     let mut bytes = 0;
     let mut notes: Vec<(Value, String)> = Vec::new();
@@ -151,7 +188,7 @@ pub(in crate::architect) fn preview(text: &str) -> String {
 /// Notes the actor saw only as launch-brief previews and has not fetched, still unchanged:
 /// the next incremental brief delivers their full values.
 fn previewed(store: &Store, parent: &str, actor: &str) -> Result<Vec<Note>> {
-    let mut query = store.db.prepare("SELECT n.key,n.value,n.author,n.updated_at,n.rev FROM architect_note_previews p JOIN architect_notes n ON n.parent_session_id=p.parent_session_id AND n.key=p.key AND n.rev=p.rev WHERE p.parent_session_id=?1 AND p.actor=?2 ORDER BY n.rev DESC").map_err(|e| e.to_string())?;
+    let mut query = store.db.prepare_cached("SELECT n.key,n.value,n.author,n.updated_at,n.rev FROM architect_note_previews p JOIN architect_notes n ON n.parent_session_id=p.parent_session_id AND n.key=p.key AND n.rev=p.rev WHERE p.parent_session_id=?1 AND p.actor=?2 ORDER BY n.rev DESC").map_err(|e| e.to_string())?;
     let rows = query.query_map(params![parent, actor], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(|e| e.to_string())?;
     rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
 }
@@ -175,23 +212,30 @@ pub(super) struct Staged {
 
 /// Replaces the actor's pending previews with `notes` (key, rev).
 fn set_previewed(store: &Store, parent: &str, actor: &str, notes: &[(String, i64)]) -> Result<()> {
-    store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2", params![parent, actor]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2")
+        .and_then(|mut query| query.execute(params![parent, actor]))
+        .map_err(|e| e.to_string())?;
+    let mut insert = store.db.prepare_cached("INSERT INTO architect_note_previews(parent_session_id,actor,key,rev) VALUES(?1,?2,?3,?4)").map_err(|e| e.to_string())?;
     for (key, rev) in notes {
-        store.db.execute("INSERT INTO architect_note_previews(parent_session_id,actor,key,rev) VALUES(?1,?2,?3,?4)", params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
+        insert.execute(params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 /// Clears previews that were delivered in full in an incremental brief.
 fn clear_previewed(store: &Store, parent: &str, actor: &str, notes: &[(String, i64)]) -> Result<()> {
+    let mut delete = store.db.prepare_cached("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3 AND rev=?4").map_err(|e| e.to_string())?;
     for (key, rev) in notes {
-        store.db.execute("DELETE FROM architect_note_previews WHERE parent_session_id=?1 AND actor=?2 AND key=?3 AND rev=?4", params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
+        delete.execute(params![parent, actor, key, rev]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 fn mark_seen(store: &Store, parent: &str, actor: &str, newest: i64) -> Result<()> {
-    store.db.execute("INSERT INTO architect_mailbox_cursors(parent_session_id,actor,notes_seen) VALUES(?1,?2,?3) ON CONFLICT(parent_session_id,actor) DO UPDATE SET notes_seen=MAX(notes_seen,excluded.notes_seen)", params![parent, actor, newest]).map(|_| ()).map_err(|e| e.to_string())
+    store.db.prepare_cached("INSERT INTO architect_mailbox_cursors(parent_session_id,actor,notes_seen) VALUES(?1,?2,?3) ON CONFLICT(parent_session_id,actor) DO UPDATE SET notes_seen=MAX(notes_seen,excluded.notes_seen)")
+        .and_then(|mut query| query.execute(params![parent, actor, newest]))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Commits the `notes_seen` cursor and preview transitions after a brief's run ends cleanly.
@@ -210,7 +254,10 @@ pub(super) fn commit(store: &Store, parent: &str, staged: Staged) -> Result<()> 
 /// counted. Otherwise only notes changed since the actor last saw notes (and pending previews),
 /// with their values.
 pub(super) fn context(store: &Store, parent: &str, actor: &str, full: bool) -> Result<(String, Option<Staged>)> {
-    let seen: i64 = store.db.query_row("SELECT notes_seen FROM architect_mailbox_cursors WHERE parent_session_id=?1 AND actor=?2", params![parent, actor], |r| r.get(0)).optional().map_err(|e| e.to_string())?.unwrap_or(0);
+    let seen: i64 = store.db.prepare_cached("SELECT notes_seen FROM architect_mailbox_cursors WHERE parent_session_id=?1 AND actor=?2")
+        .and_then(|mut query| query.query_row(params![parent, actor], |r| r.get(0)).optional())
+        .map_err(|e| e.to_string())?
+        .unwrap_or(0);
     let mut notes = rows(store, parent, if full { 0 } else { seen })?;
     let mut pending = Vec::new();
     if !full {
@@ -327,3 +374,27 @@ pub(super) fn index(store: &Store, parent: &str) -> Result<String> {
 #[cfg(test)]
 #[path = "notes_tests.rs"]
 mod notes_tests;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_creates_every_side_table_once_and_one_count_sees_them() {
+        let path = std::env::temp_dir().join(format!("pandacode-notes-ensure-{}.db", storage::id()));
+        {
+            let store = Store::open(&path).unwrap();
+            store.db.execute_batch(&TABLES.iter().map(|table| format!("DROP TABLE IF EXISTS {table};")).collect::<String>()).unwrap();
+            let count = |store: &Store| store.db.query_row(PRESENT_SQL, [], |r| r.get::<_, i64>(0)).unwrap();
+            assert_eq!(count(&store), 0);
+            ensure(&store).unwrap();
+            assert_eq!(count(&store), TABLES.len() as i64);
+            store.db.execute_batch("DROP TABLE architect_note_revisions").unwrap();
+            ensure(&store).unwrap();
+            assert_eq!(count(&store), TABLES.len() as i64, "a missing table is recreated");
+        }
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+    }
+}

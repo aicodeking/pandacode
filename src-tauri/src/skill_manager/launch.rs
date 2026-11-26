@@ -37,15 +37,31 @@ mod tests {
         assert!(timeout >= 5000);
     }
     #[test]
-    fn skill_manager_read_only_launch_rejects_schema_drift() {
+    fn skill_manager_read_only_launch_accepts_current_and_newer_schemas() {
+        use crate::storage::SCHEMA_VERSION;
+
         let f = Fixture::new();
         let path = f.0.join("db.sqlite");
         let store = Store::open(&path).unwrap();
+        let project = store.add_project(&f.0).unwrap();
+        let task = store
+            .create_session(&project.id, "codex", "default", "ask")
+            .unwrap();
+        let expected = Some((project.id, project.path));
+        assert_eq!(session_project(&path, &task.id, None).unwrap(), expected);
+
         store
             .db
-            .pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION + 1)
+            .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
             .unwrap();
-        assert!(open(&path).err().unwrap().contains("Database schema"));
+        assert_eq!(session_project(&path, &task.id, None).unwrap(), expected);
+
+        store
+            .db
+            .pragma_update(None, "user_version", SCHEMA_VERSION - 1)
+            .unwrap();
+        let error = session_project(&path, &task.id, None).unwrap_err();
+        assert!(error.contains("is older than"), "{error}");
     }
     #[test]
     fn skill_manager_worktree_lookups_canonicalize_paths() {

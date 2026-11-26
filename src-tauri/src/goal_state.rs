@@ -14,6 +14,12 @@ pub struct GoalState {
 }
 
 impl GoalState {
+    /// A saved `goal_state` column: `None` when absent, unparsable or invalid.
+    pub(crate) fn parse(raw: Option<&str>) -> Option<Self> {
+        raw.and_then(|raw| serde_json::from_str::<Self>(raw).ok())
+            .filter(Self::is_valid)
+    }
+
     pub fn is_valid(&self) -> bool {
         !self.thread_id.is_empty()
             && self.thread_id.len() <= 200
@@ -43,4 +49,18 @@ pub enum GoalRequest {
     Pause,
     Resume,
     Clear,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GoalState;
+
+    #[test]
+    fn parse_keeps_only_valid_saved_goals() {
+        let valid = r#"{"threadId":"t","objective":"Ship","status":"active","tokenBudget":null,"tokensUsed":0,"timeUsedSeconds":0,"createdAt":1,"updatedAt":2}"#;
+        assert_eq!(GoalState::parse(Some(valid)).map(|goal| goal.objective), Some("Ship".into()));
+        assert!(GoalState::parse(None).is_none());
+        assert!(GoalState::parse(Some("not json")).is_none());
+        assert!(GoalState::parse(Some(&valid.replace("active", "unknown"))).is_none());
+    }
 }

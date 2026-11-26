@@ -17,6 +17,27 @@ fn a_listing_reads_a_teams_status_alone_and_survives_a_corrupt_row() {
 }
 
 #[test]
+fn a_listing_reads_every_working_team_once_with_the_same_answer_as_each_task() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let project = store.add_project(&std::env::temp_dir()).unwrap();
+    let contents = [Some(r#"{"status":"running"}"#), Some(r#"{"status":"waiting"}"#), Some(r#"{"status":"paused"}"#), Some("not json"), None];
+    let tasks = contents.map(|content| {
+        let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+        if let Some(content) = content {
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", rusqlite::params![task.id, content]).unwrap();
+        }
+        task.id
+    });
+    let leads = architect::active_team_session_ids(&store).unwrap();
+    assert_eq!(leads, tasks[..2].iter().cloned().collect::<HashSet<_>>());
+    for id in &tasks {
+        let one = reconcile_inactive_task(&store, &HashMap::new(), store.session(id).unwrap());
+        let batched = reconcile_inactive_task_with_active(&store, &HashMap::new(), Some(&leads), store.session(id).unwrap());
+        assert_eq!((one.status, one.task_stage), (batched.status, batched.task_stage));
+    }
+}
+
+#[test]
 fn account_switch_notes_preserve_the_marker_and_body_in_message_pages() {
     let store = Store::open(Path::new(":memory:")).unwrap();
     let project = store.add_project(&std::env::temp_dir()).unwrap();

@@ -1097,15 +1097,12 @@ fn worker_messages(
     let task = local_session_from(store, worker_session)?;
     let last_id: Option<i64> = store
         .db
-        .query_row(
-            "SELECT MAX(id) FROM messages WHERE session_id=?1",
-            [worker_session],
-            |row| row.get(0),
-        )
+        .prepare_cached("SELECT MAX(id) FROM messages WHERE session_id=?1")
+        .and_then(|mut statement| statement.query_row([worker_session], |row| row.get(0)))
         .map_err(|error| error.to_string())?;
     // Backward pages read newest first and are put back in order below.
     let (window, order) = if before_id.is_some() { ("<", "DESC") } else { (">", "") };
-    let mut query = store.db.prepare(&format!("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id{window}?2 ORDER BY m.id {order} LIMIT ?3")).map_err(|error| error.to_string())?;
+    let mut query = store.db.prepare_cached(&format!("SELECT m.id,m.session_id,m.role,CASE WHEN m.role='assistant' THEN COALESCE(substr(CAST(m.content AS BLOB),1,131076),X'') ELSE m.content END,m.created_at,m.turn_duration_ms,t.summary FROM messages m LEFT JOIN turn_changes t ON t.message_id=m.id WHERE m.session_id=?1 AND m.id{window}?2 ORDER BY m.id {order} LIMIT ?3")).map_err(|error| error.to_string())?;
     let rows = query
         .query_map(
             rusqlite::params![worker_session, before_id.unwrap_or(after_id), limit + 1],
@@ -1324,7 +1321,7 @@ fn team_states(db: &rusqlite::Connection, ids: &[&str]) -> Result<HashMap<String
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut query = db.prepare("SELECT session_id,COALESCE(json_extract(content,'$.status'),''),COALESCE(json_extract(content,'$.revision'),0),(SELECT COUNT(*) FROM json_each(content,'$.workers') w WHERE COALESCE(json_extract(w.value,'$.abandoned'),0)=0 AND json_extract(w.value,'$.status') IN ('queued','running','waiting')) FROM architect_teams WHERE session_id IN (SELECT value FROM json_each(?1))").map_err(|e| e.to_string())?;
+    let mut query = db.prepare_cached("SELECT session_id,COALESCE(json_extract(content,'$.status'),''),COALESCE(json_extract(content,'$.revision'),0),(SELECT COUNT(*) FROM json_each(content,'$.workers') w WHERE COALESCE(json_extract(w.value,'$.abandoned'),0)=0 AND json_extract(w.value,'$.status') IN ('queued','running','waiting')) FROM architect_teams WHERE session_id IN (SELECT value FROM json_each(?1))").map_err(|e| e.to_string())?;
     let rows = query
         .query_map([json!(ids).to_string()], |row| {
             Ok((row.get::<_, String>(0)?, TeamState { status: row.get(1)?, revision: row.get::<_, i64>(2)?.max(0) as u64, active_workers: row.get(3)? }))
@@ -1413,7 +1410,7 @@ async fn queue_team_settled(app: tauri::AppHandle, session_id: String, team: Tea
             return Ok(None);
         }
         let store = state.store.lock().map_err(|e| e.to_string())?;
-        let status: Option<String> = store.db.query_row("SELECT status FROM sessions WHERE id=?1 AND remote_device IS NULL", [&id], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+        let status: Option<String> = store.db.prepare_cached("SELECT status FROM sessions WHERE id=?1 AND remote_device IS NULL").and_then(|mut statement| statement.query_row([&id], |r| r.get(0)).optional()).map_err(|e| e.to_string())?;
         Ok(status.map(|status| settled_finished(&id, &status, &team)))
     })
     .await;
@@ -3426,6 +3423,27 @@ fn fit_project_icons(icons: impl IntoIterator<Item = (String, Option<String>)>) 
     json!({"icons": result})
 }
 
+/// A subscribed task's row: status, title, newest message id, last prompt time.
+type SubscribedRow = (String, String, i64, Option<i64>);
+
+/// The rows of the local tasks among `ids` (mirrors excluded), read in one query.
+fn subscribed_rows(db: &rusqlite::Connection, ids: &[String]) -> Result<HashMap<String, SubscribedRow>> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let wanted = serde_json::to_string(ids).map_err(|e| e.to_string())?;
+    let mut statement = db
+        .prepare_cached(
+            "SELECT s.id,s.status,s.title,(SELECT COALESCE(MAX(m.id),0) FROM messages m WHERE m.session_id=s.id),s.last_prompt_at
+             FROM sessions s WHERE s.id IN (SELECT value FROM json_each(?1)) AND s.remote_device IS NULL",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([wanted], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
+}
+
 /// Each subscribed task that exists here: its status as this window shows it, its newest
 /// message id (so the viewer pulls what it missed) and its title; then the ids that are
 /// not tasks here (deleted, or never were), so the viewer stops waiting on them.
@@ -3445,13 +3463,10 @@ fn subscribed_tasks(state: &AppState, ids: &[String]) -> Result<(Vec<Value>, Vec
     };
     let store = state.store.lock().map_err(|e| e.to_string())?;
     let teams = observed_team_states(&store.db, &ids.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let rows = subscribed_rows(&store.db, ids)?;
     let (mut tasks, mut missing) = (Vec::new(), Vec::new());
     for id in ids {
-        let row: Option<(String, String, i64, Option<i64>)> = store
-            .db
-            .query_row("SELECT status,title,(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1),last_prompt_at FROM sessions WHERE id=?1 AND remote_device IS NULL", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-            .optional()
-            .map_err(|e| e.to_string())?;
+        let row = rows.get(id).cloned();
         let Some((status, title, last_id, last_prompt_at)) = row else {
             missing.push(json!(id));
             continue;
@@ -3584,12 +3599,9 @@ fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Value> {
 
 fn message_exists(db: &rusqlite::Connection, session_id: &str, id: i64, older: bool) -> Result<bool> {
     let comparison = if older { "<" } else { ">" };
-    db.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id{comparison}?2)"),
-        rusqlite::params![session_id, id],
-        |row| row.get(0),
-    )
-    .map_err(|e| e.to_string())
+    db.prepare_cached(&format!("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND id{comparison}?2)"))
+        .and_then(|mut statement| statement.query_row(rusqlite::params![session_id, id], |row| row.get(0)))
+        .map_err(|e| e.to_string())
 }
 
 /// Legacy `afterId` page entrypoint used by mirror copies and tests.
@@ -3625,14 +3637,15 @@ pub(crate) struct PageRows {
 }
 
 pub(crate) fn read_page(db: &rusqlite::Connection, session_id: &str, page: MessagePaging) -> Result<PageRows> {
-    let title: String = db.query_row("SELECT title FROM sessions WHERE id=?1", [session_id], |r| r.get(0)).optional().map_err(|e| e.to_string())?.ok_or("Conversation not found.")?;
+    let title: String = db.prepare_cached("SELECT title FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([session_id], |r| r.get(0)).optional()).map_err(|e| e.to_string())?.ok_or(crate::storage::SESSION_NOT_FOUND)?;
     let (first_id, last_id): (Option<i64>, Option<i64>) = db
-        .query_row("SELECT MIN(id),MAX(id) FROM messages WHERE session_id=?1", [session_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .prepare_cached("SELECT MIN(id),MAX(id) FROM messages WHERE session_id=?1")
+        .and_then(|mut statement| statement.query_row([session_id], |row| Ok((row.get(0)?, row.get(1)?))))
         .map_err(|e| e.to_string())?;
     let mut statement = match page {
-        MessagePaging::After { .. } => db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id>?2 ORDER BY id LIMIT ?3"),
-        MessagePaging::Tail { .. } => db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2"),
-        MessagePaging::Before { .. } => db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3"),
+        MessagePaging::After { .. } => db.prepare_cached("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id>?2 ORDER BY id LIMIT ?3"),
+        MessagePaging::Tail { .. } => db.prepare_cached("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id DESC LIMIT ?2"),
+        MessagePaging::Before { .. } => db.prepare_cached("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 AND id<?2 ORDER BY id DESC LIMIT ?3"),
     }
     .map_err(|e| e.to_string())?;
     let mapped = match page {
@@ -3658,14 +3671,14 @@ pub(crate) fn read_page(db: &rusqlite::Connection, session_id: &str, page: Messa
 fn page_attachments(db: &rusqlite::Connection, session_id: &str, rows: &[Value]) -> Result<HashMap<i64, Vec<Value>>> {
     let ids = rows.iter().filter_map(|row| row["id"].as_i64());
     let (Some(low), Some(high)) = (ids.clone().min(), ids.max()) else { return Ok(HashMap::new()) };
-    let table: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments')", [], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let table: bool = db.prepare_cached("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments')").and_then(|mut statement| statement.query_row([], |row| row.get(0))).map_err(|e| e.to_string())?;
     let mut by_message: HashMap<i64, Vec<Value>> = HashMap::new();
     if !table {
         return Ok(by_message);
     }
     // The same rows and shape as attachments::message_attachment_rows, for every message at once.
     let mut statement = db
-        .prepare("SELECT message_id,id,kind,name,mime,bytes,width,height FROM message_attachments WHERE session_id=?1 AND message_id BETWEEN ?2 AND ?3 ORDER BY message_id,rowid")
+        .prepare_cached("SELECT message_id,id,kind,name,mime,bytes,width,height FROM message_attachments WHERE session_id=?1 AND message_id BETWEEN ?2 AND ?3 ORDER BY message_id,rowid")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map(rusqlite::params![session_id, low, high], |row| {

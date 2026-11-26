@@ -1,0 +1,194 @@
+--- a/src-tauri/src/agents_dock.rs
++++ b/src-tauri/src/agents_dock.rs
+@@ -84,2 +84,10 @@
+     let store = state.store.lock().map_err(|error| error.to_string())?;
++    snapshot_in_store(&store, &agents)
++}
++
++/// The dock listing from a locked store and agents map (`snapshot` holds both locks).
++pub(crate) fn snapshot_in_store(
++    store: &storage::Store,
++    agents: &HashMap<String, RunningAgent>,
++) -> crate::Result<AgentsDockSnapshot> {
+     let projects: HashMap<_, _> = store
+@@ -93,3 +101,3 @@
+         .map(|task| {
+-            let task = reconcile_inactive_task(&store, &agents, task);
++            let task = reconcile_inactive_task(store, agents, task);
+             let running = agents.get(&task.id);
+--- a/src-tauri/src/architect.rs
++++ b/src-tauri/src/architect.rs
+@@ -568,3 +568,15 @@
+ // teams; save and send only the changed rows if it ever shows.
+-fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
++/// Benchmark adapter: `next_action_state`'s own scheduler query, run as it runs it.
++#[cfg(test)]
++pub(crate) fn runnable_team_rows(db: &rusqlite::Connection) -> Result<Vec<((), String)>> {
++    let mut query=db.prepare("SELECT content FROM architect_teams WHERE json_valid(content) AND (json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting'))) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
++    let teams = query
++        .query_map([], |r| r.get::<_, String>(0))
++        .map_err(|e| e.to_string())?
++        .collect::<std::result::Result<Vec<_>, _>>()
++        .map_err(|e| e.to_string())?;
++    Ok(teams.into_iter().map(|content| ((), content)).collect())
++}
++
++pub(crate) fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
+     if let Some(failure) = &mut team.lead_failure {
+--- a/src-tauri/src/architect/watchdog.rs
++++ b/src-tauri/src/architect/watchdog.rs
+@@ -256 +256,17 @@
+ }
++
++/// Benchmark adapter: `settle_stale`'s own candidate query, run as it runs it.
++#[cfg(test)]
++pub(crate) fn stale_candidates(db: &rusqlite::Connection) -> Result<Vec<String>> {
++    let mut query = db.prepare("SELECT session_id FROM architect_teams WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') NOT IN ('running','waiting') ELSE 1 END").map_err(|e| e.to_string())?;
++    let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
++    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())
++}
++
++/// Benchmark adapter: `reconcile`'s own candidate query, run as it runs it.
++#[cfg(test)]
++pub(crate) fn reconcile_candidates(db: &rusqlite::Connection) -> Result<Vec<String>> {
++    let mut query = db.prepare("SELECT session_id FROM architect_teams WHERE json_valid(content) AND json_extract(content,'$.status') IN ('running','waiting')").map_err(|e| e.to_string())?;
++    let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
++    rows.collect::<std::result::Result<Vec<_>, _>>().map_err(|e| e.to_string())
++}
+--- a/src-tauri/src/lib.rs
++++ b/src-tauri/src/lib.rs
+@@ -78,2 +78,4 @@
+ mod storage;
++#[cfg(test)]
++mod storage_bench;
+ mod subagent_state;
+@@ -350,2 +352,7 @@
+
++/// Benchmark adapter: `listed_sessions`' per-task reconcile.
++#[cfg(test)]
++pub(crate) fn reconcile_listed(store: &Store, agents: &HashMap<String, RunningAgent>, tasks: Vec<Session>) -> Vec<Session> {
++    tasks.into_iter().map(|task| reconcile_inactive_task(store, agents, task)).collect()
++}
+ /// A provider can finish while the database is temporarily unable to write its
+@@ -796,6 +803,3 @@
+     }
+-    let active_team:bool=store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[&project_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+-    if active_team {
+-        return Err("Stop this project's architect teams first.".into());
+-    }
++    ensure_project_teams_inactive(&store, &project_id)?;
+     let removed = store.remove_project(&project_id);
+@@ -804,2 +808,14 @@
+ }
++#[cfg(test)]
++fn remove_project_with_team_check(store: &Store, target: &str) -> Result<()> {
++    ensure_project_teams_inactive(store, target)?;
++    store.remove_project(target)
++}
++fn ensure_project_teams_inactive(store: &Store, target: &str) -> Result<()> {
++    let active_team:bool=store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[target],|r|r.get(0)).map_err(|e|e.to_string())?;
++    if active_team {
++        return Err("Stop this project's architect teams first.".into());
++    }
++    Ok(())
++}
+ #[tauri::command]
+--- a/src-tauri/src/moodboards.rs
++++ b/src-tauri/src/moodboards.rs
+@@ -399,8 +399,3 @@
+         let store = store.lock().map_err(|e| e.to_string())?;
+-        board(&store, &project_id, &board_id)?;
+-        store
+-            .db
+-            .execute("DELETE FROM moodboards WHERE id=?1", [board_id])
+-            .map_err(|e| e.to_string())?;
+-        Ok(())
++        delete_in_store(&store, &project_id, &board_id)
+     })
+@@ -408,2 +403,10 @@
+ }
++pub(crate) fn delete_in_store(store: &Store, project: &str, board_id: &str) -> Result<()> {
++    board(store, project, board_id)?;
++    store
++        .db
++        .execute("DELETE FROM moodboards WHERE id=?1", [board_id])
++        .map_err(|e| e.to_string())?;
++    Ok(())
++}
+ #[tauri::command]
+--- a/src-tauri/src/remote/mirror.rs
++++ b/src-tauri/src/remote/mirror.rs
+@@ -756,3 +756,3 @@
+ /// until [`uncut`] fetches them whole.
+-fn cut_copies(store: &Store, local: &str) -> Result<Vec<(i64, i64)>> {
++pub(crate) fn cut_copies(store: &Store, local: &str) -> Result<Vec<(i64, i64)>> {
+     let mut statement = store.db.prepare("SELECT id,remote_cut FROM messages WHERE session_id=?1 AND remote_cut IS NOT NULL ORDER BY id").map_err(|e| e.to_string())?;
+@@ -2802 +2802,10 @@
+ }
++
++/// Benchmark adapter: `HEAD` has no batched subagent save, so this saves each row as it does.
++#[cfg(test)]
++pub(crate) fn save_subagents_in_store(store: &Store, session_id: &str, activities: &[crate::providers::SubagentActivity]) -> Result<()> {
++    for activity in activities {
++        store.save_subagent(session_id, activity)?;
++    }
++    Ok(())
++}
+--- a/src-tauri/src/storage_bench.rs
++++ b/src-tauri/src/storage_bench.rs
+@@ -28,3 +28,3 @@
+ use crate::providers::{AgentEvent, SubagentActivity};
+-use crate::storage::{self, Store, V38_BOT_INDEXES, V38_SCHEMA_INDEXES, V38_TRACKER_INDEXES, V38_TRACKER_TABLES, V38_TRACKER_TRIGGERS};
++use crate::storage::{self, Store};
+ use crate::turn_changes::Captured;
+@@ -195,3 +195,3 @@
+     bench_batched(table, "workspace_root_lookup", (2, 25), 50, "store.workspace_root(project, Some(heavy)) (worktree with .git file)", || store.workspace_root(project, Some(heavy)).unwrap());
+-    bench_batched(table, "workspace_root_lock_hold", (2, 25), 100, "uncontended store-mutex lock/unlock + SQL critical section of AppState::root (BEFORE holds the lock across workspace_root including disk checks; AFTER holds it only across workspace_paths)", || locked.lock().unwrap().workspace_paths(project, Some(heavy)).unwrap());
++    bench_batched(table, "workspace_root_lock_hold", (2, 25), 100, "uncontended store-mutex lock/unlock + SQL critical section of AppState::root (BEFORE holds the lock across workspace_root including disk checks; AFTER holds it only across workspace_paths)", || locked.lock().unwrap().workspace_root(project, Some(heavy)).unwrap());
+     let store: &Store = locked.get_mut().unwrap();
+@@ -598,4 +598,6 @@
+
++// The version 37 baseline only runs the paired suite.
+ /// The one object version 38 drops: version 13's index, superseded by `turn_changes_retained_bytes`
+ /// (its SQL as version 13 created it).
++#[cfg(any())]
+ const V37_RETAINED_INDEX: &str = "CREATE INDEX IF NOT EXISTS turn_changes_retained ON turn_changes(created_at,id) WHERE diff_bytes>0;";
+@@ -603,2 +605,3 @@
+ /// `(type, name, sql)` of every schema object, SQLite's internal ones left out.
++#[cfg(any())]
+ fn schema(path: &std::path::Path) -> Vec<(String, String, Option<String>)> {
+@@ -613,2 +616,3 @@
+ /// Version 38 alters no table, so this is a version 37 schema.
++#[cfg(any())]
+ fn revert_to_v37(path: &std::path::Path) {
+@@ -659,2 +663,3 @@
+ /// version 38 schema exactly (same objects, same SQL).
++#[cfg(any())]
+ fn assert_v37_round_trip(fx: &Fixture) {
+@@ -671,4 +676,6 @@
+
++#[cfg(any())]
+ fn file_mib(path: &std::path::Path) -> f64 { std::fs::metadata(path).unwrap().len() as f64 / 1048576.0 }
+
++#[cfg(any())]
+ fn message_count(path: &std::path::Path) -> i64 {
+@@ -682,2 +689,3 @@
+ /// from the same on-disk layout.
++#[cfg(any())]
+ fn vacuum(path: &std::path::Path) {
+@@ -690,2 +698,3 @@
+ /// tool ids so `messages_tool` stays unique.
++#[cfg(any())]
+ fn double_messages(path: &std::path::Path) {
+@@ -714,2 +723,3 @@
+ /// Times `Store::open` on fresh copies of the pre-reverted, `VACUUM`ed version 37 file `source`.
++#[cfg(any())]
+ fn migration_case(fx: &Fixture, table: &mut Table, name: &str, source: &std::path::Path, note: &str) {
+@@ -727,2 +737,3 @@
+ /// untimed, so 1× and 2× differ only in size; both are removed right after their cases.
++#[cfg(any())]
+ fn migration_cases(fx: &Fixture, table: &mut Table) {
+@@ -777,2 +788,3 @@
+
++#[cfg(any())]
+ #[test]

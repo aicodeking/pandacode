@@ -47,6 +47,9 @@ CREATE INDEX IF NOT EXISTS task_schedules_due ON task_schedules(enabled,next_run
 CREATE INDEX IF NOT EXISTS task_schedules_session ON task_schedules(session_id);
 CREATE INDEX IF NOT EXISTS task_schedules_watch ON task_schedules(watch_session_id);
 CREATE INDEX IF NOT EXISTS task_schedules_workflow ON task_schedules(workflow_id);
+-- Fresh databases get this index here and v35-v37 ones from the v38 step; a fresh database
+-- runs both, so both say IF NOT EXISTS.
+CREATE INDEX IF NOT EXISTS task_schedules_creator ON task_schedules(created_by_session) WHERE created_by_session IS NOT NULL;
 CREATE TABLE IF NOT EXISTS task_schedule_runs(id TEXT PRIMARY KEY, schedule_id TEXT NOT NULL,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, title TEXT NOT NULL, at INTEGER NOT NULL,
   outcome TEXT NOT NULL CHECK(outcome IN ('started','queued','skipped','failed')), detail TEXT NOT NULL DEFAULT '',
@@ -218,13 +221,17 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
 /// Schedules matching `filter` (SQL over `t`, `s`, `w`), soonest first, never-due last.
 pub(crate) fn select(store: &Store, filter: &str, args: impl rusqlite::Params) -> Result<Vec<TaskSchedule>> {
     let sql = format!("SELECT {COLUMNS} {FROM} WHERE {filter} ORDER BY t.next_run_at IS NULL, t.next_run_at, t.created_at, t.id");
-    let mut statement = store.db.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached(&sql).map_err(|e| e.to_string())?;
     let rows = statement.query_map(args, row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
 
 pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<TaskSchedule>> {
-    select(store, "(?1 IS NULL OR t.session_id=?1)", [session_id])
+    // Separate statements, so a thread's list uses `task_schedules_session`.
+    match session_id {
+        Some(session_id) => select(store, "t.session_id=?1", [session_id]),
+        None => select(store, "1", params![]),
+    }
 }
 
 pub(crate) fn get(store: &Store, id: &str) -> Result<TaskSchedule> {
@@ -471,13 +478,13 @@ pub(crate) fn due(store: &Store, now: i64) -> Result<Vec<TaskSchedule>> {
 pub(crate) fn trigger(store: &Store, session_id: &str, successful: bool, now: i64) -> Result<usize> {
     store
         .db
-        .execute(
+        .prepare_cached(
             "UPDATE task_schedules SET next_run_at=COALESCE(next_run_at,MAX(?3,COALESCE(last_run_at,0)+?4)),trigger_ok=?2,updated_at=?3
              WHERE enabled=1 AND kind='after' AND watch_session_id=?1 AND (only_on_success=0 OR ?2) AND (max_runs IS NULL OR run_count<max_runs)
                AND (chain_from_id IS NULL OR ((SELECT p.last_run_at FROM task_schedules p WHERE p.id=task_schedules.chain_from_id)>COALESCE(last_run_at,0)
                  AND (SELECT MAX(created_at) FROM messages WHERE session_id=?1 AND role='user')>=(SELECT p.last_run_at FROM task_schedules p WHERE p.id=task_schedules.chain_from_id)))",
-            params![session_id, successful, now, AFTER_GAP],
         )
+        .and_then(|mut update| update.execute(params![session_id, successful, now, AFTER_GAP]))
         .map_err(|e| e.to_string())
 }
 
@@ -496,10 +503,10 @@ pub(crate) fn advance(store: &Store, schedule: &TaskSchedule, now: i64, manual: 
     };
     store
         .db
-        .execute(
+        .prepare_cached(
             "UPDATE task_schedules SET run_count=?2,last_run_at=?3,next_run_at=?4,enabled=CASE WHEN ?5 THEN 0 ELSE enabled END,trigger_ok=CASE WHEN ?6 THEN trigger_ok END,updated_at=?3 WHERE id=?1 AND run_count=?7",
-            params![schedule.id, runs, now, next, finished, manual, schedule.run_count],
         )
+        .and_then(|mut update| update.execute(params![schedule.id, runs, now, next, finished, manual, schedule.run_count]))
         .map_err(|e| e.to_string())
         .and_then(|changed| if changed == 0 { Err(String::from("This schedule already ran.")) } else { Ok(()) })?;
     // The trace reports what triggered this run.
@@ -599,27 +606,36 @@ fn run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRun> {
 /// Records a run and keeps the newest `RUNS_PER_SESSION` per thread.
 pub(crate) fn record_run(store: &Store, schedule: &TaskSchedule, at: i64, outcome: &str, detail: &str, manual: bool) -> Result<ScheduleRun> {
     let id = crate::storage::id();
-    store
-        .db
-        .execute(
+    store.in_transaction(|| {
+        let db = &store.db;
+        db.prepare_cached(
             "INSERT INTO task_schedule_runs(id,schedule_id,session_id,title,at,outcome,detail,sequence,manual) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
-            params![id, schedule.id, schedule.session_id, schedule.title, at, outcome, detail, schedule.run_count, manual],
         )
+        .and_then(|mut insert| insert.execute(params![id, schedule.id, schedule.session_id, schedule.title, at, outcome, detail, schedule.run_count, manual]))
         .map_err(|e| e.to_string())?;
-    store
-        .db
-        .execute(
+        db.prepare_cached(
             "DELETE FROM task_schedule_runs WHERE session_id=?1 AND id NOT IN (SELECT id FROM task_schedule_runs WHERE session_id=?1 ORDER BY at DESC, rowid DESC LIMIT ?2)",
-            params![schedule.session_id, RUNS_PER_SESSION],
         )
+        .and_then(|mut delete| delete.execute(params![schedule.session_id, RUNS_PER_SESSION]))
         .map_err(|e| e.to_string())?;
-    store.db.query_row("SELECT id,schedule_id,session_id,title,at,outcome,detail,sequence,manual FROM task_schedule_runs WHERE id=?1", [&id], run_row).map_err(|e| e.to_string())
+        db.prepare_cached("SELECT id,schedule_id,session_id,title,at,outcome,detail,sequence,manual FROM task_schedule_runs WHERE id=?1")
+            .and_then(|mut query| query.query_row([&id], run_row))
+            .map_err(|e| e.to_string())
+    })
 }
 
 pub(crate) fn runs(store: &Store, session_id: Option<&str>, schedule_id: Option<&str>, limit: i64) -> Result<Vec<ScheduleRun>> {
+    // One statement per filter shape, so SQLite can use the session or schedule index;
+    // an absent filter stays bound as a constant `NULL` test.
+    let filter = match (session_id.is_some(), schedule_id.is_some()) {
+        (true, true) => "session_id=?1 AND schedule_id=?2",
+        (true, false) => "session_id=?1 AND ?2 IS NULL",
+        (false, true) => "?1 IS NULL AND schedule_id=?2",
+        (false, false) => "?1 IS NULL AND ?2 IS NULL",
+    };
     let mut statement = store
         .db
-        .prepare("SELECT id,schedule_id,session_id,title,at,outcome,detail,sequence,manual FROM task_schedule_runs WHERE (?1 IS NULL OR session_id=?1) AND (?2 IS NULL OR schedule_id=?2) ORDER BY at DESC, rowid DESC LIMIT ?3")
+        .prepare_cached(&format!("SELECT id,schedule_id,session_id,title,at,outcome,detail,sequence,manual FROM task_schedule_runs WHERE {filter} ORDER BY at DESC, rowid DESC LIMIT ?3"))
         .map_err(|e| e.to_string())?;
     let rows = statement.query_map(params![session_id, schedule_id, limit.clamp(1, RUNS_PER_SESSION)], run_row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
@@ -627,21 +643,27 @@ pub(crate) fn runs(store: &Store, session_id: Option<&str>, schedule_id: Option<
 
 /// Counts a failed delivery; three in a row turn the schedule off. Returns the detail to record.
 fn note_outcome(store: &Store, schedule: &TaskSchedule, error: Option<&str>) -> Result<String> {
+    let db = &store.db;
     let Some(error) = error else {
-        store.db.execute("UPDATE task_schedules SET consecutive_failures=0 WHERE id=?1", [&schedule.id]).map_err(|e| e.to_string())?;
+        db.prepare_cached("UPDATE task_schedules SET consecutive_failures=0 WHERE id=?1")
+            .and_then(|mut update| update.execute([&schedule.id]))
+            .map_err(|e| e.to_string())?;
         return Ok(String::new());
     };
-    let failures: i64 = store
-        .db
-        .query_row("UPDATE task_schedules SET consecutive_failures=consecutive_failures+1 WHERE id=?1 RETURNING consecutive_failures", [&schedule.id], |r| r.get(0))
-        .optional()
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    if failures >= FAILURE_LIMIT {
-        store.db.execute("UPDATE task_schedules SET enabled=0,next_run_at=NULL WHERE id=?1", [&schedule.id]).map_err(|e| e.to_string())?;
-        return Ok(format!("{error} Turned off after {FAILURE_LIMIT} failures in a row."));
-    }
-    Ok(error.to_owned())
+    store.in_transaction(|| {
+        let failures: i64 = db
+            .prepare_cached("UPDATE task_schedules SET consecutive_failures=consecutive_failures+1 WHERE id=?1 RETURNING consecutive_failures")
+            .and_then(|mut update| update.query_row([&schedule.id], |r| r.get(0)).optional())
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        if failures >= FAILURE_LIMIT {
+            db.prepare_cached("UPDATE task_schedules SET enabled=0,next_run_at=NULL WHERE id=?1")
+                .and_then(|mut update| update.execute([&schedule.id]))
+                .map_err(|e| e.to_string())?;
+            return Ok(format!("{error} Turned off after {FAILURE_LIMIT} failures in a row."));
+        }
+        Ok(error.to_owned())
+    })
 }
 
 pub(crate) fn changed(app: &tauri::AppHandle, session_id: Option<&str>) {

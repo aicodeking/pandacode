@@ -425,11 +425,12 @@ fn spare_eligibility(app: &tauri::AppHandle, store: &Arc<Mutex<Store>>, session_
     }
     // A turn that ended without any reply (seen after background commands) may have
     // left the session in a state a spare would inherit: start the next one fresh.
-    let replied = store.lock().ok().and_then(|db| db.db.query_row(
+    let replied = store.lock().ok().and_then(|db| db.db.prepare_cached(
         "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
+    ).and_then(|mut query| query.query_row(
         [session_id],
         |row| row.get::<_, bool>(0),
-    ).ok()).unwrap_or(false);
+    )).ok()).unwrap_or(false);
     if !replied {
         return None;
     }

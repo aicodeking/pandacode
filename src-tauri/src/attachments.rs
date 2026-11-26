@@ -48,7 +48,12 @@ impl Variant {
 }
 
 /// Called after the user message row exists. Each failed attachment is logged and skipped so it
-/// cannot turn a successfully saved prompt into a failed send.
+/// cannot turn a successfully saved prompt into a failed send, unless SQLite rolled the whole
+/// transaction back: then later rows would commit one by one, so linking stops with `Err`.
+/// Capture files are copied under `<app data>/attachments/` before the transaction opens, so
+/// when it later fails or rolls back those copies stay on disk unreferenced (as a failed row's
+/// copy always has). When the write lock cannot be taken at all (another connection holds it
+/// past the busy timeout), rows are linked one by one outside a transaction instead.
 pub fn link_message_attachments(
     store: &Store,
     session_id: &str,
@@ -60,32 +65,128 @@ pub fn link_message_attachments(
 ) -> Result<usize, String> {
     let project_id: String = store
         .db
-        .query_row(
-            "SELECT project_id FROM sessions WHERE id=?1",
-            [session_id],
-            |row| row.get(0),
-        )
-        .optional()
+        .prepare_cached("SELECT project_id FROM sessions WHERE id=?1")
+        .and_then(|mut query| query.query_row([session_id], |row| row.get(0)).optional())
         .map_err(|error| error.to_string())?
-        .ok_or("Conversation not found.")?;
+        .ok_or(crate::storage::SESSION_NOT_FOUND)?;
     let names = prompt_image_names(content);
+    // Files are copied first; every row is then written in one transaction, so no
+    // filesystem work happens while the write transaction is open.
+    let captures = image_ids
+        .iter()
+        .enumerate()
+        .filter_map(|(index, id)| {
+            match persist_capture(
+                session_id,
+                id,
+                names.get(index).map(String::as_str),
+                capture_dir,
+                app_data_dir,
+            ) {
+                Ok(capture) => Some(capture),
+                Err(error) => {
+                    eprintln!("PandaCode: could not persist prompt image {id}: {error}");
+                    None
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let link_all = || {
+        let batch = Batch { store, guard: crate::storage::RollbackGuard::new(&store.db) };
+        let linked = link_captures(&batch, session_id, message_id, &captures)?;
+        Ok(linked + link_moodboards(&batch, session_id, message_id, &project_id, content)?)
+    };
+    match store.try_in_transaction_immediate(link_all) {
+        Ok(count) => Ok(count),
+        // `Busy` means `BEGIN IMMEDIATE` itself failed, so no row was written and linking row
+        // by row cannot repeat a rolled-back row.
+        Err(crate::storage::ImmediateTxError::Busy(error)) => {
+            eprintln!("PandaCode: linking attachments row by row, the write lock was busy: {error}");
+            link_all()
+        }
+        Err(crate::storage::ImmediateTxError::Other(error)) => Err(error),
+    }
+}
+
+/// The store inside `link_message_attachments`'s transaction. A failed row is skipped, but once
+/// SQLite has rolled that transaction back (`RAISE(ROLLBACK)`, a full disk) the connection is
+/// in autocommit mode and every later write would commit alone, so the batch stops instead.
+struct Batch<'a> {
+    store: &'a Store,
+    guard: crate::storage::RollbackGuard<'a>,
+}
+
+impl Batch<'_> {
+    /// `Err` when SQLite rolled the batch's transaction back after `error`.
+    fn check(&self, error: &rusqlite::Error) -> Result<(), String> {
+        if self.guard.rolled_back() {
+            return Err(format!("the attachment transaction was rolled back: {error}"));
+        }
+        Ok(())
+    }
+}
+
+/// A prompt image copied into app data, ready for its `message_attachments` row.
+struct Capture {
+    id: String,
+    name: String,
+    width: u32,
+    height: u32,
+    bytes: i64,
+    file: String,
+}
+
+fn link_captures(batch: &Batch, session_id: &str, message_id: i64, captures: &[Capture]) -> Result<usize, String> {
+    if captures.is_empty() {
+        return Ok(0);
+    }
+    let mut insert = match batch.store.db.prepare_cached(
+        "INSERT OR IGNORE INTO message_attachments
+         (message_id,session_id,id,kind,name,mime,width,height,bytes,file,source,moodboard_id,moodboard_image_id)
+         VALUES(?1,?2,?3,'image',?4,'image/png',?5,?6,?7,?8,'file',NULL,NULL)",
+    ) {
+        Ok(insert) => insert,
+        Err(error) => {
+            for capture in captures {
+                eprintln!("PandaCode: could not persist prompt image {}: {error}", capture.id);
+            }
+            batch.check(&error)?;
+            return Ok(0);
+        }
+    };
     let mut linked = 0;
-    for (index, id) in image_ids.iter().enumerate() {
-        match link_capture(
-            store,
-            session_id,
+    for capture in captures {
+        match insert.execute(params![
             message_id,
-            id,
-            names.get(index).map(String::as_str),
-            capture_dir,
-            app_data_dir,
-        ) {
-            Ok(()) => linked += 1,
-            Err(error) => eprintln!("PandaCode: could not persist prompt image {id}: {error}"),
+            session_id,
+            capture.id,
+            capture.name,
+            capture.width,
+            capture.height,
+            capture.bytes,
+            capture.file
+        ]) {
+            Ok(_) => linked += 1,
+            Err(error) => {
+                eprintln!("PandaCode: could not persist prompt image {}: {error}", capture.id);
+                batch.check(&error)?;
+            }
         }
     }
+    Ok(linked)
+}
+
+fn link_moodboards(
+    batch: &Batch,
+    session_id: &str,
+    message_id: i64,
+    project_id: &str,
+    content: &str,
+) -> Result<usize, String> {
+    let store = batch.store;
+    let mut linked = 0;
     for board_id in moodboard_ids(content) {
-        let rows = store.db.prepare(
+        let rows = store.db.prepare_cached(
             "SELECT i.id,i.name,i.mime_type,i.width,i.height,length(i.original)
              FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id
              WHERE b.id=?1 AND b.project_id=?2 ORDER BY i.created_at,i.id",
@@ -112,6 +213,7 @@ pub fn link_message_attachments(
                 eprintln!(
                     "PandaCode: could not list moodboard attachments for {board_id}: {error}"
                 );
+                batch.check(&error)?;
                 continue;
             }
         };
@@ -120,15 +222,22 @@ pub fn link_message_attachments(
                 eprintln!("PandaCode: moodboard image {id} exceeds the stored attachment limit");
                 continue;
             }
-            let result = store.db.execute(
-                "INSERT OR IGNORE INTO message_attachments
+            let result = store
+                .db
+                .prepare_cached(
+                    "INSERT OR IGNORE INTO message_attachments
                  (message_id,session_id,id,kind,name,mime,width,height,bytes,file,source,moodboard_id,moodboard_image_id)
                  VALUES(?1,?2,?3,'image',?4,?5,?6,?7,?8,NULL,'moodboard',?9,?3)",
-                params![message_id, session_id, id, name, mime, width, height, bytes, board_id],
-            );
+                )
+                .and_then(|mut insert| {
+                    insert.execute(params![message_id, session_id, id, name, mime, width, height, bytes, board_id])
+                });
             match result {
                 Ok(count) => linked += count,
-                Err(error) => eprintln!("PandaCode: could not link moodboard image {id}: {error}"),
+                Err(error) => {
+                    eprintln!("PandaCode: could not link moodboard image {id}: {error}");
+                    batch.check(&error)?;
+                }
             }
         }
     }
@@ -166,15 +275,13 @@ fn canonical_uuid(id: &str) -> bool {
     uuid::Uuid::parse_str(id).is_ok_and(|parsed| parsed.to_string() == id)
 }
 
-fn link_capture(
-    store: &Store,
+fn persist_capture(
     session_id: &str,
-    message_id: i64,
     id: &str,
     name: Option<&str>,
     capture_dir: &Path,
     app_data_dir: &Path,
-) -> Result<(), String> {
+) -> Result<Capture, String> {
     if !canonical_uuid(id) || !canonical_uuid(session_id) {
         return Err("invalid attachment id".into());
     }
@@ -214,26 +321,14 @@ fn link_capture(
         fs::write(&destination, &bytes).map_err(|error| error.to_string())?;
         set_private_file(&destination);
     }
-    let file = format!("{session_id}/{id}.png");
-    store
-        .db
-        .execute(
-            "INSERT OR IGNORE INTO message_attachments
-         (message_id,session_id,id,kind,name,mime,width,height,bytes,file,source,moodboard_id,moodboard_image_id)
-         VALUES(?1,?2,?3,'image',?4,'image/png',?5,?6,?7,?8,'file',NULL,NULL)",
-            params![
-                message_id,
-                session_id,
-                id,
-                name,
-                width,
-                height,
-                bytes.len() as i64,
-                file
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(Capture {
+        id: id.to_owned(),
+        name: name.to_owned(),
+        width,
+        height,
+        bytes: bytes.len() as i64,
+        file: format!("{session_id}/{id}.png"),
+    })
 }
 
 fn image_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
@@ -496,205 +591,5 @@ pub fn message_attachment_rows(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use image::{ImageFormat, Rgba, RgbaImage};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "pandacode-{label}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn png(width: u32, height: u32) -> Vec<u8> {
-        let image = RgbaImage::from_pixel(width, height, Rgba([255, 10, 20, 255]));
-        let mut bytes = Vec::new();
-        DynamicImage::ImageRgba8(image)
-            .write_to(&mut Cursor::new(&mut bytes), ImageFormat::Png)
-            .unwrap();
-        bytes
-    }
-
-    fn task(store: &Store, root: &Path) -> String {
-        let project_dir = root.join(format!("project-{}", uuid::Uuid::new_v4()));
-        fs::create_dir_all(&project_dir).unwrap();
-        let project = store.add_project(&project_dir).unwrap();
-        store
-            .create_session(&project.id, "codex", "default", "ask")
-            .unwrap()
-            .id
-    }
-
-    #[test]
-    fn linking_copies_capture_and_persists_metadata_in_a_temp_directory() {
-        let root = temp_dir("attachment-link");
-        let store = Store::open(&root.join("db.sqlite3")).unwrap();
-        let session = task(&store, &root);
-        let message = store
-            .start_turn_message(&session, "Attached image: cabin.png (8 × 4)")
-            .unwrap();
-        let id = uuid::Uuid::new_v4().to_string();
-        let captures = root.join("cache/browser-captures");
-        fs::create_dir_all(&captures).unwrap();
-        fs::write(captures.join(format!("{id}.png")), png(8, 4)).unwrap();
-        let linked = link_message_attachments(
-            &store,
-            &session,
-            message,
-            "Attached image: cabin.png (8 × 4)",
-            std::slice::from_ref(&id),
-            &captures,
-            &root.join("data"),
-        )
-        .unwrap();
-        assert_eq!(linked, 1);
-        let item = message_attachment_rows(&store.db, &session, message).unwrap();
-        assert_eq!(item[0]["id"], id);
-        assert_eq!(item[0]["name"], "cabin.png");
-        assert_eq!(item[0]["width"].as_u64(), Some(8));
-        assert_eq!(item[0]["height"].as_u64(), Some(4));
-        assert!(root
-            .join(format!("data/attachments/{session}/{id}.png"))
-            .is_file());
-        let loaded = load_attachment(&store.db, &root.join("data"), &session, &id).unwrap();
-        assert_eq!(loaded.bytes, png(8, 4));
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn refuses_foreign_ids_and_foreign_sessions() {
-        let root = temp_dir("attachment-owner");
-        let store = Store::open(&root.join("db.sqlite3")).unwrap();
-        let session = task(&store, &root);
-        let foreign = task(&store, &root);
-        let message = store
-            .start_turn_message(&session, "Attached image: shot.png")
-            .unwrap();
-        let id = uuid::Uuid::new_v4().to_string();
-        let captures = root.join("cache");
-        fs::create_dir_all(&captures).unwrap();
-        fs::write(captures.join(format!("{id}.png")), png(2, 2)).unwrap();
-        link_message_attachments(
-            &store,
-            &session,
-            message,
-            "Attached image: shot.png",
-            std::slice::from_ref(&id),
-            &captures,
-            &root.join("data"),
-        )
-        .unwrap();
-        assert!(load_attachment(
-            &store.db,
-            &root.join("data"),
-            &session,
-            &uuid::Uuid::new_v4().to_string()
-        )
-        .is_err());
-        assert!(load_attachment(&store.db, &root.join("data"), &foreign, &id).is_err());
-        assert!(
-            load_attachment(&store.db, &root.join("data"), &session, "../../etc/passwd").is_err()
-        );
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn thumbnail_is_jpeg_with_a_long_edge_no_larger_than_480() {
-        let (mime, bytes) = variant_bytes(&png(128, 64), "image/png", Variant::Thumb).unwrap();
-        assert_eq!(mime, "image/jpeg");
-        let decoded = image::load_from_memory(&bytes).unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (128, 64));
-        assert!(decoded.width().max(decoded.height()) <= 480);
-        assert!(bytes.len() <= MAX_RAW_CHUNK);
-    }
-
-    #[test]
-    fn chunks_are_limited_and_fit_the_encrypted_reply_budget() {
-        let bytes = vec![7u8; MAX_RAW_CHUNK + 100];
-        let first = chunk_reply(&bytes, "image/png", 0).unwrap();
-        let second = chunk_reply(&bytes, "image/png", MAX_RAW_CHUNK as u64).unwrap();
-        assert_eq!(
-            STANDARD
-                .decode(first["data"].as_str().unwrap())
-                .unwrap()
-                .len(),
-            MAX_RAW_CHUNK
-        );
-        assert_eq!(
-            STANDARD
-                .decode(second["data"].as_str().unwrap())
-                .unwrap()
-                .len(),
-            100
-        );
-        assert!(first.to_string().len() <= MESSAGE_PAGE_BUDGET);
-        assert_eq!(first["done"], false);
-        assert_eq!(second["done"], true);
-        assert!(chunk_reply(&bytes, "image/png", bytes.len() as u64 + 1).is_err());
-    }
-
-    #[test]
-    fn moodboard_blobs_are_linked_without_copying_the_original() {
-        let root = temp_dir("attachment-moodboard");
-        let store = Store::open(&root.join("db.sqlite3")).unwrap();
-        let session = task(&store, &root);
-        let message = store.start_turn_message(&session, "The user attached these project moodboards:\n- Board (moodboard ID: board-id, 1 images)").unwrap();
-        let project: String = store
-            .db
-            .query_row(
-                "SELECT project_id FROM sessions WHERE id=?1",
-                [&session],
-                |row| row.get(0),
-            )
-            .unwrap();
-        let board = uuid::Uuid::new_v4().to_string();
-        let image_id = uuid::Uuid::new_v4().to_string();
-        store.db.execute("INSERT INTO moodboards(id,project_id,name,created_at,updated_at) VALUES(?1,?2,'Board',1,1)", params![board,project]).unwrap();
-        store.db.execute("INSERT INTO moodboard_images(id,board_id,name,caption,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,'board.png','', 'image/png',2,2,?3,?3,?3,1)", params![image_id,board,png(2,2)]).unwrap();
-        let content = format!("(moodboard ID: {board})");
-        assert_eq!(
-            link_message_attachments(
-                &store,
-                &session,
-                message,
-                &content,
-                &[],
-                &root,
-                &root.join("data")
-            )
-            .unwrap(),
-            1
-        );
-        let stored_board: String = store
-            .db
-            .query_row(
-                "SELECT moodboard_id FROM message_attachments WHERE session_id=?1 AND id=?2",
-                params![session, image_id],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(stored_board, board);
-        let loaded = load_attachment(&store.db, &root.join("data"), &session, &image_id).unwrap();
-        assert_eq!(loaded.bytes, png(2, 2));
-        assert!(!root
-            .join(format!("data/attachments/{session}/{image_id}.png"))
-            .exists());
-        let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn image_id_and_variant_validation_are_strict() {
-        assert!(!canonical_uuid("../file.png"));
-        assert_eq!(Variant::parse("thumb"), Ok(Variant::Thumb));
-        assert_eq!(Variant::parse("full"), Ok(Variant::Full));
-        assert!(Variant::parse("path").is_err());
-    }
-}
+#[path = "attachments_tests.rs"]
+mod tests;

@@ -1,4 +1,4 @@
-use crate::{reconcile_inactive_task, storage, AppState, RunningAgent};
+use crate::{reconcile_listed, storage, AppState, RunningAgent};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -82,16 +82,24 @@ pub async fn agents_dock_snapshot(state: State<'_, AppState>) -> crate::Result<A
 fn snapshot(state: &AppState) -> crate::Result<AgentsDockSnapshot> {
     let agents = crate::run_requests::lock_agents(&state.agents).map_err(|error| error.to_string())?;
     let store = state.store.lock().map_err(|error| error.to_string())?;
+    snapshot_in_store(&store, &agents)
+}
+
+/// The dock listing from a locked store and agents map (`snapshot` holds both locks).
+pub(crate) fn snapshot_in_store(
+    store: &storage::Store,
+    agents: &HashMap<String, RunningAgent>,
+) -> crate::Result<AgentsDockSnapshot> {
     let projects: HashMap<_, _> = store
         .projects()?
         .into_iter()
         .map(|project| (project.id, project.name))
         .collect();
-    let candidates = store
-        .sessions()?
+    // Every working team is read once for the whole listing, not once per task: this runs on
+    // every dock-changing agent event while both locks are held.
+    let candidates = reconcile_listed(store, agents, store.sessions()?)
         .into_iter()
         .map(|task| {
-            let task = reconcile_inactive_task(&store, &agents, task);
             let running = agents.get(&task.id);
             Candidate {
                 id: task.id,
@@ -663,5 +671,39 @@ mod tests {
         assert_eq!(snapshot.agents[1].status, DockStatus::WaitingForApproval);
         assert_eq!(snapshot.agents[2].status, DockStatus::WaitingForInput);
         assert!(!snapshot.agents.iter().any(|agent| agent.id == "task-idle"));
+    }
+
+    #[test]
+    fn a_snapshot_settles_stale_tasks_and_keeps_working_team_leads() {
+        use crate::storage::Store;
+        use std::sync::{atomic::AtomicU8, Arc, Mutex};
+        let state = crate::AppState {
+            store: Arc::new(Mutex::new(Store::open(std::path::Path::new(":memory:")).unwrap())),
+            agents: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            terminals: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            shutdown: AtomicU8::new(0),
+        };
+        let (stale, lead) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let stale = store.create_session(&project.id, "codex", "default", "ask").unwrap().id;
+            store.status(&stale, "running").unwrap();
+            let lead = store.create_session(&project.id, "codex", "default", "ask").unwrap().id;
+            store
+                .db
+                .execute(
+                    "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                    rusqlite::params![lead, r#"{"status":"running"}"#],
+                )
+                .unwrap();
+            (stale, lead)
+        };
+        let snapshot = super::snapshot(&state).unwrap();
+        let ids: Vec<&str> = snapshot.agents.iter().map(|agent| agent.id.as_str()).collect();
+        assert_eq!(ids, [lead.as_str()], "only the working team lead is listed");
+        assert_eq!(snapshot.agents[0].status, DockStatus::Running);
+        let store = state.store.lock().unwrap();
+        assert_eq!(store.session(&stale).unwrap().status, "interrupted", "a stale run is settled");
+        assert_eq!(store.session(&lead).unwrap().status, "idle", "the lead's row stays idle");
     }
 }
