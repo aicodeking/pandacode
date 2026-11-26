@@ -779,15 +779,24 @@ test('the title bar row keeps its on-screen height under interface zoom so it st
   await page.goto('/');
   await page.locator('#navigation .task-item').first().waitFor();
   const heights = () => page.evaluate(() => ['.workspace-header', '.sidebar>.brand'].map(selector => Math.round(document.querySelector(selector)!.getBoundingClientRect().height * 10) / 10));
-  // The conversation panel is inset 8px from the window's top, so its header is the title bar less
-  // 8px above and below: both rows centre on the same line as the window buttons.
+  // The frame gap is a native point, so the conversation panel sits 8pt inside the window's top at
+  // every interface size and its header is the title bar less 8pt above and below: both rows centre
+  // on the same line as the window buttons. The corner stays the card role, so it scales with the
+  // cards the panels hold instead of holding a point size.
   const middles = () => page.evaluate(() => ['.workspace-header', '.sidebar>.brand'].map(selector => { const box = document.querySelector(selector)!.getBoundingClientRect(); return Math.round((box.top + box.height / 2) * 10) / 10; }));
+  const frame = () => page.evaluate(() => { const style = getComputedStyle(document.querySelector('.main-pane')!); return [style.marginTop, style.borderTopLeftRadius].map(value => Math.round(parseFloat(value) * 100) / 100); });
   expect(await heights()).toEqual([39, 55]);
   expect(await middles()).toEqual([27.5, 27.5]);
-  // In the app, ⌘+ zooms the webview by --page-zoom; the row shrinks in CSS pixels by the same factor.
+  expect(await frame()).toEqual([8, 16]);
+  // In the app, ⌘+ zooms the webview by --page-zoom: CSS pixels shrink by that factor, points do not.
   await page.evaluate(() => document.documentElement.style.setProperty('--page-zoom', '1.25'));
-  expect(await heights()).toEqual([28, 44]);
+  expect((await heights()).map(value => Math.round(value * 1.25 * 10) / 10)).toEqual([39, 55]);
   expect(await middles()).toEqual([22, 22]);
+  expect(await frame()).toEqual([6.4, 16]);
+  await page.evaluate(() => document.documentElement.style.setProperty('--page-zoom', '1.6'));
+  expect(await frame()).toEqual([5, 16]);
+  await page.evaluate(() => document.documentElement.style.removeProperty('--page-zoom'));
+  expect(await frame()).toEqual([8, 16]);
 });
 
 for (const wallpaper of [false, true]) {
