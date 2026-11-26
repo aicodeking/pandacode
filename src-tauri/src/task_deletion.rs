@@ -1,5 +1,6 @@
 //! Local conversation deletion, serialized with task and harness admission.
 use crate::{architect, jev, jev_decisions, storage::Store, terminal, AppState, Result};
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use std::sync::atomic::Ordering;
 use tauri::{Emitter, Manager};
@@ -10,29 +11,46 @@ pub struct DeletedSessions {
     pub deleted_session_ids: Vec<String>,
 }
 
+/// The deletion guard reads only `status` and `goal_state`, never the full task row and its links.
+fn deletion_state(store: &Store, id: &str) -> Result<(String, Option<String>)> {
+    store
+        .db
+        .prepare_cached("SELECT status,goal_state FROM sessions WHERE id=?1")
+        .and_then(|mut query| query.query_row([id], |row| Ok((row.get(0)?, row.get(1)?))).optional())
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| String::from(crate::storage::SESSION_NOT_FOUND))
+}
+
+fn ensure_deletable((status, goal): &(String, Option<String>)) -> Result<()> {
+    if matches!(status.as_str(), "running" | "waiting") {
+        return Err("Stop this task and wait for its agents to finish before deleting it.".into());
+    }
+    // Parsed as `Store::session` does: an unreadable goal counts as no goal.
+    let goal = crate::goal_state::GoalState::parse(goal.as_deref());
+    if goal.is_some_and(|goal| goal.status == "active") {
+        return Err("Pause this task's active goal before deleting it.".into());
+    }
+    Ok(())
+}
+
 fn candidates(store: &Store, sid: &str) -> Result<Vec<String>> {
-    store.session(sid)?;
+    let lead = deletion_state(store, sid)?;
     architect::check_manual(store, sid)?;
     let mut ids = vec![sid.to_owned()];
-    let mut query = store.db.prepare(
-        "SELECT session_id FROM architect_workers WHERE parent_session_id=?1 ORDER BY session_id",
-    ).map_err(|e| e.to_string())?;
-    let workers = query
-        .query_map([sid], |row| row.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-    for worker in workers {
-        ids.push(worker.map_err(|e| e.to_string())?);
+    {
+        let mut query = store.db.prepare_cached(
+            "SELECT session_id FROM architect_workers WHERE parent_session_id=?1 ORDER BY session_id",
+        ).map_err(|e| e.to_string())?;
+        let workers = query
+            .query_map([sid], |row| row.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        for worker in workers {
+            ids.push(worker.map_err(|e| e.to_string())?);
+        }
     }
-    for id in &ids {
-        let task = store.session(id)?;
-        if matches!(task.status.as_str(), "running" | "waiting") {
-            return Err(
-                "Stop this task and wait for its agents to finish before deleting it.".into(),
-            );
-        }
-        if task.goal_state.is_some_and(|goal| goal.status == "active") {
-            return Err("Pause this task's active goal before deleting it.".into());
-        }
+    ensure_deletable(&lead)?;
+    for id in &ids[1..] {
+        ensure_deletable(&deletion_state(store, id)?)?;
     }
     Ok(ids)
 }
@@ -48,11 +66,13 @@ fn delete_owned(store: &Store, sid: &str, expected: &[String]) -> Result<()> {
     }
     // Parent deletion cascades the ownership mapping, not the worker sessions.
     // Delete children first, preserving unrelated conversations and forks.
+    let mut delete = transaction
+        .prepare_cached("DELETE FROM sessions WHERE id=?1")
+        .map_err(|e| e.to_string())?;
     for id in expected.iter().skip(1).chain(expected.first()) {
-        transaction
-            .execute("DELETE FROM sessions WHERE id=?1", [id])
-            .map_err(|e| e.to_string())?;
+        delete.execute([id]).map_err(|e| e.to_string())?;
     }
+    drop(delete);
     transaction.commit().map_err(|e| e.to_string())
 }
 

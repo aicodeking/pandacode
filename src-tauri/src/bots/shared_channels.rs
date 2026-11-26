@@ -2,7 +2,7 @@
 //! assignments use each member's ordinary desktop task and the existing gateway queue.
 
 use super::{gateway, Bot, DESKTOP};
-use crate::{message_queue, storage::Store, AppState, Result};
+use crate::{message_queue, storage::{RollbackGuard, Store}, AppState, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -103,26 +103,40 @@ pub(crate) fn route_recipients(members: &[String], lead: Option<&str>, requested
 }
 
 fn member_ids(store: &Store, channel_id: &str) -> Result<Vec<String>> {
-    let mut statement = store.db.prepare("SELECT bot_id FROM bot_shared_channel_members WHERE channel_id=?1 ORDER BY position,bot_id").map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached("SELECT bot_id FROM bot_shared_channel_members WHERE channel_id=?1 ORDER BY position,bot_id").map_err(|e| e.to_string())?;
     let rows = statement.query_map([channel_id], |row| row.get(0)).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
 
 fn shared_channel(store: &Store, id: &str) -> Result<SharedChannel> {
-    let row: (String, String, Option<String>, bool, i64) = store.db.query_row(
-        "SELECT id,name,lead_bot_id,archived,updated_at FROM bot_shared_channels WHERE id=?1", [id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    ).optional().map_err(|e| e.to_string())?.ok_or("This channel no longer exists.")?;
+    let row: (String, String, Option<String>, bool, i64) = store.db
+        .prepare_cached("SELECT id,name,lead_bot_id,archived,updated_at FROM bot_shared_channels WHERE id=?1")
+        .and_then(|mut statement| statement.query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).optional())
+        .map_err(|e| e.to_string())?.ok_or("This channel no longer exists.")?;
     Ok(SharedChannel { id: row.0.clone(), name: row.1, lead_bot_id: row.2, archived: row.3, updated_at: row.4, member_ids: member_ids(store, &row.0)? })
 }
 
+/// Every channel with its members: one query for the channels and one for all members.
 pub(crate) fn list(store: &Store) -> Result<Vec<SharedChannel>> {
-    let ids = {
-        let mut statement = store.db.prepare("SELECT id FROM bot_shared_channels ORDER BY archived,name COLLATE NOCASE").map_err(|e| e.to_string())?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
-    };
-    ids.iter().map(|id| shared_channel(store, id)).collect()
+    let mut members: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut statement = store.db.prepare_cached("SELECT channel_id,bot_id FROM bot_shared_channel_members ORDER BY channel_id,position,bot_id").map_err(|e| e.to_string())?;
+        let rows = statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+        for row in rows {
+            let (channel_id, bot_id) = row.map_err(|e| e.to_string())?;
+            members.entry(channel_id).or_default().push(bot_id);
+        }
+    }
+    let mut statement = store.db.prepare_cached("SELECT id,name,lead_bot_id,archived,updated_at FROM bot_shared_channels ORDER BY archived,name COLLATE NOCASE").map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, bool>(3)?, r.get::<_, i64>(4)?)))
+        .map_err(|e| e.to_string())?;
+    rows.map(|row| {
+        let (id, name, lead_bot_id, archived, updated_at) = row.map_err(|e| e.to_string())?;
+        let member_ids = members.remove(&id).unwrap_or_default();
+        Ok(SharedChannel { id, name, member_ids, lead_bot_id, archived, updated_at })
+    })
+    .collect()
 }
 
 pub(crate) fn create(store: &Store, raw_name: &str, requested: &[String]) -> Result<SharedChannel> {
@@ -131,11 +145,19 @@ pub(crate) fn create(store: &Store, raw_name: &str, requested: &[String]) -> Res
     let id = crate::storage::id();
     let now = crate::storage::now();
     let lead = members.first().cloned();
-    store.db.execute("INSERT INTO bot_shared_channels(id,name,lead_bot_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)", params![id,name,lead,now]).map_err(|e| e.to_string())?;
-    for (position, bot_id) in members.iter().enumerate() {
-        store.db.execute("INSERT INTO bot_shared_channel_members(channel_id,bot_id,position) VALUES(?1,?2,?3)", params![id,bot_id,position as i64]).map_err(|e| e.to_string())?;
-    }
+    store.in_transaction(|| {
+        store.db.prepare_cached("INSERT INTO bot_shared_channels(id,name,lead_bot_id,created_at,updated_at) VALUES(?1,?2,?3,?4,?4)").and_then(|mut statement| statement.execute(params![id,name,lead,now])).map_err(|e| e.to_string())?;
+        insert_members(store, &id, &members)
+    })?;
     shared_channel(store, &id)
+}
+
+fn insert_members(store: &Store, channel_id: &str, members: &[String]) -> Result<()> {
+    let mut statement = store.db.prepare_cached("INSERT INTO bot_shared_channel_members(channel_id,bot_id,position) VALUES(?1,?2,?3)").map_err(|e| e.to_string())?;
+    for (position, bot_id) in members.iter().enumerate() {
+        statement.execute(params![channel_id,bot_id,position as i64]).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 pub(crate) fn update(store: &Store, id: &str, raw_name: &str, requested: &[String], requested_lead: Option<&str>) -> Result<SharedChannel> {
@@ -149,9 +171,7 @@ pub(crate) fn update(store: &Store, id: &str, raw_name: &str, requested: &[Strin
     let tx = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
     tx.execute("UPDATE bot_shared_channels SET name=?2,lead_bot_id=?3,updated_at=?4 WHERE id=?1", params![id,name,lead,crate::storage::now()]).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM bot_shared_channel_members WHERE channel_id=?1", [id]).map_err(|e| e.to_string())?;
-    for (position, bot_id) in members.iter().enumerate() {
-        tx.execute("INSERT INTO bot_shared_channel_members(channel_id,bot_id,position) VALUES(?1,?2,?3)", params![id,bot_id,position as i64]).map_err(|e| e.to_string())?;
-    }
+    insert_members(store, id, &members)?;
     tx.commit().map_err(|e| e.to_string())?;
     shared_channel(store, id)
 }
@@ -162,18 +182,25 @@ pub(crate) fn set_archived(store: &Store, id: &str, archived: bool) -> Result<()
     Ok(())
 }
 
+/// A channel's latest assignments, newest first (index `bot_shared_channel_deliveries_channel`).
+pub(crate) const CHANNEL_DELIVERIES_SQL: &str = "SELECT d.id,d.bot_id,b.name,d.status,d.created_at FROM bot_shared_channel_deliveries d JOIN bots b ON b.id=d.bot_id WHERE d.channel_id=?1 ORDER BY d.created_at DESC,d.id DESC LIMIT ?2";
+/// A post's deliveries, oldest first (index `bot_shared_channel_deliveries_message`).
+pub(crate) const MESSAGE_DELIVERIES_SQL: &str = "SELECT status,created_at,updated_at FROM bot_shared_channel_deliveries WHERE message_id=?1 ORDER BY created_at,id";
+/// Posts with unfinished work for a bot (index `bot_shared_channel_deliveries_bot_status`).
+pub(crate) const OPEN_POSTS_SQL: &str = "SELECT DISTINCT message_id FROM bot_shared_channel_deliveries WHERE bot_id=?1 AND status IN ('queued','in_progress')";
+
 /// The channel and its latest `limit` history rows (posts, replies and assignments), oldest first.
 pub(crate) fn detail(store: &Store, id: &str, limit: usize) -> Result<SharedChannelDetail> {
     let limit = limit.clamp(1, 10_000);
     let channel = shared_channel(store, id)?;
     let mut messages = Vec::new();
     {
-        let mut statement = store.db.prepare("SELECT id,kind,author_bot_id,text,status,created_at FROM bot_shared_channel_messages WHERE channel_id=?1 ORDER BY created_at DESC,id DESC LIMIT ?2").map_err(|e| e.to_string())?;
+        let mut statement = store.db.prepare_cached("SELECT id,kind,author_bot_id,text,status,created_at FROM bot_shared_channel_messages WHERE channel_id=?1 ORDER BY created_at DESC,id DESC LIMIT ?2").map_err(|e| e.to_string())?;
         let rows = statement.query_map(params![id,limit as i64+1], |r| Ok(SharedChannelMessage { id:r.get(0)?, kind:r.get(1)?, author_bot_id:r.get(2)?, text:r.get(3)?, status:r.get::<_,Option<String>>(4)?.map(status_label), created_at:r.get(5)? })).map_err(|e| e.to_string())?;
         messages.extend(rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?);
     }
     {
-        let mut statement = store.db.prepare("SELECT d.id,d.bot_id,b.name,d.status,d.created_at FROM bot_shared_channel_deliveries d JOIN bots b ON b.id=d.bot_id WHERE d.channel_id=?1 ORDER BY d.created_at DESC,d.id DESC LIMIT ?2").map_err(|e| e.to_string())?;
+        let mut statement = store.db.prepare_cached(CHANNEL_DELIVERIES_SQL).map_err(|e| e.to_string())?;
         let rows = statement.query_map(params![id,limit as i64+1], |r| {
             let bot_id: String = r.get(1)?; let bot_name: String = r.get(2)?;
             Ok(SharedChannelMessage { id:r.get(0)?, kind:"assigned".into(), author_bot_id:Some(bot_id), text:format!("Assigned to {bot_name}"), status:Some(status_label(r.get::<_,String>(3)?)), created_at:r.get(4)? })
@@ -187,7 +214,7 @@ pub(crate) fn detail(store: &Store, id: &str, limit: usize) -> Result<SharedChan
     let has_more = messages.len() > limit;
     let messages = messages.split_off(messages.len().saturating_sub(limit));
     let active_bot_ids = {
-        let mut statement=store.db.prepare("SELECT DISTINCT bot_id FROM bot_shared_channel_deliveries WHERE channel_id=?1 AND status='in_progress' ORDER BY bot_id").map_err(|e|e.to_string())?;
+        let mut statement=store.db.prepare_cached("SELECT DISTINCT bot_id FROM bot_shared_channel_deliveries WHERE channel_id=?1 AND status='in_progress' ORDER BY bot_id").map_err(|e|e.to_string())?;
         let rows=statement.query_map([id],|r|r.get(0)).map_err(|e|e.to_string())?;
         rows.collect::<rusqlite::Result<_>>().map_err(|e|e.to_string())?
     };
@@ -201,13 +228,13 @@ fn status_label(status: String) -> String {
 /// A post's status from its deliveries. A stop or failure is superseded by any attempt made
 /// after it (Continue or Reassign), and a post left with no deliveries (its bot was deleted) is
 /// stopped, so it can be continued.
-fn message_status(store: &Store, message_id: &str) -> Result<String> {
+fn message_status(store: &Store, message_id: &str) -> rusqlite::Result<&'static str> {
     let rows: Vec<(String, i64, i64)> = {
-        let mut statement = store.db.prepare("SELECT status,created_at,updated_at FROM bot_shared_channel_deliveries WHERE message_id=?1 ORDER BY created_at,id").map_err(|e| e.to_string())?;
-        let rows=statement.query_map([message_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
-        rows.collect::<rusqlite::Result<_>>().map_err(|e|e.to_string())?
+        let mut statement = store.db.prepare_cached(MESSAGE_DELIVERIES_SQL)?;
+        let rows = statement.query_map([message_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
     };
-    if rows.is_empty() { return Ok("stopped".into()); }
+    if rows.is_empty() { return Ok("stopped"); }
     let statuses: Vec<&str> = rows.iter()
         .filter(|(status, _, ended_at)| !matches!(status.as_str(), "stopped" | "failed") || !rows.iter().any(|(_, created, _)| created > ended_at))
         .map(|(status, _, _)| status.as_str()).collect();
@@ -216,18 +243,23 @@ fn message_status(store: &Store, message_id: &str) -> Result<String> {
         else if statuses.contains(&"failed") { "failed" }
         else if statuses.contains(&"stopped") { "stopped" }
         else { "completed" };
-    Ok(status.into())
+    Ok(status)
 }
 
 fn update_message_status(store: &Store, message_id: &str) -> Result<()> {
+    settle_post(store, message_id).map_err(|error| error.to_string())
+}
+
+fn settle_post(store: &Store, message_id: &str) -> rusqlite::Result<()> {
     let status = message_status(store, message_id)?;
-    store.db.execute("UPDATE bot_shared_channel_messages SET status=?2 WHERE id=?1", params![message_id,status]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("UPDATE bot_shared_channel_messages SET status=?2 WHERE id=?1")?
+        .execute(params![message_id, status])?;
     Ok(())
 }
 
 /// Posts with unfinished work for `bot_id`, read before a reset or delete cascades its deliveries away.
 pub(crate) fn open_posts(store: &Store, bot_id: &str) -> Result<Vec<String>> {
-    let mut statement = store.db.prepare("SELECT DISTINCT message_id FROM bot_shared_channel_deliveries WHERE bot_id=?1 AND status IN ('queued','in_progress')").map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached(OPEN_POSTS_SQL).map_err(|e| e.to_string())?;
     let rows = statement.query_map([bot_id], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -241,28 +273,97 @@ pub(crate) fn settle_posts(store: &Store, message_ids: &[String]) -> Result<()> 
 /// Runs are not restored for bot deliveries, so a process restart must not leave
 /// old assignments permanently marked as active.
 pub(crate) fn reconcile_in_progress(store: &Store) -> Result<()> {
-    store.db.execute("UPDATE bot_messages SET status='failed',result='Interrupted when PandaCode closed.',updated_at=?1 WHERE status='in_progress'", [crate::storage::now()]).map_err(|e| e.to_string())?;
+    let direct = store.in_transaction_immediate(|| {
+        store.db.execute("UPDATE bot_messages SET status='failed',result='Interrupted when PandaCode closed.',updated_at=?1 WHERE status='in_progress'", [crate::storage::now()]).map_err(|e| e.to_string())
+    });
+    // Commit interrupted deliveries and their posts before decoding any queued messages.
+    let interrupted = store.in_transaction_immediate(|| reconcile_interrupted_deliveries(store));
+    let queued = store.in_transaction_immediate(|| reconcile_queued_deliveries(store));
+    let recovery_error = |result: Result<Vec<String>>| match result {
+        Ok(errors) if errors.is_empty() => None,
+        Ok(errors) => Some(errors.join("; ")),
+        Err(error) => Some(error),
+    };
+    let errors: Vec<_> = [
+        ("direct bot messages", direct.err()),
+        ("interrupted shared-channel deliveries", recovery_error(interrupted)),
+        ("queued shared-channel deliveries", recovery_error(queued)),
+    ].into_iter().filter_map(|(phase, error)| error.map(|error| (phase, error))).collect();
+    match errors.as_slice() {
+        [] => Ok(()),
+        [(_, error)] => Err(error.clone()),
+        _ => Err(errors.into_iter().map(|(phase, error)| format!("{phase}: {error}")).collect::<Vec<_>>().join("; ")),
+    }
+}
+
+fn reconcile_interrupted_deliveries(store: &Store) -> Result<Vec<String>> {
+    let posts = recovery_posts(
+        store,
+        "SELECT id FROM bot_shared_channel_messages WHERE kind='user'
+         AND (status='in_progress' OR id IN (
+             SELECT message_id FROM bot_shared_channel_deliveries WHERE status='in_progress'
+         ))",
+    )?;
     store.db.execute("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?1 WHERE status='in_progress'", [crate::storage::now()]).map_err(|e| e.to_string())?;
+    settle_recovery_posts(store, posts, Vec::new())
+}
+
+fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
+    let rollback = RollbackGuard::new(&store.db);
     // A queued assignment whose queue entry is gone was taken just before PandaCode closed.
     let queued: Vec<(String,String,String,String)> = {
         let mut statement = store.db.prepare("SELECT d.id,d.session_id,c.name,m.text FROM bot_shared_channel_deliveries d JOIN bot_shared_channel_messages m ON m.id=d.message_id JOIN bot_shared_channels c ON c.id=d.channel_id WHERE d.status='queued'").map_err(|e| e.to_string())?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
     };
+    let mut session_errors = Vec::new();
     for (id, session_id, name, text) in queued {
+        let queue = match message_queue::list(store, Some(&session_id)) {
+            Ok(queue) => queue,
+            // list returns strings. Only rusqlite row-decoding errors are safe to skip.
+            Err(error) if !rollback.rolled_back()
+                && (error.starts_with("Invalid column type ")
+                    || error.starts_with("Conversion error from type ")) =>
+            {
+                session_errors.push(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let prefix = format!("Work requested in #{name}:");
-        if !message_queue::list(store, Some(&session_id))?.iter().any(|item| prompt_matches(&item.text, &prefix, &text)) {
-            store.db.execute("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?2 WHERE id=?1", params![id,crate::storage::now()]).map_err(|e| e.to_string())?;
+        if !queue.iter().any(|item| prompt_matches(&item.text, &prefix, &text)) {
+            store.db.prepare_cached("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?2 WHERE id=?1").and_then(|mut statement| statement.execute(params![id,crate::storage::now()])).map_err(|e| e.to_string())?;
         }
     }
-    let messages = {
-        let mut statement = store.db.prepare("SELECT id FROM bot_shared_channel_messages WHERE kind='user' AND status IN ('queued','in_progress')").map_err(|e| e.to_string())?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| e.to_string())?
-    };
-    for id in messages { update_message_status(store, &id)?; }
-    Ok(())
+    let posts = recovery_posts(
+        store,
+        "SELECT id FROM bot_shared_channel_messages WHERE kind='user' AND status IN ('queued','in_progress')",
+    )?;
+    settle_recovery_posts(store, posts, session_errors)
 }
+
+fn settle_recovery_posts(store: &Store, posts: Vec<String>, mut errors: Vec<String>) -> Result<Vec<String>> {
+    // Keep SQLite failures distinct from malformed delivery fields.
+    for id in posts {
+        match settle_post(store, &id) {
+            Ok(()) => {}
+            Err(error @ (rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..)))
+                if !store.db.is_autocommit() => errors.push(format!("Post {id}: {error}")),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(errors)
+}
+
+fn recovery_posts(store: &Store, sql: &str) -> Result<Vec<String>> {
+    let mut statement = store.db.prepare(sql).map_err(|error| error.to_string())?;
+    let rows = statement.query_map([], |row| row.get(0)).map_err(|error| error.to_string())?;
+    rows.collect::<rusqlite::Result<_>>().map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+#[path = "shared_channels_tests.rs"]
+mod tests;
 
 /// The post, then the channel's latest other posts and replies, so the assigned bot can build on
 /// what the user and other members already said.
@@ -367,8 +468,8 @@ pub(crate) async fn deliver_bot_message(app: &tauri::AppHandle, source: &Bot, so
 }
 
 pub(crate) fn current_hop_depth(store: &Store, session_id: &str) -> Result<u8> {
-    let direct: i64 = store.db.query_row("SELECT COALESCE(MAX(depth),0) FROM bot_messages WHERE target_session_id=?1 AND status='in_progress'", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-    let channel: i64 = store.db.query_row("SELECT COALESCE(MAX(d.depth),0) FROM bot_shared_channel_deliveries d WHERE d.session_id=?1 AND d.status='in_progress'", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let direct: i64 = store.db.prepare_cached("SELECT COALESCE(MAX(depth),0) FROM bot_messages WHERE target_session_id=?1 AND status='in_progress'").and_then(|mut statement| statement.query_row([session_id], |r| r.get(0))).map_err(|e| e.to_string())?;
+    let channel: i64 = store.db.prepare_cached("SELECT COALESCE(MAX(d.depth),0) FROM bot_shared_channel_deliveries d WHERE d.session_id=?1 AND d.status='in_progress'").and_then(|mut statement| statement.query_row([session_id], |r| r.get(0))).map_err(|e| e.to_string())?;
     // A delegated bot's result becomes a new user message in the sender's ordinary task.
     // Recover that request's depth from the matching "Update from …" message so a queued
     // follow-up cannot reset the three-hop guard when a reply starts another turn.

@@ -140,10 +140,10 @@ pub fn ensure_on_this_machine(store: &Mutex<Store>, sid: &str) -> Result<(), Str
     let store = store.lock().map_err(|e| e.to_string())?;
     let elsewhere: bool = store
         .db
-        .query_row("SELECT remote_device IS NOT NULL OR cloud IS NOT NULL FROM sessions WHERE id=?1", [sid], |r| r.get(0))
-        .optional()
+        .prepare_cached("SELECT remote_device IS NOT NULL OR cloud IS NOT NULL FROM sessions WHERE id=?1")
+        .and_then(|mut statement| statement.query_row([sid], |r| r.get(0)).optional())
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| String::from("Conversation not found."))?;
+        .ok_or_else(|| String::from(crate::storage::SESSION_NOT_FOUND))?;
     if elsewhere {
         Err(crate::tool_images::ERR_ELSEWHERE.into())
     } else {

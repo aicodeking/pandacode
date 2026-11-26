@@ -76,6 +76,8 @@ mod slash_commands;
 mod recipes;
 mod schedules;
 mod storage;
+#[cfg(test)]
+mod storage_bench;
 mod subagent_state;
 mod support;
 mod task_controls;
@@ -381,11 +383,36 @@ mod concurrent_task_tests;
 fn reconcile_inactive_task(
     store: &Store,
     agents: &HashMap<String, RunningAgent>,
+    task: Session,
+) -> Session {
+    reconcile_inactive_task_with_active(store, agents, None, task)
+}
+
+/// `tasks` as a listing shows them: every working team is read once
+/// (`architect::active_team_session_ids`) instead of once per task; if that read fails, each task
+/// falls back to its own lookup.
+pub(crate) fn reconcile_listed(store: &Store, agents: &HashMap<String, RunningAgent>, tasks: Vec<Session>) -> Vec<Session> {
+    let active_teams = architect::active_team_session_ids(store).ok();
+    tasks
+        .into_iter()
+        .map(|task| reconcile_inactive_task_with_active(store, agents, active_teams.as_ref(), task))
+        .collect()
+}
+
+/// `reconcile_inactive_task` with the working teams already known (`None` reads this task's).
+fn reconcile_inactive_task_with_active(
+    store: &Store,
+    agents: &HashMap<String, RunningAgent>,
+    active_teams: Option<&HashSet<String>>,
     mut task: Session,
 ) -> Session {
+    let team_active = match active_teams {
+        Some(leads) => leads.contains(&task.id),
+        None => architect::is_active(store, &task.id),
+    };
     // Team coordination continues while the architect process is between review rounds.
     // The raw row remains idle for internal admission; the UI sees logical activity.
-    if architect::is_active(store, &task.id) {
+    if team_active {
         if !agents.contains_key(&task.id) {
             task.status = "waiting".into();
         }
@@ -511,6 +538,27 @@ mod task_agent_tests {
         assert_eq!(listed(r#"{"status":"waiting"}"#), "waiting");
         assert_eq!(listed(r#"{"status":"paused"}"#), "idle");
         assert_eq!(listed("not json"), "idle");
+    }
+
+    #[test]
+    fn a_listing_reads_every_working_team_once_with_the_same_answer_as_each_task() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let contents = [Some(r#"{"status":"running"}"#), Some(r#"{"status":"waiting"}"#), Some(r#"{"status":"paused"}"#), Some("not json"), None];
+        let tasks = contents.map(|content| {
+            let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            if let Some(content) = content {
+                store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", rusqlite::params![task.id, content]).unwrap();
+            }
+            task.id
+        });
+        let leads = architect::active_team_session_ids(&store).unwrap();
+        assert_eq!(leads, tasks[..2].iter().cloned().collect::<HashSet<_>>());
+        for id in &tasks {
+            let one = reconcile_inactive_task(&store, &HashMap::new(), store.session(id).unwrap());
+            let batched = reconcile_inactive_task_with_active(&store, &HashMap::new(), Some(&leads), store.session(id).unwrap());
+            assert_eq!((one.status, one.task_stage), (batched.status, batched.task_stage));
+        }
     }
 
     #[test]
@@ -775,13 +823,17 @@ struct AppState {
     shutdown: AtomicU8,
 }
 impl AppState {
+    /// `Store::workspace_root`, with only its rows read under the store lock: the folder checks
+    /// (`canonicalize`, `is_dir`, `.git`) touch the disk and run after the lock is released.
     fn root(&self, project_id: &str, session_id: Option<&str>) -> Result<PathBuf> {
-        self.store
-            .lock()
-            .map_err(|e| e.to_string())?
-            .workspace_root(project_id, session_id)
+        let (project_path, worktree) = {
+            let store = self.store.lock().map_err(|e| e.to_string())?;
+            store.workspace_paths(project_id, session_id)?
+        };
+        storage::resolve_workspace_root(project_path, worktree)
     }
 }
+
 /// Fixed instructions for every task turn: sidebar titles, the run script, change tracking.
 /// Projectless chats have nothing to run, so they skip the run script. Managed team workers
 /// report to their lead, not the user: no titles (they never get a title run), run script,
@@ -943,18 +995,27 @@ async fn add_project(state: State<'_, AppState>, path: String) -> Result<Project
 async fn remove_project(state: State<'_, AppState>, project_id: String) -> Result<()> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    for session_id in agents.keys() {
-        if store.session(session_id)?.project_id == project_id {
-            return Err("Stop this project's agents first.".into());
+    {
+        use rusqlite::OptionalExtension;
+        // Only each running task's project is needed, never its full row.
+        let mut project_of = store
+            .db
+            .prepare_cached("SELECT project_id FROM sessions WHERE id=?1")
+            .map_err(|e| e.to_string())?;
+        for session_id in agents.keys() {
+            let owner: String = project_of
+                .query_row([session_id], |r| r.get(0))
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| String::from(storage::SESSION_NOT_FOUND))?;
+            if owner == project_id {
+                return Err("Stop this project's agents first.".into());
+            }
         }
-    }
-    let active_team:bool=store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id WHERE s.project_id=?1 AND json_extract(t.content,'$.status') IN ('running','waiting'))",[&project_id],|r|r.get(0)).map_err(|e|e.to_string())?;
-    if active_team {
-        return Err("Stop this project's architect teams first.".into());
     }
     // Read before the project (and its threads) go, so their Colab runtime claims can be freed.
     let session_ids = project_session_ids(&store, &project_id)?;
-    let removed = store.remove_project(&project_id);
+    let removed = remove_project_with_team_check(&store, &project_id);
     drop(store);
     if removed.is_ok() {
         cloud::colab::activity::forget_sessions(&session_ids);
@@ -967,6 +1028,148 @@ fn project_session_ids(store: &storage::Store, project_id: &str) -> Result<Vec<S
     let ids = stmt.query_map([project_id], |r| r.get(0)).map_err(|e| e.to_string())?;
     ids.collect::<rusqlite::Result<Vec<String>>>().map_err(|e| e.to_string())
 }
+
+pub(crate) fn remove_project_with_team_check(store: &Store, project_id: &str) -> Result<()> {
+    store.in_transaction_immediate(|| {
+        // Check the saved snapshots before cascading deletion, even if tracker rows are missing.
+        let team_checks = "SELECT EXISTS(
+             SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+             WHERE s.project_id=?1
+               AND CASE WHEN json_valid(t.content, 6) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
+         ), EXISTS(
+             SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+             WHERE s.project_id=?1 AND NOT json_valid(t.content, 6)
+         )";
+        let (active_team, malformed_team): (bool, bool) = store.db
+            .prepare_cached(team_checks)
+            .and_then(|mut query| query.query_row([project_id], |row| Ok((row.get(0)?, row.get(1)?))))
+            .map_err(|error| error.to_string())?;
+        if active_team {
+            return Err("Stop this project's architect teams first.".into());
+        }
+        if malformed_team {
+            return Err("Cannot remove this project: a saved architect team snapshot is malformed JSON.".into());
+        }
+        store.remove_project(project_id)
+    })
+}
+
+#[cfg(test)]
+mod project_removal_tests {
+    use super::*;
+
+    fn assert_removal_rejects_untracked_team(snapshot: &str, expected: &str) {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(store.team_meta_usable());
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        store.db.execute(
+            "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+            [session.id.as_str(), snapshot],
+        ).unwrap();
+        assert_eq!(store.db.execute("DELETE FROM architect_team_meta", []).unwrap(), 1);
+
+        assert_eq!(remove_project_with_team_check(&store, &project.id), Err(expected.into()));
+        assert!(store.project(&project.id).is_ok());
+        let content: String = store.db.query_row(
+            "SELECT content FROM architect_teams WHERE session_id=?1",
+            [&session.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, snapshot);
+    }
+
+    #[test]
+    fn project_removal_rejects_untracked_running_team() {
+        assert_removal_rejects_untracked_team(
+            r#"{"status":"running"}"#,
+            "Stop this project's architect teams first.",
+        );
+    }
+
+    #[test]
+    fn project_removal_rejects_untracked_json5_team() {
+        assert_removal_rejects_untracked_team(
+            "{status:'running',}",
+            "Stop this project's architect teams first.",
+        );
+    }
+
+    #[test]
+    fn project_removal_allows_completed_json5_team_snapshots() {
+        use crate::storage::{id, SCHEMA_VERSION};
+
+        for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
+            let path = std::env::temp_dir().join(format!("pandacode-project-removal-{}.db", id()));
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                [session.id.as_str(), "{status:'completed',}"],
+            ).unwrap();
+            store.db.pragma_update(None, "user_version", version).unwrap();
+            drop(store);
+
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.team_meta_usable(), version == SCHEMA_VERSION);
+            let result = remove_project_with_team_check(&store, &project.id);
+            let project_preserved = store.project(&project.id).is_ok();
+            drop(store);
+            std::fs::remove_file(path).unwrap();
+            assert_eq!(
+                result,
+                Ok(()),
+                "schema v{version}",
+            );
+            assert!(!project_preserved, "schema v{version}");
+        }
+    }
+
+    #[test]
+    fn project_removal_guards_active_and_malformed_team_snapshots() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
+        let save_snapshot = |content: &str| {
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)
+                 ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",
+                [session.id.as_str(), content],
+            ).unwrap();
+        };
+        for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
+            save_snapshot(snapshot);
+            assert_eq!(
+                remove_project_with_team_check(&store, &project.id),
+                Err("Stop this project's architect teams first.".into()),
+            );
+        }
+
+        let malformed = r#"{"status":"completed""#;
+        save_snapshot(malformed);
+        assert!(remove_project_with_team_check(&store, &project.id).unwrap_err().contains("malformed JSON"));
+        assert!(store.project(&project.id).is_ok());
+        assert!(store.session(&session.id).is_ok());
+        let content: String = store.db.query_row(
+            "SELECT content FROM architect_teams WHERE session_id=?1",
+            [&session.id],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(content, malformed);
+
+        save_snapshot(r#"{"status":"completed"}"#);
+        remove_project_with_team_check(&store, &project.id).unwrap();
+        assert!(store.project(&project.id).is_err());
+        assert!(store.session(&session.id).is_err());
+        assert!(!store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)",
+            [&session.id],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+}
+
 #[tauri::command]
 async fn relink_project(state: State<'_, AppState>, project_id: String, path: String) -> Result<Project> {
     let (project, worktrees) = {
@@ -1010,11 +1213,8 @@ async fn sessions_missing(state: State<'_, AppState>, ids: Vec<String>) -> Resul
 pub(crate) fn listed_sessions(state: &AppState) -> Result<Vec<Session>> {
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    Ok(store
-        .sessions()?
-        .into_iter()
-        .map(|task| reconcile_inactive_task(&store, &agents, task))
-        .collect())
+    let tasks = store.sessions()?;
+    Ok(reconcile_listed(&store, &agents, tasks))
 }
 #[tauri::command]
 async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, enabled: bool) -> Result<Session> {
@@ -1526,10 +1726,8 @@ fn save_agent_activity(
                 return Err("Task settings are too large.".into());
             }
             db.db
-                .execute(
-                    "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-                    rusqlite::params![activity.session_id, data],
-                )
+                .prepare_cached("UPDATE sessions SET codex_settings=?2 WHERE id=?1")
+                .and_then(|mut update| update.execute(rusqlite::params![activity.session_id, data]))
                 .map_err(|error| error.to_string())?;
             Ok(())
         }
@@ -1562,11 +1760,12 @@ fn save_agent_activity(
             // updates must not split that response. Reuse the persisted unique
             // tool index instead of keeping an unbounded per-turn ID cache.
             let starts_tool = match &activity.tool {
-                Some(tool) => db.db.query_row(
+                Some(tool) => db.db.prepare_cached(
                     "SELECT NOT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND tool_id=?2)",
+                ).and_then(|mut query| query.query_row(
                     rusqlite::params![activity.session_id, tool.id],
                     |row| row.get::<_, bool>(0),
-                ).map_err(|error| error.to_string())?,
+                )).map_err(|error| error.to_string())?,
                 None => true,
             };
             let flushed = if activity.kind == "error" || starts_tool {
@@ -1604,12 +1803,12 @@ fn recipes_dir(app: &tauri::AppHandle, state: &State<'_, AppState>, project_id: 
     if scope == "global" {
         return Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recipes"));
     }
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(project_id, None)?;
+    let root = state.root(project_id, None)?;
     Ok(recipes::project_dir(&root))
 }
 #[tauri::command]
 async fn recipes_list(app: tauri::AppHandle, state: State<'_, AppState>, project_id: String) -> Result<Vec<recipes::Recipe>> {
-    let root = state.store.lock().map_err(|e| e.to_string())?.workspace_root(&project_id, None).ok();
+    let root = state.root(&project_id, None).ok();
     let global = recipes_dir(&app, &state, &project_id, "global")?;
     blocking(move || Ok(recipes::list(root.as_deref(), &global))).await
 }
@@ -2906,8 +3105,14 @@ async fn launch_operation_admitted(
                 .lock()
                 .map(|error| error.is_none())
                 .unwrap_or(false);
-            if let Ok(task) = db.session(&session_id) {
-                if let Some(mut goal) = task.goal_state.filter(|g| g.status == "active") {
+            // Only the goal is read here, parsed as `Store::session` does (unreadable is none).
+            let saved_goal = db
+                .db
+                .prepare_cached("SELECT goal_state FROM sessions WHERE id=?1")
+                .and_then(|mut query| query.query_row([&session_id], |row| row.get::<_, Option<String>>(0)));
+            if let Ok(saved_goal) = saved_goal {
+                let saved_goal = goal_state::GoalState::parse(saved_goal.as_deref());
+                if let Some(mut goal) = saved_goal.filter(|g| g.status == "active") {
                     goal.status = "paused".into();
                     if db.record_goal(&session_id, Some(&goal)).is_ok() {
                         let mut e = event(&session_id, "goal", "");
@@ -2932,8 +3137,10 @@ async fn launch_operation_admitted(
             if successful {
                 if let Some(through) = context_handoff {
                     let resumed = db
-                        .session(&session_id)
-                        .is_ok_and(|task| task.resume_id.is_some_and(|id| !id.trim().is_empty()));
+                        .db
+                        .prepare_cached("SELECT resume_id FROM sessions WHERE id=?1")
+                        .and_then(|mut query| query.query_row([&session_id], |row| row.get::<_, Option<String>>(0)))
+                        .is_ok_and(|resume_id| resume_id.is_some_and(|id| !id.trim().is_empty()));
                     if resumed {
                         if let Err(error) = context_recovery::acknowledge(&db, &session_id, through)
                         {
@@ -3035,11 +3242,12 @@ async fn launch_operation_admitted(
         if let (true, Some((mut next, (tools, approvals)))) = (successful && !was_stopped, warm_next) {
             // A turn that ended without any reply (seen after background commands) may have
             // left the session in a state a spare would inherit: start the next one fresh.
-            let replied = store.lock().ok().and_then(|db| db.db.query_row(
+            let replied = store.lock().ok().and_then(|db| db.db.prepare_cached(
                 "SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')))",
+            ).and_then(|mut query| query.query_row(
                 [&session_id],
                 |row| row.get::<_, bool>(0),
-            ).ok()).unwrap_or(false);
+            )).ok()).unwrap_or(false);
             // A lead whose workers are still unsettled is woken only after they settle, often
             // past the spare's idle limit: skip the spare (the wake starts cold, ~1.4 s).
             let lead = team.as_ref().is_some_and(|admission| admission.parent == session_id);

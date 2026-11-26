@@ -71,9 +71,20 @@ pub(crate) fn reserve_install(state: &crate::AppState) -> Result<InstallGuard> {
     if busy("SELECT EXISTS(SELECT 1 FROM sessions WHERE json_valid(goal_state) AND json_extract(goal_state,'$.status')='active')", "Goal")? {
         return Err("Pause active goals before updating an agent.".into());
     }
-    // Admission must inspect every team, including coordinators between turns.
-    if busy("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting'))", "Team")? {
-        return Err("Pause active teams before updating an agent.".into());
+    // Read the saved snapshots directly so a missing tracker row cannot admit an install.
+    // Accept JSON5 snapshots, like json_extract, and report malformed snapshots separately.
+    let team_checks = "SELECT EXISTS(
+         SELECT 1 FROM architect_teams
+         WHERE CASE WHEN json_valid(content, 6) THEN json_extract(content,'$.status') END IN ('running','waiting')
+     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content, 6))";
+    let (active_team, malformed_team): (bool, bool) = store.db
+        .query_row(team_checks, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|_| "Team state is unavailable.")?;
+    if active_team {
+        return Err("Finish running teams before updating an agent.".into());
+    }
+    if malformed_team {
+        return Err("Cannot update an agent while a saved team snapshot is malformed JSON.".into());
     }
     if INSTALLING.swap(true, Ordering::SeqCst) {
         return Err("An agent update is already being installed.".into());
@@ -702,6 +713,87 @@ pub async fn update_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_install_rejects_untracked_team(snapshot: &str, expected: &str) {
+        let (state, project_id) = crate::concurrent_task_tests::test_state();
+        {
+            let store = state.store.lock().unwrap();
+            assert!(store.team_meta_usable());
+            let task = store.create_session(&project_id, "codex", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                [task.id.as_str(), snapshot],
+            ).unwrap();
+            assert_eq!(store.db.execute("DELETE FROM architect_team_meta", []).unwrap(), 1);
+        }
+        assert_eq!(reserve_install(&state).err().as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn install_admission_rejects_untracked_running_team() {
+        assert_install_rejects_untracked_team(
+            r#"{"status":"running"}"#,
+            "Finish running teams before updating an agent.",
+        );
+    }
+
+    #[test]
+    fn install_admission_rejects_untracked_json5_team() {
+        assert_install_rejects_untracked_team(
+            "{status:'running',}",
+            "Finish running teams before updating an agent.",
+        );
+    }
+
+    #[test]
+    fn install_admission_guards_active_and_malformed_team_snapshots() {
+        use crate::storage::{id, Store, SCHEMA_VERSION};
+
+        let (state, _) = crate::concurrent_task_tests::test_state();
+        for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
+            let path = std::env::temp_dir().join(format!("pandacode-agent-updates-{}.db", id()));
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')",
+                [&task.id],
+            ).unwrap();
+            store.db.pragma_update(None, "user_version", version).unwrap();
+            drop(store);
+            *state.store.lock().unwrap() = Store::open(&path).unwrap();
+
+            let set_snapshot = |snapshot| {
+                state.store.lock().unwrap().db.execute(
+                    "UPDATE architect_teams SET content=?1 WHERE session_id=?2",
+                    rusqlite::params![snapshot, task.id],
+                ).unwrap();
+            };
+            assert_eq!(state.store.lock().unwrap().team_meta_usable(), version == SCHEMA_VERSION);
+            for snapshot in ["{not valid", "{"] {
+                set_snapshot(snapshot);
+                assert_eq!(
+                    reserve_install(&state).err().as_deref(),
+                    Some("Cannot update an agent while a saved team snapshot is malformed JSON."),
+                    "schema v{version}, snapshot {snapshot:?}",
+                );
+            }
+            for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
+                set_snapshot(snapshot);
+                assert_eq!(
+                    reserve_install(&state).err().as_deref(),
+                    Some("Finish running teams before updating an agent."),
+                );
+            }
+            for snapshot in [r#"{"status":"completed"}"#, "{status:'completed',}"] {
+                set_snapshot(snapshot);
+                drop(reserve_install(&state).expect("a completed team allows admission"));
+            }
+
+            *state.store.lock().unwrap() = Store::open(std::path::Path::new(":memory:")).unwrap();
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn parses_bounded_agent_versions_without_lexical_order_or_command_fragments() {

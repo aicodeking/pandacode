@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::{Emitter, Manager, State};
 
-pub(crate) const SCHEMA: &str = "
+macro_rules! bots_table {
+    () => { "
 CREATE TABLE IF NOT EXISTS bots(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -51,7 +52,20 @@ CREATE TABLE IF NOT EXISTS bots(
   while_working TEXT NOT NULL DEFAULT 'queue',
   show_plan INTEGER NOT NULL DEFAULT 0 CHECK(show_plan IN (0,1)),
   skills TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(skills)),
-  mcp TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(mcp)));
+  mcp TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(mcp)));"
+    };
+}
+
+macro_rules! bot_tasks_table {
+    () => { "
+CREATE TABLE IF NOT EXISTS bot_tasks(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  brief_version INTEGER NOT NULL DEFAULT -1);"
+    };
+}
+
+pub(crate) const SCHEMA: &str = concat!(bots_table!(), "
 CREATE TABLE IF NOT EXISTS bot_memories(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -107,11 +121,7 @@ CREATE TABLE IF NOT EXISTS bot_pairings(
   status TEXT NOT NULL CHECK(status IN ('pending','approved','blocked')),
   code TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY(channel_id,sender_id));
-CREATE TABLE IF NOT EXISTS bot_tasks(
-  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  brief_version INTEGER NOT NULL DEFAULT -1);
+  PRIMARY KEY(channel_id,sender_id));", bot_tasks_table!(), "
 CREATE TABLE IF NOT EXISTS bot_rules(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -168,7 +178,7 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   CHECK(source_bot_id<>target_bot_id));
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
-";
+");
 
 /// Profile columns added after the bots table first shipped (schema 25). Fresh databases get
 /// them from `SCHEMA`; `upgrade` adds whichever are missing, so it is safe to run every start.
@@ -182,17 +192,49 @@ const ADDED_COLUMNS: [(&str, &str); 7] = [
     ("show_plan", "INTEGER NOT NULL DEFAULT 0 CHECK(show_plan IN (0,1))"),
 ];
 
-pub(crate) fn upgrade(db: &rusqlite::Connection) -> Result<()> {
+/// Indexes for the bot queries that read past a handful of rows (shared-channel deliveries,
+/// model-switch history, a project's bots). Run by `upgrade` once every bot table and column
+/// exists. Storage setup and bot startup install them. The small per-bot
+/// tables (channels, tasks, rules, schedules, members, bot messages) stay unindexed by `bot_id`:
+/// each holds a few rows per bot, and an index would only add writes.
+/// `bots_project` is `PROJECT_INDEX`, created only when `bots.project_id` exists.
+pub(crate) const INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_message ON bot_shared_channel_deliveries(message_id,created_at,id);
+CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_channel ON bot_shared_channel_deliveries(channel_id,created_at,id);
+CREATE INDEX IF NOT EXISTS bot_shared_channel_deliveries_bot_status ON bot_shared_channel_deliveries(bot_id,status);
+CREATE INDEX IF NOT EXISTS bot_activity_model_switch ON bot_activity(id DESC) WHERE kind='model-switch';";
+/// A project's bots (its foreign-key check when a project is deleted, and lookups by project).
+/// `bots.project_id` is in the original table, but `upgrade` never adds it, so a table lacking
+/// it is left unindexed rather than failing.
+pub(crate) const PROJECT_INDEX: &str = "CREATE INDEX IF NOT EXISTS bots_project ON bots(project_id);";
+
+fn has_bot_column(db: &rusqlite::Connection, name: &str) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)",
+        [name],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+pub(crate) fn upgrade_schema(db: &rusqlite::Connection) -> Result<()> {
     // Bot databases at schema 27 already exist in the wild. Keep these tables idempotent
     // here instead of bumping the app-wide schema version for this bot-only feature.
     db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     for (name, definition) in ADDED_COLUMNS {
-        let exists: bool = db
-            .query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)", [name], |r| r.get(0))
-            .map_err(|e| e.to_string())?;
-        if !exists {
-            db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};")).map_err(|e| e.to_string())?;
+        if !has_bot_column(db, name)? {
+            db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {name} {definition};"))
+                .map_err(|e| e.to_string())?;
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade(db: &rusqlite::Connection) -> Result<()> {
+    upgrade_schema(db)?;
+    db.execute_batch(INDEXES).map_err(|e| e.to_string())?;
+    if has_bot_column(db, "project_id")? {
+        db.execute_batch(PROJECT_INDEX).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -449,8 +491,9 @@ mod avatar_tests {
 
 /// Adds the `soul` column to a bots table created before it existed (schema 28). Idempotent.
 pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
-    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name='soul')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if !exists {
+    // A partial legacy bot schema can block indexes on unrelated tables.
+    db.execute_batch(bots_table!()).map_err(|e| e.to_string())?;
+    if !has_bot_column(db, "soul")? {
         db.execute_batch("ALTER TABLE bots ADD COLUMN soul TEXT NOT NULL DEFAULT '';").map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -458,13 +501,13 @@ pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
 
 /// Adds bot skill and MCP references and the task-to-bot links (schema 29). Idempotent.
 pub(crate) fn migrate_capabilities(db: &rusqlite::Connection) -> Result<()> {
+    db.execute_batch(concat!(bots_table!(), bot_tasks_table!())).map_err(|e| e.to_string())?;
     for column in ["skills", "mcp"] {
-        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)", [column], |r| r.get(0)).map_err(|e| e.to_string())?;
-        if !exists {
+        if !has_bot_column(db, column)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]' CHECK(json_valid({column}));")).map_err(|e| e.to_string())?;
         }
     }
-    db.execute_batch(SCHEMA).map_err(|e| e.to_string())
+    Ok(())
 }
 
 const MAX_REFERENCES: usize = 50;
@@ -550,14 +593,14 @@ pub(crate) fn workspace_root() -> PathBuf {
 pub(crate) fn get(store: &Store, id: &str) -> Result<Bot> {
     store
         .db
-        .query_row(&format!("SELECT {BOT_COLUMNS} FROM bots WHERE id=?1"), [id], bot_row)
-        .optional()
+        .prepare_cached(&format!("SELECT {BOT_COLUMNS} FROM bots WHERE id=?1"))
+        .and_then(|mut statement| statement.query_row([id], bot_row).optional())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This bot no longer exists.".into())
 }
 
 pub(crate) fn list(store: &Store) -> Result<Vec<Bot>> {
-    let mut statement = store.db.prepare(&format!("SELECT {BOT_COLUMNS} FROM bots ORDER BY created_at")).map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached(&format!("SELECT {BOT_COLUMNS} FROM bots ORDER BY created_at")).map_err(|e| e.to_string())?;
     let rows = statement.query_map([], bot_row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -653,38 +696,194 @@ pub(crate) fn reset(store: &Store, id: &str) -> Result<Bot> {
 
 /// Deletes the bot and its records. Its workspace folder stays on disk.
 pub(crate) fn delete(store: &Store, id: &str) -> Result<()> {
-    let open = shared_channels::open_posts(store, id)?;
-    store.db.execute("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)", [id]).map_err(|e| e.to_string())?;
-    let channels: Vec<String> = {
-        let mut statement = store.db.prepare("SELECT id FROM bot_channels WHERE bot_id=?1").map_err(|e| e.to_string())?;
-        let rows = statement.query_map([id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
-    };
+    let channels: Vec<String> = store.in_transaction_immediate(|| {
+        let open = shared_channels::open_posts(store, id)?;
+        store.db.prepare_cached("DELETE FROM sessions WHERE id IN (SELECT session_id FROM bot_threads WHERE bot_id=?1)").and_then(|mut statement| statement.execute([id])).map_err(|e| e.to_string())?;
+        let channels: Vec<String> = {
+            let mut statement = store.db.prepare_cached("SELECT id FROM bot_channels WHERE bot_id=?1").map_err(|e| e.to_string())?;
+            let rows = statement.query_map([id], |r| r.get(0)).map_err(|e| e.to_string())?;
+            rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
+        };
+        store.db.prepare_cached("DELETE FROM bots WHERE id=?1").and_then(|mut statement| statement.execute([id])).map_err(|e| e.to_string())?;
+        shared_channels::settle_posts(store, &open)?;
+        Ok(channels)
+    })?;
+    // Secrets go once the records are: a failed delete leaves the bot whole.
     for channel in channels {
         secrets::remove_all(&channel);
     }
-    store.db.execute("DELETE FROM bots WHERE id=?1", [id]).map_err(|e| e.to_string())?;
-    shared_channels::settle_posts(store, &open)?;
     Ok(())
 }
 
+/// Activity rows kept per bot; older ones are trimmed as new ones are logged.
+const ACTIVITY_CAP: i64 = 5000;
+
+/// Appends one activity row in autocommit mode or in the caller's transaction. The Store lock
+/// keeps the `MAX(id)` read and the insert together. The occasional trim is a separate statement.
+/// A trim failure is logged and deferred to the next rowid block if the insert survives.
+/// If SQLite rolls back the caller's transaction during the trim, the trim error is returned.
 pub(crate) fn log(store: &Store, bot_id: &str, kind: &str, summary: &str, detail: Value) -> Result<()> {
+    let (summary, detail) = (clean(summary, 300), detail.to_string());
+    // The bot's newest row before this insert: one seek of `bot_activity_bot(bot_id,id)`.
+    let previous: Option<i64> = store
+        .db
+        .prepare_cached("SELECT MAX(id) FROM bot_activity WHERE bot_id=?1")
+        .and_then(|mut statement| statement.query_row([bot_id], |r| r.get(0)))
+        .map_err(|e| e.to_string())?;
     store
         .db
-        .execute("INSERT INTO bot_activity(bot_id,kind,summary,detail,at) VALUES(?1,?2,?3,?4,?5)", params![bot_id, kind, clean(summary, 300), detail.to_string(), crate::storage::now()])
+        .prepare_cached("INSERT INTO bot_activity(bot_id,kind,summary,detail,at) VALUES(?1,?2,?3,?4,?5)")
+        .and_then(|mut statement| statement.execute(params![bot_id, kind, summary, detail, crate::storage::now()]))
         .map_err(|e| e.to_string())?;
-    // Keep the audit trail bounded per bot.
-    store
-        .db
-        .execute("DELETE FROM bot_activity WHERE bot_id=?1 AND id <= (SELECT id FROM bot_activity WHERE bot_id=?1 ORDER BY id DESC LIMIT 1 OFFSET 5000)", [bot_id])
-        .map_err(|e| e.to_string())?;
+    let inserted = store.db.last_insert_rowid();
+    if trim_due(previous, inserted) {
+        // The cutoff walks ACTIVITY_CAP entries of the covering `bot_activity_bot(bot_id,id)`
+        // index (no table rows read).
+        let guard = crate::storage::RollbackGuard::new(&store.db);
+        let trimmed = store
+            .db
+            .prepare_cached("DELETE FROM bot_activity WHERE bot_id=?1 AND id <= (SELECT id FROM bot_activity WHERE bot_id=?1 ORDER BY id DESC LIMIT 1 OFFSET ?2)")
+            .and_then(|mut statement| statement.execute(params![bot_id, ACTIVITY_CAP]));
+        if let Err(error) = trimmed {
+            if guard.rolled_back() {
+                return Err(error.to_string());
+            }
+            eprintln!("Trimming bot {bot_id} activity: {error}");
+        }
+    }
     Ok(())
+}
+
+/// Rowid block width for the periodic trim in `log`.
+const TRIM_EVERY: i64 = 128;
+
+/// Whether `log` trims after inserting row `inserted`, given the bot's newest row before it.
+///
+/// Trimming walks ACTIVITY_CAP index entries, so it runs only when this insert enters a new
+/// block of TRIM_EVERY rowids for this bot (always when `inserted % 128 == 0` follows an older
+/// row), or when the bot had no row. Rowids are AUTOINCREMENT, so increasing and never reused:
+/// a run of untrimmed inserts and the insert before it all fall in one block of 128 ids, so at
+/// most 127 rows land between trims, even with other bots' rows interleaved. A bot therefore
+/// holds at most ACTIVITY_CAP + 127 rows. (Gating on the global `inserted % 128 == 0` alone
+/// would not bound it: two bots logging alternately could leave one of them never trimmed.)
+fn trim_due(previous: Option<i64>, inserted: i64) -> bool {
+    previous.is_none_or(|previous| previous.div_euclid(TRIM_EVERY) != inserted.div_euclid(TRIM_EVERY))
+}
+
+#[cfg(test)]
+mod log_trim_tests {
+    use super::*;
+
+    fn count(store: &Store, bot_id: &str) -> i64 {
+        store.db.query_row("SELECT COUNT(*) FROM bot_activity WHERE bot_id=?1", [bot_id], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn log_reports_rejected_commit_without_persisting_activity() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        // The bundled SQLite exposes this hook without rusqlite's optional hooks feature.
+        unsafe extern "C" fn reject_commit(_: *mut std::ffi::c_void) -> std::ffi::c_int {
+            1
+        }
+        // SAFETY: The connection is live and the callback uses no context or borrowed data.
+        unsafe {
+            rusqlite::ffi::sqlite3_commit_hook(
+                store.db.handle(),
+                Some(reject_commit),
+                std::ptr::null_mut(),
+            );
+        }
+        let result = log(&store, "a", "note", "unsaved", json!({}));
+        assert_eq!(count(&store, "a"), 0);
+        assert!(result.is_err(), "log must report the rejected commit");
+    }
+
+    #[test]
+    fn trim_runs_once_per_rowid_block() {
+        assert!(trim_due(None, 7));
+        assert!(!trim_due(Some(128), 129));
+        assert!(!trim_due(Some(128), 255));
+        assert!(trim_due(Some(127), 128));
+        assert!(trim_due(Some(10), 200));
+    }
+
+    #[test]
+    fn logging_past_the_cap_keeps_each_bot_bounded_and_newest_rows() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let total = ACTIVITY_CAP + 300;
+        for n in 0..total {
+            // Interleaved bots share the rowid sequence; each must still be bounded.
+            log(&store, "a", "note", &format!("a{n}"), json!({})).unwrap();
+            log(&store, "b", "note", &format!("b{n}"), json!({})).unwrap();
+            for bot in ["a", "b"] {
+                assert!(count(&store, bot) < ACTIVITY_CAP + TRIM_EVERY, "{bot} after {n}");
+            }
+        }
+        for bot in ["a", "b"] {
+            assert!(count(&store, bot) >= ACTIVITY_CAP, "{bot}");
+            let newest: String = store.db.query_row("SELECT summary FROM bot_activity WHERE bot_id=?1 ORDER BY id DESC LIMIT 1", [bot], |r| r.get(0)).unwrap();
+            assert_eq!(newest, format!("{bot}{}", total - 1));
+            let oldest_kept: i64 = store.db.query_row("SELECT COUNT(*) FROM bot_activity WHERE bot_id=?1 AND summary=?2", params![bot, format!("{bot}0")], |r| r.get(0)).unwrap();
+            assert_eq!(oldest_kept, 0, "the oldest rows were trimmed");
+        }
+    }
+
+    fn store_due_for_trim() -> Store {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        // Rows 1..=5119 put the next insert (5120) at the start of a new block, so it trims,
+        // and there are more than ACTIVITY_CAP rows for the trim to delete.
+        store.db.execute_batch("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<5119) INSERT INTO bot_activity(id,bot_id,kind,summary,detail,at) SELECT i,'a','note','old','{}',0 FROM n").unwrap();
+        store
+    }
+
+    #[test]
+    fn a_failed_trim_still_reports_the_saved_row() {
+        let store = store_due_for_trim();
+        store.db.execute_batch("CREATE TEMP TRIGGER block_trim BEFORE DELETE ON main.bot_activity BEGIN SELECT RAISE(ABORT,'trim blocked'); END;").unwrap();
+        log(&store, "a", "note", "new", json!({})).unwrap();
+        let saved: (i64, String) = store.db.query_row("SELECT id,summary FROM bot_activity WHERE bot_id='a' ORDER BY id DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(saved, (5120, "new".into()));
+        assert_eq!(count(&store, "a"), 5120, "the blocked trim deleted nothing");
+        assert!(store.db.is_autocommit());
+    }
+
+    #[test]
+    fn a_failed_trim_in_transaction_keeps_outer_transaction_intact() {
+        let store = store_due_for_trim();
+        store.db.execute_batch("CREATE TEMP TRIGGER block_trim BEFORE DELETE ON main.bot_activity BEGIN SELECT RAISE(ABORT,'trim blocked'); END;").unwrap();
+        store.in_transaction(|| {
+            log(&store, "a", "note", "new", json!({})).unwrap();
+            assert!(!store.db.is_autocommit());
+            Ok(())
+        }).unwrap();
+        assert!(store.db.is_autocommit());
+        assert_eq!(activity(&store, "a", None, 1).unwrap()[0].summary, "new");
+        assert_eq!(count(&store, "a"), 5120);
+    }
+
+    #[test]
+    fn a_rolled_back_trim_in_transaction_returns_error() {
+        let store = store_due_for_trim();
+        store.db.execute_batch("CREATE TEMP TRIGGER rollback_trim BEFORE DELETE ON main.bot_activity BEGIN SELECT RAISE(ROLLBACK,'trim rollback'); END;").unwrap();
+        let error = store.in_transaction(|| {
+            let result = log(&store, "a", "note", "new", json!({}));
+            assert!(result.as_ref().unwrap_err().contains("trim rollback"));
+            result
+        }).unwrap_err();
+        assert!(error.contains("trim rollback"), "{error}");
+        assert!(store.db.is_autocommit());
+        assert_eq!(activity(&store, "a", None, 1).unwrap()[0].summary, "old");
+        assert_eq!(count(&store, "a"), 5119);
+    }
 }
 
 pub(crate) fn activity(store: &Store, bot_id: &str, before: Option<i64>, limit: i64) -> Result<Vec<Activity>> {
     let mut statement = store
         .db
-        .prepare("SELECT id,kind,summary,detail,at FROM bot_activity WHERE bot_id=?1 AND (?2 IS NULL OR id < ?2) ORDER BY id DESC LIMIT ?3")
+        .prepare_cached("SELECT id,kind,summary,detail,at FROM bot_activity WHERE bot_id=?1 AND (?2 IS NULL OR id < ?2) ORDER BY id DESC LIMIT ?3")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map(params![bot_id, before, limit.clamp(1, 200)], |r| {
@@ -695,7 +894,7 @@ pub(crate) fn activity(store: &Store, bot_id: &str, before: Option<i64>, limit: 
 }
 
 pub(crate) fn memories(store: &Store, bot_id: &str) -> Result<Vec<Memory>> {
-    let mut statement = store.db.prepare("SELECT id,content,source,created_at FROM bot_memories WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached("SELECT id,content,source,created_at FROM bot_memories WHERE bot_id=?1 ORDER BY created_at").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Memory { id: r.get(0)?, content: r.get(1)?, source: r.get(2)?, created_at: r.get(3)? }))
         .map_err(|e| e.to_string())?;
@@ -708,33 +907,42 @@ pub(crate) fn remember(store: &Store, bot_id: &str, content: &str, source: &str)
     if content.is_empty() {
         return Err("A memory needs some text.".into());
     }
-    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM bot_memories WHERE bot_id=?1", [bot_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store.db.prepare_cached("SELECT COUNT(*) FROM bot_memories WHERE bot_id=?1").and_then(|mut statement| statement.query_row([bot_id], |r| r.get(0))).map_err(|e| e.to_string())?;
     if count >= MAX_MEMORIES {
         return Err(format!("A bot keeps up to {MAX_MEMORIES} memories. Remove some first."));
     }
-    let duplicate: Option<String> = store.db.query_row("SELECT id FROM bot_memories WHERE bot_id=?1 AND lower(content)=lower(?2)", params![bot_id, content], |r| r.get(0)).optional().map_err(|e| e.to_string())?;
+    let duplicate: Option<String> = store.db.prepare_cached("SELECT id FROM bot_memories WHERE bot_id=?1 AND lower(content)=lower(?2)").and_then(|mut statement| statement.query_row(params![bot_id, content], |r| r.get(0)).optional()).map_err(|e| e.to_string())?;
     if let Some(existing) = duplicate {
         return memories(store, bot_id)?.into_iter().find(|memory| memory.id == existing).ok_or_else(|| "Memory not found.".into());
     }
     let id = crate::storage::id();
     let now = crate::storage::now();
-    store.db.execute("INSERT INTO bot_memories(id,bot_id,content,source,created_at) VALUES(?1,?2,?3,?4,?5)", params![id, bot_id, content, source, now]).map_err(|e| e.to_string())?;
-    store.db.execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
-    log(store, bot_id, "memory", &format!("Remembered: {}", content.chars().take(120).collect::<String>()), json!({"source": source}))?;
+    store.in_transaction(|| {
+        store.db.prepare_cached("INSERT INTO bot_memories(id,bot_id,content,source,created_at) VALUES(?1,?2,?3,?4,?5)").and_then(|mut statement| statement.execute(params![id, bot_id, content, source, now])).map_err(|e| e.to_string())?;
+        bump_memory_version(store, bot_id)?;
+        log(store, bot_id, "memory", &format!("Remembered: {}", content.chars().take(120).collect::<String>()), json!({"source": source}))
+    })?;
     Ok(Memory { id, content, source: source.into(), created_at: now })
 }
 
+fn bump_memory_version(store: &Store, bot_id: &str) -> Result<()> {
+    store.db.prepare_cached("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1").and_then(|mut statement| statement.execute([bot_id])).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub(crate) fn forget(store: &Store, bot_id: &str, memory_id: &str) -> Result<()> {
-    let removed = store.db.execute("DELETE FROM bot_memories WHERE id=?1 AND bot_id=?2", params![memory_id, bot_id]).map_err(|e| e.to_string())?;
-    if removed == 0 {
-        return Err("That memory was already removed.".into());
-    }
-    store.db.execute("UPDATE bots SET memory_version=memory_version+1 WHERE id=?1", [bot_id]).map_err(|e| e.to_string())?;
-    log(store, bot_id, "memory", "Forgot a memory", json!({}))
+    store.in_transaction(|| {
+        let removed = store.db.prepare_cached("DELETE FROM bot_memories WHERE id=?1 AND bot_id=?2").and_then(|mut statement| statement.execute(params![memory_id, bot_id])).map_err(|e| e.to_string())?;
+        if removed == 0 {
+            return Err("That memory was already removed.".into());
+        }
+        bump_memory_version(store, bot_id)?;
+        log(store, bot_id, "memory", "Forgot a memory", json!({}))
+    })
 }
 
 pub(crate) fn threads(store: &Store, bot_id: &str) -> Result<Vec<Thread>> {
-    let mut statement = store.db.prepare("SELECT channel_id,external_id,session_id,updated_at FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
+    let mut statement = store.db.prepare_cached("SELECT channel_id,external_id,session_id,updated_at FROM bot_threads WHERE bot_id=?1 ORDER BY updated_at DESC").map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([bot_id], |r| Ok(Thread { channel_id: r.get(0)?, external_id: r.get(1)?, session_id: r.get(2)?, updated_at: r.get(3)? }))
         .map_err(|e| e.to_string())?;
@@ -1191,20 +1399,274 @@ pub async fn bot_task_brief(
     .await
 }
 
+/// Prepares the bot schema and recovers interrupted deliveries before startup.
+pub(crate) fn startup_prepare(store: &Store) -> Result<()> {
+    let db = &store.db;
+    let upgrade = || {
+        let version: i64 = db
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .map_err(|error| format!("Could not read the schema version: {error}"))?;
+        if version > crate::storage::SCHEMA_VERSION {
+            return Ok(());
+        }
+        upgrade_schema(db)?;
+
+        let guard = crate::storage::RollbackGuard::new(db);
+        let statements = INDEXES.split(';').map(str::trim).filter(|sql| !sql.is_empty());
+        let project_index = match has_bot_column(db, "project_id") {
+            Ok(has_column) => has_column.then_some(PROJECT_INDEX),
+            Err(error) if guard.rolled_back() => return Err(error),
+            Err(error) => {
+                eprintln!("Could not check for bots.project_id: {error}");
+                None
+            }
+        };
+        for sql in statements.chain(project_index) {
+            if let Err(error) = db.execute_batch(sql) {
+                eprintln!("Could not create optional bot index ({sql}): {error}");
+                if guard.rolled_back() {
+                    return Err(error.to_string());
+                }
+            }
+        }
+        Ok(())
+    };
+    let upgraded = crate::storage::with_migration_pragmas(db, true, || {
+        store.in_transaction_immediate(upgrade)
+    });
+    if let Err(error) = upgraded {
+        eprintln!("Could not upgrade the bots table: {error}");
+    }
+    shared_channels::reconcile_in_progress(store)
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    struct TestDatabase(PathBuf);
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    fn store_with_interrupted_delivery() -> Store {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        // The recovery SQL only needs these delivery fields. Disable foreign keys
+        // while building the fixture so we can simulate a legacy bots table.
+        store.db.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             INSERT INTO bot_shared_channel_deliveries
+               (id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at)
+             VALUES('delivery','channel','message','bot','task','in_progress',1,1);
+             PRAGMA foreign_keys=ON;",
+        ).unwrap();
+        store
+    }
+
+    fn assert_delivery_reconciled(store: &Store) {
+        let status: String = store.db.query_row(
+            "SELECT status FROM bot_shared_channel_deliveries WHERE id='delivery'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(status, "failed");
+    }
+
+    #[test]
+    fn v25_without_a_bots_table_migrates_bot_profile_columns() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "PRAGMA foreign_keys=OFF; DROP TABLE bot_tasks; DROP TABLE bots; PRAGMA user_version=25;",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        for column in ["soul", "skills", "mcp"] {
+            assert!(has_bot_column(&store.db, column).unwrap(), "missing bots.{column}");
+        }
+        store.db.prepare("SELECT session_id,bot_id,brief_version FROM bot_tasks").unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v25_with_partial_bot_activity_migrates_bot_profile_columns() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "DROP TABLE bot_activity;
+             CREATE TABLE bot_activity(id INTEGER PRIMARY KEY, kind TEXT);
+             INSERT INTO bot_activity VALUES(1,'legacy');
+             ALTER TABLE bots DROP COLUMN soul;
+             ALTER TABLE bots DROP COLUMN skills;
+             ALTER TABLE bots DROP COLUMN mcp;
+             DROP TABLE bot_tasks;
+             PRAGMA user_version=25;",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        for column in ["soul", "skills", "mcp"] {
+            assert!(has_bot_column(&store.db, column).unwrap(), "missing bots.{column}");
+        }
+        store.db.prepare("SELECT session_id,bot_id,brief_version FROM bot_tasks").unwrap();
+        let kind: String = store.db.query_row("SELECT kind FROM bot_activity WHERE id=1", [], |row| row.get(0)).unwrap();
+        assert_eq!(kind, "legacy");
+    }
+
+    #[test]
+    fn startup_prepare_restores_steady_storage_pragmas() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch(
+            "DROP INDEX bots_project;
+             PRAGMA temp_store=FILE;
+             PRAGMA cache_size=-65536;",
+        ).unwrap();
+
+        startup_prepare(&store).unwrap();
+
+        let temp_store: i64 = store.db.pragma_query_value(None, "temp_store", |row| row.get(0)).unwrap();
+        let cache_size: i64 = store.db.pragma_query_value(None, "cache_size", |row| row.get(0)).unwrap();
+        assert_eq!((temp_store, cache_size), (2, -8192));
+        assert!(store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='bots_project')",
+            [],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+
+    #[test]
+    fn startup_prepare_keeps_published_drafts_in_sidebar_order() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
+             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,draft,sidebar_order)
+             VALUES('ranked','project','Ranked','codex','default','ask','idle',1,1,0,0),
+                   ('draft','project','Draft','codex','default','ask','idle',2,2,1,NULL);",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        startup_prepare(&store).unwrap();
+        store.db.execute("UPDATE sessions SET draft=0 WHERE id='draft'", []).unwrap();
+        let rank = |id| store.db.query_row(
+            "SELECT sidebar_order FROM sessions WHERE id=?1",
+            [id],
+            |row| row.get::<_, Option<i64>>(0),
+        ).unwrap();
+        assert_eq!((rank("draft"), rank("ranked")), (Some(0), Some(1)));
+    }
+
+    #[test]
+    fn startup_prepare_checks_schema_after_waiting_for_the_writer() {
+        thread_local! {
+            static MIGRATION: std::cell::RefCell<Option<rusqlite::Connection>> = const {
+                std::cell::RefCell::new(None)
+            };
+        }
+
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        let writer = rusqlite::Connection::open(&path.0).unwrap();
+        writer.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             BEGIN IMMEDIATE;
+             DROP TABLE bots;
+             CREATE TABLE bots(id TEXT PRIMARY KEY, project_id TEXT, future_profile BLOB);
+             PRAGMA user_version=39;",
+        ).unwrap();
+        MIGRATION.with(|migration| migration.replace(Some(writer)));
+        // Commit on the first attempt to acquire the writer lock, then let SQLite retry.
+        store.db.busy_handler(Some(|_| {
+            MIGRATION.with(|migration| {
+                migration.take().is_some_and(|writer| writer.execute_batch("COMMIT").is_ok())
+            })
+        })).unwrap();
+
+        assert_eq!(startup_prepare(&store), Ok(()));
+        let (version, columns, has_project_index): (i64, i64, bool) = store.db.query_row(
+            "SELECT (SELECT user_version FROM pragma_user_version),
+                    (SELECT count(*) FROM pragma_table_info('bots')),
+                    EXISTS(SELECT 1 FROM sqlite_schema WHERE name='bots_project')",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!((version, columns, has_project_index), (39, 3, false));
+    }
+
+    #[test]
+    fn startup_prepare_reconciles_deliveries_even_when_optional_index_is_blocked() {
+        let store = store_with_interrupted_delivery();
+        store.db.execute_batch(
+            "DROP INDEX IF EXISTS bot_activity_model_switch;
+             CREATE TABLE bot_activity_model_switch(id INTEGER);
+             DROP INDEX IF EXISTS bots_project;",
+        ).unwrap();
+
+        assert_eq!(startup_prepare(&store), Ok(()));
+        assert_delivery_reconciled(&store);
+        assert!(store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='bots_project')",
+            [],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+
+    #[test]
+    fn startup_prepare_preserves_newer_schema_and_rolls_back_failed_upgrade() {
+        let store = store_with_interrupted_delivery();
+        store.db.execute_batch(
+            "PRAGMA foreign_keys=OFF;
+             DROP TABLE bots;
+             CREATE TABLE bots(id TEXT PRIMARY KEY);
+             PRAGMA foreign_keys=ON;
+             PRAGMA user_version=39;",
+        ).unwrap();
+        assert_eq!(startup_prepare(&store), Ok(()));
+        assert_delivery_reconciled(&store);
+        let columns: i64 = store.db.query_row(
+            "SELECT count(*) FROM pragma_table_info('bots')",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(columns, 1);
+
+        // Drop a table outside the recovery queries so we can verify both rollback
+        // and successful reconciliation against the surviving delivery tables.
+        store.db.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION).unwrap();
+        store.db.execute_batch(
+            "ALTER TABLE bots ADD COLUMN COLOR TEXT;
+             DROP TABLE bot_memories;
+             DROP INDEX IF EXISTS bot_activity_model_switch;
+             UPDATE bot_shared_channel_deliveries SET status='in_progress';",
+        ).unwrap();
+        assert_eq!(startup_prepare(&store), Ok(()));
+        assert_delivery_reconciled(&store);
+        assert!(!store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name IN ('bot_memories','bot_activity_model_switch'))",
+            [],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+}
+
 /// Starts the scheduler and channel connections once the app is ready.
 pub(crate) fn start(app: &tauri::AppHandle) {
     // Before the scheduler or any window reads a bot, so older databases have the profile columns.
-    let upgraded = app
+    let prepared = app
         .state::<AppState>()
         .store
         .lock()
         .map_err(|e| e.to_string())
-        .and_then(|store| {
-            upgrade(&store.db)?;
-            shared_channels::reconcile_in_progress(&store)
-        });
-    if let Err(error) = upgraded {
-        eprintln!("Could not upgrade the bots table: {error}");
+        .and_then(|store| startup_prepare(&store));
+    if let Err(error) = prepared {
+        eprintln!("Could not prepare bots at startup: {error}");
     }
     schedule::start(app.clone());
     channels::start_all(app.clone());

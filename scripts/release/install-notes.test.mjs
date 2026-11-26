@@ -24,11 +24,14 @@ test('the section ends with one newline and no trailing blank line', () => {
   }
 });
 
-test('both builds offer the terminal install, which signs locally on macOS', () => {
-  for (const notes of [installNotes(), installNotes({ signed: true })]) {
-    assert.match(notes, /npx pandacode/);
-    assert.match(notes, /signs it locally on macOS/);
-  }
+test('unsigned builds note local signing for npx pandacode, while signed builds do not', () => {
+  const unsigned = installNotes();
+  assert.match(unsigned, /`npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears\./);
+
+  const signed = installNotes({ signed: true });
+  assert.match(signed, /`npx pandacode` downloads, verifies and installs the right build\./);
+  assert.doesNotMatch(signed, /signs it locally on macOS/);
+  assert.doesNotMatch(signed, /Gatekeeper/);
 });
 
 test('every published asset is named once', () => {

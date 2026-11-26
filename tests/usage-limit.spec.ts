@@ -187,7 +187,13 @@ test('dismissing a usage limit leaves queued work paused until Resume', async ({
   await expect(banner(page)).toHaveCount(0);
   await expect(resume).toBeVisible();
   await expect(queue(page).locator('.queue-text')).toHaveText(['After the limit']);
-  await expect.poll(async () => (await calls(page, 'set_queue_hold')).at(-1)?.args).toEqual({ sessionId: 'session-1', held: true, reason: 'reset' });
+  await expect(queue(page)).toContainText('The usage limit has reset');
+  expect((await calls(page, 'clear_usage_limit')).map(call => call.args)).toEqual([{ sessionId: 'session-1' }]);
+  expect((await calls(page, 'set_queue_hold')).map(call => call.args)).toEqual([{ sessionId: 'session-1', held: true, reason: 'limited' }]);
+  await expect.poll(() => page.evaluate(async () => {
+    const { invoke } = await import('/src/preview.ts');
+    return (await invoke<Record<string, string>>('queue_holds', {}))['session-1'];
+  })).toBe('reset');
   expect(await sent(page)).toEqual(['Build the feature']);
 
   await resume.click();
