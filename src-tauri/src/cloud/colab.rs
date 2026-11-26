@@ -69,7 +69,10 @@ const CLIENT_AGENT: &str = "colab-cli";
 const REFRESH_MARGIN: i64 = 300;
 const LIMIT: usize = 16 << 20;
 const QUICK: Duration = Duration::from_secs(30);
-const ASSIGN_TIMEOUT: Duration = Duration::from_secs(180);
+const ASSIGN_TIMEOUT: Duration = Duration::from_secs(75);
+const ASSIGN_BUDGET: Duration = Duration::from_secs(165);
+const RECONCILE_RESERVE: Duration = Duration::from_secs(20);
+const MIN_POST_BUDGET: Duration = Duration::from_secs(5);
 const ASSIGN_RETRIES: u32 = 3;
 /// Colab disconnects an idle runtime after about 90 minutes without a client. A keep-alive
 /// asking for less (the 15 idle minutes after a cloud run) is not sent, so a finished run
@@ -227,6 +230,7 @@ pub fn machine(record: &SessionRecord) -> Machine {
 pub(crate) struct Failure {
     pub status: Option<u16>,
     pub timed_out: bool,
+    pub transport: bool,
     pub message: String,
 }
 impl From<Failure> for String {
@@ -236,30 +240,39 @@ impl From<Failure> for String {
 }
 impl From<String> for Failure {
     fn from(message: String) -> Failure {
-        Failure { status: None, timed_out: false, message }
+        Failure { status: None, timed_out: false, transport: false, message }
     }
 }
 
 /// Send a request and return the body, at most `limit` bytes, XSSI prefix removed.
 pub(crate) async fn send_text(service: &str, request: reqwest::RequestBuilder, limit: usize) -> std::result::Result<String, Failure> {
-    let response = request.send().await.map_err(|e| Failure {
-        status: None,
-        timed_out: e.is_timeout(),
-        message: if e.is_timeout() { format!("{service} did not answer in time.") } else if e.is_connect() { format!("Could not reach {service}. Check your connection.") } else { format!("{service} request failed.") },
+    let response = request.send().await.map_err(|e| {
+        let tls = super::http::is_tls_error(&e);
+        Failure {
+            status: None,
+            timed_out: e.is_timeout() && !tls,
+            transport: !e.is_builder() && !e.is_redirect() && !tls,
+            message: super::http::transport_error(service, &e),
+        }
     })?;
     let status = response.status().as_u16();
-    let too_large = || Failure { status: Some(status), timed_out: false, message: format!("{service} sent a response that is too large.") };
+    let too_large = || Failure { status: Some(status), timed_out: false, transport: false, message: format!("{service} sent a response that is too large.") };
     if response.content_length().is_some_and(|n| n > limit as u64) {
         return Err(too_large());
     }
-    let bytes = response.bytes().await.map_err(|_| Failure { status: Some(status), timed_out: false, message: format!("{service} response was cut off.") })?;
+    let bytes = response.bytes().await.map_err(|e| Failure {
+        status: Some(status),
+        timed_out: e.is_timeout(),
+        transport: ((200..300).contains(&status) || matches!(status, 502..=504)) && !super::http::is_tls_error(&e),
+        message: super::http::body_transport_error(service, status, &e),
+    })?;
     if bytes.len() > limit {
         return Err(too_large());
     }
     let text = String::from_utf8_lossy(&bytes);
     let body = strip_xssi(&text).to_string();
     if !(200..300).contains(&status) {
-        return Err(Failure { status: Some(status), timed_out: false, message: super::http::error_message(service, status, &body) });
+        return Err(Failure { status: Some(status), timed_out: false, transport: false, message: super::http::error_message(service, status, &body) });
     }
     Ok(body)
 }
@@ -406,31 +419,69 @@ impl Colab {
     }
 
     async fn assign(&self, accelerator: &str, high_mem: bool) -> Result<Value> {
+        self.assign_until(accelerator, high_mem, tokio::time::Instant::now() + ASSIGN_BUDGET).await
+    }
+
+    async fn assign_until(&self, accelerator: &str, high_mem: bool, deadline: tokio::time::Instant) -> Result<Value> {
+        use tokio::time::Instant;
+
         let hash = nbh(uuid::Uuid::new_v4());
         let mut params = vec![("nbh", hash.as_str()), ("variant", variant(accelerator)), ("accelerator", accelerator)];
         if let Some(shape) = shape_param(accelerator, high_mem) {
             params.push(("shape", shape));
         }
         let url = self.url("/tun/m/assign", &params)?;
-        let get = || self.call(reqwest::Method::GET, url.clone(), &[], ASSIGN_TIMEOUT);
-        let mut first = get().await.map_err(|f| assign_error(f, accelerator))?;
+        let post_deadline = deadline - RECONCILE_RESERVE;
+        let remaining = || post_deadline.saturating_duration_since(Instant::now());
+        let get = |until| self.assign_request(reqwest::Method::GET, url.clone(), &[], until);
+        let mut reply = get(post_deadline.min(Instant::now() + QUICK)).await.map_err(|f| assign_error(f, accelerator))?;
+        if is_assignment(&reply) {
+            return Ok(reply);
+        }
+        if remaining() < MIN_POST_BUDGET {
+            return Err(format!("{SERVICE} did not answer in time."));
+        }
         for attempt in 0..=ASSIGN_RETRIES {
-            if is_assignment(&first) {
-                return Ok(first);
-            }
-            let xsrf = first["token"].as_str().filter(|t| !t.is_empty()).ok_or("Google Colab did not return an assignment token.")?.to_string();
-            match self.call(reqwest::Method::POST, url.clone(), &[("X-Goog-Colab-Token", &xsrf)], ASSIGN_TIMEOUT).await {
-                Ok(reply) if is_assignment(&reply) => return Ok(reply),
+            let xsrf = reply["token"].as_str().filter(|t| !t.is_empty()).ok_or("Google Colab did not return an assignment token.")?;
+            let post_until = post_deadline.min(Instant::now() + ASSIGN_TIMEOUT);
+            let failure = match self.assign_request(reqwest::Method::POST, url.clone(), &[("X-Goog-Colab-Token", xsrf)], post_until).await {
+                Ok(assigned) if is_assignment(&assigned) => return Ok(assigned),
                 Ok(_) => return Err("Google Colab did not report the new runtime.".into()),
-                Err(failure) if attempt < ASSIGN_RETRIES && retryable(&failure) => {
-                    tokio::time::sleep(self.backoff * 2u32.pow(attempt)).await;
-                    // Reconcile an uncertain POST before submitting the same request again.
-                    first = get().await.map_err(|f| assign_error(f, accelerator))?;
-                }
+                Err(failure) if retryable(&failure) => failure,
                 Err(failure) => return Err(assign_error(failure, accelerator)),
+            };
+            if attempt < ASSIGN_RETRIES {
+                tokio::time::sleep((self.backoff * 2u32.pow(attempt)).min(remaining())).await;
+            }
+
+            // Look up the same notebook even after the last POST. Leave room for a
+            // second GET if the first reconciliation itself drops or times out.
+            let reconcile_until = deadline.min(Instant::now() + RECONCILE_RESERVE / 2);
+            let reconciled = match get(reconcile_until).await {
+                Err(failure) if retryable(&failure) && Instant::now() < deadline => {
+                    get(deadline.min(Instant::now() + QUICK)).await
+                }
+                result => result,
+            };
+            reply = match reconciled {
+                Ok(assigned) if is_assignment(&assigned) => return Ok(assigned),
+                Ok(reply) if attempt < ASSIGN_RETRIES && remaining() >= MIN_POST_BUDGET => reply,
+                _ => return Err(assign_error(failure, accelerator)),
+            };
+        }
+        unreachable!("the final POST either succeeded or was reconciled")
+    }
+
+    async fn assign_request(&self, method: reqwest::Method, url: Url, headers: &[(&str, &str)], deadline: tokio::time::Instant) -> std::result::Result<Value, Failure> {
+        let timeout = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if !timeout.is_zero() {
+            // Cover authentication and response parsing as well as Reqwest's request timeout.
+            if let Ok(result) = tokio::time::timeout_at(deadline, self.call(method, url, headers, timeout)).await {
+                return result;
             }
         }
-        Err("Google Colab could not assign a runtime. Try again in a minute.".into())
+        eprintln!("{SERVICE} transport error: timed out");
+        Err(Failure { status: None, timed_out: true, transport: true, message: format!("{SERVICE} did not answer in time.") })
     }
 
     /// Release a runtime (Colab has no stop; it ends and its files go with it).
@@ -564,7 +615,13 @@ fn is_assignment(reply: &Value) -> bool {
     reply["endpoint"].is_string() && reply["runtimeProxyInfo"].is_object()
 }
 fn retryable(failure: &Failure) -> bool {
-    matches!(failure.status, Some(502..=504)) || failure.timed_out
+    // Like google-colab-cli, retry gateway failures (502–504). A 4xx or 500 stays
+    // terminal even when reading its body times out.
+    match failure.status {
+        Some(400..=500) => false,
+        Some(502..=504) => true,
+        _ => failure.timed_out || failure.transport,
+    }
 }
 fn assign_error(failure: Failure, accelerator: &str) -> String {
     match failure.status {

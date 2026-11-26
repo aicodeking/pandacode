@@ -345,3 +345,147 @@ fn live_lists_runtimes_and_compute_units() {
     let usage = usage_summary().unwrap();
     assert!(usage.ccu_balance.is_none_or(|balance| balance >= 0.0));
 }
+
+fn raw_reply(body: &str) -> Vec<u8> {
+    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).into_bytes()
+}
+
+fn recovers_committed_assignment(dropped_reply: &'static [u8]) {
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |request, _| {
+        assert_eq!(request.path.split('?').next(), Some("/tun/m/assign"));
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 => dropped_reply.to_vec(),
+            _ => raw_reply(ASSIGNMENT),
+        }
+    });
+    let machine = colab(&base, &sessions()).create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET"]);
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn dropped_assign_headers_reconcile_an_existing_runtime() {
+    recovers_committed_assignment(b"");
+}
+
+#[test]
+fn truncated_assign_body_reconciles_an_existing_runtime() {
+    recovers_committed_assignment(b"HTTP/1.1 200 OK\r\nContent-Length: 200\r\nConnection: close\r\n\r\n0123456789");
+}
+
+#[test]
+fn dropped_assign_retries_with_a_fresh_token() {
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |_, _| {
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 => Vec::new(),
+            2 => raw_reply(r#"{"token":"fresh"}"#),
+            _ => raw_reply(ASSIGNMENT),
+        }
+    });
+    let machine = colab(&base, &sessions()).create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET", "POST"]);
+    assert_eq!(header(&log[1], "x-goog-colab-token"), Some("initial"));
+    assert_eq!(header(&log[3], "x-goog-colab-token"), Some("fresh"));
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn dropped_reconcile_get_retries_before_posting_again() {
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |_, _| {
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 | 2 => Vec::new(),
+            _ => raw_reply(ASSIGNMENT),
+        }
+    });
+    let machine = colab(&base, &sessions()).create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    assert_eq!(seen.lock().unwrap().iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET", "GET"]);
+}
+
+#[test]
+fn repeated_assign_drops_exhaust_retries_without_leaking_credentials() {
+    let (base, seen) = mock::serve_raw(|request, _| {
+        if request.method == "POST" { Vec::new() } else { raw_reply(r#"{"token":"private-xsrf"}"#) }
+    });
+    let client = Colab::with(Urls::mock(&base), Auth::Token("private-auth".into()), sessions(), Duration::ZERO);
+    let error = client.create_with("pc-train", "T4", false).err().unwrap();
+    assert_eq!(error, "Google Colab request failed (connection closed before response).");
+    for secret in ["private-auth", "private-xsrf", "nbh", "127.0.0.1"] {
+        assert!(!error.contains(secret));
+    }
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().filter(|r| r.method == "POST").count(), ASSIGN_RETRIES as usize + 1);
+    assert_eq!(log.len(), 1 + 2 * (ASSIGN_RETRIES as usize + 1));
+    assert_eq!(log.last().unwrap().method, "GET");
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn final_dropped_post_can_recover_the_runtime() {
+    let posts = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_raw(move |request, _| {
+        if request.method == "POST" {
+            posts.fetch_add(1, Ordering::SeqCst);
+            Vec::new()
+        } else if posts.load(Ordering::SeqCst) > ASSIGN_RETRIES as usize {
+            raw_reply(ASSIGNMENT)
+        } else {
+            raw_reply(r#"{"token":"xsrf"}"#)
+        }
+    });
+    let machine = colab(&base, &sessions()).create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.len(), 1 + 2 * (ASSIGN_RETRIES as usize + 1));
+    assert_eq!(log.last().unwrap().method, "GET");
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn budget_preserves_reconciliation_after_backoff_leaves_no_time_to_post() {
+    let (base, seen) = mock::serve_raw(|request, _| {
+        if request.method == "POST" { Vec::new() } else { raw_reply(r#"{"token":"xsrf"}"#) }
+    });
+    let client = Colab::with(Urls::mock(&base), Auth::Token("tok".into()), sessions(), Duration::from_millis(550));
+    let error = block(async {
+        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(450);
+        client.assign_until("T4", false, deadline).await.unwrap_err()
+    });
+    assert_eq!(error, "Google Colab request failed (connection closed before response).");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET"]);
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn truncated_assignment_refusals_preserve_the_status_and_do_not_retry() {
+    for (status, expected) in [
+        (412, "Google Colab refused the runtime: too many active Colab sessions, or a usage or capacity limit. Stop a runtime, wait and retry, or pick other hardware."),
+        (400, "Google Colab has no quota or entitlement for accelerator T4 on this account. Pick another (for example T4) or use a CPU runtime."),
+        (401, "Google Colab refused the credentials (HTTP 401). Check them in Settings → Cloud."),
+        (403, "Google Colab refused the credentials (HTTP 403). Check them in Settings → Cloud."),
+        (500, "Google Colab returned HTTP 500."),
+    ] {
+        let (base, seen) = mock::serve_raw(move |request, _| {
+            if request.method == "POST" {
+                format!("HTTP/1.1 {status} Refused\r\nContent-Length: 200\r\nConnection: close\r\n\r\n0123456789").into_bytes()
+            } else {
+                raw_reply(r#"{"token":"xsrf"}"#)
+            }
+        });
+        let error = colab(&base, &sessions()).create_with("pc-train", "T4", false).err().unwrap();
+        assert_eq!(error, expected);
+        let log = seen.lock().unwrap();
+        assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST"]);
+    }
+}
