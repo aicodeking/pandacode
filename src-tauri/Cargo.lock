@@ -3585,7 +3585,7 @@ dependencies = [
 
 [[package]]
 name = "pandacode"
-version = "0.3.156"
+version = "0.3.157"
 dependencies = [
  "arboard",
  "base64 0.22.1",
