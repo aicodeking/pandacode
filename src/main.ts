@@ -1160,6 +1160,54 @@ async function exportTask(task: Session, name?: string): Promise<void> {
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** A fix thread carries a readable bundle, not an unbounded log; Save .md keeps the whole thing. */
+const DEBUG_BUNDLE_LIMIT = 40000;
+const DEBUG_FIX_PREAMBLE = 'This thread is a fix for a problem in an earlier session. The debug bundle from that session is below. Reproduce the problem, find the root cause, and fix it. Ask me if you need more context or the full logs.';
+/** The debug bundle for this session: a redacted report of what happened, plus a fix thread seeded with it. */
+async function exportDebugBundle(task: Session, anchor?: HTMLElement): Promise<void> {
+  // The task export's safe, short name, prefixed so debug bundles stand apart in a folder.
+  const fileName = `debug-${task.title.replace(/[^a-z0-9 -]/gi, '').trim().slice(0, 60) || 'task'}.md`;
+  // Closing the dialog returns focus to the row or dock button that opened it, not to a closed menu.
+  if (anchor?.isConnected) anchor.focus({ preventScroll: true });
+  const dialog = modal('Export debug session', `<p class="dialog-description">Save this session’s debug bundle as Markdown, or start a fix thread with the bundle already in the composer.</p><label class="field-label" for="debug-note">What went wrong? (optional)</label><textarea id="debug-note" rows="4" placeholder="Describe the problem and any steps that reproduce it."></textarea><div class="debug-export-options"><label><input type="checkbox" id="debug-include-output" checked> Include tool call output</label><label><input type="checkbox" id="debug-include-changes" checked> Include changed files</label></div><div class="dialog-footer"><button type="button" class="secondary-button" id="debug-save">${icon('download')}Save .md</button><button type="button" class="primary-button" id="debug-start-fix">Start fix thread</button></div>`);
+  const note = dialog.querySelector<HTMLTextAreaElement>('#debug-note')!;
+  const includeOutput = dialog.querySelector<HTMLInputElement>('#debug-include-output')!;
+  const includeChanges = dialog.querySelector<HTMLInputElement>('#debug-include-changes')!;
+  const save = dialog.querySelector<HTMLButtonElement>('#debug-save')!;
+  const start = dialog.querySelector<HTMLButtonElement>('#debug-start-fix')!;
+  // Both actions read the fields when clicked; trimming the note keeps an untouched box empty.
+  const request = () => ({ sessionId: task.id, note: note.value.trim(), includeOutput: includeOutput.checked, includeChanges: includeChanges.checked });
+  // One in-flight action at a time: a second click must not save twice or start two fix threads.
+  const runAction = async (work: () => Promise<void>): Promise<void> => {
+    if (save.disabled) return;
+    save.disabled = start.disabled = true;
+    try { await work(); } catch (error) { report(error); }
+    finally { if (save.isConnected) save.disabled = start.disabled = false; }
+  };
+  save.addEventListener('click', () => runAction(async () => {
+    if (nativeDesktop) {
+      const path = await (await import('@tauri-apps/plugin-dialog')).save({ title: 'Export debug session', defaultPath: fileName, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+      if (path) { await call<void>('save_debug_bundle', { ...request(), path }); notify('Debug bundle saved'); }
+      return;
+    }
+    const text = await call<string>('export_debug_bundle', request());
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }));
+  start.addEventListener('click', () => runAction(async () => {
+    const text = await call<string>('export_debug_bundle', request());
+    const created = await call<Session>('create_session', { projectId: task.projectId, provider: task.provider, model: task.model, mode: 'full', draft: true });
+    const bundle = text.length > DEBUG_BUNDLE_LIMIT ? text.slice(0, DEBUG_BUNDLE_LIMIT) + '\n\n[Bundle truncated — use Save .md for the full log.]' : text;
+    const draft = `${DEBUG_FIX_PREAMBLE}\n\n${bundle}`;
+    closeModal();
+    if (!state.sessions.some(item => item.id === created.id)) state.sessions.unshift(created);
+    await selectSession(created.id, true);
+    state.drafts.set(created.id, draft);
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (prompt?.dataset.sessionId === created.id) { prompt.value = draft; resizePrompt(); }
+    notify('Fix thread started');
+  }));
+}
 
 const disposeMessageActions = bindMessageActions($('#transcript'), {
   content: (sessionId, key) => {
@@ -7725,6 +7773,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSession(s.id) },
     ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
+    { id: 'export-debug', label: 'Export debug session…', icon: 'download' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
     { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSession(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
@@ -7805,6 +7854,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
     ...branch ? [{ id: 'copy-branch', label: 'Copy branch name', icon: 'copy', separator: true }] : [],
     ...path ? [{ id: 'copy-path', label: task.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy', separator: !branch }] : [],
     { id: 'copy-id', label: 'Copy task ID', icon: 'copy', separator: !branch && !path },
+    { id: 'export-debug', label: 'Export debug session…', icon: 'download' },
     { id: 'stage', label: done ? 'Reopen' : 'Settle', icon: done ? 'undo' : 'check', disabled: busy, separator: true },
     { id: 'delete', label: 'Delete task…', icon: 'trash', danger: true, disabled: busy || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: async choice => {
@@ -7821,6 +7871,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
       if (unread) seen.delete(id); else seen.add(id);
       saveUnreviewed(); renderNavigation(); return;
     }
+    if (choice === 'export-debug') { await exportDebugBundle(task, anchor); return; }
     if (choice === 'copy-branch' || choice === 'copy-path' || choice === 'copy-id') {
       await navigator.clipboard.writeText(choice === 'copy-branch' ? branch : choice === 'copy-path' ? path : id);
       notify(choice === 'copy-branch' ? 'Branch name copied' : choice === 'copy-path' ? 'Path copied' : 'Task ID copied'); return;
@@ -9062,7 +9113,7 @@ const settingsPageCommands = () => SECTIONS.flatMap(section => section.pages.map
 /** Every whitespace-separated word of the query appears somewhere in the text (case-insensitive). */
 const matchesWords = (text: string, query: string): boolean => { const hay = text.toLowerCase(); return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word)); };
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(session() ? [{ action: 'export-debug', label: 'Export debug session…', icon: 'download', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
   const tasks = listedSessions().filter(s => matchesWords(s.title, query)).slice(0, 12);
   $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}"${'page' in c ? ` data-id="${c.page}"` : ''} data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
@@ -9182,6 +9233,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'harness-console': if (session()) await openHarnessConsole(session()!); break;
     case 'task-menu': await showTaskMenu(element); break;
     case 'pin-task': if (session()) await pinTask(session()!.id); break;
+    case 'export-debug': if (session()) await exportDebugBundle(session()!, element); break;
     case 'rename': showRename(); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new'); break;
     case 'branch-menu': await worktrees.showMenu(element); break;

@@ -563,6 +563,10 @@ dialog input::placeholder{color:var(--muted)}
 .field-label-row>.field-label{margin:0}
 .field-label-row>.info-mark{margin-left:0}
 .dialog-footer{display:flex;align-items:center;justify-content:flex-end;gap:var(--space-2);margin-top:18px}
+#debug-note{display:block;width:100%;min-height:84px;font-size:var(--type-body);font-weight:var(--weight-regular);line-height:var(--type-body-leading);color:var(--text)}
+.debug-export-options{display:grid;gap:10px;margin-top:14px}
+.debug-export-options label{display:flex;align-items:center;gap:8px;font-size:var(--type-body);font-weight:var(--weight-regular);line-height:var(--type-body-leading);color:var(--text)}
+.debug-export-options input{flex:none;width:16px;height:16px;margin:0;accent-color:var(--accent)}
 .compact-dialog{width:350px}
 .command-list{display:grid;gap:3px}
 .command-list button{min-height:var(--row-lg);padding:var(--space-1) var(--space-2);border-radius:var(--ds-control-radius);text-align:left;justify-content:flex-start;font-size:var(--type-body);color:var(--text)}
