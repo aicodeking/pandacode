@@ -21,7 +21,8 @@
           "version": "1.0.0",
           "date": "2026-11-26",
           "downloadURL": "https://github.com/aicodeking/pandacode/releases/download/ios-v1.0.0/PandaCode.ipa",
-          "size": 0
+          "size": 0,
+          "localizedDescription": "Build 1"
         }
       ]
     }

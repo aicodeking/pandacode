@@ -12,6 +12,10 @@ on:
         description: 'Mobile version (x.y.z); defaults to mobile/app.json'
         type: string
         required: false
+      build:
+        description: 'Build number; defaults to ios.buildNumber in mobile/app.json'
+        type: string
+        required: false
       publish:
         description: 'Create the GitHub Release and update appstore/source.json'
         type: boolean
@@ -54,6 +58,23 @@ jobs:
       - name: Generate the iOS project
         working-directory: mobile
         run: npx expo prebuild --platform ios --no-install --clean
+      - name: Resolve build number
+        id: build
+        run: |
+          build="${{ inputs.build }}"
+          if [ -z "$build" ]; then
+            plist="mobile/ios/PandaCode/Info.plist"
+            if [ -f "$plist" ]; then
+              build=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null || true)
+            fi
+          fi
+          if [ -z "$build" ]; then
+            build=$(node -p "String(require('./mobile/app.json').expo.ios.buildNumber || '1')")
+          fi
+          if ! printf '%s' "$build" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Build number '$build' is not a whole number."; exit 1
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
       - name: Install CocoaPods dependencies
         working-directory: mobile/ios
         run: pod install
@@ -85,6 +106,7 @@ jobs:
           node scripts/release/mobile-source.mjs \
             --repository "$GITHUB_REPOSITORY" \
             --version "${{ steps.version.outputs.version }}" \
+            --build "${{ steps.build.outputs.build }}" \
             --date "$(date -u +%F)" \
             --size "$(stat -f%z PandaCode.ipa)" \
             --output appstore/source.json
@@ -102,9 +124,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.build.outputs.build }}
         run: |
           cat > "$RUNNER_TEMP/notes.md" <<EOF
-          Unsigned PandaCode mobile $VERSION IPA, built from source by
+          Unsigned PandaCode mobile $VERSION (build $BUILD) IPA, built from source by
           .github/workflows/mobile-release.yml. SideStore or AltStore signs it with your
           own Apple ID on install. See docs/app-store/sideloading.md.
           EOF
@@ -112,12 +135,13 @@ jobs:
             gh release upload "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json --clobber
           else
             gh release create "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json \
-              --title "PandaCode mobile $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+              --title "PandaCode mobile $VERSION (build $BUILD)" --notes-file "$RUNNER_TEMP/notes.md"
           fi
       - name: Commit the updated source
         if: github.ref_type == 'tag' || inputs.publish
         env:
           VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.build.outputs.build }}
         run: |
           if [ -z "$(git status --porcelain appstore/source.json)" ]; then
             echo "appstore/source.json is unchanged."
@@ -126,5 +150,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add appstore/source.json
-          git commit -m "chore: update SideStore source for ios-v$VERSION [skip ci]"
+          git commit -m "chore: update SideStore source for $VERSION (build $BUILD) [skip ci]"
           git push origin HEAD:main || echo "::warning::Could not push appstore/source.json to main; update it manually."

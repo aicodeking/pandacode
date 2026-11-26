@@ -20,7 +20,7 @@ const APP_KEYS = [
   'name', 'bundleIdentifier', 'developerName', 'localizedDescription', 'iconURL',
   'versions', 'subtitle', 'tintColor', 'screenshotURLs',
 ];
-const VERSION_KEYS = ['version', 'date', 'downloadURL', 'size'];
+const VERSION_KEYS = ['version', 'date', 'downloadURL', 'size', 'localizedDescription'];
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function assertKeys(object, allowed, label) {
@@ -49,6 +49,7 @@ function assertSource(source, repository = 'aicodeking/pandacode') {
       assertKeys(version, VERSION_KEYS, 'version');
       assert.match(version.version, SEMVER);
       assert.match(version.date, /^\d{4}-\d{2}-\d{2}$/);
+      assert.match(version.localizedDescription, /^Build \d+$/);
       assert.ok(Number.isSafeInteger(version.size) && version.size >= 0, 'size must be a non-negative integer');
       assert.equal(
         version.downloadURL,
@@ -59,11 +60,17 @@ function assertSource(source, repository = 'aicodeking/pandacode') {
 }
 
 test('mobileSource builds a schema-shaped source', () => {
-  const source = mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.0.0', date: '2026-11-26', size: 1234 });
+  const source = mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.0.0', build: '3', date: '2026-11-26', size: 1234 });
   assertSource(source, 'hongkongkiwi/pandacode');
   assert.equal(source.apps[0].tintColor, '#111111');
   assert.equal(source.apps[0].versions[0].size, 1234);
   assert.equal(source.apps[0].versions[0].version, '1.0.0');
+  assert.equal(source.apps[0].versions[0].localizedDescription, 'Build 3');
+});
+
+test('mobileSource defaults the build to 1', () => {
+  const source = mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.0.0', date: '2026-11-26', size: 1 });
+  assert.equal(source.apps[0].versions[0].localizedDescription, 'Build 1');
 });
 
 test('mobileSource uses the tag and repository in the download URL', () => {
@@ -80,6 +87,8 @@ test('mobileSource rejects bad input', () => {
   assert.throws(() => mobileSource({ ...base, repository: 'nope' }), /repository/);
   assert.throws(() => mobileSource({ ...base, version: 'v1' }), /version/);
   assert.throws(() => mobileSource({ ...base, date: '26-11-2026' }), /date/);
+  assert.throws(() => mobileSource({ ...base, build: 'beta' }), /build/);
+  assert.throws(() => mobileSource({ ...base, build: '' }), /build/);
   assert.throws(() => mobileSource({ ...base, size: -1 }), /size/);
   assert.throws(() => mobileSource({ ...base, size: 1.5 }), /size/);
 });
@@ -94,13 +103,14 @@ test('the CLI writes the source file', async () => {
   const output = resolve(directory, 'source.json');
   try {
     const result = spawnSync(process.execPath, [
-      SCRIPT, '--repository', 'hongkongkiwi/pandacode', '--version', '1.2.3',
+      SCRIPT, '--repository', 'hongkongkiwi/pandacode', '--version', '1.2.3', '--build', '7',
       '--date', '2026-02-03', '--size', '4096', '--output', output,
     ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const written = JSON.parse(await readFile(output, 'utf8'));
     assertSource(written, 'hongkongkiwi/pandacode');
-    assert.deepEqual(written, mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.2.3', date: '2026-02-03', size: 4096 }));
+    assert.equal(written.apps[0].versions[0].localizedDescription, 'Build 7');
+    assert.deepEqual(written, mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.2.3', build: '7', date: '2026-02-03', size: 4096 }));
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

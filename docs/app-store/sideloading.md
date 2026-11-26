@@ -36,10 +36,15 @@ builds the IPA on a `macos-latest` runner:
 - `xcodebuild` archives it with signing disabled;
 - the archive's `Payload/PandaCode.app` is zipped into `PandaCode.ipa`;
 - `scripts/release/mobile-source.mjs` writes `appstore/source.json` with the version,
-  release date, byte size and the `ios-v<version>` download URL;
+  build number, release date, byte size and the `ios-v<version>` download URL;
 - both are attached to a GitHub Release tagged `ios-v<version>`, and the updated
   `appstore/source.json` is committed back to `main` so the raw URL above always names
   the newest build.
+
+SideStore compares the source's version with the app's `CFBundleShortVersionString`, so
+that field stays the plain version (`1.0.0`). The build number (`CFBundleVersion`, from
+`ios.buildNumber` in `mobile/app.json`) is shown as the version's description, `Build 1`,
+the same way TestFlight shows `1.0.0 (1)`.
 
 ## Building a release
 
