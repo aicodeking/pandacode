@@ -13,16 +13,16 @@ export const CRASH_RESTART_DETAIL = "If PandaCode crashes, it restarts itself, p
 export const SHOW_REPORTS = 'Show latest crash report';
 /** Said once for the group: what a report holds, where it stays, and how to report a problem. */
 export const CRASH_REPORTS_DETAIL = 'Written when PandaCode crashes and kept on this computer. A report can contain file paths, text from your work or credentials, so check it before attaching it to a GitHub issue.';
-/** Unsent text, in existing threads, New task and shared bot channels, is written to local storage on every change
- * (launch-restore.ts) and kept until DRAFT_MAX_AGE; attachments and drafts over its size cap are
- * not kept, which the parenthesis says without a number. A note under the group, under the
- * KEEP_DRAFTS switch it describes, with CLEAR_DRAFTS beside it (DRAFTS_OFF_DETAIL while off). It ends with when the text goes. */
-export const DRAFTS_KEPT_DETAIL = `The text of unsent messages (not attachments or very long drafts) is saved locally as plain text, so a crash rarely loses it. A pasted secret is kept too, until the message is sent, cleared, or ${Math.round(DRAFT_MAX_AGE / 86_400_000)} days old.`;
+/** Unsent text and its prompt attachments, in existing threads, New task and shared bot channels, are written to local
+ * storage on every change (launch-restore.ts) and kept until DRAFT_MAX_AGE; drafts over its size cap are not
+ * kept, which the parenthesis says without a number. A note under the group, under the
+ * KEEP_DRAFTS switch it describes, with CLEAR_DRAFTS beside it (DRAFTS_OFF_DETAIL while off). It ends with when they go. */
+export const DRAFTS_KEPT_DETAIL = `The text of unsent messages and the files attached to them (but not very long drafts) are saved locally, so a crash rarely loses them. A pasted secret is kept too, until the message is sent, cleared, or ${Math.round(DRAFT_MAX_AGE / 86_400_000)} days old.`;
 /** The note while Keep unsent drafts is off. */
 export const DRAFTS_OFF_DETAIL = 'Unsent messages are not saved; a crash or quit loses them.';
 /** Off: nothing is written and every stored draft goes (PersistedDrafts.setKeeping). */
 export const KEEP_DRAFTS = 'Keep unsent drafts';
-/** Removes every stored draft; text in an open composer stays on screen, unstored until its next change. */
+/** Removes every stored draft; an open composer's text and attachments stay on screen, unstored until their next change. */
 export const CLEAR_DRAFTS = 'Clear saved drafts';
 export const NO_REPORTS = 'There are no crash reports on this computer.';
 /** The no-reports line clears itself after this long. */

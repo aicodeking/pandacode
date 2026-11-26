@@ -46,7 +46,7 @@ export const RESTARTS_BACK = 'Automatic restarts are on again.';
 /** Starts these preview tasks Interrupted (src/preview.ts). */
 export const interruptedTasks = (page: Page, ids: string[]) => page.addInitScript(value => { (window as Window & { __previewInterrupted?: string[] }).__previewInterrupted = value; }, ids);
 export const RELOADED = "PandaCode's window stopped and was reloaded.";
-export const DRAFTS = 'The text of unsent messages (not attachments or very long drafts) is saved locally as plain text, so a crash rarely loses it. A pasted secret is kept too, until the message is sent, cleared, or 30 days old.';
+export const DRAFTS = 'The text of unsent messages and the files attached to them (but not very long drafts) are saved locally, so a crash rarely loses them. A pasted secret is kept too, until the message is sent, cleared, or 30 days old.';
 export const CLEAR_DRAFTS = 'Clear saved drafts';
 export const KEEP_DRAFTS = 'Keep unsent drafts';
 export const DRAFTS_OFF = 'Unsent messages are not saved; a crash or quit loses them.';

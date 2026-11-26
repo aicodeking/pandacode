@@ -1058,6 +1058,11 @@ const attachments = mountPromptAttachments({
     return true;
   },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
+  // Every change to a thread's prompt attachments is written with its draft, so a restart brings them back.
+  changed: taskId => {
+    if (deletedSessions.has(taskId)) return;
+    state.drafts.setAttachments(taskId, attachments.list(taskId));
+  },
   menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
   projectFiles: () => { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
@@ -4048,6 +4053,23 @@ function renderAttachmentBar(): void {
   const s = session(), bar = document.querySelector<HTMLElement>('#attachments');
   if (s && bar) bar.innerHTML = attachmentBar(s); else renderComposer();
 }
+/** Brings back a thread's kept prompt attachments when it is shown, so a restart returns the draft whole.
+ * A capture pruned since it was attached can no longer be sent: its chip says so until it is removed. */
+function hydrateDraftAttachments(s: Session): void {
+  if (attachments.list(s.id).length) return;
+  const restored = state.drafts.attachments(s.id);
+  if (!restored.length) return;
+  attachments.hydrate(s.id, restored);
+  const images = restored.filter((item): item is PromptImage => item.kind === 'image');
+  if (!images.length) return;
+  void Promise.all(images.map(item => call<string | null>('prompt_image', { id: item.id })
+    .then(url => ({ id: item.id, present: Boolean(url?.startsWith('data:image/')) }))
+    .catch(() => ({ id: item.id, present: true }))))
+    .then(results => {
+      if (state.sessionId !== s.id) return;
+      attachments.markMissing(s.id, results.filter(item => !item.present).map(item => item.id));
+    });
+}
 /** Pending approvals for the open task, in the bar directly above the prompt. */
 /** Tasks whose grouped approval bar is expanded (the main bar and the By the way panel's are separate). */
 const approvalGroupsOpen = new Set<string>();
@@ -4975,6 +4997,7 @@ async function openThread(id: string, focusComposer: boolean, initialScroll?: In
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
   state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
+  hydrateDraftAttachments(s);
   // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
   beginThreadRestore(localStorage, id);
   // The thread boot kept closed is open now, by the crash notice's button or any other way.
@@ -5403,7 +5426,8 @@ function setQueueHold(sessionId: string, reason?: HoldReason): void {
 }
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
-  return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
+  // A restored attachment whose file is gone is shown, but never travels with a message.
+  return { text, items: [...attachments.list(s.id).filter(item => !item.missing), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
 }
 async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[], browserItems: BrowserAttachment[], moodboardItems: { id: string; projectId: string; name: string }[], forceQueue = false): Promise<void> {
   const contexts = await Promise.all(paths.map(path => fileContext(s, path)));
