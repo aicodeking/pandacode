@@ -192,31 +192,18 @@ gh run watch --exit-status "$preflight_run"
 gh run view "$preflight_run" --json headSha,status,conclusion,jobs
 ```
 
-Require `run.headSha` to equal `$release_commit`, all six build jobs to succeed,
-and `main` to remain at that SHA. Download that run's six
-`pandacode-X.Y.Z-<target>` artifacts with `gh run download` into a fresh directory
-and collect their contents into one assets directory. Before tagging, require:
+Require the run's `headSha` to equal `$release_commit` and `main` to remain at
+that SHA. The `verify_preflight` job downloads all six platform artifacts and
+the SBOM artifact and checks all six installer SHA-256 checksums. Official
+preflights and forks with an updater signing key also require all six updater
+minisign signatures to verify against the app's configured public key and
+validate the generated `latest.json`. Both official macOS build jobs must pass
+Developer ID signing, notarization, stapling and Gatekeeper assessment.
 
-- All six installers in the table above, each matching its `.sha256`.
-- Developer ID signing and successful notarization, stapling and Gatekeeper
-  assessment in both macOS build logs. **Do not tag while Apple's legal-agreement
-  HTTP 403 remains unresolved.**
-- All six updater files with valid `.sig` signatures, cryptographically verified
-  against `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (the existing
-  `verifyMinisign(data, sigFile, pubkey)` export in `packages/npx/installer.mjs`
-  supports this; presence of `.sig` alone is insufficient).
-- Generate `latest.json` from those downloaded files with
-  `node scripts/release/updater-manifest.mjs ASSETS_DIR "$release_version" "releases/$release_version.md"`.
-  Inspect the version, all six platform entries, signatures and versioned asset
-  URLs; the generator permits partial manifests, so explicitly require all six.
-
-For official `aicodeking/pandacode` publishes, the `prepare` job in `release.yml`
-requires a successful `workflow_dispatch` run on `main` for the exact commit.
-Start that preflight with `publish=false` as shown above. The `publish` job runs
-`node scripts/release/verify-publish.mjs --require-signed` to check all six updater
-signatures and `latest.json`. It writes signed macOS install notes only when both
-`APPLE_CERTIFICATE` and `APPLE_SIGNING_IDENTITY` are configured. Signing remains
-optional for local builds and forks without signing secrets.
+For official `aicodeking/pandacode` publishes, `prepare` requires a successful
+manual Release run on `main` for the exact commit, with `publish` skipped and
+`verify_preflight` successful. It logs the accepted run ID and URL. The
+`publish` job verifies the rebuilt assets before creating the GitHub Release.
 
 If `main` drifts or the release commit changes, repeat CI and this preflight for
 the new final commit. Once all gates pass, recheck remote `main` immediately
@@ -313,8 +300,10 @@ raw `tauri build` output.
 
 ## Optional signing
 
-Signing is optional for local and fork builds: without Apple credentials, macOS
-gets an ad-hoc signature. The official
+Official macOS builds require a Developer ID Application certificate and Apple
+notarization credentials. Both official macOS runners check for
+`APPLE_CERTIFICATE` and `APPLE_SIGNING_IDENTITY` before compiling.
+Local and fork builds without Apple credentials use ad-hoc signing. The official
 [v0.3.103 macOS release builds](https://github.com/aicodeking/pandacode/actions/runs/42462913784)
 passed Apple notarization and Gatekeeper assessment as `Notarized Developer ID` on
 both Apple silicon and Intel. Notarization does not suppress macOS's normal

@@ -4,8 +4,8 @@
 //
 //   node scripts/release/build.mjs [darwin-aarch64|darwin-x86_64|windows-x86_64|windows-aarch64|linux-x86_64|linux-aarch64]
 //
-// Signing is optional. Without Apple credentials the macOS app gets an ad-hoc
-// signature; Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
+// Outside official builds, macOS can use an ad-hoc signature without Apple
+// credentials. Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
 // (the release workflow's secret) the build also produces the signed update file and
 // its `.sig` for the in-app updater.
 import { readFile, writeFile, mkdir, copyFile, readdir, readlink, mkdtemp, rmdir, rm, lstat, chmod } from 'node:fs/promises';
@@ -22,7 +22,12 @@ const STRIPPED = /^PANDACODE_(LICENSE|UPDATE)_PUBLIC_KEY$/;
 
 export function macosSigning(env) {
   const identity = env.APPLE_SIGNING_IDENTITY?.trim();
-  if (!identity || identity === '-') return { mode: 'adhoc', identity: '-' };
+  if (!identity || identity === '-') {
+    if (['1', 'true'].includes(env.PANDACODE_REQUIRE_APPLE_SIGNING)) {
+      throw new Error('Official macOS builds require APPLE_SIGNING_IDENTITY (Developer ID Application) and Apple notarization credentials.');
+    }
+    return { mode: 'adhoc', identity: '-' };
+  }
   if (!identity.startsWith('Developer ID Application:')) throw new Error('APPLE_SIGNING_IDENTITY must be a "Developer ID Application: ..." certificate, or unset for an ad-hoc build.');
   const complete = names => names.every(name => env[name]?.trim());
   if (!complete(['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH']) && !complete(['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'])) {

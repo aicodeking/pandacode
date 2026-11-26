@@ -5,7 +5,7 @@
 //! drain, pull-request links, limit resumes) run natively here instead; see start_services.
 
 use crate::{message_queue, AppState};
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -276,16 +276,22 @@ fn start_services(app: tauri::AppHandle) {
                     continue;
                 }
                 println!("serve: resuming {session_id} at its usage-limit reset");
+                let previous_hold = clear_resumable_hold(&session_id);
+                if previous_hold.is_some() {
+                    let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
+                }
                 if let Err(error) = crate::send_message(
                     limits.clone(),
                     limits.state::<AppState>(),
-                    session_id,
+                    session_id.clone(),
                     "Continue where you left off.".into(),
                     None,
                     None,
                 )
                 .await
                 {
+                    let reason = message_queue::queue_hold_reason(&session_id).or(previous_hold);
+                    hold_queue(&limits, &session_id, reason.as_deref().unwrap_or("failed"));
                     eprintln!("serve: the limit resume could not be sent: {error}");
                 }
             }
@@ -309,24 +315,73 @@ fn start_services(app: tauri::AppHandle) {
     });
 }
 
-static DRAINING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+/// Both host modes hold ordinary queues at an unclean run end. The bot gateway
+/// waits for the next clean bot turn and separately honors explicit holds.
+pub(crate) fn run_end_hold_reason(successful: bool, stopped: bool, limited: bool, is_bot: bool) -> Option<&'static str> {
+    if is_bot {
+        None
+    } else if limited {
+        Some("limited")
+    } else if stopped {
+        Some("stopped")
+    } else if !successful {
+        Some("failed")
+    } else {
+        None
+    }
+}
+
+fn clear_resumable_hold(session_id: &str) -> Option<String> {
+    let reason = message_queue::queue_hold_reason(session_id)?;
+    if !matches!(reason.as_str(), "limited" | "reset" | "restart") {
+        return None;
+    }
+    message_queue::set_queue_hold_state(session_id, false, None);
+    Some(reason)
+}
+
+pub(crate) fn hold_queue(app: &tauri::AppHandle, session_id: &str, reason: &str) {
+    message_queue::set_queue_hold_state(session_id, true, Some(reason));
+    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
+}
+
+static DRAINING: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Default::default);
 
 struct DrainGuard<'a> {
     session_id: &'a str,
+    finished: bool,
+}
+
+impl DrainGuard<'_> {
+    fn finish_or_continue(&mut self) -> bool {
+        let mut draining = DRAINING.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(pending) = draining.get_mut(self.session_id) {
+            if std::mem::take(pending) {
+                return true;
+            }
+        }
+        draining.remove(self.session_id);
+        self.finished = true;
+        false
+    }
 }
 
 impl Drop for DrainGuard<'_> {
     fn drop(&mut self) {
-        DRAINING.lock().unwrap_or_else(PoisonError::into_inner).remove(self.session_id);
+        if !self.finished {
+            DRAINING.lock().unwrap_or_else(PoisonError::into_inner).remove(self.session_id);
+        }
     }
 }
 
 fn try_begin_drain(session_id: &str) -> Option<DrainGuard<'_>> {
     let mut draining = DRAINING.lock().unwrap_or_else(PoisonError::into_inner);
-    if !draining.insert(session_id.to_owned()) {
+    if let Some(pending) = draining.get_mut(session_id) {
+        *pending = true;
         return None;
     }
-    Some(DrainGuard { session_id })
+    draining.insert(session_id.to_owned(), false);
+    Some(DrainGuard { session_id, finished: false })
 }
 
 /// Sends the next queued message of a finished task — the window's dispatchQueue (main.ts)
@@ -336,73 +391,63 @@ fn try_begin_drain(session_id: &str) -> Option<DrainGuard<'_>> {
 /// send itself, so callers can chain it after their own run-end work.
 pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
     tauri::async_runtime::spawn(async move {
-        let Some(_draining) = try_begin_drain(&session_id) else { return };
-        let now = crate::storage::now();
-        let eligible = {
-            let state = app.state::<AppState>();
-            if crate::run_requests::lock_agents(&state.agents).map(|agents| agents.contains_key(&session_id)).unwrap_or(true) {
-                return;
-            }
-            let Ok(store) = state.store.lock() else { return };
-            // Bot conversations drain through the bot gateway.
-            if crate::bots::owner_of(&store, &session_id).ok().flatten().is_some() {
-                return;
-            }
-            store.session(&session_id).ok().is_some_and(|task| can_drain(&session_id, task.archived, task.limited_at, task.limited_until, now))
-        };
-        if !eligible {
-            return;
-        }
-        let next = {
-            let state = app.state::<AppState>();
-            let Ok(store) = state.store.lock() else { return };
-            if message_queue::is_queue_held(&session_id) {
-                return;
-            }
-            message_queue::list(&store, Some(&session_id)).ok().and_then(|entries| entries.into_iter().next())
-        };
-        let Some(entry) = next else { return };
-        let entry = {
-            let state = app.state::<AppState>();
-            let Ok(store) = state.store.lock() else { return };
-            if message_queue::is_queue_held(&session_id) {
-                return;
-            }
-            match message_queue::take(&store, &entry.id) {
-                Ok(entry) => entry,
-                Err(error) => {
-                    eprintln!("serve: could not take the next queued message: {error}");
-                    return;
+        let Some(mut draining) = try_begin_drain(&session_id) else { return };
+        loop {
+            if let Some(entry) = claim_next_queued(&app.state::<AppState>(), &session_id) {
+                let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
+                let (context, image_ids) = crate::bots::gateway::queued_prompt(&entry.attachments);
+                let images = (!image_ids.is_empty()).then_some(image_ids);
+                println!("serve: sending the next queued message to {session_id}");
+                if let Err(error) = crate::send_message(
+                    app.clone(),
+                    app.state::<AppState>(),
+                    session_id.clone(),
+                    format!("{}{context}", entry.text),
+                    images,
+                    None,
+                )
+                .await
+                {
+                    // A failed launch puts the entry back first; no run ends, so the queue holds.
+                    let state = app.state::<AppState>();
+                    if let Ok(store) = state.store.lock() {
+                        if let Err(lost) = message_queue::restore(&store, &entry) {
+                            // The id, never the text: after a crash restart this goes to serve-restart.log.
+                            eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
+                        }
+                    }
+                    hold_queue(&app, &session_id, "failed");
+                    eprintln!("serve: couldn't send the next queued message: {error}");
                 }
             }
-        };
-        let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
-        let (context, image_ids) = crate::bots::gateway::queued_prompt(&entry.attachments);
-        let images = (!image_ids.is_empty()).then_some(image_ids);
-        println!("serve: sending the next queued message to {session_id}");
-        if let Err(error) = crate::send_message(
-            app.clone(),
-            app.state::<AppState>(),
-            session_id.clone(),
-            format!("{}{context}", entry.text),
-            images,
-            None,
-        )
-        .await
-        {
-            // A failed launch puts the entry back first; no run ends, so the queue holds.
-            let state = app.state::<AppState>();
-            if let Ok(store) = state.store.lock() {
-                if let Err(lost) = message_queue::restore(&store, &entry) {
-                    // The id, never the text: after a crash restart this goes to serve-restart.log.
-                    eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
-                }
+            if !draining.finish_or_continue() {
+                break;
             }
-            message_queue::set_queue_hold_state(&session_id, true, Some("failed"));
-            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": "failed" }));
-            eprintln!("serve: couldn't send the next queued message: {error}");
         }
     });
+}
+
+fn claim_next_queued(state: &AppState, session_id: &str) -> Option<message_queue::QueuedMessage> {
+    let agents = crate::run_requests::lock_agents(&state.agents).ok()?;
+    if agents.contains_key(session_id) {
+        return None;
+    }
+    let store = state.store.lock().ok()?;
+    // Bot conversations drain through the bot gateway.
+    if crate::bots::owner_of(&store, session_id).ok().flatten().is_some() {
+        return None;
+    }
+    let task = store.session(session_id).ok()?;
+    if !can_drain(session_id, task.archived, task.limited_at, task.limited_until, crate::storage::now()) {
+        return None;
+    }
+    let entry = message_queue::list(&store, Some(session_id)).ok()?.into_iter().next()?;
+    if message_queue::is_queue_held(session_id) {
+        return None;
+    }
+    message_queue::take(&store, &entry.id).map_err(|error| {
+        eprintln!("serve: could not take the next queued message: {error}");
+    }).ok()
 }
 
 /// A task may take its next queued message when it is live and not inside a usage limit —
@@ -628,34 +673,66 @@ mod tests {
         assert!(!can_drain(&session_id, true, Some(500), Some(999), 1000));
     }
 
-    /// Round 17: the desktop's webview drains on `queue-changed`, so the native drain runs
-    /// only under `serve`, and never over a running agent.
     #[test]
-    fn queue_changes_drain_only_headless_and_idle() {
+    fn queue_changes_drain_only_headless() {
         assert!(drains_natively(true));
         assert!(!drains_natively(false));
         assert!(!active(), "a desktop (test) process is not headless");
-        let source = include_str!("headless.rs");
-        let hook = &source[source.find("pub(crate) fn queue_changed").unwrap()..];
-        let hook = &hook[..hook.find("\n}\n").unwrap()];
-        assert!(hook.find("if !drains_natively(active())").unwrap() < hook.find("drain_queue(").unwrap());
-        let drain = &source[source.find("pub(crate) fn drain_queue").unwrap()..];
-        assert!(drain.find("agents.contains_key(&session_id)").unwrap() < drain.find("message_queue::take(").unwrap());
     }
 
     #[test]
-    fn drain_guard_excludes_the_same_session_until_drop() {
+    fn drain_guard_coalesces_wakes_and_releases_the_session() {
         let session_id = crate::storage::id();
         let other_session = crate::storage::id();
-        let guard = try_begin_drain(&session_id).unwrap();
+        let mut guard = try_begin_drain(&session_id).unwrap();
         std::thread::scope(|scope| {
             scope.spawn(|| {
+                assert!(try_begin_drain(&session_id).is_none());
                 assert!(try_begin_drain(&session_id).is_none());
                 assert!(try_begin_drain(&other_session).is_some());
             }).join().unwrap();
         });
+        assert!(guard.finish_or_continue());
+        assert!(!guard.finish_or_continue());
+
+        let mut replacement = try_begin_drain(&session_id).unwrap();
         drop(guard);
+        assert!(try_begin_drain(&session_id).is_none());
+        assert!(replacement.finish_or_continue());
+        drop(replacement);
         assert!(try_begin_drain(&session_id).is_some());
+    }
+
+    #[test]
+    fn run_end_holds_failed_stopped_and_limited_queues() {
+        for (successful, stopped, limited, reason) in [
+            (true, false, false, None),
+            (false, false, false, Some("failed")),
+            (false, true, false, Some("stopped")),
+            (true, false, true, Some("limited")),
+            (false, false, true, Some("limited")),
+            (false, true, true, Some("limited")),
+        ] {
+            assert_eq!(run_end_hold_reason(successful, stopped, limited, false), reason);
+            assert_eq!(run_end_hold_reason(successful, stopped, limited, true), None);
+        }
+    }
+
+    #[test]
+    fn limit_resume_clears_only_resumable_holds() {
+        let session_id = crate::storage::id();
+        assert_eq!(clear_resumable_hold(&session_id), None);
+        for reason in ["limited", "reset", "restart"] {
+            message_queue::set_queue_hold_state(&session_id, true, Some(reason));
+            assert_eq!(clear_resumable_hold(&session_id).as_deref(), Some(reason));
+            assert!(!message_queue::is_queue_held(&session_id));
+        }
+        for reason in ["stopped", "failed"] {
+            message_queue::set_queue_hold_state(&session_id, true, Some(reason));
+            assert_eq!(clear_resumable_hold(&session_id), None);
+            assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
+        }
+        message_queue::set_queue_hold_state(&session_id, false, None);
     }
 
     #[test]

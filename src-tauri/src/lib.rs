@@ -2540,6 +2540,8 @@ async fn launch_operation_admitted(
         };
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
         let coalescer_sink = coalescer.clone();
+        let newly_limited = Arc::new(AtomicBool::new(false));
+        let limited_sink = newly_limited.clone();
         let sink: providers::Sink = Arc::new(move |mut e: AgentEvent| {
             if cloud && app_sink.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
                 return;
@@ -2547,6 +2549,9 @@ async fn launch_operation_admitted(
             last_event.store(storage::now(), Ordering::SeqCst);
             if e.kind == "done" || e.kind == providers::HEARTBEAT {
                 return;
+            }
+            if e.kind == "limited" {
+                limited_sink.store(true, Ordering::SeqCst);
             }
             let usage = if e.kind == "usage" {
                 let Some(usage) = e.data.as_ref().and_then(ContextUsage::from_value) else {
@@ -2848,7 +2853,9 @@ async fn launch_operation_admitted(
             model_health::record_success(&ran.0, &ran.1);
         }
         let mut children = subagents.lock().ok();
+        let mut is_bot = false;
         if let Ok(db) = store.lock() {
+            is_bot = bots::owner_of(&db, &session_id).ok().flatten().is_some();
             let child_status = if was_stopped || successful {
                 "stopped"
             } else {
@@ -2957,6 +2964,12 @@ async fn launch_operation_admitted(
                 );
             }
         }
+        let limited = newly_limited.load(Ordering::SeqCst);
+        // The store is unlocked. Publish the hold before done so every client sees it
+        // even when another client stopped this run.
+        if let Some(reason) = headless::run_end_hold_reason(successful, was_stopped, limited, is_bot) {
+            headless::hold_queue(&app, &session_id, reason);
+        }
         if let Some(registry) = registry.as_mut() {
             if let Some(agent) = registry.get(&session_id) {
                 if let Ok(mut approvals) = agent.approvals.lock() {
@@ -2999,7 +3012,7 @@ async fn launch_operation_admitted(
             });
             // Only a clean run end delivers the next queued message; failed, stopped and
             // limited runs hold it, as on the desktop.
-            if successful && !was_stopped {
+            if successful && !was_stopped && !limited {
                 headless::drain_queue(app.clone(), session_id.clone());
             }
         }

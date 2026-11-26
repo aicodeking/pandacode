@@ -88,10 +88,26 @@ jobs:
             echo "::error::The Release preflight lookup for $GITHUB_SHA on main failed. $instructions"
             exit 1
           fi
-          if ! jq -e 'type == "array" and any(.[]; .status == "completed" and .conclusion == "success")' <<<"$runs" >/dev/null; then
-            echo "::error::No successful Release preflight run found for $GITHUB_SHA on main. $instructions"
+          if ! candidates=$(jq -r '.[] | select(.status == "completed" and .conclusion == "success") | [.databaseId, .url] | @tsv' <<<"$runs"); then
+            echo "::error::The Release preflight lookup for $GITHUB_SHA on main returned invalid data. $instructions"
             exit 1
           fi
+          while IFS=$'\t' read -r run_id run_url; do
+            [ -n "$run_id" ] || continue
+            if ! jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100"); then
+              echo "::warning::Could not inspect Release run $run_id: $run_url"
+              continue
+            fi
+            if jq -e '
+              any(.jobs[]; .name == "publish" and .conclusion == "skipped") and
+              any(.jobs[]; .name == "verify_preflight" and .conclusion == "success")
+            ' <<<"$jobs" >/dev/null; then
+              echo "Verified preflight run $run_id passed for $GITHUB_SHA: $run_url"
+              exit 0
+            fi
+          done <<<"$candidates"
+          echo "::error::No verified artifact-only Release preflight run found for $GITHUB_SHA on main. $instructions"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Read and check the version
         id: version
@@ -139,10 +155,18 @@ jobs:
       RELEASE_TARGET: ${{ matrix.target }}
       # Empty on Apple silicon: an empty value adds no CMake arguments.
       TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
-      # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
-      # an ad-hoc signature instead (see docs/releasing.md).
+      # Forks without Apple signing secrets can build with an ad-hoc signature.
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     steps:
+      - name: Require official Apple signing secrets
+        if: runner.os == 'macOS' && github.repository == 'aicodeking/pandacode'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::error::Official macOS builds require APPLE_CERTIFICATE and APPLE_SIGNING_IDENTITY."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22', cache: npm }
@@ -173,6 +197,7 @@ jobs:
           # without them the build shows remote access as not configured.
           PANDACODE_RELAY_URL: ${{ vars.PANDACODE_RELAY_URL }}
           PANDACODE_GITHUB_CLIENT_ID: ${{ vars.PANDACODE_GITHUB_CLIENT_ID }}
+          PANDACODE_REQUIRE_APPLE_SIGNING: ${{ runner.os == 'macOS' && github.repository == 'aicodeking/pandacode' && '1' || '' }}
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -243,6 +268,38 @@ jobs:
           path: sbom/
           if-no-files-found: warn
           retention-days: 14
+
+  verify_preflight:
+    needs: [prepare, build, sbom]
+    if: github.ref_type != 'tag' && !inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          merge-multiple: true
+      - name: Download SBOMs and scan coverage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+      - name: Verify preflight assets
+        env:
+          REQUIRE_SIGNED: ${{ github.repository == 'aicodeking/pandacode' || secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if compgen -G 'assets/*.sig' >/dev/null; then
+            node scripts/release/updater-manifest.mjs assets "$VERSION" "releases/$VERSION.md"
+          fi
+          flags=()
+          if [ "$REQUIRE_SIGNED" = true ]; then
+            flags+=(--require-signed)
+          fi
+          node scripts/release/verify-publish.mjs "${flags[@]}" assets "$VERSION" "releases/$VERSION.md"
 
   publish:
     needs: [prepare, build, sbom]

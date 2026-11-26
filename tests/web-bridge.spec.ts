@@ -8,7 +8,11 @@ import { expect, test, type Page, type WebSocketRoute } from '@playwright/test';
  */
 /** `fail`: commands answered with this status and body instead (closing the socket with `closeFirst` before replying);
  *  `refuseSockets`: new event sockets are closed at once, so the tab stays offline. */
-type Controls = { fail: Map<string, { status: number; body: unknown; closeFirst?: number }>; refuseSockets: boolean };
+type Controls = {
+  fail: Map<string, { status: number; body: unknown; closeFirst?: number }>;
+  refuseSockets: boolean;
+  beforeReply?: (command: string, args: Record<string, unknown>) => Promise<void> | void;
+};
 type WebPage = { page: Page; subscriptions: Set<string>; commands: string[]; socket: () => WebSocketRoute; controls: Controls };
 
 async function openWebMode(page: Page, host = page): Promise<WebPage> {
@@ -35,12 +39,14 @@ async function openWebMode(page: Page, host = page): Promise<WebPage> {
       try { return { ok: true, value: await preview.invoke(name, values) }; } catch (error) { return { ok: false, value: String((error as Error)?.message ?? error) }; }
     }, [command, args] as const).catch(error => ({ ok: false, value: String(error) }));
     if (!reply.ok) { await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: reply.value }) }); return; }
+    await controls.beforeReply?.(command, args);
     await route.fulfill({ status: 200, contentType: 'application/json', body: reply.value === undefined ? '' : JSON.stringify(reply.value) });
   });
   const subscriptions = new Set<string>();
   await page.routeWebSocket(/\/api\/events$/, ws => {
     if (controls.refuseSockets) { void ws.close({ code: 4000, reason: 'Unavailable' }); return; }
     current = ws;
+    subscriptions.clear();
     ws.onMessage(message => {
       const frame = JSON.parse(String(message)) as { type: string; token?: string; event?: string };
       if (frame.type === 'auth') ws.send(JSON.stringify({ type: frame.token === 'test-token' ? 'ready' : 'error' }));
@@ -59,6 +65,30 @@ const selected = (page: Page) => page.locator('#navigation .task-item.selected')
 
 const queueRows = (page: Page) => page.getByRole('region', { name: 'Queued messages' }).locator('.queue-row .queue-text');
 
+function delayQueueSnapshot(web: WebPage, name: 'queue_list' | 'queue_holds') {
+  const captured = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
+  web.controls.beforeReply = (command, args) => {
+    if (command !== name || args.sessionId) return;
+    captured.resolve();
+    return released.promise;
+  };
+  return { captured: captured.promise, release: () => { delete web.controls.beforeReply; released.resolve(); } };
+}
+
+async function reloadQueueClient(web: WebPage) {
+  const oldSocket = web.socket();
+  await web.page.reload();
+  await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('queue-changed')).toBe(true);
+}
+
+function nextQueueEventReply(page: Page, sessionId: string) {
+  return page.waitForResponse(response => {
+    if (!response.url().endsWith('/api/invoke')) return false;
+    const { command, args } = response.request().postDataJSON();
+    return command === 'queue_list' && args.sessionId === sessionId;
+  });
+}
+
 async function openQueueClients(page: Page, beforeConnect?: (host: Page, sessionId: string, agentStatus: (running: boolean) => Promise<void>) => Promise<void>) {
   const host = await page.context().newPage();
   await host.goto('/');
@@ -71,6 +101,7 @@ async function openQueueClients(page: Page, beforeConnect?: (host: Page, session
   await beforeConnect?.(host, sessionId, agentStatus);
   const web = await openWebMode(page, host);
   await expect.poll(() => web.subscriptions.has('queue-changed')).toBe(true);
+  await expect(page.locator('#prompt')).toBeEnabled();
   const queueEvents: { sessionId: string; held?: boolean }[] = [];
   const finishedRuns: string[] = [];
   await host.exposeFunction('forwardHostEvent', (name: string, payload: { sessionId: string; held?: boolean; kind?: string }) => {
@@ -200,6 +231,105 @@ test.describe('web mode', () => {
     await page.reload();
     await expect(page.getByText('Paused until the usage limit resets', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(resume).toHaveCount(0);
+  });
+
+  test('delayed boot snapshots cannot restore a removed queue row or a released hold', async ({ page }) => {
+    const kept = 'Keep this follow-up', removed = 'Remove this follow-up';
+    const { host, sessionId, web } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
+      await agentStatus(true);
+      await host.evaluate(async ({ sessionId, kept, removed }) => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('set_queue_hold', { sessionId, held: true, reason: 'failed' });
+        for (const text of [kept, removed]) await invoke('queue_add', { sessionId, text, attachments: [] });
+      }, { sessionId, kept, removed });
+    });
+    const hold = page.locator('.queue-hold');
+    await expect(queueRows(page)).toHaveText([kept, removed]);
+    await expect(hold).toHaveText('Paused after the run failed');
+
+    const list = delayQueueSnapshot(web, 'queue_list');
+    await reloadQueueClient(web);
+    await list.captured;
+    const removedReply = nextQueueEventReply(page, sessionId);
+    await host.evaluate(async ({ sessionId, removed }) => {
+      const { invoke } = await import('/src/preview.ts');
+      const rows = await invoke<{ id: string; text: string }[]>('queue_list', { sessionId });
+      await invoke('queue_remove', { id: rows.find(row => row.text === removed)!.id });
+    }, { sessionId, removed });
+    await (await removedReply).finished();
+    list.release();
+    await expect(queueRows(page)).toHaveText([kept]);
+    await expect(hold).toHaveText('Paused after the run failed');
+
+    const holds = delayQueueSnapshot(web, 'queue_holds');
+    await reloadQueueClient(web);
+    await holds.captured;
+    const releasedReply = nextQueueEventReply(page, sessionId);
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: false });
+    }, sessionId);
+    await (await releasedReply).finished();
+    holds.release();
+    await expect(queueRows(page)).toHaveText([kept]);
+    await expect(hold).toHaveCount(0);
+  });
+
+  test('a lagged event stream refreshes queue rows and restores or clears the host hold', async ({ page }) => {
+    const web = await openWebMode(page);
+    await expect(page.locator('#prompt')).toBeEnabled();
+    const sessionId = (await selected(page).getAttribute('data-id'))!;
+    const updateHostQueue = (reason?: string, text?: string) => page.evaluate(async ({ sessionId, reason, text }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: Boolean(reason), reason });
+      if (text) await invoke('queue_add', { sessionId, text, attachments: [] });
+    }, { sessionId, reason, text });
+    const hold = page.locator('.queue-hold');
+    const resume = page.getByRole('button', { name: 'Resume', exact: true });
+    await updateHostQueue('failed', 'Original follow-up');
+    web.socket().send(JSON.stringify({ type: 'event', name: 'queue-changed', payload: { sessionId, held: true, reason: 'failed' } }));
+    await expect(hold).toHaveText('Paused after the run failed');
+    await expect(resume).toBeVisible();
+
+    await updateHostQueue('limited', 'Follow-up queued during the gap');
+    web.socket().send(JSON.stringify({ type: 'lagged' }));
+    await expect(queueRows(page)).toHaveText(['Original follow-up', 'Follow-up queued during the gap']);
+    await expect(hold).toHaveText('Paused until the usage limit resets');
+    await expect(resume).toHaveCount(0);
+
+    await updateHostQueue();
+    web.socket().send(JSON.stringify({ type: 'lagged' }));
+    await expect(hold).toHaveCount(0);
+    await expect(queueRows(page)).toHaveCount(2);
+  });
+
+  test('browser Send now gets past the host stop hold without clearing it', async ({ page }) => {
+    const kept = 'Keep this follow-up', urgent = 'Send this one now';
+    const { host, sessionId, web, finishedRuns } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
+      await agentStatus(true);
+      await host.evaluate(async ({ sessionId, kept, urgent }) => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('queue_add', { sessionId, text: kept, attachments: [] });
+        await invoke('queue_add', { sessionId, text: urgent, attachments: [{ kind: 'path', path: 'README.md' }] });
+        (window as any).__stopHold = true;
+      }, { sessionId, kept, urgent });
+    });
+    await expect(page.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: `Send now: ${urgent}`, exact: true }).click();
+    await host.waitForFunction(() => typeof (window as any).__stopRelease === 'function');
+    // Model the host's run-end hold before its delayed done event arrives in the browser.
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: true, reason: 'stopped' });
+    }, sessionId);
+    const hold = page.locator('.queue-hold');
+    await expect(hold).toHaveText('Paused after you stopped the run');
+    await host.evaluate(() => (window as any).__stopRelease());
+
+    await expect.poll(() => finishedRuns).toEqual([sessionId, sessionId]);
+    await expect(queueRows(page)).toHaveText([kept]);
+    await expect(hold).toHaveText('Paused after you stopped the run');
+    expect(web.commands.filter(command => ['set_queue_hold', 'queue_take', 'send_message'].includes(command))).toEqual(['queue_take', 'send_message']);
   });
 
   test('browser Resume clears the host hold and the desktop drains the queue once', async ({ page }) => {
