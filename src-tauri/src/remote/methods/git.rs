@@ -1211,7 +1211,7 @@ mod tests {
         assert!(allow_secret_diff(None, &[Some("config/prod.tfvars"), None], false).is_err());
         assert!(allow_secret_diff(None, &[Some("src/main.rs"), None], false).is_ok());
         assert!(allow_secret_diff(None, &[Some(".env"), Some(".envrc")], true).is_ok());
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for TurnDiff").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.contains("allow_secret_diff(root.as_deref(), &[Some(&detail.path), detail.old_path.as_deref()], full)?"));
@@ -1270,7 +1270,7 @@ mod tests {
         let background = runtime.block_on(lock_checkouts(vec![root.clone()]));
         assert!(try_lock_checkouts(vec![root.clone()]).is_err());
         drop(background);
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         for method in ["impl Run for Stage", "impl Run for SwitchBranch"] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -1281,7 +1281,7 @@ mod tests {
 
     #[test]
     fn switch_off_git_refuses_unvetted_config_before_any_status() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = |method: &str| {
             let body = &source[source.find(method).unwrap()..];
             body[..body.find("\n}\n").unwrap()].to_owned()
@@ -1291,7 +1291,7 @@ mod tests {
         assert!(refusal < stage.find("stage_all_in(&root").unwrap(), "git.stage {{all}} refuses before its status, which skips submodules with the switch off");
         assert!(body("impl Run for SwitchBranch").contains("refuse_config_programs(&ctx"), "a branch switch runs smudge filters");
         assert!(body("impl Run for Status").contains("status_for(&root, trust)"));
-        let lib = include_str!("../../lib.rs");
+        let lib = include_str!("../../lib.rs").replace("\r\n", "\n");
         let pull = &lib[lib.find("pub(crate) fn push_and_open_pull").unwrap()..];
         assert!(pull.find("refuse_untrusted_programs(root, trust)").unwrap() < pull.find("git_status(root, trust)").unwrap());
     }
@@ -1303,7 +1303,7 @@ mod tests {
     /// pending exit reach the desktop helper's await/quiesce.
     #[test]
     fn commit_and_merge_recheck_the_agent_after_the_checkout_lock() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         for (method, check) in [
             ("async fn commit(", "refuse_running_here(&ctx, &root).await?"),
             ("impl Run for WorktreeMerge", "crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?"),
@@ -1319,7 +1319,7 @@ mod tests {
 
     #[test]
     fn worktree_merge_waits_for_exit_through_the_shared_helper() {
-        let lib = include_str!("../../lib.rs");
+        let lib = include_str!("../../lib.rs").replace("\r\n", "\n");
         let desktop = &lib[lib.find("async fn merge_worktree(").unwrap()..];
         let desktop = &desktop[..desktop.find("\n}\n").unwrap()];
         assert!(desktop.contains("merge_task_worktree(&state, session_id, workspace::Trust::Desktop).await"));
@@ -1329,7 +1329,7 @@ mod tests {
         assert!(guard < helper.find("providers::await_exit(&session_id)").unwrap());
         assert!(helper.find(".await?;").unwrap() < helper.find("workspace::merge_worktree(").unwrap());
         assert!(helper.contains("workspace::merge_worktree(&main, &path, trust)"));
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let remote = &source[source.find("impl Run for WorktreeMerge").unwrap()..];
         let remote = &remote[..remote.find("\n}\n").unwrap()];
         assert!(remote.find("let _checkout = lock_task_checkout(").unwrap() < remote.find("crate::merge_task_worktree(").unwrap());
@@ -1486,7 +1486,7 @@ mod tests {
     /// `files.write` does; never just this task's own agent.
     #[test]
     fn discard_refuses_while_any_agent_works_in_the_checkout() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for Discard").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(!body.contains("refuse_running(&ctx"), "not only this task's agent");
@@ -1495,7 +1495,7 @@ mod tests {
         assert!(body[lock..].contains("refuse_running_here(&ctx, &root).await?"), "again under the lock");
         let here = &source[source.find("async fn refuse_running_here").unwrap()..];
         assert!(here[..here.find("\n}\n").unwrap()].contains("super::files::running_in(ctx, root)"), "the files.write check");
-        let files = include_str!("files.rs");
+        let files = include_str!("files.rs").replace("\r\n", "\n");
         let refuse = &files[files.find("async fn refuse_running_in").unwrap()..];
         assert!(refuse[..refuse.find("\n}\n").unwrap()].contains("running_in(ctx, root)"), "one check for both");
     }
@@ -1506,7 +1506,7 @@ mod tests {
     /// checkout lock.
     #[test]
     fn checkout_changes_refuse_while_any_agent_works_in_the_checkout() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         for (method, lock) in [
             ("impl Run for Stage", "try_lock_task_checkout(&ctx"),
             ("impl Run for SwitchBranch", "try_lock_task_checkout(&ctx"),
@@ -1615,7 +1615,7 @@ mod tests {
         assert_eq!(allow_unlinked(&root, &[Some("notes.txt")]).unwrap_err(), super::super::files::HARD_LINK_REFUSED);
         assert!(allow_unlinked(&root, &[Some("plain.txt"), Some("notes.txt")]).is_err(), "a rename's old path too");
         assert!(allow_unlinked(&root, &[Some("plain.txt"), None, Some("gone.txt")]).is_ok());
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for TurnDiff").unwrap()..];
         assert!(body[..body.find("\n}\n").unwrap()].contains("allow_unlinked(root, &[Some(&detail.path), detail.old_path.as_deref()])?"));
         std::fs::remove_dir_all(&dir).unwrap();
@@ -1698,7 +1698,7 @@ mod tests {
     /// Round 24: with no base, `pull.create` asks the base remote's HEAD first, then origin's.
     #[test]
     fn pull_create_defaults_to_the_base_remotes_branch() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("async fn open_pull(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.find("crate::workspace::pull_base_default(&pin_root, trust)").unwrap() < body.find("crate::task_branches(").unwrap());
@@ -1706,7 +1706,7 @@ mod tests {
 
     #[test]
     fn worktree_create_checks_busy_checkout_before_and_after_the_lock() {
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("async fn create_worktree(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let lock = body.find("lock_task_checkout(&ctx").unwrap();

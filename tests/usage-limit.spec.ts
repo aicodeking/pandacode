@@ -82,18 +82,25 @@ test('a passed reset releases the queue hold without auto-sending', async ({ pag
   const resetsAt = await page.evaluate(() => Date.now() + 60_000);
   await hitLimit(page, resetsAt);
   await expect(queue(page)).toContainText('Paused until the usage limit resets');
-  await expect.poll(async () => (await calls(page, 'set_queue_hold')).map(call => call.args)).toEqual([{ sessionId: 'session-1', held: true }]);
+  await expect.poll(async () => (await calls(page, 'set_queue_hold')).map(call => call.args)).toEqual([
+    { sessionId: 'session-1', held: true, reason: 'limited' },
+  ]);
   await page.clock.fastForward(61_000);
   // The banner says the limit has reset and the queue offers Resume again, but nothing sends by itself.
   await expect(banner(page)).toContainText('The usage limit has reset');
   await expect(queue(page)).not.toContainText('Paused until the usage limit resets');
   await expect(queue(page).getByRole('button', { name: 'Resume', exact: true })).toBeVisible();
   expect(await sent(page)).toEqual(['Build the feature']);
-  expect(await calls(page, 'set_queue_hold')).toHaveLength(1);
+  expect((await calls(page, 'set_queue_hold')).map(call => call.args)).toEqual([
+    { sessionId: 'session-1', held: true, reason: 'limited' },
+    { sessionId: 'session-1', held: true, reason: 'reset' },
+  ]);
   await queue(page).getByRole('button', { name: 'Resume', exact: true }).click();
   await expect.poll(() => sent(page)).toEqual(['Build the feature', 'After the limit']);
   expect((await calls(page, 'set_queue_hold')).map(call => call.args)).toEqual([
-    { sessionId: 'session-1', held: true }, { sessionId: 'session-1', held: false },
+    { sessionId: 'session-1', held: true, reason: 'limited' },
+    { sessionId: 'session-1', held: true, reason: 'reset' },
+    { sessionId: 'session-1', held: false },
   ]);
 });
 

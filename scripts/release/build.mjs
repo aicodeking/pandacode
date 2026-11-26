@@ -4,8 +4,8 @@
 //
 //   node scripts/release/build.mjs [darwin-aarch64|darwin-x86_64|windows-x86_64|windows-aarch64|linux-x86_64|linux-aarch64]
 //
-// Signing is optional. Without Apple credentials the macOS app gets an ad-hoc
-// signature; Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
+// Outside official builds, macOS can use an ad-hoc signature without Apple
+// credentials. Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
 // (the release workflow's secret) the build also produces the signed update file and
 // its `.sig` for the in-app updater.
 import { readFile, writeFile, mkdir, copyFile, readdir, readlink, mkdtemp, rmdir, rm, lstat, chmod } from 'node:fs/promises';
@@ -22,13 +22,35 @@ const STRIPPED = /^PANDACODE_(LICENSE|UPDATE)_PUBLIC_KEY$/;
 
 export function macosSigning(env) {
   const identity = env.APPLE_SIGNING_IDENTITY?.trim();
-  if (!identity || identity === '-') return { mode: 'adhoc', identity: '-' };
+  if (!identity || identity === '-') {
+    if (['1', 'true'].includes(env.PANDACODE_REQUIRE_APPLE_SIGNING)) {
+      throw new Error('Official macOS builds require APPLE_SIGNING_IDENTITY (Developer ID Application) and Apple notarization credentials.');
+    }
+    return { mode: 'adhoc', identity: '-' };
+  }
   if (!identity.startsWith('Developer ID Application:')) throw new Error('APPLE_SIGNING_IDENTITY must be a "Developer ID Application: ..." certificate, or unset for an ad-hoc build.');
   const complete = names => names.every(name => env[name]?.trim());
   if (!complete(['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH']) && !complete(['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'])) {
     throw new Error('Developer ID builds must be notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_PATH, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID.');
   }
   return { mode: 'developer-id', identity };
+}
+
+const API_KEY_CREDENTIALS = ['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH'];
+const APPLE_ID_CREDENTIALS = ['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'];
+
+// Tauri notarizes only the app; the disk image around it needs its own ticket.
+export function notarytoolArgs(dmg, env) {
+  const value = name => (typeof env[name] === 'string' ? env[name].trim() : '');
+  const complete = names => names.every(value);
+  if (complete(API_KEY_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--key', value('APPLE_API_KEY_PATH'), '--key-id', value('APPLE_API_KEY'), '--issuer', value('APPLE_API_ISSUER'), '--wait'];
+  if (complete(APPLE_ID_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--apple-id', value('APPLE_ID'), '--password', value('APPLE_PASSWORD'), '--team-id', value('APPLE_TEAM_ID'), '--wait'];
+  throw new Error(`Notarizing the disk image needs ${API_KEY_CREDENTIALS.join(', ')} or ${APPLE_ID_CREDENTIALS.join(', ')}.`);
+}
+
+export async function notarizeDmg(dmg, env, commands = { run }) {
+  await commands.run('/usr/bin/xcrun', notarytoolArgs(dmg, env));
+  await commands.run('/usr/bin/xcrun', ['stapler', 'staple', dmg]);
 }
 
 function withoutApple(env) {
@@ -118,6 +140,11 @@ async function verifyPackagedMacApp(installed, { app, releaseVersion, mode }, la
 
 async function verifyDmg(artifacts, commands) {
   await commands.run('/usr/bin/hdiutil', ['verify', artifacts.dmg, '-quiet']);
+  if (artifacts.mode === 'developer-id') {
+    // The container itself must carry a ticket and pass Gatekeeper's open check.
+    await commands.run('/usr/bin/xcrun', ['stapler', 'validate', artifacts.dmg]);
+    await commands.run('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose', '--ignore-cache', '--no-cache', artifacts.dmg]);
+  }
   const scratch = await mkdtemp(resolve(tmpdir(), 'pandacode-dmg-verify-'));
   const mount = resolve(scratch, 'volume');
   await mkdir(mount);
@@ -166,6 +193,7 @@ async function main() {
   const updater = build.updater ? resolve(bundleRoot, config.updater(releaseVersion)) : undefined;
   if (releaseTarget.startsWith('darwin-')) {
     const app = resolve(bundleRoot, 'macos/PandaCode.app');
+    if (build.signing.mode === 'developer-id') await notarizeDmg(source, build.env);
     await verifyMacArtifacts({ dmg: source, app, releaseVersion, mode: build.signing.mode, updater });
   }
   if (releaseTarget.startsWith('linux-')) {

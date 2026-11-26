@@ -878,6 +878,8 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
     return [{ date: key(date), tokens: Math.round((weekend ? 900 : 2400) * (0.3 + roll * roll * 3.2)) }];
   });
 }
+const previewQueueHolds = new Map<string, string>();
+
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
 function previewQueue(): PreviewQueued[] {
@@ -1983,7 +1985,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'tray_seen': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
-    case 'set_queue_hold': break;
+    case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
+    case 'set_queue_hold': {
+      const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
+      if (held) previewQueueHolds.set(sessionId, reason);
+      else previewQueueHolds.delete(sessionId);
+      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
+      break;
+    }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
       session(args.sessionId);
@@ -1991,32 +2000,47 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!text.trim() && !list.length) throw new Error('Write a message or add an attachment to queue.');
       const queue = previewQueue(), at = Date.now();
       const entry = { id: crypto.randomUUID(), sessionId: args.sessionId, position: Math.max(-1, ...queue.filter(e => e.sessionId === args.sessionId).map(e => e.position)) + 1, text, attachments: list, createdAt: at, updatedAt: at };
-      savePreviewQueue([...queue, entry]); result = entry; break;
+      savePreviewQueue([...queue, entry]);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
     case 'queue_update': {
       const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
       if (!entry) throw new Error('This queued message was already sent or removed.');
       Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
-      savePreviewQueue(queue); result = entry; break;
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
-    case 'queue_remove': case 'queue_take_steered': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
+    case 'queue_remove': case 'queue_take_steered': {
+      const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      if (entry) emit('queue-changed', { sessionId: entry.sessionId });
+      result = null; break;
+    }
     case 'queue_reorder': {
       const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
       if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
       (args.ids as string[]).forEach((id, position) => { queue.find(e => e.id === id)!.position = position; });
-      savePreviewQueue(queue); result = previewQueue().filter(e => e.sessionId === args.sessionId); break;
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: args.sessionId });
+      result = previewQueue().filter(e => e.sessionId === args.sessionId); break;
     }
     case 'queue_take': {
       const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
       if (!entry) throw new Error('This queued message was already sent or removed.');
-      savePreviewQueue(queue.filter(e => e.id !== args.id)); result = entry; break;
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
     case 'queue_restore': {
       const queue = previewQueue(), entry = args.entry as PreviewQueued;
       if (queue.some(e => e.id === entry.id)) throw new Error('This message is already queued.');
       const position = Math.min(1, ...queue.filter(e => e.sessionId === entry.sessionId).map(e => e.position)) - 1;
       const restored = { ...entry, position, updatedAt: Date.now() };
-      savePreviewQueue([...queue, restored]); result = restored; break;
+      savePreviewQueue([...queue, restored]);
+      emit('queue-changed', { sessionId: restored.sessionId });
+      result = restored; break;
     }
     case 'steer_task': {
       const s = session(args.sessionId), w = window as any;
@@ -2204,7 +2228,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       turnChanges.remove(deletedSessionIds);
       sessions = sessions.filter(task => !deletedSessionIds.includes(task.id));
       saveThreadOrder(sessions.map(threadOrder));
-      for (const id of deletedSessionIds) delete messages[id];
+      for (const id of deletedSessionIds) { delete messages[id]; previewQueueHolds.delete(id); }
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }

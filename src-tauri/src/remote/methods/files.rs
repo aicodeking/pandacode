@@ -1087,12 +1087,12 @@ mod tests {
             std::os::unix::fs::symlink(&data, &link).unwrap();
             assert!(touches_app_data(&link, data_ref), "a symlink to it");
         }
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         let allow = &source[source.find("pub(crate) fn allow_root(").unwrap()..];
         assert!(allow[..allow.find("\n}\n").unwrap()].contains("touches_app_data(root, crate::secret_store::dir())"));
         std::fs::remove_dir_all(&dir).unwrap();
         // Every phone read path checks the root before reading.
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         for method in ["impl Run for List", "impl Run for Read", "impl Run for Search", "impl Run for Grep", "pub(crate) fn checked_image_data_url("] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -1101,7 +1101,7 @@ mod tests {
         let host = include_str!("../host.rs");
         let diff = &host[host.find("Call::Diff { session_id, path, staged } =>").unwrap()..];
         assert!(diff[..diff.find("Call::BotsList").unwrap()].contains("allow_root(&root, full)?"), "task.diff");
-        let git = include_str!("git.rs");
+        let git = include_str!("git.rs").replace("\r\n", "\n");
         let turn = &git[git.find("impl Run for TurnDiff").unwrap()..];
         assert!(turn[..turn.find("\n}\n").unwrap()].contains("allow_root(root, full)?"), "turn.diff");
     }
@@ -1172,7 +1172,7 @@ mod tests {
     #[test]
     fn files_write_needs_full_access_for_remote_tasks() {
         // A Full-scope phone with the host switch off must not plant hooks that run as the user.
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         let body = &source[source.find("impl Run for Write").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         let gate = body.find("require_full_access_to(ctx.full_access, super::terminal::EDIT_FILES)?").expect("files.write checks Full access");
@@ -1237,7 +1237,7 @@ mod tests {
         assert_eq!(write_text(&dir, "notes.txt", "changed", &hash).unwrap_err(), HARD_LINK_REFUSED);
         assert_eq!(std::fs::read_to_string(outside.join("id_rsa")).unwrap(), "PRIVATE KEY", "nothing written");
         write_text(&dir, "plain.txt", "PRIVATE sample", &content_hash("hello")).unwrap();
-        let source = include_str!("files.rs");
+        let source = include_str!("files.rs").replace("\r\n", "\n");
         for method in ["impl Run for Read", "fn checked_image_data_url"] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
@@ -1510,14 +1510,14 @@ mod tests {
         let helper = "pub(crate) fn checked_image_data_url(";
         let needle = ["image", "_data_url("].concat();
         for file in files {
-            let source = std::fs::read_to_string(&file).unwrap();
+            let source = std::fs::read_to_string(&file).unwrap().replace("\r\n", "\n");
             let source = source.split("#[cfg(test)]\nmod tests").next().unwrap();
             for (at, _) in source.match_indices(&needle) {
                 let allowed = source[..at].ends_with("checked_") || source[..at].rfind(helper).is_some_and(|start| !source[start..at].contains("\n}\n"));
                 assert!(allowed, "{}: image_data_url must go through checked_image_data_url", file.display());
             }
         }
-        let host = include_str!("../host.rs");
+        let host = include_str!("../host.rs").replace("\r\n", "\n");
         let arm = &host[host.find("Call::WorkspaceImage { session_id, path, variant, offset } =>").unwrap()..];
         assert!(arm[..arm.find("\n        }\n").unwrap()].contains("checked_image_data_url(&root, &path, full)"), "task.workspaceImage uses the helper");
     }

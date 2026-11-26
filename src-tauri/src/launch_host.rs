@@ -167,6 +167,7 @@ pub(crate) struct RunSink {
     /// A cloud run's events are dropped while PandaCode quits (the remote run continues).
     pub(crate) cloud: bool,
     pub(crate) last_event: Arc<AtomicI64>,
+    pub(crate) newly_limited: Arc<AtomicBool>,
     pub(crate) tracker: Option<Arc<Mutex<turn_changes::Tracker>>>,
     pub(crate) run_id: String,
     pub(crate) assistant: Arc<Mutex<String>>,
@@ -203,6 +204,9 @@ impl RunSink {
         self.last_event.store(storage::now(), Ordering::SeqCst);
         if e.kind == "done" || e.kind == providers::HEARTBEAT {
             return;
+        }
+        if e.kind == "limited" {
+            self.newly_limited.store(true, Ordering::SeqCst);
         }
         let usage = if e.kind == "usage" {
             let Some(usage) = e.data.as_ref().and_then(ContextUsage::from_value) else {

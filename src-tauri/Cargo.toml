@@ -1,6 +1,6 @@
 [package]
 name = "pandacode"
-version = "0.3.147"
+version = "0.3.152"
 description = "A lightweight native workspace for coding agents"
 authors = ["PandaCode contributors"]
 edition = "2021"
@@ -51,7 +51,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 webpki-roots = "0.26"
 des = "0.8"
 shell-words = "1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # 2.14 checks and downloads updates with reqwest 0.13, which verifies TLS against
 # the OS certificate store. It needs Tauri 2.12 (the Windows bindings below) and
 # rustc 1.90. Keep the cap on 2.14 so a later minor cannot change that stack.

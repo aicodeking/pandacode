@@ -48,7 +48,57 @@ export function scanStatus(inventory, { report, error }) {
     const severity = SEVERITIES.includes(match.vulnerability?.severity) ? match.vulnerability.severity : 'Unknown';
     severities[severity] += 1;
   }
-  return { status: 'scanned', findings: (report?.matches ?? []).length, severities };
+  return { status: 'scanned', findings: (report?.matches ?? []).length, severities, advisories: advisories(report?.matches) };
+}
+
+const REPORTED = ['Critical', 'High'];
+const text = value => (typeof value === 'string' || typeof value === 'number') && String(value).trim() ? String(value).trim() : undefined;
+
+/** Critical and High matches as a sorted, de-duplicated `{ id, severity, package, version }` list. */
+export function advisories(matches) {
+  const seen = new Map();
+  for (const match of Array.isArray(matches) ? matches : []) {
+    const severity = match?.vulnerability?.severity;
+    const id = text(match?.vulnerability?.id);
+    if (!REPORTED.includes(severity) || !id) continue;
+    const entry = { id, severity, package: text(match?.artifact?.name) ?? 'unknown', version: text(match?.artifact?.version) ?? 'unknown' };
+    const key = [entry.id, entry.package, entry.version].join('\0');
+    const prior = seen.get(key);
+    if (!prior || REPORTED.indexOf(severity) < REPORTED.indexOf(prior.severity)) seen.set(key, entry);
+  }
+  const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  return [...seen.values()].sort((a, b) => REPORTED.indexOf(a.severity) - REPORTED.indexOf(b.severity)
+    || cmp(a.package, b.package) || cmp(a.version, b.version) || cmp(a.id, b.id));
+}
+
+/**
+ * The vulnerability database build time from `grype db status -o json`. grype 0.121.0 (schema v6)
+ * prints `{ schemaVersion, from, built, path, valid }`; older or wrapped shapes nest it under `status`.
+ * Falls back to the timestamp in the `from` archive URL. Returns an ISO string or undefined.
+ */
+export function dbBuiltAt(status) {
+  let db = status;
+  if (typeof db === 'string') {
+    try { db = JSON.parse(db); } catch { return undefined; }
+  }
+  if (!db || typeof db !== 'object') return undefined;
+  const fromUrl = text(db.from ?? db.status?.from)?.match(/_(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)_/)?.[1];
+  for (const candidate of [db.built, db.status?.built, db.db?.built, fromUrl]) {
+    const value = text(candidate);
+    if (value && !Number.isNaN(Date.parse(value))) return new Date(value).toISOString().replace('.000Z', 'Z');
+  }
+  return undefined;
+}
+
+function advisoryLines(entries) {
+  return entries.filter(e => e.scan.advisories?.length).map(e => {
+    const groups = new Map();
+    for (const a of e.scan.advisories) {
+      const key = `**${a.severity}** \`${a.package}\` ${a.version}`;
+      groups.set(key, [...(groups.get(key) ?? []), a.id]);
+    }
+    return `- \`${e.name}\`: ${[...groups].map(([key, ids]) => `${key}: ${ids.join(', ')}`).join('; ')}`;
+  });
 }
 
 export function coverage({ version, commit, scanners, dbBuilt, entries, notes }) {
@@ -65,19 +115,24 @@ export function markdown(report) {
     const inventory = e.inventory.status === 'ok' ? `${e.inventory.components} components` : `**incomplete** (${e.inventory.reason})`;
     return `| \`${e.name}\` | ${e.platform} | \`${e.sha256 ?? 'n/a'}\` | ${e.kind} | ${inventory} | ${scan} |`;
   });
+  const advisories = advisoryLines(report.entries);
   return [
     `# Security scan coverage for PandaCode ${report.version}`, '',
     `Commit \`${report.commit}\`. Scanners: ${Object.entries(report.scanners).map(([n, v]) => `${n} ${v}`).join(', ')}. Vulnerability database built: ${report.vulnerabilityDbBuilt}.`, '',
     report.complete ? 'All listed inventories were identified and scanned.' : `**Coverage is incomplete** for: ${report.incomplete.map(n => `\`${n}\``).join(', ')}. An incomplete inventory is not a clean scan.`, '',
     '| Subject | Platform | SHA-256 | Kind | Inventory | Vulnerability scan |', '| --- | --- | --- | --- | --- | --- |', ...rows, '',
+    ...(advisories.length ? ['## Critical and High advisories', '', ...advisories, ''] : []),
     '## Limits', '', ...report.notes.map(n => `- ${n}`), '',
   ].join('\n');
 }
 
-const NOTES = [
+/** Paths kept out of the `pandacode-npm` scan: none of them ship in the desktop app. */
+export const NPM_EXCLUDES = ['./mobile/**', './website/**', './packages/**', './relay/**', './node_modules/**'];
+
+export const NOTES = [
   'Artifact SBOMs list only what syft can identify inside the installer; compressed installers (DMG, NSIS, AppImage) often yield little or nothing, which is reported as incomplete.',
   'The Rust and npm SBOMs come from Cargo.lock and package-lock.json at the release commit and describe build dependencies, not a verified inventory of any one installer.',
-  'The website, the relay and the npx package are not shipped in the desktop app and are excluded.',
+  'The mobile app, the website, the relay and the npx package are not shipped in the desktop app and are excluded.',
   'The WebView and other operating-system libraries (WebKitGTK, WebView2, WKWebView, glibc) are supplied by the host, are not bundled, and are not scanned.',
   'Findings are reported, not gating. Checksums and signatures are separate provenance checks and are unchanged.',
 ];
@@ -111,12 +166,10 @@ async function main() {
   await mkdir(out, { recursive: true });
   const syftVersion = JSON.parse((await tool('syft', ['version', '-o', 'json'])).out ?? '{}').version;
   const grypeVersion = JSON.parse((await tool('grype', ['version', '-o', 'json'])).out ?? '{}').version;
-  const db = await tool('grype', ['db', 'status', '-o', 'json']);
-  const dbBuilt = db.out ? JSON.parse(db.out).built : undefined;
 
   const subjects = [
     ...packagedAssets(await readdir(assets)).map(name => ({ name, kind: 'artifact', platform: platformOf(name), source: [`file:${resolve(assets, name)}`], path: resolve(assets, name) })),
-    { name: 'pandacode-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', '--exclude', './website/**', '--exclude', './packages/**', '--exclude', './relay/**', '--exclude', './node_modules/**'] },
+    { name: 'pandacode-npm', kind: 'npm lockfile', platform: 'all', source: ['dir:.', '--select-catalogers', 'javascript', ...NPM_EXCLUDES.flatMap(glob => ['--exclude', glob])] },
     { name: 'pandacode-rust', kind: 'Cargo.lock', platform: 'all', source: ['dir:.', '--select-catalogers', 'rust'] },
   ];
   const entries = [];
@@ -127,6 +180,9 @@ async function main() {
     entries.push({ name: subject.name, kind: subject.kind, platform: subject.platform, sha256: subject.path ? await sha256(subject.path) : undefined, sbom: inv.status === 'ok' ? basename(file) : undefined, inventory: inv, scan: result });
     console.log(`${subject.name}: inventory ${inv.status}, scan ${result.status}`);
   }
+  // After the scans: on a fresh runner the first scan downloads the database.
+  const dbBuilt = dbBuiltAt((await tool('grype', ['db', 'status', '-o', 'json'])).out);
+  if (!dbBuilt) console.log('::warning::Could not determine grype vulnerability database build time; reporting "unknown".');
   const report = coverage({ version: releaseVersion, commit, scanners: { syft: syftVersion ?? 'unknown', grype: grypeVersion ?? 'unknown' }, dbBuilt, entries, notes: NOTES });
   await writeFile(resolve(out, 'SBOM-COVERAGE.json'), `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(resolve(out, 'SBOM-COVERAGE.md'), markdown(report));

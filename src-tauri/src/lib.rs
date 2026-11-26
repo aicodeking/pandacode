@@ -586,6 +586,7 @@ async fn delete_session_with_attachment_cleanup(
     let deleted = task_deletion::delete_session(app.clone(), window, session_id).await?;
     for sid in &deleted.deleted_session_ids {
         cloud::colab::activity::forget_session(sid);
+        message_queue::set_queue_hold_state(sid, false, None);
     }
     match app.path().app_data_dir() {
         Ok(data_dir) => {
@@ -771,8 +772,18 @@ async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, se
     Ok(())
 }
 #[tauri::command]
-fn set_queue_hold(session_id: String, held: bool) {
-    message_queue::set_queue_held(&session_id, held);
+fn set_queue_hold(app: tauri::AppHandle, session_id: String, held: bool, reason: Option<String>) {
+    let effective = message_queue::normalize_hold_reason(reason.as_deref());
+    message_queue::set_queue_hold_state(&session_id, held, held.then_some(effective));
+    let event = if held {
+        serde_json::json!({ "sessionId": session_id, "held": true, "reason": effective })
+    } else {
+        serde_json::json!({ "sessionId": session_id, "held": false })
+    };
+    let _ = app.emit("queue-changed", event);
+    if !held {
+        crate::headless::queue_changed(&app, &session_id);
+    }
 }
 /// Scans a year of messages: on its own read-only connection (`read_scan`), without the store lock.
 #[tauri::command]
@@ -2516,8 +2527,10 @@ async fn launch_operation_admitted(
             requests: pending_requests.clone(),
         };
         let coalescer = Arc::new(Mutex::new(providers::Coalescer::default()));
+        let newly_limited = Arc::new(AtomicBool::new(false));
         let sink = RunSink {
             app: app.clone(), cloud, last_event, tracker: tracker.clone(), run_id, assistant: assistant.clone(), subagents: subagents.clone(), store: store.clone(),
+            newly_limited: newly_limited.clone(),
             own_run, team_worker, errors: persistence_error.clone(), agents: agents.clone(), goal_reply: goal_reply.clone(), team: team.clone(), coalescer: coalescer.clone(),
         }
         .sink();
@@ -2688,7 +2701,9 @@ async fn launch_operation_admitted(
             model_health::record_success(&ran.0, &ran.1);
         }
         let mut children = subagents.lock().ok();
+        let mut is_bot = false;
         if let Ok(db) = store.lock() {
+            is_bot = bots::owner_of(&db, &session_id).ok().flatten().is_some();
             let child_status = if was_stopped || successful {
                 "stopped"
             } else {
@@ -2797,6 +2812,12 @@ async fn launch_operation_admitted(
                 );
             }
         }
+        let limited = newly_limited.load(Ordering::SeqCst);
+        // The store is unlocked. Publish the hold before done so every client sees it
+        // even when another client stopped this run.
+        if let Some(reason) = headless::run_end_hold_reason(successful, was_stopped, limited, is_bot) {
+            headless::hold_queue(&app, &session_id, reason);
+        }
         if let Some(registry) = registry.as_mut() {
             if let Some(agent) = registry.get(&session_id) {
                 if let Ok(mut approvals) = agent.approvals.lock() {
@@ -2839,7 +2860,7 @@ async fn launch_operation_admitted(
             });
             // Only a clean run end delivers the next queued message; failed, stopped and
             // limited runs hold it, as on the desktop.
-            if successful && !was_stopped {
+            if successful && !was_stopped && !limited {
                 headless::drain_queue(app.clone(), session_id.clone());
             }
         }
@@ -4777,6 +4798,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         discard_draft,
         set_queue_hold,
         message_queue::queue_list,
+        message_queue::queue_holds,
         message_queue::queue_add,
         message_queue::queue_update,
         message_queue::queue_remove,
