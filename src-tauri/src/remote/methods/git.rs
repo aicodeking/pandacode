@@ -1148,8 +1148,10 @@ mod tests {
         let source = include_str!("git.rs");
         let commit = &source[source.find("async fn commit(").unwrap()..source.find("fn parse_commit").unwrap()];
         assert!(commit.find("Ok(pushed)").unwrap() < commit.find("invalidate_pull_cache(&this.session_id)").unwrap(), "only after a push that worked");
-        let push = &source[source.find("impl Run for Push").unwrap()..source.find("fn parse_push").unwrap()];
-        assert!(push.find("git_push(").unwrap() < push.find("invalidate_pull_cache(&self.session_id)").unwrap());
+        let push_run = &source[source.find("impl Run for Push").unwrap()..source.find("impl Push").unwrap()];
+        assert!(push_run.find("self.push(").unwrap() < push_run.find("invalidate_pull_cache(&self.session_id)").unwrap(), "only after Push::push succeeds");
+        let push_impl = &source[source.find("impl Push").unwrap()..source.find("fn parse_push").unwrap()];
+        assert!(push_impl.contains("crate::workspace::git_push(&root, trust)"));
     }
 
     #[test]
