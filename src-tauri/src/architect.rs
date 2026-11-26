@@ -554,17 +554,38 @@ pub(crate) fn leads_team(store: &Store, sid: &str) -> Result<bool> {
 /// The status comes from the trigger-kept `architect_team_meta` tracker, so no JSON is parsed;
 /// without a usable tracker (a newer schema) it is read from the snapshot.
 pub(crate) fn is_active(store: &Store, sid: &str) -> bool {
-    let sql = if store.team_meta_usable() {
-        "SELECT status FROM architect_team_meta WHERE session_id=?1"
-    } else {
-        "SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1"
+    let read = |sql: &str| -> Result<Option<String>> {
+        store.db.prepare_cached(sql)
+            .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
+            .map_err(|e| e.to_string())
     };
-    store.db.prepare_cached(sql)
-        .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
+    tracker_or_snapshot(store, TRACKER_STATUS_SQL, SNAPSHOT_STATUS_SQL, read)
         .ok()
         .flatten()
         .is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
 }
+/// One task's status in the `architect_team_meta` tracker.
+const TRACKER_STATUS_SQL: &str = "SELECT status FROM architect_team_meta WHERE session_id=?1";
+/// The same status parsed from the snapshot, for a process without a usable tracker.
+const SNAPSHOT_STATUS_SQL: &str = "SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1";
+/// Runs a tracker read, and when `architect_team_meta` has gone missing (another build repaired
+/// this data folder) disables the trackers and answers the same question from the snapshots.
+/// Without this a read would quietly report "no team": `is_active` swallows its error, so a
+/// running team would look idle and stall until some later save happened to heal the tracker.
+fn tracker_or_snapshot<T>(store: &Store, tracker: &str, snapshot: &str, read: impl Fn(&str) -> Result<T>) -> Result<T> {
+    if !store.team_meta_usable() {
+        return read(snapshot);
+    }
+    match read(tracker) {
+        Err(error) if team_meta_table_missing(&error) => {
+            store.disable_team_trackers();
+            eprintln!("The team tracker table is missing (another PandaCode build repaired this data folder); reading team status from snapshots until restart: {error}");
+            read(snapshot)
+        }
+        other => other,
+    }
+}
+
 /// Every working team, found through the `architect_team_meta_status` index on the tracker
 /// instead of parsing every snapshot. Its query plan is checked in `architect::watchdog::query_tests`.
 pub(super) const ACTIVE_TEAMS: &str = "SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting')";
@@ -573,10 +594,12 @@ const ACTIVE_TEAMS_FALLBACK: &str = "SELECT session_id FROM architect_teams WHER
 /// The leads of every working team, read once per task listing (`crate::reconcile_listed`) so it
 /// never asks `is_active` for each task.
 pub(crate) fn active_team_session_ids(store: &Store) -> Result<std::collections::HashSet<String>> {
-    let sql = if store.team_meta_usable() { ACTIVE_TEAMS } else { ACTIVE_TEAMS_FALLBACK };
-    let mut query = store.db.prepare_cached(sql).map_err(|e| e.to_string())?;
-    let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-    rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+    let read = |sql: &str| -> Result<std::collections::HashSet<String>> {
+        let mut query = store.db.prepare_cached(sql).map_err(|e| e.to_string())?;
+        let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+    };
+    tracker_or_snapshot(store, ACTIVE_TEAMS, ACTIVE_TEAMS_FALLBACK, read)
 }
 /// The teams the watchdog may run: see [`runnable_team_rows`]. Its query plan is checked in
 /// `architect::watchdog::query_tests`.
@@ -589,8 +612,8 @@ const RUNNABLE_TEAMS_FALLBACK_SQL: &str = "SELECT session_id,content FROM archit
 /// (`architect_team_meta_status`, `sessions_active_status`) and only those rows are read by key, so a
 /// pass on the current schema avoids parsing every snapshot. A row that is not JSON is never returned.
 pub(crate) fn runnable_team_rows_in(store: &Store) -> Result<Vec<(String, String)>> {
-    let sql = if store.team_meta_usable() { RUNNABLE_TEAMS_SQL } else { RUNNABLE_TEAMS_FALLBACK_SQL };
-    team_rows(&store.db, sql)
+    let read = |sql: &str| -> Result<Vec<(String, String)>> { team_rows(&store.db, sql) };
+    tracker_or_snapshot(store, RUNNABLE_TEAMS_SQL, RUNNABLE_TEAMS_FALLBACK_SQL, read)
 }
 
 /// The tracker query for the v38 benchmark and query-plan fixtures.
@@ -4006,6 +4029,39 @@ mod team_meta_heal_tests {
         let saved = load(&store, &sid).unwrap().unwrap();
         assert_eq!(saved.objective, "saved inside a caller transaction");
         assert!(!store.team_meta_usable());
+    }
+
+    /// A read can be the first thing to notice a missing tracker, before any save heals it.
+    /// It must degrade to the snapshots instead of reporting the team idle, which would stall a
+    /// running team until some later save happened to fix the tracker.
+    #[test]
+    fn a_read_notices_the_missing_tracker_and_degrades() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+
+        // The status is still reachable through the snapshot, and the read heals the process.
+        assert!(is_active(&store, &sid), "a running team must not read as idle");
+        assert!(!store.team_meta_usable(), "the read disables the broken tracker");
+        assert!(active_team_session_ids(&store).unwrap().contains(&sid));
+        assert_eq!(runnable_team_rows_in(&store).unwrap().len(), 1);
+    }
+
+    /// A read that is not about a missing table must keep its error; only the tracker loss heals.
+    #[test]
+    fn a_read_error_that_is_not_the_missing_tracker_surfaces() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta; DROP TABLE architect_teams").unwrap();
+        assert!(active_team_session_ids(&store).is_err(), "a real failure is still an error");
     }
 
     /// A caller's transaction can roll the trigger drops back after the heal decided they were
