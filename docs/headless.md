@@ -190,7 +190,11 @@ WantedBy=multi-user.target
   Log in each CLI/provider once; a keyring's old values are not migrated.
 - **NTP required.** Connect refuses requests whose timestamp is more than a minute off.
 - One instance per data dir. Don't run serve and the desktop app on the same data dir:
-  serve skips the single-instance guard.
+  serve skips the single-instance guard. This matters most across **versions**: a newer
+  build repairs the shared database on open, and doing that underneath a running older
+  build makes its team saves fail until it restarts. Upgrading therefore means stopping and
+  restarting every instance, `serve` included, not just the desktop. A sequential rollback
+  of a single instance is safe: the older build recreates what it needs on open.
 - Status lines go to stdout (journald): signed-in account, hosting, relay connection,
   online devices — printed only when they change.
 
