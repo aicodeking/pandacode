@@ -394,7 +394,7 @@ fn v38_objects_sql() -> &'static str {
         let indexes: Vec<&str> = V38_TRACKER_INDEXES.into_iter().chain(V38_SCHEMA_INDEXES).chain(V38_BOT_INDEXES).collect();
         let triggers = ["messages", "subagents", "architect_teams"]
             .into_iter()
-            .zip(V38_TRACKER_TRIGGERS.chunks_exact(3))
+            .zip(V38_TRACKER_TRIGGERS.as_chunks::<3>().0)
             .map(|(parent, names)| format!("(tbl_name COLLATE NOCASE = '{parent}' AND name COLLATE NOCASE IN ({}))", list(names)))
             .collect::<Vec<_>>()
             .join(" OR ");
