@@ -3,8 +3,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rmdir, chmod, readFile, stat } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { root, targetConfig } from './common.mjs';
+import { root, targetConfig, isMain } from './common.mjs';
 
 export function assertHostedRunner(env, target, platform = process.platform) {
   if (env.GITHUB_ACTIONS !== 'true' || env.RUNNER_ENVIRONMENT !== 'github-hosted' || !env.RUNNER_TEMP || !isAbsolute(env.RUNNER_TEMP)) {
@@ -169,6 +168,6 @@ async function main() {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

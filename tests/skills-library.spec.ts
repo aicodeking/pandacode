@@ -58,6 +58,8 @@ test('opens through real Settings navigation and agrees with the Skills page', a
   await settings.getByRole('tab', { name: 'Rules & library', exact: true }).click();
   const tag = notes.getByRole('button', { name: 'Release notes is off in all projects in Settings → Tools → Skills' });
   await expect(tag).toHaveText('Off in Skills');
+  await expect(notes.locator('span.skills-kind')).toHaveCSS('border-radius', '6px');
+  await expect(tag).toHaveCSS('border-radius', '999px');
   // Off is blocked or asked depending on the agent: the tooltip never claims only 'asked'.
   await expect(tag).toHaveAttribute('title', 'Off in all projects in Settings → Tools → Skills: blocked or asked, per agent.');
   // One link to Skills, at the top, saying what the page holds; the rule import card has no second pointer.
@@ -239,6 +241,17 @@ test('activating a rule for Claude Code and Codex shows in the matrix, and drift
 
   await page.evaluate(() => (window as any).__skills.edit('no-force-push', 'claude', 'user'));
   await page.getByRole('combobox', { name: 'Project scope' }).selectOption('orbit');
+  const scopeLabels = page.getByRole('table', { name: 'Rules by harness' }).getByRole('columnheader').locator('small');
+  await expect(scopeLabels.filter({ hasText: /^Project$/ }).first()).toBeVisible();
+  await expect(scopeLabels.filter({ hasText: /^User$/ }).first()).toBeVisible();
+  for (const label of await scopeLabels.all()) {
+    const heading = await label.evaluate(el => {
+      const { fontSize, lineHeight } = getComputedStyle(el.parentElement!);
+      return { fontSize, lineHeight };
+    });
+    await expect(label).toHaveCSS('font-size', heading.fontSize);
+    await expect(label).toHaveCSS('line-height', heading.lineHeight);
+  }
   await expect(status(page, 'No force push', 0)).toHaveText('Edited on disk');
   await page.getByRole('checkbox', { name: 'No force push: Claude Code · User' }).uncheck();
   await expect(page.getByRole('status')).toContainText('Left 1 edited file in place');

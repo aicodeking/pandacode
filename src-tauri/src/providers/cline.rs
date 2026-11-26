@@ -33,11 +33,19 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
 /// reads its servers from the file `CLINE_MCP_SETTINGS_PATH` names. A run's tools go in a
 /// private copy of the user's settings, so their own file is never touched. The returned
 /// folder is removed when dropped; `sweep_mcp_settings` clears what a crash left behind.
-pub(super) fn mcp_settings(command: &mut Command, server: &Value) -> Result<AgentTemp, String> {
+/// Extra stdio servers (Colab's MCP) join the same private copy.
+pub(super) fn mcp_settings(command: &mut Command, server: Option<&Value>, extra: &[mcp_host::Stdio]) -> Result<AgentTemp, String> {
     let root = crate::secret_store::dir().ok_or(MCP_SETTINGS_FAILED)?.join(MCP_SETTINGS_DIR);
-    let (name, entry) = loopback_entry(server).ok_or(MCP_SETTINGS_FAILED)?;
+    let mut entries = Vec::new();
+    if let Some(server) = server {
+        entries.push(loopback_entry(server).ok_or(MCP_SETTINGS_FAILED)?);
+    }
+    entries.extend(extra.iter().map(|server| (server.name.clone(), server.cline_entry())));
+    if entries.is_empty() {
+        return Err(MCP_SETTINGS_FAILED.into());
+    }
     let user = user_mcp_settings_path(command).and_then(|path| std::fs::read_to_string(path).ok());
-    let folder = write_mcp_settings(&root, &merged_mcp_settings(user.as_deref(), &name, entry)).ok_or(MCP_SETTINGS_FAILED)?;
+    let folder = write_mcp_settings(&root, &merged_mcp_settings_all(user.as_deref(), entries)).ok_or(MCP_SETTINGS_FAILED)?;
     command.env(MCP_SETTINGS_ENV, launch::external_path(&folder.0.join(MCP_SETTINGS_FILE)));
     Ok(folder)
 }
@@ -58,10 +66,17 @@ fn loopback_entry(server: &Value) -> Option<(String, Value)> {
 
 /// The user's settings with PandaCode's server over them. A file that can't be read as
 /// settings counts as empty: their mistake must not stop the run or reach its errors.
+#[cfg(test)]
 fn merged_mcp_settings(user: Option<&str>, name: &str, entry: Value) -> Value {
+    merged_mcp_settings_all(user, vec![(name.to_string(), entry)])
+}
+
+fn merged_mcp_settings_all(user: Option<&str>, entries: Vec<(String, Value)>) -> Value {
     let mut settings = user.and_then(|text| serde_json::from_str::<Value>(text).ok()).filter(Value::is_object).unwrap_or_else(|| json!({}));
     if !settings["mcpServers"].is_object() { settings["mcpServers"] = json!({}); }
-    settings["mcpServers"][name] = entry;
+    for (name, entry) in entries {
+        settings["mcpServers"][name] = entry;
+    }
     settings
 }
 
@@ -385,7 +400,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
                     }
                 })?;
             acp_catalog::store(discovery, &metadata);
-            acp::parse_models(&metadata)
+            acp::parse_models_for("cline", &metadata)
         }
     };
     Ok(with_efforts(models))
@@ -487,7 +502,7 @@ mod tests {
 
     #[test]
     fn recorded_catalog_lists_models_with_thinking_levels() {
-        let models = with_efforts(acp::parse_models(&session()));
+        let models = with_efforts(acp::parse_models_for("cline", &session()));
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "anthropic/claude-sonnet-5.5", "anthropic/claude-opus-5.5"]);
         assert_eq!(models[2].reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), EFFORTS);
         for effort in EFFORTS {
@@ -694,7 +709,7 @@ mod tests {
         let server = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:4310/mcp","headers":[{"name":"Authorization","value":token}]});
         let mut command = Command::new("cline");
         command.env(MCP_SETTINGS_ENV, "/nonexistent/settings.json");
-        let folder = mcp_settings(&mut command, &server).unwrap();
+        let folder = mcp_settings(&mut command, Some(&server), &[]).unwrap();
         let std_command = command.as_std();
         assert!(std_command.get_args().all(|arg| !arg.to_string_lossy().contains("token-7741")));
         assert!(std_command.get_envs().all(|(_, value)| !value.is_some_and(|value| value.to_string_lossy().contains("token-7741"))));
@@ -705,8 +720,44 @@ mod tests {
         // A server that is not the loopback host gets no file and leaves the command alone.
         let mut command = Command::new("cline");
         let remote = json!({"name":"pandacode_architect","url":"http://example.com/mcp","headers":[]});
-        assert_eq!(mcp_settings(&mut command, &remote).err().unwrap(), MCP_SETTINGS_FAILED);
+        assert_eq!(mcp_settings(&mut command, Some(&remote), &[]).err().unwrap(), MCP_SETTINGS_FAILED);
         assert_eq!(command.as_std().get_envs().count(), 0);
+    }
+
+    fn colab() -> mcp_host::Stdio {
+        mcp_host::Stdio::new(mcp_host::COLAB_MCP, "/bin/uvx".into(), vec!["git+https://github.com/googlecolab/colab-mcp".into()])
+    }
+
+    #[test]
+    fn colab_mcp_joins_the_private_settings_beside_the_bridge() {
+        crate::secret_store::setup(&std::env::temp_dir().join(format!("cline-mcp-colab-{}", uuid::Uuid::new_v4())));
+        let server = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:4310/mcp","headers":[]});
+        let user = std::env::temp_dir().join(format!("cline-user-settings-{}.json", uuid::Uuid::new_v4()));
+        let original = r#"{"mcpServers":{"mine":{"command":"run-me"}}}"#;
+        std::fs::write(&user, original).unwrap();
+        let read = |command: &Command| -> Value {
+            let path = command.as_std().get_envs().find(|(key, _)| *key == MCP_SETTINGS_ENV).and_then(|(_, value)| value).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+        };
+        let mut command = Command::new("cline");
+        command.env(MCP_SETTINGS_ENV, &user);
+        let _both = mcp_settings(&mut command, Some(&server), &[colab()]).unwrap();
+        let written = read(&command);
+        assert_eq!(written["mcpServers"]["colab-mcp"], json!({"command":"/bin/uvx","args":["git+https://github.com/googlecolab/colab-mcp"],"disabled":false}));
+        assert!(written["mcpServers"]["pandacode_architect"]["transport"].is_object());
+        assert_eq!(written["mcpServers"]["mine"]["command"], "run-me");
+        // Colab alone, with no bridge for this run, still gets a settings file.
+        let mut command = Command::new("cline");
+        command.env(MCP_SETTINGS_ENV, &user);
+        let _alone = mcp_settings(&mut command, None, &[colab()]).unwrap();
+        assert_eq!(read(&command)["mcpServers"]["colab-mcp"]["command"], "/bin/uvx");
+        assert!(read(&command)["mcpServers"].get("pandacode_architect").is_none());
+        // Nothing to add writes nothing.
+        let mut command = Command::new("cline");
+        assert_eq!(mcp_settings(&mut command, None, &[]).err().unwrap(), MCP_SETTINGS_FAILED);
+        // The user's own file is never touched.
+        assert_eq!(std::fs::read_to_string(&user).unwrap(), original);
+        let _ = std::fs::remove_file(user);
     }
 
     #[test]

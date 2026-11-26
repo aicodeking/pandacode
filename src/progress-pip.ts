@@ -2,7 +2,7 @@ import './progress-pip.css';
 import { escape, icon } from './dom';
 import { IDEA, openLightbox, type Lightbox } from './progress-lightbox';
 import { createDimmer } from './progress-dim';
-import { legend, linkMarks, marks, type Annotation } from './progress-marks';
+import { legend, linkMarks, marks, rescaleMarks, type Annotation } from './progress-marks';
 import { createMedia, lazyThumbs } from './progress-media';
 import { flipHeight, play, settle, still } from './progress-motion';
 import { errorText } from './error-text';
@@ -57,6 +57,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
   let playing = false, stepTimer = 0, stepLeft = 0, stepStarted = 0, ring: Animation | undefined, stageHover = false;
   let lightbox: Lightbox | null = null, observer: IntersectionObserver | null = null;
   let morph: { to: State; anims: Animation[] } | null = null;
+  let scaleRevision = 0;
   const unseen = new Set<string>();
   const media = createMedia((command, args) => host.call(command, args), () => sessionId);
   const save = (next: Partial<typeof saved>) => { saved = { ...saved, ...next }; localStorage.setItem(STORE, JSON.stringify(saved)); };
@@ -145,12 +146,29 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
 
   /* ---------- rendering ---------- */
   /** Drop the strip observer and every cached image (thread switch, hide, clear). */
-  function release(): void { observer?.disconnect(); observer = null; media.reset(); stageHover = false; }
+  function release(): void { window.removeEventListener('pandacode-ui-scale-change', repaintScale); observer?.disconnect(); observer = null; media.reset(); stageHover = false; }
+  /** UI scale changed: re-measure marks in place on live frames; repaint only a stage with nothing drawn yet. */
+  function repaintScale(): void {
+    if (!current()) return;
+    fitFrames(document, true);
+    const bare = (stage: HTMLElement | null) => Boolean(stage) && ![...stage!.querySelectorAll('.pp-frame')].some(frame => !frame.closest('.is-leaving'));
+    const card = q<HTMLElement>('.pp-card .pp-stage'), cardBare = bare(card), boxBare = bare(document.querySelector<HTMLElement>('.pp-lightbox .pp-stage'));
+    if (!cardBare && !boxBare) return;
+    // Live stages were re-fitted in place above; bump their key with the revision so the next
+    // routine paint() does not cross-fade a stage that already shows the new scale.
+    const from = `|${scaleRevision}`, to = `|${++scaleRevision}`;
+    for (const stage of document.querySelectorAll<HTMLElement>('.pp-card .pp-stage, .pp-lightbox .pp-stage')) {
+      if (!bare(stage) && stage.dataset.key?.endsWith(from)) stage.dataset.key = stage.dataset.key.slice(0, -from.length) + to;
+    }
+    if (cardBare) void paint(card!, 0, false);
+    if (boxBare) lightbox?.update(0);
+  }
   function render(fresh = false): void {
     root.hidden = !(allowed && snaps.length);
     morph?.anims.forEach(a => a.cancel()); morph = null;
     root.replaceChildren();
     if (root.hidden) { stopPlay(); lightbox?.close(); release(); dim.apply(); return; }
+    window.addEventListener('pandacode-ui-scale-change', repaintScale);
     place();
     if (wanted() === 'collapsed') buildPill(); else buildCard();
     // A thread's PiP arrives softly rather than popping in.
@@ -189,18 +207,27 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
   }
 
   /** Size every frame to its image's aspect inside its stage. */
-  function fitFrames(scope: ParentNode = document): void {
+  function fitFrames(scope: ParentNode = document, forceMarks = false): void {
     for (const frame of scope.querySelectorAll<HTMLElement>('.progress-pip .pp-frame, .pp-lightbox .pp-frame')) {
       const stage = frame.closest<HTMLElement>('.pp-stage'), aspect = Number(frame.dataset.aspect);
       if (!stage || !aspect) continue;
       const width = Math.min(stage.clientWidth, stage.clientHeight * aspect);
+      if (width <= 0) continue;
       frame.style.width = `${width}px`; frame.style.height = `${width / aspect}px`;
+      // Strokes and radii are baked in viewBox units for the drawn width; re-fit them so they stay crisp.
+      // A UI scale change (forceMarks) re-measures caption and radius tokens even at an unchanged width.
+      if (frame.closest('.is-leaving') || !frame.querySelector('.pp-marks')) continue;
+      if (!forceMarks && Math.abs(width - Number(frame.dataset.marksWidth || 0)) <= 0.5) continue;
+      const snap = snaps.find(item => item.id === frame.dataset.snapId) ?? current();
+      if (!snap) continue;
+      frame.dataset.marksWidth = String(width);
+      rescaleMarks(frame, snap.annotations, aspect, width, stage);
     }
   }
   /** Draw the current snapshot into a stage, crossfading from what it showed. Resolves true if it changed. */
   async function paint(stage: HTMLElement, direction: number, large: boolean): Promise<boolean> {
     const s = current(), previous = snaps[index - 1], compare = comparing && Boolean(previous) && !large;
-    const key = `${s.id}|${compare ? previous.id : ''}|${marksOn}`;
+    const key = `${s.id}|${compare ? previous.id : ''}|${marksOn}|${scaleRevision}`;
     if (stage.dataset.key === key) return false;
     stage.dataset.key = key;
     const ticket = String(Number(stage.dataset.ticket ?? 0) + 1); stage.dataset.ticket = ticket;
@@ -218,10 +245,10 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     layer.className = 'pp-layer';
     // A letterboxed (portrait) image sits on a blurred, dimmed copy of itself.
     const band = !large && aspect < box - 0.05 ? `<img class="pp-band" src="${escape(url)}" alt="" aria-hidden="true">` : '';
-    layer.innerHTML = `${band}<div class="pp-frame" data-aspect="${aspect}" style="width:${width}px;height:${width / aspect}px">
+    layer.innerHTML = `${band}<div class="pp-frame" data-aspect="${aspect}" data-snap-id="${escape(s.id)}" data-marks-width="${width}" style="width:${width}px;height:${width / aspect}px">
       ${compare ? `<img class="pp-before" src="${escape(before)}" alt="${escape(label(previous))}"><span class="pp-tag pp-tag-before" aria-hidden="true">Before · ${previous.iteration}</span>` : ''}
       <img class="pp-media" src="${escape(url)}" alt="${escape(label(s))}"${compare ? ` style="clip-path:inset(0 0 0 ${split}%)"` : ''}>
-      ${compare ? `<span class="pp-divider" style="left:${split}%" aria-hidden="true"></span><span class="pp-tag pp-tag-after" aria-hidden="true">After · ${s.iteration}</span>` : marksOn ? marks(s.annotations, aspect, width) : ''}
+      ${compare ? `<span class="pp-divider" style="left:${split}%" aria-hidden="true"></span><span class="pp-tag pp-tag-after" aria-hidden="true">After · ${s.iteration}</span>` : marksOn ? marks(s.annotations, aspect, width, stage) : ''}
     </div>`;
     // Rapid stepping keeps at most the outgoing layer and the new one.
     stage.querySelectorAll(':scope > .pp-layer.is-leaving').forEach(old => old.remove());
@@ -346,6 +373,7 @@ export function mountProgressPip(root: HTMLElement, host: ProgressHost): Progres
     lightbox = openLightbox({
       snaps: () => snaps, index: () => index, go: i => go(i), thumb: media.thumb, ago, fromPointer,
       paint: (stage, direction) => void paint(stage, direction, true),
+      resize: () => fitFrames(),
       closed: () => { lightbox = null; q<HTMLElement>('[data-pp="enlarge"]')?.focus({ preventScroll: true }); dim.apply(); },
     });
   }

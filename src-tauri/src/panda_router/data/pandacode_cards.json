@@ -8364,5 +8364,587 @@
       "https://openrouter.ai/api/v1/models (price, context, max output, modalities for openai/gpt-6-astra-pro, fetched 2026-10-26)"
     ],
     "notes": "Skills set by tier relative to neighbouring cards (no independent benchmark used); se is wide. Cost/limits are OpenRouter list values where marked verified, which can differ from the harness's own plan pricing."
+  },
+  {
+    "id": "claude-fable-5.2",
+    "provider": "claude",
+    "model": "claude-fable-5-2",
+    "description": "Claude Fable 5.2 is Anthropic's model for demanding technical work, long-horizon coding, and research.",
+    "skills": {
+      "coding": {
+        "theta": 9.1,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 9.5,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 9.3,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 9.4,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 9.1,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1000000,
+      "max_output_tokens": 128000
+    },
+    "cost": {
+      "input_per_mtok": 8,
+      "output_per_mtok": 40,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.2
+    },
+    "latency": {
+      "ttft_ms_p50": 2500,
+      "tokens_per_sec": 50
+    },
+    "local": false,
+    "tags": [
+      "harness:claude-code",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://www.anthropic.com/claude/fable (ID and standard API pricing, consulted 2026-11-18)",
+      "https://platform.claude.com/docs/en/models/fable-5-2/overview (context, output limit, modalities, consulted 2026-11-18)",
+      "https://www.anthropic.com/claude-fable-and-mythos-5-2 (provider-reported capability comparisons and speed, consulted 2026-11-18)",
+      "Claude Code initialize.models read-only discovery 2026-11-18: fable resolves to claude-fable-5-2"
+    ],
+    "notes": "Skills are conservative routing estimates anchored to claude-fable-5.1 and claude-opus-5.5, with small coding/debugging/vision-related uplifts for the provider-reported improvements. They are not measured or fitted router scores; every axis has se 1.3. Latency is estimated from the 5.1 peer, allowing a modest throughput improvement rather than assuming the advertised maximum. Prices are standard API list rates, not Claude Code subscription charges or fast-mode rates. The pinned 5.1 model retains its own card and identity.",
+    "supersedes": ["claude-fable-5.1", "claude-fable-5"]
+  },
+  {
+    "id": "codex-gpt-6.2-sol",
+    "provider": "codex",
+    "model": "gpt-6.2-sol",
+    "description": "GPT-6.2 Sol is OpenAI's efficient model for everyday coding and multistep agentic work, available through Codex.",
+    "skills": {
+      "coding": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 8.6,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 8.7,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 8.6,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 8.7,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 8.9,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 9.1,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000
+    },
+    "cost": {
+      "input_per_mtok": 2,
+      "output_per_mtok": 10,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.1
+    },
+    "latency": {
+      "ttft_ms_p50": 2500,
+      "tokens_per_sec": 70
+    },
+    "local": false,
+    "tags": [
+      "harness:codex",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://openai.com/index/introducing-gpt-6-2-astra-sol/ (IDs, pricing, provider-reported relative strengths, consulted 2026-11-18)",
+      "https://developers.openai.com/api/docs/models/gpt-6.2-sol (limits, modalities, pricing tiers, consulted 2026-11-18)",
+      "Codex app-server model/list read-only discovery 2026-11-18: gpt-6.2-sol"
+    ],
+    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6.1-sol and openrouter-gpt-6-astra; coding/planning/data analysis stay near the 6.1 Sol anchors while broader axes get modest uplifts. They are not measured or fitted router scores, and do not inherit the predecessor's calibration: every axis has se 1.3. Latency copies the 6.1 Sol estimate; no speed measurement was made. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded. Modalities use the documented API subset; the local Codex catalog additionally advertises audio input.",
+    "supersedes": ["openrouter-gpt-6.1-sol", "openrouter-gpt-6-sol"]
+  },
+  {
+    "id": "codex-gpt-6.2-astra",
+    "provider": "codex",
+    "model": "gpt-6.2-astra",
+    "description": "GPT-6.2 Astra is OpenAI's frontier model for complex coding, professional outputs, and scientific work, available through Codex.",
+    "skills": {
+      "coding": {
+        "theta": 9.3,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 9.1,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 9.1,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 9.2,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 9.2,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1050000,
+      "max_output_tokens": 128000
+    },
+    "cost": {
+      "input_per_mtok": 8,
+      "output_per_mtok": 40,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.4
+    },
+    "latency": {
+      "ttft_ms_p50": 3500,
+      "tokens_per_sec": 45
+    },
+    "local": false,
+    "tags": [
+      "harness:codex",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://openai.com/index/introducing-gpt-6-2-astra-sol/ (IDs, pricing, provider-reported relative strengths, consulted 2026-11-18)",
+      "https://developers.openai.com/api/docs/models/gpt-6.2-astra (limits, modalities, pricing tiers, consulted 2026-11-18)",
+      "Codex app-server model/list read-only discovery 2026-11-18: gpt-6.2-astra"
+    ],
+    "notes": "Skills are conservative routing estimates relative to openrouter-gpt-6-astra, codex-gpt-6.2-sol, and claude-fable-5.1, reflecting provider-reported gains in coding, professional outputs, visual work, and scientific reasoning. They are not measured or fitted router scores: every axis has se 1.3. Coding stays close to Sol because the launch report describes a narrow coding gap. Latency retains the GPT-6 Astra peer estimate; token-efficiency claims are not treated as latency measurements. Standard short-context API prices are proxies for Codex plan cost. Max input is 922000 tokens; above 272K input tokens, input/cache rates double and output rates rise 1.5x. Fast/Ultrafast premiums are excluded.",
+    "supersedes": ["openrouter-gpt-6-astra"]
+  },
+  {
+    "id": "gemini-4-carbon",
+    "provider": "antigravity",
+    "model": "gemini-4-carbon",
+    "description": "Gemini 4 Carbon is Google's frontier reasoning model for sustained coding, architecture, multimodal knowledge work, and science.",
+    "skills": {
+      "coding": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 9.1,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 8.7,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 9.1,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 9,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 9,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536
+    },
+    "cost": {
+      "input_per_mtok": 4,
+      "output_per_mtok": 20,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.2
+    },
+    "latency": {
+      "ttft_ms_p50": 3500,
+      "tokens_per_sec": 60
+    },
+    "local": false,
+    "tags": [
+      "harness:antigravity",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-4-carbon-now-available/ (provider-reported strengths and Antigravity availability, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/models/gemini-4-carbon (model ID, limits, modalities, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/whats-new-gemini-4-carbon (thinking levels and introductory/ongoing pricing, consulted 2026-11-18)",
+      "https://antigravity.google/docs/models (native model family and thinking levels, consulted 2026-11-18)",
+      "Antigravity agy models and ACP session/new read-only discovery 2026-11-18: local account does not advertise Carbon; new-family native IDs cannot be live-verified here"
+    ],
+    "notes": "Skills are conservative routing estimates above the openrouter-gemini-4-argon peer, emphasizing the provider-reported gains in debugging, planning, reasoning, and research. They are not measured or fitted router scores: every axis has se 1.3. Latency is estimated slower than Argon because Google describes deeper thinking and verification. Costs use the published ongoing API rates ($4/$20, cached $0.20) starting December 1, 2026, avoiding a durable estimate based on the $2/$10 promotion through November 30; these are proxies for Antigravity quota, not subscription charges. Limits are API specifications: input, thinking and output share one window; max output records the synchronous limit, with longer decode possible through API background execution. Bare and effort-suffixed mappings identify one model family; local account entitlement prevented live confirmation of Carbon IDs."
+  },
+  {
+    "id": "gemini-4-hydrogen",
+    "provider": "antigravity",
+    "model": "gemini-4-hydrogen",
+    "description": "Gemini 4 Hydrogen is Google's efficient model for everyday coding, fast agentic execution, and multimodal knowledge work.",
+    "skills": {
+      "coding": {
+        "theta": 8.7,
+        "se": 1.3
+      },
+      "debugging": {
+        "theta": 8.5,
+        "se": 1.3
+      },
+      "reasoning": {
+        "theta": 8.6,
+        "se": 1.3
+      },
+      "math": {
+        "theta": 8.5,
+        "se": 1.3
+      },
+      "writing": {
+        "theta": 8.4,
+        "se": 1.3
+      },
+      "research": {
+        "theta": 8.5,
+        "se": 1.3
+      },
+      "review": {
+        "theta": 8.5,
+        "se": 1.3
+      },
+      "planning": {
+        "theta": 8.5,
+        "se": 1.3
+      },
+      "ui_frontend": {
+        "theta": 8.7,
+        "se": 1.3
+      },
+      "data_analysis": {
+        "theta": 8.6,
+        "se": 1.3
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536
+    },
+    "cost": {
+      "input_per_mtok": 1.5,
+      "output_per_mtok": 7.5,
+      "currency": "USD"
+    },
+    "latency": {
+      "ttft_ms_p50": 1500,
+      "tokens_per_sec": 90
+    },
+    "local": false,
+    "tags": [
+      "harness:antigravity",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-18",
+    "provenance": "estimated",
+    "field_provenance": {
+      "skills": "estimated",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-hydrogen/ (API price, provider-reported strengths and Antigravity availability, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/models/gemini-4-hydrogen (model ID, limits, modalities, consulted 2026-11-18)",
+      "https://antigravity.google/docs/models (native CLI gemini-4-hydrogen-xhigh example and thinking levels, consulted 2026-11-18)",
+      "Antigravity agy models and ACP session/new read-only discovery 2026-11-18: local account does not advertise Hydrogen; new-family native IDs cannot be live-verified here"
+    ],
+    "notes": "Skills are conservative routing estimates held at the openrouter-gemini-4-argon peer levels, rather than translating Google's higher reported intelligence-index score into router theta. Carbon remains the stronger prior for deep planning and debugging. These are not measured or fitted scores: every axis has se 1.3. Latency estimates reflect the advertised faster-execution role, not observed timings. Prices are standard API proxies for Antigravity quota, not subscription charges. Limits are API specifications: input, thinking and output share one window; max output records the synchronous limit, with longer decode possible through API background execution. Bare and effort-suffixed mappings identify one model family; local account entitlement prevented live confirmation of Hydrogen IDs."
+  },
+  {
+    "id": "gemini-4-neon",
+    "provider": "antigravity",
+    "model": "gemini-4-neon",
+    "description": "Gemini 4 Neon is Google's mid-tier frontier model for complex coding, debugging, review, analytical reasoning, and fast multi-step agentic workflows.",
+    "skills": {
+      "coding": {
+        "theta": 9.3,
+        "se": 0.9
+      },
+      "debugging": {
+        "theta": 9.2,
+        "se": 0.9
+      },
+      "reasoning": {
+        "theta": 9.2,
+        "se": 0.9
+      },
+      "math": {
+        "theta": 9.1,
+        "se": 0.9
+      },
+      "writing": {
+        "theta": 8.9,
+        "se": 0.9
+      },
+      "research": {
+        "theta": 9.1,
+        "se": 0.9
+      },
+      "review": {
+        "theta": 9.2,
+        "se": 0.9
+      },
+      "planning": {
+        "theta": 9.3,
+        "se": 0.9
+      },
+      "ui_frontend": {
+        "theta": 9.2,
+        "se": 0.9
+      },
+      "data_analysis": {
+        "theta": 9.2,
+        "se": 0.9
+      }
+    },
+    "discrimination": 1.2,
+    "modalities": {
+      "input": [
+        "text",
+        "image",
+        "audio",
+        "video"
+      ],
+      "output": [
+        "text"
+      ]
+    },
+    "features": {
+      "tools": true
+    },
+    "limits": {
+      "context_tokens": 1048576,
+      "max_output_tokens": 65536
+    },
+    "cost": {
+      "input_per_mtok": 3,
+      "output_per_mtok": 15,
+      "currency": "USD",
+      "cached_input_per_mtok": 0.15
+    },
+    "latency": {
+      "ttft_ms_p50": 2500,
+      "tokens_per_sec": 75
+    },
+    "local": false,
+    "tags": [
+      "harness:antigravity",
+      "added:pandacode-model-refresh"
+    ],
+    "card_version": "2026-11-22",
+    "provenance": "benchmark-informed",
+    "field_provenance": {
+      "skills": "benchmark-informed",
+      "latency": "estimated",
+      "cost": "verified",
+      "limits": "verified"
+    },
+    "sources": [
+      "https://blog.google/innovation-and-ai/models-and-research/gemini-models/introducing-gemini-4-neon/ (positioning, pricing, provider-reported strengths, and Antigravity availability, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/models/gemini-4-neon (model ID, limits, modalities, thinking levels, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/whats-new-gemini-4-neon (pricing, thinking levels, positioning between Hydrogen and Carbon, consulted 2026-11-18)",
+      "https://aistudio.google.com/docs/pricing#gemini-4-neon (standard input $3, output $15, implicit cached input $0.15 per MTok, consulted 2026-11-18)",
+      "https://antigravity.google/docs/models (Antigravity availability, 512K Antigravity context window, xhigh thinking level, consulted 2026-11-18)",
+      "https://openrouter.ai/api/v1/models (google/gemini-4-neon slug, pricing, modalities, fetched 2026-11-18)",
+      "https://openrouter.ai/api/v1/models (benchmarks.artificial_analysis for google/gemini-4-neon, fetched 2026-11-22: intelligence_index 61.4, engineering_index 66.8, strategy_and_ops_index 63.8)",
+      "Antigravity agy models read-only discovery 2026-11-18: gemini-4-neon-low, gemini-4-neon-medium, gemini-4-neon-high, gemini-4-neon-xhigh",
+      "OpenCode opencode models read-only discovery 2026-11-18: openrouter/google/gemini-4-neon"
+    ],
+    "notes": "Skills are benchmark-informed calibrations from Artificial Analysis via OpenRouter (2026-11-22: Intelligence Index 61.4, Engineering 66.8, Strategy & Ops 63.8, Finance & Accounting 65.1, Legal 63.8, Economics 61.9, Healthcare 60.1), placing Neon ahead of GPT-6.2 Sol (II 57.3, Eng 61.2, Strat 59.4), Claude Opus 5.5 (II 59.1, Eng 65.3, Strat 61.4), and Gemini 4 Carbon (II 60.0, Eng 65.3, Strat 60.9) and near GPT-6.2 Astra (II 62.1, Eng 66.6, Strat 63.3) with se 0.9 on all axes. Latency remains estimated for Neon's moderate speed tier and default high thinking level, not observed timings. Costs use verified standard Gemini API / OpenRouter rates ($3/$15, implicit cached $0.15 per MTok) as proxies for Antigravity quota, not subscription charges. Limits are Gemini API specifications: input, thinking, and output share one 1,048,576-token window (Antigravity caps context at 512K); max output records the 65,536-token synchronous limit, with longer decode up to 1M tokens possible via long decode / background execution. Bare and effort-suffixed Antigravity mappings identify one model family."
   }
 ]

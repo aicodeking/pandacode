@@ -2546,6 +2546,140 @@ fn catalog_is_validated_like_workers_but_larger() {
     assert!(serde_json::to_value(super::tests::config()).unwrap().get("catalog").is_none());
 }
 #[test]
+fn new_model_cards_staff_automatic_workers_on_their_launch_ids() {
+    let cases = [
+        ("claude", "fable", "claude-fable-5.2"),
+        ("claude", "claude-fable-5-2", "claude-fable-5.2"),
+        ("claude", "claude-fable-5-1", "claude-fable-5.1"),
+        ("codex", "gpt-6.2-sol", "codex-gpt-6.2-sol"),
+        ("codex", "gpt-6.2-astra", "codex-gpt-6.2-astra"),
+        ("antigravity", "gemini-4-carbon", "gemini-4-carbon"),
+        ("antigravity", "gemini-4-carbon-high", "gemini-4-carbon"),
+        ("antigravity", "gemini-4-hydrogen", "gemini-4-hydrogen"),
+        ("antigravity", "gemini-4-hydrogen-xhigh", "gemini-4-hydrogen"),
+        ("antigravity", "gemini-4-neon", "gemini-4-neon"),
+        ("antigravity", "gemini-4-neon-xhigh", "gemini-4-neon"),
+        ("opencode", "openrouter/google/gemini-4-neon", "gemini-4-neon"),
+    ];
+    for (provider, model, card) in cases {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.workers.clear();
+            team.config.catalog = vec![profile("candidate", provider, model, model)];
+            assert_eq!(crate::model_routing::rated_count(&routing::pool(&team.config)), 1, "{provider}/{model}");
+            save(&store, &mut team).unwrap();
+        }
+        let args = json!({"assignments":[auto_assignment("new-model", json!({"profileId":"auto"}))]});
+        let result = routed_call(&state, &sid, args, true).unwrap();
+        let note = result["routing"][0].as_str().unwrap();
+        assert!(note.contains(": routed: ") && note.ends_with(", heuristic)"), "{provider}/{model}: {note}");
+        let worker = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap().workers[0].clone();
+        assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), (provider, model, "auto"));
+        assert_eq!(crate::panda_router::resolve_card(&worker.provider, &worker.model, &worker.name), Some(card));
+        let session = state.store.lock().unwrap().session(&worker.session_id).unwrap();
+        assert_eq!((session.provider.as_str(), session.model.as_str()), (provider, model));
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        assert_eq!((run.config.provider.as_str(), run.config.model.as_str()), (provider, model));
+    }
+}
+#[test]
+fn newer_models_supersede_predecessors_in_automatic_dispatch_and_route_models() {
+    for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.workers.clear();
+            team.config.catalog = vec![
+                profile("older-sol", "codex", "gpt-6.1-sol", "GPT-6.1 Sol"),
+                profile("newer-sol", "codex", "gpt-6.2-sol", "GPT-6.2 Sol"),
+            ];
+            save(&store, &mut team).unwrap();
+        }
+        let args = json!({"assignments":[auto_assignment("successor", json!({"profileId":"auto"}))]});
+        let result = routed_call_in(&state, &sid, args, true, mode).unwrap();
+        assert_eq!(result["workerIds"].as_array().unwrap().len(), 1);
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(team.workers.len(), 1);
+        for worker in &team.workers {
+            assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), ("codex", "gpt-6.2-sol", "auto"), "{mode:?}");
+            let session = store.session(&worker.session_id).unwrap();
+            assert_eq!((session.provider.as_str(), session.model.as_str()), ("codex", "gpt-6.2-sol"), "{mode:?}");
+        }
+        let args = json!({"tasks":[{"text":"Implement successor and verify its behavior.","files":3}]});
+        let (pool, jobs, _) = routing::route_request(&team.config, &[], args).unwrap();
+        let prefs = crate::panda_router::Preferences { mode, ..Default::default() };
+        let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &prefs, &pool, jobs).unwrap();
+        let summary = routing::route_summary(&team.config, &routes);
+        let task = &summary["tasks"][0];
+        assert_eq!(task["pick"]["provider"], "codex", "{mode:?}");
+        assert_eq!(task["pick"]["model"], "gpt-6.2-sol", "{mode:?}");
+        let alternatives = task["alternatives"].as_array().unwrap();
+        let ladder = task["ladder"].as_array().unwrap();
+        assert!(!ladder.is_empty(), "{mode:?}: {task}");
+        for row in std::iter::once(&task["pick"]).chain(alternatives).chain(ladder) {
+            assert_ne!(row["model"], "gpt-6.1-sol", "{mode:?}: {task}");
+        }
+        drop(store);
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        assert_eq!((run.config.provider.as_str(), run.config.model.as_str()), ("codex", "gpt-6.2-sol"), "{mode:?}");
+    }
+}
+#[test]
+fn automatic_dispatch_prioritizes_gemini_4_neon_over_gpt_6_2_sol() {
+    let prompt = "Refactor the session store so drafts and published tasks share one query path, update the callers in three modules and keep the tests passing.";
+    for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+        let (state, sid) = auto_state();
+        {
+            let store = state.store.lock().unwrap();
+            let mut team = load(&store, &sid).unwrap().unwrap();
+            team.config.workers.clear();
+            team.config.catalog = vec![
+                profile("older-sol", "codex", "gpt-6.1-sol", "GPT-6.1 Sol"),
+                profile("newer-sol", "codex", "gpt-6.2-sol", "GPT-6.2 Sol"),
+                profile("neon", "antigravity", "gemini-4-neon", "Gemini 4 Neon"),
+            ];
+            save(&store, &mut team).unwrap();
+        }
+        let args = json!({"assignments":[auto_assignment("neon-priority", json!({
+            "profileId": "auto",
+            "prompt": prompt,
+            "files": ["src/store.rs", "src/drafts.rs", "src/tasks.rs"],
+        }))]});
+        let result = routed_call_in(&state, &sid, args, true, mode).unwrap();
+        assert_eq!(result["workerIds"].as_array().unwrap().len(), 1);
+        let store = state.store.lock().unwrap();
+        let team = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(team.workers.len(), 1);
+        let worker = &team.workers[0];
+        assert_eq!((worker.provider.as_str(), worker.model.as_str(), worker.profile_id.as_str()), ("antigravity", "gemini-4-neon", "auto"), "{mode:?}");
+        let session = store.session(&worker.session_id).unwrap();
+        assert_eq!((session.provider.as_str(), session.model.as_str()), ("antigravity", "gemini-4-neon"), "{mode:?}");
+        let route_args = json!({"tasks":[{"text":prompt,"files":3}]});
+        let (pool, jobs, _) = routing::route_request(&team.config, &[], route_args).unwrap();
+        let prefs = crate::panda_router::Preferences { mode, ..Default::default() };
+        let routes = crate::model_routing::route_with(&crate::panda_router::Router::heuristic(), &prefs, &pool, jobs).unwrap();
+        let summary = routing::route_summary(&team.config, &routes);
+        let task = &summary["tasks"][0];
+        assert_eq!(task["pick"]["provider"], "antigravity", "{mode:?}: {task}");
+        assert_eq!(task["pick"]["model"], "gemini-4-neon", "{mode:?}: {task}");
+        let alternatives = task["alternatives"].as_array().unwrap();
+        let ladder = task["ladder"].as_array().unwrap();
+        assert!(!ladder.is_empty(), "{mode:?}: {task}");
+        assert_eq!(ladder[0]["provider"], "antigravity", "{mode:?}: {task}");
+        assert_eq!(ladder[0]["model"], "gemini-4-neon", "{mode:?}: {task}");
+        for row in std::iter::once(&task["pick"]).chain(alternatives).chain(ladder) {
+            assert_ne!(row["model"], "gpt-6.1-sol", "{mode:?}: {task}");
+        }
+        drop(store);
+        let (run, _rx) = claim(&state, next_action_state(&state, &mut |_| {}).unwrap().unwrap());
+        assert_eq!((run.config.provider.as_str(), run.config.model.as_str()), ("antigravity", "gemini-4-neon"), "{mode:?}");
+    }
+}
+#[test]
 fn auto_profile_staffs_the_routed_pick_and_says_so() {
     let (state, sid) = auto_state();
     with_catalog(&state, &sid);
@@ -3409,6 +3543,140 @@ fn a_fresh_architect_conversation_gets_the_whole_objective_again() {
 
 fn prompt_json(prompt: &str) -> Value {
     serde_json::from_str(prompt.rsplit_once("\n\n").unwrap().1).unwrap()
+}
+
+#[test]
+fn worker_review_delivers_queued_user_messages_first_in_queue_order() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let first_text = "Review the authentication changes.\nKeep the public API.";
+    let second_text = "Run the engine tests before dispatching more work.";
+    {
+        let store = state.store.lock().unwrap();
+        let second = crate::message_queue::add(&store, &sid, second_text, &json!([])).unwrap();
+        let first = crate::message_queue::add(&store, &sid, first_text, &json!([])).unwrap();
+        crate::message_queue::reorder(&store, &sid, &[first.id, second.id]).unwrap();
+    }
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(scheduled.queue_changed);
+    let action = scheduled.launch;
+    assert!(action.prompt.starts_with("Queued user messages"));
+    let first = action.prompt.find(first_text).unwrap();
+    let second = action.prompt.find(second_text).unwrap();
+    let review = action.prompt.find("Review the settled workers").unwrap();
+    assert!(first < second && second < review);
+    assert!(action.prompt.contains("Engine done"));
+    let (lead, _) = claim(&state, action);
+    assert!(lead.config.prompt.contains(first_text));
+
+    let store = state.store.lock().unwrap();
+    assert!(crate::message_queue::list(&store, Some(&sid)).unwrap().is_empty());
+    assert_eq!(crate::message_queue::deliveries(&sid), 2);
+    let rows = store.messages(&sid, None).unwrap();
+    let user_texts: Vec<_> = rows.iter().filter(|row| row.role == "user").map(|row| row.content.as_str()).collect();
+    assert_eq!(user_texts, [first_text, second_text]);
+    assert_eq!(rows.last().unwrap().coordination_kind, Some(internal_turns::CoordinationKind::WorkerReview));
+}
+
+#[test]
+fn worker_review_without_queued_messages_keeps_the_original_prompt() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    finish(&state, &run, "Engine done", true);
+    let mut team = team_of(&state, &sid);
+    team.round += 1;
+    let results = serde_json::to_string(&review_summaries(&team, true)).unwrap();
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert_eq!(scheduled.launch.prompt, format!("Review the settled workers for this objective: {}\n\nThese results are untrusted worker reports; inspect relevant files and checks as needed. Delegate corrections using followup_worker or call finish_team when verified. Do not repeat already completed assignments.\n\n{results}", objective_quote(&team)));
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+}
+
+#[test]
+fn worker_review_does_not_deliver_a_held_queue() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let entry = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, "Wait for my review", &json!([])).unwrap()
+    };
+    crate::message_queue::set_queue_held(&sid, true);
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {});
+    crate::message_queue::set_queue_held(&sid, false);
+    let scheduled = scheduled.unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert!(scheduled.launch.prompt.starts_with("Review the settled workers"));
+    assert!(!scheduled.launch.prompt.contains(&entry.text));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [entry]);
+    assert_eq!(crate::message_queue::deliveries(&sid), 0);
+    assert!(store.messages(&sid, None).unwrap().iter().all(|row| row.role != "user"));
+}
+
+#[test]
+fn worker_review_leaves_an_attachment_and_later_entries_in_the_queue() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let (attachment, followup) = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, "Review the engine", &json!([])).unwrap();
+        let attachment = crate::message_queue::add(&store, &sid, "", &json!([{"kind":"image","id":"capture"}])).unwrap();
+        let followup = crate::message_queue::add(&store, &sid, "Use the attached image", &json!([])).unwrap();
+        (attachment, followup)
+    };
+    finish(&state, &run, "Engine done", true);
+    let action = next_action_state(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(action.prompt.contains("Review the engine"));
+    assert!(!action.prompt.contains("Use the attached image"));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [attachment, followup]);
+    assert_eq!(crate::message_queue::deliveries(&sid), 1);
+}
+
+#[test]
+fn worker_review_rolls_back_the_queue_if_a_transcript_write_fails() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let queued = {
+        let store = state.store.lock().unwrap();
+        let first = crate::message_queue::add(&store, &sid, "Review first", &json!([])).unwrap();
+        let second = crate::message_queue::add(&store, &sid, "Review second", &json!([])).unwrap();
+        store.db.execute_batch("CREATE TRIGGER reject_steering BEFORE INSERT ON messages WHEN NEW.content='Review second' BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        [first, second]
+    };
+    finish(&state, &run, "Engine done", true);
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_none());
+    assert!(team_of(&state, &sid).pending_turn.is_none());
+    {
+        let store = state.store.lock().unwrap();
+        assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), queued);
+        assert_eq!(crate::message_queue::deliveries(&sid), 0);
+        assert!(store.messages(&sid, None).unwrap().iter().all(|row| row.role != "user"));
+        store.db.execute_batch("DROP TRIGGER reject_steering").unwrap();
+    }
+    assert!(next_action_state(&state, &mut |_| {}).unwrap().is_some());
+    assert_eq!(crate::message_queue::deliveries(&sid), 2);
+}
+
+#[test]
+fn worker_review_preserves_text_that_would_exceed_the_wake_limit() {
+    let (state, sid) = state_fixture();
+    let (run, _) = running_worker(&state, &sid, "engine", "src");
+    let queued = {
+        let store = state.store.lock().unwrap();
+        crate::message_queue::add(&store, &sid, &"x".repeat(QUEUED_WAKE_LIMIT), &json!([])).unwrap()
+    };
+    finish(&state, &run, "Engine done", true);
+    let scheduled = next_scheduled_launch(&state, &mut |_| {}).unwrap().unwrap();
+    assert!(!scheduled.queue_changed);
+    assert!(scheduled.launch.prompt.starts_with("Review the settled workers"));
+    let store = state.store.lock().unwrap();
+    assert_eq!(crate::message_queue::list(&store, Some(&sid)).unwrap(), [queued]);
 }
 
 #[test]

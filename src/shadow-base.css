@@ -1,0 +1,20 @@
+/* Shared Shadow DOM typography; prose bold matches Markdown (strong), headings keep their own weight, bold code stays medium. */
+:host{display:block;color:var(--text);font-size:inherit;font-weight:var(--weight-regular);line-height:inherit;letter-spacing:var(--tracking-none)}
+*{box-sizing:border-box}
+img,svg,video,canvas{max-width:100%}
+.markdown{font-size:var(--thread-font);font-weight:var(--weight-regular);line-height:var(--type-prose-leading);letter-spacing:var(--tracking-none)}
+/* Covers bold directly inside .markdown, outside p, li, blockquote, dd and td. */
+:where(.markdown) :where(strong,b){font-weight:var(--weight-strong)}
+:where(p,li,blockquote,dd,td) :where(strong,b){font-weight:var(--weight-strong)}
+:where(strong,b) :is(code,samp,tt){font-weight:var(--weight-medium)}
+:where(h1,h2){font-size:var(--md-heading-lg);font-weight:var(--weight-strong);line-height:var(--type-title-leading);letter-spacing:var(--tracking-none)}
+:where(h3,h4,h5,h6){font-size:1em;font-weight:var(--weight-strong);line-height:var(--type-title-leading);letter-spacing:var(--tracking-none)}
+/* Inline code, samp and tt are 0.9em of their parent with inherited leading; only pre defaults to the mono size. */
+:where(code,samp,tt){font-size:var(--code-inline-size);line-height:inherit;letter-spacing:var(--tracking-none)}
+pre{font-size:var(--mono-size);line-height:var(--leading-code)}
+:where(pre :is(code,samp,tt)){font-size:inherit;line-height:inherit}
+td,th{text-align:start}
+:where(thead th:not([scope="row" i],[scope="rowgroup" i]),th:is([scope="col" i],[scope="colgroup" i])){font-size:var(--type-caption);font-weight:var(--weight-medium);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-none)}
+:where(tbody th:not([scope="col" i],[scope="colgroup" i]),th:is([scope="row" i],[scope="rowgroup" i])){font-size:1em;font-weight:var(--weight-medium);line-height:inherit;letter-spacing:var(--tracking-none)}
+img{height:auto}
+a{color:var(--accent-ink)}

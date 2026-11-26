@@ -158,7 +158,8 @@ const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
   { provider: 'claude', name: 'Claude Code', status: 'off', detail: 'Usage telemetry, error reports and surveys. Remote feature flags and remotely started sessions stop.' },
   { provider: 'codex', name: 'Codex', status: 'off', detail: 'Analytics and feedback uploads.' },
   { provider: 'cline', name: 'Cline', status: 'manual', detail: 'No per-launch switch. Opt out in Cline’s settings.' },
-  { provider: 'antigravity', name: 'Antigravity', status: 'unknown', detail: 'No verified switch.' },
+  { provider: 'antigravity', name: 'Antigravity', status: 'partial', detail: 'Task sessions through the agy CLI only; agy may save the choice with your Google account. Its console, usage checks and standalone ACP server have no verified switch.' },
+  { provider: 'github-copilot', name: 'GitHub Copilot CLI', status: 'unknown', detail: 'No verified switch.' },
 ] });
 // Provider environment in the preview lives in memory so the Settings UI can be tested in a browser.
 const previewEnvState = { global: [] as [string, string][], providers: {} as Record<string, [string, string][]>, useGlobal: {} as Record<string, boolean> };
@@ -240,6 +241,27 @@ const providers: Provider[] = [
   { id: 'hermes', name: 'Hermes Agent', installed: true, path: '/sample/bin/hermes', version: 'hermes 0.5.0 (sample)', models: [] },
   { id: 'cursor', name: 'Cursor CLI', installed: true, path: '/sample/bin/cursor-agent', version: '2026.10.22-27dcf5f (sample)', models: [] },
 ];
+/* Mirrors the native list_providers contract: install state at once, each version the cached one or '' until probed;
+ * the probe reports by `provider-versions` ({ versions, done }) shortly after (force clears the cache). Tests: `window.__previewHoldVersions
+ * = true` (before load) keeps each report until `window.__previewReleaseVersions()`. */
+const PREVIEW_VERSION_PROBE_MS = 400;
+let previewVersionsProbed = false;
+let previewVersionProbe: number | undefined;
+function listPreviewProviders(force: boolean): Provider[] {
+  if (force) previewVersionsProbed = false;
+  const listed = providers.map(p => ({ ...p, version: previewVersionsProbed ? p.version : '' }));
+  if (!previewVersionsProbed && previewVersionProbe === undefined) {
+    const report = () => {
+      previewVersionProbe = undefined; previewVersionsProbed = true;
+      // Like the native probe round: every installed harness reported (a failed probe as ''), then done.
+      emit('provider-versions', { versions: Object.fromEntries(providers.filter(p => p.installed).map(p => [p.id, p.version])), done: true });
+    };
+    const w = window as typeof window & { __previewHoldVersions?: boolean; __previewReleaseVersions?: () => void };
+    if (w.__previewHoldVersions) { previewVersionProbe = -1; w.__previewReleaseVersions = report; }
+    else previewVersionProbe = window.setTimeout(report, PREVIEW_VERSION_PROBE_MS);
+  }
+  return listed;
+}
 // Mirrors providers::mimo::ENDPOINTS; the native side is the authority.
 const previewMimoEndpoints = [
   { id: 'token-plan-cn', url: 'https://token-plan-cn.xiaomimimo.com/anthropic', label: 'Token Plan · China cluster' },
@@ -250,7 +272,6 @@ const previewMimoEndpoints = [
 let previewMimoEndpoint: string | null = null;
 const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
-let previewStartAhead = true;
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 const previewAgentsDockSnapshot = {
   agents: [
@@ -352,11 +373,14 @@ const catalogs: Record<ProviderId, ProviderModel[]> = {
     { id: 'mimo-v2.6-pro[1m]', name: 'MiMo-V2.6-Pro · 1M context', description: 'Flagship with the extended 1M-token context window. Availability depends on your plan.' },
     { id: 'mimo-v2.6-flash', name: 'MiMo-V2.6-Flash', description: 'Fast and a third of Pro\'s credit cost. Availability depends on your plan.' },
   ],
-  // Mirrors providers::alibaba::models (first entries).
+  // Sample of providers::alibaba::models, including the distinct model variants.
   alibaba: [
     { id: 'qwen3.8-max', name: 'Qwen3.8-Max', description: 'Qwen flagship. Availability depends on your plan.' },
     { id: 'qwen3.8-flash', name: 'Qwen3.8-Flash', description: 'Fast Qwen model; used for background work. Availability depends on your plan.' },
-    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview; retires after November 25, 2026. Availability depends on your plan.' },
+    { id: 'qwen4-max', name: 'Qwen4-Max', description: 'Stable Qwen4 flagship. Availability depends on your plan.', reasoningEfforts: [{ id: 'low', name: 'Low', description: '' }, { id: 'high', name: 'High', description: '' }, { id: 'xhigh', name: 'Extra high', description: '' }], defaultReasoningEffort: 'high' },
+    { id: 'qwen4-max-preview', name: 'Qwen4-Max-Preview', description: 'Preview. Retires after November 25, 2026 (UTC+8). Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash', name: 'DeepSeek-V4.1-Flash', description: 'Fast DeepSeek on Token Plan. Availability depends on your plan.' },
+    { id: 'deepseek-v4.1-flash-1017', name: 'DeepSeek-V4.1-Flash-1017', description: 'October 17 snapshot of DeepSeek-V4.1-Flash. Availability depends on your plan.' },
   ],
   antigravity: [{ id: 'default', name: 'Server default', description: 'Connect the Antigravity ACP server to load models.' }],
   claude: [
@@ -385,7 +409,7 @@ const benchDiffs = typeof location !== 'undefined' && (new URLSearchParams(locat
 const BENCH_LINES: Record<string, (n: number, word: string) => string> = {
   ts: (n, w) => [`export function ${w}${n}(input: ${w[0].toUpperCase()}${w.slice(1)}Options): number {`, `  const ${w} = input.items.filter(item => item.weight > ${n % 17});`, `  if (!${w}.length) return ${n};`, `  return ${w}.reduce((total, item) => total + item.weight * ${n % 9 + 1}, 0);`, `}`, `// ${w} keeps the index warm between keystrokes (${n})`, `const ${w}Cache = new Map<string, ${w[0].toUpperCase()}${w.slice(1)}Entry>();`][n % 7],
   rs: (n, w) => [`pub fn ${w}_${n}(input: &[u32]) -> u64 {`, `    let ${w}: u64 = input.iter().map(|v| *v as u64 * ${n % 9 + 1}).sum();`, `    if ${w} > ${n} { return ${w}; }`, `    ${w}.saturating_sub(${n % 13})`, `}`, `// ${w} runs on the background pool (${n})`][n % 6],
-  css: (n, w) => [`.${w}-${n} {`, `  padding: ${n % 12}px ${n % 7}px;`, `  color: rgb(var(--accent-rgb) / 0.${n % 9 + 1});`, `  border-radius: ${n % 5}px;`, `}`][n % 5],
+  css: (n, w) => [`.${w}-${n} {`, `  padding: ${n % 12}px ${n % 7}px;`, `  color: rgb(var(--accent-rgb) / 0.${n % 9 + 1});`, `  border-radius: var(--ds-control-radius);`, `}`][n % 5],
   json: (n, w) => `  "${w}${n}": { "weight": ${n % 97}, "enabled": ${n % 2 === 0}, "label": "${w} ${n}" },`,
   md: (n, w) => [`## ${w[0].toUpperCase()}${w.slice(1)} ${n}`, ``, `The ${w} step runs after indexing and takes about ${n % 40} ms on a warm cache.`, `- Keep ${w} under ${n % 9 + 1} passes`, `- See \`${w}${n}()\` for details`][n % 5],
 };
@@ -517,7 +541,7 @@ const previewVm = createPreviewVm();
 const previewDesign = createPreviewDesign();
 const previewSkills = createPreviewSkills();
 const previewSkillManager = createPreviewSkillManager({ library: previewSkills });
-const previewCloud = createPreviewCloud();
+const previewCloud = createPreviewCloud((name, event) => emit(name, event));
 /** Each preview cloud preparation step takes this long; tests can watch the stages go by. */
 const CLOUD_STEP_MS = 400;
 function cloudStage(s: Session, stage: NonNullable<Session['cloud']>['stage'], detail: string | null = null): void {
@@ -632,6 +656,8 @@ function emit(name: string, event: unknown) { listeners.get(name)?.forEach(fn =>
 previewProgress.onChange = sessionId => emit('progress-changed', { sessionId });
 // Tests: deliver a native event, e.g. a background refresh of the open channel.
 (window as any).__previewEmit = emit;
+// Tests: a thread's Google Colab runtimes (colab-pip.ts); stores them and sends `colab-runtime`.
+(window as any).__previewColabRuntime = (sessionId: string, runtimes: unknown[]) => previewCloud.setColabRuntimes(sessionId, runtimes);
 // tests: `window.__previewInterrupted = ['session-2']` (set before load) starts those tasks Interrupted;
 // `__previewSetStatus(id, status)` changes one and announces it, as the native app does.
 for (const id of (window as any).__previewInterrupted ?? []) sessions = sessions.map(task => task.id === id ? { ...task, status: 'interrupted' } : task);
@@ -837,14 +863,16 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
     return [{ date: key(date), tokens: Math.round((weekend ? 900 : 2400) * (0.3 + roll * roll * 3.2)) }];
   });
 }
+const previewQueueHolds = new Map<string, string>();
+
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
 function previewQueue(): PreviewQueued[] {
   try { return (JSON.parse(localStorage.getItem('pandacode.preview.queue') ?? '[]') as PreviewQueued[]).filter(e => sessions.some(task => task.id === e.sessionId)).sort((a, b) => a.sessionId.localeCompare(b.sessionId) || a.position - b.position); } catch { return []; }
 }
 function savePreviewQueue(queue: PreviewQueued[]): void { try { localStorage.setItem('pandacode.preview.queue', JSON.stringify(queue)); } catch { /* preview only */ } }
-/** Sample conversations from the Claude Code and Codex CLIs for the Import conversations window. */
-const previewImportables: Record<'claude' | 'codex', { id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }[]> = {
+/** Sample conversations from Claude Code, Codex and ZCode for the Import conversations window. */
+const previewImportables: Record<'claude' | 'codex' | 'zcode', { id: string; title: string; folder: string; updatedAt: number; messages: number | null; model: string | null }[]> = {
   claude: [
     { id: '7d3f2c1a-0b4e-4c6d-9a8b-1f2e3d4c5b6a', title: 'Fix login redirect loop', folder: '/Users/you/Projects/orbit', updatedAt: now - 3 * 3600000, messages: 24, model: 'claude-opus-5-5' },
     { id: '1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d', title: 'Draft the pricing page copy', folder: '/Users/you/Projects/marketing-site', updatedAt: now - 2 * 86400000, messages: 12, model: 'claude-sonnet-5' },
@@ -852,6 +880,9 @@ const previewImportables: Record<'claude' | 'codex', { id: string; title: string
   ],
   codex: [
     { id: '4c5d6e7f-8a9b-4c0d-9e1f-2a3b4c5d6e7f', title: 'Speed up the search index', folder: '/Users/you/Projects/pandacode', updatedAt: now - 5 * 3600000, messages: null, model: 'gpt-6-astra' },
+  ],
+  zcode: [
+    { id: 'sess_6b7c8d9e-0f1a-4b2c-8d3e-4f5a6b7c8d9e', title: 'Trace a slow build', folder: '/Users/you/Projects/demo-app', updatedAt: now - 7 * 3600000, messages: 9, model: null },
   ],
 };
 /** Mirrors native storage: a New task draft is published by its first saved prompt. */
@@ -1199,6 +1230,7 @@ const voicePreferencePatches: Partial<VoicePreferences>[] = [];
   vad: structuredClone(voiceLocalCatalog.vad), preferences: structuredClone(voicePreferences), downloads: [...voiceDownloads.keys()], testing: voiceLocalTest.modelId, micTesting: voiceLocalTest.mic, preferencePatches: structuredClone(voicePreferencePatches),
 });
 (window as any).__voiceLocalCatalog = () => structuredClone(voiceLocalCatalog);
+(window as any).__voiceInvoke = invoke;
 function voiceLocalFind(modelId: unknown): VoiceLocalModel {
   const model = voiceLocalCatalog.models.find(item => item.id === modelId);
   if (!model) throw new Error('Unknown speech model.');
@@ -1511,21 +1543,8 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
   if (command.startsWith('tray_')) return trayCommand(command, args) as T;
   // An if chain, not a switch: specs patch the first command switch in this file to record calls.
   if (command.startsWith('agents_dock_')) return previewAgentsDock<T>(command, args);
-  // Settings → Agents → Start agents ahead; tests read the saves from `__startAheadSaves`, can hold the read
-  // (`__startAheadGetHold`, a promise) and make either call fail (`__startAheadFail = { get?: message, set?: message }`).
-  if (command === 'start_ahead_get') {
-    const w = window as any;
-    if (w.__startAheadGetHold) await w.__startAheadGetHold;
-    if (w.__startAheadFail?.get) throw new Error(w.__startAheadFail.get);
-    return { on: previewStartAhead } as T;
-  }
-  if (command === 'start_ahead_set') {
-    if ((window as any).__startAheadFail?.set) throw new Error((window as any).__startAheadFail.set);
-    previewStartAhead = Boolean(args.on);
-    ((window as any).__startAheadSaves ??= []).push(previewStartAhead);
-    return { on: previewStartAhead } as T;
-  }
   if (command.startsWith('crash_') || command === 'set_crash_restart_enabled' || command === 'sessions_missing') return (await import('./preview-crash')).previewCrash<T>(command, args, sessions.map(task => task.id));
+  if (command === 'app_version' || command.startsWith('web_server_')) return (await import('./preview-web-server')).invokeWebServer<T>(command, args, emit);
   if (command.startsWith('jj_')) return (await import('./preview-jj')).invokeJj<T>(command, args);
   if (command.includes('moodboard')) return (await import('./preview-moodboards')).invokeMoodboards<T>(command, args);
   if (command === 'bots_list' || command.startsWith('bot_')) return invokeBots<T>(command, args, {
@@ -1652,9 +1671,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       return { provider: provider.id, name: provider.name, providers: provider.id === 'claude' ? ['claude', 'glm', 'mimo', 'alibaba'] : [provider.id], installedVersion: version, latestVersion: version, status: 'current', method: null, canUpdate: false, message: 'Browser preview · installed agents are checked in the desktop app.', checkedAt: Date.now(), docsUrl: null };
     }); break;
     case 'update_agent': throw new Error('Agent updates are available in the desktop app.');
-    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
+    case 'jev_configuration': result = { enabled: false, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', openrouterKeySaved: false, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false }; break;
     case 'jev_doctor': result = { ready: false, pythonVersion: '', jevVersion: '', chromePath: '', issues: ['Jev runs in the desktop app. This browser preview does not launch browsers or contact model APIs.'] }; break;
-    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
+    case 'jev_decision_models': result = args?.provider === 'openrouter' ? [{ id: 'openai/gpt-4o-mini', name: 'OpenAI: GPT-4o mini' }, { id: 'anthropic/claude-haiku-4.5', name: 'Anthropic: Claude Haiku 4.5' }] : args?.provider === 'laya' ? [{ id: 'laya-system-one', name: 'laya-system-one' }] : [{ id: 'jev-1.13.0', name: 'jev-1.13.0' }]; break;
     case 'jev_list_runs': case 'jev_assist_list': result = []; break;
     case 'jev_watch_run': break; // Preview never starts Chrome or contacts model providers.
     case 'jev_assist_prepare': {
@@ -1949,7 +1968,23 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
     case 'tray_seen': result = null; break;
-    case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
+    case 'clear_usage_limit': {
+      const s = session(args.sessionId);
+      s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
+      if (previewQueueHolds.get(s.id) === 'limited') {
+        previewQueueHolds.set(s.id, 'reset');
+        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset' });
+      }
+      result = null; break;
+    }
+    case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
+    case 'set_queue_hold': {
+      const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
+      if (held) previewQueueHolds.set(sessionId, reason);
+      else previewQueueHolds.delete(sessionId);
+      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
+      break;
+    }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
       session(args.sessionId);
@@ -1957,32 +1992,47 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (!text.trim() && !list.length) throw new Error('Write a message or add an attachment to queue.');
       const queue = previewQueue(), at = Date.now();
       const entry = { id: crypto.randomUUID(), sessionId: args.sessionId, position: Math.max(-1, ...queue.filter(e => e.sessionId === args.sessionId).map(e => e.position)) + 1, text, attachments: list, createdAt: at, updatedAt: at };
-      savePreviewQueue([...queue, entry]); result = entry; break;
+      savePreviewQueue([...queue, entry]);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
     case 'queue_update': {
       const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
       if (!entry) throw new Error('This queued message was already sent or removed.');
       Object.assign(entry, { text: String(args.text ?? ''), attachments: args.attachments ?? [], updatedAt: Date.now() });
-      savePreviewQueue(queue); result = entry; break;
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
-    case 'queue_remove': case 'queue_take_steered': savePreviewQueue(previewQueue().filter(e => e.id !== args.id)); result = null; break;
+    case 'queue_remove': case 'queue_take_steered': {
+      const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      if (entry) emit('queue-changed', { sessionId: entry.sessionId });
+      result = null; break;
+    }
     case 'queue_reorder': {
       const queue = previewQueue(), own = queue.filter(e => e.sessionId === args.sessionId);
       if ([...own.map(e => e.id)].sort().join() !== [...args.ids].sort().join()) throw new Error('The queue changed. Try reordering again.');
       (args.ids as string[]).forEach((id, position) => { queue.find(e => e.id === id)!.position = position; });
-      savePreviewQueue(queue); result = previewQueue().filter(e => e.sessionId === args.sessionId); break;
+      savePreviewQueue(queue);
+      emit('queue-changed', { sessionId: args.sessionId });
+      result = previewQueue().filter(e => e.sessionId === args.sessionId); break;
     }
     case 'queue_take': {
       const queue = previewQueue(), entry = queue.find(e => e.id === args.id);
       if (!entry) throw new Error('This queued message was already sent or removed.');
-      savePreviewQueue(queue.filter(e => e.id !== args.id)); result = entry; break;
+      savePreviewQueue(queue.filter(e => e.id !== args.id));
+      emit('queue-changed', { sessionId: entry.sessionId });
+      result = entry; break;
     }
     case 'queue_restore': {
       const queue = previewQueue(), entry = args.entry as PreviewQueued;
       if (queue.some(e => e.id === entry.id)) throw new Error('This message is already queued.');
       const position = Math.min(1, ...queue.filter(e => e.sessionId === entry.sessionId).map(e => e.position)) - 1;
       const restored = { ...entry, position, updatedAt: Date.now() };
-      savePreviewQueue([...queue, restored]); result = restored; break;
+      savePreviewQueue([...queue, restored]);
+      emit('queue-changed', { sessionId: restored.sessionId });
+      result = restored; break;
     }
     case 'steer_task': {
       const s = session(args.sessionId), w = window as any;
@@ -2006,14 +2056,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'list_importable_conversations': {
       const query = String(args.search ?? '').toLowerCase();
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
       const imported = (id: string) => sessions.find(task => task.provider === source && task.resumeId === id)?.id ?? null;
       const items = previewImportables[source].filter(item => !query || `${item.title} ${item.folder}`.toLowerCase().includes(query))
         .map(item => ({ ...item, importedTaskId: imported(item.id), unavailable: item.folder.startsWith('/missing') ? 'Its folder no longer exists on this computer.' : null }));
-      result = { items, cursor: null, note: items.length ? null : `No ${source === 'codex' ? 'Codex' : 'Claude Code'} conversations were found on this computer.` }; break;
+      const label = source === 'codex' ? 'Codex' : source === 'zcode' ? 'ZCode' : 'Claude Code';
+      result = { items, cursor: null, note: items.length ? null : `No ${label} conversations were found on this computer.` }; break;
     }
     case 'import_conversations': {
-      const source = args.provider === 'codex' ? 'codex' : 'claude';
+      const source = args.provider === 'zcode' ? 'zcode' : args.provider === 'codex' ? 'codex' : 'claude';
       const imported: Session[] = [], existing: string[] = [], failed: { id: string; message: string }[] = [];
       for (const conversationId of args.ids as string[]) {
         const found = previewImportables[source].find(item => item.id === conversationId);
@@ -2039,7 +2090,6 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       sessions = sessions.filter(item => item.id !== task.id); delete messages[task.id]; architect.remove([task.id]);
       result = true; break;
     }
-    case 'prewarm_draft_session': result = null; break;
     case 'pin_session': {
       const task = session(args.sessionId);
       if (typeof args.pinned !== 'boolean') throw new Error('Choose whether to pin this task.');
@@ -2060,7 +2110,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       result = reordered.map(taskSummary); break;
     }
     case 'get_task': result = settleDraft(session(args.sessionId)); break;
-    case 'list_providers': result = args.deviceId ? remoteProviders() : providers; break;
+    case 'list_providers': result = args.deviceId ? remoteProviders() : listPreviewProviders(Boolean(args.force)); break;
     case 'provider_check_connection': result = { installed: true, acpReady: true, sessionReady: true, state: 'ready', message: 'Sample connection check. No prompt sent.' }; break;
     case 'list_slash_commands': result = slashCatalog(session(args.sessionId).provider); break;
     case 'resolve_slash_command': result = resolveSlash(session(args.sessionId).provider, String(args.text)); break;
@@ -2105,11 +2155,11 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       turnChanges.remove(deletedSessionIds);
       sessions = sessions.filter(task => !deletedSessionIds.includes(task.id));
       saveThreadOrder(sessions.map(threadOrder));
-      for (const id of deletedSessionIds) delete messages[id];
+      for (const id of deletedSessionIds) { delete messages[id]; previewQueueHolds.delete(id); }
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }
-    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) { architect.inherit(s.id); const inherited = architect.get(s.id); if (inherited) emit('architect-event', inherited); } result = s; break; }
+    case 'create_session': { const { team, mainSessionId: _mainSessionId, ...fields } = args; const s: Session = { id: crypto.randomUUID(), ...fields, pinned: false, sidebarOrder: null, draft: Boolean(args.draft), mode: args.mode ?? 'full', title: 'New conversation', status: 'idle', createdAt: Date.now(), updatedAt: Date.now(), archived: false, worktreePath: null, resumeId: null, lastResponseAt: null, lastPromptAt: null, reasoningEffort: null, contextUsage: null, taskStage: 'pending', taskDescription: '', completedAt: null } as Session; sessions.unshift(s); messages[s.id] = []; if (team !== false) architect.inherit(s.id); result = s; break; }
     case 'chat_create': {
       const project = { id: crypto.randomUUID(), name: 'Chat', path: `/Users/you/PandaCode Chats/chat-${crypto.randomUUID().slice(0, 8)}` }; projects.push(project);
       result = await invoke<Session>('create_session', { projectId: project.id, provider: args.provider, model: args.model, mode: args.mode });
@@ -2151,8 +2201,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'update_session': {
       const s = session(args.sessionId);
       if (args.archived === false && s.archived && s.taskStage === 'completed') s.completedAt = Date.now();
-      // `warm` (optional) only asks native to restart the warm process; it is not a task field.
-      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId' && key !== 'warm')), { updatedAt: Date.now() }); break;
+      Object.assign(s, Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'sessionId')), { updatedAt: Date.now() }); break;
     }
     case 'set_reasoning_effort': {
       const s = session(args.sessionId);
@@ -2164,13 +2213,9 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       if (effort !== null && !supported.some(option => option.id === effort)) throw new Error('This model does not support that reasoning effort.');
       s.reasoningEffort = effort; s.updatedAt = Date.now(); result = s; break;
     }
-    // Warming a task's next turn ahead (native starts the harness process): nothing to start here.
-    case 'warm_task': session(args.sessionId); result = null; break;
     case 'configure_session': {
       const s = session(args.sessionId);
       if (!providers.some(p => p.id === args.provider) || typeof args.model !== 'string' || args.model.length > 200) throw new Error('Invalid harness or model.');
-      // `warm` (optional): only the model picker asks native to start the new model's process ahead.
-      if (args.warm !== undefined && typeof args.warm !== 'boolean') throw new Error('Invalid warm flag.');
       const projectId = args.projectId ?? s.projectId;
       if (!projects.some(p => p.id === projectId)) throw new Error('Project not found.');
       if (s.worktreePath && projectId !== s.projectId) throw new Error('A worktree task must stay in its original project.');
@@ -2413,8 +2458,19 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     case 'cloud_disconnect': result = previewCloud.disconnect(args.provider); emit('vm-changed', {}); break;
     case 'cloud_set_inherit_environment': result = previewCloud.setInheritEnvironment(args.provider, args.inherit); break;
     case 'cloud_setup_sandboxes': result = previewCloud.setupSandboxes(); emit('vm-changed', {}); break;
+    case 'cloud_colab_sign_in_start': result = previewCloud.colabSignInStart(args.authMode, args.oauthConfigPath); break;
+    case 'cloud_colab_sign_in_status': result = previewCloud.colabSignInStatus(); break;
+    case 'cloud_colab_usage': result = previewCloud.colabUsage(); break;
+    case 'cloud_colab_sign_in_cancel': result = previewCloud.colabSignInCancel(); break;
+    case 'cloud_colab_config': result = previewCloud.colabConfig(); break;
+    case 'cloud_colab_set_config': result = await previewCloud.colabSetConfig(args); break;
+    case 'cloud_colab_install_cli': result = previewCloud.colabInstallCli(); break;
+    case 'cloud_colab_thread_runtimes': result = previewCloud.colabThreadRuntimes(args.sessionId, args.refresh); break;
+    case 'cloud_colab_runtime_action': result = await previewCloud.colabRuntimeAction(args.sessionId, args.endpoint, args.action); break;
     case 'cloud_instabox_images': result = previewCloud.instaboxImages(); break;
     case 'cloud_instabox_set_image': result = previewCloud.setInstaboxImage(args.image); break;
+    case 'cloud_digitalocean_catalog': result = previewCloud.digitalOceanCatalog(); break;
+    case 'cloud_digitalocean_set_options': result = previewCloud.setDigitalOceanOptions(args.region, args.size); break;
     case 'cloud_machines': result = previewCloud.list(); break;
     case 'cloud_create': result = previewCloud.create(args.provider, args.name); break;
     case 'cloud_power': result = previewCloud.power(args.id, args.action); break;

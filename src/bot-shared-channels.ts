@@ -82,7 +82,7 @@ function messageHtml(message: SharedChannelMessage, bots: Bot[]): string {
   // Assignment rows and the working row already show progress; a post only flags what needs the user.
   const marker = message.status === 'Failed' || message.status === 'Stopped' ? `<small class="bc-message-status">${escape(message.status)}</small>` : '';
   return `<article class="bc-message ${message.kind === 'user' ? 'from-user' : 'from-bot'}" data-message-id="${escape(message.id)}" ${bot?.color ? `style="--bot-color:${escape(bot.color)}"` : ''}>
-    ${bot ? botAvatarHtml(bot.avatar, bot.name, 'bc-message-avatar', bot.color) : ''}<div class="bc-message-main"><header><strong>${escape(name)}</strong>${marker}</header><div class="bc-message-text" data-message-id="${escape(message.id)}"></div></div></article>`;
+    ${bot ? botAvatarHtml(bot.avatar, bot.name, 'bc-message-avatar', bot.color) : ''}<div class="bc-message-main"><header><strong>${escape(name)}</strong>${marker}</header><div class="bc-message-text markdown" data-message-id="${escape(message.id)}"></div></div></article>`;
 }
 
 function workingHtml(channel: SharedChannelDetail, bots: Bot[]): string {

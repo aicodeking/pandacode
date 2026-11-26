@@ -4,6 +4,7 @@
  * clamp, its live growth and the footer's arrival, all with the Web Animations API (the trace is the
  * one surface allowed richer choreography) and instant under reduced motion or before first paint. */
 import { escape } from './dom.ts';
+import { preserveTranscriptPosition } from './transcript-scroll.ts';
 import { formatDuration } from './turn-activity.ts';
 import './turn-card.css';
 
@@ -59,13 +60,48 @@ const observer = typeof ResizeObserver === 'undefined' ? undefined : new ResizeO
     const box = entry.borderBoxSize?.[0], height = box ? Math.round(box.blockSize) : content.offsetHeight;
     return [{ content, reply, body, live, height, limit: live ? 0 : clampHeight(body) }];
   });
-  for (const { content, reply, body, live, height, limit } of measured) {
-    const before = sizes.get(content);
+  const restores = holdClampChanges(measured);
+  for (const { content, reply, height, live, limit } of measured) {
     sizes.set(content, height);
-    if (live) { if (before !== undefined && before !== height) grow(body, before, height); }
-    else syncOverflow(reply, height, limit);
+    // A live reply's growth starts from liveGrowth, before layout. Writing a height here, during delivery, would resize
+    // the transcript's observed rows after they were measured; anything else that resizes a live reply (width, an image)
+    // is only recorded, so its body never steps back to an old height.
+    if (!live) syncOverflow(reply, height, limit);
+  }
+  restores.forEach(restore => restore());
+});
+/** A live reply's text lands in a task or frame callback; this runs right after it, before style and layout, so its body
+ *  starts growing from the painted height in the very frame the new text first lays out: the height only ever moves on. */
+const liveGrowth = typeof MutationObserver === 'undefined' ? undefined : new MutationObserver(records => {
+  const contents = new Set<HTMLElement>();
+  for (const { target } of records) {
+    const content = (target instanceof Element ? target : target.parentElement)?.closest<HTMLElement>(REPLY_CONTENT);
+    if (content?.isConnected && content.parentElement && content.closest('.turn-card-reply.is-live')) contents.add(content);
+  }
+  if (!contents.size) return;
+  // One layout for the batch, then the writes.
+  const measured = [...contents].map(content => ({ content, body: content.parentElement!, height: Math.round(content.offsetHeight) }));
+  for (const { content, body, height } of measured) {
+    const before = sizes.get(content);
+    if (before === undefined || before === height) continue;
+    sizes.set(content, height);
+    grow(body, before, height);
   }
 });
+const LIVE_MUTATIONS: MutationObserverInit = { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['hidden'] };
+
+/** Saved replies (far rows laying out after a jump) that are about to gain or lose their clamp change height above the
+ *  reader. WebKit has no scroll anchoring, so hold the reader's place in each affected transcript: captured once per
+ *  transcript before any write, restored after them all. Free while the transcript follows its bottom. */
+function holdClampChanges(measured: readonly { reply: HTMLElement; live: boolean; height: number; limit: number }[]): (() => void)[] {
+  const scrollers = new Set<HTMLElement>();
+  for (const { reply, live, height, limit } of measured) {
+    if (live || overflows(height, limit) === reply.hasAttribute('data-overflow')) continue;
+    const scroller = reply.closest<HTMLElement>('#transcript');
+    if (scroller) scrollers.add(scroller);
+  }
+  return [...scrollers].map(scroller => preserveTranscriptPosition(scroller));
+}
 
 const REPLY_CONTENT = '.turn-card-reply-content';
 /** What a visible Read more adds above the reply's row: turn-card.css `--reply-more-gap` (the row's margin-top, 0 without
@@ -99,9 +135,25 @@ export function measureReplies(root: ParentNode | readonly Node[], defer?: (cont
     shift,
     apply() {
       saved.forEach(({ reply, height, limit }) => syncOverflow(reply, height, limit));
-      fresh.forEach(content => { sizes.set(content, -1); observer?.observe(content); });
+      fresh.forEach(content => {
+        sizes.set(content, -1);
+        observer?.observe(content);
+        if (content.closest('.turn-card-reply.is-live')) liveGrowth?.observe(content, LIVE_MUTATIONS);
+      });
     },
   };
+}
+
+/** Clamps the saved reply holding `target` now, in the task its text was written (a long folded reply formatted as it
+ *  nears the reader), rather than a frame later from the observer: the reply never lays out unclamped above the reader. */
+export function syncReplyClamp(target: Element): void {
+  const reply = target.closest<HTMLElement>('.turn-card-reply');
+  const content = target.closest<HTMLElement>(REPLY_CONTENT) ?? reply?.querySelector<HTMLElement>(REPLY_CONTENT);
+  const body = content?.parentElement;
+  if (!reply || !content || !body || !content.isConnected || reply.classList.contains('is-live')) return;
+  const height = content.offsetHeight;
+  sizes.set(content, height);
+  syncOverflow(reply, height, clampHeight(body));
 }
 
 /** Read more shows only when the reply runs past the clamp by more than half a line. */

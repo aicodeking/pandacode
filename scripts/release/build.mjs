@@ -4,16 +4,15 @@
 //
 //   node scripts/release/build.mjs [darwin-aarch64|darwin-x86_64|windows-x86_64|windows-aarch64|linux-x86_64|linux-aarch64]
 //
-// Signing is optional. Without Apple credentials the macOS app gets an ad-hoc
-// signature; Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
+// Outside official builds, macOS can use an ad-hoc signature without Apple
+// credentials. Windows and Linux builds are unsigned. With TAURI_SIGNING_PRIVATE_KEY
 // (the release workflow's secret) the build also produces the signed update file and
 // its `.sig` for the in-app updater.
-import { readFile, writeFile, mkdir, copyFile, readdir, readlink, mkdtemp, rmdir, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, copyFile, readdir, readlink, mkdtemp, rmdir, rm, lstat, chmod } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory } from './common.mjs';
+import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory, isMain } from './common.mjs';
 import { repackAppImage } from './appimage.mjs';
 
 // Never forwarded to the build: leftovers of the old license check in a developer
@@ -22,13 +21,35 @@ const STRIPPED = /^PANDACODE_(LICENSE|UPDATE)_PUBLIC_KEY$/;
 
 export function macosSigning(env) {
   const identity = env.APPLE_SIGNING_IDENTITY?.trim();
-  if (!identity || identity === '-') return { mode: 'adhoc', identity: '-' };
+  if (!identity || identity === '-') {
+    if (['1', 'true'].includes(env.PANDACODE_REQUIRE_APPLE_SIGNING)) {
+      throw new Error('Official macOS builds require APPLE_SIGNING_IDENTITY (Developer ID Application) and Apple notarization credentials.');
+    }
+    return { mode: 'adhoc', identity: '-' };
+  }
   if (!identity.startsWith('Developer ID Application:')) throw new Error('APPLE_SIGNING_IDENTITY must be a "Developer ID Application: ..." certificate, or unset for an ad-hoc build.');
   const complete = names => names.every(name => env[name]?.trim());
   if (!complete(['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH']) && !complete(['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'])) {
     throw new Error('Developer ID builds must be notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_KEY_PATH, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID.');
   }
   return { mode: 'developer-id', identity };
+}
+
+const API_KEY_CREDENTIALS = ['APPLE_API_KEY', 'APPLE_API_ISSUER', 'APPLE_API_KEY_PATH'];
+const APPLE_ID_CREDENTIALS = ['APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'];
+
+// Tauri notarizes only the app; the disk image around it needs its own ticket.
+export function notarytoolArgs(dmg, env) {
+  const value = name => (typeof env[name] === 'string' ? env[name].trim() : '');
+  const complete = names => names.every(value);
+  if (complete(API_KEY_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--key', value('APPLE_API_KEY_PATH'), '--key-id', value('APPLE_API_KEY'), '--issuer', value('APPLE_API_ISSUER'), '--wait'];
+  if (complete(APPLE_ID_CREDENTIALS)) return ['notarytool', 'submit', dmg, '--apple-id', value('APPLE_ID'), '--password', value('APPLE_PASSWORD'), '--team-id', value('APPLE_TEAM_ID'), '--wait'];
+  throw new Error(`Notarizing the disk image needs ${API_KEY_CREDENTIALS.join(', ')} or ${APPLE_ID_CREDENTIALS.join(', ')}.`);
+}
+
+export async function notarizeDmg(dmg, env, commands = { run }) {
+  await commands.run('/usr/bin/xcrun', notarytoolArgs(dmg, env));
+  await commands.run('/usr/bin/xcrun', ['stapler', 'staple', dmg]);
 }
 
 function withoutApple(env) {
@@ -99,45 +120,69 @@ function verifyAdhocSignature(app) {
   if (result.status !== 0 || !/^Signature=adhoc\r?$/m.test(details) || /^Authority=/m.test(details)) throw new Error('Expected an ad-hoc macOS signature.');
 }
 
-// Tauri staples right after notarization, but Apple's ticket can take a while to
-// propagate, and then that staple fails without failing the build. Staple again until
-// the ticket is there. ponytail: the DMG and update archive keep the app as Tauri
-// packed it; an unstapled notarized app still passes Gatekeeper's online check.
-async function stapleTicket(app, attempts = 10) {
-  for (let attempt = 1; ; attempt += 1) {
-    if (spawnSync('xcrun', ['stapler', 'validate', app], { stdio: 'ignore' }).status === 0) return;
-    if (attempt >= attempts) throw new Error('Apple has no notarization ticket for the app yet; stapling failed.');
-    if (spawnSync('xcrun', ['stapler', 'staple', app], { stdio: 'inherit' }).status === 0) continue;
-    await new Promise((done) => setTimeout(done, 30_000));
+async function verifyPackagedMacApp(installed, { app, releaseVersion, mode }, label, commands) {
+  if (!(await lstat(installed)).isDirectory()) throw new Error(`The ${label} is missing its app bundle.`);
+  await commands.run('/usr/bin/codesign', ['--verify', '--deep', '--strict', installed]);
+  const plist = resolve(installed, 'Contents/Info.plist');
+  const readPlist = key => commands.execFileSync('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist], { encoding: 'utf8' }).trim();
+  const binary = 'Contents/MacOS/pandacode';
+  if (readPlist('CFBundleShortVersionString') !== releaseVersion || readPlist('CFBundleExecutable') !== 'pandacode' ||
+      await digest(resolve(installed, binary)) !== await digest(resolve(app, binary))) {
+    throw new Error(`The ${label} contains a different app build.`);
+  }
+  if (mode === 'developer-id') {
+    // Gatekeeper can accept an unstapled app online, so require the attached ticket too.
+    await commands.run('/usr/bin/xcrun', ['stapler', 'validate', installed]);
+    await commands.run('/usr/sbin/spctl', ['--assess', '--type', 'execute', '--verbose', '--ignore-cache', '--no-cache', installed]);
   }
 }
 
-async function verifyMacApp(app, mode) {
-  await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
-  if (mode === 'adhoc') return verifyAdhocSignature(app);
-  await stapleTicket(app);
-  await run('spctl', ['--assess', '--type', 'execute', '--verbose', app]);
-}
-
-async function verifyDmg(path, app, releaseVersion) {
-  await run('/usr/bin/hdiutil', ['verify', path, '-quiet']);
+async function verifyDmg(artifacts, commands) {
+  await commands.run('/usr/bin/hdiutil', ['verify', artifacts.dmg, '-quiet']);
+  if (artifacts.mode === 'developer-id') {
+    // The container itself must carry a ticket and pass Gatekeeper's open check.
+    await commands.run('/usr/bin/xcrun', ['stapler', 'validate', artifacts.dmg]);
+    await commands.run('/usr/sbin/spctl', ['--assess', '--type', 'open', '--context', 'context:primary-signature', '--verbose', '--ignore-cache', '--no-cache', artifacts.dmg]);
+  }
   const scratch = await mkdtemp(resolve(tmpdir(), 'pandacode-dmg-verify-'));
   const mount = resolve(scratch, 'volume');
   await mkdir(mount);
   let mounted = false;
   try {
-    await run('/usr/bin/hdiutil', ['attach', path, '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, '-quiet']);
+    await commands.run('/usr/bin/hdiutil', ['attach', artifacts.dmg, '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, '-quiet']);
     mounted = true;
     if (await readlink(resolve(mount, 'Applications')) !== '/Applications') throw new Error('The disk image is missing its Applications shortcut.');
-    const installed = resolve(mount, 'PandaCode.app');
-    await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', installed]);
-    const installedVersion = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleShortVersionString', resolve(installed, 'Contents/Info.plist')], { encoding: 'utf8' }).trim();
-    if (installedVersion !== releaseVersion || await digest(resolve(installed, 'Contents/MacOS/pandacode')) !== await digest(resolve(app, 'Contents/MacOS/pandacode'))) throw new Error('The disk image contains a different app build.');
+    await verifyPackagedMacApp(resolve(mount, 'PandaCode.app'), artifacts, 'disk image', commands);
   } finally {
-    if (mounted) await run('/usr/bin/hdiutil', ['detach', mount, '-quiet']);
+    if (mounted) await commands.run('/usr/bin/hdiutil', ['detach', mount, '-quiet']);
     // Only remove empty mount directories; never recursively delete a volume.
     await rmdir(mount); await rmdir(scratch);
   }
+}
+
+export async function verifyMacArtifacts(artifacts, commands = { run, execFileSync }) {
+  const { app, mode, updater } = artifacts;
+  if (mode === 'adhoc') {
+    await commands.run('/usr/bin/codesign', ['--verify', '--deep', '--strict', app]);
+    verifyAdhocSignature(app);
+  }
+  await verifyDmg(artifacts, commands);
+  if (mode !== 'developer-id' || !updater) return;
+  const scratch = await mkdtemp(resolve(tmpdir(), 'pandacode-updater-verify-'));
+  try {
+    await commands.run('/usr/bin/tar', ['-xzf', updater, '-C', scratch]);
+    await verifyPackagedMacApp(resolve(scratch, 'PandaCode.app'), artifacts, 'updater archive', commands);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+export async function resignAppImage(source, releaseVersion, env, commands = {}) {
+  const runCommand = commands.run ?? run;
+  const tauriCli = commands.tauriCli ?? resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
+  await runCommand(process.execPath, [tauriCli, 'signer', 'sign', '--app-version', version(releaseVersion), source], {
+    env: await signingEnvironment(env),
+  });
 }
 
 async function main() {
@@ -152,17 +197,18 @@ async function main() {
   const bundleRoot = resolve(root, 'src-tauri/target', config.triple, 'release/bundle');
   const bundleDir = resolve(bundleRoot, config.bundleDir);
   const source = resolve(bundleDir, builtArtifact(await readdir(bundleDir), releaseVersion, releaseTarget));
+  const updater = build.updater ? resolve(bundleRoot, config.updater(releaseVersion)) : undefined;
   if (releaseTarget.startsWith('darwin-')) {
     const app = resolve(bundleRoot, 'macos/PandaCode.app');
-    await verifyMacApp(app, build.signing.mode);
-    await verifyDmg(source, app, releaseVersion);
+    if (build.signing.mode === 'developer-id') await notarizeDmg(source, build.env);
+    await verifyMacArtifacts({ dmg: source, app, releaseVersion, mode: build.signing.mode, updater });
   }
   if (releaseTarget.startsWith('linux-')) {
     // Drop the build host's Wayland libraries, let GDK_BACKEND be overridden (see
-    // appimage.mjs), and sign the
-    // final bytes again, since Tauri signed the image before this rebuild.
+    // appimage.mjs), and sign the final bytes again, since Tauri signed the image
+    // before this rebuild.
     await repackAppImage(source, { log: message => console.log(message) });
-    if (build.updater) await run(process.execPath, [tauriCli, 'signer', 'sign', source], { env: await signingEnvironment(build.env) });
+    if (build.updater) await resignAppImage(source, releaseVersion, build.env, { run, tauriCli });
   }
   const output = releaseDirectory(releaseVersion);
   await mkdir(output, { recursive: true });
@@ -170,14 +216,13 @@ async function main() {
   await copyFile(source, destination);
   if (releaseTarget.startsWith('linux-')) await chmod(destination, 0o755);
   await writeFile(`${destination}.sha256`, checksumLine(await digest(destination), config.asset));
-  if (build.updater) {
-    const updater = resolve(bundleRoot, config.updater(releaseVersion));
+  if (updater) {
     if (config.updaterAsset !== config.asset) await copyFile(updater, resolve(output, config.updaterAsset));
     await copyFile(`${updater}.sig`, resolve(output, `${config.updaterAsset}.sig`));
   }
   console.log(`Built ${config.asset} (${build.signing.mode}) in ${output}. Nothing was uploaded.`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

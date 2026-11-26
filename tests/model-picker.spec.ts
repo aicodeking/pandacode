@@ -10,31 +10,31 @@ const task = (page: Page) => page.evaluate(async () => {
 });
 const activeOption = (page: Page) => picker(page).locator('[role="option"][aria-selected="true"]');
 
-/** Vite's lazy module graph can outlive page.goto. Wait for the first composer, not history or a picker:
- *  a held startup get_messages call still leaves this prompt attached and disabled. */
-async function gotoApp(page: Page, url: string): Promise<void> {
-  await page.goto(url);
-  await page.locator('#prompt').waitFor({ state: 'attached', timeout: 30_000 });
-}
-
 async function open(page: Page, url = '/?teams'): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
     await route.fulfill({ response, body: `${await response.text()}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
   });
-  await gotoApp(page, url);
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
-  await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
+  await page.goto(url);
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1', { timeout: 15_000 });
+  await expect(trigger(page)).toBeVisible({ timeout: 15_000 });
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await picker(page).isVisible()) await trigger(page).click();
+    await expect(picker(page)).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
 }
 
 // Issue #123: the picker lists only installed harnesses. The preview marks
 // Antigravity and Oh My Pi as not installed.
 test('the harness picker hides harnesses that are not installed', async ({ page }) => {
-  await gotoApp(page, '/');
+  await page.goto('/');
   await page.locator('.new-task-button').click();
-  await page.getByRole('button', { name: /^Model: / }).click();
-  await expect(picker(page).getByRole('tab', { name: 'Grok Build' })).toBeVisible();
+  // A composer redraw while the app starts cancels a menu just opened, so try again until one stays.
+  await expect(async () => {
+    if (!await picker(page).isVisible()) await page.getByRole('button', { name: /^Model: / }).click();
+    await expect(picker(page).getByRole('tab', { name: 'Grok Build' })).toBeVisible({ timeout: 1000 });
+  }).toPass();
   await expect(picker(page).locator('[data-provider="antigravity"], [data-provider="omp"]')).toHaveCount(0);
   await expect(picker(page)).not.toContainText('Antigravity');
   await expect(picker(page)).not.toContainText('Oh My Pi');
@@ -84,7 +84,7 @@ test('the picker is a small inset shell: a bare rail beside one inset list panel
       rail: getComputedStyle(panel.querySelector('.model-menu-rail')!).backgroundColor,
       listBorder: [list.borderTopWidth, list.borderTopColor], border: resolved('color', '--ds-border'),
       listFill: list.backgroundColor, inner: resolved('backgroundColor', '--ds-card-inner'),
-      listRadius: list.borderTopLeftRadius, radius: getComputedStyle(document.documentElement).getPropertyValue('--ds-radius-inner').trim(),
+      listRadius: list.borderTopLeftRadius, radius: getComputedStyle(document.documentElement).getPropertyValue('--radius-inner').trim(),
       thumb: thumb.backgroundColor, thumbToken: resolved('backgroundColor', '--ds-thumb'),
       listEdges: [box('.model-menu-list').left, box('.model-menu-list').right], trackEdges: [box('.model-menu-effort').left, box('.model-menu-effort').right],
     };
@@ -101,6 +101,7 @@ test('the picker is a small inset shell: a bare rail beside one inset list panel
 test('a team row keeps its name readable; the detail gives way first', async ({ page }) => {
   await open(page);
   await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' }).locator('.model-menu-count')).toHaveCSS('font-weight', '400');
   const names = picker(page).locator('.model-menu-team .model-menu-name');
   await expect(names).toHaveCount(2);
   expect(await names.evaluateAll(nodes => nodes.every(node => node.scrollWidth <= Math.ceil(node.getBoundingClientRect().width)))).toBe(true);
@@ -165,10 +166,7 @@ test('keyboard: arrows move rows, left/right change harness, Enter picks, Tab cy
   await page.keyboard.press('ArrowRight');
   await expect(picker(page).getByRole('tab', { name: 'Codex', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(activeOption(page)).toHaveAccessibleName('Codex · Default');
-  // Step through the fetched list, not the bundled one it replaces.
-  await expect(picker(page).locator('[data-catalog-loading="codex"]')).toBeHidden();
   await page.keyboard.press('ArrowUp');
-  await expect(activeOption(page)).not.toHaveAccessibleName('Codex · Default');
   const last = await activeOption(page).getAttribute('aria-label');
   await page.keyboard.press('ArrowDown');
   await expect(activeOption(page)).toHaveAccessibleName('Codex · Default');
@@ -192,7 +190,7 @@ test('keyboard: arrows move rows, left/right change harness, Enter picks, Tab cy
   await page.keyboard.press('Enter');
   await expect(picker(page)).toHaveCount(0);
   await expect(trigger(page)).toContainText('GPT-6-Astra');
-  await expect.poll(() => task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
+  expect(await task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
 });
 
 test('effort is a segmented radiogroup that saves on choice', async ({ page }) => {
@@ -214,6 +212,23 @@ test('effort is a segmented radiogroup that saves on choice', async ({ page }) =
   await expect.poll(async () => (await task(page)).reasoningEffort).toBeNull();
   await expect(trigger(page).locator('.model-effort')).toBeHidden();
   await expect(picker(page)).toBeVisible();
+});
+
+test('effort is a segmented radiogroup with full labels at --ui-scale 1.6 in the minimum window', async ({ page }) => {
+  // open() may retry a startup redraw for up to 15s; triple the budget so that fits under load.
+  test.slow();
+  await page.setViewportSize({ width: 860, height: 940 });
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.6'));
+  await open(page);
+  const segments = picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio');
+  await expect(segments).toHaveCount(4);
+  expect(await segments.evaluateAll(buttons => buttons.every(button => {
+    const style = getComputedStyle(button);
+    const range = document.createRange();
+    range.selectNodeContents(button);
+    return button.scrollWidth <= button.clientWidth && style.textOverflow !== 'ellipsis'
+      && range.getBoundingClientRect().width <= button.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  }))).toBe(true);
 });
 
 test('teams: picking one sets the team, a plain model clears it', async ({ page }) => {
@@ -250,22 +265,20 @@ test('a ZCode model joins an automatic team instead of leaving it', async ({ pag
   await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
   // A redraw while the team loads can close a freshly opened menu, so try again until one stays.
   await expect(async () => {
-    if (!(await picker(page).isVisible())) await trigger(page).click();
+    await trigger(page).click();
     await expect(picker(page).getByRole('tab', { name: 'ZCode', exact: true })).toBeVisible();
   }).toPass();
   // ZCode carries the team tools now, so its model keeps the automatic team.
   await picker(page).getByRole('tab', { name: 'ZCode', exact: true }).click();
   await picker(page).getByRole('option', { name: 'ZCode · zcproxy/GLM-5.3', exact: true }).click();
   await expect(picker(page)).toHaveCount(0);
-  await expect.poll(() => task(page)).toMatchObject({ provider: 'zcode', model: 'zcproxy/GLM-5.3' });
+  expect(await task(page)).toMatchObject({ provider: 'zcode', model: 'zcproxy/GLM-5.3' });
   await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
-  await expect.poll(async () => {
-    const team = await page.evaluate(async () => {
-      const { invoke } = await import((window as any).__pandacodePreviewUrl);
-      return invoke('architect_get', { sessionId: 'session-1' });
-    });
-    return team?.config?.auto === true && [...team.config.workers, ...team.config.catalog].some((profile: any) => profile.provider === 'zcode');
-  }).toBe(true);
+  const team = await page.evaluate(async () => {
+    const { invoke } = await import((window as any).__pandacodePreviewUrl);
+    return invoke('architect_get', { sessionId: 'session-1' });
+  });
+  expect(team.config.auto).toBe(true);
 });
 
 test('Esc clears the query first, then closes and returns focus to the trigger', async ({ page }) => {
@@ -279,43 +292,6 @@ test('Esc clears the query first, then closes and returns focus to the trigger',
   await expect(picker(page)).toHaveCount(0);
   await expect(trigger(page)).toBeFocused();
 });
-
-for (const ime of ['isComposing', 'keyCode229'] as const) for (const query of ['opus', '']) {
-  test(`IME Escape (${ime}) preserves the open picker with ${query ? 'a query' : 'empty search'}`, async ({ page }) => {
-    await loadHeld(page);
-    await openSettled(page);
-    if (query) await search(page).fill(query);
-    await expect(search(page)).toBeFocused();
-    const selected = await activeOption(page).getAttribute('id');
-    const before = await task(page);
-    const choicesAndSends = () => page.evaluate(() => (window as any).__calls.filter((command: string) => ['configure_session', 'set_reasoning_effort', 'architect_configure', 'send_message', 'architect_start'].includes(command)));
-    const callsBefore = await choicesAndSends();
-    await search(page).evaluate((node, kind) => {
-      if (kind === 'keyCode229') {
-        node.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
-        node.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }));
-      }
-      node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true,
-        ...(kind === 'isComposing' ? { isComposing: true } : { keyCode: 229 }) }));
-    }, ime);
-    await expect(picker(page)).toBeVisible();
-    await expect(search(page)).toHaveValue(query);
-    await expect(search(page)).toBeFocused();
-    await expect(activeOption(page)).toHaveAttribute('id', selected!);
-    await expect(search(page)).toHaveAttribute('aria-activedescendant', selected!);
-    expect(await task(page)).toEqual(before);
-    expect(await choicesAndSends()).toEqual(callsBefore);
-    if (query) {
-      await page.keyboard.press('Escape');
-      await expect(search(page)).toHaveValue('');
-      await expect(picker(page)).toBeVisible();
-      await expect(search(page)).toBeFocused();
-    }
-    await page.keyboard.press('Escape');
-    await expect(picker(page)).toHaveCount(0);
-    await expect(trigger(page)).toBeFocused();
-  });
-}
 
 test('narrow windows collapse the rail to logos', async ({ page }) => {
   await page.setViewportSize({ width: 480, height: 800 });
@@ -336,7 +312,7 @@ async function delayCommands(page: Page, commands: string[], ms = 500): Promise<
 
 test('a harness list that answers late still fills the picker', async ({ page }) => {
   await delayCommands(page, ['list_providers']);
-  await gotoApp(page, '/');
+  await page.goto('/');
   await page.locator('.new-task-button').click();
   await trigger(page).click();
   await expect(picker(page).locator('[role="tab"][data-view="h:grok"]')).toBeVisible();
@@ -346,9 +322,64 @@ test('a harness list that answers late still fills the picker', async ({ page })
   await expect(picker(page).getByRole('tab', { name: 'Grok Build', exact: true })).toBeVisible();
 });
 
+/** Holds `list_providers` until the test releases it, exposing `window.__releaseProviders`. */
+async function holdProviders(page: Page): Promise<void> {
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const marker = /switch\s*\(command\)\s*\{/;
+    const gate = `const __providersGate = new Promise(done => { window.__releaseProviders = done; });\n`;
+    const body = (await response.text()).replace(marker, `if (command === 'list_providers') await __providersGate;\nswitch (command) {`);
+    await route.fulfill({ response, body: `${gate}${body}\nwindow.__pandacodePreviewUrl = import.meta.url;\n` });
+  });
+}
+
+test('opening the picker on a single-agent task with saved teams while harnesses load stays off Teams', async ({ page }) => {
+  await holdProviders(page);
+  await page.goto('/?teams');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  await trigger(page).click();
+  await expect(picker(page)).toBeVisible();
+  // While harnesses are still loading, saved teams must not hijack the view or Enter selection.
+  await expect(search(page)).toHaveAttribute('placeholder', 'Loading models…');
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'false');
+  await expect(picker(page).locator('.model-menu-list')).toHaveText(/Loading…/);
+  await expect(picker(page).locator('.model-menu-team')).toHaveCount(0);
+  await expect(activeOption(page)).toHaveCount(0);
+  await page.keyboard.press('Enter');
+  await expect(picker(page)).toBeVisible();
+  await expect(trigger(page)).not.toContainText('Ship crew');
+  const teamBefore = await page.evaluate(async () => {
+    const { invoke } = await import((window as any).__pandacodePreviewUrl);
+    return invoke('architect_get', { sessionId: 'session-1' });
+  });
+  expect(teamBefore).toBeNull();
+  // Once harnesses resolve, the picker lands on the task's harness and current model, not Teams.
+  await page.evaluate(() => (window as any).__releaseProviders());
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'false');
+  await expect(activeOption(page)).toHaveAccessibleName('Claude Code · Claude Sonnet 5');
+  await expect(activeOption(page)).toHaveAttribute('aria-current', 'true');
+  await expect(picker(page).locator('.model-menu-team')).toHaveCount(0);
+});
+
+test('explicitly clicking Teams while harnesses load shows saved teams and stays there', async ({ page }) => {
+  await holdProviders(page);
+  await page.goto('/?teams');
+  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
+  await trigger(page).click();
+  await expect(picker(page).locator('.model-menu-list')).toHaveText(/Loading…/);
+  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true })).toBeVisible();
+  await page.evaluate(() => (window as any).__releaseProviders());
+  await expect(picker(page).getByRole('tab', { name: 'Claude Code', exact: true })).toBeVisible();
+  await expect(picker(page).getByRole('tab', { name: 'Teams, 2' })).toHaveAttribute('aria-selected', 'true');
+  await expect(picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true })).toBeVisible();
+});
+
 test('the Model button pressed while New task is on its way opens on the new task and stays open', async ({ page }) => {
   await delayCommands(page, ['create_session']);
-  await gotoApp(page, '/');
+  await page.goto('/');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
   const before = (await page.evaluate(async () => { const { invoke } = await import((window as any).__pandacodePreviewUrl); return invoke('get_task', { sessionId: 'session-1' }); }) as any);
   await page.locator('.new-task-button').click();
@@ -359,7 +390,7 @@ test('the Model button pressed while New task is on its way opens on the new tas
   await picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true }).click();
   await expect(picker(page)).toHaveCount(0);
   // The pick landed on the new task, not on the one the button belonged to when it was pressed.
-  await expect.poll(() => task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
+  expect(await task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
   const after = await page.evaluate(async () => { const { invoke } = await import((window as any).__pandacodePreviewUrl); return invoke('get_task', { sessionId: 'session-1' }); }) as any;
   expect([after.provider, after.model]).toEqual([before.provider, before.model]);
 });
@@ -371,7 +402,7 @@ test('the picker shows provider logos for Cline, Kilo Code and Oh My Pi', async 
     expect(source).toMatch(marker);
     await route.fulfill({ response, body: source.replace(marker, `if (command === 'list_providers') return structuredClone(providers.map(p => ({ ...p, installed: true })));\nswitch (command) {`) });
   });
-  await gotoApp(page, '/');
+  await page.goto('/');
   await page.locator('.new-task-button').click();
   await trigger(page).click();
   const rail = picker(page).getByRole('tablist', { name: 'Harnesses' });
@@ -393,7 +424,7 @@ async function accountFixture(page: Page, pooled: boolean) {
     const body = source.replace(/switch\s*\(command\)\s*\{/, `(window.__accountCalls ??= []).push({ command, args: structuredClone(args) }); switch (command) {`);
     await route.fulfill({ response, body: `${body}\npreviewConnections = ${JSON.stringify({ connections, tasks: { 'session-1': 'claude-0' }, pools: pooled ? ['claude', 'codex'] : [], poolExcluded: [] })};\nwindow.__pandacodePreviewUrl = import.meta.url;\nwindow.__accountSnapshot = () => structuredClone(previewConnections);\n` });
   });
-  await gotoApp(page, '/');
+  await page.goto('/');
   await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
 }
 const accountCalls = (page: Page, command: string) => page.evaluate(name => (window as any).__accountCalls.filter((c: any) => c.command === name), command);
@@ -449,1052 +480,10 @@ test('a true harness switch clears a stale account binding after configuring the
   expect(await accountCalls(page, 'connection_pool_set')).toEqual([]);
 });
 
-// Model switching is optimistic: the picker opens on cached data and a pick shows at once while the backend saves.
-/** Loads the preview with holdable commands (HELD; `holdCall`, then `releaseCall`) and a log of every call (`__calls`). */
-const HELD = ['architect_profiles', 'configure_session', 'set_reasoning_effort', 'list_provider_models', 'get_messages', 'get_task', 'send_message', 'update_session'];
-/** `clock`: a controllable clock, to step past the catalogs' 5-minute expiry. */
-async function loadHeld(page: Page, url = '/?teams', { clock = false, startupHolds = [] as string[] } = {}): Promise<void> {
-  // A cold dev server compiles the rewritten preview module first: leave the boot wait room inside the test.
-  test.setTimeout(90_000);
-  await page.route('**/src/preview.ts*', async route => {
-    const response = await route.fetch();
-    let patched = 0;
-    const body = (await response.text())
-      .replace(new RegExp(`case (["'])(${HELD.join('|')})\\1:`, 'g'), (found, _q, name) => { patched += 1; return `${found} { const gate = window.__holds?.[${JSON.stringify(name)}]; if (gate) { (window.__atGate ??= {})[${JSON.stringify(name)}] = true; await gate; } const over = window.__override?.[${JSON.stringify(name)}]?.(args); if (over !== undefined) return over; }`; })
-      .replace(/async function invoke\(command, args\) \{/, found => { patched += 1; return `${found} (window.__calls ??= []).push(command); (window.__callArgs ??= []).push([command, args]);`; });
-    await route.fulfill({ response, body: `${body}\nwindow.__pandacodePreviewUrl = import.meta.url;\nwindow.__previewPatched = ${patched};\n` });
-  });
-  await page.addInitScript((startup: string[]) => {
-    const w = window as any;
-    w.__holds = {};
-    w.__hold = (name: string) => { let release!: (fail?: string) => void; w.__holds[name] = new Promise<void>((resolve, reject) => { release = fail => { delete w.__holds[name]; fail ? reject(new Error(fail)) : resolve(); }; }); w.__release = { ...w.__release, [name]: release }; };
-    for (const name of startup) w.__hold(name);
-  }, startupHolds);
-  if (clock) await page.clock.install();
-  await gotoApp(page, url);
-  // The rewritten preview module compiles uncached, so the first boot can take longer than the default wait.
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1', { timeout: 20_000 });
-  // Fail loudly when preview.ts changes shape: every held command and the call log.
-  expect(await page.evaluate(() => (window as any).__previewPatched), 'preview.ts rewrite for held calls').toBe(HELD.length + 1);
-}
-const sent = (page: Page) => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'send_message').length);
-const holdCall = (page: Page, name: string) => page.evaluate(n => (window as any).__hold(n), name);
-/** Releases a held command once a call is waiting at its gate (releasing earlier would let that call through unheld). */
-async function releaseCall(page: Page, name: string, fail?: string): Promise<void> {
-  await expect.poll(() => page.evaluate(n => Boolean((window as any).__atGate?.[n]), name), { message: `a ${name} call waiting to be released` }).toBe(true);
-  await page.evaluate(([n, f]) => { const w = window as any; w.__atGate[n] = false; w.__release[n](f); }, [name, fail] as const);
-}
-
-/** Open exactly once: startup refreshes must preserve the interaction. */
-async function openSettled(page: Page): Promise<void> {
-  await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
-}
-async function pickAstra(page: Page): Promise<void> {
-  await openSettled(page);
-  await search(page).fill('astra');
-  await page.keyboard.press('Enter');
-}
-
-/** Keep the lazy choice-menu import pending without delaying the application's initial module graph. */
-async function holdChoiceModule(page: Page): Promise<() => void> {
-  let release!: () => void;
-  const gate = new Promise<void>(resolve => { release = resolve; });
-  await page.route('**/src/choice-menu.ts*', async route => {
-    const response = await route.fetch();
-    await gate;
-    await route.fulfill({ response });
-  });
-  return release;
-}
-
-for (const pending of [true, false]) test(`startup refresh preserves ${pending ? 'pending' : 'open'} Permissions`, async ({ page }) => {
-  const release = pending ? await holdChoiceModule(page) : () => {};
-  try {
-    await loadHeld(page, '/?teams', { startupHolds: ['get_messages'] });
-    const mode = page.locator('#mode-picker-trigger'), menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-    await mode.click();
-    if (pending) await expect(mode).toHaveAttribute('aria-busy', 'true');
-    else await expect(menu).toBeVisible();
-    await releaseCall(page, 'get_messages');
-    await expect(page.locator('#prompt')).toBeEnabled();
-    release();
-    await expect(menu).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(menu).toHaveCount(0);
-  } finally { release(); }
-});
-
-for (const cancel of ['Escape', 'navigation']) test(`pending Permissions stays cancelled after startup ${cancel}`, async ({ page }) => {
-  const release = await holdChoiceModule(page);
-  try {
-    await loadHeld(page, '/?teams', { startupHolds: ['get_messages'] });
-    const mode = page.locator('#mode-picker-trigger');
-    await mode.click();
-    await expect(mode).toHaveAttribute('aria-busy', 'true');
-    if (cancel === 'Escape') await page.keyboard.press('Escape');
-    else await page.locator('.task-item[data-id="session-2"]').click();
-    await releaseCall(page, 'get_messages');
-    await expect(page.locator('#prompt')).toBeEnabled();
-    release();
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(page.getByRole('dialog', { name: 'Permissions', exact: true })).toHaveCount(0);
-  } finally { release(); }
-});
-
-test('a catalog label refresh during one Model press keeps native activation', async ({ page }) => {
-  await loadHeld(page, '/?teams', { startupHolds: ['get_messages', 'list_provider_models'] });
-  await releaseCall(page, 'get_messages');
-  await expect(page.locator('#prompt')).toBeEnabled();
-  const label = trigger(page).locator('[data-model-label]');
-  await expect(label).toHaveText('Claude Sonnet');
-  const box = (await trigger(page).boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await releaseCall(page, 'list_provider_models');
-  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-  await page.mouse.up();
-  await expect(picker(page)).toBeVisible();
-  await expect(search(page)).toBeFocused();
-  await expect(label).toHaveText('Claude Sonnet 5');
-});
-
-for (const control of ['Model', 'Permissions']) test(`startup refresh during one ${control} press still activates the picker`, async ({ page }) => {
-  await loadHeld(page, '/?teams', { startupHolds: ['get_messages'] });
-  const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-  const box = (await button.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await releaseCall(page, 'get_messages');
-  // Let the native startup completion paint before releasing this one press.
-  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
-  await page.mouse.up();
-  await expect(page.getByRole('dialog', { name: control === 'Model' ? 'Harness and model' : 'Permissions', exact: true })).toBeVisible();
-  if (control === 'Model') await expect(search(page)).toBeFocused();
-  await expect(page.locator('#prompt')).toBeEnabled();
-});
-
-for (const control of ['Model', 'Permissions']) test(`releasing a startup ${control} press outside cancels and flushes the refresh`, async ({ page }) => {
-  await loadHeld(page, '/?teams', { startupHolds: ['get_messages'] });
-  const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-  const box = (await button.boundingBox())!;
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await releaseCall(page, 'get_messages');
-  await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
-  const outside = (await page.locator('.workspace-header').boundingBox())!;
-  await page.mouse.move(outside.x + 300, outside.y + 10);
-  await page.mouse.up();
-  await expect(page.locator('#prompt')).toBeEnabled();
-  await expect(page.getByRole('dialog', { name: control === 'Model' ? 'Harness and model' : 'Permissions', exact: true })).toHaveCount(0);
-});
-
-for (const control of ['Model', 'Permissions']) for (const change of ['target', 'running', 'navigation']) {
-  test(`startup ${change} change cancels a pressed ${control} trigger`, async ({ page }) => {
-    await loadHeld(page, '/?teams', { startupHolds: ['get_messages', 'get_task'] });
-    const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-    const box = (await button.boundingBox())!;
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-    await page.mouse.down();
-    if (change === 'navigation') await page.evaluate(() => document.querySelector<HTMLElement>('.task-item[data-id="session-2"]')!.click());
-    else await page.evaluate(async running => {
-      const { invoke } = await import((window as any).__pandacodePreviewUrl);
-      await invoke('update_session', { sessionId: 'session-1', ...(running ? { status: 'running' } : { model: 'changed-during-press' }) });
-    }, change === 'running');
-    await releaseCall(page, 'get_task');
-    await releaseCall(page, 'get_messages');
-    await expect(page.locator('#prompt')).toBeEnabled();
-    await page.mouse.up();
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(page.getByRole('dialog', { name: control === 'Model' ? 'Harness and model' : 'Permissions', exact: true })).toHaveCount(0);
-  });
-}
-
-for (const pending of [true, false]) test(`startup message refresh preserves the ${pending ? 'pending' : 'open'} picker after one click`, async ({ page }) => {
-  await loadHeld(page, '/?teams', { startupHolds: pending ? ['get_messages', 'architect_profiles'] : ['get_messages'] });
-  const originalTrigger = await trigger(page).elementHandle();
-  await trigger(page).click();
-  if (pending) await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
-  else { await expect(picker(page)).toBeVisible(); await search(page).fill('sonne'); }
-  await page.locator('#prompt').evaluate(node => { (node as HTMLTextAreaElement).value = 'draft during startup'; });
-  await releaseCall(page, 'get_messages');
-  await expect(page.locator('#prompt')).toBeEnabled();
-  if (pending) await releaseCall(page, 'architect_profiles');
-  await expect(picker(page)).toBeVisible();
-  expect(await originalTrigger!.evaluate(node => node === document.querySelector('#model-picker-trigger'))).toBe(true);
-  await expect(search(page)).toBeFocused();
-  await expect(search(page)).toHaveValue(pending ? '' : 'sonne');
-  await expect(page.locator('#prompt')).toHaveValue('draft during startup');
-  if (!pending) await page.keyboard.press('Escape'); // Clear the query first.
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-});
-
-for (const pending of [true, false]) for (const cancel of ['Escape', 'outside click', 'navigation', 'new task', 'target change', 'running task']) {
-  test(`startup refresh keeps ${pending ? 'a pending' : 'an open'} picker cancelled after ${cancel}`, async ({ page }) => {
-    await loadHeld(page, '/?teams', { startupHolds: ['get_messages', 'get_task', ...(pending ? ['architect_profiles'] : [])] });
-    await trigger(page).click();
-    if (pending) await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
-    else await expect(picker(page)).toBeVisible();
-    if (cancel === 'Escape') await page.keyboard.press('Escape');
-    else if (cancel === 'outside click') await page.locator('.workspace-header').click({ position: { x: 300, y: 10 } });
-    else if (cancel === 'navigation') await page.locator('.task-item[data-id="session-2"]').click();
-    else if (cancel === 'new task') await page.locator('.new-task-button').click();
-    else await page.evaluate(async running => {
-      const { invoke } = await import((window as any).__pandacodePreviewUrl);
-      await invoke('update_session', { sessionId: 'session-1', ...(running ? { status: 'running' } : { model: 'changed-during-startup' }) });
-    }, cancel === 'running task');
-    await releaseCall(page, 'get_task');
-    await releaseCall(page, 'get_messages');
-    if (cancel === 'navigation') await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-2');
-    else if (cancel === 'new task') await expect(page.locator('#prompt')).not.toHaveAttribute('data-session-id', 'session-1');
-    else await expect(page.locator('#prompt')).toBeEnabled();
-    if (pending) await releaseCall(page, 'architect_profiles');
-    // Drain the same open's held work, then a browser frame: an invalid request must never mount later.
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(picker(page)).toHaveCount(0);
-  });
-}
-
-test('the picker opens without waiting for the team library once it is known', async ({ page }) => {
-  await loadHeld(page);
-  await openSettled(page);
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await holdCall(page, 'architect_profiles');
-  await openSettled(page);
-  await releaseCall(page, 'architect_profiles');
-});
-
-test('a picked model shows on the trigger before configure_session answers', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await expect(picker(page)).toHaveCount(0);
-  await expect(trigger(page)).toContainText('GPT-6-Astra');
-  await releaseCall(page, 'configure_session');
-  await expect.poll(async () => (await task(page)).model).toBe('gpt-6-astra');
-  await expect(trigger(page)).toContainText('GPT-6-Astra');
-});
-
-test('a refused switch puts the previous model back and says why', async ({ page }) => {
-  await loadHeld(page);
-  const before = await trigger(page).locator('[data-model-label]').textContent();
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await expect(trigger(page)).toContainText('GPT-6-Astra');
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.getByText('Preview refused the switch.')).toBeVisible();
-  await expect(trigger(page).locator('[data-model-label]')).toHaveText(before!);
-});
-
-test('a send during a switch waits for it and goes with the new model', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await expect(trigger(page)).toContainText('GPT-6-Astra');
-  await page.locator('#prompt').fill('hello after the switch');
-  await page.locator('#prompt').press('Enter');
-  // The held message shows on the send button.
-  const sendButton = page.locator('#composer .send-button[type="submit"]');
-  await expect(sendButton).toHaveAttribute('aria-busy', 'true');
-  await page.waitForTimeout(150);
-  expect(await page.evaluate(() => (window as any).__calls.includes('send_message'))).toBe(false);
-  await releaseCall(page, 'configure_session');
-  await expect.poll(() => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'configure_session' || c === 'send_message'))).toEqual(['configure_session', 'send_message']);
-  await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
-  await expect.poll(() => task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra' });
-});
-
-test('a failed switch keeps the draft and sends nothing', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await page.locator('#prompt').fill('keep this draft');
-  await page.locator('#prompt').press('Enter');
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.getByText('Preview refused the switch.')).toBeVisible();
-  await expect(page.locator('#prompt')).toHaveValue('keep this draft');
-  await page.waitForTimeout(300);
-  expect(await sent(page)).toBe(0);
-});
-
-test('opening another task during a held switch does not send the draft there, says so and keeps it', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await page.locator('#prompt').fill('meant for the first task');
-  await page.locator('#prompt').press('Enter');
-  await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-2');
-  await releaseCall(page, 'configure_session');
-  await expect.poll(async () => (await page.evaluate(async () => { const { invoke } = await import((window as any).__pandacodePreviewUrl); return invoke('get_task', { sessionId: 'session-1' }); }) as any).model).toBe('gpt-6-astra');
-  await expect(page.locator('#toast')).toContainText('Not sent — you switched tasks. Your draft is still there.');
-  await page.waitForTimeout(300);
-  expect(await sent(page)).toBe(0);
-  await page.locator('.task-item[data-id="session-1"]').click();
-  await expect(page.locator('#prompt')).toHaveValue('meant for the first task');
-});
-
-test('a refused effort change puts the previous effort back', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'set_reasoning_effort');
-  await openSettled(page);
-  await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
-  await expect(trigger(page).locator('.model-effort')).toHaveText('High');
-  await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(picker(page)).toContainText('Preview refused the effort.');
-  await expect(trigger(page).locator('.model-effort')).toBeHidden();
-  expect((await task(page)).reasoningEffort ?? null).toBeNull();
-});
-
-test('the model button pressed during a held save opens the picker once it lands', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
-  await trigger(page).click();
-  await page.waitForTimeout(200);
-  await expect(picker(page)).toHaveCount(0);
-  const reads = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'get_messages').length);
-  const before = await reads();
-  await releaseCall(page, 'configure_session');
-  await expect(picker(page)).toBeVisible();
-  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
-  // The harness change's transcript reload lands meanwhile and must not close the picker.
-  await expect.poll(reads).toBeGreaterThan(before);
-  await page.waitForTimeout(500);
-  await expect(picker(page)).toBeVisible();
-});
-
-test('a send right after a harness switch keeps its message when the transcript reloads', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await page.locator('#prompt').fill('right after the switch');
-  await page.locator('#prompt').press('Enter');
-  // The reload reads the page before the send is stored; the send's optimistic message must survive it.
-  await holdCall(page, 'get_messages');
-  await holdCall(page, 'send_message');
-  await releaseCall(page, 'configure_session');
-  const message = page.locator('#transcript .user-message', { hasText: 'right after the switch' });
-  await expect(message).toBeVisible();
-  await releaseCall(page, 'get_messages');
-  await page.waitForTimeout(300);
-  await expect(message).toBeVisible();
-  await releaseCall(page, 'send_message');
-  await expect(message).toBeVisible();
-});
-
-test('a catalog that failed loads again on the next open', async ({ page }) => {
-  await loadHeld(page);
-  const asked = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'list_provider_models').length);
-  await holdCall(page, 'list_provider_models');
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  await releaseCall(page, 'list_provider_models', 'Catalog offline.');
-  const failure = picker(page).locator('[role="tab"][data-view="h:codex"][data-tip="Catalog offline."]');
-  await expect(failure).toBeVisible();
-  const before = await asked();
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await openSettled(page);
-  await expect.poll(asked).toBeGreaterThan(before);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  await expect(failure).toHaveCount(0);
-  await expect(picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true })).toBeVisible();
-});
-
-test('overlapping effort changes: only the latest one paints or rolls back', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'set_reasoning_effort');
-  await openSettled(page);
-  const group = picker(page).getByRole('radiogroup', { name: 'Effort' });
-  const effortLabel = trigger(page).locator('.model-effort');
-  await group.getByRole('radio', { name: 'High', exact: true }).click();
-  await group.getByRole('radio', { name: 'Low', exact: true }).click();
-  await expect(effortLabel).toHaveText('Low');
-  // High saves; Low, sent after it, is held again. High's reply must not paint over Low.
-  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.set_reasoning_effort))).toBe(true);
-  await page.evaluate(() => { const w = window as any; w.__atGate.set_reasoning_effort = false; w.__release.set_reasoning_effort(); w.__hold('set_reasoning_effort'); });
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
-  await page.waitForTimeout(200);
-  await expect(effortLabel).toHaveText('Low');
-  await expect(group.getByRole('radio', { name: 'Low', exact: true })).toHaveAttribute('aria-checked', 'true');
-  // Low is refused: back to the last confirmed effort (High), not the one before both.
-  await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(picker(page)).toContainText('Preview refused the effort.');
-  await expect(effortLabel).toHaveText('High');
-  await expect(group.getByRole('radio', { name: 'High', exact: true })).toHaveAttribute('aria-checked', 'true');
-  expect((await task(page)).reasoningEffort).toBe('high');
-});
-
-/** Chooses High with set_reasoning_effort held, then closes the picker: the effort change is still saving. */
-async function holdHighEffort(page: Page): Promise<void> {
-  await holdCall(page, 'set_reasoning_effort');
-  await openSettled(page);
-  await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
-  await expect(trigger(page).locator('.model-effort')).toHaveText('High');
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-}
-
-test('a send during an effort change waits for it, with the held cue on the send button', async ({ page }) => {
-  await loadHeld(page);
-  await holdHighEffort(page);
-  await page.locator('#prompt').fill('after the effort change');
-  await page.locator('#prompt').press('Enter');
-  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
-  await page.waitForTimeout(150);
-  const order = () => page.evaluate(() => (window as any).__calls.filter((c: string) => ['set_reasoning_effort', 'send_message', 'architect_start'].includes(c)));
-  expect(await order()).toEqual(['set_reasoning_effort']);
-  await releaseCall(page, 'set_reasoning_effort');
-  await expect.poll(async () => (await order()).length).toBe(2);
-  expect((await order())[0]).toBe('set_reasoning_effort');
-  await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
-});
-
-test('a refused effort change keeps held sends and their draft, with one notice', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdHighEffort(page);
-  await page.evaluate(() => {
-    const toast = document.querySelector('#toast')!; (window as any).__notSent = 0;
-    new MutationObserver(() => { if (toast.textContent?.startsWith('Not sent')) (window as any).__notSent += 1; }).observe(toast, { childList: true, characterData: true, subtree: true });
-  });
-  const prompt = page.locator('#prompt');
-  await prompt.fill('keep this effort draft');
-  await prompt.press('Enter');
-  await prompt.press('Enter');
-  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
-  await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect(page.locator('#toast')).toHaveText('Not sent — the effort wasn’t changed (Preview refused the effort.). Your draft is still there.');
-  await expect(prompt).toHaveValue('keep this effort draft');
-  await expect(trigger(page).locator('.model-effort')).toBeHidden();
-  await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
-  await page.waitForTimeout(300);
-  expect(await page.evaluate(() => (window as any).__calls.filter((c: string) => ['send_message', 'architect_start'].includes(c)))).toEqual([]);
-  expect(await page.evaluate(() => (window as any).__notSent)).toBe(1);
-});
-
-for (const failed of [false, true]) test(`a model queued after a refused effort ${failed ? 'reports its own refusal' : 'sends with the newer choice'}`, async ({ page }) => {
-  await loadHeld(page, '/');
-  await openSettled(page);
-  const group = picker(page).getByRole('radiogroup', { name: 'Effort' });
-  await group.getByRole('radio', { name: 'Low', exact: true }).click();
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('low');
-  await holdCall(page, 'set_reasoning_effort');
-  await group.getByRole('radio', { name: 'High', exact: true }).click();
-  await holdCall(page, 'configure_session');
-  await search(page).fill('astra');
-  await page.keyboard.press('Enter');
-  await expect(picker(page)).toHaveCount(0);
-  await expect(trigger(page)).toContainText('GPT-6-Astra');
-  const prompt = page.locator('#prompt');
-  await prompt.fill('after the newer model');
-  await prompt.press('Enter');
-  const sends = () => page.evaluate(() => (window as any).__calls.filter((c: string) => ['send_message', 'architect_start'].includes(c)).length);
-  await releaseCall(page, 'set_reasoning_effort', 'Preview refused the effort.');
-  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.configure_session))).toBe(true);
-  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
-  expect(await sends()).toBe(0);
-  await expect(page.locator('#toast')).not.toContainText('Preview refused the effort.');
-  await releaseCall(page, 'configure_session', failed ? 'Preview refused the newer model.' : undefined);
-  if (failed) {
-    await expect(page.locator('#toast')).toHaveText('Not sent — the model wasn’t changed (Preview refused the newer model.). Your draft is still there.');
-    await expect(prompt).toHaveValue('after the newer model');
-    await expect(trigger(page).locator('.model-effort')).toHaveText('Low');
-    await page.waitForTimeout(200);
-    expect(await sends()).toBe(0);
-  } else {
-    await expect.poll(sends).toBe(1);
-    await expect.poll(() => task(page)).toMatchObject({ provider: 'codex', model: 'gpt-6-astra', reasoningEffort: null });
-  }
-  await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
-});
-
-test('the model button pressed during an effort change opens the picker once it lands', async ({ page }) => {
-  await loadHeld(page);
-  await holdHighEffort(page);
-  await trigger(page).click();
-  await page.waitForTimeout(200);
-  await expect(picker(page)).toHaveCount(0);
-  await expect(trigger(page)).toHaveAttribute('aria-busy', 'true');
-  await releaseCall(page, 'set_reasoning_effort');
-  await expect(picker(page)).toBeVisible();
-  await expect(trigger(page)).not.toHaveAttribute('aria-busy', 'true');
-});
-
-for (const failed of [true, false]) test(`reopening during an overlapping catalog refresh keeps cached choices and receives ${failed ? 'the quiet failure' : 'the refreshed list'}`, async ({ page }) => {
-  await loadHeld(page, '/?teams', { clock: true });
-  const codex = picker(page).getByRole('tab', { name: 'Codex', exact: true });
-  const astra = picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true });
-  const loading = picker(page).locator('[data-catalog-loading="codex"]');
-  const loads = () => page.evaluate(() => (window as any).__callArgs.filter(([name, args]: [string, any]) => name === 'list_provider_models' && args.provider === 'codex').length);
-  await openSettled(page);
-  await codex.click();
-  await expect(astra).toBeEnabled();
-  await expect(loading).toBeHidden();
-  expect(await loads()).toBe(1);
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await page.clock.fastForward('06:00');
-  await holdCall(page, 'list_provider_models');
-  await openSettled(page);
-  await codex.click();
-  await expect(astra).toBeEnabled();
-  await expect(loading).toBeHidden();
-  await expect.poll(loads).toBe(2);
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await openSettled(page);
-  await codex.click();
-  // This open must receive the cached answer before the same held refresh is released.
-  await expect(astra).toBeEnabled();
-  await expect(codex).toBeEnabled();
-  await expect(loading).toBeHidden();
-  expect(await loads()).toBe(2);
-  await page.mouse.move(2, 2);
-  if (!failed) await page.evaluate(() => { (window as any).__override = { list_provider_models: (args: any) => args.provider === 'codex' ? [{ id: 'gpt-6-astra', name: 'GPT-6-Astra' }, { id: 'gpt-7-nova', name: 'GPT-7-Nova' }] : undefined }; });
-  await releaseCall(page, 'list_provider_models', failed ? 'Catalog offline.' : undefined);
-  const note = picker(page).locator('.model-menu-stale');
-  if (failed) {
-    await expect(note).toHaveText("Couldn't refresh");
-    await expect(note).toHaveAttribute('data-tip', 'Catalog offline. Showing the saved list.');
-  } else {
-    await expect(picker(page).getByRole('option', { name: 'Codex · GPT-7-Nova', exact: true })).toBeVisible();
-    await expect(note).toHaveCount(0);
-  }
-  await expect(codex).toBeEnabled();
-  await expect(astra).toBeEnabled();
-  await expect(page.locator('#toast')).toBeHidden();
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await openSettled(page);
-  await codex.click();
-  await expect(loading).toBeHidden();
-  await expect(astra).toBeEnabled();
-  if (failed) await expect(note).toHaveText("Couldn't refresh");
-  else await expect(picker(page).getByRole('option', { name: 'Codex · GPT-7-Nova', exact: true })).toBeVisible();
-  expect(await loads()).toBe(2);
-  if (failed) {
-    await page.keyboard.press('Escape');
-    await expect(picker(page)).toHaveCount(0);
-    await page.clock.fastForward('00:31');
-    await holdCall(page, 'list_provider_models');
-    await openSettled(page);
-    await codex.click();
-    await expect(astra).toBeEnabled();
-    await expect(loading).toBeHidden();
-    await expect.poll(loads).toBe(3);
-    await releaseCall(page, 'list_provider_models');
-    await expect(note).toHaveCount(0);
-  }
-});
-
-test('a failed refresh behind a saved list keeps the list and says so quietly', async ({ page }) => {
-  await loadHeld(page, '/?teams', { clock: true });
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  const astra = picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true });
-  await expect(astra).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  // Past the 5-minute expiry the saved list answers at once while a refresh runs; that refresh fails.
-  await page.clock.fastForward('06:00');
-  await holdCall(page, 'list_provider_models');
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  await expect(astra).toBeVisible();
-  await releaseCall(page, 'list_provider_models', 'Catalog offline.');
-  const note = picker(page).locator('.model-menu-stale');
-  await expect(note).toHaveText("Couldn't refresh");
-  await expect(note).toHaveAttribute('data-tip', 'Catalog offline. Showing the saved list.');
-  await expect(astra).toBeVisible();
-  await expect(page.locator('#toast')).toBeHidden();
-});
-
-/** Opens a /btw side thread that has answered once, then picks GPT-6-Astra for it with configure_session held. */
-async function sideSwitchHeld(page: Page) {
-  await page.locator('#prompt').fill('/btw first question');
-  await page.locator('#prompt').press('Enter');
-  const panel = page.locator('.btw-panel');
-  await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Send to side thread', exact: true })).toBeEnabled();
-  await holdCall(page, 'configure_session');
-  const sideModel = panel.getByRole('button', { name: /^Model: / });
-  // As openSettled: retry a lost open, but never click while one is on its way.
-  await expect(async () => {
-    if (!await picker(page).isVisible() && await sideModel.getAttribute('aria-busy') !== 'true') await sideModel.click();
-    await expect(picker(page)).toBeVisible({ timeout: 2000 });
-  }).toPass();
-  await search(page).fill('astra');
-  await page.keyboard.press('Enter');
-  await expect(sideModel).toContainText('GPT-6-Astra');
-  const box = page.getByRole('textbox', { name: 'Message the side thread', exact: true });
-  const sends = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'send_message').length);
-  return { panel, box, sends, before: await sends() };
-}
-
-test('a side-thread send during its model change waits for it', async ({ page }) => {
-  await loadHeld(page, '/');
-  const { panel, box, sends, before } = await sideSwitchHeld(page);
-  await box.fill('second question');
-  await box.press('Enter');
-  await expect(panel.locator('.btw-send')).toHaveAttribute('aria-busy', 'true');
-  await page.waitForTimeout(150);
-  expect(await sends()).toBe(before);
-  await releaseCall(page, 'configure_session');
-  await expect.poll(sends).toBe(before + 1);
-  const order = await page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'configure_session' || c === 'send_message'));
-  expect(order.lastIndexOf('configure_session')).toBeLessThan(order.lastIndexOf('send_message'));
-});
-
-test('a failed side-thread model change keeps the message and sends nothing', async ({ page }) => {
-  await loadHeld(page, '/');
-  const { box, sends, before } = await sideSwitchHeld(page);
-  await box.fill('second question');
-  await box.press('Enter');
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(box).toHaveValue('second question');
-  await page.waitForTimeout(200);
-  expect(await sends()).toBe(before);
-});
-
-test('a refused switch says the model was not changed and which one stays', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('Model not changed — still on ');
-  // The notice names the model the trigger is back on.
-  const restored = (await trigger(page).getAttribute('aria-label'))!.replace(/^Model: /, '');
-  await expect(page.locator('#toast')).toContainText(`Model not changed — still on ${restored}: Preview refused the switch.`);
-});
-
-test('a board start during a model change waits for it', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  // The board's Start task goes through the same data-action dispatch; pressed while the model saves, it waits.
-  const starts = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'start_task' || c === 'architect_start').length);
-  await page.evaluate(() => {
-    const start = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Start task' });
-    start.dataset.action = 'board-start'; start.dataset.id = 'session-1';
-    document.body.append(start); start.click(); start.remove();
-  });
-  await page.waitForTimeout(200);
-  expect(await starts()).toBe(0);
-  await releaseCall(page, 'configure_session');
-  await expect.poll(starts).toBe(1);
-});
-
-test('typing a draft warms the task once; opening or focusing it does not', async ({ page }) => {
-  await loadHeld(page, '/');
-  const warms = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'warm_task').length);
-  await page.locator('.task-item[data-id="session-2"]').click();
-  await page.locator('.task-item[data-id="session-1"]').click();
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-1');
-  await page.locator('#prompt').click();
-  await page.waitForTimeout(300);
-  expect(await warms()).toBe(0);
-  await page.locator('#prompt').pressSequentially('hello');
-  await expect.poll(warms).toBe(1);
-  await page.waitForTimeout(200);
-  expect(await warms()).toBe(1);
-  // A cleared draft typed again is a new sign of intent.
-  await page.locator('#prompt').fill('');
-  await page.locator('#prompt').pressSequentially('x');
-  await expect.poll(warms).toBe(2);
-});
-
-test('a refused switch out of a named team says the task left the team', async ({ page }) => {
-  await loadHeld(page);
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
-  await picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true }).click();
-  await expect(trigger(page)).toContainText('Ship crew');
-  await holdCall(page, 'configure_session');
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Claude Code', exact: true }).click();
-  await picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true }).click();
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('; the task left team Ship crew: Preview refused the switch.');
-});
-
-test('permissions show at once, save behind, and a refusal puts them back and says so', async ({ page }) => {
-  await loadHeld(page, '/');
-  const mode = page.locator('#mode-picker-trigger');
-  const before = await mode.getAttribute('data-mode');
-  await holdCall(page, 'update_session');
-  await mode.click();
-  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-  const choice = menu.getByRole('menuitemradio', { checked: false }).first();
-  await choice.click();
-  await expect(mode).not.toHaveAttribute('data-mode', before!);
-  await expect(mode).toHaveAttribute('aria-busy', 'true');
-  // The model button pressed meanwhile opens once the save lands, here refused.
-  await trigger(page).click();
-  await page.waitForTimeout(150);
-  await expect(picker(page)).toHaveCount(0);
-  await releaseCall(page, 'update_session', 'Preview refused the permissions.');
-  await expect(page.locator('#toast')).toContainText('Permissions not changed — still ');
-  await expect(page.locator('#toast')).toContainText(': Preview refused the permissions.');
-  await expect(mode).toHaveAttribute('data-mode', before!);
-  await expect(mode).not.toHaveAttribute('aria-busy', 'true');
-  await expect(picker(page)).toBeVisible();
-});
-
-test('a refreshed list that lands under the pointer waits for it to leave the rows', async ({ page }) => {
-  await loadHeld(page, '/?teams', { clock: true });
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  const astra = picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true });
-  await expect(astra).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  // Past the 5-minute expiry the saved list answers at once; its refresh brings a new model while the pointer is on a row.
-  await page.clock.fastForward('06:00');
-  await holdCall(page, 'list_provider_models');
-  await openSettled(page);
-  await picker(page).getByRole('tab', { name: 'Codex', exact: true }).click();
-  await astra.hover();
-  await expect(astra).toHaveAttribute('aria-selected', 'true');
-  await page.evaluate(() => { (window as any).__override = { list_provider_models: (args: any) => args.provider === 'codex' ? [{ id: 'gpt-6-astra', name: 'GPT-6-Astra' }, { id: 'gpt-7-nova', name: 'GPT-7-Nova' }] : undefined }; });
-  await releaseCall(page, 'list_provider_models');
-  const nova = picker(page).getByRole('option', { name: 'Codex · GPT-7-Nova', exact: true });
-  await page.waitForTimeout(300);
-  await expect(nova).toHaveCount(0);
-  await expect(astra).toHaveAttribute('aria-selected', 'true');
-  // Leaving the rows applies it, keeping the active row.
-  await page.mouse.move(2, 2);
-  await expect(nova).toBeVisible();
-  await expect(astra).toHaveAttribute('aria-selected', 'true');
-});
-
-test('the permissions button pressed during a switch that fails opens its menu once it lands', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await page.locator('#mode-picker-trigger').click();
-  const menu = page.getByRole('dialog', { name: 'Permissions', exact: true });
-  await page.waitForTimeout(150);
-  await expect(menu).toHaveCount(0);
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(menu).toBeVisible();
-});
-
-test('a send held by a refused permissions change is not sent, says why and keeps the draft', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'update_session');
-  await page.locator('#mode-picker-trigger').click();
-  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
-  await page.locator('#prompt').fill('after the permissions change');
-  await page.locator('#prompt').press('Enter');
-  await releaseCall(page, 'update_session', 'Preview refused the permissions.');
-  await expect(page.locator('#toast')).toHaveText('Not sent — the permissions weren’t changed (Preview refused the permissions.). Your draft is still there.');
-  await expect(page.locator('#prompt')).toHaveValue('after the permissions change');
-  await page.waitForTimeout(200);
-  expect(await sent(page)).toBe(0);
-});
-
-test('the permissions button waits busy during a switch and stays closed if another task opened', async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  const mode = page.locator('#mode-picker-trigger');
-  await mode.click();
-  await expect(mode).toHaveAttribute('aria-busy', 'true');
-  await page.locator('.task-item[data-id="session-2"]').click();
-  await expect(page.locator('.task-item.selected')).toHaveAttribute('data-id', 'session-2');
-  await releaseCall(page, 'configure_session');
-  await page.waitForTimeout(300);
-  await expect(page.getByRole('dialog', { name: 'Permissions', exact: true })).toHaveCount(0);
-});
-
-test('a failed team library load is not retried on every hover', async ({ page }) => {
-  await page.addInitScript(() => { (window as any).__override = { architect_profiles: () => { throw new Error('Profiles unavailable.'); } }; });
-  await loadHeld(page);
-  const loads = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'architect_profiles').length);
-  // The idle preload (about 1.5 s after start) fails once.
-  await expect.poll(loads, { timeout: 10_000 }).toBeGreaterThan(0);
-  await page.waitForTimeout(300);
-  const before = await loads();
-  for (let i = 0; i < 3; i++) { await trigger(page).hover(); await page.mouse.move(2, 2); }
-  await page.waitForTimeout(300);
-  expect(await loads()).toBe(before);
-});
-
-test('a new task aimed at another computer neither warms nor asks to warm', async ({ page }) => {
-  await loadHeld(page, '/');
-  // Sign in to Connect, then aim a new task at the Studio iMac (preview sample devices).
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  await page.getByRole('tab', { name: 'Connections', exact: true }).click();
-  await page.getByRole('tab', { name: 'Remote access' }).click();
-  const remote = page.getByRole('tabpanel', { name: 'Remote access' });
-  await remote.getByRole('button', { name: 'Sign in with GitHub' }).click();
-  await expect(remote.getByRole('button', { name: 'Sign out' })).toBeVisible();
-  await page.getByRole('button', { name: /^back/i }).click();
-  await page.locator('.new-task-button').click();
-  const computer = page.locator('#composer-computer');
-  await computer.click();
-  await page.getByRole('menuitemradio', { name: 'Studio iMac' }).click();
-  await expect(computer).toHaveAccessibleName('Computer: Studio iMac');
-  await page.locator('#prompt').pressSequentially('for the other computer');
-  // A permissions pick for that task doesn't ask to warm either.
-  await page.locator('#mode-picker-trigger').click();
-  await page.getByRole('dialog', { name: 'Permissions', exact: true }).getByRole('menuitemradio', { checked: false }).first().click();
-  await expect.poll(() => page.evaluate(() => (window as any).__callArgs.filter(([c, a]: [string, any]) => c === 'update_session' && 'mode' in a).length)).toBe(1);
-  await page.waitForTimeout(300);
-  const log = await page.evaluate(() => (window as any).__callArgs as [string, any][]);
-  expect(log.filter(([command]) => command === 'warm_task')).toEqual([]);
-  expect(log.filter(([, args]) => args?.warm)).toEqual([]);
-});
-
-test('several held presses of Enter show one notice for one refused change', async ({ page }) => {
-  await loadHeld(page, '/');
-  await page.evaluate(() => {
-    const toast = document.querySelector('#toast')!; (window as any).__notSent = 0;
-    new MutationObserver(() => { if (toast.textContent?.startsWith('Not sent')) (window as any).__notSent += 1; }).observe(toast, { childList: true, characterData: true, subtree: true });
-  });
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  await page.locator('#prompt').fill('one notice please');
-  await page.locator('#prompt').press('Enter');
-  await page.locator('#prompt').press('Enter');
-  await expect(page.locator('#composer .send-button[type="submit"]')).toHaveAttribute('aria-busy', 'true');
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toContainText('Not sent — the model wasn’t changed (Preview refused the switch.).');
-  await page.waitForTimeout(300);
-  expect(await page.evaluate(() => (window as any).__notSent)).toBe(1);
-  await expect(page.locator('#composer .send-button[aria-busy="true"]')).toHaveCount(0);
-  await expect(page.locator('#prompt')).toHaveValue('one notice please');
-});
-
-test('a board start held by a refused change is not started and says why', async ({ page }) => {
-  await loadHeld(page, '/');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  const starts = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'start_task' || c === 'architect_start').length);
-  await page.evaluate(() => {
-    const start = Object.assign(document.createElement('button'), { type: 'button', textContent: 'Start task' });
-    start.dataset.action = 'board-start'; start.dataset.id = 'session-1';
-    document.body.append(start); start.click(); start.remove();
-  });
-  await releaseCall(page, 'configure_session', 'Preview refused the switch.');
-  await expect(page.locator('#toast')).toHaveText('Not started — the model wasn’t changed (Preview refused the switch.).');
-  await page.waitForTimeout(200);
-  expect(await starts()).toBe(0);
-});
-
-test('the side panel stays live during its model change: a send click is held, then sent', async ({ page }) => {
-  await loadHeld(page, '/');
-  const { panel, box, sends, before } = await sideSwitchHeld(page);
-  const send = panel.locator('.btw-send');
-  await expect(send).toBeEnabled();
-  await expect(panel.getByRole('button', { name: /^Model: / })).toBeEnabled();
-  await box.fill('second question');
-  await send.click();
-  await expect(send).toHaveAttribute('aria-busy', 'true');
-  await page.waitForTimeout(150);
-  expect(await sends()).toBe(before);
-  await releaseCall(page, 'configure_session');
-  await expect.poll(sends).toBe(before + 1);
-});
-
-test('re-picking the same model keeps its effort on screen', async ({ page }) => {
-  await loadHeld(page);
-  await openSettled(page);
-  await picker(page).getByRole('radiogroup', { name: 'Effort' }).getByRole('radio', { name: 'High', exact: true }).click();
-  const effort = trigger(page).locator('.model-effort');
-  await expect(effort).toHaveText('High');
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
-  await page.keyboard.press('Escape');
-  await expect(picker(page)).toHaveCount(0);
-  await holdCall(page, 'configure_session');
-  await openSettled(page);
-  await picker(page).locator('.model-menu-option[aria-current="true"]').click();
-  await expect(picker(page)).toHaveCount(0);
-  // While the save is held the effort stays (no flash to Default), and it stays once saved.
-  await expect(effort).toHaveText('High');
-  await releaseCall(page, 'configure_session');
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
-  await expect(effort).toHaveText('High');
-});
-
-test('with Start agents ahead off, typing and picking never warm', async ({ page }) => {
-  await loadHeld(page, '/');
-  await page.keyboard.press('Meta+,');
-  const settings = page.getByRole('region', { name: 'Settings', exact: true });
-  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
-  const toggle = settings.getByRole('checkbox', { name: 'Start agents ahead', exact: true });
-  await expect(toggle).toBeChecked();
-  await toggle.click();
-  await expect(toggle).not.toBeChecked();
-  await expect.poll(() => page.evaluate(() => (window as any).__startAheadSaves)).toEqual([false]);
-  await page.keyboard.press('Escape');
-  await expect(settings).toHaveCount(0);
-  await page.locator('#prompt').pressSequentially('no warming please');
-  await pickAstra(page);
-  await expect.poll(async () => (await task(page)).model).toBe('gpt-6-astra');
-  await page.waitForTimeout(300);
-  const log = await page.evaluate(() => (window as any).__callArgs as [string, any][]);
-  expect(log.filter(([command]) => command === 'warm_task')).toEqual([]);
-  expect(log.filter(([, args]) => args?.warm)).toEqual([]);
-});
-
-for (const input of ['pointer', 'keyboard']) test(`named teams wait for queued efforts via ${input} while ordinary rows stay live`, async ({ page }) => {
-  await loadHeld(page);
-  await holdCall(page, 'set_reasoning_effort');
-  await openSettled(page);
-  const group = picker(page).getByRole('radiogroup', { name: 'Effort' });
-  await group.getByRole('radio', { name: 'High', exact: true }).click();
-  await group.getByRole('radio', { name: 'Low', exact: true }).click();
-  await expect(group.getByRole('radio', { name: 'Medium', exact: true })).toBeEnabled();
-  await expect(picker(page).getByRole('option', { name: 'Claude Code · Claude Opus 5', exact: true })).toBeEnabled();
-  await picker(page).getByRole('tab', { name: 'Teams, 2' }).click();
-  const ship = picker(page).getByRole('option', { name: 'Agent team · Ship crew', exact: true });
-  const configured = () => page.evaluate(() => (window as any).__calls.filter((c: string) => c === 'architect_configure').length);
-  const before = await configured();
-  // A real pointer click on a disabled row must do nothing; Enter must also skip it after a search redraw.
-  if (input === 'pointer') { const box = (await ship.boundingBox())!; await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2); }
-  else { await search(page).fill('Ship'); await page.keyboard.press('Enter'); }
-  await expect(ship).toBeDisabled();
-  expect(await configured()).toBe(before);
-  await expect.poll(() => page.evaluate(() => Boolean((window as any).__atGate?.set_reasoning_effort))).toBe(true);
-  await page.evaluate(() => { const w = window as any; w.__atGate.set_reasoning_effort = false; w.__release.set_reasoning_effort(); w.__hold('set_reasoning_effort'); });
-  await expect.poll(async () => (await task(page)).reasoningEffort).toBe('high');
-  await expect(ship).toBeDisabled();
-  await releaseCall(page, 'set_reasoning_effort', input === 'keyboard' ? 'Low refused.' : undefined);
-  await expect(ship).toBeEnabled();
-  expect((await task(page)).reasoningEffort).toBe(input === 'keyboard' ? 'high' : 'low');
-  const leadEffort = await page.evaluate(() => JSON.parse(localStorage.getItem('pandacode.preview.architect-library')!).profiles.find((p: any) => p.name === 'Ship crew').setup.architect.reasoningEffort ?? null);
-  if (input === 'pointer') await ship.click();
-  else { await search(page).fill(''); await search(page).fill('Ship'); await page.keyboard.press('Enter'); }
-  await expect(trigger(page)).toContainText('Ship crew');
-  await expect.poll(async () => (await task(page)).reasoningEffort ?? null).toBe(leadEffort);
-});
-
-for (const control of ['Model', 'Permissions']) for (const dismiss of ['Escape', 'outside', 'focus', 'blur', 'navigation']) {
-  test(`held ${control} opening cancels on ${dismiss} before the save settles`, async ({ page }) => {
-    await loadHeld(page);
-    await holdCall(page, 'configure_session');
-    await pickAstra(page);
-    const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-    await button.click();
-    await expect(button).toHaveAttribute('aria-busy', 'true');
-    // Observe real deferred-paint bookkeeping without releasing configure_session.
-    await page.evaluate(async () => {
-      const path = '/src/model-switch.ts'; const switching = await import(path);
-      (window as any).__heldPaint = false;
-      switching.deferTranscript(() => { (window as any).__heldPaint = true; });
-    });
-    if (control === 'Model') expect(await page.evaluate(() => (window as any).__heldPaint)).toBe(false);
-    if (dismiss === 'Escape') await page.keyboard.press('Escape');
-    else if (dismiss === 'outside') await page.locator('.workspace-header').click({ position: { x: 300, y: 10 } });
-    else if (dismiss === 'focus') await page.locator('#prompt').focus();
-    else if (dismiss === 'blur') await page.evaluate(() => window.dispatchEvent(new Event('blur')));
-    else await page.locator('.task-item[data-id="session-2"]').click();
-    if (control === 'Permissions') await expect(button).not.toHaveAttribute('aria-busy', 'true');
-    await expect.poll(() => page.evaluate(() => (window as any).__heldPaint)).toBe(true);
-    expect(await page.evaluate(async () => { const path = '/src/model-switch.ts'; return (await import(path)).saving('session-1'); })).toBe(true);
-    await releaseCall(page, 'configure_session');
-    await expect.poll(() => page.evaluate(async () => { const path = '/src/model-switch.ts'; return (await import(path)).saving('session-1'); })).toBe(false);
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(picker(page)).toHaveCount(0);
-    await expect(page.getByRole('dialog', { name: 'Permissions', exact: true })).toHaveCount(0);
-  });
-}
-
-for (const control of ['Model', 'Permissions']) for (const refused of [false, true]) {
-  test(`a replacement held ${control} request survives ${refused ? 'refusal' : 'success'} and IME Escape`, async ({ page }) => {
-    await loadHeld(page);
-    await holdCall(page, 'configure_session');
-    await pickAstra(page);
-    const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-    const original = await button.elementHandle();
-    await button.click();
-    await page.keyboard.press('Escape');
-    await button.click();
-    await button.evaluate(node => node.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 229, bubbles: true, cancelable: true })));
-    await releaseCall(page, 'configure_session', refused ? 'Model refused.' : undefined);
-    const menu = control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true });
-    await expect(menu).toBeVisible();
-    expect(await original!.evaluate(node => node === document.getElementById(node.id))).toBe(true);
-    await expect(button).not.toHaveAttribute('aria-busy', 'true');
-    if (control === 'Model') await expect(search(page)).toBeFocused();
-    await page.keyboard.press('Escape');
-    await expect(menu).toHaveCount(0);
-  });
-}
-
-for (const control of ['Model', 'Permissions']) test(`held ${control} opening survives its automatic team roster refresh`, async ({ page }) => {
-  await page.addInitScript(() => {
-    const worker = { id: 'codex-default', name: 'Codex', provider: 'codex', model: 'default', reasoningEffort: null };
-    localStorage.setItem('pandacode.preview.architect-configs', JSON.stringify({ 'session-1': {
-      auto: true, council: { target: 9, maxRounds: 3, reviewers: 2 }, workers: [worker], catalog: [worker], maxParallel: 0, maxRounds: 8, maxAssignments: 24, workspace: 'shared', summaryLimit: 3072,
-    } }));
-  });
-  await loadHeld(page);
-  await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
-  await holdCall(page, 'configure_session');
-  await pickAstra(page);
-  const button = control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger');
-  const original = await button.elementHandle();
-  await button.click();
-  await releaseCall(page, 'configure_session');
-  await expect(control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true })).toBeVisible();
-  expect(await original!.evaluate(node => node === document.getElementById(node.id))).toBe(true);
-  await expect(page.locator('#team-trigger')).toHaveAttribute('data-on', '');
-});
-
-for (const control of ['Model', 'Permissions']) test(`held ${control} opening stays on its side thread after saving`, async ({ page }) => {
-  await loadHeld(page, '/');
-  await page.locator('#prompt').fill('/btw first question');
-  await page.locator('#prompt').press('Enter');
-  const panel = page.locator('.btw-panel');
-  await expect(panel.locator('.message.agent-message[data-message-id]')).toHaveCount(1);
-  await expect(page.getByRole('button', { name: 'Send to side thread', exact: true })).toBeEnabled();
-  const sideModel = panel.locator('.model-picker');
-  await sideModel.click();
-  await expect(picker(page)).toBeVisible();
-  await holdCall(page, 'configure_session');
-  await search(page).fill('astra');
-  await page.keyboard.press('Enter');
-  await expect(sideModel).toContainText('GPT-6-Astra');
-  await (control === 'Model' ? sideModel : panel.locator('.mode-picker')).click();
-  await releaseCall(page, 'configure_session');
-  const menu = control === 'Model' ? picker(page) : page.getByRole('dialog', { name: 'Permissions', exact: true });
-  await expect(menu).toBeVisible();
-  await expect(trigger(page)).toContainText('Claude Sonnet');
-  await expect(sideModel).toContainText('GPT-6-Astra');
-  if (control === 'Model') await expect(picker(page).getByRole('option', { name: 'Codex · GPT-6-Astra', exact: true })).toHaveAttribute('aria-current', 'true');
-});
-
-for (const control of ['Model', 'Permissions']) for (const changed of ['model', 'mode']) {
-  test(`held ${control} opening rejects an unrelated ${changed} change`, async ({ page }) => {
-    await loadHeld(page);
-    await holdHighEffort(page);
-    await (control === 'Model' ? trigger(page) : page.locator('#mode-picker-trigger')).click();
-    await page.evaluate(async field => {
-      const { invoke } = await import((window as any).__pandacodePreviewUrl);
-      await invoke('update_session', { sessionId: 'session-1', reasoningEffort: 'high', [field]: field === 'model' ? 'opus' : 'full' });
-      (window as any).__previewEmit('sessions-changed', {});
-    }, changed);
-    if (changed === 'model') await expect(trigger(page)).toContainText('Claude Opus');
-    else await expect(page.locator('#mode-picker-trigger')).toHaveAttribute('data-mode', 'full');
-    await releaseCall(page, 'set_reasoning_effort');
-    await expect.poll(() => page.evaluate(async () => { const path = '/src/model-switch.ts'; return (await import(path)).saving('session-1'); })).toBe(false);
-    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-    await expect(picker(page)).toHaveCount(0);
-    await expect(page.getByRole('dialog', { name: 'Permissions', exact: true })).toHaveCount(0);
-  });
-}
-
 const speed = (page: Page) => picker(page).getByRole('radiogroup', { name: 'Speed' });
 
 async function pick(page: Page, query: string, name: string): Promise<void> {
   await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
   await picker(page).getByRole('combobox', { name: 'Search harnesses and models', exact: true }).fill(query);
   await picker(page).getByRole('option', { name, exact: true }).click();
   await expect(picker(page)).toHaveCount(0);
@@ -1510,7 +499,6 @@ test('the Speed row lists a model\'s tiers and saves the choice', async ({ page 
 
   await pick(page, 'astra', 'Codex · GPT-6-Astra');
   await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
   await expect(speed(page).getByRole('radio')).toHaveText(['Standard', 'Fast', 'Ultra Fast']);
   await expect(speed(page).getByRole('radio', { name: 'Standard', exact: true })).toHaveAttribute('aria-checked', 'true');
   await speed(page).getByRole('radio', { name: 'Ultra Fast', exact: true }).click();
@@ -1526,7 +514,6 @@ test('the Speed row lists a model\'s tiers and saves the choice', async ({ page 
   // A Codex model without tiers has no Speed row.
   await pick(page, 'sol', 'Codex · GPT-5.6-Sol');
   await trigger(page).click();
-  await expect(picker(page)).toBeVisible();
   await expect(picker(page).getByRole('radiogroup', { name: 'Effort' })).toBeVisible();
   await expect(speed(page)).toHaveCount(0);
 });

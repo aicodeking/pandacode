@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { openInspectorTab } from './inspector-tab-helper';
 
 /* Cloud agents in the preview (src/preview.ts, src/preview-vm.ts): connect a sandbox provider,
  * pick it in a New task's "Run on" menu, and watch the cloud machine get ready. */
@@ -238,4 +239,48 @@ test('a failed machine action shows the provider error', async ({ page }) => {
   await page.getByRole('menu', { name: 'Cloud machine' }).getByText('Stop machine').click();
   await expect(page.locator('#toast')).toHaveText('E2B could not stop the machine (HTTP 503).');
   await expect(strip(page)).toContainText('E2B · Ready');
+});
+
+test('a signed-in Google Colab is a Run on target and starts a cloud task there', async ({ page }) => {
+  await newTask(page);
+  const settings = await openCloudSettings(page);
+  await settings.getByRole('button', { name: 'Sign in with Google for Google Colab', exact: true }).click();
+  await expect(settings.getByRole('button', { name: 'Disconnect Google Colab', exact: true })).toBeVisible();
+  await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  await expect(settings).toBeHidden();
+
+  const computer = page.locator('#composer-computer');
+  await computer.click();
+  await page.getByRole('menu', { name: 'Run on' }).getByRole('menuitemradio', { name: 'Cloud · Google Colab' }).click();
+  await expect(computer).toHaveAccessibleName('Computer: Cloud · Google Colab');
+  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Train the model on a GPU');
+  await page.getByRole('button', { name: 'Send message' }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__cloudStarts?.length)).toBe(1);
+  expect((await page.evaluate(() => (window as any).__cloudStarts))[0]).toMatchObject({ provider: 'colab', prompt: 'Train the model on a GPU' });
+  await expect(page.locator('#composer-area .composer-computer-fixed')).toHaveText('on Google Colab');
+  await expect(strip(page)).toContainText('Google Colab · Ready');
+});
+
+test('a signed-in Google Colab runtime can be made from the VM panel and is not restarted once stopped', async ({ page }) => {
+  await newTask(page);
+  const settings = await openCloudSettings(page);
+  await settings.getByRole('button', { name: 'Sign in with Google for Google Colab', exact: true }).click();
+  await expect(settings.getByRole('button', { name: 'Disconnect Google Colab', exact: true })).toBeVisible();
+  await settings.getByRole('button', { name: 'Back to the workspace', exact: true }).click();
+  await expect(settings).toBeHidden();
+
+  if (!(await page.locator('#inspector').isVisible())) await page.locator('#inspector-toggle').click();
+  await openInspectorTab(page, 'tab-vm');
+  await page.locator('.inspector-tabs [data-action="tab-vm"]').click();
+  const panel = page.getByRole('region', { name: 'Virtual machines', exact: true });
+  const create = panel.getByRole('button', { name: /^Google Colab runtime/ });
+  await expect(create).toContainText('released when stopped');
+  await create.click();
+  await expect(panel.getByText(/has no screen/)).toBeVisible();
+  const stop = panel.getByRole('toolbar', { name: 'VM controls' }).getByRole('button', { name: 'Stop VM', exact: true });
+  await stop.click();
+  // A released Colab runtime cannot start again: no Start, and the power control stays off.
+  await expect(panel.getByText(/is stopped/)).toBeVisible();
+  await expect(panel.getByRole('button', { name: 'Start', exact: true })).toHaveCount(0);
+  await expect(panel.getByRole('toolbar', { name: 'VM controls' }).getByRole('button', { name: 'Start VM', exact: true })).toBeDisabled();
 });

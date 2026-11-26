@@ -29,10 +29,9 @@ fn once(store: &Store) -> TaskSchedule {
 }
 
 #[test]
-fn schema_version_is_37_with_schedule_tables() {
+fn current_schema_has_schedule_tables() {
     let store = store();
-    assert_eq!(crate::storage::SCHEMA_VERSION, 37);
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::storage::SCHEMA_VERSION);
     assert!(list(&store, None).unwrap().is_empty());
     assert_eq!(settings(&store).unwrap(), SchedulerSettings::default());
 }
@@ -49,7 +48,7 @@ fn version_37_survives_malformed_settings_json() {
         id
     };
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::storage::SCHEMA_VERSION);
     // Version 36 recorded nothing, so a user-made schedule fails closed.
     assert!(saved_remotely(&store, &id).unwrap());
     drop(store);
@@ -68,7 +67,7 @@ fn version_37_moves_remotely_saved_ids_into_a_column() {
         id
     };
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 37);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), crate::storage::SCHEMA_VERSION);
     assert!(saved_remotely(&store, &id).unwrap());
     assert!(settings(&store).unwrap().paused);
     let content: String = store.db.query_row("SELECT content FROM scheduler_settings WHERE id=1", [], |r| r.get(0)).unwrap();

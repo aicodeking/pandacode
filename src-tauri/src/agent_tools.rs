@@ -864,7 +864,11 @@ async fn dispatch(
             )?
         }
         "pandacode_list_local_servers" => value(crate::local_servers::list().await?)?,
-        "pandacode_search_tasks" => json!({"tasks": state.store.lock().map_err(|e| e.to_string())?.search_tasks(&current.project_id, &string(&args, "query"), 20)?}),
+        "pandacode_search_tasks" => {
+            // Scans every message: on its own read-only connection, never under the store lock.
+            let (project, query) = (current.project_id.clone(), string(&args, "query"));
+            json!({"tasks": crate::read_scan(state.store.clone(), move |store| store.search_tasks(&project, &query, 20)).await?})
+        }
         "pandacode_code_search" => {
             let root = state.root(&current.project_id, Some(sid))?;
             let query = string(&args, "query");
@@ -1241,7 +1245,7 @@ for await (const line of createInterface({input: process.stdin})) {
                 });
                 let config = RunConfig { session_id: uuid::Uuid::new_v4().to_string(), provider: provider.into(), mode: mode.into(),
                     model: "default".into(), reasoning_effort: None, cwd: root.clone(), resume_id: None, prompt: "Check tools".into(),
-                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![] };
+                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![], no_fresh_resume_fallback: false };
                 tokio::time::timeout(Duration::from_secs(20), crate::providers::run_with_tools(config, sink, receive, Some(host), Default::default()))
                     .await.expect(&context).unwrap_or_else(|error| panic!("{context}: {error}"));
                 let report: Value = serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();

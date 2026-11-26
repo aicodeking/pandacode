@@ -812,7 +812,7 @@ for (const wallpaper of [false, true]) {
       };
     });
     const open_ = await shell();
-    expect(open_).toMatchObject({ mainRadius: '12px', mainBorder: '0px', inspectorRadius: '12px', mainTop: 8, mainBottom: 8, mainLeft: 0, inspectorTop: 8, inspectorRight: 8, inspectorBottom: 8, overflow: 'hidden' });
+    expect(open_).toMatchObject({ mainRadius: '16px', mainBorder: '0px', inspectorRadius: '16px', mainTop: 8, mainBottom: 8, mainLeft: 0, inspectorTop: 8, inspectorRight: 8, inspectorBottom: 8, overflow: 'hidden' });
     // The inspector is its own inset panel, a gap to the right of the main pane.
     expect(open_.gap).toBe(8);
     // The sidebar has no fill: it is the window frame's tone, which the panels sit on.
@@ -873,7 +873,7 @@ test('layout preferences run the main pane full-bleed at the top left while the 
   await page.locator('#sidebar-toggle').click();
   await expect(page.locator('.sidebar')).toBeVisible();
   await expect.poll(async () => (await geometry()).top).toBe(8);
-  expect((await geometry()).radii).toEqual(['12px', '12px', '12px', '12px']);
+  expect((await geometry()).radii).toEqual(['16px', '16px', '16px', '16px']);
 });
 
 test('layout preferences hand focus to the inspector toggle when the inspector is closed from inside it', async ({ page }) => {

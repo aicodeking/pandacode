@@ -64,7 +64,7 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
         .await
         .map_err(|error| redact(error, key.as_deref()))?;
     acp_catalog::store(discovery, &metadata);
-    Ok(acp::parse_models(&metadata))
+    Ok(acp::parse_models_for("commandcode", &metadata))
 }
 
 #[cfg(test)]
@@ -134,7 +134,7 @@ mod tests {
                 {"value":"claude-sonnet-5-5","name":"Claude Sonnet 5.5","description":"best combo of speed & intelligence"}]},
             {"id":"effort","name":"Effort","category":"thought_level","type":"select","currentValue":"max","options":[
                 {"value":"off","name":"Off"},{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]});
-        let models = acp::parse_models(&metadata);
+        let models = acp::parse_models_for("commandcode", &metadata);
         assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["default", "deepseek/deepseek-v4.1-flash", "claude-sonnet-5-5"]);
         assert_eq!(models[1].name, "DeepSeek V4.1 Flash");
         assert_eq!(models[1].description, "fast hybrid-attention reasoning");

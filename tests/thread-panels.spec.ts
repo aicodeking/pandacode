@@ -139,7 +139,7 @@ test.describe('thread panels', () => {
     await expect(page.locator('.file-row').first()).toBeVisible();
   });
 
-  test('keeps folder, selected file, tab, and closed state separate for same-project tasks', async ({ page }) => {
+  test('keeps folder, selected file, and tab separate while inspector visibility is global', async ({ page }) => {
     await open(page);
     await expect(inspector(page)).toBeVisible();
     await openInspectorTab(page, 'Files');
@@ -156,16 +156,19 @@ test.describe('thread panels', () => {
     await page.locator('.file-row').getByRole('button', { name: 'package.json', exact: true }).click();
     await expect(page.locator('.file-view-path')).toHaveText('package.json');
     await page.locator('#inspector-toggle').click();
+    await expect(inspector(page)).toBeHidden();
     await select(page, 'session-1');
+    await expect(inspector(page)).toBeHidden();
+    await page.locator('#inspector-toggle').click();
     await expect(inspector(page)).toBeVisible();
     expect((await calls(page, 'read_file')).at(-1).args).toMatchObject({sessionId:'session-1',path:'src/main.ts'});
     await expect(page.locator('#file-panel')).toBeVisible();
     await expect(page.locator('.file-view-path')).toHaveText('src/main.ts');
-    await page.getByRole('tab', { name: 'Files', exact: true }).click();
+    await expect(page.getByRole('tab', { name: 'Files', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator('.file-row').getByRole('button', { name: 'src', exact: true })).toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('.file-row').getByRole('button', { name: 'main.ts', exact: true })).toBeVisible();
     await select(page, 'session-2');
-    await expect(inspector(page)).toBeHidden();
+    await expect(inspector(page)).toBeVisible();
     await expect(page.locator('.file-view-path')).toHaveText('package.json');
   });
 
@@ -191,8 +194,14 @@ test.describe('thread panels', () => {
     await reopen();
     await expect(address(page)).toHaveValue('http://localhost:5173/second');
     await page.getByRole('button', { name: 'Close browser', exact: true }).click();
+    await expect(inspector(page)).toBeHidden();
     await select(page, 'session-1');
+    await expect(inspector(page)).toBeHidden();
+    await page.locator('#inspector-toggle').click();
+    await expect(inspector(page)).toBeVisible();
     await expect(address(page)).toHaveValue('http://localhost:3000/next');
+    await page.locator('#inspector-toggle').click();
+    await expect(inspector(page)).toBeHidden();
     await reopen();
     await expect(inspector(page)).toBeHidden();
   });
@@ -219,6 +228,9 @@ test.describe('thread panels', () => {
     await page.getByRole('button', { name: 'Open task: Refine the navigation', exact: true }).click();
     await expect(inspector(page)).toBeHidden();
     await page.evaluate(() => (window as any).__panelEmit('overlay-open-task', {sessionId:'session-1'}));
+    await expect(page.locator('#prompt')).toHaveAttribute('data-session-id', 'session-1');
+    await expect(inspector(page)).toBeHidden();
+    await page.locator('#inspector-toggle').click();
     await expect(address(page)).toHaveValue('http://localhost:3000/kept');
     await page.getByRole('button', { name: 'Task actions', exact: true }).click();
     await page.getByRole('menuitem', { name: 'Delete task…', exact: true }).click();

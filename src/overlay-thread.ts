@@ -13,6 +13,8 @@ import { decodeHandoff, historicalProvider } from './provider-handoff';
 import { attachToolImages } from './tool-image-viewer';
 import type { ToolImageLoader } from './tool-images';
 // The viewer's own styles; under `is-launcher` they also carry the tokens motion.css and design-system.css give the app.
+import './tool-trace.css';
+import './tool-cards.css';
 import './tool-images.css';
 
 /** Tool-row images in the launcher come from the same `tool_image` command as the app's transcript. */
@@ -70,6 +72,7 @@ export class OverlayThreadView {
   private lastLoad = 0;
   private olderLoading = false;
   private hasOlder = false;
+  private backfillCount = 0;
   private messages = new Map<number, Message>();
   private turns = new Map<string, HTMLElement>();
   private activityMessages = new WeakMap<HTMLElement, Message[]>();
@@ -168,7 +171,7 @@ export class OverlayThreadView {
     void this.flushUndo();
     this.generation++; this.task = undefined; clearTimeout(this.timer); this.timer = 0;
     this.unsubscribe?.(); this.unsubscribe = undefined; this.loading = false; this.queued = false; this.olderLoading = false;
-    this.messages.clear(); this.turns.clear(); this.history.replaceChildren(); this.host.hidden = true; this.hasOlder = false;
+    this.messages.clear(); this.turns.clear(); this.history.replaceChildren(); this.host.hidden = true; this.hasOlder = false; this.backfillCount = 0;
     this.latest = undefined;
     this.notice.hidden = true; this.host.querySelector<HTMLElement>('.launcher-thread-retry')!.hidden = true;
     this.host.querySelector<HTMLElement>('.launcher-thread-empty')!.hidden = false;
@@ -251,10 +254,22 @@ export class OverlayThreadView {
     } catch (error) { if (generation === this.generation && this.active) this.error(error); }
     finally { if (generation === this.generation) { this.olderLoading = false; if (loaded) this.fillHistory(); } }
   }
+  private hasConversationMessage(): boolean {
+    for (const message of this.messages.values()) {
+      if (message.role === 'user' || message.role === 'assistant') return true;
+    }
+    return false;
+  }
   private fillHistory(): void {
-    // A page full of collapsed tools may occupy only a few pixels. Load another
-    // bounded page so earlier conversation is reachable without a dead scroll area.
-    if (!this.initial && this.scroll.scrollHeight <= this.scroll.clientHeight + 80) void this.loadOlder();
+    // A page full of collapsed tools may occupy only a few pixels or contain no saved
+    // user/assistant context yet. Load another bounded page so earlier conversation is reachable.
+    if (this.initial || this.olderLoading || !this.hasOlder || this.task?.subagentId) return;
+    const needsContext = !this.hasConversationMessage() && this.backfillCount < 5;
+    const shortScroll = this.scroll.scrollHeight <= this.scroll.clientHeight + 80;
+    if (needsContext || shortScroll) {
+      this.backfillCount++;
+      void this.loadOlder();
+    }
   }
   private paint(thread: OverlayThread): void {
     if (!this.task) return;

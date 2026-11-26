@@ -77,6 +77,37 @@ jobs:
               exit 1
               ;;
           esac
+      - name: Require a green preflight run for official publishes
+        if: github.repository == 'aicodeking/pandacode' && (github.ref_type == 'tag' || inputs.publish)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          instructions="Run 'gh workflow run release.yml --ref main -f publish=false' and wait for it to pass (docs/releasing.md step 3)."
+          if ! runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow release.yml --commit "$GITHUB_SHA" \
+            --event workflow_dispatch --branch main --limit 20 --json databaseId,status,conclusion,url); then
+            echo "::error::The Release preflight lookup for $GITHUB_SHA on main failed. $instructions"
+            exit 1
+          fi
+          if ! candidates=$(jq -r '.[] | select(.status == "completed" and .conclusion == "success") | [.databaseId, .url] | @tsv' <<<"$runs"); then
+            echo "::error::The Release preflight lookup for $GITHUB_SHA on main returned invalid data. $instructions"
+            exit 1
+          fi
+          while IFS=$'\t' read -r run_id run_url; do
+            [ -n "$run_id" ] || continue
+            if ! jobs=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs?per_page=100"); then
+              echo "::warning::Could not inspect Release run $run_id: $run_url"
+              continue
+            fi
+            if jq -e '
+              any(.jobs[]; .name == "publish" and .conclusion == "skipped") and
+              any(.jobs[]; .name == "verify_preflight" and .conclusion == "success")
+            ' <<<"$jobs" >/dev/null; then
+              echo "Verified preflight run $run_id passed for $GITHUB_SHA: $run_url"
+              exit 0
+            fi
+          done <<<"$candidates"
+          echo "::error::No verified artifact-only Release preflight run found for $GITHUB_SHA on main. $instructions"
+          exit 1
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Read and check the version
         id: version
@@ -124,10 +155,18 @@ jobs:
       RELEASE_TARGET: ${{ matrix.target }}
       # Empty on Apple silicon: an empty value adds no CMake arguments.
       TRANSCRIBE_CMAKE_ARGS: ${{ matrix.transcribe_cmake }}
-      # Optional macOS signing. When APPLE_CERTIFICATE is not set, the app gets
-      # an ad-hoc signature instead (see docs/releasing.md).
+      # Forks without Apple signing secrets can build with an ad-hoc signature.
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
     steps:
+      - name: Require official Apple signing secrets
+        if: runner.os == 'macOS' && github.repository == 'aicodeking/pandacode'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "::error::Official macOS builds require APPLE_CERTIFICATE and APPLE_SIGNING_IDENTITY."
+            exit 1
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with: { node-version: '22', cache: npm }
@@ -158,6 +197,7 @@ jobs:
           # without them the build shows remote access as not configured.
           PANDACODE_RELAY_URL: ${{ vars.PANDACODE_RELAY_URL }}
           PANDACODE_GITHUB_CLIENT_ID: ${{ vars.PANDACODE_GITHUB_CLIENT_ID }}
+          PANDACODE_REQUIRE_APPLE_SIGNING: ${{ runner.os == 'macOS' && github.repository == 'aicodeking/pandacode' && '1' || '' }}
           APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY || '' }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -229,6 +269,39 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  verify_preflight:
+    needs: [prepare, build, sbom]
+    if: github.ref_type != 'tag' && !inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          pattern: pandacode-${{ needs.prepare.outputs.version }}-*
+          merge-multiple: true
+      - name: Download SBOMs and scan coverage
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: assets
+          name: pandacode-sbom-${{ needs.prepare.outputs.version }}
+      - name: Verify preflight assets
+        env:
+          REQUIRE_SIGNED: ${{ github.repository == 'aicodeking/pandacode' || secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if compgen -G 'assets/*.sig' >/dev/null; then
+            node scripts/release/updater-manifest.mjs assets "$VERSION" "releases/$VERSION.md"
+          fi
+          flags=()
+          if [ "$REQUIRE_SIGNED" = true ]; then
+            flags+=(--require-signed)
+          fi
+          node scripts/release/verify-publish.mjs "${flags[@]}" assets "$VERSION" "releases/$VERSION.md"
+
   publish:
     needs: [prepare, build, sbom]
     if: github.ref_type == 'tag' || inputs.publish
@@ -256,7 +329,7 @@ jobs:
         env:
           # A Developer ID signed build is notarized; an ad-hoc one is not, and
           # macOS then needs a step the notes have to name.
-          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' && secrets.APPLE_SIGNING_IDENTITY != '' }}
         run: |
           {
             cat "releases/$VERSION.md"
@@ -270,9 +343,33 @@ jobs:
           else
             echo "::warning::No signed update files; this release will not update installed apps."
           fi
+      - name: Verify publish assets
+        env:
+          REQUIRE_SIGNED: ${{ github.repository == 'aicodeking/pandacode' || secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$REQUIRE_SIGNED" = true ]; then
+            node scripts/release/verify-publish.mjs --require-signed assets "$VERSION" "releases/$VERSION.md"
+          else
+            node scripts/release/verify-publish.mjs assets "$VERSION" "releases/$VERSION.md"
+          fi
       - name: Create GitHub Release
         run: |
           ls -l assets
+          # GitHub ignores --target when the tag already exists. Prefer the peeled commit for annotated tags.
+          tag_ref="refs/tags/v$VERSION"
+          if ! tag_refs=$(git ls-remote --tags origin "$tag_ref" "${tag_ref}^{}"); then
+            echo "::error::Could not check remote tag v$VERSION."
+            exit 1
+          fi
+          tag_commit=$(awk -v ref="$tag_ref" '
+            $2 == ref { tag = $1 }
+            $2 == ref "^{}" { peeled = $1 }
+            END { print (peeled ? peeled : tag) }
+          ' <<< "$tag_refs")
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "::error::Remote tag v$VERSION points to $tag_commit, but the release was built from $GITHUB_SHA."
+            exit 1
+          fi
           gh release create "v$VERSION" assets/* \
             --title "PandaCode $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \

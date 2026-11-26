@@ -102,10 +102,32 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
 }
 
 pub fn show(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+    let Some(window) = app.get_webview_window("main").or_else(|| reopen_main_window(app)) else { return };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
+}
+
+/// The configured window the menu bar item opens: the workspace window, labelled `main`.
+fn workspace_window(config: &tauri::utils::config::Config) -> Option<&tauri::utils::config::WindowConfig> {
+    config.app.windows.iter().find(|window| window.label == "main")
+}
+
+/// The workspace window when the close button left nothing behind: build it again from the app
+/// config, so "Open PandaCode" opens a window instead of doing nothing. `hide_on_close` normally
+/// keeps the window alive; this is the fallback for when it did not, where a new window is the
+/// only way back to the tasks.
+fn reopen_main_window(app: &AppHandle) -> Option<WebviewWindow> {
+    let config = workspace_window(app.config())?.clone();
+    match tauri::WebviewWindowBuilder::from_config(app, &config).and_then(|builder| builder.build()) {
+        Ok(window) => {
+            crate::install_main_window(app, &window);
+            Some(window)
+        }
+        Err(error) => {
+            eprintln!("Workspace window could not be reopened: {error}");
+            None
+        }
     }
 }
 
@@ -258,20 +280,27 @@ pub(crate) struct TraySnapshot {
     asking_claude: bool,
 }
 
+/// Async with the reads on the blocking pool: a sync command would lock the store on the main
+/// thread. Locks in turn, never nested: agents then store (`listed_sessions`), store
+/// (projects), `UNSEEN`, `USAGE`; each guard is dropped before the next and before `snapshot`.
 #[tauri::command]
-pub(crate) fn tray_snapshot(app: AppHandle) -> Result<TraySnapshot, String> {
-    let state = app.state::<AppState>();
-    let sessions = crate::listed_sessions(&state)?;
-    let projects: HashMap<String, String> = state
-        .store
-        .lock()
-        .map_err(|e| e.to_string())?
-        .projects()?
-        .into_iter()
-        .map(|p| (p.id, p.name))
-        .collect();
-    let unseen = lock(&UNSEEN).clone();
-    Ok(snapshot(&sessions, &projects, &unseen, lock(&USAGE).values().cloned().collect()))
+pub(crate) async fn tray_snapshot(app: AppHandle) -> Result<TraySnapshot, String> {
+    crate::blocking(move || {
+        let state = app.state::<AppState>();
+        let sessions = crate::listed_sessions(&state)?;
+        let projects: HashMap<String, String> = state
+            .store
+            .lock()
+            .map_err(|e| e.to_string())?
+            .projects()?
+            .into_iter()
+            .map(|p| (p.id, p.name))
+            .collect();
+        let unseen = lock(&UNSEEN).clone();
+        let usage: Vec<Usage> = lock(&USAGE).values().cloned().collect();
+        Ok(snapshot(&sessions, &projects, &unseen, usage))
+    })
+    .await
 }
 
 fn snapshot(sessions: &[Session], projects: &HashMap<String, String>, unseen: &BTreeMap<String, bool>, usage: Vec<Usage>) -> TraySnapshot {
@@ -387,8 +416,8 @@ fn show_saved(saved: Option<Usage>) -> bool {
     true
 }
 
-/// Claude and Codex, plus every agent a task has used. Each result updates the popover.
-fn refresh_usage(app: &AppHandle, refresh_now: bool) {
+/// Claude and Codex, plus every agent a task has used.
+fn usage_providers(app: &AppHandle) -> BTreeSet<String> {
     let mut providers: BTreeSet<String> = ["claude", "codex"].map(String::from).into();
     if let Ok(store) = app.state::<AppState>().store.lock() {
         if let Ok(mut statement) = store.db.prepare("SELECT DISTINCT provider FROM sessions") {
@@ -397,6 +426,28 @@ fn refresh_usage(app: &AppHandle, refresh_now: bool) {
             }
         }
     }
+    providers
+}
+
+/// Checks every provider of `usage_providers`; each result updates the popover. Returns at
+/// once: callers run on the main thread (the tray click, `tray_refresh_usage`), so the store
+/// is read on the blocking pool.
+fn refresh_usage(app: &AppHandle, refresh_now: bool) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let reader = app.clone();
+        let providers = match tauri::async_runtime::spawn_blocking(move || usage_providers(&reader)).await {
+            Ok(providers) => providers,
+            Err(error) => {
+                eprintln!("Menu bar item could not list the agents to check: {error}");
+                return;
+            }
+        };
+        check_usage(&app, providers, refresh_now);
+    });
+}
+
+fn check_usage(app: &AppHandle, providers: BTreeSet<String>, refresh_now: bool) {
     CHECKING.fetch_add(providers.len(), Ordering::SeqCst);
     let _ = app.emit_to(LABEL, "tray-changed", ());
     for provider in providers {
@@ -476,5 +527,14 @@ mod tests {
         assert!(close_quits(true, false));
         assert!(close_quits(false, false), "nothing could reopen the window");
         assert!(!close_quits(false, true), "macOS and Windows with a menu bar item only hide");
+    }
+
+    #[test]
+    fn open_rebuilds_the_window_it_looks_for() {
+        let mut config = tauri::utils::config::Config::default();
+        config.app.windows = vec![tauri::utils::config::WindowConfig { label: "main".into(), ..Default::default() }];
+        assert!(workspace_window(&config).is_some(), "the workspace window is the one show finds");
+        config.app.windows[0].label = "renamed".into();
+        assert!(workspace_window(&config).is_none(), "only the window show looks for is rebuilt");
     }
 }

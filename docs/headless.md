@@ -7,7 +7,8 @@ steer and approve tasks on it, including cloud runs ([cloud agents](cloud-agents
 is no webview and no window: the desktop frontend never runs on a server.
 
 Nothing changes for the desktop app. `pandacode` with no arguments is the ordinary GUI;
-`pandacode serve …` is the host.
+`pandacode serve …` is the host. A host can serve Connect clients (when signed in), a local
+web UI in any browser (`--port`, see [Local web UI](#local-web-ui---port)), or both.
 
 ## What the server runs
 
@@ -58,10 +59,109 @@ access — no approval prompts; off by default).
 pandacode serve        # requires an existing sign-in; exits non-zero if none
 ```
 
+## Local web UI (`--port`)
+
+```sh
+pandacode serve --port 8787        # or -p 8787; 0 picks a free port
+```
+
+serves the live PandaCode workspace over HTTP + WebSocket on `127.0.0.1:<PORT>` and prints
+its address to stdout:
+
+```text
+http://127.0.0.1:8787/#token=<token>
+```
+
+Open that URL in a browser to get the full PandaCode UI, driving the same tasks, queue and
+providers as the host. It works on its own, with no PandaCode Connect sign-in. When you are
+signed in, Connect hosting runs alongside it.
+
+- `--host <ADDR>` picks the bind address (default `127.0.0.1`). The recommended way to
+  reach a server's web UI from another machine is to keep the loopback default and tunnel
+  over SSH:
+
+  ```sh
+  ssh -L 8787:127.0.0.1:8787 build-server   # then open the printed URL locally
+  ```
+
+  The local port does not have to match the remote one: with
+  `ssh -L 9000:127.0.0.1:8787 build-server`, open the printed URL with `8787` changed to
+  `9000`.
+
+  On a private network such as Tailscale or WireGuard you can instead bind the machine's
+  address on that interface (`--host 100.x.y.z`): WireGuard encrypts the traffic, and
+  nothing is exposed as plain HTTP on your LAN. Avoid `--host 0.0.0.0` on untrusted
+  networks: pages, API calls and the token all travel as **unencrypted HTTP**. A generic
+  TLS reverse proxy in front of a `127.0.0.1` bind does not work: the `Host` and `Origin`
+  checks below refuse requests addressed to another host name, by design.
+  `--host` without `--port` is refused, by `serve` and by the desktop app alike.
+- **The URL is a credential.** Holding the token gives full control of this PandaCode
+  session as the host user — starting coding agents, running terminal commands, and
+  reading or editing workspace files. `serve --port` prints the full `#token=` URL to
+  stdout, so it lands in journald or whatever log your service manager keeps. A
+  `pandacode --port` handed off to a running desktop app prints it to that running
+  instance's stdout too. Keep those service and launch logs private, and rotate the token
+  (see below) if a log was ever shared.
+- **Desktop app too.** The desktop session can be served the same way: `pandacode --port
+  <PORT>` (or `--web-port <PORT>`), `PANDACODE_WEB_PORT=<PORT>`, or **Settings →
+  Connections → Remote access → Web access**. On macOS the binary is inside the app bundle:
+
+  ```sh
+  /Applications/PandaCode.app/Contents/MacOS/pandacode --port 8787
+  ```
+
+  The `--port` / `--web-port` flags also reach a desktop app that is already running: the
+  second `pandacode --port <PORT>` process hands the request to the running app and exits
+  silently in that terminal, printing nothing. The running instance starts its web server
+  (or moves it to the new port), and its desktop window shows the outcome: a notification
+  with **Copy link** and **Open** on success, or an error toast if the port could not be
+  used. It also updates **Settings → Connections → Remote access → Web access**.
+  `PANDACODE_WEB_PORT` and `PANDACODE_WEB_HOST` only apply when they launch a new
+  instance. `PANDACODE_WEB_HOST` applies only together with `PANDACODE_WEB_PORT`: a
+  `--port` passed on the command line binds loopback unless `--host` is given too. The
+  browser and the
+  desktop window then show the same live session.
+
+Security:
+
+- Each session gets a fresh 256-bit access token: 64 hex characters from the OS random
+  number generator (`OsRng`). It travels in the URL fragment
+  (`#token=…`), which browsers never send to the server. The page strips it from the address
+  bar on load (`replaceState`) and keeps it in `sessionStorage`, but the browser's history
+  may still record the first `#token=` URL: rotate the token (or clear that history) if
+  you ever share the browser profile.
+- Every API call carries it as a `Bearer` token, compared in constant time. Failed
+  attempts are counted per IPv4 address or IPv6 `/64` prefix and answered with `429` once
+  there are too many, while a request with the valid token always passes. The primary
+  defense against guessing is the 256-bit random token itself.
+- Remote peers share a 256-slot connection pool, separate from the 128-slot loopback
+  pool, so remote traffic cannot lock out local or SSH-tunnelled access. On an
+  off-loopback bind, unauthenticated peers can still fill the remote pool.
+- On loopback the `Host` header must name the loopback address, which blocks DNS
+  rebinding. A non-loopback bind also restricts `Host` to the bound address (on `0.0.0.0`
+  or `::`, to IP literals and `localhost`), so a public domain rebound to the machine is
+  refused too. When an API or WebSocket request carries an `Origin` header, it must name
+  exactly the same host and port as `Host`. Requests without one, such as non-browser
+  clients, still need the bearer token.
+- No CORS wildcard, and pages are served with a strict Content Security Policy.
+- Browser tabs can change the port, stop the server or rotate the token, but cannot change
+  its listen address (`host`) through the API. That block is defense in depth, not a
+  privilege boundary: anyone holding the token already has full control of the session,
+  terminals and coding agents included (see above). Commands that only make sense on the host
+  machine (voice input from its microphone, the embedded browser, the native clipboard,
+  revealing or opening files, tray window controls) are refused over the web API.
+- The token can be rotated on demand (**New token** in Settings → Connections → Remote
+  access → Web access), which ends every other browser session immediately. Rotating from
+  a browser tab keeps that tab signed in and ends all the others. Rotation does **not**
+  undo lasting changes a previous token holder may have made: bots, schedules, Connect
+  device grants, saved Web access auto-start settings, or files and commands run through
+  agents or the terminal. Review those if a token leaked.
+
 ## Linux server
 
 1. Install the binary and Tauri's Linux runtime libraries (GTK, webkit2gtk — they are
-   linked even though no webview is created). A display must exist to *start*: run under
+   linked even though plain `serve` creates no webview; `serve --port` creates only a
+   hidden `about:blank` main webview to host the web API bridge). A display must exist to *start*: run under
    `xvfb-run` (a virtual X server; PandaCode renders nothing).
 2. Install and log in each agent CLI (`claude`, `codex`, …) and `gh` (pull-request links
    and private clones use it), with the server's own logins.
@@ -167,7 +267,8 @@ by hand (not through the import) need a restart to connect.
 
 ## Security
 
-- The server dials the relay outbound (one WebSocket). No inbound ports, and the relay
+- The server dials the relay outbound (one WebSocket). No inbound ports (unless you pass
+  `--port`), and the relay
   stores no task content: frames between your devices are end-to-end encrypted
   ([remote access](remote-access.md)).
 - The server takes one of the account's 10 device slots; revoke it from any device's
@@ -177,6 +278,8 @@ by hand (not through the import) need a restart to connect.
   `--full-access` off unless you mean it.
 - No new automatic requests beyond what Connect already makes on the desktop: the same
   relay socket, no update checks, no telemetry.
+- `--port` opens a local listening socket (loopback by default) and makes no outbound
+  requests; see [Local web UI](#local-web-ui---port) for its token and origin checks.
 
 ## Tasks after a crash
 

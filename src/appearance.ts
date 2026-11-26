@@ -1,4 +1,4 @@
-import { call, preview } from './bridge';
+import { call, nativeDesktop } from './bridge';
 import { isMac } from './platform';
 
 type AppearancePreferences = { reducedTransparency: boolean; increasedContrast: boolean; darkMode: boolean };
@@ -11,7 +11,9 @@ export function initializeNativeAppearance(
 ): () => void {
   const root = document.documentElement;
   // Reserve native window controls before appearance IPC, including its solid fallback.
-  root.dataset.nativePlatform = !preview && isMac ? 'macos' : 'other';
+  root.dataset.nativePlatform = nativeDesktop && isMac ? 'macos' : 'other';
+  // Browser tabs have no native window to configure: an opaque surface, no traffic-light gutter.
+  if (!nativeDesktop) { root.dataset.nativeMaterial = 'solid'; return () => { delete root.dataset.nativeMaterial; delete root.dataset.nativePlatform; }; }
   const transparency = matchMedia('(prefers-reduced-transparency: reduce)');
   const contrast = matchMedia('(prefers-contrast: more)');
   let disposed = false, busy = false, dirty = false;

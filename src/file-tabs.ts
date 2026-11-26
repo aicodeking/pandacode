@@ -1,27 +1,18 @@
 import './file-tabs.css';
+import { webMode } from './bridge';
 import { renderDocument } from './document-viewer';
 import { escape, fileIcon, icon, isImeKey } from './dom';
 import { createFileWindow } from './file-window';
 import { isPreviewableFile } from './file-links';
-import type { OfficeKind, OfficeState } from './office-viewer';
+import type { OfficeKind } from './office-viewer';
 import { errorText } from './error-text';
 import type { CodeSelection, SelectedCode } from './diff-viewer';
 
 type Context = { projectId: string; sessionId?: string };
 /** `source` shows a viewer-handled file (e.g. an SVG) as text. */
-type Tab = { path: string; context: Context; content?: string | ArrayBuffer; evictedBytes?: number; reads?: number; loading?: boolean; source?: boolean; used?: number; scroll?: number; office?: OfficeState; draft?: string; editing?: boolean; saving?: boolean; stamp?: string; error?: string; editorKey?: string };
-/** Text and document bytes kept off screen; evicted tabs read their file again when shown. */
+type Tab = { path: string; context: Context; content?: string | ArrayBuffer; reads?: number; source?: boolean; used?: number; draft?: string; editing?: boolean; saving?: boolean; stamp?: string; error?: string; editorKey?: string };
+/** Document bytes kept for tabs not on screen, across all tasks; evicted tabs read their file again when shown. */
 const DOCUMENT_CACHE_BYTES = 64 * 1024 * 1024;
-/** Keeps the shown file and the most recently used background content within the byte budget. */
-export function trimDocumentCache(tabs: Tab[], shown?: Tab, budget = DOCUMENT_CACHE_BYTES): void {
-  const cached = tabs.filter(tab => tab !== shown && tab.content !== undefined)
-    .sort((a, b) => (b.used ?? 0) - (a.used ?? 0));
-  for (const tab of cached) {
-    const bytes = typeof tab.content === 'string' ? tab.content.length * 2 : tab.content!.byteLength;
-    if (bytes > budget) { tab.evictedBytes = bytes; tab.content = undefined; }
-    else budget -= bytes;
-  }
-}
 /** PDF, Word, spreadsheet and image files arrive as bytes and draw in their own lazily loaded viewer. */
 const officeKind = (path: string): OfficeKind | undefined =>
   /\.pdf$/i.test(path) ? 'pdf' : /\.docx$/i.test(path) ? 'docx' : /\.(?:xlsx|xlsm|xls|ods)$/i.test(path) ? 'sheet' : /\.(?:png|jpe?g|gif|webp|avif|bmp|ico|svg)$/i.test(path) ? 'image' : undefined;
@@ -58,8 +49,6 @@ export function createFileTabs(deps: Deps) {
   let tick = 0, selectionBusy = false;
   let selectedCode: SelectedCode | undefined, questionCode: SelectedCode | undefined;
   const floating = createFileWindow(pane, () => { const entry = thread(); if (entry) entry.visible = false; render(); }, deps.focusConversation);
-  const isVisible = () => !document.hidden && !pane.closest('[hidden], [inert]') && pane.getClientRects().length > 0;
-  let visible = isVisible(), renderedTab: Tab | undefined;
 
   const thread = (): Thread | undefined => threads.get(key);
   const current = (): Tab | undefined => thread()?.tabs.find(tab => tab.path === thread()!.active);
@@ -67,20 +56,22 @@ export function createFileTabs(deps: Deps) {
   const dirty = (tab: Tab) => tab.draft !== undefined && tab.draft !== tab.content;
   const matches = (tab: Tab, context: Context, path: string) => tab.context.projectId === context.projectId && tab.context.sessionId === context.sessionId && (tab.path === path || tab.path.startsWith(path + '/'));
 
+  /** Keeps the shown tab's bytes and the most recently shown background documents that fit the cache. */
   function trim(): void {
-    trimDocumentCache([...threads.values()].flatMap(entry => entry.tabs), visible ? current() : undefined);
+    const shown = current();
+    let budget = DOCUMENT_CACHE_BYTES;
+    const cached = [...threads.values()].flatMap(entry => entry.tabs)
+      .filter(tab => tab !== shown && typeof tab.content === 'object')
+      .sort((a, b) => (b.used ?? 0) - (a.used ?? 0));
+    for (const tab of cached) {
+      budget -= (tab.content as ArrayBuffer).byteLength;
+      if (budget < 0) tab.content = undefined;
+    }
   }
-
-  function saveScroll(): void {
-    const body = view.querySelector<HTMLElement>('.file-view-body');
-    // display:none resets scrollTop in WebKit; retain the last visible scroll event instead.
-    if (renderedTab && body?.getClientRects().length) renderedTab.scroll = body.scrollTop;
-  }
-  view.addEventListener('scroll', saveScroll, true);
 
   /** Redraws the strip and view; focus that was on the strip, or that the file view just made inert, lands on the selected tab. */
   function render(): void {
-    const shown = current(); if (shown && visible) shown.used = ++tick;
+    const shown = current(); if (shown) shown.used = ++tick;
     trim();
     const focused = document.activeElement, onStrip = strip.contains(focused), inView = view.contains(focused);
     draw();
@@ -95,11 +86,10 @@ export function createFileTabs(deps: Deps) {
 
   function draw(): void {
     const entry = thread(), active = current();
-    saveScroll();
-    renderedTab = undefined;
     selectedCode = questionCode = undefined;
     if (entry?.visible && active) floating.show(); else floating.hide();
-    const scroll = active?.scroll ?? 0;
+    // Re-reading the file on screen keeps the reader's place in it.
+    const scroll = active && view.dataset.path === active.path ? view.querySelector('.file-view-body')?.scrollTop ?? 0 : 0;
     view.dataset.path = active?.path ?? '';
     disposeOffice(); disposeOffice = () => {};
     strip.hidden = !entry?.tabs.length;
@@ -110,13 +100,13 @@ export function createFileTabs(deps: Deps) {
       return `<div class="file-tab${selected ? ' selected' : ''}" role="presentation" data-tab="${escape(path)}"><button role="tab" aria-selected="${selected}" aria-controls="file-view" tabindex="${selected ? 0 : -1}" data-file-tab="select" title="${escape(path)}">${glyph}<span>${escape(label)}</span></button><button class="icon-button" tabindex="-1" data-file-tab="close" aria-label="Close ${escape(name(path))}" title="Close (Delete)">${icon('close')}</button></div>`;
     };
     strip.innerHTML = entry.tabs.map(tab => tabButton(tab.path, name(tab.path) + (dirty(tab) ? ' ●' : ''), fileIcon(name(tab.path), false))).join('');
-    if (!active || !entry.visible || (!visible && !active.source && Boolean(officeKind(active.path)))) { view.innerHTML = ''; return; }
+    if (!active || !entry.visible) { view.innerHTML = ''; return; }
     const attach = deps.canAttach(active.context) ? `<button data-file-tab="attach">${icon('attach')} Attach</button>` : '';
     const preview = isPreviewableFile(active.path) ? `<button class="icon-button" data-file-tab="preview" aria-label="Preview in browser" title="Preview in browser">${icon('globe')}</button>` : '';
     const editor = typeof active.content === 'string' ? `<button data-file-tab="save"${active.saving || !dirty(active) ? ' disabled' : ''}>${active.saving ? 'Saving…' : 'Save'}</button><button data-file-tab="discard"${active.saving || !dirty(active) ? ' disabled' : ''}>Discard</button><button data-file-tab="${active.editing ? 'reader' : 'edit'}">${active.editing ? 'Preview' : 'Edit'}</button>` : '';
     view.innerHTML = `<div class="file-view-header"><span class="file-view-path" title="${escape(active.path)}">${escape(active.path)}</span><div class="file-preview-actions">${editor}${preview}${typeof active.content === 'object' ? '' : `<button class="icon-button" data-file-tab="copy" aria-label="Copy file" title="Copy file">${icon('copy')}</button>`}${attach}</div></div>${active.editing && typeof active.content === 'string' ? '<div class="file-selection-actions"><span data-selection-lines>Select code to ask or fix</span><button data-file-tab="ask" disabled>Ask model</button><button data-file-tab="fix" disabled>Fix selection</button></div><form class="file-selection-form" aria-label="Ask about selected code" hidden><input aria-label="Question about selected code" placeholder="Ask about this code…" maxlength="2000"><button type="submit">Send question</button><button type="button" data-file-tab="cancel-question">Cancel</button><small role="alert" hidden></small></form>' : ''}<div class="file-view-body"></div>`;
     const body = view.querySelector<HTMLElement>('.file-view-body')!;
-    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}<button data-file-tab="external">Open in Default App</button></div>`; return; }
+    if (active.error) { body.innerHTML = `<div class="inspector-empty" role="alert">${escape(active.error)}${webMode ? '' : '<button data-file-tab="external">Open in Default App</button>'}</div>`; return; }
     if (active.editing && typeof active.content === 'string') {
       body.classList.add('file-editor');
       body.innerHTML = '<div class="inspector-empty" role="status">Opening editor…</div>';
@@ -137,23 +127,18 @@ export function createFileTabs(deps: Deps) {
     if (active.content === undefined) { body.innerHTML = '<div class="inspector-empty" role="status">Loading file…</div>'; return; }
     if (typeof active.content === 'string') {
       disposeOffice = renderDocument(body, active.path, active.draft ?? active.content, path => deps.call<string>('workspace_image', { ...active.context, path }));
-      body.scrollTop = scroll; renderedTab = active;
+      body.scrollTop = scroll;
       return;
     }
     const bytes = active.content, kind = officeKind(active.path)!;
-    const office = active.office ??= { aspectRatios: [] };
-    const controller = new AbortController();
-    disposeOffice = () => controller.abort();
-    void import('./office-viewer').then(async ({ renderOffice }) => {
-      if (controller.signal.aborted) return;
-      const dispose = await renderOffice(body, kind, bytes, active.path, controller.signal, office);
+    let disposed = false;
+    disposeOffice = () => { disposed = true; };
+    void import('./office-viewer').then(({ renderOffice }) => renderOffice(body, kind, bytes, active.path)).then(dispose => {
       // The tab may have been switched or closed while the viewer was drawing.
-      if (controller.signal.aborted || !body.isConnected) { dispose(); return; }
-      disposeOffice = () => { controller.abort(); dispose(); };
-      if (!office.anchor) body.scrollTop = scroll;
-      renderedTab = active;
+      if (disposed || !body.isConnected) { dispose(); return; }
+      disposeOffice = dispose; body.scrollTop = scroll;
     }).catch(error => {
-      if (!controller.signal.aborted && body.isConnected) body.innerHTML = `<div class="inspector-empty" role="alert">This file could not be opened: ${escape(errorText(error))}</div>`;
+      if (!disposed && body.isConnected) body.innerHTML = `<div class="inspector-empty" role="alert">This file could not be opened: ${escape(errorText(error))}</div>`;
     });
   }
 
@@ -161,7 +146,6 @@ export function createFileTabs(deps: Deps) {
   async function load(tab: Tab): Promise<void> {
     if (tab.saving || dirty(tab)) return;
     const read = tab.reads = (tab.reads ?? 0) + 1;
-    tab.loading = true;
     try {
       const stamp = await deps.call<string>('workspace_file_stamp', { ...tab.context, path: tab.path });
       if (read !== tab.reads || dirty(tab)) return;
@@ -173,12 +157,9 @@ export function createFileTabs(deps: Deps) {
       if (read !== tab.reads || dirty(tab)) return;
       tab.stamp = stamp; tab.error = undefined;
       if (sameContent(content, tab.content)) return;
-      const sameEvicted = tab.content === undefined && tab.evictedBytes !== undefined && (typeof content === 'string' ? content.length * 2 : content.byteLength) === tab.evictedBytes;
-      tab.evictedBytes = undefined;
       tab.editorKey = crypto.randomUUID();
       if (typeof content === 'string') tab.editing ??= true;
       tab.content = content;
-      if (!sameEvicted) tab.office = undefined;
       if (current() === tab) render(); else trim();
     } catch (error) {
       if (read !== tab.reads) return;
@@ -186,8 +167,6 @@ export function createFileTabs(deps: Deps) {
       if (!owner) return;
       tab.error = errorText(error);
       if (current() === tab) render();
-    } finally {
-      if (read === tab.reads) tab.loading = false;
     }
   }
 
@@ -306,26 +285,12 @@ export function createFileTabs(deps: Deps) {
     if (action === 'ask' && selectedCode) { questionCode = selectedCode; const form = view.querySelector<HTMLFormElement>('.file-selection-form')!; form.hidden = false; form.querySelector<HTMLInputElement>('input')!.focus(); }
     if (action === 'fix') void requestSelection('fix', selectedCode);
     if (action === 'cancel-question') view.querySelector<HTMLFormElement>('.file-selection-form')!.hidden = true;
-    if (action === 'external') void deps.call('open_workspace_file', { ...tab.context, path: tab.path }).catch(deps.report);
+    if (action === 'external' && !webMode) void deps.call('open_workspace_file', { ...tab.context, path: tab.path }).catch(deps.report);
     // Attaching is the first step of writing about the file, so focus goes to the prompt beside it.
     if (action === 'attach') { deps.attach(tab.path); deps.focusConversation(); }
     if (action === 'preview') void deps.preview(tab.path, tab.context).catch(deps.report);
     if (action === 'copy' && typeof tab.content === 'string') void navigator.clipboard.writeText(tab.draft ?? tab.content).then(() => deps.notify('File copied'), deps.report);
   });
-
-  const syncVisibility = () => {
-    const next = isVisible(); if (next === visible) return;
-    visible = next;
-    const tab = current();
-    if (tab && !tab.source && Boolean(officeKind(tab.path))) render(); else trim();
-    if (visible && tab && tab.content === undefined && !tab.loading) void load(tab);
-  };
-  // Inspector tabs and the workspace hide ancestors without changing the selected file tab.
-  const visibility = new MutationObserver(syncVisibility);
-  for (let node: HTMLElement | null = pane; node; node = node.parentElement) {
-    visibility.observe(node, { attributes: true, attributeFilter: ['hidden', 'inert', 'class', 'style'] });
-  }
-  document.addEventListener('visibilitychange', syncVisibility);
 
   return {
     /**

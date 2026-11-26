@@ -512,13 +512,7 @@ pub async fn connection_assign(
             fresh_context(&store, &session_id)?;
         }
     }
-    let snapshot = crate::blocking({
-        let session_id = session_id.clone();
-        move || save_assignment(session_id, connection_id)
-    })
-    .await?;
-    crate::providers::discard_warm_agent(&session_id);
-    Ok(snapshot)
+    crate::blocking(move || save_assignment(session_id, connection_id)).await
 }
 
 fn save_assignment(session_id: String, connection_id: Option<String>) -> Result<Snapshot> {
@@ -738,6 +732,7 @@ mod tests {
             goal: None,
             codex_settings: None,
             images: Vec::new(),
+            no_fresh_resume_fallback: false,
         };
         let (input, receiver) = tokio::sync::mpsc::unbounded_channel();
         let sink: crate::providers::Sink = std::sync::Arc::new(move |_| {

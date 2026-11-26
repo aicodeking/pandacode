@@ -1,5 +1,5 @@
 import './moodboards.css';
-import { call, preview, subscribe } from './bridge';
+import { call, nativeDesktop, subscribe } from './bridge';
 import { escape, icon, isImeKey } from './dom';
 
 export interface Moodboard { id: string; projectId: string; name: string; imageCount: number; updatedAt: number }
@@ -142,7 +142,8 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   }
   function showCreate(): void { createForm.hidden = false; nameInput.focus(); }
   async function chooseImages(): Promise<void> {
-    if (preview) { fileInput.click(); return; }
+    // Browsers (preview and web mode) pick and upload local files; only the desktop has the native dialog.
+    if (!nativeDesktop) { fileInput.click(); return; }
     const result = await (await import('@tauri-apps/plugin-dialog')).open({ title: 'Add images to moodboard', multiple: true, filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] });
     if (!disposed && result) await addPaths(Array.isArray(result) ? result : [result]);
   }
@@ -232,7 +233,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
   }
   host.addEventListener('click', click); host.addEventListener('change', change); host.addEventListener('paste', paste); host.addEventListener('keydown', key);
   createForm.addEventListener('submit', createBoard); canvas.addEventListener('dragover', drag); canvas.addEventListener('dragleave', leave); canvas.addEventListener('drop', drop);
-  if (!preview) void import('@tauri-apps/api/webview').then(module => module.getCurrentWebview().onDragDropEvent(event => {
+  if (nativeDesktop) void import('@tauri-apps/api/webview').then(module => module.getCurrentWebview().onDragDropEvent(event => {
     if (disposed || !selected) return;
     if (event.payload.type === 'over') canvas.classList.add('is-dragging');
     else if (event.payload.type === 'leave') canvas.classList.remove('is-dragging');

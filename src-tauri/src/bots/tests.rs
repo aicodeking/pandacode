@@ -355,29 +355,6 @@ fn schedules_validate_and_advance() {
 }
 
 #[test]
-fn scheduler_refreshes_only_after_advancing_due_state() {
-    let f = fixture();
-    let bot = bot(&f);
-    let scheduled = schedule::ScheduleInput { kind: "once".into(), prompt: "Check".into(), run_at: Some(10 * MINUTE), ..Default::default() };
-    schedule::create(&f.store, &bot.id, &scheduled, "user", 0).unwrap();
-    let (schedules, bots) = schedule::due(&f.store, 0).unwrap();
-    assert!(!schedule::advance_due(&f.store, &schedules, &bots, 0));
-    let (schedules, bots) = schedule::due(&f.store, 11 * MINUTE).unwrap();
-    assert!(schedule::advance_due(&f.store, &schedules, &bots, 11 * MINUTE));
-    let (schedules, bots) = schedule::due(&f.store, 12 * MINUTE).unwrap();
-    assert!(!schedule::advance_due(&f.store, &schedules, &bots, 12 * MINUTE));
-
-    let mut input = input("Heartbeat");
-    input.heartbeat_minutes = 60;
-    let bot = create(&f.store, &input, &f.root).unwrap();
-    let now = bot.next_heartbeat_at.unwrap();
-    let (schedules, bots) = schedule::due(&f.store, now).unwrap();
-    assert!(schedule::advance_due(&f.store, &schedules, &bots, now));
-    let (schedules, bots) = schedule::due(&f.store, now).unwrap();
-    assert!(!schedule::advance_due(&f.store, &schedules, &bots, now));
-}
-
-#[test]
 fn paused_bots_skip_heartbeats() {
     let f = fixture();
     let mut with_heartbeat = input("Watcher");

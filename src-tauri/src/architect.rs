@@ -16,6 +16,7 @@ pub(crate) mod watchdog;
 pub use council::{CouncilConfig, CouncilSeat, CouncilStatus};
 
 use crate::{
+    message_queue,
     providers::ToolHost,
     storage::{self, MessagePage, Store},
     AppState, Result, RunInput,
@@ -535,12 +536,8 @@ fn validate_profiles(profiles: &[WorkerProfile]) -> Result<()> {
 pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
     store
         .db
-        .query_row(
-            "SELECT content FROM architect_teams WHERE session_id=?1",
-            [sid],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
+        .prepare_cached("SELECT content FROM architect_teams WHERE session_id=?1")
+        .and_then(|mut query| query.query_row([sid], |r| r.get::<_, String>(0)).optional())
         .map_err(|e| e.to_string())?
         .map(|s| serde_json::from_str(&s).map_err(|e| format!("Invalid saved team: {e}")))
         .transpose()
@@ -548,25 +545,74 @@ pub(crate) fn load(store: &Store, sid: &str) -> Result<Option<TeamSnapshot>> {
 /// Whether a task leads a team: has one saved, configured, active or not. Every gate that keeps
 /// remote devices, bots and schedules from driving full-access workers asks this.
 pub(crate) fn leads_team(store: &Store, sid: &str) -> Result<bool> {
-    store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |row| row.get(0)).map_err(|e| e.to_string())
+    store.db.prepare_cached("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)")
+        .and_then(|mut query| query.query_row([sid], |row| row.get(0)))
+        .map_err(|e| e.to_string())
 }
 /// Whether a task's saved team is working. Every listing asks this for every task while holding
 /// both global locks, so it reads the status alone: a team's snapshot can be megabytes.
+/// The status comes from the trigger-kept `architect_team_meta` tracker, so no JSON is parsed;
+/// without a usable tracker (a newer schema) it is read from the snapshot.
 pub(crate) fn is_active(store: &Store, sid: &str) -> bool {
-    store.db.prepare_cached("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1")
+    let sql = if store.team_meta_usable() {
+        "SELECT status FROM architect_team_meta WHERE session_id=?1"
+    } else {
+        "SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams WHERE session_id=?1"
+    };
+    store.db.prepare_cached(sql)
         .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
         .ok()
         .flatten()
         .is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
 }
+/// Every working team, found through the `architect_team_meta_status` index on the tracker
+/// instead of parsing every snapshot. Its query plan is checked in `architect::watchdog::query_tests`.
+pub(super) const ACTIVE_TEAMS: &str = "SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting')";
+/// `ACTIVE_TEAMS` from the snapshots, for a newer schema without a usable tracker.
+const ACTIVE_TEAMS_FALLBACK: &str = "SELECT session_id FROM architect_teams WHERE json_valid(content) AND json_extract(content,'$.status') IN ('running','waiting')";
+/// The leads of every working team, read once per task listing (`crate::reconcile_listed`) so it
+/// never asks `is_active` for each task.
+pub(crate) fn active_team_session_ids(store: &Store) -> Result<std::collections::HashSet<String>> {
+    let sql = if store.team_meta_usable() { ACTIVE_TEAMS } else { ACTIVE_TEAMS_FALLBACK };
+    let mut query = store.db.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let rows = query.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+}
+/// The teams the watchdog may run: see [`runnable_team_rows`]. Its query plan is checked in
+/// `architect::watchdog::query_tests`.
+pub(super) const RUNNABLE_TEAMS_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE session_id IN (SELECT session_id FROM architect_team_meta WHERE status IN ('running','waiting') UNION SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) AND json_valid(content) ORDER BY json_extract(content,'$.updatedAt'),session_id";
+/// `RUNNABLE_TEAMS_SQL` from the snapshots, for a newer schema without a usable tracker.
+const RUNNABLE_TEAMS_FALLBACK_SQL: &str = "SELECT session_id,content FROM architect_teams WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') IN ('running','waiting') OR session_id IN (SELECT w.parent_session_id FROM architect_workers w JOIN sessions s ON s.id=w.session_id WHERE s.status IN ('running','waiting')) END ORDER BY json_extract(content,'$.updatedAt'),session_id";
+
+/// `(session_id, content)` of every team the scheduler looks at, oldest update first: a working
+/// team, or one with a worker whose session still runs. Both candidate sets come from indexes
+/// (`architect_team_meta_status`, `sessions_active_status`) and only those rows are read by key, so a
+/// pass on the current schema avoids parsing every snapshot. A row that is not JSON is never returned.
+pub(crate) fn runnable_team_rows_in(store: &Store) -> Result<Vec<(String, String)>> {
+    let sql = if store.team_meta_usable() { RUNNABLE_TEAMS_SQL } else { RUNNABLE_TEAMS_FALLBACK_SQL };
+    team_rows(&store.db, sql)
+}
+
+/// The tracker query for the v38 benchmark and query-plan fixtures.
+#[cfg(test)]
+pub(crate) fn runnable_team_rows(db: &rusqlite::Connection) -> Result<Vec<(String, String)>> {
+    team_rows(db, RUNNABLE_TEAMS_SQL)
+}
+fn team_rows(db: &rusqlite::Connection, sql: &str) -> Result<Vec<(String, String)>> {
+    let mut query = db.prepare_cached(sql).map_err(|e| e.to_string())?;
+    let rows = query.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+    rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())
+}
 /// The reset of the lead's usage limit, while it is still ahead.
 fn limit_reset(store: &Store, sid: &str) -> Result<Option<i64>> {
-    let until = store.db.query_row("SELECT limited_until FROM sessions WHERE id=?1", [sid], |r| r.get::<_, Option<i64>>(0)).optional().map_err(|e| e.to_string())?;
+    let until = store.db.prepare_cached("SELECT limited_until FROM sessions WHERE id=?1")
+        .and_then(|mut query| query.query_row([sid], |r| r.get::<_, Option<i64>>(0)).optional())
+        .map_err(|e| e.to_string())?;
     Ok(until.flatten().filter(|until| *until > storage::now()))
 }
 // ponytail: every save rewrites the whole team snapshot and `emit` sends it, a known ceiling for large
 // teams; save and send only the changed rows if it ever shows.
-fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
+pub(crate) fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     if let Some(failure) = &mut team.lead_failure {
         failure.held_until = limit_reset(store, &team.session_id)?;
     }
@@ -577,8 +623,38 @@ fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
     team.revision = team.revision.saturating_add(1);
     refresh_council(store, team);
     let content = serde_json::to_string(team).map_err(|e| e.to_string())?;
-    store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content",params![team.session_id,content]).map_err(|e|e.to_string())?;
-    Ok(())
+    write_snapshot(store, team, &content)
+}
+/// Writes a serialized team and its `architect_team_meta` row in one savepoint, so it is atomic
+/// whether or not the caller holds a transaction. The tracker row is set from the snapshot
+/// itself with `skip_sync=1`, so the update triggers parse no JSON (`storage::schema_v38::SCHEMA_38_RUNNING`);
+/// a new team has no tracker row yet and its insert trigger fills it. On failure the savepoint
+/// is rolled back, so `skip_sync=1` never outlives the save. Without a usable tracker (a newer
+/// schema that dropped or changed it) only the snapshot is written.
+fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<()> {
+    const UPSERT: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
+    let db = &store.db;
+    let sql_error = |e: rusqlite::Error| e.to_string();
+    let upsert = || db.prepare_cached(UPSERT)?.execute(params![team.session_id, content]);
+    if !store.team_meta_usable() {
+        return upsert().map(|_| ()).map_err(sql_error);
+    }
+    crate::storage::run_savepoint(db, "architect_team_save", || {
+        let needs_cutoff = i64::from(team.legacy_prompt_through_id.is_none());
+        db.prepare_cached("UPDATE architect_team_meta SET status=?2,valid_json=1,needs_legacy_cutoff=?3,skip_sync=1 WHERE session_id=?1")
+            .and_then(|mut update| update.execute(params![team.session_id, team.status, needs_cutoff]))
+            .map_err(sql_error)?;
+        if upsert().map_err(sql_error)? != 1 {
+            return Err("The architect team snapshot write did not affect one row.".into());
+        }
+        let synced = db.prepare_cached("SELECT skip_sync=0 FROM architect_team_meta WHERE session_id=?1")
+            .and_then(|mut select| select.query_row([&team.session_id], |row| row.get::<_, bool>(0)))
+            .map_err(sql_error)?;
+        if !synced {
+            return Err("The architect team metadata did not clear skip_sync.".into());
+        }
+        Ok(())
+    }, sql_error)
 }
 /// Brings `changed_at` and `council_status` up to date. A failed read keeps the last value, so the
 /// save itself still goes ahead.
@@ -612,22 +688,15 @@ fn event_payload(team: &TeamSnapshot) -> TeamSnapshot {
     }
     lean
 }
-pub(crate) fn emit_snapshot(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    let _ = app.emit("architect-event", &event_payload(team));
-}
 fn emit(app: &tauri::AppHandle, team: &TeamSnapshot) {
-    emit_snapshot(app, team);
+    let _ = app.emit("architect-event", &event_payload(team));
     let _ = app.emit("sessions-changed", ());
 }
 pub(crate) fn parent_of(store: &Store, sid: &str) -> Result<Option<String>> {
     store
         .db
-        .query_row(
-            "SELECT parent_session_id FROM architect_workers WHERE session_id=?1",
-            [sid],
-            |r| r.get(0),
-        )
-        .optional()
+        .prepare_cached("SELECT parent_session_id FROM architect_workers WHERE session_id=?1")
+        .and_then(|mut query| query.query_row([sid], |r| r.get(0)).optional())
         .map_err(|e| e.to_string())
 }
 /// Refuses a team worker's session only (a lead is not affected): its full access must never
@@ -638,6 +707,8 @@ pub(crate) fn refuse_worker(store: &Store, sid: &str) -> Result<()> {
     }
     Ok(())
 }
+/// The whole snapshot is parsed on purpose: a saved team that no longer reads refuses manual
+/// changes with its parse error, which a status-only read would let through.
 pub(crate) fn check_manual(store: &Store, sid: &str) -> Result<()> {
     refuse_worker(store, sid)?;
     if load(store, sid)?.is_some_and(|t| active(&t.status)) {
@@ -653,7 +724,8 @@ pub(crate) fn validate_admission(
     let Some(admission) = admission else {
         check_manual(store, sid)?;
         // The one exception is a maintenance command on the lead (`prepare_task_run_in_project`).
-        if load(store, sid)?.is_some() {
+        // `check_manual` just parsed any saved team, so whether one exists is all that is left.
+        if leads_team(store, sid)? {
             return Err("Start this task using its architect team controls.".into());
         }
         return Ok(());
@@ -920,7 +992,6 @@ pub async fn architect_configure(
         architect,
         profile_id.as_deref(),
     )?;
-    crate::providers::discard_warm_agent(&session_id);
     if let Some(team) = &changed {
         emit(&app, team);
         wake(app.clone());
@@ -941,7 +1012,6 @@ pub async fn architect_set_council(
     council: Option<CouncilConfig>,
 ) -> Result<Option<TeamSnapshot>> {
     let team = council::set(&state, &session_id, council)?;
-    crate::providers::discard_warm_agent(&session_id);
     emit(&app, &team);
     wake(app);
     Ok(Some(team))
@@ -2127,7 +2197,10 @@ fn dispatch_as(
             if args.get("checkpoint").map_or(Some(false), Value::as_bool).ok_or("checkpoint must be true or false.")? {
                 return Ok((checkpoint_page(worker, offset), None));
             }
-            let response=store.db.query_row("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",[&worker.session_id],|r|r.get::<_,String>(0)).optional().map_err(|e|e.to_string())?.unwrap_or_default();
+            let response = store.db.prepare_cached("SELECT content FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1")
+                .and_then(|mut query| query.query_row([&worker.session_id], |r| r.get::<_, String>(0)).optional())
+                .map_err(|e| e.to_string())?
+                .unwrap_or_default();
             // Summary and checkpoint ride the first page only, inside its budget; later pages are
             // the response alone.
             let mut item = json!({"id":worker.id,"status":worker.status,"offset":offset});
@@ -2321,7 +2394,9 @@ fn request_duplicate(
     kind: &str,
     content: &str,
 ) -> Result<Option<String>> {
-    let existing=store.db.query_row("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2",params![sid,key],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?))).optional().map_err(|e|e.to_string())?;
+    let existing = store.db.prepare_cached("SELECT kind,content,worker_id FROM architect_requests WHERE parent_session_id=?1 AND key=?2")
+        .and_then(|mut query| query.query_row(params![sid, key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))).optional())
+        .map_err(|e| e.to_string())?;
     match existing {
         Some((saved_kind, saved_content, id)) if saved_kind == kind && saved_content == content => {
             Ok(Some(id))
@@ -2330,17 +2405,15 @@ fn request_duplicate(
         None => Ok(None),
     }
 }
+/// `requested_effort`, through `architect_requests_worker` (checked in `storage::schema_v38::tests`).
+pub(crate) const REQUESTED_EFFORT_SQL: &str = "SELECT json_extract(content,'$.reasoningEffort') FROM architect_requests WHERE worker_id=?1 AND json_valid(content) AND json_type(content,'$.reasoningEffort')='text' ORDER BY rowid DESC LIMIT 1";
 /// The effort the lead last asked of a worker (dispatch or follow-up), before it was fitted
 /// to a model, so a failover fits the request again rather than an already lowered level.
 fn requested_effort(store: &Store, worker: &str) -> Result<Option<String>> {
     let effort = store
         .db
-        .query_row(
-            "SELECT json_extract(content,'$.reasoningEffort') FROM architect_requests WHERE worker_id=?1 AND json_valid(content) AND json_type(content,'$.reasoningEffort')='text' ORDER BY rowid DESC LIMIT 1",
-            [worker],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
+        .prepare_cached(REQUESTED_EFFORT_SQL)
+        .and_then(|mut query| query.query_row([worker], |r| r.get::<_, String>(0)).optional())
         .map_err(|e| e.to_string())?;
     Ok(model_efforts::normalise(effort))
 }
@@ -2352,7 +2425,9 @@ fn record_request(
     content: &str,
     worker: &str,
 ) -> Result<()> {
-    store.db.execute("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)",params![sid,key,kind,content,worker]).map_err(|e|e.to_string())?;
+    store.db.prepare_cached("INSERT INTO architect_requests(parent_session_id,key,kind,content,worker_id) VALUES(?1,?2,?3,?4,?5)")
+        .and_then(|mut query| query.execute(params![sid, key, kind, content, worker]))
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 fn worker_arg<'a>(team: &'a TeamSnapshot, args: &Value, owner: Option<&str>) -> Result<&'a Worker> {
@@ -2461,6 +2536,17 @@ struct Launch {
     images: Option<Vec<String>>,
     admission: Admission,
 }
+struct ScheduledLaunch {
+    launch: Launch,
+    queue_changed: bool,
+}
+
+const QUEUED_USER_HEADER: &str = "Queued user messages in queue order. Follow these new instructions before acting on the worker reports.\n\n";
+const QUEUED_USER_LABEL: &str = "User message:\n";
+const QUEUED_USER_END: &str = "PandaCode coordination:\n\n";
+// Leave room for the encoded coordination envelope as well as the raw prompt.
+const QUEUED_WAKE_LIMIT: usize = 120 * 1024;
+
 /// Reserves an architect turn that PandaCode starts itself and saves the team, unless that many turns
 /// in a row made no progress: then it pauses the team, so nothing spends tokens unattended forever.
 /// Only reached at the limit with nothing running: `team_action` holds wakes while workers run, so the
@@ -2471,7 +2557,7 @@ fn wake_lead(
     prompt: String,
     kind: internal_turns::CoordinationKind,
     notify: &mut impl FnMut(&TeamSnapshot),
-) -> Result<Option<Launch>> {
+) -> Result<Option<ScheduledLaunch>> {
     if team.stalled_wakes >= MAX_STALLED_WAKES {
         team.status = "paused".into();
         team.generation += 1;
@@ -2485,6 +2571,39 @@ fn wake_lead(
         return Ok(None);
     }
     keep_objective_note(store, team)?;
+    // The queue, user transcript rows and reserved wake must commit together. Early failure
+    // and coordination wakes while workers are still active do not collect queued messages.
+    let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut steering = String::new();
+    let entries = if matches!(kind, internal_turns::CoordinationKind::WorkerReview | internal_turns::CoordinationKind::Continue) {
+        let budget = QUEUED_WAKE_LIMIT.saturating_sub(prompt.len() + QUEUED_USER_HEADER.len() + QUEUED_USER_END.len());
+        message_queue::take_all_ready(&transaction, &team.session_id, |entry| {
+            // Normal queue delivery resolves attachments and slash commands. Keep these entries
+            // and everything after them in place, including text that cannot fit this wake.
+            let bytes = QUEUED_USER_LABEL.len() + entry.text.len() + 2;
+            if !entry.attachments.as_array().is_some_and(Vec::is_empty)
+                || crate::slash_commands::split_command(&entry.text).is_some()
+                || bytes > budget.saturating_sub(steering.len())
+            {
+                return false;
+            }
+            steering.push_str(QUEUED_USER_LABEL);
+            steering.push_str(&entry.text);
+            steering.push_str("\n\n");
+            true
+        })?
+    } else {
+        Vec::new()
+    };
+    let queue_changed = !entries.is_empty();
+    let prompt = if queue_changed {
+        for entry in &entries {
+            store.message(&team.session_id, "user", &entry.text)?;
+        }
+        format!("{QUEUED_USER_HEADER}{steering}{QUEUED_USER_END}{prompt}")
+    } else {
+        prompt
+    };
     team.stalled_wakes += 1;
     team.pending_turn = Some(PendingTurn {
         prompt: prompt.clone(),
@@ -2493,7 +2612,7 @@ fn wake_lead(
         reserved_at: storage::now(),
         kind: Some(kind),
     });
-    let action = Launch {
+    let launch = Launch {
         sid: team.session_id.clone(),
         prompt,
         images: None,
@@ -2503,8 +2622,12 @@ fn wake_lead(
         },
     };
     save(store, team)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    if queue_changed {
+        message_queue::record_deliveries(&team.session_id, entries.len() as i64);
+    }
     notify(team);
-    Ok(Some(action))
+    Ok(Some(ScheduledLaunch { launch, queue_changed }))
 }
 fn eligible(team: &TeamSnapshot, index: usize) -> bool {
     let worker = &team.workers[index];
@@ -2579,27 +2702,33 @@ fn fail_blocked(team: &mut TeamSnapshot, direct: bool) -> bool {
     changed
 }
 fn next_action(app: &tauri::AppHandle) -> Result<Option<Launch>> {
-    next_action_state(&app.state::<AppState>(), &mut |team| emit(app, team))
+    let action = next_scheduled_launch(&app.state::<AppState>(), &mut |team| emit(app, team))?;
+    Ok(action.map(|scheduled| {
+        if scheduled.queue_changed {
+            let _ = app.emit("queue-changed", json!({"sessionId": scheduled.launch.sid}));
+        }
+        scheduled.launch
+    }))
 }
+#[cfg(test)]
 fn next_action_state(
     state: &AppState,
     notify: &mut impl FnMut(&TeamSnapshot),
 ) -> Result<Option<Launch>> {
+    Ok(next_scheduled_launch(state, notify)?.map(|scheduled| scheduled.launch))
+}
+fn next_scheduled_launch(
+    state: &AppState,
+    notify: &mut impl FnMut(&TeamSnapshot),
+) -> Result<Option<ScheduledLaunch>> {
     let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
     if state.shutdown.load(Ordering::SeqCst) != 0 {
         return Ok(None);
     }
     let store = state.store.lock().map_err(|e| e.to_string())?;
-    let mut query=store.db.prepare("SELECT content FROM architect_teams WHERE json_valid(content) AND (json_extract(content,'$.status') IN ('running','waiting') OR EXISTS(SELECT 1 FROM architect_workers aw JOIN sessions s ON s.id=aw.session_id WHERE aw.parent_session_id=architect_teams.session_id AND s.status IN ('running','waiting'))) ORDER BY json_extract(content,'$.updatedAt')").map_err(|e|e.to_string())?;
-    let teams = query
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    drop(query);
-    let teams = teams
+    let teams = runnable_team_rows_in(&store)?
         .into_iter()
-        .filter_map(|s| match serde_json::from_str::<TeamSnapshot>(&s) {
+        .filter_map(|(_, s)| match serde_json::from_str::<TeamSnapshot>(&s) {
             Ok(team) => Some(team),
             Err(error) => {
                 eprintln!("Architect scheduler skipped an unreadable team: {error}");
@@ -2636,7 +2765,7 @@ fn team_action<'a>(
     roots: &std::cell::OnceCell<std::collections::HashMap<&'a str, std::path::PathBuf>>,
     original: &TeamSnapshot,
     notify: &mut impl FnMut(&TeamSnapshot),
-) -> Result<Option<Launch>> {
+) -> Result<Option<ScheduledLaunch>> {
     let mut team = original.clone();
     // One team's missing folder or bad setup must not stop scheduling for every other team.
     let mut folder_step = false;
@@ -2720,7 +2849,7 @@ fn team_action<'a>(
             };
             save(store, &mut team)?;
             notify(&team);
-            return Ok(Some(action));
+            return Ok(Some(ScheduledLaunch { launch: action, queue_changed: false }));
         }
     }
     if !agents.contains_key(&team.session_id) {
@@ -2741,7 +2870,7 @@ fn team_action<'a>(
             };
             save(store, &mut team)?;
             notify(&team);
-            return Ok(Some(action));
+            return Ok(Some(ScheduledLaunch { launch: action, queue_changed: false }));
         }
     }
     // At the no-progress limit, wakes wait while workers run: they stay due, and a completion resets
@@ -2854,11 +2983,12 @@ fn team_action<'a>(
         }
         if team.dispatch_revision <= team.reviewed_revision {
             // The second stop below the target asks the user.
-            if let Some(refusal) = council::finish_refusal(&team).filter(|_| council::asks_user(&team)) {
-                return settle_asking(store, &mut team, refusal, notify);
-            }
             let refusal = council::finish_refusal(&team);
-            return pause_refused(store, &mut team, refusal.as_deref(), notify);
+            match refusal {
+                Some(refusal) if council::asks_user(&team) => settle_asking(store, &mut team, refusal, notify)?,
+                refusal => pause_refused(store, &mut team, refusal.as_deref(), notify)?,
+            }
+            return Ok(None);
         }
         team.round += 1;
         team.status = "running".into();
@@ -2991,7 +3121,7 @@ fn retry_lead(team: &mut TeamSnapshot, provider_error: Option<&str>) {
 const EFFORT_NOTE: &str = "Effort:";
 /// Pauses a team whose lead stopped twice without dispatching or finishing; when Council refused its
 /// finish, the user sees why.
-fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<Option<Launch>> {
+fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<()> {
     team.status = "paused".into();
     team.error = Some(match refusal {
         Some(refusal) => format!("The architect ended without dispatching work or finishing. {refusal} Resume to continue."),
@@ -2999,7 +3129,7 @@ fn pause_refused(store: &Store, team: &mut TeamSnapshot, refusal: Option<&str>, 
     });
     save(store, team)?;
     notify(team);
-    Ok(None)
+    Ok(())
 }
 /// Queues one lead turn the scheduler starts, for a team resting while its lead asked the user.
 fn lift_turn(store: &Store, team: &mut TeamSnapshot, ask: &str) -> Result<()> {
@@ -3012,13 +3142,13 @@ fn lift_turn(store: &Store, team: &mut TeamSnapshot, ask: &str) -> Result<()> {
 }
 /// Rests a team whose lead ended its turn on a round below the target: it asks the user, who can
 /// lower the target, turn Council off, or say to keep going.
-fn settle_asking(store: &Store, team: &mut TeamSnapshot, refusal: String, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<Option<Launch>> {
+fn settle_asking(store: &Store, team: &mut TeamSnapshot, refusal: String, notify: &mut impl FnMut(&TeamSnapshot)) -> Result<()> {
     team.status = "ready".into();
     team.error = Some(refusal);
     team.timed_out = false;
     save(store, team)?;
     notify(team);
-    Ok(None)
+    Ok(())
 }
 /// The lead's edits in the turn that called finish_team are recorded only when that turn ends. If they
 /// leave changes no passing round covers, the team goes back to waiting with the refusal, and the
@@ -3380,9 +3510,14 @@ fn completed_with_agents<'a>(
                         // on the same conversation; a second silent run fails it, so the lead is woken.
                         // A tool row keeps its first event's id and text is flushed before a new tool's
                         // row (`save_agent_activity`), so a reply's id is above every tool it followed.
-                        let replied: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND trim(content)<>'' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination','tool')))", [sid], |r| r.get(0)).unwrap_or(true);
+                        let replied: bool = store.db.prepare_cached("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='assistant' AND trim(content)<>'' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination','tool')))")
+                            .and_then(|mut query| query.query_row([sid], |r| r.get(0)))
+                            .unwrap_or(true);
                         let silent = successful && !stopped && !replied;
-                        let ran_tools = silent && store.db.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='tool')", [sid], |r| r.get(0)).unwrap_or(false);
+                        let ran_tools = silent
+                            && store.db.prepare_cached("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=?1 AND role='tool')")
+                                .and_then(|mut query| query.query_row([sid], |r| r.get(0)))
+                                .unwrap_or(false);
                         let worker = &mut team.workers[index];
                         let score = if worker.council.is_some() && successful && !stopped { council::latest_score(&store, sid) } else { None };
                         let unscored = worker.council.is_some() && score.is_none();
@@ -3420,7 +3555,12 @@ fn completed_with_agents<'a>(
                             }
                             .into();
                         }
-                        worker.summary=store.db.query_row("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1",params![sid,SUMMARY_PREVIEW as i64],|r|r.get::<_,String>(0)).optional().ok().flatten().map(|s|bounded(&s,SUMMARY_PREVIEW)).unwrap_or_default();
+                        worker.summary = store.db.prepare_cached("SELECT substr(content,1,?2+1) FROM messages WHERE session_id=?1 AND role='assistant' AND id>(SELECT COALESCE(MAX(id),0) FROM messages WHERE session_id=?1 AND role IN ('user','coordination')) ORDER BY id DESC LIMIT 1")
+                            .and_then(|mut query| query.query_row(params![sid, SUMMARY_PREVIEW as i64], |r| r.get::<_, String>(0)).optional())
+                            .ok()
+                            .flatten()
+                            .map(|s| bounded(&s, SUMMARY_PREVIEW))
+                            .unwrap_or_default();
                         let settled_status = worker.status == "completed";
                         if let Some(seat) = &mut worker.council {
                             seat.score = score.filter(|_| settled_status);
@@ -3572,3 +3712,102 @@ pub(crate) fn stopped_by_team(store: &Store, admission: Option<&Admission>, sid:
 }
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod is_active_tests {
+    use super::*;
+    /// `is_active` as it read before the status table: parse the snapshot row itself.
+    fn parsed_status(store: &Store, sid: &str) -> Option<String> {
+        store.db.prepare("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams NOT INDEXED WHERE session_id=?1")
+            .and_then(|mut query| query.query_row([sid], |row| row.get::<_, Option<String>>(0)))
+            .ok()
+            .flatten()
+    }
+    fn parsed(store: &Store, sid: &str) -> bool {
+        parsed_status(store, sid).is_some_and(|status| matches!(status.as_str(), "running" | "waiting"))
+    }
+
+    #[test]
+    fn is_active_matches_parsing_the_snapshot_for_every_shape() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let snapshots = [
+            ("running", r#"{"status":"running","workers":[{"status":"completed"}]}"#, true),
+            ("waiting", r#"{"status":"waiting"}"#, true),
+            ("escaped", r#"{"status":"\u0072unning"}"#, true),
+            ("completed", r#"{"status":"completed","workers":[{"status":"running"}]}"#, false),
+            ("interrupted", r#"{"status":"interrupted"}"#, false),
+            ("ready", r#"{"status":"ready"}"#, false),
+            ("upper", r#"{"status":"Running"}"#, false),
+            ("padded", r#"{"status":" running"}"#, false),
+            ("missing", r#"{"workers":[]}"#, false),
+            ("null", r#"{"status":null}"#, false),
+            ("number", r#"{"status":1}"#, false),
+            ("bool", r#"{"status":true}"#, false),
+            ("object", r#"{"status":{"status":"running"}}"#, false),
+            ("array", r#"["running"]"#, false),
+            ("scalar", r#""running""#, false),
+            ("corrupt", r#"{"status":"running""#, false),
+            ("empty", "", false),
+            ("not-json", "running", false),
+        ];
+        for (sid, content, _) in snapshots {
+            store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", [sid, content]).unwrap();
+        }
+        let entries: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_team_meta", [], |row| row.get(0)).unwrap();
+        assert_eq!(entries, snapshots.len() as i64, "raw inserts populate the tracker");
+        for (sid, _, active) in snapshots.iter().copied().chain([("absent", "", false)]) {
+            assert_eq!(parsed(&store, sid), active, "{sid}: parsed");
+            assert_eq!(is_active(&store, sid), active, "{sid}: tracked");
+        }
+        // A real save keeps the stored status current.
+        let config: TeamConfig = serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap();
+        let mut team = new_team("running".into(), config);
+        team.status = "completed".into();
+        save(&store, &mut team).unwrap();
+        assert!(!is_active(&store, "running") && !parsed(&store, "running"));
+        team.status = "waiting".into();
+        save(&store, &mut team).unwrap();
+        assert!(is_active(&store, "running") && parsed(&store, "running"));
+    }
+
+    /// Median of `runs` timings of `step`, in microseconds.
+    fn median_micros(runs: usize, mut step: impl FnMut()) -> u128 {
+        let mut times: Vec<u128> = (0..runs).map(|_| { let at = std::time::Instant::now(); step(); at.elapsed().as_micros() }).collect();
+        times.sort_unstable();
+        times[runs / 2]
+    }
+
+    #[test]
+    fn a_team_save_never_parses_the_snapshot_in_sqlite() {
+        let directory = std::env::temp_dir().join(format!("pandacode-team-save-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let store = Store::open(&directory.join("store.sqlite")).unwrap();
+        store.db.execute_batch("PRAGMA foreign_keys=OFF").unwrap();
+        let config: TeamConfig = serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap();
+        let mut team = new_team("big".into(), config);
+        team.status = "running".into();
+        team.objective = "x".repeat(2 << 20);
+        save(&store, &mut team).unwrap();
+        let content = serde_json::to_string(&team).unwrap();
+        let measure = |store: &Store, team: &mut TeamSnapshot| {
+            let write = median_micros(21, || write_snapshot(store, team, &content).unwrap());
+            let saved = median_micros(21, || save(store, team).unwrap());
+            let read = median_micros(201, || assert!(is_active(store, "big")));
+            (write, saved, read)
+        };
+        let (write, saved, read) = measure(&store, &mut team);
+        eprintln!("2 MiB team, metadata tracker: snapshot write {write} us, full save {saved} us, is_active {read} us (medians)");
+        // The status index this replaced, as SQLite maintained it on every save.
+        store.db.execute_batch("CREATE INDEX architect_teams_status ON architect_teams(session_id,(CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END))").unwrap();
+        let (old_write, old_saved, _) = measure(&store, &mut team);
+        let old_read = median_micros(201, || {
+            let status: Option<String> = store.db.query_row("SELECT CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END FROM architect_teams INDEXED BY architect_teams_status WHERE session_id=?1", ["big"], |row| row.get(0)).unwrap();
+            assert_eq!(status.as_deref(), Some("running"));
+        });
+        eprintln!("2 MiB team, old status index: snapshot write {old_write} us, full save {old_saved} us, indexed read {old_read} us (medians)");
+        // Generous for loaded machines and debug SQLite; the index alone parses 4 MiB per save.
+        assert!(write < old_write, "a save no longer parses the snapshot: {write} us vs {old_write} us with the index");
+        drop(store);
+        let _ = std::fs::remove_dir_all(directory);
+    }
+}

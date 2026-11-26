@@ -414,18 +414,7 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
         let mut ids: HashMap<String, Option<String>> = HashMap::new();
         let events = relabel(list, |remote| ids.entry(remote.to_owned()).or_insert_with(|| local_id(&store, from, remote)).clone());
         save_subagents(&store, &events);
-        let mut changed = false;
-        for event in &events {
-            let (Some(id), Some(kind)) = (event["sessionId"].as_str(), event["kind"].as_str()) else { continue };
-            let current: String = store.db.query_row("SELECT status FROM sessions WHERE id=?1", [id], |r| r.get(0)).unwrap_or_default();
-            if let Some(next) = status_after(&current, kind) {
-                if store.status(id, next).is_ok() {
-                    changed = true;
-                    // A thread that now needs the user ends its parent's `pandacode_machine_wait`.
-                    super::orchestrate::child_changed(&store, id);
-                }
-            }
-        }
+        let changed = move_statuses(&store, &events);
         (events, changed)
     };
     {
@@ -442,18 +431,139 @@ fn show(app: &tauri::AppHandle, from: &str, list: &[Value]) {
     }
 }
 
+/// Moves each mirror's status by the events, reading a task's status from SQLite at most
+/// once per batch. Returns whether any status changed.
+fn move_statuses(store: &Store, events: &[Value]) -> bool {
+    let mut statuses: HashMap<String, String> = HashMap::new();
+    let mut changed = false;
+    for event in events {
+        let (Some(id), Some(kind)) = (event["sessionId"].as_str(), event["kind"].as_str()) else { continue };
+        if !may_move_status(kind) {
+            continue;
+        }
+        let current = match statuses.get(id) {
+            Some(current) => current.clone(),
+            None => {
+                let current = session_status(store, id);
+                statuses.insert(id.to_owned(), current.clone());
+                current
+            }
+        };
+        let Some(next) = status_after(&current, kind) else { continue };
+        let Ok(updated) = store.set_status_count(id, next) else { continue };
+        // A missing task keeps reading as "" (as a fresh lookup would).
+        if updated > 0 {
+            statuses.insert(id.to_owned(), next.to_owned());
+        }
+        changed = true;
+        // A thread that now needs the user ends its parent's `pandacode_machine_wait`.
+        super::orchestrate::child_changed(store, id);
+    }
+    changed
+}
+
+/// Whether [`status_after`] can move a task for this event kind: true when it moves some
+/// status, read from `status_after` itself so the two can never drift apart.
+fn may_move_status(kind: &str) -> bool {
+    // Every arm of `status_after` moves one of these: an idle task, an active one, or a waiting one.
+    ["", "running", "waiting"].iter().any(|current| status_after(current, kind).is_some())
+}
+
+fn session_status(store: &Store, id: &str) -> String {
+    store.db.prepare_cached("SELECT status FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([id], |r| r.get(0))).unwrap_or_default()
+}
+
 /// Shown in a child's response when its newest text did not fit a subscribe reply.
 const SUBAGENT_TEXT_LEFT_OUT: &str = "*Newer text from this agent did not fit the update from its computer, so it was left out here.*";
 
 /// Saves the newest snapshot of each child agent among relabelled events, so a mirror's
 /// Subagents panel (`list_subagents`) has them after a reload, as a local run's does.
+/// Every task's rows go through [`save_subagents_in_store`], all in one transaction. A child that
+/// cannot be parsed, serialized, or saved due to a statement error is skipped alone. If SQLite
+/// rolls back the transaction (I/O, disk full), the batch stops before any later task can write
+/// in autocommit mode.
 fn save_subagents(store: &Store, events: &[Value]) {
+    // Tasks keep the order their first child appears in; `slot` finds a task's group in O(1).
+    let mut by_task: Vec<(&str, Vec<crate::providers::SubagentActivity>)> = Vec::new();
+    let mut slot: HashMap<&str, usize> = HashMap::new();
     for (session, data) in newest_subagents(events) {
-        let saved = serde_json::from_value::<crate::providers::SubagentActivity>(data.clone()).map_err(|e| e.to_string()).and_then(|activity| store.save_subagent(session, &activity));
-        if let Err(error) = saved {
-            eprintln!("PandaCode Connect: could not keep a remote subagent: {error}");
+        let activity = match serde_json::from_value::<crate::providers::SubagentActivity>(data.clone()) {
+            Ok(activity) => activity,
+            Err(error) => {
+                eprintln!("PandaCode Connect: could not keep a remote subagent: {error}");
+                continue;
+            }
+        };
+        match slot.get(session) {
+            Some(&index) => by_task[index].1.push(activity),
+            None => {
+                slot.insert(session, by_task.len());
+                by_task.push((session, vec![activity]));
+            }
         }
     }
+    if by_task.is_empty() {
+        return;
+    }
+    let saved = store.in_transaction(|| {
+        let guard = crate::storage::RollbackGuard::new(&store.db);
+        for (session, activities) in &by_task {
+            // Errors are already logged. Stop if SQLite rolled back the outer transaction.
+            if let Err(error) = save_subagents_in_store(store, session, activities) {
+                if guard.rolled_back() {
+                    return Err(error);
+                }
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = saved {
+        eprintln!("PandaCode Connect: could not keep remote subagents: {error}");
+    }
+}
+
+/// Saves one task's snapshots in a transaction or in a savepoint within [`save_subagents`].
+/// Serialization and statement errors are logged and the affected row is skipped. The first
+/// such error is returned after the valid rows are written. If SQLite rolls the transaction
+/// back, return that error immediately so the caller can stop the batch.
+pub(crate) fn save_subagents_in_store(store: &Store, session_id: &str, activities: &[crate::providers::SubagentActivity]) -> Result<()> {
+    let mut first_error = None;
+    let mut contents = Vec::with_capacity(activities.len());
+    for activity in activities {
+        match crate::storage::serialize_subagent(activity) {
+            Ok(content) => contents.push((activity.id.as_str(), content, activity.updated_at)),
+            Err(error) => {
+                eprintln!("PandaCode Connect: could not keep a remote subagent: {error}");
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if !contents.is_empty() {
+        let saved = store.in_transaction(|| {
+            let guard = crate::storage::RollbackGuard::new(&store.db);
+            for (id, content, updated_at) in &contents {
+                // A FAIL trigger can report an error after changing the row.
+                if let Err(error) = crate::storage::run_savepoint(
+                    &store.db,
+                    "pandacode_mirror_subagent_row",
+                    || store.upsert_subagent_row(session_id, id, content, *updated_at),
+                    |error| error.to_string(),
+                ) {
+                    if guard.rolled_back() {
+                        return Err(error);
+                    }
+                    eprintln!("PandaCode Connect: could not keep a remote subagent: {error}");
+                    first_error.get_or_insert(error);
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = saved {
+            eprintln!("PandaCode Connect: could not keep remote subagents: {error}");
+            return Err(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// A cut subscribe reply's rows, merged over what this computer saved.
@@ -751,11 +861,14 @@ async fn fill_in(app: &tauri::AppHandle, local: &str) {
     backfill_soon(app, local);
 }
 
+/// [`cut_copies`], through the `messages_remote_cut` partial index (its plan is checked in the tests).
+pub(crate) const CUT_COPIES_SQL: &str = "SELECT id,remote_cut FROM messages WHERE session_id=?1 AND remote_cut IS NOT NULL ORDER BY id";
+
 /// A mirror's copies the host cut (`cut: true`: the newest message, cut to fit a small first
 /// page), as (local id, host id). They stay marked (`messages.remote_cut`) across restarts
 /// until [`uncut`] fetches them whole.
-fn cut_copies(store: &Store, local: &str) -> Result<Vec<(i64, i64)>> {
-    let mut statement = store.db.prepare("SELECT id,remote_cut FROM messages WHERE session_id=?1 AND remote_cut IS NOT NULL ORDER BY id").map_err(|e| e.to_string())?;
+pub(crate) fn cut_copies(store: &Store, local: &str) -> Result<Vec<(i64, i64)>> {
+    let mut statement = store.db.prepare_cached(CUT_COPIES_SQL).map_err(|e| e.to_string())?;
     let rows = statement.query_map([local], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
 }
@@ -779,10 +892,10 @@ async fn uncut(app: &tauri::AppHandle, local: &str) -> Result<()> {
 /// Replaces a cut copy with the page's whole message. The copy is forgotten either way: a
 /// message the host no longer has, or cuts again, stays as it is.
 pub(crate) fn replace_cut(store: &Store, local: &str, (id, host_id): (i64, i64), page: &Value) -> Result<bool> {
-    store.db.execute("UPDATE messages SET remote_cut=NULL WHERE id=?1 AND session_id=?2", params![id, local]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("UPDATE messages SET remote_cut=NULL WHERE id=?1 AND session_id=?2").and_then(|mut statement| statement.execute(params![id, local])).map_err(|e| e.to_string())?;
     let Some(message) = page["messages"].as_array().and_then(|messages| messages.first()).filter(|m| m["id"].as_i64() == Some(host_id) && m["cut"] != true) else { return Ok(false) };
     let (_, role, content, created_at) = valid_message(message)?;
-    let changed = store.db.execute("UPDATE messages SET role=?3,content=?4,created_at=?5,turn_duration_ms=?6 WHERE id=?1 AND session_id=?2", params![id, local, role, content, created_at, message["turnDurationMs"].as_i64()]).map_err(|e| e.to_string())?;
+    let changed = store.db.prepare_cached("UPDATE messages SET role=?3,content=?4,created_at=?5,turn_duration_ms=?6 WHERE id=?1 AND session_id=?2").and_then(|mut statement| statement.execute(params![id, local, role, content, created_at, message["turnDurationMs"].as_i64()])).map_err(|e| e.to_string())?;
     Ok(changed > 0)
 }
 
@@ -860,9 +973,9 @@ async fn yield_to_calls(app: &tauri::AppHandle, device: &str) {
 
 /// The backfill base and the oldest host id copied so far, while older messages remain.
 fn oldest_copied(store: &Store, local: &str) -> Result<Option<(i64, i64)>> {
-    let base: Option<i64> = store.db.query_row("SELECT remote_backfill_base FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let base: Option<i64> = store.db.prepare_cached("SELECT remote_backfill_base FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([local], |r| r.get(0))).map_err(|e| e.to_string())?;
     let Some(base) = base else { return Ok(None) };
-    let oldest: Option<i64> = store.db.query_row("SELECT MIN(id) FROM messages WHERE session_id=?1 AND id>?2", params![local, base], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let oldest: Option<i64> = store.db.prepare_cached("SELECT MIN(id) FROM messages WHERE session_id=?1 AND id>?2").and_then(|mut statement| statement.query_row(params![local, base], |r| r.get(0))).map_err(|e| e.to_string())?;
     Ok(oldest.map(|id| (base, id - base)))
 }
 
@@ -878,13 +991,13 @@ fn valid_message(message: &Value) -> Result<(i64, &str, &str, i64)> {
 fn insert_copy(store: &Store, local: &str, id: Option<i64>, message: &Value) -> Result<()> {
     let (host_id, role, content, created_at) = valid_message(message)?;
     let cut = (message["cut"] == true).then_some(host_id);
-    store.db.execute("INSERT INTO messages(id,session_id,role,content,created_at,turn_duration_ms,remote_cut) VALUES (?1,?2,?3,?4,?5,?6,?7)", params![id, local, role, content, created_at, message["turnDurationMs"].as_i64(), cut]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("INSERT INTO messages(id,session_id,role,content,created_at,turn_duration_ms,remote_cut) VALUES (?1,?2,?3,?4,?5,?6,?7)").and_then(|mut statement| statement.execute(params![id, local, role, content, created_at, message["turnDurationMs"].as_i64(), cut])).map_err(|e| e.to_string())?;
     Ok(())
 }
 
 fn store_title(store: &Store, local: &str, page: &Value) -> Result<()> {
     if let Some(title) = page["title"].as_str().map(str::trim).filter(|title| !title.is_empty() && title.chars().count() <= 200) {
-        store.db.execute("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2 AND title_origin<>'manual'", params![local, title]).map_err(|e| e.to_string())?;
+        store.db.prepare_cached("UPDATE sessions SET title=?2 WHERE id=?1 AND title<>?2 AND title_origin<>'manual'").and_then(|mut statement| statement.execute(params![local, title])).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -909,7 +1022,7 @@ fn ascending(messages: &[Value], low: i64, high: i64) -> Result<()> {
 /// longer starts at the stored position (another sync got there first) is skipped.
 pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -> Result<bool> {
     let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
-    let current: i64 = store.db.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let current: i64 = store.db.prepare_cached("SELECT remote_synced_id FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([local], |r| r.get(0))).map_err(|e| e.to_string())?;
     if current != after {
         return Ok(false);
     }
@@ -920,7 +1033,7 @@ pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -
     }
     let last = messages.last().and_then(|m| m["id"].as_i64()).unwrap_or(after);
     store_title(store, local, page)?;
-    store.db.execute("UPDATE sessions SET remote_synced_id=?2 WHERE id=?1", params![local, last]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("UPDATE sessions SET remote_synced_id=?2 WHERE id=?1").and_then(|mut statement| statement.execute(params![local, last])).map_err(|e| e.to_string())?;
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(page["hasMore"] == true && last > after)
 }
@@ -930,21 +1043,21 @@ pub(crate) fn store_page(store: &Store, local: &str, after: i64, page: &Value) -
 /// pages ([`store_older`]) and the thread still reads in host order. Returns whether it stored.
 pub(crate) fn store_tail(store: &Store, local: &str, page: &Value) -> Result<bool> {
     let transaction = store.db.unchecked_transaction().map_err(|e| e.to_string())?;
-    let current: i64 = store.db.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let current: i64 = store.db.prepare_cached("SELECT remote_synced_id FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([local], |r| r.get(0))).map_err(|e| e.to_string())?;
     if current != 0 {
         return Ok(false);
     }
     let messages = page["messages"].as_array().map(Vec::as_slice).unwrap_or_default();
     ascending(messages, 0, i64::MAX)?;
     let Some(last) = messages.last().and_then(|m| m["id"].as_i64()) else { return Ok(false) };
-    let base: i64 = store.db.query_row("SELECT MAX(COALESCE((SELECT MAX(id) FROM messages),0),COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0))", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let base: i64 = store.db.prepare_cached("SELECT MAX(COALESCE((SELECT MAX(id) FROM messages),0),COALESCE((SELECT seq FROM sqlite_sequence WHERE name='messages'),0))").and_then(|mut statement| statement.query_row([], |r| r.get(0))).map_err(|e| e.to_string())?;
     base.checked_add(last).ok_or("The other computer sent an invalid message.")?;
     for message in messages {
         insert_copy(store, local, Some(base + message["id"].as_i64().unwrap_or_default()), message)?;
     }
     store_title(store, local, page)?;
     let older = (page["hasOlder"] == true).then_some(base);
-    store.db.execute("UPDATE sessions SET remote_synced_id=?2,remote_backfill_base=?3 WHERE id=?1", params![local, last, older]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("UPDATE sessions SET remote_synced_id=?2,remote_backfill_base=?3 WHERE id=?1").and_then(|mut statement| statement.execute(params![local, last, older])).map_err(|e| e.to_string())?;
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(true)
 }
@@ -963,7 +1076,7 @@ pub(crate) fn store_older(store: &Store, local: &str, (base, before): (i64, i64)
     }
     let more = page["hasOlder"] == true && !messages.is_empty();
     if !more {
-        store.db.execute("UPDATE sessions SET remote_backfill_base=NULL WHERE id=?1", [local]).map_err(|e| e.to_string())?;
+        store.db.prepare_cached("UPDATE sessions SET remote_backfill_base=NULL WHERE id=?1").and_then(|mut statement| statement.execute([local])).map_err(|e| e.to_string())?;
     }
     transaction.commit().map_err(|e| e.to_string())?;
     Ok(more)
@@ -1249,7 +1362,7 @@ pub(super) fn store_first(store: &Store, local: &str, after: i64, page: &Value) 
 }
 
 fn synced_id(store: &Store, local: &str) -> i64 {
-    store.db.query_row("SELECT remote_synced_id FROM sessions WHERE id=?1", [local], |r| r.get(0)).unwrap_or(0)
+    store.db.prepare_cached("SELECT remote_synced_id FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([local], |r| r.get(0))).unwrap_or(0)
 }
 
 /// Shows a subscribe reply's replayed entries in order and moves this viewer's positions;
@@ -1308,7 +1421,7 @@ fn catch_up(app: &tauri::AppHandle, device: &str, reply: &Value, requested: &[St
         let row = app.state::<AppState>().store.lock().ok().and_then(|store| {
             let local = local_id(&store, device, session)?;
             // Unfinished: a backfill or a cut copy left by an earlier run (say, before a quit).
-            store.db.query_row("SELECT status,remote_synced_id,remote_backfill_base IS NOT NULL OR EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND remote_cut IS NOT NULL) FROM sessions WHERE id=?1", [&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?))).ok()
+            store.db.prepare_cached("SELECT status,remote_synced_id,remote_backfill_base IS NOT NULL OR EXISTS(SELECT 1 FROM messages WHERE session_id=sessions.id AND remote_cut IS NOT NULL) FROM sessions WHERE id=?1").and_then(|mut statement| statement.query_row([&local], |r| Ok((local.clone(), r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, bool>(2)?)))).ok()
         });
         let Some((local, current, synced, unfinished)) = row else { continue };
         match reconcile(&current, status) {
@@ -2055,6 +2168,101 @@ mod tests {
     }
 
     #[test]
+    fn only_status_moving_kinds_read_the_status() {
+        for current in ["", "idle", "running", "waiting", "completed", "failed", "stopped"] {
+            for kind in ["subagent", "usage", "run_end", "error", "turn_changes", "thinking", "approval", "text", "status", "input_cancelled"] {
+                if status_after(current, kind).is_some() {
+                    assert!(may_move_status(kind), "{kind} moves {current}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn statuses_move_once_per_batch_with_a_cached_read() {
+        let (store, id) = store();
+        store.status(&id, "idle").unwrap();
+        let event = |kind: &str| json!({"sessionId": id, "kind": kind});
+        let events = [event("subagent"), event("text"), event("tool"), event("approval"), event("text"), event("approval_cancelled")];
+        assert!(move_statuses(&store, &events));
+        assert_eq!(session_status(&store, &id), "running");
+        assert!(!move_statuses(&store, &[event("text"), event("usage")]), "an active task stays as it is");
+        assert!(move_statuses(&store, &[event("input_request")]));
+        assert_eq!(session_status(&store, &id), "waiting");
+        assert!(move_statuses(&store, &[json!({"sessionId": "gone", "kind": "text"})]), "a missing task still reads as moved, as before");
+    }
+
+    #[test]
+    fn subagents_save_in_one_transaction_keeping_valid_rows() {
+        let (store, id) = store();
+        let child = |child: &str, updated_at: i64| crate::providers::SubagentActivity { id: child.into(), parent_id: None, name: "bg".into(), prompt: "p".into(), status: "running".into(), response: "r".into(), tools: Vec::new(), started_at: 1, updated_at };
+        save_subagents_in_store(&store, &id, &[child("a", 2), child("b", 3)]).unwrap();
+        let error = save_subagents_in_store(&store, &id, &[child("", 4), child("a", 5)]).unwrap_err();
+        assert_eq!(error, "Subagent activity has an invalid ID.");
+        let saved = store.subagents(&id).unwrap();
+        assert_eq!(saved.iter().map(|c| (c.id.as_str(), c.updated_at)).collect::<Vec<_>>(), [("a", 5), ("b", 3)]);
+        assert!(store.db.is_autocommit(), "no transaction left open");
+    }
+
+    #[test]
+    fn subagent_statement_error_preserves_neighboring_snapshots() {
+        let (store, id) = store();
+        store.db.execute_batch(
+            "CREATE TRIGGER reject_bad_subagent BEFORE INSERT ON subagents WHEN NEW.id='bad'
+             BEGIN SELECT RAISE(ABORT, 'bad row'); END;",
+        ).unwrap();
+        let child = |id: &str, updated_at| crate::providers::SubagentActivity {
+            id: id.into(),
+            parent_id: None,
+            name: "background agent".into(),
+            prompt: "p".into(),
+            status: "completed".into(),
+            response: "r".into(),
+            tools: Vec::new(),
+            started_at: 1,
+            updated_at,
+        };
+        let activities = [child("before", 2), child("bad", 3), child("after", 4)];
+        assert_eq!(save_subagents_in_store(&store, &id, &activities), Err("bad row".into()));
+        assert!(store.db.is_autocommit());
+        let saved = store.subagents(&id).unwrap();
+        assert_eq!(saved.iter().map(|child| child.id.as_str()).collect::<Vec<_>>(), ["after", "before"]);
+    }
+
+    #[test]
+    fn subagent_fail_trigger_rolls_back_only_the_rejected_row() {
+        let (store, id) = store();
+        store.db.execute_batch(
+            "CREATE TRIGGER reject_bad_subagent AFTER INSERT ON subagents WHEN NEW.id='bad'
+             BEGIN SELECT RAISE(FAIL, 'bad row'); END;",
+        ).unwrap();
+        let child = |id: &str, updated_at| crate::providers::SubagentActivity {
+            id: id.into(),
+            parent_id: None,
+            name: "background agent".into(),
+            prompt: "p".into(),
+            status: "completed".into(),
+            response: "r".into(),
+            tools: Vec::new(),
+            started_at: 1,
+            updated_at,
+        };
+        let activities = [child("before", 2), child("bad", 3), child("after", 4)];
+        assert_eq!(save_subagents_in_store(&store, &id, &activities), Err("bad row".into()));
+        assert!(store.db.is_autocommit());
+        let saved = store.subagents(&id).unwrap();
+        assert_eq!(saved.iter().map(|child| child.id.as_str()).collect::<Vec<_>>(), ["after", "before"]);
+    }
+
+    #[test]
+    fn cut_copies_use_the_partial_index() {
+        let (store, id) = store();
+        let plan: String = store.db.query_row(&format!("EXPLAIN QUERY PLAN {CUT_COPIES_SQL}"), [&id], |r| r.get(3)).unwrap();
+        assert!(plan.contains("messages_remote_cut"), "{plan}");
+        assert!(cut_copies(&store, &id).unwrap().is_empty());
+    }
+
+    #[test]
     fn a_worktree_fallback_note_is_one_short_line() {
         assert_eq!(start_note(&json!({"sessionId": "s"})), None);
         assert_eq!(start_note(&json!({"note": "  "})), None);
@@ -2172,7 +2380,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pandacode-mirror-{}.sqlite3", uuid::Uuid::new_v4()));
         {
             let store = Store::open(&path).unwrap();
-            store.db.execute_batch("DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device; ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id; PRAGMA user_version=25;").unwrap();
+            store.db.execute_batch("DROP INDEX IF EXISTS sessions_remote_pending; DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device; ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id; PRAGMA user_version=25;").unwrap();
         }
         let store = Store::open(&path).unwrap();
         assert_eq!((crate::storage::SCHEMA_VERSION, store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap()), (crate::storage::SCHEMA_VERSION, crate::storage::SCHEMA_VERSION));
@@ -2798,5 +3006,25 @@ mod tests {
         assert_eq!(repo_summary("git@github.com:orbit-labs/orbit.git\n", "feature\n", " M src/a.rs\n", Some("3\n"), true), json!({"repo": "orbit-labs/orbit", "branch": "feature", "ahead": 3, "dirty": true, "pushed": true}));
         assert_eq!(repo_summary("", "", "", None, false), json!({"repo": null, "branch": "", "ahead": 0, "dirty": false, "pushed": false}));
         assert_eq!(repo_summary("https://gitlab.com/a/b.git", "main", "", Some("x"), false)["repo"], Value::Null);
+    }
+
+    #[test]
+    fn a_rolled_back_subagent_batch_stops_before_writing_other_tasks() {
+        let (store, first) = store();
+        let project = store.session(&first).unwrap().project_id;
+        let second = store.create_session(&project, "codex", "default", "ask").unwrap().id;
+        // RAISE(ROLLBACK) rolls the transaction back, as an I/O or disk-full error does.
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_boom BEFORE INSERT ON subagents WHEN NEW.id='boom'
+                 BEGIN SELECT RAISE(ROLLBACK,'simulated disk full'); END;",
+            )
+            .unwrap();
+        let row = |session: &str, id: &str| json!({"sessionId": session, "kind": "subagent", "data": {"id": id, "parentId": null, "name": "bg", "prompt": "", "status": "completed", "response": "", "tools": [], "startedAt": 1, "updatedAt": 2}});
+        save_subagents(&store, &[row(&first, "kept"), row(&first, "boom"), row(&second, "after")]);
+        assert!(store.db.is_autocommit());
+        assert!(store.subagents(&first).unwrap().is_empty(), "the batch was rolled back");
+        assert!(store.subagents(&second).unwrap().is_empty(), "no later task is written in autocommit mode");
     }
 }

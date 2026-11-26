@@ -1,11 +1,21 @@
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createReadStream, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 
 export const root = fileURLToPath(new URL('../../', import.meta.url));
+
+export function isMain(metaUrl, argv1 = process.argv[1]) {
+  if (!argv1) return false;
+  try {
+    return realpathSync(fileURLToPath(metaUrl)) === realpathSync(resolve(argv1));
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
 
 // One entry per published desktop build. `asset` is the stable file name on a
 // GitHub Release, so https://github.com/aicodeking/pandacode/releases/latest/download/<asset>

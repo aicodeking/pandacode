@@ -1,0 +1,121 @@
+/* The thread's Google Colab runtimes (colab-pip.ts): a pill, or a card of runtime rows, floating at the
+ * conversation's top right, left of the action dock (the script sets --cp-top, --cp-edge and --cp-room). It takes
+ * no layout. The pill and card are the action dock's card (action-dock.css): its fill, blur, radius and hairline;
+ * rows are inner cards. Every colour is a theme token; state reads from one dot tone (--cp-tone) and always from
+ * text too. Motion is the Web Animations API and the shared state pulse; transitions only ease colour and opacity. */
+.conversation-pane{position:relative}
+.colab-pip{--cp-fill:var(--dock-fill);--cp-ring:var(--frame,var(--bg));position:absolute;z-index:6;top:var(--cp-top,12px);right:var(--cp-edge,14px);
+  box-sizing:border-box;max-width:var(--cp-max-w,calc(100% - var(--cp-edge,14px) - 14px));max-height:var(--cp-room,70vh);display:flex;justify-content:flex-end;
+  font-size:var(--type-meta);color:var(--text);text-shadow:none}
+.colab-pip[hidden]{display:none}
+/* A surface that is going (the card as it collapses, the pip as its last runtime goes) fades out in a shell beside
+ * the pip, the pip's own box again; nothing in it takes a pointer. */
+.colab-pip.cp-ghost{pointer-events:none}
+/* The progress PiP keeps whichever corner it is parked in. Beside one in a top corner the pip is no wider than the
+ * room there (--cp-max-w), on the left when the PiP is top right; in a pane too narrow for both, and above one in a
+ * bottom corner, the script moves it under the PiP (--cp-top) or ends its room over it (--cp-room). */
+.colab-pip[data-side="left"]{right:auto;left:14px;justify-content:flex-start}
+/* Give the top message breathing room under the floating pill, matching progress-pip's data-pip-top: its 76px when
+ * both pills share the row, and further (--colab-pip-clear) when the pip sits under the PiP's pill. */
+.conversation-pane[data-colab-pip-top] .transcript{padding-top:max(var(--transcript-top,28px),calc(var(--header-under,0px) + var(--colab-pip-clear,72px)))}
+.conversation-pane[data-pip-top][data-colab-pip-top] .transcript{padding-top:max(var(--transcript-top,28px),calc(var(--header-under,0px) + max(76px,var(--colab-pip-clear,72px))))}
+
+.colab-pip [data-runtime]{--cp-tone:var(--muted)}
+.colab-pip [data-runtime="ready"]{--cp-tone:var(--ds-success)}
+.colab-pip :is([data-runtime="creating"],[data-runtime="busy"],[data-runtime="restarting"],[data-runtime="stopping"]){--cp-tone:var(--ds-info)}
+.colab-pip [data-runtime="error"]{--cp-tone:var(--ds-danger)}
+.cp-dot{flex:none;width:7px;height:7px;border-radius:50%;background:var(--cp-tone)}
+@media(prefers-reduced-motion:no-preference){
+  .colab-pip :is([data-runtime="creating"],[data-runtime="busy"],[data-runtime="restarting"],[data-runtime="stopping"]) .cp-dot{animation:state-pulse 1.6s ease-in-out infinite}
+  .cp-icon[aria-busy="true"]>.icon{animation:state-pulse 1.6s ease-in-out infinite}
+}
+
+.cp-pill,.cp-card{box-sizing:border-box;border:0;border-radius:var(--ds-card-radius);background:var(--cp-fill);
+  backdrop-filter:var(--dock-blur);-webkit-backdrop-filter:var(--dock-blur);box-shadow:var(--dock-edge)}
+
+/* Collapsed pill. Hover and press are a neutral layer over the fill (::before), so the solid fallbacks below keep them. */
+.cp-pill{position:relative;max-width:min(280px,100%);gap:10px;justify-content:flex-start;padding:var(--ds-card-pad) 10px var(--ds-card-pad) var(--ds-card-pad);color:var(--text);font:inherit;text-align:left;cursor:pointer}
+.cp-pill::before{content:"";position:absolute;inset:0;border-radius:inherit;background:var(--ds-row-hover);opacity:0;pointer-events:none;transition:opacity var(--ds-ease-out) ease-out}
+.cp-pill:hover::before{opacity:1;transition-duration:var(--ds-ease-in)}
+.cp-pill:active::before{opacity:1;background:var(--ds-row-press)}
+.cp-pill>*{position:relative}
+.cp-glyph{position:relative;flex:none;display:inline-grid;place-items:center;width:30px;height:30px;border-radius:var(--ds-control-radius);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+.cp-glyph>.icon{--icon-size:17px;--icon-stroke:1.6}
+.cp-glyph>.cp-dot{position:absolute;right:-2px;bottom:-2px;width:8px;height:8px;box-shadow:0 0 0 2px var(--cp-ring)}
+.cp-text{display:flex;flex-direction:column;min-width:0;line-height:var(--type-meta-leading)}
+.cp-primary{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);color:var(--ds-row-ink)}
+.cp-status{display:flex;align-items:center;gap:5px;min-width:0;margin:0;color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading);white-space:nowrap}
+.cp-activity{min-width:0;overflow:hidden;text-overflow:ellipsis}
+.cp-sep,.cp-clock{flex:none}
+.cp-clock{font-variant-numeric:tabular-nums}
+.cp-status>[hidden]{display:none}
+.colab-pip [data-runtime="error"] .cp-activity{color:var(--ds-danger)}
+.cp-chevron{flex:none;display:inline-grid;color:var(--muted)}
+.cp-chevron>.icon{--icon-size:14px;--icon-stroke:1.8}
+
+/* Expanded card: the header stays; a long list of runtimes scrolls under it. */
+.cp-card{width:340px;max-width:100%;max-height:var(--cp-room,70vh);padding:var(--ds-card-pad);display:flex;flex-direction:column;gap:6px;overflow:hidden}
+.cp-head{flex:none;display:flex;align-items:center;gap:8px;padding-left:2px}
+.cp-head>.cp-glyph{width:28px;height:28px}
+.cp-title{margin:0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);color:var(--ds-row-ink)}
+.cp-count{position:relative;flex:none;display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;box-sizing:border-box;border-radius:var(--radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--muted);font-size:var(--type-caption);font-variant-numeric:tabular-nums;line-height:1;text-align:center}
+.cp-head-gap{flex:1}
+/* Controls are the dock's small items: muted ink, a neutral hover. */
+.cp-icon{flex:none;display:inline-grid;place-items:center;width:28px;height:28px;padding:0;border-radius:var(--ds-control-radius);background:transparent;color:var(--muted);--press:.94}
+.cp-icon>.icon{--icon-size:16px}
+.cp-icon:hover:not([aria-disabled="true"]){background:var(--ds-row-hover);color:var(--text)}
+.cp-icon:active:not([aria-disabled="true"]){background:var(--ds-row-press)}
+/* A waiting control is aria-disabled, so the one that was pressed keeps keyboard focus (colab-pip.ts). */
+:is(.cp-icon,.cp-button)[aria-disabled="true"]{opacity:.5;cursor:default;--press:1}
+
+.cp-list{flex:0 1 auto;min-height:0;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin}
+.colab-pip .cp-runtime{flex:none;display:flex;flex-direction:column;gap:6px;padding:10px;border-radius:var(--ds-inner-radius);background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-card)}
+.cp-runtime-head{display:flex;align-items:center;gap:8px;min-width:0}
+.cp-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);color:var(--ds-row-ink)}
+.cp-chips{flex:none;display:inline-flex;gap:4px}
+.cp-chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border-radius:var(--radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading);white-space:nowrap}
+.cp-runtime>.cp-status{gap:6px}
+/* An error is text to read and copy: selectable, its lines kept. It is clamped to four lines; one that does not fit them gets a toggle that shows it whole (colab-pip.ts measures). */
+.cp-error-block{display:flex;flex-direction:column;align-items:flex-start;gap:2px;min-width:0}
+.cp-error{margin:0;max-width:100%;color:var(--ds-danger);font-size:var(--type-caption);line-height:var(--type-caption-leading);white-space:pre-wrap;overflow-wrap:anywhere;user-select:text;-webkit-user-select:text;cursor:text;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:4;overflow:hidden}
+.cp-error.is-full{display:block;-webkit-line-clamp:unset;overflow:visible}
+.cp-more{min-height:24px;padding:0 2px;border-radius:var(--radius-hair);color:var(--muted);font:inherit;font-size:var(--type-caption);font-weight:var(--weight-regular);line-height:var(--type-caption-leading);text-decoration:underline;text-underline-offset:2px;--press:1}
+.cp-more:hover{color:var(--text)}
+
+/* Row actions: quiet hairline buttons; stopping a runtime or restarting its kernel asks once more in the same row, the question on its own line over its two answers. */
+.cp-actions,.cp-confirm{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:2px}
+.cp-confirm{justify-content:flex-end}
+.cp-confirm-text{flex:1 1 100%;min-width:0;padding:0 2px 2px;color:var(--ds-row-ink);font-size:var(--type-caption);line-height:var(--type-caption-leading)}
+.cp-button{flex:none;gap:5px;min-height:26px;padding:0 9px 0 7px;border-radius:var(--ds-control-radius);background:transparent;box-shadow:inset 0 0 0 1px var(--ds-border);color:var(--muted);font:inherit;font-size:var(--type-caption);line-height:var(--type-caption-leading);font-weight:var(--weight-medium);white-space:nowrap;--press:.96}
+.cp-button>.icon{--icon-size:13px;--icon-stroke:1.8}
+.cp-button:not(:has(>.icon)){padding:0 11px}
+.cp-button:hover:not([aria-disabled="true"]){background:var(--ds-row-hover);color:var(--text)}
+.cp-button:active:not([aria-disabled="true"]){background:var(--ds-row-press)}
+.cp-button.is-danger,.cp-button.is-danger:hover{background:var(--ds-danger);box-shadow:none;color:var(--bg)}
+.cp-button.is-danger:is(:hover,:active){background:color-mix(in srgb,var(--ds-danger) 88%,var(--bg))}
+:is(.cp-pill,.cp-icon,.cp-button,.cp-more):focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+@media(prefers-reduced-motion:reduce){.cp-pill::before{transition:none}}
+@media(prefers-reduced-transparency:reduce),(prefers-contrast:more){
+  .colab-pip{--cp-fill:var(--panel);--cp-ring:var(--panel)}
+  .cp-pill,.cp-card{backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media(prefers-contrast:more){
+  .colab-pip{--cp-fill:var(--bg);--cp-ring:var(--bg)}
+  .cp-pill,.cp-card{box-shadow:none;outline:1px solid var(--text)}
+  .colab-pip .cp-runtime,.cp-glyph,.cp-button:not(.is-danger),.cp-chip,.cp-count{box-shadow:inset 0 0 0 1px var(--text)}
+  .cp-status,.cp-chip,.cp-count,.cp-button:not(.is-danger),.cp-icon,.cp-chevron,.cp-more{color:var(--text)}
+}
+@media(forced-colors:active){
+  .cp-pill,.cp-card{border:1px solid CanvasText;background:Canvas}
+  .colab-pip .cp-runtime,.cp-glyph,.cp-chip,.cp-count,.cp-button{border:1px solid ButtonText;box-shadow:none}
+  .cp-pill::before{display:none}
+  .cp-pill:hover,:is(.cp-icon,.cp-button):hover:not([aria-disabled="true"]){outline:1px solid Highlight}
+  :is(.cp-icon,.cp-button)[aria-disabled="true"]{opacity:1;color:GrayText;border-color:GrayText}
+  .cp-dot{background:CanvasText;box-shadow:none}
+  /* Only a stopped runtime is greyed; an error keeps full ink, so it does not read as disabled. */
+  .colab-pip [data-runtime="stopped"] .cp-dot{background:GrayText}
+  .colab-pip [data-runtime="error"] .cp-dot{background:CanvasText}
+  .colab-pip [data-runtime="error"] .cp-activity,.cp-error{color:CanvasText}
+  .cp-button.is-danger,.cp-button.is-danger:hover{background:ButtonFace;color:ButtonText}
+}

@@ -1,5 +1,5 @@
 import type { GitFile, GitStatus } from './types';
-import type { DiffViewerController, DiffViewerReaderState } from './diff-viewer';
+import type { DiffViewerController } from './diff-viewer';
 import { escape, fileIcon, icon } from './dom';
 import './changes-view.css';
 import { errorText } from './error-text';
@@ -21,41 +21,41 @@ export interface ChangesView {
    * `status` is a new object, or always/never with an explicit `refetch`; a viewer re-mounts only
    * when its patch text changed. */
   update(status: GitStatus | null, error?: string, options?: { refetch?: boolean }): void;
-  /** Hidden inspectors retain patches, folds and scroll, while releasing their renderers. */
-  setVisible(visible: boolean): void;
   dispose(): void;
 }
 
 type Scope = 'all' | 'unstaged' | 'staged';
-type Load = 'idle' | 'loading' | 'loaded' | 'evicted' | 'error';
+type Load = 'idle' | 'loading' | 'loaded' | 'error';
 interface Entry {
   path: string; staged: boolean; sig: string; code: string;
   el: HTMLElement; body: HTMLElement; stat: HTMLElement;
   load: Load; token: number; raw: string; patch: string; adds: number; dels: number;
-  near: boolean; refresh: boolean; used: number; height?: number; reader?: DiffViewerReaderState;
   viewer?: DiffViewerController; slot?: HTMLElement; shown?: string;
   /** Viewers still on screen until their replacement has rendered. */
   stale: { viewer: DiffViewerController; slot: HTMLElement }[];
 }
 
+const EAGER = 8;
 const REFETCH_GAP = 1_000;
-const PATCH_CACHE_BYTES = 16 * 1024 * 1024;
-const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
 // Added to each diff's shadow root (by the viewer, also for hunk groups that mount later): long lines scroll with a visible bar; wrapped code may break anywhere (so indentation never
 // sits alone on a row), and hunk headers are one slim muted line.
 const SHADOW_CSS = `
   pre[data-diff][data-overflow='wrap'] [data-line] { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
   pre[data-diff] [data-code] { scrollbar-gutter: stable; }
   pre[data-diff] [data-code]::-webkit-scrollbar { height: 10px; background: transparent; }
-  pre[data-diff] [data-code]::-webkit-scrollbar-thumb { background: color-mix(in srgb, currentColor 35%, transparent); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+  pre[data-diff] [data-code]::-webkit-scrollbar-thumb { background: color-mix(in srgb, currentColor 35%, transparent); border-radius: var(--radius-chip); border: 2px solid transparent; background-clip: content-box; }
   pre[data-diff] [data-code]::-webkit-scrollbar-thumb:hover { background: color-mix(in srgb, currentColor 55%, transparent); background-clip: content-box; }
   [data-file-info] { border-block: 0; }
   pre[data-diff] [data-gutter] { background-color: color-mix(in srgb, var(--diffs-fg, currentColor) 5%, var(--diffs-bg)); }
-  pre[data-diff] [data-separator='metadata'] { height: 20px; }
+  pre[data-diff] [data-separator='metadata'] { height: calc(var(--mono-size) * 5 / 3); }
   pre[data-diff] [data-separator='metadata'] [data-separator-wrapper] {
-    font-size: .68rem; line-height: 20px; opacity: .8;
+    font-size:var(--type-caption); line-height:calc(var(--mono-size) * 5 / 3); opacity: .8;
     background-color: color-mix(in srgb, var(--diffs-bg-separator) 45%, var(--diffs-bg));
-  }`;
+  }
+  /* The vendor sheet is one @layer base block; these unlayered rules win and put its literal radii (3px, 4px, 6px) on the scale. */
+  [data-diff-span] { border-radius: var(--radius-hair); }
+  [data-utility-button] { border-radius: var(--ds-control-radius); }
+  [data-separator-content] { border-start-end-radius: var(--radius-chip); border-end-end-radius: var(--radius-chip); }`;
 const TRUNCATED = /\n*\[Preview truncated at [^\]]*\]\n*$/;
 const SCOPES: Record<Scope, string> = { all: 'All changes', unstaged: 'Unstaged', staged: 'Staged' };
 const STATUS: Record<string, string> = { A: 'Added', M: 'Modified', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Modified', U: 'Conflict', '?': 'Untracked' };
@@ -85,17 +85,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   let scope: Scope = 'all';
   let status: GitStatus | null = null;
   let error: string | undefined;
-  let disposed = false, showing = true;
-  let committing = false, lastUsed = 0;
+  let disposed = false;
+  let committing = false;
   const entries = new Map<string, Entry>();
   const collapsed = new Set<string>();
   let order: string[] = [];
   let viewerModule: Promise<typeof import('./diff-viewer')> | undefined;
   let lastRefetch = 0, refetchTimer = 0, fitFrame = 0;
-  let listReader: { path: string; state: DiffViewerReaderState } | undefined;
-  let lastBodyScrollTop = 0;
-  let pendingListScrollTop: number | undefined;
-  let foldScrollTop: number | undefined;
 
   host.classList.add('changes-view');
   host.innerHTML = `
@@ -117,23 +113,28 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   const addsLabel = q('.cv-adds'), delsLabel = q('.cv-dels'), branchLabel = q('.cv-branch'), foldButton = q<HTMLButtonElement>('[data-cv-action="fold-all"]');
   const commitBar = q<HTMLFormElement>('.cv-commit'), commitInput = q<HTMLInputElement>('.cv-commit-input'), commitSubmit = q<HTMLButtonElement>('.cv-commit-submit');
 
+  /** The list has a real box: a hidden or closed inspector gives it 0×0, where every row "intersects" the empty root.
+   *  Nothing loads or mounts then, so a closed inspector never starts the diff engine. */
+  const hasSize = (): boolean => {
+    if (!body.isConnected) return false;
+    const rect = body.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  /** Set when something was skipped for want of a size: the next resize with a size runs reveal(). */
+  let skipped = false;
+  /** Mounts parked while the list had no size: each runs once it has one. */
+  const parked = new Set<Entry>();
   const observer = new IntersectionObserver(records => {
+    if (!hasSize()) { skipped = true; return; }
     for (const record of records) {
+      if (!record.isIntersecting) continue;
       const entry = entries.get((record.target as HTMLElement).dataset.path ?? '');
-      if (!entry) continue;
-      entry.near = record.isIntersecting;
-      if (entry.near) show(entry);
-      else suspend(entry);
+      if (entry && entry.load === 'idle') void load(entry);
     }
-    trimPatches();
   }, { root: body, rootMargin: '800px 0px' });
   const resizer = new ResizeObserver(() => {
-    if (pendingListScrollTop !== undefined && body.clientHeight > 0) {
-      body.scrollTop = pendingListScrollTop;
-      lastBodyScrollTop = body.scrollTop;
-      pendingListScrollTop = undefined;
-    }
     scheduleFit();
+    if (skipped && hasSize()) reveal();
   });
   resizer.observe(body);
 
@@ -152,7 +153,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function setStat(entry: Entry): void {
     const parts: string[] = [];
-    if (entry.load === 'loaded' || entry.load === 'evicted') {
+    if (entry.load === 'loaded') {
       if (entry.adds) parts.push(`<span class="cv-add">+${entry.adds}</span>`);
       if (entry.dels) parts.push(`<span class="cv-del">-${entry.dels}</span>`);
     }
@@ -199,7 +200,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function totals(): void {
     let adds = 0, dels = 0;
-    for (const entry of entries.values()) { adds += entry.adds; dels += entry.dels; }
+    for (const entry of entries.values()) if (entry.load === 'loaded') { adds += entry.adds; dels += entry.dels; }
     const n = entries.size;
     filesLabel.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : '';
     addsLabel.textContent = n ? `+${adds}` : '';
@@ -234,60 +235,14 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
   }
 
   function drop(entry: Entry): void {
-    if (entry.viewer) entry.reader = entry.viewer.getReaderState();
+    parked.delete(entry);
     entry.viewer?.dispose();
     for (const old of entry.stale.splice(0)) old.viewer.dispose();
     entry.viewer = entry.slot = entry.shown = undefined;
   }
 
-  /** The Changes list owns its one outer scroll position; individual entries never do. */
-  function captureListReader(path?: string): void {
-    const scrollTop = body.clientHeight > 0 ? body.scrollTop : lastBodyScrollTop;
-    if (!path) pendingListScrollTop = scrollTop;
-    listReader = undefined;
-    for (const entry of entries.values()) {
-      if (path && entry.path !== path) continue;
-      if (entry.viewer) {
-        if (body.clientHeight > 0) entry.height = entry.body.getBoundingClientRect().height || entry.height;
-        entry.reader = entry.viewer.getReaderState();
-      }
-      const state = entry.reader;
-      if (state?.anchor && Math.abs(state.top - scrollTop) <= 1 && (!listReader || state.anchor.offset < listReader.state.anchor!.offset)) {
-        listReader = { path: entry.path, state };
-      }
-    }
-  }
-
-  /** Keep an offscreen diff's extent, so releasing its renderer does not move the list's scroll. */
-  function suspend(entry: Entry): void {
-    if (!entry.viewer) return;
-    entry.height = entry.body.getBoundingClientRect().height || entry.height;
-    if (entry.height) entry.body.style.minHeight = `${entry.height}px`;
-    drop(entry);
-    entry.body.replaceChildren();
-  }
-
-  function trimPatches(): void {
-    // Count UTF-16 storage conservatively, including a separate stripped patch when present.
-    const bytes = (entry: Entry) => 2 * (entry.raw.length + (entry.patch === entry.raw ? 0 : entry.patch.length));
-    let total = 0;
-    for (const entry of entries.values()) total += bytes(entry);
-    if (total <= PATCH_CACHE_BYTES) return;
-    const candidates = [...entries.values()].filter(entry => entry.load === 'loaded' && (!showing || !entry.near || collapsed.has(entry.path))).sort((a, b) => a.used - b.used);
-    for (const entry of candidates) {
-      if (total <= PATCH_CACHE_BYTES) break;
-      suspend(entry);
-      total -= bytes(entry);
-      entry.raw = entry.patch = '';
-      entry.load = 'evicted';
-      entry.token++;
-    }
-  }
-
   function reset(entry: Entry): void {
     drop(entry);
-    entry.body.style.minHeight = '';
-    entry.height = undefined;
     entry.token++;
     entry.load = 'idle';
     entry.raw = entry.patch = '';
@@ -316,7 +271,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     if (!quiet) entry.load = 'loading';
     try {
       const text = await deps.loadDiff(entry.path, entry.staged);
-      if (disposed || entries.get(entry.path) !== entry || token !== entry.token) return;
+      if (disposed || token !== entry.token) return;
       if (quiet && entry.load === 'loaded' && text === entry.raw) { mountViewer(entry); return; }
       entry.raw = text;
       const truncated = TRUNCATED.test(text);
@@ -326,12 +281,9 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       setStat(entry);
       totals();
       mountViewer(entry);
-      trimPatches();
     } catch (reason) {
       if (disposed || token !== entry.token || (quiet && entry.load === 'loaded')) return;
       drop(entry);
-      entry.body.style.minHeight = '';
-      entry.height = undefined;
       entry.load = 'error';
       entry.body.innerHTML = `<div class="cv-placeholder cv-error">${icon('alert')}<span>${escape(reason instanceof Error ? reason.message : String(reason || 'Unable to load diff'))}</span><button type="button" class="cv-link" data-cv-action="retry-file">Retry</button></div>`;
     }
@@ -339,11 +291,13 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   /** Mounts the patch, or swaps in a new viewer once it has rendered so the old one never flashes away. */
   function mountViewer(entry: Entry): void {
-    if (!showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    if (entry.load !== 'loaded' || (entry.viewer && entry.shown === entry.raw)) return;
+    if (!hasSize()) { parked.add(entry); skipped = true; return; }
+    parked.delete(entry);
     const token = entry.token, raw = entry.raw;
     viewerModule ??= import('./diff-viewer');
     viewerModule.then(({ mountDiffViewer }) => {
-      if (disposed || !showing || entries.get(entry.path) !== entry || collapsed.has(entry.path) || !entry.near || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
+      if (disposed || token !== entry.token || (entry.viewer && entry.shown === raw)) return;
       const slot = document.createElement('div');
       slot.className = 'cv-diff';
       if (entry.viewer && entry.slot) {
@@ -351,38 +305,33 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         slot.classList.add('cv-diff-next');
         entry.body.append(slot);
       } else entry.body.replaceChildren(slot);
-      const saved = listReader?.path === entry.path ? listReader.state : entry.reader;
-      const viewer = mountDiffViewer(slot, {
-        patch: entry.patch,
-        path: entry.path,
-        layout: saved?.layout ?? 'unified',
-        wrap: saved?.wrap,
-        truncated: entry.el.dataset.truncated === 'true',
-        scrollRoot: body,
-        shadowCSS: SHADOW_CSS,
-        hunkSeparatorHeight: 20,
-        blockGap: 0,
-      });
+      const viewer = mountDiffViewer(slot, { patch: entry.patch, path: entry.path, layout: 'unified', truncated: entry.el.dataset.truncated === 'true', scrollRoot: body, shadowCSS: SHADOW_CSS });
       Object.assign(entry, { viewer, slot, shown: raw });
       void viewer.ready.then(() => {
         if (disposed || entry.viewer !== viewer) return;
         for (const old of entry.stale.splice(0)) { old.viewer.dispose(); old.slot.remove(); }
         slot.classList.remove('cv-diff-next');
-        entry.body.style.minHeight = '';
-        const restore = listReader?.path === entry.path ? listReader : undefined;
-        if (entry.reader || restore) viewer.restoreReaderState(restore?.state ?? entry.reader!, { vertical: Boolean(restore) });
-        if (restore) { listReader = undefined; pendingListScrollTop = undefined; }
-        entry.height = entry.body.getBoundingClientRect().height || entry.height;
       });
     }, () => { if (!disposed && token === entry.token) entry.body.innerHTML = `<pre class="cv-raw">${escape(entry.patch)}</pre>`; });
   }
 
+  /** The list got a size: load the eager patches, mount the parked ones, and observe the idle rows again so the
+   *  IntersectionObserver reports the ones really in view (it reported them while the box was empty). */
+  function reveal(): void {
+    if (disposed) return;
+    skipped = false;
+    for (const entry of [...parked]) { parked.delete(entry); mountViewer(entry); }
+    for (const entry of entries.values()) {
+      if (entry.load !== 'idle') continue;
+      if (order.indexOf(entry.path) < EAGER) { void load(entry); continue; }
+      observer.unobserve(entry.el);
+      observer.observe(entry.el);
+    }
+  }
+
   function refetch(): void {
     lastRefetch = Date.now();
-    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') {
-      entry.refresh = true;
-      show(entry);
-    }
+    for (const entry of entries.values()) if (entry.load === 'loaded' || entry.load === 'error') void load(entry, true);
   }
   function scheduleRefetch(): void {
     const wait = lastRefetch + REFETCH_GAP - Date.now();
@@ -431,7 +380,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       let entry = entries.get(file.path);
       if (!entry) {
         const el = element(file.path);
-        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', near: false, refresh: false, used: 0, token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
+        entry = { path: file.path, staged, sig, code: '', el, body: el.querySelector('.cv-file-body')!, stat: el.querySelector('.cv-stat')!, load: 'idle', token: 0, raw: '', patch: '', adds: 0, dels: 0, stale: [] };
         entries.set(file.path, entry);
         observer.observe(el);
         fresh.push(entry);
@@ -440,7 +389,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         entry.staged = staged;
         const wasLoaded = entry.load !== 'idle';
         reset(entry);
-        if (wasLoaded) show(entry);
+        if (wasLoaded) void load(entry);
       }
       const side = staged ? file.index : (file.index === '?' ? '?' : file.working);
       paint(entry, side);
@@ -449,34 +398,18 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       previous = entry.el;
     });
     order = wanted.map(w => w.file.path);
+    // The first few patches load right away; the rest load as they near the viewport.
+    // With no size (inspector hidden) they wait for reveal().
+    const eager = fresh.filter(entry => order.indexOf(entry.path) < EAGER && entry.load === 'idle');
+    if (eager.length && !hasSize()) skipped = true;
+    else for (const entry of eager) void load(entry);
     if (fresh.length) scheduleFit();
   }
 
-  /** Hidden panels and folded files keep budgeted patch text, but never start the diff engine. */
-  function show(entry: Entry): void {
-    if (!showing || !entry.near || collapsed.has(entry.path)) return;
-    entry.used = ++lastUsed;
-    if (entry.load === 'idle' || entry.load === 'evicted' || entry.refresh) {
-      entry.refresh = false;
-      void load(entry, entry.load === 'loaded');
-    } else mountViewer(entry);
-  }
-
-  function toggle(path: string, folded = !collapsed.has(path), captureAnchor = true): void {
-    if (folded && captureAnchor) captureListReader(path);
+  function toggle(path: string, folded = !collapsed.has(path)): void {
     if (folded) collapsed.add(path); else collapsed.delete(path);
     const entry = entries.get(path);
-    if (entry) {
-      if (folded) suspend(entry);
-      paint(entry, entry.code);
-      if (folded) {
-        drop(entry);
-        // Error and Retry are lightweight state: folding must not erase them.
-        if (entry.load !== 'error') entry.body.replaceChildren();
-      }
-      else show(entry);
-      trimPatches();
-    }
+    if (entry) paint(entry, entry.code);
   }
 
   async function run(task: Promise<void>, failure: string): Promise<void> {
@@ -544,40 +477,8 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
         break;
       case 'fold-all': {
         const fold = ![...entries.keys()].every(p => collapsed.has(p));
-        if (fold) {
-          captureListReader();
-          foldScrollTop = pendingListScrollTop;
-          pendingListScrollTop = undefined;
-          for (const p of entries.keys()) toggle(p, true, false);
-          totals();
-        } else {
-          const savedReader = listReader;
-          const savedTop = savedReader?.state.top ?? foldScrollTop;
-          foldScrollTop = undefined;
-          for (const p of entries.keys()) toggle(p, false, false);
-          totals();
-          listReader = savedReader;
-          if (savedTop !== undefined) {
-            const rounded = Math.round(savedTop);
-            if (body.clientHeight > 0) {
-              body.scrollTop = rounded;
-              lastBodyScrollTop = body.scrollTop;
-            } else {
-              pendingListScrollTop = rounded;
-            }
-          }
-          const target = savedReader ? entries.get(savedReader.path) : undefined;
-          if (target && savedReader) {
-            if (target.viewer) {
-              target.viewer.restoreReaderState(savedReader.state, { vertical: true });
-              listReader = undefined;
-              pendingListScrollTop = undefined;
-            } else {
-              target.near = true;
-              show(target);
-            }
-          }
-        }
+        for (const p of entries.keys()) toggle(p, fold);
+        totals();
         break;
       }
       case 'menu': {
@@ -607,30 +508,6 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   const listeners = new AbortController();
   host.addEventListener('click', onClick, { signal: listeners.signal });
-  const cancelListReader = () => { listReader = undefined; pendingListScrollTop = undefined; foldScrollTop = undefined; };
-  body.addEventListener('scroll', () => {
-    if (body.clientHeight > 0) lastBodyScrollTop = body.scrollTop;
-  }, { passive: true, signal: listeners.signal });
-  body.addEventListener('wheel', cancelListReader, { passive: true, signal: listeners.signal });
-  body.addEventListener('touchstart', cancelListReader, { passive: true, signal: listeners.signal });
-  body.addEventListener('pointerdown', event => {
-    if (!(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
-  }, { passive: true, signal: listeners.signal });
-  body.addEventListener('keydown', event => {
-    if (SCROLL_KEYS.has(event.key) && !(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) cancelListReader();
-  }, { signal: listeners.signal });
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) captureListReader();
-    else if (listReader) {
-      const restore = listReader;
-      const viewer = entries.get(restore.path)?.viewer;
-      if (viewer) {
-        viewer.restoreReaderState(restore.state, { vertical: true });
-        listReader = undefined;
-        pendingListScrollTop = undefined;
-      }
-    }
-  }, { signal: listeners.signal });
   commitBar.addEventListener('submit', event => { event.preventDefault(); event.stopPropagation(); void submitCommit(); }, { signal: listeners.signal });
   commitInput.addEventListener('input', totals, { signal: listeners.signal });
   commitInput.addEventListener('keydown', event => {
@@ -647,20 +524,6 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
       render();
       if (options?.refetch === true) { clearTimeout(refetchTimer); refetchTimer = 0; refetch(); }
       else if (options?.refetch ?? changed) scheduleRefetch();
-    },
-    setVisible(visible) {
-      if (disposed || showing === visible) return;
-      if (!visible) captureListReader();
-      showing = visible;
-      if (showing && pendingListScrollTop !== undefined && body.clientHeight > 0) {
-        body.scrollTop = pendingListScrollTop;
-        lastBodyScrollTop = body.scrollTop;
-        pendingListScrollTop = undefined;
-      }
-      for (const entry of entries.values()) {
-        if (showing) show(entry); else suspend(entry);
-      }
-      trimPatches();
     },
     dispose() {
       if (disposed) return;

@@ -10,7 +10,7 @@ import { markupCache } from '../src/transcript-rows.ts';
  * fails: check every value the changed code reads; anything that is not the turn's own messages must be in savedTurnHtml's
  * `parts` or in `markupEnv`. Then record the new hash below. */
 const PINNED = {
-  'src/main.ts': ['turnHtml', 'turnCardHtml', 'turnLeadHtml', 'notesHtml', 'workerSlot', 'cardless', 'cardErrorsHtml', 'errorsOpenKey', 'savedErrorsHtml', 'errorRowHtml', 'dismissAllHtml', 'dismissedNoteHtml', 'liveErrorOpen', 'cardFootHtml', 'savedActivityHtml', 'savedTurnActivity', 'markupEnv', 'savedTurnHtml',
+  'src/main.ts': ['turnHtml', 'turnCardHtml', 'turnLeadHtml', 'notesHtml', 'workerSlot', 'turnWorkerStart', 'cardless', 'cardErrorsHtml', 'errorsOpenKey', 'savedErrorsHtml', 'errorRowHtml', 'dismissAllHtml', 'dismissedNoteHtml', 'liveErrorOpen', 'cardFootHtml', 'earlierChangeSets', 'savedActivityHtml', 'savedTurnActivity', 'markupEnv', 'savedTurnHtml',
     'messageHtml', 'activityHtml', 'accountSwitchHtml', 'userContent', 'foldedLabelHtml', 'changesRow', 'changesFoot', 'steerStateHtml'],
   'src/message-actions.ts': ['messageActionsHtml'],
   'src/schedules-thread.ts': ['scheduledMark', 'workflowStep'],
@@ -23,8 +23,7 @@ const PINNED = {
   'src/turn-card.ts': ['replyHtml', 'timeHtml'],
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
-// userContent leaves image sources to the observer, so cached markup cannot retain evicted payloads.
-const RECORDED = '0475c8a9900db58c';
+const RECORDED = '15eac7ddd3011483';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {

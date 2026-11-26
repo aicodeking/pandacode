@@ -12,6 +12,12 @@ and dialogs temporarily hide the guest view so native content cannot cover them.
 There is no bundled browser engine, proxy server, or idle port polling. Browser
 history and cookies are ephemeral in this first version.
 
+The guest is a child webview of the main window, and Tauri only resolves a
+`WebviewWindow` for a window whose webviews all share its label. While this tab is
+open, a command that asks for `tauri::WebviewWindow` fails with "current webview is
+not a WebviewWindow". Workspace commands take the calling `tauri::Webview` and
+check its label instead (`is_main_webview` in `src-tauri/src/lib.rs`).
+
 Element selection highlights the hovered element and consumes the next click.
 Escape cancels it. The attached context contains the page URL, title, CSS selector,
 tag, bounded text, a sanitized markup summary, and element bounds. Form values,

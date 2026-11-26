@@ -3,7 +3,7 @@
 A task can run its agent on a cloud machine instead of this computer. In a New task, the
 context bar's computer menu ("This computer", other Connect computers) also lists
 **Cloud** targets: every provider connected in Settings → Cloud (Daytona, Docker, DigitalOcean,
-Vultr, Hetzner, RunPod, Cloudflare, AWS EC2, Google Cloud, E2B, Modal, Vercel Sandbox,
+Vultr, Hetzner, RunPod, Cloudflare, AWS EC2, Google Cloud, Google Colab, E2B, Modal, Vercel Sandbox,
 CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, Railway, boat, InstaBox). Picking one and
 sending starts the task there. The
 task then reads like any other task: streaming transcript, approvals, questions, steering,
@@ -83,6 +83,23 @@ change emits `cloud-agent://progress` `{sessionId, stage, detail}` plus
 - Follow-ups, stop, approvals, input, steering: the ordinary commands.
 - `cloud_instabox_images() → {images: [{value, label}], selected}` and
   `cloud_instabox_set_image({image}) → same` — the InstaBox machine image (below).
+- `cloud_digitalocean_catalog() → {regions, sizes, region, size}` and
+  `cloud_digitalocean_set_options({region, size}) → connections` — the DigitalOcean region
+  and machine size (below).
+- `cloud_colab_sign_in_start({oauthConfigPath?, authMode?}) → {id}` — starts the Google
+  OAuth2 loopback sign-in for Colab (below); progress arrives as `colab-sign-in` events
+  `{id, state, url?, message?, detail?}`.
+- `cloud_colab_sign_in_status() → {id, state, url?, message?} | null` — the sign-in in
+  progress or last finished, so a reopened Settings picks it up.
+- `cloud_colab_sign_in_cancel()` — cancels the sign-in in progress.
+- `cloud_colab_config() → ColabConfig` — the local Colab settings plus checks for the
+  installed tools (`uv`, `gcloud`, `google-colab-cli`).
+- `cloud_colab_usage() → {ccuBalance, ccuRate}` — the account's Colab compute-unit
+  balance and the current hourly rate.
+- `cloud_colab_set_config({accelerator?, highMem?, nativeTools?, colabMcp?}) → ColabConfig`
+  — the default hardware, High-RAM and model-access options.
+- `cloud_colab_install_cli() → ColabConfig` — installs the pinned
+  `google-colab-cli==0.8.0` with `uv tool install`, only when asked.
 
 ## Provider settings
 
@@ -91,7 +108,7 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | Provider | Key | Options |
 | --- | --- | --- |
 | docker | — (no credentials) | `engine` (`docker`, `podman`, `apple` for Apple Containers on this machine, or `lxc` for the LXD/Incus client — which selects its own remote, so no endpoint), `endpoint` (empty for this machine's daemon, `ssh://[user@]host[:port]` over the shared SSH transport — for Podman this runs the remote podman directly, `tcp://host:port` with TLS (Docker only), or `unix:///path`), `image` (default `ubuntu:24.04`), and `tlsCa`/`tlsCert`/`tlsKey` paths for `tcp://` Docker hosts. One container or instance per task, named `pc-…` (labelled `pandacode` on Docker/Podman/Apple; the prefix is the ownership marker on LXC, which has no labels). Machines keep their disk until deleted and use the host's own resources. A Docker daemon is root-equivalent on its machine — an endpoint is a trust decision like any VPS |
-| digitalocean | API token | `region` (default `nyc1`). Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
+| digitalocean | API token | `region` (default `nyc1`) and `size` (default `s-2vcpu-4gb`), chosen after connecting in Settings → Cloud from the account's own catalog (`cloud_digitalocean_catalog`, cached for an hour) or any slug typed under Custom. Droplets carry the `pandacode` tag and are persistent VMs: the disk survives stop/start, and DigitalOcean bills a droplet while it exists even when powered off — the panel's **delete** is what ends the billing. The first create registers an account SSH key holding the shared keypair's public half (`cloud/ssh.rs`), matched by key material so several computers can share the account |
 | vultr | API key | `region` (default `ewr`). Instances carry the `pandacode` tag; the Ubuntu 24.04 image is picked by name from the account's OS list at create (Vultr has no image slugs), and `user_data` is sent base64-encoded. Bill while they exist, stopped included — delete ends the billing |
 | hetzner | API token | `location` (default `fsn1`). Servers carry the `pandacode=true` label and are persistent VMs billed while they exist; CPX22 on the stock Ubuntu 24.04 image. Stop is a graceful shutdown followed by a hard poweroff, as Hetzner's own guidance orders them |
 | runpod | API key | `gpu` (default an RTX 3090) and `image` (default RunPod's own Ubuntu 24.04 base image, which ships SSH configured). Pods expose SSH on their public IP through the container's port 22 and authorize PandaCode's key with the documented `SSH_PUBLIC_KEY` pod variable; only pods named `pc-…` (the run pipeline's names) appear in the panel. The container disk is cleared when a pod stops (only the `/workspace` volume survives), so pods are non-persistent: a stopped pod is replaced by a fresh one and rehydrated, like Cloudflare's sandboxes. A running pod bills its GPU until stopped — the panel's stop releases it |
@@ -107,9 +124,39 @@ Keyed providers connect through `cloud_connect(provider, key, options)`:
 | vercel | (existing deploy token) | `projectId` and `teamId` for Sandbox, saved in `Settings.providers["vercel"]` |
 | railway | (existing deploy token) | `workspace` (existing) |
 | gcloud | (gcloud CLI login) | `zone` for Compute Engine VMs, saved in `Settings.providers["gcloud"]` |
+| colab | (Google sign-in) — one-click Google OAuth2, or `gcloud` Application Default Credentials as a fallback | Default hardware (`CPU`, GPUs `T4`, `L4`, `G4`, `A100`, `H100`; TPUs `v5e1`, `v6e1`) and optional High-RAM. Runtimes are ephemeral (`persistent: false`): Colab's tunnel keep-alive holds one for up to 90 idle minutes, after which the next prompt gets a fresh runtime, rehydrated like any non-persistent machine. SSH runs over a WebSocket with the shared Ed25519 keypair (`cloud/ssh.rs`). See [Google Colab](#google-colab) |
 
 Non-secret options live in `cloud::Settings.providers[<id>]`; a `detail` entry there is
 shown in Settings. Secrets use `cloud::set_secret("<id>_key", …)`.
+
+## Google Colab
+
+**Sign-in.** Settings → Connections → Cloud sandboxes → Google Colab → **Sign in with
+Google** runs a Google OAuth2 loopback flow with `google-colab-cli`'s public OAuth client,
+requesting `openid`, `userinfo.profile`, `userinfo.email` and `colaboratory`. When no
+local Colab CLI OAuth client file is found, that click first installs Google's pinned
+`google-colab-cli==0.8.0` with `uv tool install`. **Use gcloud ADC** instead runs
+`gcloud auth application-default login` explicitly, which rewrites gcloud's own
+Application Default Credentials file and also asks for `cloud-platform`, because `gcloud`
+requires it. Tokens live in `secret_store.rs` (the 0600 file, never the Keychain) and
+never reach the webview.
+
+**Cloud agents.** New task → **Run on** → **Google Colab** runs the task on a Colab
+runtime with the hardware chosen in Settings, through the ordinary pipeline above.
+
+**Model access.** When configured, agents can use Colab directly:
+
+- PandaCode's built-in `pandacode_colab_*` tools: Python in a persistent Jupyter
+  kernel (plots captured as images), shell exec, runtime management,
+  file sync through the Jupyter Contents API, and a URL that attaches the
+  runtime in the browser. The runtime also appears to the `pandacode_vm_*` tools.
+- Optionally, Google's official `colab-mcp` server for working in a browser notebook,
+  pinned to a commit
+  (`uvx git+https://github.com/googlecolab/colab-mcp@b9ab3899e0f1fa493390b1fd6d54aa2e464ecdf1`).
+  PandaCode injects it per local run for Claude-family harnesses, Codex, the ACP
+  harnesses, Cline, ZCode and Muse; the harness's own MCP configuration is never
+  modified. Pi and OMP get no stdio `colab-mcp`: they use the built-in
+  `pandacode_colab_*` tools through the PandaCode bridge.
 
 ## InstaBox
 
@@ -169,3 +216,15 @@ example. They land in the same 0600, self-deleting command file as the login tok
 the harness's own credentials always win over them, and a variable whose proxy points
 at this computer (`127.0.0.1`, `localhost`) refuses to start the task, because a
 cloud machine cannot reach it.
+
+Google Colab sends nothing before the user clicks **Sign in with Google** or
+**Use gcloud ADC**, or turns Google Colab on in Settings → Connections → Cloud
+sandboxes. Sign-in talks to `accounts.google.com` and `oauth2.googleapis.com`;
+runtimes are assigned through `colab.research.google.com` and reached through the
+runtime proxy on `*.colab.dev` or `*.googleusercontent.com` (Jupyter and SSH
+WebSockets).
+`google-colab-cli==0.8.0` is fetched (`uv tool install`, from `pypi.org` and
+`files.pythonhosted.org`) when Sign in with Google finds no local OAuth client file
+or the user installs it; the pinned `colab-mcp` is fetched (`uvx`, from `github.com`,
+`pypi.org` and `files.pythonhosted.org`) the first time a local run with the option on
+starts it.

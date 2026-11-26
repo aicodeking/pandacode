@@ -25,6 +25,9 @@ fn transport_error(pipe: &Pipe, stage: &str) -> String {
 /// Shown when Grok Build has no usable cached credentials.
 pub(super) const GROK_SIGN_IN: &str =
     "Grok Build is not signed in. Run `grok login` in a terminal, then send again.";
+/// Shown when Antigravity has no usable cached credentials.
+pub(super) const ANTIGRAVITY_SIGN_IN: &str =
+    "Antigravity is not signed in. Run `agy acp --login` in a terminal, then retry.";
 /// For ACP harnesses with no read-only session mode (Grok Build, DeepSeek, Muse,
 /// Hermes): plan mode is enforced by declining state-changing permission requests
 /// and telling the model up front with this prefix.
@@ -74,7 +77,10 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
         "devin" => super::devin::configure(command),
         "cursor" => super::cursor::configure(command),
         "hermes" => super::hermes::configure(command, config),
-        "antigravity" => antigravity_args(command),
+        "antigravity" => {
+            configure_antigravity_base(command, config);
+            antigravity_gemini_dir(command);
+        }
         _ => {
             #[cfg(target_os = "linux")]
             command.arg("--uid=");
@@ -82,14 +88,338 @@ pub(super) fn configure(command: &mut Command, config: &RunConfig) {
     }
 }
 
-/// The `agy` CLI needs a worker per session to accept editor-configured HTTP MCP servers.
-pub(crate) fn antigravity_args(command: &mut Command) {
+/// Whether `path` points to the standalone `agy` CLI rather than `agy_acp_server`.
+pub(crate) fn is_agy_cli(path: &Path) -> bool {
+    path.file_stem()
+        .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+}
+
+fn command_env(command: &Command, name: &str) -> Option<PathBuf> {
+    command
+        .as_std()
+        .get_envs()
+        .find(|(key, _)| key.to_string_lossy().eq_ignore_ascii_case(name))
+        .and_then(|(_, value)| value)
+        .filter(|value| !value.to_string_lossy().trim().is_empty())
+        .map(PathBuf::from)
+}
+
+fn command_home(command: &Command) -> Option<PathBuf> {
+    if cfg!(windows) {
+        command_env(command, "USERPROFILE")
+            .filter(|path| path.is_absolute())
+            .or_else(|| command_env(command, "HOME").filter(|path| path.is_absolute()))
+    } else {
+        command_env(command, "HOME")
+            .filter(|path| path.is_absolute())
+            .or_else(|| command_env(command, "USERPROFILE").filter(|path| path.is_absolute()))
+    }
+}
+
+/// Drops every `GEMINI_DIR` and `ANTIGRAVITY_GEMINI_DIR` spelling already on the command,
+/// then blocks inheritance of `GEMINI_DIR`. Unix environments are case-sensitive, so one
+/// `env_remove` leaves `gemini_dir` in place.
+fn remove_gemini_dir_envs(command: &mut Command) {
+    let keys: Vec<std::ffi::OsString> = command
+        .as_std()
+        .get_envs()
+        .filter(|(key, _)| is_gemini_dir_var(key))
+        .map(|(key, _)| key.to_os_string())
+        .collect();
+    for key in keys {
+        command.env_remove(key);
+    }
+    command.env_remove("GEMINI_DIR");
+}
+
+fn is_gemini_dir_var(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy();
+    key.eq_ignore_ascii_case("GEMINI_DIR") || key.eq_ignore_ascii_case("ANTIGRAVITY_GEMINI_DIR")
+}
+
+fn is_gemini_dir_arg(arg: &std::ffi::OsStr) -> bool {
+    let arg = arg.to_string_lossy();
+    ["--gemini-dir", "--gemini_dir"]
+        .iter()
+        .any(|flag| arg == *flag || arg.starts_with(&format!("{flag}=")))
+}
+
+fn is_home_var(key: &std::ffi::OsStr) -> bool {
+    let key = key.to_string_lossy();
+    key.eq_ignore_ascii_case("HOME") || key.eq_ignore_ascii_case("USERPROFILE")
+}
+
+/// The Gemini directory chosen on `command`: PandaCode's `GEMINI_DIR` (a named
+/// connection's config folder or the provider environment), else agy's own
+/// `ANTIGRAVITY_GEMINI_DIR`. agy's ACP server reads neither; it takes its
+/// directory from `--gemini-dir` alone.
+fn chosen_gemini_dir(command: &Command) -> Option<PathBuf> {
+    let chosen: Vec<(String, PathBuf)> = command
+        .as_std()
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_string_lossy().into_owned(), PathBuf::from(value?))))
+        .filter(|(key, value)| is_gemini_dir_var(std::ffi::OsStr::new(key)) && !value.to_string_lossy().trim().is_empty())
+        .collect();
+    ["GEMINI_DIR", "ANTIGRAVITY_GEMINI_DIR"]
+        .iter()
+        .find_map(|name| chosen.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)))
+        .map(|(_, dir)| dir.clone())
+}
+
+/// True when this Named Connection's own environment sets `HOME` or `USERPROFILE`.
+pub(super) fn connection_overrides_home(env: &[(String, String)]) -> bool {
+    env.iter().any(|(key, value)| {
+        (key.eq_ignore_ascii_case("HOME") || key.eq_ignore_ascii_case("USERPROFILE"))
+            && !value.trim().is_empty()
+    })
+}
+
+/// True when this Named Connection's own env or args choose a Gemini directory.
+pub(super) fn connection_sets_gemini_dir(env: &[(String, String)], args: &[String]) -> bool {
+    env.iter()
+        .any(|(key, value)| is_gemini_dir_var(std::ffi::OsStr::new(key)) && !value.trim().is_empty())
+        || args.iter().any(|arg| is_gemini_dir_arg(std::ffi::OsStr::new(arg)))
+}
+
+/// The Gemini directory this Named Connection's own env chooses: `GEMINI_DIR`, else
+/// `ANTIGRAVITY_GEMINI_DIR` (any letter case, non-empty). Provider-wide settings are
+/// not consulted, so a connection's choice beats them.
+pub(super) fn connection_gemini_dir(env: &[(String, String)]) -> Option<PathBuf> {
+    ["GEMINI_DIR", "ANTIGRAVITY_GEMINI_DIR"].iter().find_map(|name| {
+        env.iter()
+            .find(|(key, value)| key.eq_ignore_ascii_case(name) && !value.trim().is_empty())
+            .map(|(_, value)| PathBuf::from(value.trim()))
+    })
+}
+
+/// Rejects a `--gemini-dir` / `--gemini_dir` argument whose value is missing, blank or
+/// relative: agy would resolve it against the project folder.
+fn check_gemini_dir_args(command: &Command) -> Result<(), String> {
+    let args: Vec<String> = command
+        .as_std()
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    for (index, arg) in args.iter().enumerate() {
+        let value = ["--gemini-dir", "--gemini_dir"].iter().find_map(|flag| {
+            if arg == flag {
+                Some(args.get(index + 1).map(String::as_str))
+            } else {
+                arg.strip_prefix(&format!("{flag}=")).map(Some)
+            }
+        });
+        let Some(value) = value else { continue };
+        let usable = value.is_some_and(|value| !value.trim().is_empty() && Path::new(value.trim()).is_absolute());
+        if !usable {
+            return Err("Antigravity needs an absolute path for --gemini-dir in this named connection.".into());
+        }
+    }
+    Ok(())
+}
+
+fn antigravity_base_args(command: &mut Command) {
     let program = Path::new(command.as_std().get_program());
-    if program.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("agy")) {
-        command.args(["acp", "--process-per-session"]);
+    if is_agy_cli(program) {
+        command
+            .args(["acp", "--process-per-session"])
+            .args(super::privacy::antigravity_arguments());
+        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
     } else if cfg!(target_os = "linux") {
         command.arg("--uid=");
     }
+}
+
+pub(super) fn configure_antigravity_base(command: &mut Command, config: &RunConfig) {
+    antigravity_base_args(command);
+    let program = Path::new(command.as_std().get_program());
+    if config.mode == "full" && is_agy_cli(program) {
+        command.arg("--dangerously-skip-permissions");
+    }
+}
+
+fn antigravity_gemini_dir_with(
+    command: &mut Command,
+    process_home: Option<PathBuf>,
+    connection_overrides_home: bool,
+    connection_sets_gemini_dir: bool,
+    connection_dir: Option<PathBuf>,
+) {
+    let program = Path::new(command.as_std().get_program());
+    if !is_agy_cli(program) {
+        return;
+    }
+    let command_home = command_home(command);
+    // A Named Connection that relocates HOME without choosing its own Gemini dir
+    // must not keep a global, provider, or host GEMINI_DIR.
+    if connection_overrides_home && !connection_sets_gemini_dir {
+        remove_gemini_dir_envs(command);
+        if let Some(home) = command_home {
+            command.arg("--gemini-dir").arg(home.join(".gemini"));
+        }
+        return;
+    }
+    // agy reads its directory from `--gemini-dir` alone, so a `GEMINI_DIR` or
+    // `ANTIGRAVITY_GEMINI_DIR` on the command (a named connection's config folder or
+    // the provider environment) is passed on and removed, the host's is never
+    // inherited, and an explicit argument wins. A Named Connection's own choice beats
+    // a provider-wide one, whatever spelling each uses.
+    let chosen = connection_dir
+        .filter(|path| path.is_absolute())
+        .or_else(|| chosen_gemini_dir(command));
+    remove_gemini_dir_envs(command);
+    if command.as_std().get_args().any(is_gemini_dir_arg) {
+        return;
+    }
+    if let Some(dir) = chosen.filter(|path| path.is_absolute()) {
+        command.arg("--gemini-dir").arg(dir);
+    } else if let Some(home) = command_home {
+        command.arg("--gemini-dir").arg(home.join(".gemini"));
+    } else if let Some(home) = process_home.filter(|path| path.is_absolute()) {
+        command.arg("--gemini-dir").arg(home.join(".gemini"));
+    }
+}
+
+/// Appends `--gemini-dir` for the standalone `agy` CLI: the directory chosen on
+/// `command` (an argument, `GEMINI_DIR` or `ANTIGRAVITY_GEMINI_DIR`), else
+/// `HOME`/`USERPROFILE`'s `.gemini`, else the process home's.
+pub(super) fn antigravity_gemini_dir(command: &mut Command) {
+    antigravity_gemini_dir_with(command, crate::agent_usage_providers::home(), false, false, None);
+}
+
+/// Like `antigravity_gemini_dir`, with provenance from the Named Connection's own
+/// env and args (before they are mixed with global or provider settings). agy
+/// resolves a relative path against the project folder, which would put the Gemini
+/// directory (settings, conversation store, credentials) inside it, so the task
+/// fails here, before the process starts. `connection_env` and `connection_args` are
+/// the connection's own (empty when there is none).
+pub(super) fn antigravity_gemini_dir_isolated(
+    command: &mut Command,
+    connection_env: &[(String, String)],
+    connection_args: &[String],
+) -> Result<(), String> {
+    for (key, value) in command.as_std().get_envs() {
+        if !is_home_var(key) && !is_gemini_dir_var(key) {
+            continue;
+        }
+        let relative = value.is_some_and(|value| {
+            !value.to_string_lossy().trim().is_empty() && !Path::new(value).is_absolute()
+        });
+        if relative {
+            return Err(format!(
+                "Antigravity needs an absolute path for {} in this named connection.",
+                key.to_string_lossy().to_ascii_uppercase()
+            ));
+        }
+    }
+    check_gemini_dir_args(command)?;
+    antigravity_gemini_dir_with(
+        command,
+        crate::agent_usage_providers::home(),
+        connection_overrides_home(connection_env),
+        connection_sets_gemini_dir(connection_env, connection_args),
+        connection_gemini_dir(connection_env),
+    );
+    Ok(())
+}
+
+/// The `agy` CLI needs a worker per session to accept editor-configured HTTP MCP servers.
+pub(crate) fn antigravity_args(command: &mut Command) {
+    antigravity_base_args(command);
+    antigravity_gemini_dir(command);
+}
+
+pub(super) fn is_acp_provider(provider: &str) -> bool {
+    matches!(
+        provider,
+        "kimi"
+            | "opencode"
+            | "antigravity"
+            | "grok"
+            | "deepseek"
+            | "commandcode"
+            | "cline"
+            | "kilo"
+            | "github-copilot"
+            | "devin"
+            | "hermes"
+            | "cursor"
+    )
+}
+
+fn session_capability(capabilities: &Value, name: &str) -> bool {
+    capabilities["sessionCapabilities"]
+        .get(name)
+        .is_some_and(|v| v.is_object() || v == true)
+}
+
+fn acp_missing_session_error(frame: &Value) -> bool {
+    let error = &frame["error"];
+    if error["code"].as_i64() == Some(-32002) {
+        return true;
+    }
+    let mut parts = Vec::new();
+    for candidate in [
+        error["message"].as_str(),
+        error["data"].as_str(),
+        error["data"]["message"].as_str(),
+        error["data"]["details"].as_str(),
+        error["data"]["error"].as_str(),
+    ] {
+        if let Some(part) = candidate.filter(|s| !s.is_empty()) {
+            parts.push(part);
+        }
+    }
+    let lower = parts.join(" ").to_ascii_lowercase();
+    [
+        "failed to read session",
+        "session not found",
+        "no such session",
+        "unknown session",
+        "session does not exist",
+        "cannot read session",
+        "could not find session",
+        "invalid session",
+        "or load it with session/load",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+        || (lower.contains("conversation") && lower.contains("not found"))
+}
+
+/// An error's message and data text, lowercased.
+fn acp_error_text(frame: &Value) -> String {
+    let error = &frame["error"];
+    [
+        error["message"].as_str(),
+        error["data"].as_str(),
+        error["data"]["message"].as_str(),
+        error["data"]["details"].as_str(),
+        error["data"]["error"].as_str(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_ascii_lowercase()
+}
+
+/// Antigravity answers -32000 for its context window as well. That limit is per
+/// conversation: neither a sign-in problem nor an account limit to rotate on.
+fn antigravity_context_error(frame: &Value) -> bool {
+    acp_error_text(frame).contains("context")
+}
+
+/// Whether an error's text names a sign-in problem (stems, so "Not authenticated"
+/// counts), as opposed to a session agy cannot find on resume, which it also
+/// answers with -32000.
+fn acp_sign_in_error(frame: &Value) -> bool {
+    let text = acp_error_text(frame);
+    [
+        "authenticat", "login", "log in", "credential", "unauthori", "oauth", "signed in", "sign in",
+        "auth token", "access token", "refresh token", "id token",
+    ]
+        .iter()
+        .any(|needle| text.contains(needle))
 }
 
 pub(crate) fn grok_permission_mode(mode: &str) -> &'static str {
@@ -148,7 +478,10 @@ pub(super) fn configuration(mode: &str) -> String {
 
 /// How much a harness's own mode ID approves without asking: 1 asks, 2 edits,
 /// 3 anything. A guess from the name, used only to refuse a fallback.
-fn mode_reach(id: &str) -> u8 {
+fn mode_reach(provider: &str, id: &str) -> u8 {
+    if provider == "antigravity" && id.eq_ignore_ascii_case("auto") {
+        return 3;
+    }
     let id = id.to_ascii_lowercase();
     if ["bypass", "yolo", "full", "danger", "dont", "trust", "unsafe"].iter().any(|word| id.contains(word)) {
         3
@@ -156,6 +489,17 @@ fn mode_reach(id: &str) -> u8 {
         2
     } else {
         1
+    }
+}
+/// Why a task did not start: the server advertises no mode for the approval choice.
+fn mode_unadvertised(provider: &str) -> String {
+    if provider == "antigravity" {
+        // agy 1.5.7+ opens new sessions in Auto, so running in agy's own default mode
+        // would approve more than the task allows; the standalone ACP server is older
+        // and advertises no mode at all.
+        "Antigravity did not offer this task's approval mode, so the task did not start; it would have run in agy's own default mode. Run `agy update` in a terminal outside PandaCode (or use its official installer), or select the agy CLI instead of the standalone ACP server, then retry.".into()
+    } else {
+        "This harness does not advertise the selected task mode.".into()
     }
 }
 pub(super) fn options<'a>(config: &'a Value, category: &str) -> Option<&'a Value> {
@@ -218,34 +562,30 @@ fn choice_request(session: &str, id: u64, option: &Value, value: &str) -> Result
 }
 
 impl Protocol {
+    /// `mcpServers` for `session/new`, `session/load` and `session/resume`: the
+    /// bridge's HTTP entry (when the agent takes HTTP MCP) and any extra stdio
+    /// servers, which every ACP agent accepts without a capability.
+    pub(super) fn acp_mcp_servers(&self) -> Vec<Value> {
+        self.mcp_server.iter().chain(&self.extra_mcp_servers).cloned().collect()
+    }
     pub(super) fn acp(&mut self, value: Value) -> Result<Step, String> {
         let mut step = Step::default();
         let grok = self.config.provider == "grok";
-        if self.acp_live_answered(&value, &mut step) {
+        if self.acp_live_answered(&value, &mut step)? {
             return Ok(step);
         }
         if value.get("error").is_some() {
-            if self.config.provider == "github-copilot" && value["error"]["code"] == -32000 {
-                return Err("GitHub Copilot CLI requires sign-in. Run `copilot login` in a terminal, then retry.".into());
-            }
-            if grok && (value["id"] == 7 || value["error"]["code"] == -32000) {
-                return Err(GROK_SIGN_IN.into());
-            }
-            if self.config.provider == "commandcode" && value["error"]["code"] == -32000 {
-                return Err(super::commandcode::SIGN_IN.into());
-            }
-            if self.config.provider == "cline" && value["error"]["code"] == -32000 {
-                return Err(super::cline::SIGN_IN.into());
-            }
-            if self.config.provider == "kilo" && value["error"]["code"] == -32000 {
-                return Err(super::kilo::SIGN_IN.into());
-            }
-            if self.config.provider == "devin" && value["error"]["code"] == -32000 {
-                return Err(super::devin::SIGN_IN.into());
-            }
-            if self.config.provider == "cursor" && (value["id"] == 7 || value["error"]["code"] == -32000) {
-                return Err(super::cursor::SIGN_IN.into());
-            }
+            let stage = match value["id"].as_u64() {
+                Some(1) => "initialize",
+                Some(2) => "session creation or resume",
+                Some(3) => "session/prompt",
+                Some(4) => "mode selection",
+                Some(5) => "model selection",
+                Some(6) => "reasoning selection",
+                _ => "request",
+            };
+            // Hermes uses -32000 for several provider-specific conditions; check
+            // them first so they are not masked by generic authentication guidance.
             if self.config.provider == "hermes" {
                 let err_str = value["error"]["data"].as_str()
                     .or_else(|| value["error"]["data"]["details"].as_str())
@@ -264,18 +604,121 @@ impl Protocol {
                     return Err("Hermes Agent is not configured with a default model. Run `hermes model` or `hermes acp --setup` in a terminal (or set model.default in ~/.hermes/config.yaml), then retry.".into());
                 }
             }
-            if value["error"]["code"] == -32000 {
-                return Err(format!("{} requires authentication. Sign in using its own CLI or official extension, then retry.", self.config.provider));
+            // Antigravity answers -32000 for sign-in and for an exhausted quota
+            // or rate limit. Reporting a limit surfaces the quota/reset notice
+            // instead of asking for a login (and rotates any pooled account if
+            // enabled), and wins over a missing-session retry quoting it.
+            let limit = (self.config.provider == "antigravity")
+                .then(|| super::limits::antigravity_rpc_limited(&value, super::limits::now_epoch_ms()))
+                .flatten();
+            if let Some(resets_at) = limit {
+                step.events.push(self.limited_event(resets_at, None));
+                step.failure = Some(format!(
+                    "{}: {}",
+                    self.config.provider,
+                    rpc_error(&value, stage)
+                ));
+                return Ok(step);
             }
-            let stage = match value["id"].as_u64() {
-                Some(1) => "initialize",
-                Some(2) => "session creation or resume",
-                Some(3) => "session/prompt",
-                Some(4) => "mode selection",
-                Some(5) => "model selection",
-                Some(6) => "reasoning selection",
-                _ => "request",
-            };
+            // Check -32000 authentication errors BEFORE missing-session fallback
+            // so an auth error mentioning "not found" is never misreported. agy
+            // answers a resume of a missing session with -32000 as well: with no
+            // sign-in word that is the missing session, and telling a signed-in
+            // user to log in would never recover the thread.
+            let missing_resume = self.config.provider == "antigravity"
+                && value["id"] == 2
+                && self.acp_resuming
+                && acp_missing_session_error(&value)
+                && !acp_sign_in_error(&value);
+            if value["error"]["code"] == -32000
+                || (grok && value["id"] == 7)
+                || (self.config.provider == "cursor" && value["id"] == 7)
+            {
+                // OpenCode can open a session before the model's upstream provider
+                // rejects the prompt for missing credentials (#391).
+                if self.config.provider == "opencode"
+                    && value["error"]["code"] == -32000
+                    && value["id"] == 3
+                    && self.phase == 1
+                    && !self.remote_id.is_empty()
+                {
+                    if let Some(error) = self.opencode_prompt_auth_error() {
+                        return Err(error);
+                    }
+                }
+                if self.config.provider == "antigravity" && antigravity_context_error(&value) {
+                    return Err(format!("{}: {}", self.config.provider, rpc_error(&value, stage)));
+                }
+                // The server's own words stay visible: an unexpected -32000 (an
+                // unknown model, for instance) is then not hidden behind a login hint.
+                if !missing_resume {
+                    return Err(match self.config.provider.as_str() {
+                        "antigravity" => format!("{ANTIGRAVITY_SIGN_IN} (The server said: {})", rpc_error(&value, stage)),
+                        "github-copilot" => "GitHub Copilot CLI requires sign-in. Run `copilot login` in a terminal, then retry.".into(),
+                        "grok" => GROK_SIGN_IN.into(),
+                        "commandcode" => super::commandcode::SIGN_IN.into(),
+                        "cline" => super::cline::SIGN_IN.into(),
+                        "kilo" => super::kilo::SIGN_IN.into(),
+                        "devin" => super::devin::SIGN_IN.into(),
+                        "cursor" => super::cursor::SIGN_IN.into(),
+                        other => format!("{other} requires authentication. Sign in using its own CLI or official extension, then retry."),
+                    });
+                }
+            }
+            if value["id"] == 2 && self.acp_resuming && acp_missing_session_error(&value) {
+                if self.acp_can_load && !self.acp_load_fallback_tried {
+                    self.acp_load_fallback_tried = true;
+                    self.acp_config = Value::Null;
+                    self.acp_context_window = None;
+                    self.acp_pending_phase0_usage = None;
+                    self.acp_saw_any_usage_update = false;
+                    self.early_kimi_commands = None;
+                    let params = self.acp_resume_params.take().unwrap_or_else(|| {
+                        json!({
+                            "cwd": launch::external_path(&self.config.cwd),
+                            "mcpServers": self.mcp_server.iter().collect::<Vec<_>>(),
+                            "sessionId": self.remote_id,
+                        })
+                    });
+                    step.write.push(json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":params}));
+                    self.acp_startup_status(&mut step);
+                    return Ok(step);
+                }
+                if !self.acp_fresh_fallback_tried {
+                    if self.config.no_fresh_resume_fallback {
+                        // Account-pool rotation already rewrote the prompt as a resume.
+                        // An empty session/new would treat that text as a new task.
+                        self.acp_pending_phase0_usage = None;
+                    } else {
+                        self.acp_fresh_fallback_tried = true;
+                        self.acp_resuming = false;
+                        self.remote_id.clear();
+                        self.config.resume_id = None;
+                        self.acp_resume_params = None;
+                        self.acp_config = Value::Null;
+                        self.acp_context_window = None;
+                        self.acp_pending_phase0_usage = None;
+                        self.acp_saw_any_usage_update = false;
+                        self.early_kimi_commands = None;
+                        step.events.push(self.event(
+                            "note",
+                            "Saved session could not be resumed; started a fresh session.",
+                            None,
+                        ));
+                        step.write.push(json!({
+                            "jsonrpc": "2.0",
+                            "id": 2,
+                            "method": "session/new",
+                            "params": {
+                                "cwd": launch::external_path(&self.config.cwd),
+                                "mcpServers": self.mcp_server.iter().collect::<Vec<_>>(),
+                            }
+                        }));
+                        self.acp_startup_status(&mut step);
+                        return Ok(step);
+                    }
+                }
+            }
             return Err(format!("{}: {}", self.config.provider, rpc_error(&value, stage)));
         }
         if grok {
@@ -301,6 +744,13 @@ impl Protocol {
                         return Err("This harness does not support ACP protocol v1.".into());
                     }
                     let capabilities = &result["agentCapabilities"];
+                    self.acp_can_load = capabilities["loadSession"] == true
+                        || session_capability(capabilities, "load");
+                    self.acp_can_close = session_capability(capabilities, "close");
+                    self.acp_resuming = false;
+                    self.acp_load_fallback_tried = false;
+                    self.acp_fresh_fallback_tried = false;
+                    self.acp_resume_params = None;
                     if !self.image_blocks.is_empty()
                         && capabilities["promptCapabilities"]["image"] != true
                     {
@@ -321,14 +771,18 @@ impl Protocol {
                         self.mcp_server = None;
                         self.mcp_tool_names.clear();
                     }
-                    let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.mcp_server.iter().collect::<Vec<_>>()});
+                    let mut params = json!({"cwd":launch::external_path(&self.config.cwd),"mcpServers":self.acp_mcp_servers()});
                     let method = if self.remote_id.is_empty() {
                         "session/new"
                     } else {
                         params["sessionId"] = json!(self.remote_id);
-                        if capabilities["sessionCapabilities"].get("resume").is_some() {
+                        if session_capability(capabilities, "resume") {
+                            self.acp_resuming = true;
+                            self.acp_resume_params = Some(params.clone());
                             "session/resume"
-                        } else if capabilities["loadSession"] == true {
+                        } else if self.acp_can_load {
+                            self.acp_resuming = true;
+                            self.acp_load_fallback_tried = true;
                             "session/load"
                         } else {
                             return Err("This ACP server cannot resume saved tasks. Update the server or start a new task.".into());
@@ -356,6 +810,8 @@ impl Protocol {
                     }
                 }
                 2 => {
+                    self.acp_resuming = false;
+                    self.acp_resume_params = None;
                     let returned = field(result, "sessionId");
                     if !returned.is_empty() && returned.len() <= 256 {
                         self.remote_id = returned.into();
@@ -363,7 +819,8 @@ impl Protocol {
                     if self.remote_id.is_empty() {
                         return Err("ACP did not return a session ID".into());
                     }
-                    self.acp_config = result.clone();
+                    self.flush_pending_phase0_usage(&mut step);
+                    self.acp_merge_config(result);
                     if let Some(bytes) = self.early_kimi_commands.take() {
                         if let Ok(frame) = serde_json::from_slice::<Value>(&bytes) {
                             if frame["params"]["sessionId"] == self.remote_id {
@@ -392,6 +849,8 @@ impl Protocol {
                     self.acp_model(&mut step)?;
                 }
                 5 => {
+                    // A previous model's window must not bleed into the model just selected.
+                    self.acp_context_window = None;
                     self.acp_update_config(result);
                     self.acp_effort(&mut step)?;
                 }
@@ -400,15 +859,33 @@ impl Protocol {
                     if let Some(total) = result["_meta"]["totalTokens"].as_u64().filter(|_| grok) {
                         let window = self.grok_context_window();
                         self.usage(total, window, &mut step);
+                    } else if self.config.provider == "antigravity" && !self.acp_saw_usage_update {
+                        // Only Antigravity's turn-end `usage` was recorded as window
+                        // occupancy; other agents report a per-call sum, which would
+                        // make their meter jump at each turn end.
+                        let usage = &result["usage"];
+                        let used = usage["inputTokens"].as_u64().or_else(|| {
+                            (!self.acp_saw_any_usage_update)
+                                .then(|| usage["totalTokens"].as_u64())
+                                .flatten()
+                        });
+                        if let Some(used) = used {
+                            let window = usage["contextWindow"]
+                                .as_u64()
+                                .filter(|&n| n > 0 && n <= 1_000_000_000)
+                                .or(self.acp_context_window);
+                            self.usage(used, window, &mut step);
+                        }
                     }
-                    self.acp_turn_end(result, &mut step);
+                    self.acp_turn_end(result, &mut step)?;
                 }
                 _ => {}
             }
             self.acp_startup_status(&mut step);
             return Ok(step);
         }
-        if value["method"] == "session/update"
+        if !self.remote_id.is_empty()
+            && value["method"] == "session/update"
             && value["params"]["sessionId"] == self.remote_id
             && value["params"]["update"]["sessionUpdate"] == "config_option_update"
         {
@@ -431,15 +908,33 @@ impl Protocol {
             // ACP modes aren't universally approval policies. Keep user prompts
             // intact unless Full access, or Auto edits for an explicit edit call.
             let options = value["params"]["options"].as_array();
-            // As for Claude: a registered self-scoped tool can't touch the checkout.
-            if self.config.provider == "cline"
-                && super::cline::host_tool(field(&value["params"]["toolCall"], "title"))
-                    .is_some_and(|tool| super::self_scoped_host_tool(tool) && self.mcp_tool_names.contains(tool))
+            let one_allow = options.is_some_and(|values| {
+                values
+                    .iter()
+                    .filter(|entry| entry["kind"] == "allow_once")
+                    .count()
+                    == 1
+            });
+            let structured_question = options.is_some_and(|options| {
+                options.iter().any(|option| {
+                    field(option, "optionId")
+                        .strip_prefix('q')
+                        .and_then(|id| id.split_once("_opt_"))
+                        .is_some_and(|(number, _)| number.parse::<usize>().is_ok())
+                })
+            });
+            // As for Claude: a registered self-scoped host tool can't touch the checkout.
+            if one_allow
+                && !structured_question
+                && self.self_scoped_mcp_tool(&value["params"]["toolCall"]).is_some()
             {
-                if let Some(allow) = options.and_then(|values| values.iter().find(|entry| entry["kind"] == "allow_once")) {
-                    step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":allow["optionId"]}}}));
-                    return Ok(step);
-                }
+                let allow = options
+                    .unwrap()
+                    .iter()
+                    .find(|entry| entry["kind"] == "allow_once")
+                    .unwrap();
+                step.write.push(json!({"jsonrpc":"2.0","id":value["id"],"result":{"outcome":{"outcome":"selected","optionId":allow["optionId"]}}}));
+                return Ok(step);
             }
             let deepseek = self.config.provider == "deepseek";
             let copilot = self.config.provider == "github-copilot";
@@ -573,26 +1068,11 @@ impl Protocol {
                 // Read, search and fetch requests keep the ordinary approval
                 // path, as in Standard mode.
             }
-            let one_allow = options.is_some_and(|values| {
-                values
-                    .iter()
-                    .filter(|entry| entry["kind"] == "allow_once")
-                    .count()
-                    == 1
-            });
             let edit = value["params"]["toolCall"]["kind"] == "edit"
                 || (deepseek
                     && self.tools.get(field(&value["params"]["toolCall"], "toolCallId"))
                         .is_some_and(|tool| DEEPSEEK_EDIT_TOOLS.contains(&tool.name.as_str())));
             let auto = self.config.mode == "full" || (self.config.mode == "auto" && edit);
-            let structured_question = options.is_some_and(|options| {
-                options.iter().any(|option| {
-                    field(option, "optionId")
-                        .strip_prefix('q')
-                        .and_then(|id| id.split_once("_opt_"))
-                        .is_some_and(|(number, _)| number.parse::<usize>().is_ok())
-                })
-            });
             if auto && one_allow && !structured_question {
                 let selected = options
                     .unwrap()
@@ -618,8 +1098,86 @@ impl Protocol {
         step.failure = step.failure.or(inner.failure);
         Ok(step)
     }
+    fn self_scoped_mcp_tool<'a>(&self, tool_call: &'a Value) -> Option<&'a str> {
+        // Auto-approval is only for the two harnesses whose MCP titles we can verify.
+        // Every other ACP agent keeps the normal permission prompt.
+        // Cline injects the host through its private settings file, so `mcp_server`
+        // stays empty while `mcp_tool_names` still lists the tools registered for this run.
+        // Antigravity only auto-approves while that ACP server is attached.
+        let tool_call_id = field(tool_call, "toolCallId");
+        if tool_call_id.is_empty()
+            || self.non_mcp_tools.contains(tool_call_id)
+            || self.non_mcp_tools.contains(&limited(tool_call_id, 256))
+        {
+            return None;
+        }
+        if !matches!(field(tool_call, "kind"), "" | "other") {
+            return None;
+        }
+        // A tool call that names filesystem locations is not a self-scoped host tool.
+        // Only an absent, null or empty `locations` qualifies: any other value fails closed.
+        let locations = &tool_call["locations"];
+        if !locations.is_null() && !locations.as_array().is_some_and(Vec::is_empty) {
+            return None;
+        }
+        let title = field(tool_call, "title");
+        let candidate = match self.config.provider.as_str() {
+            "cline" => super::cline::host_tool(title)?,
+            "antigravity" => {
+                self.mcp_server.as_ref()?;
+                let trimmed = title.trim();
+                trimmed
+                    .strip_prefix("mcp__pandacode_architect__")
+                    .or_else(|| trimmed.strip_prefix("mcp_pandacode_architect_"))?
+            }
+            _ => return None,
+        };
+        (super::self_scoped_host_tool(candidate) && self.mcp_tool_names.contains(candidate))
+            .then_some(candidate)
+    }
+
+    fn acp_merge_config(&mut self, result: &Value) {
+        if let Some(incoming) = result.as_object() {
+            if !self.acp_config.is_object() {
+                self.acp_config = json!({});
+            }
+            let target = self.acp_config.as_object_mut().unwrap();
+            for (key, value) in incoming {
+                if value.is_null() {
+                    continue;
+                }
+                if key == "configOptions" {
+                    let Some(items) = value.as_array() else {
+                        continue;
+                    };
+                    if items.is_empty()
+                        && target
+                            .get("configOptions")
+                            .and_then(Value::as_array)
+                            .is_some_and(|existing| !existing.is_empty())
+                    {
+                        continue;
+                    }
+                }
+                target.insert(key.clone(), value.clone());
+            }
+        } else if !self.acp_config.is_object() {
+            self.acp_config = result.clone();
+        }
+    }
+
     fn acp_update_config(&mut self, result: &Value) {
-        if result["configOptions"].is_array() {
+        if let Some(items) = result["configOptions"].as_array() {
+            if items.is_empty()
+                && self.acp_config["configOptions"]
+                    .as_array()
+                    .is_some_and(|existing| !existing.is_empty())
+            {
+                return;
+            }
+            if !self.acp_config.is_object() {
+                self.acp_config = json!({});
+            }
             self.acp_config["configOptions"] = result["configOptions"].clone();
         }
     }
@@ -756,6 +1314,13 @@ impl Protocol {
             } else {
                 &["build"]
             }
+        } else if self.config.provider == "antigravity" {
+            match self.config.mode.as_str() {
+                "plan" => &["plan", "planning"],
+                "auto" => &["accept-edits", "default"],
+                "full" => &["auto", "default"],
+                _ => &["default"],
+            }
         } else if self.config.mode == "plan" {
             &["plan", "planning"]
         } else {
@@ -763,7 +1328,10 @@ impl Protocol {
         };
         // On these harnesses the ACP mode is the approval policy, so a missing
         // one must fail the run rather than silently widen access.
-        let permission_modes = matches!(self.config.provider.as_str(), "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor");
+        let permission_modes = matches!(
+            self.config.provider.as_str(),
+            "opencode" | "kilo" | "commandcode" | "cline" | "devin" | "cursor" | "antigravity"
+        );
         if let Some(option) = options(&self.acp_config, "mode") {
             let found = candidates
                 .iter()
@@ -777,7 +1345,7 @@ impl Protocol {
                 return Ok(());
             }
             if permission_modes {
-                return Err("This harness does not advertise the selected task mode.".into());
+                return Err(mode_unadvertised(&self.config.provider));
             }
             self.mode_fallback()?;
         } else if let Some(modes) = self.acp_config["modes"]["availableModes"].as_array() {
@@ -789,17 +1357,25 @@ impl Protocol {
                 return Ok(());
             }
             if permission_modes {
-                return Err("This harness does not advertise the selected task mode.".into());
+                return Err(mode_unadvertised(&self.config.provider));
             }
             self.mode_fallback()?;
-        } else if self.config.mode == "plan" || matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
+        } else if self.config.mode == "plan"
+            || matches!(
+                self.config.provider.as_str(),
+                "kilo" | "devin" | "cursor" | "antigravity"
+            )
+        {
             // With no mode information at all (a bare resumed session, for
             // instance) the run still fails rather than guess.
-            return Err(if matches!(self.config.provider.as_str(), "kilo" | "devin" | "cursor") {
-                "This harness does not advertise the selected task mode."
+            return Err(if matches!(
+                self.config.provider.as_str(),
+                "kilo" | "devin" | "cursor" | "antigravity"
+            ) {
+                mode_unadvertised(&self.config.provider)
             } else {
-                "This harness does not advertise a read-only planning mode."
-            }.into());
+                "This harness does not advertise a read-only planning mode.".to_owned()
+            });
         }
         self.acp_model(step)
     }
@@ -820,7 +1396,7 @@ impl Protocol {
             }
         };
         let current = model_text(Some(if name.is_empty() { id } else { name }), "default", 80);
-        let reach = mode_reach(id);
+        let reach = mode_reach(&self.config.provider, id);
         let chosen = match self.config.mode.as_str() { "plan" => 0, "auto" => 2, "full" => 3, _ => 1 };
         let label = match chosen { 0 => "Plan", 2 => "Accept edits", 3 => "Full access", _ => "Standard" };
         if reach > chosen.max(1) {
@@ -834,10 +1410,11 @@ impl Protocol {
         };
         Ok(())
     }
-    /// Devin and Cursor keep each setting on the session, so a run skips the
-    /// round trip (about a second on Cursor) for any value it already has.
+    /// Devin, Cursor and Antigravity keep each setting on the session, so a run
+    /// skips the round trip for any value it already has.
     fn unchanged(&self, option: &Value, value: &str) -> bool {
-        matches!(self.config.provider.as_str(), "devin" | "cursor") && option["currentValue"] == value
+        matches!(self.config.provider.as_str(), "devin" | "cursor" | "antigravity")
+            && option["currentValue"] == value
     }
     /// Devin's permission requests carry only the tool call ID and options, and
     /// several allow options grant standing access, so the generic path (which
@@ -907,6 +1484,39 @@ impl Protocol {
         }
         Ok(())
     }
+    /// OpenCode can open a session before the model's upstream provider
+    /// rejects the prompt for missing credentials (#391).
+    fn opencode_prompt_auth_error(&self) -> Option<String> {
+        let model_option = options(&self.acp_config, "model");
+        // An explicit choice was acknowledged before prompting. For Default,
+        // use the concrete model OpenCode reported for this session.
+        let model = [
+            Some(self.config.model.as_str()),
+            model_option.and_then(|option| option["currentValue"].as_str()),
+            self.acp_config["models"]["currentModelId"].as_str(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|id| *id != "default" && !id.trim().is_empty() && valid_model_id(id))?;
+        let credentials = match model.split_once('/') {
+            Some((provider, _)) if !provider.is_empty() => format!("Add {provider} credentials"),
+            _ => "Add its provider's credentials".to_owned(),
+        };
+        let free_model = model_option
+            .into_iter()
+            .flat_map(choices)
+            .filter_map(|entry| entry["value"].as_str())
+            .find(|id| id.starts_with("opencode/") && id.ends_with("-free") && valid_model_id(id));
+        let free_hint = free_model.map_or_else(
+            || " OpenCode's free models need no key.".to_owned(),
+            |id| format!(" OpenCode's free models need no key, for example \"{id}\"."),
+        );
+        Some(format!(
+            "{} cannot use the selected model \"{model}\": {credentials} or choose another model.{free_hint}",
+            self.config.provider
+        ))
+    }
+
     fn acp_effort(&mut self, step: &mut Step) -> Result<(), String> {
         if let Some(effort) = &self.config.reasoning_effort {
             let option = if self.config.provider == "cursor" {
@@ -943,7 +1553,7 @@ pub(super) async fn grok_models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut command = super::provider_command("grok", path)?;
     command.args(["--no-auto-update", "agent", "stdio"]);
     let (metadata, _) = inspect_with(command, &std::env::temp_dir(), false, true).await?;
-    Ok(parse_models(&metadata))
+    Ok(parse_models_for("grok", &metadata))
 }
 
 pub(super) fn parse_grok_models(state: &Value) -> Vec<ModelInfo> {
@@ -1015,6 +1625,60 @@ pub(crate) async fn handshake(command: Command, cwd: &Path) -> Result<Value, Str
     result.map_err(|error| super::diagnostics::failure(&error, pipe.diagnostic()))
 }
 
+/// Private empty working directory for ACP metadata discovery so servers never
+/// scan or write into the shared system temp folder; removed on drop.
+struct ScratchDir(PathBuf);
+impl ScratchDir {
+    fn new(prefix: &str) -> Result<Self, String> {
+        let parent = crate::secret_store::dir()
+            .ok_or("Could not create ACP scratch directory: secret store is not ready")?
+            .join(super::AGENT_TEMP_DIR);
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder
+            .create(&parent)
+            .map_err(|e| format!("Could not create ACP scratch directory: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("Could not create ACP scratch directory: {e}"))?;
+        }
+        super::AgentTemp::sweep_once(&parent);
+        let dir = parent.join(format!("pandacode-{prefix}-{}", uuid::Uuid::new_v4()));
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut child = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut child, 0o700);
+        child
+            .create(&dir)
+            .map_err(|e| format!("Could not create ACP scratch directory: {e}"))?;
+        Ok(Self(dir))
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let dir = std::mem::take(&mut self.0);
+        if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+            return;
+        }
+        // Windows holds a killed process's files for a moment. Off the async workers.
+        std::thread::spawn(move || {
+            for _ in 0..5 {
+                std::thread::sleep(Duration::from_secs(1));
+                if std::fs::remove_dir_all(&dir).is_ok() || !dir.exists() {
+                    return;
+                }
+            }
+        });
+    }
+}
+
 pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     if let Some(models) = super::acp_catalog::get("antigravity", path) { return Ok(models); }
     let _refresh = super::acp_catalog::refresh_lock("antigravity", path).await;
@@ -1023,16 +1687,20 @@ pub(super) async fn models(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let mut command = super::provider_command("antigravity", path)?;
     antigravity_args(&mut command);
     let _temp = super::AgentTemp::redirect(&mut command);
-    let (metadata, _) = inspect(command, &std::env::temp_dir(), false).await?;
+    let scratch = ScratchDir::new("acp-models")?;
+    let (metadata, _) = inspect_antigravity(command, scratch.path(), false).await?;
     super::acp_catalog::store(discovery, &metadata);
-    Ok(parse_models(&metadata))
+    Ok(parse_models_for("antigravity", &metadata))
 }
+/// The Antigravity model list; only tests call it directly, discovery goes through `parse_models_for`.
+#[cfg(test)]
 pub(crate) fn parse_models(metadata: &Value) -> Vec<ModelInfo> {
     parse_models_for("antigravity", metadata)
 }
 
 pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInfo> {
     let mut models = vec![ModelInfo::default_choice()];
+    let has_model_option = options(metadata, "model").is_some();
     if let Some(option) = options(metadata, "model") {
         for choice in choices(option) {
             let id = field(choice, "value");
@@ -1071,8 +1739,23 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
     let current = options(metadata, "model")
         .map(|option| field(option, "currentValue"))
         .unwrap_or_else(|| field(&metadata["models"], "currentModelId"));
-    if let Some(effort) = options(metadata, "thought_level").or_else(|| options(metadata, "effort"))
-    {
+    let effort_option = options(metadata, "thought_level").or_else(|| options(metadata, "effort"));
+    let mut advertised_effort_meta: HashMap<String, (Option<String>, Option<String>)> = HashMap::new();
+    if let Some(effort) = effort_option {
+        for choice in choices(effort) {
+            let id = field(choice, "value");
+            if super::validate_reasoning_effort(provider, Some(id)).is_ok() {
+                let name = choice["name"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+                    .map(|name| model_text(Some(name), id, 80));
+                let description = choice["description"]
+                    .as_str()
+                    .filter(|desc| !desc.trim().is_empty())
+                    .map(|desc| model_text(Some(desc), "", 500));
+                advertised_effort_meta.insert(id.into(), (name, description));
+            }
+        }
         for model in models.iter_mut().filter(|model| {
             model.id == current || (provider == "deepseek" && model.id != "default")
         }) {
@@ -1080,8 +1763,12 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                 .into_iter()
                 .filter_map(|choice| {
                     let id = field(choice, "value");
-                    super::validate_reasoning_effort("antigravity", Some(id)).ok()?;
-                    Some(effort_info(id, choice["description"].as_str()))
+                    super::validate_reasoning_effort(provider, Some(id)).ok()?;
+                    let mut info = effort_info(id, choice["description"].as_str());
+                    if let Some(name) = choice["name"].as_str().filter(|name| !name.trim().is_empty()) {
+                        info.name = model_text(Some(name), &info.name, 80);
+                    }
+                    Some(info)
                 })
                 .collect();
             model.default_reasoning_effort = effort["currentValue"]
@@ -1093,6 +1780,56 @@ pub(crate) fn parse_models_for(provider: &str, metadata: &Value) -> Vec<ModelInf
                         .any(|effort| effort.id == *id)
                 })
                 .map(str::to_owned);
+        }
+    }
+    // Antigravity advertises base models in `configOptions["model"]` and full
+    // `{base_id}-{level}` variants in `models.availableModels`. Keep the current
+    // model's `thought_level` authoritative, and derive efforts for every other
+    // base model from matching variant suffixes.
+    if provider == "antigravity" && has_model_option {
+        if let Some(available) = metadata["models"]["availableModels"].as_array() {
+            let base_ids: HashSet<String> = models
+                .iter()
+                .filter(|model| model.id != "default")
+                .map(|model| model.id.clone())
+                .collect();
+            let available_ids: HashSet<&str> = available
+                .iter()
+                .take(MODEL_CATALOG_LIMIT)
+                .filter_map(|entry| entry["modelId"].as_str())
+                .collect();
+            const LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+            for model in models.iter_mut().filter(|model| {
+                model.id != "default"
+                    && model.reasoning_efforts.is_empty()
+                    && !(effort_option.is_some() && model.id == current)
+            }) {
+                let mut derived = Vec::new();
+                for level in LEVELS {
+                    let variant = format!("{}-{level}", model.id);
+                    if available_ids.contains(variant.as_str())
+                        && !base_ids.contains(variant.as_str())
+                        && super::validate_reasoning_effort("antigravity", Some(level)).is_ok()
+                    {
+                        let meta = advertised_effort_meta.get(level);
+                        let mut info = effort_info(level, meta.and_then(|(_, desc)| desc.as_deref()));
+                        if let Some(name) = meta.and_then(|(name, _)| name.as_deref()) {
+                            info.name = name.to_owned();
+                        }
+                        derived.push(info);
+                    }
+                }
+                if !derived.is_empty() {
+                    model.default_reasoning_effort = if derived.iter().any(|e| e.id == "high") {
+                        Some("high".into())
+                    } else if derived.iter().any(|e| e.id == "medium") {
+                        Some("medium".into())
+                    } else {
+                        derived.first().map(|e| e.id.clone())
+                    };
+                    model.reasoning_efforts = derived;
+                }
+            }
         }
     }
     models
@@ -1114,7 +1851,18 @@ pub(crate) async fn inspect_with(
     wait_commands: bool,
     authenticate: bool,
 ) -> Result<(Value, Option<Value>), String> {
-    inspect_state(command, cwd, wait_commands, authenticate, DISCOVERY_STARTUP, COMMAND_GRACE)
+    inspect_state(command, cwd, wait_commands, authenticate, false, DISCOVERY_STARTUP, COMMAND_GRACE)
+        .await.map_err(|failure| failure.message)
+}
+
+/// Antigravity discovery, whichever executable starts it (the `agy` CLI or the
+/// standalone server): a -32000 quota, credit or 429 error is a limit, not a sign-in.
+pub(crate) async fn inspect_antigravity(
+    command: Command,
+    cwd: &Path,
+    wait_commands: bool,
+) -> Result<(Value, Option<Value>), String> {
+    inspect_state(command, cwd, wait_commands, false, true, DISCOVERY_STARTUP, COMMAND_GRACE)
         .await.map_err(|failure| failure.message)
 }
 
@@ -1125,18 +1873,26 @@ struct DiscoveryFailure {
     message: String,
 }
 
+/// `antigravity` comes from the caller that knows the harness; the program name
+/// does not tell the `agy` CLI from the standalone server.
 async fn inspect_state(
     command: Command,
     cwd: &Path,
     wait_commands: bool,
     authenticate: bool,
+    antigravity: bool,
     startup_timeout: Duration,
     command_grace: Duration,
 ) -> Result<(Value, Option<Value>), DiscoveryFailure> {
+    if is_agy_cli(Path::new(command.as_std().get_program())) {
+        super::antigravity_spawn_gate().await;
+    }
     let mut pipe = Pipe::spawn(command, cwd, startup_timeout)
         .map_err(|_| DiscoveryFailure { acp_ready: false, authentication_required: false, message: "Could not start ACP metadata discovery. Check the selected executable.".into() })?;
     let mut acp_ready = false;
     let mut authentication_required = false;
+    let mut can_close = false;
+    let mut session_id: Option<String> = None;
     let mut stage = "initialize";
     let result: Result<(Value, Option<Value>), String> = async {
         pipe.send(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{},"clientInfo":{"name":"pandacode","version":"0.1.0"}}})).await.map_err(|_| transport_error(&pipe, stage))?;
@@ -1154,14 +1910,22 @@ async fn inspect_state(
             if frame.get("method").is_some() && frame.get("id").is_some() {
                 pipe.send(&json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Metadata discovery does not execute requests"}})).await.map_err(|_| transport_error(&pipe, stage))?;
             } else if matches!(frame["id"].as_u64(), Some(1 | 2 | 7)) && frame.get("error").is_some() {
-                authentication_required = frame["error"]["code"] == -32000 || frame["id"] == 7;
                 let error = rpc_error(&frame, stage);
+                // Antigravity answers -32000 for an exhausted quota or a 429 as
+                // well as for sign-in: only the latter asks for a login.
+                if antigravity && super::limits::antigravity_rpc_limited(&frame, super::limits::now_epoch_ms()).is_some() {
+                    return Err(format!("The Antigravity account has reached its quota, is out of credits or is rate limited. Wait for the quota to reset or add credits, then check again.\n{error}"));
+                }
+                // Its context window is a per-conversation limit: the server's own error, not a login.
+                let context_window = antigravity && frame["error"]["code"] == -32000 && antigravity_context_error(&frame);
+                authentication_required = !context_window && (frame["error"]["code"] == -32000 || frame["id"] == 7);
                 return Err(if authentication_required {
-                    format!("Authentication is required by the ACP server. Sign in using its official extension, then check again.\n{error}")
+                    format!("Authentication is required by the ACP server. Sign in using its CLI (such as `agy acp --login`) or official extension, then check again.\n{error}")
                 } else { error });
             } else if frame["id"] == 1 {
                 if frame["result"]["protocolVersion"] != 1 { return Err("This harness does not support ACP protocol v1.".into()); }
                 acp_ready = true;
+                can_close = session_capability(&frame["result"]["agentCapabilities"], "close");
                 match cached_auth_method(&frame["result"]).filter(|_| authenticate) {
                     Some(method) => {
                         stage = "authenticate";
@@ -1176,9 +1940,13 @@ async fn inspect_state(
                 stage = "session/new";
                 pipe.send(&session).await.map_err(|_| transport_error(&pipe, stage))?;
             } else if frame["id"] == 2 {
-                if !frame["result"]["sessionId"].as_str().is_some_and(|id| !id.is_empty() && id.len() <= 256) {
+                let Some(id) = frame["result"]["sessionId"]
+                    .as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 256)
+                else {
                     return Err("ACP session/new did not return a valid session ID.".into());
-                }
+                };
+                session_id = Some(id.to_owned());
                 metadata = Some(frame["result"].clone());
                 pipe.set_deadline_after(command_grace);
             } else if frame["method"] == "session/update" && frame["params"]["update"]["sessionUpdate"] == "available_commands_update" {
@@ -1190,6 +1958,33 @@ async fn inspect_state(
             }
         }
     }.await;
+    if can_close {
+        if let Some(id) = session_id {
+            pipe.set_deadline_after(Duration::from_secs(2));
+            if pipe
+                .send(&json!({"jsonrpc":"2.0","id":9,"method":"session/close","params":{"sessionId":id}}))
+                .await
+                .is_ok()
+            {
+                for _ in 0..64 {
+                    match pipe.read().await {
+                        Ok(frame) if frame.get("method").is_some() && frame.get("id").is_some() => {
+                            if pipe
+                                .send(&json!({"jsonrpc":"2.0","id":frame["id"],"error":{"code":-32601,"message":"Metadata discovery does not execute requests"}}))
+                                .await
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(frame) if frame["id"] == 9 && frame.get("method").is_none() => break,
+                        Ok(_) => continue,
+                        Err(()) => break,
+                    }
+                }
+            }
+        }
+    }
     pipe.finish().await;
     result.map_err(|error| DiscoveryFailure {
         acp_ready,
@@ -1208,9 +2003,25 @@ pub struct ConnectionStatus {
     message: String,
 }
 
+/// The readiness check's wording when the server advertises no `default` mode.
+const ANTIGRAVITY_CHECK_MODE_UNADVERTISED: &str = "This Antigravity server does not advertise the default approval mode, so tasks will not start; they would run in agy's own default mode. Run `agy update` in a terminal outside PandaCode (or use its official installer), or select the agy CLI instead of the standalone ACP server, then retry.";
+
+/// Whether the server offers the `default` mode: Standard requires it, and Accept
+/// edits and Full access fall back to it, so without it tasks refuse to start.
+fn antigravity_advertises_mode(metadata: &Value) -> bool {
+    let known = |id: &Value| id.as_str() == Some("default");
+    let config_choice = options(metadata, "mode")
+        .is_some_and(|option| choices(option).into_iter().any(|choice| known(&choice["value"])));
+    let session_mode = metadata["modes"]["availableModes"]
+        .as_array()
+        .is_some_and(|modes| modes.iter().any(|mode| known(&mode["id"])));
+    config_choice || session_mode
+}
+
 fn connection_status(result: Result<(Value, Option<Value>), DiscoveryFailure>) -> ConnectionStatus {
     match result {
-        Ok(_) => ConnectionStatus { installed: true, acp_ready: true, session_ready: true, state: "ready", message: "Antigravity ACP initialized and opened a session. No prompt was sent; model access and quota are checked when you send.".into() },
+        Ok((metadata, _)) if !antigravity_advertises_mode(&metadata) => ConnectionStatus { installed: true, acp_ready: true, session_ready: false, state: "sessionFailed", message: ANTIGRAVITY_CHECK_MODE_UNADVERTISED.into() },
+        Ok(_) => ConnectionStatus { installed: true, acp_ready: true, session_ready: true, state: "ready", message: "Antigravity ACP initialized and opened a session. No prompt was sent; model access and quota are checked when you send. A named connection is checked when a task that uses it runs.".into() },
         Err(failure) => ConnectionStatus { installed: true, acp_ready: failure.acp_ready, session_ready: false,
             state: if failure.authentication_required { "authenticationRequired" } else if failure.acp_ready { "sessionFailed" } else { "startupFailed" },
             message: failure.message },
@@ -1234,7 +2045,17 @@ pub async fn provider_check_connection(provider: String) -> Result<ConnectionSta
     antigravity_args(&mut command);
     let discovery = super::acp_catalog::begin("antigravity", &path);
     let _temp = super::AgentTemp::redirect(&mut command);
-    let result = inspect_state(command, &std::env::temp_dir(), false, false, DISCOVERY_STARTUP, COMMAND_GRACE).await;
+    let scratch = match ScratchDir::new("acp-check") {
+        Ok(dir) => dir,
+        Err(message) => {
+            return Ok(connection_status(Err(DiscoveryFailure {
+                acp_ready: false,
+                authentication_required: false,
+                message,
+            })));
+        }
+    };
+    let result = inspect_state(command, scratch.path(), false, false, true, DISCOVERY_STARTUP, COMMAND_GRACE).await;
     if let Ok((metadata, _)) = &result { super::acp_catalog::store(discovery, metadata); }
     Ok(connection_status(result))
 }
@@ -1255,6 +2076,13 @@ pub(super) struct Steers {
     next: u64,
     /// The opening prompt answered while live steers were still outstanding.
     turn_over: bool,
+}
+
+impl Steers {
+    /// True when `id` is a live steer request still waiting for a reply.
+    pub(super) fn has_live(&self, id: u64) -> bool {
+        self.live.iter().any(|(live_id, _, _)| *live_id == id)
+    }
 }
 
 impl Protocol {
@@ -1305,28 +2133,48 @@ impl Protocol {
     }
 
     /// The running `session/prompt` answered: send held steers as the next turn, or finish.
-    fn acp_turn_end(&mut self, result: &Value, step: &mut Step) {
+    fn acp_turn_end(&mut self, result: &Value, step: &mut Step) -> Result<(), String> {
         if result["stopReason"] == "cancelled" {
             let mut failed = self.acp_steers_failed();
             step.events.append(&mut failed.events);
             step.done = true;
-            return;
+            return Ok(());
+        }
+        if self.config.provider == "antigravity" {
+            if let Some(soft) = super::limits::antigravity_soft_error(
+                &self.acp_turn_text,
+                super::limits::now_epoch_ms(),
+            ) {
+                let mut failed = self.acp_steers_failed();
+                step.events.append(&mut failed.events);
+                if soft.limited {
+                    step.events.push(self.limited_event(soft.resets_at, None));
+                    step.failure = Some(soft.message);
+                    return Ok(());
+                }
+                if !step.events.is_empty() {
+                    step.failure = Some(soft.message);
+                    return Ok(());
+                }
+                return Err(soft.message);
+            }
         }
         if !self.acp_steers.live.is_empty() {
             self.acp_steers.turn_over = true;
-            return;
+            return Ok(());
         }
         self.acp_steers.turn_over = false;
         let held = std::mem::take(&mut self.acp_steers.held);
         if held.is_empty() {
             step.done = true;
-            return;
+            return Ok(());
         }
         self.config.prompt = held.iter().map(|(_, text)| text.as_str()).collect::<Vec<_>>().join("\n\n");
         self.kimi_prompt(step);
         for (id, text) in held {
             step.events.push(self.steer_event(&id, &text, "delivered", "next-turn"));
         }
+        Ok(())
     }
 
     /// Kimi's ACP frames, with its turn end routed through held steers.
@@ -1335,15 +2183,15 @@ impl Protocol {
         let mut step = self.kimi(value)?;
         if let Some(result) = result.filter(|_| step.done) {
             step.done = false;
-            self.acp_turn_end(&result, &mut step);
+            self.acp_turn_end(&result, &mut step)?;
         }
         Ok(step)
     }
 
     /// A live steer request answered. Returns false when the id is not one.
-    fn acp_live_answered(&mut self, value: &Value, step: &mut Step) -> bool {
+    fn acp_live_answered(&mut self, value: &Value, step: &mut Step) -> Result<bool, String> {
         let Some(index) = value["id"].as_u64().and_then(|id| self.acp_steers.live.iter().position(|(request, ..)| *request == id)) else {
-            return false;
+            return Ok(false);
         };
         let (_, id, text) = self.acp_steers.live.remove(index);
         if value.get("error").is_some() {
@@ -1351,9 +2199,9 @@ impl Protocol {
             self.acp_steers.held.push((id, text));
         }
         if self.acp_steers.turn_over && self.acp_steers.live.is_empty() {
-            self.acp_turn_end(&value["result"], step);
+            self.acp_turn_end(&value["result"], step)?;
         }
-        true
+        Ok(true)
     }
 }
 
@@ -1364,19 +2212,215 @@ mod tests {
         let args = |program: &str| {
             let mut command = tokio::process::Command::new(program);
             super::antigravity_args(&mut command);
-            command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>()
+            let args = command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+            let disable_update = command.as_std().get_envs().find(|(k, _)| *k == "AGY_CLI_DISABLE_AUTO_UPDATE").and_then(|(_, v)| v.map(|v| v.to_string_lossy().into_owned()));
+            (args, disable_update)
         };
-        let mut agy = vec!["agy", "agy.exe", "AGY.EXE", "/usr/local/bin/agy", "/custom/dir/agy"];
-        if cfg!(windows) {
-            agy.push(r"C:\Program Files\Antigravity\agy.exe");
+        for telemetry_off in [false, true] {
+            super::super::privacy::FORCE.with(|force| force.set(Some(telemetry_off)));
+            let mut expected_agy = vec!["acp".to_owned(), "--process-per-session".to_owned()];
+            if telemetry_off {
+                expected_agy.push("--disable-telemetry".to_owned());
+            }
+            if let Some(home) = crate::agent_usage_providers::home().filter(|p| p.is_absolute()) {
+                expected_agy.push("--gemini-dir".to_owned());
+                expected_agy.push(home.join(".gemini").to_string_lossy().into_owned());
+            }
+            let mut agy = vec!["agy", "agy.exe", "AGY.EXE", "/usr/local/bin/agy", "/custom/dir/agy"];
+            if cfg!(windows) {
+                agy.push(r"C:\Program Files\Antigravity\agy.exe");
+            }
+            for program in agy {
+                let (got, env) = args(program);
+                assert_eq!(got, expected_agy, "{program} (telemetry_off={telemetry_off})");
+                assert_eq!(env.as_deref(), Some("true"), "{program}");
+                assert!(!got.iter().any(|a| a == "--dangerously-skip-permissions"), "discovery args stay clean");
+            }
+            let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
+            for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
+                let (got, env) = args(program);
+                assert_eq!(got, server, "{program}");
+                assert_eq!(env, None, "{program}");
+            }
         }
-        for program in agy {
-            assert_eq!(args(program), ["acp", "--process-per-session"], "{program}");
+        super::super::privacy::FORCE.with(|force| force.set(None));
+    }
+
+    #[test]
+    fn antigravity_gemini_dir_respects_command_home_and_overrides() {
+        let custom_home = if cfg!(windows) { r"C:\custom-home" } else { "/custom/conn-home" };
+        let fallback_home = if cfg!(windows) { r"C:\fallback-home" } else { "/fallback/home" };
+        let chosen = if cfg!(windows) { r"C:\chosen\gemini" } else { "/chosen/gemini" };
+        let custom = PathBuf::from(custom_home).join(".gemini").to_string_lossy().into_owned();
+        let fallback = PathBuf::from(fallback_home).join(".gemini").to_string_lossy().into_owned();
+        let arg_list = |command: &tokio::process::Command| {
+            command
+                .as_std()
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let gemini_arg = |command: &tokio::process::Command| {
+            let args = arg_list(command);
+            args.iter().position(|a| a == "--gemini-dir").map(|pos| args[pos + 1].clone())
+        };
+        let host_blocked = |command: &tokio::process::Command| {
+            command
+                .as_std()
+                .get_envs()
+                .any(|(k, v)| k == "GEMINI_DIR" && v.is_none())
+        };
+
+        // No GEMINI_DIR anywhere: the command `HOME` (such as a named connection's) pins
+        // `--gemini-dir`, and an inherited host GEMINI_DIR is never passed on.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("HOME", custom_home);
+        super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+        assert_eq!(gemini_arg(&command), Some(custom.clone()));
+        assert!(host_blocked(&command), "Named Connection HOME must keep the host GEMINI_DIR out");
+
+        // Without a command `HOME`/`USERPROFILE`, the process home's `.gemini` is pinned:
+        // a host GEMINI_DIR does not suppress it, since agy reads no variable.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+        assert_eq!(gemini_arg(&command), Some(fallback.clone()));
+        assert!(host_blocked(&command));
+
+        // A `GEMINI_DIR` (any letter case) or `ANTIGRAVITY_GEMINI_DIR` on the command, from a
+        // named connection or the provider environment, is the directory the user chose: agy
+        // reads no variable, so it is passed as `--gemini-dir` and removed.
+        for key in ["GEMINI_DIR", "gemini_dir", "ANTIGRAVITY_GEMINI_DIR"] {
+            let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+            command.env("HOME", custom_home);
+            command.env(key, chosen);
+            super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+            assert_eq!(gemini_arg(&command), Some(chosen.to_owned()), "{key}");
+            assert_eq!(arg_list(&command).iter().filter(|arg| arg.starts_with("--gemini")).count(), 1, "{key}");
+            assert!(
+                command.as_std().get_envs().all(|(name, value)| name != key || value.is_none()),
+                "{key} must be removed"
+            );
         }
-        let server: &[&str] = if cfg!(target_os = "linux") { &["--uid="] } else { &[] };
-        for program in ["agy_acp_server.par", "agy_acp_server.exe", "/opt/agy_acp_server.par", "/opt/agy/server", "agy-wrapper"] {
-            assert_eq!(args(program), server, "{program}");
+
+        // Case-insensitive `home` / `userprofile` matching on `command`.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("home", custom_home);
+        super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+        assert_eq!(gemini_arg(&command), Some(custom.clone()));
+
+        // Relative `HOME` falls back to absolute `USERPROFILE` rather than dropping `--gemini-dir`.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("HOME", "relative/home");
+        command.env("userprofile", custom_home);
+        super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+        assert_eq!(gemini_arg(&command), Some(custom.clone()));
+
+        // Relative `HOME` with no `USERPROFILE` falls back to absolute process home.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("HOME", "relative/home");
+        super::antigravity_gemini_dir_with(&mut command, Some(PathBuf::from(fallback_home)), false, false, None);
+        assert_eq!(gemini_arg(&command), Some(fallback.clone()));
+
+        // Existing `--gemini-dir` or `--gemini_dir` arg suppresses adding a second one and
+        // wins over a GEMINI_DIR variable, which is still removed.
+        for existing in [
+            vec!["--gemini-dir", "/explicit/gemini"],
+            vec!["--gemini-dir=/explicit/gemini"],
+            vec!["--gemini_dir", "/explicit/gemini"],
+            vec!["--gemini_dir=/explicit/gemini"],
+        ] {
+            let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+            command.args(&existing).env("GEMINI_DIR", chosen);
+            super::antigravity_gemini_dir(&mut command);
+            let count = arg_list(&command)
+                .iter()
+                .filter(|arg| arg.starts_with("--gemini-dir") || arg.starts_with("--gemini_dir"))
+                .count();
+            assert_eq!(count, 1, "existing={existing:?}");
+            assert!(host_blocked(&command), "existing={existing:?}");
         }
+    }
+
+    #[test]
+    fn antigravity_named_connection_relative_paths_fail_before_launch() {
+        let custom_home = if cfg!(windows) { r"C:\conn-home" } else { "/conn-home" };
+        // agy resolves a relative path against the project folder, which would put the
+        // Gemini directory (settings, conversation store, credentials) inside it.
+        for (key, value) in [
+            ("HOME", "relative/home"),
+            ("userprofile", "relative/profile"),
+            ("GEMINI_DIR", "relative/gemini"),
+            ("antigravity_gemini_dir", "relative/gemini"),
+        ] {
+            let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+            command.env(key, value);
+            let err = super::antigravity_gemini_dir_isolated(&mut command, &[("HOME".into(), custom_home.into())], &[])
+                .expect_err("a relative path must fail the launch");
+            assert_eq!(
+                err,
+                format!("Antigravity needs an absolute path for {} in this named connection.", key.to_ascii_uppercase()),
+                "{key}"
+            );
+            assert!(command.as_std().get_args().next().is_none(), "a refused launch is not prepared");
+        }
+        assert!(super::connection_overrides_home(&[("HOME".into(), "relative/home".into())]));
+
+        // The same connection with an absolute HOME launches as before.
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("HOME", custom_home);
+        super::antigravity_gemini_dir_isolated(&mut command, &[("HOME".into(), custom_home.into())], &[]).unwrap();
+        let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["--gemini-dir".to_owned(), PathBuf::from(custom_home).join(".gemini").to_string_lossy().into_owned()]);
+    }
+
+    #[test]
+    fn named_connection_gemini_dir_beats_provider_gemini_dir() {
+        let shared = if cfg!(windows) { r"C:\shared" } else { "/shared" };
+        let isolated = if cfg!(windows) { r"C:\isolated" } else { "/isolated" };
+        for key in ["ANTIGRAVITY_GEMINI_DIR", "gemini_dir"] {
+            // Merged command env: provider GEMINI_DIR plus the connection's own variable.
+            let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+            command.env("GEMINI_DIR", shared).env(key, isolated);
+            super::antigravity_gemini_dir_isolated(&mut command, &[(key.into(), isolated.into())], &[]).unwrap();
+            let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+            assert_eq!(args, ["--gemini-dir".to_owned(), isolated.to_owned()], "{key}");
+        }
+        assert_eq!(super::connection_gemini_dir(&[("PATH".into(), "/bin".into())]), None);
+        assert_eq!(
+            super::connection_gemini_dir(&[("antigravity_gemini_dir".into(), "/b".into()), ("Gemini_Dir".into(), "/a".into())]),
+            Some(PathBuf::from("/a"))
+        );
+    }
+
+    #[test]
+    fn named_connection_relative_gemini_dir_args_fail_before_launch() {
+        let expected = "Antigravity needs an absolute path for --gemini-dir in this named connection.";
+        for args in [
+            vec!["--gemini-dir", "rel"],
+            vec!["--gemini-dir=rel"],
+            vec!["--gemini_dir=rel"],
+            vec!["--gemini_dir", "rel"],
+            vec!["--gemini-dir"],
+            vec!["--gemini-dir=  "],
+        ] {
+            let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+            command.args(&args);
+            let owned: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            let err = super::antigravity_gemini_dir_isolated(&mut command, &[], &owned).expect_err("relative must fail");
+            assert_eq!(err, expected, "{args:?}");
+            assert_eq!(command.as_std().get_args().count(), args.len(), "a refused launch is not prepared");
+        }
+        let explicit = if cfg!(windows) { r"C:\abs\path" } else { "/abs/path" };
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.args(["--gemini-dir", explicit]).env("GEMINI_DIR", "/shared");
+        super::antigravity_gemini_dir_isolated(
+            &mut command,
+            &[("ANTIGRAVITY_GEMINI_DIR".into(), "/isolated".into())],
+            &["--gemini-dir".into(), explicit.into()],
+        )
+        .unwrap();
+        let args: Vec<_> = command.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["--gemini-dir".to_owned(), explicit.to_owned()]);
     }
 
     use super::super::tests::config;
@@ -1390,6 +2434,76 @@ mod tests {
         assert!(error.contains("ValueError: invalid working directory"));
         assert!(!error.contains("fixture-secret"));
         assert!(!error.contains("private opaque metadata"));
+    }
+
+    // OpenCode ACP 2.3.2 prompt error from issue #391.
+    fn prompt_auth_error(id: u64) -> Value {
+        json!({"jsonrpc":"2.0","id":id,"error":{
+            "code":-32000,"message":"Authentication required: provider authentication required","data":{}
+        }})
+    }
+
+    #[test]
+    fn opencode_prompt_auth_error_names_the_resolved_default_model() {
+        let mut p = Protocol::new(config("opencode"));
+        assert_eq!(p.receive(capabilities()).unwrap().write[0]["method"], "session/new");
+        // Model selection reported by session/new in the issue recording.
+        let session = json!({"sessionId":"ses_fixture","configOptions":[
+            {"id":"model","category":"model","type":"select","currentValue":"openai/gpt-6.2-sol","options":[
+                {"value":"openai/gpt-6.2-sol","name":"GPT-6.2 Sol"},
+                {"value":"opencode/deepseek-v4.1-flash-free","name":"DeepSeek V4.1 Flash Free"}]}
+        ]});
+        let prompt = p.receive(response(2, session)).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+        let error = p.receive(prompt_auth_error(3)).err().unwrap();
+        assert!(error.contains("cannot use the selected model \"openai/gpt-6.2-sol\""), "{error}");
+        assert!(error.contains("Add openai credentials"), "{error}");
+        assert!(error.contains("opencode/deepseek-v4.1-flash-free"), "{error}");
+        assert!(!error.contains("Sign in using its own CLI"), "{error}");
+    }
+
+    #[test]
+    fn antigravity_prompt_auth_error_keeps_the_cli_sign_in_hint() {
+        let mut p = Protocol::new(config("antigravity"));
+        p.receive(capabilities()).unwrap();
+        // Antigravity must advertise the task's approval mode before any prompt is sent.
+        let session = json!({"sessionId":"remote","modes":{"currentModeId":"default","availableModes":[{"id":"default"}]}});
+        let set_mode = p.receive(response(2, session)).unwrap();
+        assert_eq!(set_mode.write[0]["method"], "session/set_mode");
+        let set_mode_id = set_mode.write[0]["id"].as_u64().unwrap();
+        let prompt = p.receive(response(set_mode_id, json!({}))).unwrap();
+        assert_eq!(prompt.write[0]["method"], "session/prompt");
+        assert_eq!(prompt.write[0]["id"], 3);
+        // Antigravity keeps its own `agy` sign-in hint (with the server's words), never
+        // OpenCode's model-credential message.
+        let error = p.receive(prompt_auth_error(3)).err().unwrap();
+        assert!(error.starts_with(ANTIGRAVITY_SIGN_IN), "{error}");
+        assert!(error.contains("Authentication required"), "{error}");
+        assert!(!error.contains("cannot use the selected model"), "{error}");
+    }
+
+    #[test]
+    fn opencode_pre_prompt_auth_errors_keep_the_cli_sign_in_hint() {
+        for id in [1, 2, 5] {
+            let mut cfg = config("opencode");
+            cfg.model = "vendor/b".into();
+            cfg.resume_id = Some("remote".into());
+            let mut p = Protocol::new(cfg);
+            assert_eq!(p.initial()["method"], "initialize");
+            if id >= 2 {
+                assert_eq!(p.receive(capabilities()).unwrap().write[0]["method"], "session/load");
+            }
+            if id == 5 {
+                p.receive(response(2, metadata())).unwrap();
+                let selection = p.receive(response(4, json!({}))).unwrap();
+                assert_eq!(selection.write[0]["id"], 5);
+                assert_eq!(selection.write[0]["params"]["configId"], "model");
+            }
+            assert_eq!(
+                p.receive(prompt_auth_error(id)).err().unwrap(),
+                "opencode requires authentication. Sign in using its own CLI or official extension, then retry."
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -1412,7 +2526,7 @@ mod tests {
             read -r forbidden
         "#);
         let start = std::time::Instant::now();
-        let (metadata, commands) = inspect_state(command, &std::env::temp_dir(), true, false, Duration::from_secs(2), Duration::from_millis(20)).await.unwrap();
+        let (metadata, commands) = inspect_state(command, &std::env::temp_dir(), true, false, false, Duration::from_secs(2), Duration::from_millis(20)).await.unwrap();
         assert_eq!(metadata["sessionId"], "fixture");
         assert!(parse_models(&metadata).iter().any(|model| model.id == "model-fixture"));
         assert!(commands.is_none());
@@ -1426,11 +2540,11 @@ mod tests {
             (r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":2}}"#, "startupFailed", false),
             (r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Login required"}}"#, "authenticationRequired", true),
             (r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Invalid working directory"}}"#, "sessionFailed", true),
-            (r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ready"}}"#, "ready", true),
+            (r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ready","modes":{"availableModes":[{"id":"default"}]}}}"#, "ready", true),
         ] {
             let startup = if acp_ready { "read -r init; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1}}';" } else { "" };
             let command = fixture(&format!("{startup} read -r request; printf '%s\\n' '{reply}'; read -r forbidden"));
-            let status = connection_status(inspect_state(command, &std::env::temp_dir(), false, false, Duration::from_secs(2), Duration::from_millis(20)).await);
+            let status = connection_status(inspect_state(command, &std::env::temp_dir(), false, false, false, Duration::from_secs(2), Duration::from_millis(20)).await);
             assert_eq!(status.state, state);
             assert!(status.installed);
             assert_eq!(status.acp_ready, acp_ready);
@@ -1441,10 +2555,10 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn readiness_reports_timeout_and_stderr_cause_without_credentials() {
-        let failure = inspect_state(fixture("read -r init; sleep 2"), &std::env::temp_dir(), false, false, Duration::from_millis(20), COMMAND_GRACE).await.unwrap_err();
+        let failure = inspect_state(fixture("read -r init; sleep 2"), &std::env::temp_dir(), false, false, false, Duration::from_millis(20), COMMAND_GRACE).await.unwrap_err();
         assert_eq!(failure.message, ACP_STARTUP_TIMEOUT);
         assert!(!failure.acp_ready);
-        let failure = inspect_state(fixture("printf '%s\\n' 'FutureWarning: Python is deprecated' 'Authorization: Bearer fixture-secret' 'ValueError: invalid cwd' >&2; exit 1"), &std::env::temp_dir(), false, false, Duration::from_secs(2), COMMAND_GRACE).await.unwrap_err();
+        let failure = inspect_state(fixture("printf '%s\\n' 'FutureWarning: Python is deprecated' 'Authorization: Bearer fixture-secret' 'ValueError: invalid cwd' >&2; exit 1"), &std::env::temp_dir(), false, false, false, Duration::from_secs(2), COMMAND_GRACE).await.unwrap_err();
         assert!(failure.message.contains("ValueError: invalid cwd"));
         assert!(!failure.message.contains("fixture-secret"));
     }
@@ -1461,11 +2575,34 @@ mod tests {
             printf '%s\n' '{"jsonrpc":"2.0","id":90,"method":"fs/write_text_file","params":{"path":"unused","content":"must not write"}}'
             read -r request
             case "$request" in *'"code":-32601'*) ;; *) exit 1;; esac
-            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ready"}}'
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"ready","modes":{"availableModes":[{"id":"default"}]}}}'
             read -r forbidden
         "#);
-        let status = connection_status(inspect_state(command, &std::env::temp_dir(), false, false, Duration::from_secs(2), COMMAND_GRACE).await);
+        let status = connection_status(inspect_state(command, &std::env::temp_dir(), false, false, false, Duration::from_secs(2), COMMAND_GRACE).await);
         assert_eq!(status.state, "ready");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readiness_reports_session_failed_when_no_approval_mode_is_advertised() {
+        // A mode-less server and a plan-only one both lack `default`, which Standard
+        // needs and Accept edits / Full access fall back to.
+        for session in [r#"{"sessionId":"ready"}"#, r#"{"sessionId":"ready","modes":{"availableModes":[{"id":"plan"}]}}"#] {
+            let script = format!(
+                r#"read -r init; printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1}}}}'; read -r request; printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{session}}}'; read -r forbidden"#
+            );
+            let status = connection_status(inspect_state(fixture(&script), &std::env::temp_dir(), false, false, false, Duration::from_secs(2), Duration::from_millis(20)).await);
+            assert_eq!(status.state, "sessionFailed", "{session}");
+            assert!(status.installed);
+            assert!(status.acp_ready);
+            assert!(!status.session_ready);
+            assert_eq!(status.message, ANTIGRAVITY_CHECK_MODE_UNADVERTISED, "{session}");
+            assert!(!status.message.contains("this task's approval mode"));
+        }
+        let plan_only = json!({"modes":{"availableModes":[{"id":"plan"}]}});
+        assert!(!antigravity_advertises_mode(&plan_only));
+        assert!(antigravity_advertises_mode(&json!({"modes":{"availableModes":[{"id":"plan"},{"id":"default"}]}})));
+        assert_eq!(connection_status(Ok((json!({"modes":{"availableModes":[{"id":"default"}]}}), None))).state, "ready");
     }
 
     #[cfg(windows)]
@@ -1483,7 +2620,22 @@ mod tests {
     #[tokio::test]
     #[ignore = "Needs installed and signed-in official Antigravity ACP server; never sends a prompt"]
     async fn installed_antigravity_opens_session_without_prompt() {
-        let status = provider_check_connection("antigravity".into()).await.unwrap();
+        let owned_root = if crate::secret_store::dir().is_none() {
+            let root = std::env::temp_dir().join(format!(
+                "pandacode-acp-antigravity-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&root).unwrap();
+            crate::secret_store::setup(&root);
+            Some(root)
+        } else {
+            None
+        };
+        let status = provider_check_connection("antigravity".into()).await;
+        if let Some(root) = &owned_root {
+            let _ = std::fs::remove_dir_all(root);
+        }
+        let status = status.unwrap();
         assert_eq!(status.state, "ready", "{}", status.message);
     }
     fn capabilities() -> Value {
@@ -2138,6 +3290,52 @@ mod tests {
         }
     }
     #[test]
+    fn colab_mcp_rides_beside_the_bridge_on_new_load_and_resume() {
+        let colab = super::mcp_host::acp_mcp_servers(&[super::mcp_host::Stdio::new(
+            super::mcp_host::COLAB_MCP,
+            "/bin/uvx".into(),
+            vec!["colab-mcp".into()],
+        )]);
+        assert_eq!(colab, vec![json!({"name":"colab-mcp","command":"/bin/uvx","args":["colab-mcp"],"env":[]})]);
+        let bridge = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:1/mcp","headers":[]});
+        for (provider, saved, resume, method) in [
+            ("antigravity", false, false, "session/new"),
+            ("opencode", true, false, "session/load"),
+            ("kilo", true, true, "session/resume"),
+            ("hermes", false, false, "session/new"),
+        ] {
+            let mut cfg = config(provider);
+            cfg.resume_id = saved.then(|| "saved".into());
+            let mut p = Protocol::new(cfg);
+            p.mcp_server = Some(bridge.clone());
+            p.extra_mcp_servers = colab.clone();
+            let mut cap = capabilities();
+            if resume {
+                cap["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume":{}});
+            }
+            let step = p.receive(cap).unwrap();
+            let session = &step.write[0];
+            assert_eq!(session["method"], method, "{provider}");
+            assert_eq!(session["params"]["mcpServers"], json!([bridge, colab[0]]), "{provider}");
+        }
+        // Without HTTP MCP the optional bridge drops out but stdio Colab still goes.
+        let mut p = Protocol::new(config("antigravity"));
+        p.mcp_server = Some(bridge.clone());
+        p.mcp_required = false;
+        p.extra_mcp_servers = colab.clone();
+        let mut cap = capabilities();
+        cap["result"]["agentCapabilities"]["mcpCapabilities"] = json!({});
+        let step = p.receive(cap).unwrap();
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!(colab));
+        // Off by default: the session carries exactly what it did before.
+        let mut p = Protocol::new(config("antigravity"));
+        p.mcp_server = Some(bridge.clone());
+        assert!(p.extra_mcp_servers.is_empty());
+        let step = p.receive(capabilities()).unwrap();
+        assert_eq!(step.write[0]["params"]["mcpServers"], json!([bridge]));
+    }
+
+    #[test]
     fn unsupported_images_mcp_or_effort_fail_before_any_prompt() {
         let mut p = Protocol::new(config("antigravity"));
         p.image_blocks.push(json!({"type":"image"}));
@@ -2167,9 +3365,9 @@ mod tests {
 
     #[test]
     fn a_generic_harness_without_the_selected_mode_runs_in_its_own_mode() {
-        // A harness whose own modes lack a plan choice (#269) keeps the session
+        // A generic harness whose own modes lack a plan choice (#269) keeps the session
         // alive and PandaCode enforces the read-only plan rules instead.
-        let mut cfg = config("antigravity");
+        let mut cfg = config("hermes");
         cfg.mode = "plan".into();
         let mut p = Protocol::new(cfg);
         assert_eq!(p.initial()["method"], "initialize");
@@ -2206,7 +3404,7 @@ mod tests {
         assert_eq!(p.receive(read).unwrap().write[0]["result"]["outcome"]["optionId"], "allow");
 
         // Accept edits runs in the harness's own mode with a status note and no plan prefix.
-        let mut cfg = config("antigravity");
+        let mut cfg = config("hermes");
         cfg.mode = "auto".into();
         let mut p = Protocol::new(cfg);
         p.receive(capabilities()).unwrap();
@@ -2217,7 +3415,7 @@ mod tests {
 
         // The same fallback applies when the harness advertises its modes as a
         // mode option without a plan choice.
-        let mut cfg = config("antigravity");
+        let mut cfg = config("hermes");
         cfg.mode = "plan".into();
         let mut p = Protocol::new(cfg);
         p.receive(capabilities()).unwrap();
@@ -2230,7 +3428,7 @@ mod tests {
         // a fallback: Plan and Standard refuse an edit or bypass mode, Accept
         // edits refuses a bypass mode, and Full access takes any.
         for (mode, current, fails) in [("plan", "autoEdit", true), ("default", "yolo", true), ("auto", "accept-edits", false), ("auto", "bypassPermissions", true), ("full", "yolo", false)] {
-            let mut cfg = config("antigravity");
+            let mut cfg = config("hermes");
             cfg.mode = mode.into();
             let mut p = Protocol::new(cfg);
             p.receive(capabilities()).unwrap();
@@ -2241,7 +3439,7 @@ mod tests {
 
         // With no mode information at all the run still fails rather than
         // guess what the harness would allow.
-        let mut cfg = config("antigravity");
+        let mut cfg = config("hermes");
         cfg.mode = "plan".into();
         assert!(Protocol::new(cfg)
             .receive(response(2, json!({"sessionId":"remote"})))
@@ -2250,12 +3448,50 @@ mod tests {
             .contains("planning"));
 
         // Harnesses whose modes are their approval policy still fail rather
-        // than widen access.
-        let mut cfg = config("opencode");
-        cfg.mode = "plan".into();
-        let mut p = Protocol::new(cfg);
-        p.receive(capabilities()).unwrap();
-        assert!(p.receive(response(2, json!({"sessionId":"remote","modes":{"availableModes":[{"id":"build"}]}}))).err().unwrap().contains("does not advertise the selected task mode"));
+        // than widen access; Antigravity's message says what to do about it.
+        for (provider, expected) in [
+            ("opencode", "This harness does not advertise the selected task mode."),
+            ("antigravity", "Antigravity did not offer this task's approval mode, so the task did not start; it would have run in agy's own default mode. Run `agy update` in a terminal outside PandaCode (or use its official installer), or select the agy CLI instead of the standalone ACP server, then retry."),
+        ] {
+            let mut cfg = config(provider);
+            cfg.mode = "plan".into();
+            let mut p = Protocol::new(cfg);
+            p.receive(capabilities()).unwrap();
+            assert_eq!(
+                p.receive(response(2, json!({"sessionId":"remote","modes":{"availableModes":[{"id":"build"}]}})))
+                    .err()
+                    .unwrap(),
+                expected,
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn antigravity_mode_reach_and_bare_resumed_session_fail_closed() {
+        assert_eq!(mode_reach("antigravity", "auto"), 3);
+        assert_eq!(mode_reach("antigravity", "AUTO"), 3);
+        assert_eq!(mode_reach("antigravity", "accept-edits"), 2);
+        assert_eq!(mode_reach("hermes", "auto"), 2);
+
+        // Bare resumed Antigravity session (missing configOptions and modes)
+        // must fail closed in every approval mode rather than silently keep a
+        // previously persisted `auto` mode.
+        for mode in ["ask", "auto", "plan", "full"] {
+            let mut cfg = config("antigravity");
+            cfg.mode = mode.into();
+            cfg.resume_id = Some("saved-sess".into());
+            let mut p = Protocol::new(cfg);
+            p.receive(capabilities()).unwrap();
+            let err = p
+                .receive(response(2, json!({"sessionId": "saved-sess"})))
+                .err()
+                .unwrap();
+            assert!(
+                err.contains("Antigravity did not offer this task's approval mode") && err.contains("agy update"),
+                "mode={mode}: {err}"
+            );
+        }
     }
     fn permission() -> Value {
         json!({"jsonrpc":"2.0","id":"p1","method":"session/request_permission","params":{"sessionId":"remote","toolCall":{"title":"Run command","kind":"execute"},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}})
@@ -2380,8 +3616,17 @@ mod tests {
         configure(&mut c, &config("antigravity"));
         assert!(!c.as_std().get_args().any(|arg| arg == "acp"));
         let mut c = Command::new("/usr/local/bin/agy");
+        super::super::privacy::FORCE.with(|force| force.set(Some(true)));
         configure(&mut c, &config("antigravity"));
-        assert_eq!(c.as_std().get_args().collect::<Vec<_>>(), ["acp", "--process-per-session"]);
+        let agy_args: Vec<_> = c.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert_eq!(&agy_args[..3], ["acp", "--process-per-session", "--disable-telemetry"]);
+        assert!(!agy_args.iter().any(|arg| arg == "--dangerously-skip-permissions"));
+        let mut full_cfg = config("antigravity");
+        full_cfg.mode = "full".into();
+        let mut c_full = Command::new("/usr/local/bin/agy");
+        configure(&mut c_full, &full_cfg);
+        assert!(c_full.as_std().get_args().any(|arg| arg == "--dangerously-skip-permissions"));
+        super::super::privacy::FORCE.with(|force| force.set(None));
         let mut c_hermes = Command::new("hermes");
         configure(&mut c_hermes, &config("hermes"));
         assert!(c_hermes.as_std().get_args().any(|arg| arg == "acp"));
@@ -2681,5 +3926,1631 @@ mod tests {
         let step = p.receive(json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}})).unwrap();
         assert!(!step.done);
         assert_eq!(step.write[0]["params"]["prompt"][0]["text"], "retry me");
+    }
+
+    #[test]
+    fn antigravity_soft_errors_fail_turn_and_emit_limited_only_for_quota_and_credits() {
+        let chunk = |text: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "ag-1",
+                    "update": {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"type": "text", "text": text}
+                    }
+                }
+            })
+        };
+
+        // Credits exhausted -> emits `limited` event (resetsAt: null) and fails via `step.failure`.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("⚠ Your AI credits balance is too low to continue.")).unwrap();
+        let step = p.receive(response(3, json!({"stopReason": "end_turn"}))).unwrap();
+        assert!(!step.done);
+        let limited = step.events.iter().find(|e| e.kind == "limited").expect("limited event");
+        assert!(limited.data.as_ref().unwrap()["resetsAt"].is_null());
+        assert!(step.failure.as_deref().unwrap().contains("AI credits balance"));
+
+        // Individual quota reached -> emits `limited` event with parsed `resetsAt` and fails.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("⚠ Individual quota reached for Gemini 4 Neon. Resets in 2h 15m.")).unwrap();
+        let step = p.receive(response(3, json!({"stopReason": "end_turn"}))).unwrap();
+        let limited = step.events.iter().find(|e| e.kind == "limited").expect("limited event");
+        assert!(limited.data.as_ref().unwrap()["resetsAt"].as_i64().is_some());
+        assert!(step.failure.as_deref().unwrap().contains("Individual quota reached"));
+
+        // Stream interrupted -> fails without emitting `limited`.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("⚠ The stream was interrupted.")).unwrap();
+        let err = p.receive(response(3, json!({"stopReason": "end_turn"}))).err().unwrap();
+        assert!(err.contains("stream was interrupted"));
+
+        // Model produced invalid output -> fails without emitting `limited`.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("⚠ Model produced invalid output.")).unwrap();
+        let err = p.receive(response(3, json!({"stopReason": "end_turn"}))).err().unwrap();
+        assert!(err.contains("invalid output"));
+
+        // Trailing fatal `⚠` after partial prose -> detected.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("Starting analysis...\n⚠ The stream was interrupted.")).unwrap();
+        let err = p.receive(response(3, json!({"stopReason": "end_turn"}))).err().unwrap();
+        assert!(err.contains("stream was interrupted"));
+
+        // Verbose >2 KiB warning retries stay within rolling 4096-byte tail and still detect.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        let padding = format!("⚠ API error (attempt 1/3): {}\n", "x".repeat(2500));
+        p.receive(chunk(&padding)).unwrap();
+        p.receive(chunk("⚠ API error (attempt 2/3): RESOURCE_EXHAUSTED (code 429). Resets in 45m.\n⚠ The stream was interrupted.")).unwrap();
+        let step = p.receive(response(3, json!({"stopReason": "end_turn"}))).unwrap();
+        assert!(!step.done);
+        let limited = step.events.iter().find(|e| e.kind == "limited").expect("limited event");
+        assert!(limited.data.as_ref().unwrap()["resetsAt"].as_i64().is_some());
+
+        // `agent_thought_chunk` clears preceding turn text so earlier prose does not pollute later segment.
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-1".into();
+        p.phase = 1;
+        p.receive(chunk("⚠ Individual quota reached. Resets in 2h.")).unwrap();
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "ag-1",
+                "update": {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Continuing"}}
+            }
+        })).unwrap();
+        p.receive(chunk("All done.")).unwrap();
+        let step = p.receive(response(3, json!({"stopReason": "end_turn"}))).unwrap();
+        assert!(step.done && step.failure.is_none());
+
+        // Normal reply mentioning `⚠` mid-sentence or with prose after `⚠` -> succeeds cleanly.
+        for benign in [
+            "When quota runs out, agy prints \"⚠ Individual quota reached. Resets in 2h.\" on stderr.",
+            "⚠ Individual quota reached. Resets in 2h.\nThat is the message agy prints when your quota is full.",
+        ] {
+            let mut p = Protocol::new(config("antigravity"));
+            p.remote_id = "ag-1".into();
+            p.phase = 1;
+            p.receive(chunk(benign)).unwrap();
+            let step = p.receive(response(3, json!({"stopReason": "end_turn"}))).unwrap();
+            assert!(step.done, "{benign}");
+            assert!(step.failure.is_none(), "{benign}");
+            assert!(!step.events.iter().any(|e| e.kind == "limited"), "{benign}");
+        }
+    }
+
+    #[test]
+    fn antigravity_rpc_errors_classify_rate_limits_and_sign_in() {
+        let mut p = Protocol::new(config("antigravity"));
+        let step = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "error": {
+                    "code": -32603,
+                    "message": "API error: RESOURCE_EXHAUSTED (code 429). Resets in 45m."
+                }
+            }))
+            .unwrap();
+        let limited = step.events.iter().find(|e| e.kind == "limited").expect("limited event");
+        assert!(limited.data.as_ref().unwrap()["resetsAt"].as_i64().is_some());
+        assert!(step.failure.as_deref().unwrap().contains("RESOURCE_EXHAUSTED"));
+
+        let mut p = Protocol::new(config("antigravity"));
+        let err = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "error": {"code": -32000, "message": "Authentication required"}
+            }))
+            .err()
+            .unwrap();
+        assert!(err.contains("agy acp --login"), "{err}");
+
+        // -32000 with explicit credit/quota/429 error on Antigravity classifies as rate-limited
+        // rather than ANTIGRAVITY_SIGN_IN.
+        for message in [
+            "Your AI credits balance is too low",
+            "API error: RESOURCE_EXHAUSTED (code 429). Resets in 20m.",
+            "Individual quota reached. Resets in 1h.",
+        ] {
+            let mut p = Protocol::new(config("antigravity"));
+            let step = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "error": {"code": -32000, "message": message}
+                }))
+                .unwrap();
+            assert!(
+                step.events.iter().any(|e| e.kind == "limited"),
+                "-32000 credit/quota error must emit limited event: {message}"
+            );
+            assert!(
+                step.failure.as_deref().is_some_and(|f| f.contains(message)),
+                "-32000 credit/quota error must set step.failure: {message}"
+            );
+        }
+
+        // Otherwise -32000 auth error STILL returns ANTIGRAVITY_SIGN_IN BEFORE
+        // missing-session fallback, even if its message mentions "not found" / "session not found",
+        // followed by what the server said (agy's own texts included).
+        for message in [
+            "Authentication required",
+            "authentication required. Run 'agy acp --login' to log in.",
+            "Credentials not found; session not found",
+            "Not authenticated: failed to read session",
+        ] {
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("saved-sess".into());
+            let mut p = Protocol::new(cfg);
+            let mut caps = capabilities();
+            caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+            p.receive(caps).unwrap();
+            let err = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "error": {"code": -32000, "message": message}
+                }))
+                .err()
+                .unwrap_or_else(|| panic!("expected a sign-in error for {message:?}"));
+            assert_eq!(
+                err,
+                format!("{ANTIGRAVITY_SIGN_IN} (The server said: ACP session creation or resume: {message})"),
+                "{message}"
+            );
+        }
+    }
+
+    #[test]
+    fn antigravity_missing_session_resume_answered_with_32000_recovers_the_thread() {
+        let frame = |message: &str| json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":message}});
+        assert!(!acp_sign_in_error(&frame("Session not found: saved-sess")));
+        assert!(acp_sign_in_error(&frame("Credentials not found; session not found")));
+        // A missing session that merely mentions a token still recovers the thread.
+        assert!(!acp_sign_in_error(&frame("Session not found: saved-sess (token budget unchanged)")));
+        for message in ["Invalid access token", "refresh token expired", "OAuth failed", "missing auth token", "bad id token"] {
+            assert!(acp_sign_in_error(&frame(message)), "{message}");
+        }
+        // agy's real resume failures, both answered with -32000.
+        for message in [
+            "Session not found: saved-sess",
+            "Failed to read session saved-sess; retry, or load it with session/load",
+        ] {
+            // With the load capability the session is loaded.
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("saved-sess".into());
+            let mut p = Protocol::new(cfg);
+            let mut caps = capabilities();
+            caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+            p.receive(caps).unwrap();
+            let step = p.receive(frame(message)).unwrap();
+            assert_eq!(step.write[0]["method"], "session/load", "{message}");
+            assert!(step.events.iter().all(|e| e.kind != "limited"), "{message}");
+
+            // Without it, a fresh session starts with the note.
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("saved-sess".into());
+            let mut p = Protocol::new(cfg);
+            let mut caps = capabilities();
+            caps["result"]["agentCapabilities"]["loadSession"] = json!(false);
+            caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}});
+            p.receive(caps).unwrap();
+            let step = p.receive(frame(message)).unwrap();
+            assert_eq!(step.write[0]["method"], "session/new", "{message}");
+            assert!(
+                step.events.iter().any(|e| e.kind == "note" && e.text == "Saved session could not be resumed; started a fresh session."),
+                "{message}"
+            );
+        }
+
+        // Any other harness keeps its sign-in text for the same frame.
+        let mut cfg = config("opencode");
+        cfg.resume_id = Some("saved-sess".into());
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        assert_eq!(
+            p.receive(frame("Session not found: saved-sess")).err().unwrap(),
+            "opencode requires authentication. Sign in using its own CLI or official extension, then retry."
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_context_window_errors_are_neither_sign_in_nor_account_limits() {
+        const CONTEXT: &str = "context window quota exceeded, try a shorter prompt";
+        assert!(antigravity_context_error(&json!({"error":{"code":-32000,"message":"The CONTEXT window is full"}})));
+        assert!(antigravity_context_error(&json!({"error":{"code":-32000,"message":"Quota","data":{"details":"context length exceeded"}}})));
+        assert!(!antigravity_context_error(&json!({"error":{"code":-32000,"message":"Login required"}})));
+
+        // Live, at session/prompt: the server's own text, with no sign-in advice.
+        let mut p = Protocol::new(config("antigravity"));
+        let err = p
+            .receive(json!({"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":CONTEXT}}))
+            .err()
+            .expect("the server's own error");
+        assert_eq!(err, format!("antigravity: ACP session/prompt: {CONTEXT}"));
+
+        // Live, at session/resume: the same, and no session/load or session/new retry.
+        let mut cfg = config("antigravity");
+        cfg.resume_id = Some("saved-sess".into());
+        let mut p = Protocol::new(cfg);
+        let mut caps = capabilities();
+        caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+        p.receive(caps).unwrap();
+        let err = p
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":CONTEXT}}))
+            .err()
+            .expect("the server's own error");
+        assert_eq!(err, format!("antigravity: ACP session creation or resume: {CONTEXT}"));
+        assert!(!p.acp_load_fallback_tried && !p.acp_fresh_fallback_tried);
+
+        // Any other harness keeps its sign-in text for the same frame.
+        let mut p = Protocol::new(config("opencode"));
+        assert_eq!(
+            p.receive(json!({"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":CONTEXT}})).err().unwrap(),
+            "opencode requires authentication. Sign in using its own CLI or official extension, then retry."
+        );
+
+        // Discovery: no sign-in wording either.
+        let dir = std::env::temp_dir().join(format!("pandacode-agy-context-{}", uuid::Uuid::new_v4()));
+        let failure = named_server_failure(&dir, "agy", true, r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"context window quota exceeded, try a shorter prompt"}}"#, true).await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(!failure.authentication_required, "{}", failure.message);
+        assert_eq!(failure.message, "ACP session/new: context window quota exceeded, try a shorter prompt");
+        assert_eq!(connection_status(Err(failure)).state, "sessionFailed");
+    }
+
+    #[test]
+    fn acp_missing_session_error_rejects_generic_not_found_and_bare_method_names() {
+        // ACP standard RESOURCE_NOT_FOUND (-32002) matches regardless of wording.
+        assert!(acp_missing_session_error(&json!({
+            "error": {"code": -32002, "message": "Resource not found"}
+        })));
+        for matched in [
+            "Failed to read session abc",
+            "Session not found",
+            "No such session: abc",
+            "Unknown session id",
+            "Session does not exist",
+            "Cannot read session",
+            "Could not find session",
+            "Invalid session",
+            "Please create a session or load it with session/load",
+            "Conversation abc was not found",
+        ] {
+            assert!(
+                acp_missing_session_error(&json!({"error": {"code": -32603, "message": matched}})),
+                "should match: {matched}"
+            );
+        }
+        for unmatched in [
+            "File /Users/me/project/foo.rs not found",
+            "Method session/load is not supported by this server",
+            "Model gemini-9 not found",
+            "Command not found: git",
+        ] {
+            assert!(
+                !acp_missing_session_error(&json!({"error": {"code": -32603, "message": unmatched}})),
+                "must NOT match: {unmatched}"
+            );
+        }
+    }
+
+    #[test]
+    fn session_resume_error_falls_back_to_session_load_and_merges_config() {
+        let mut cfg = config("antigravity");
+        cfg.resume_id = Some("saved-sess".into());
+        cfg.model = "gemini-4-neon".into();
+        let mut p = Protocol::new(cfg);
+
+        let mut caps = capabilities();
+        caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+        let step = p.receive(caps).unwrap();
+        assert_eq!(step.write[0]["method"], "session/resume");
+        assert_eq!(step.write[0]["params"]["sessionId"], "saved-sess");
+
+        // Streamed stale state during failed `session/resume` must be cleared before
+        // `session/load` fallback runs.
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "saved-sess",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {"id": "mode", "category": "mode", "type": "select", "currentValue": "plan", "options": [{"value": "plan"}]}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "saved-sess",
+                "update": {"sessionUpdate": "usage_update", "used": 999, "size": 500000}
+            }
+        }))
+        .unwrap();
+        p.early_kimi_commands = Some(b"stale".to_vec());
+        assert!(!p.acp_config.is_null());
+        assert_eq!(p.acp_context_window, Some(500000));
+        assert!(p.acp_saw_any_usage_update);
+
+        // `session/resume` fails with unreadable session -> retries id 2 as `session/load`
+        // and resets stale session state.
+        let retry = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "error": {"code": -32603, "message": "Failed to read session saved-sess"}
+            }))
+            .unwrap();
+        assert_eq!(retry.write[0]["id"], 2);
+        assert_eq!(retry.write[0]["method"], "session/load");
+        assert_eq!(retry.write[0]["params"]["sessionId"], "saved-sess");
+        assert!(p.acp_config.is_null(), "stale acp_config must be cleared on session/load fallback");
+        assert_eq!(p.acp_context_window, None);
+        assert!(!p.acp_saw_any_usage_update);
+        assert!(p.early_kimi_commands.is_none());
+
+        // Streamed `config_option_update` arrives before `id == 2` response.
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "saved-sess",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {"id": "mode", "category": "mode", "type": "select", "currentValue": "default", "options": [{"value": "default"}]},
+                        {"id": "model", "category": "model", "type": "select", "currentValue": "gemini-4-neon", "options": [{"value": "gemini-4-neon"}]}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+
+        // Empty `config_option_update` (`configOptions: []`) must NOT wipe previously streamed options!
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "saved-sess",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": []
+                }
+            }
+        }))
+        .unwrap();
+
+        // `id == 2` response lacks `configOptions` -> previously streamed options are preserved!
+        let loaded = p
+            .receive(response(2, json!({"sessionId": "saved-sess", "configOptions": null})))
+            .unwrap();
+        // Both mode and model already match currentValue, so `unchanged()` skips straight to prompt.
+        assert_eq!(loaded.write[0]["method"], "session/prompt");
+
+        // Dead `resume_id`: `session/resume` (-32002) -> `session/load` -> fresh `session/new`, and never loops!
+        let mut cfg2 = config("antigravity");
+        cfg2.resume_id = Some("gone-sess".into());
+        let mut p2 = Protocol::new(cfg2);
+        let mut caps2 = capabilities();
+        caps2["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}});
+        p2.receive(caps2).unwrap();
+        let retry2 = p2
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Resource not found"}}))
+            .unwrap();
+        assert_eq!(retry2.write[0]["method"], "session/load");
+        assert_eq!(retry2.write[0]["params"]["sessionId"], "gone-sess");
+
+        // Stale config/usage streamed during the doomed `session/load` must be wiped on fresh `session/new`.
+        p2.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "gone-sess",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {"id": "mode", "category": "mode", "type": "select", "currentValue": "default", "options": [{"value": "default"}]}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        p2.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "gone-sess",
+                "update": {"sessionUpdate": "usage_update", "used": 42, "size": 128000}
+            }
+        }))
+        .unwrap();
+        p2.early_kimi_commands = Some(b"stale".to_vec());
+
+        let fresh = p2
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Resource not found"}}))
+            .unwrap();
+        assert_eq!(fresh.write[0]["id"], 2);
+        assert_eq!(fresh.write[0]["method"], "session/new");
+        assert!(fresh.write[0]["params"].get("sessionId").is_none());
+        assert!(p2.remote_id.is_empty());
+        assert!(p2.config.resume_id.is_none());
+        assert!(p2.acp_config.is_null(), "stale acp_config must be cleared on session/new fallback");
+        assert_eq!(p2.acp_context_window, None);
+        assert!(p2.acp_pending_phase0_usage.is_none(), "phase-0 usage from the dead session is discarded");
+        assert!(!p2.acp_saw_any_usage_update);
+        assert!(p2.early_kimi_commands.is_none());
+        assert!(
+            fresh.events.iter().any(|e| e.kind == "note" && e.text == "Saved session could not be resumed; started a fresh session."),
+            "fresh fallback must emit a persisted note event"
+        );
+        assert!(
+            fresh.events.iter().any(|e| e.kind == "status" && e.text == "Opening session"),
+            "fresh fallback must update startup status"
+        );
+
+        // With `remote_id` empty, a `config_option_update` with `sessionId: ""` must be ignored.
+        p2.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "",
+                "update": {
+                    "sessionUpdate": "config_option_update",
+                    "configOptions": [
+                        {"id": "mode", "category": "mode", "type": "select", "currentValue": "default", "options": [{"value": "default"}]}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        assert!(p2.acp_config.is_null(), "config_option_update must be ignored when remote_id is empty");
+
+        // If the fresh `session/new` ALSO fails, return the RPC error (never loop!).
+        let err = p2
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Session not found"}}))
+            .err()
+            .unwrap();
+        assert!(err.contains("Session not found"), "{err}");
+
+        // Direct `session/load` (no `resume` capability) also falls back to fresh `session/new`.
+        let mut cfg3 = config("antigravity");
+        cfg3.resume_id = Some("gone-direct".into());
+        let mut p3 = Protocol::new(cfg3);
+        let step3 = p3.receive(capabilities()).unwrap();
+        assert_eq!(step3.write[0]["method"], "session/load");
+        let fresh3 = p3
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Session not found"}}))
+            .unwrap();
+        assert_eq!(fresh3.write[0]["method"], "session/new");
+        assert!(fresh3.write[0]["params"].get("sessionId").is_none());
+        assert!(fresh3.events.iter().any(|e| e.kind == "status" && e.text == "Opening session"));
+    }
+
+    #[test]
+    fn rotated_account_does_not_open_a_fresh_session_for_a_missing_resume() {
+        let mut cfg = config("antigravity");
+        cfg.resume_id = Some("rotated".into());
+        cfg.no_fresh_resume_fallback = true;
+        let mut p = Protocol::new(cfg);
+        let mut caps = capabilities();
+        caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+        p.receive(caps).unwrap();
+        p.acp_pending_phase0_usage = Some((9, Some(100)));
+        let load = p
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Session not found"}}))
+            .unwrap();
+        assert_eq!(load.write[0]["method"], "session/load");
+        assert!(p.acp_pending_phase0_usage.is_none());
+        let err = p
+            .receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32002,"message":"Session not found"}}))
+            .err()
+            .unwrap();
+        assert!(err.contains("Session not found"), "{err}");
+        assert!(!p.acp_fresh_fallback_tried);
+    }
+
+    #[test]
+    fn antigravity_resume_error_that_quotes_a_limit_rotates_instead_of_retrying() {
+        let frame = json!({"jsonrpc":"2.0","id":2,"error":{"code":-32001,"message":"session not found: quota exceeded for this model"}});
+        assert!(acp_missing_session_error(&frame), "the frame also reads as a missing session");
+        for rotated in [false, true] {
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("saved-sess".into());
+            cfg.no_fresh_resume_fallback = rotated;
+            let mut p = Protocol::new(cfg);
+            let mut caps = capabilities();
+            caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}, "load": {}});
+            p.receive(caps).unwrap();
+            let step = p.receive(frame.clone()).unwrap();
+            assert_eq!(step.events.iter().filter(|e| e.kind == "limited").count(), 1, "one limited event rotates the account");
+            assert!(step.failure.as_deref().is_some_and(|failure| failure.contains("quota exceeded for this model")), "{:?}", step.failure);
+            assert!(step.write.is_empty(), "neither session/load nor session/new is written: {:?}", step.write);
+            assert!(!p.acp_load_fallback_tried && !p.acp_fresh_fallback_tried);
+        }
+
+        // Any other harness keeps its missing-session retry for the same frame.
+        let mut cfg = config("opencode");
+        cfg.resume_id = Some("saved-sess".into());
+        let mut p = Protocol::new(cfg);
+        assert_eq!(p.receive(capabilities()).unwrap().write[0]["method"], "session/load");
+        let step = p.receive(frame).unwrap();
+        assert_eq!(step.write[0]["method"], "session/new");
+        assert!(!step.events.iter().any(|e| e.kind == "limited"));
+    }
+
+    #[test]
+    fn resume_without_a_load_capability_goes_straight_to_a_fresh_session() {
+        let mut caps = capabilities();
+        caps["result"]["agentCapabilities"]["loadSession"] = json!(false);
+        caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({"resume": {}});
+        for rotated in [false, true] {
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("saved-sess".into());
+            cfg.no_fresh_resume_fallback = rotated;
+            let mut p = Protocol::new(cfg);
+            assert_eq!(p.receive(caps.clone()).unwrap().write[0]["method"], "session/resume");
+            let outcome = p.receive(json!({"jsonrpc":"2.0","id":2,"error":{"code":-32603,"message":"Session not found"}}));
+            if rotated {
+                let err = outcome.err().expect("a rotated account returns the error");
+                assert!(err.contains("Session not found"), "{err}");
+                assert!(!p.acp_fresh_fallback_tried);
+            } else {
+                let step = outcome.unwrap();
+                assert_eq!(step.write.len(), 1, "only the fresh session/new: {:?}", step.write);
+                assert_eq!(step.write[0]["method"], "session/new");
+                assert!(step.write[0]["params"].get("sessionId").is_none());
+                assert!(step.events.iter().any(|e| e.kind == "note" && e.text == "Saved session could not be resumed; started a fresh session."));
+            }
+            assert!(!p.acp_load_fallback_tried, "an agent that cannot load sessions never sees session/load");
+        }
+    }
+
+    #[test]
+    fn model_switch_clears_the_previous_context_window() {
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-model".into();
+        p.acp_context_window = Some(500_000);
+        p.acp_config = json!({"configOptions":[{"id":"model","type":"select","category":"model","currentValue":"gemini-4-neon","options":[{"value":"gemini-4-neon"}]}]});
+        let step = p.receive(json!({"jsonrpc":"2.0","id":5,"result":{"configOptions":[{"id":"model","type":"select","category":"model","currentValue":"gemini-4-neon","options":[{"value":"gemini-4-neon"}]}]}})).unwrap();
+        assert_eq!(p.acp_context_window, None);
+        assert!(step.write.iter().any(|request| request["method"] == "session/prompt"));
+    }
+
+    #[test]
+    fn grok_catalog_does_not_inherit_antigravity_effort_variants() {
+        let metadata = json!({
+            "configOptions": [{
+                "id": "model",
+                "type": "select",
+                "category": "model",
+                "options": [{"value": "gemini-base", "name": "Gemini Base"}]
+            }],
+            "models": {"availableModels": [
+                {"modelId": "gemini-base-high"},
+                {"modelId": "gemini-base-low"}
+            ]}
+        });
+        let grok = parse_models_for("grok", &metadata);
+        let grok_base = grok.iter().find(|model| model.id == "gemini-base").unwrap();
+        assert!(grok_base.reasoning_efforts.is_empty(), "grok must not derive antigravity efforts");
+        let agy = parse_models(&metadata);
+        let agy_base = agy.iter().find(|model| model.id == "gemini-base").unwrap();
+        assert!(agy_base.reasoning_efforts.iter().any(|effort| effort.id == "high"));
+        assert!(agy_base.reasoning_efforts.iter().any(|effort| effort.id == "low"));
+    }
+
+    #[test]
+    fn named_connection_home_strips_global_gemini_dir_spellings() {
+        let custom_home = if cfg!(windows) { r"C:\conn-home" } else { "/conn-home" };
+        let chosen = if cfg!(windows) { r"C:\connection\gemini" } else { "/connection/gemini" };
+        let mut command = tokio::process::Command::new("/usr/local/bin/agy");
+        command.env("HOME", custom_home);
+        command.env("GEMINI_DIR", "/global/gemini");
+        command.env("gemini_dir", "/global/other");
+        super::antigravity_gemini_dir_with(
+            &mut command,
+            Some(PathBuf::from("/process/home")),
+            true,
+            false,
+            None,
+        );
+        let args: Vec<_> = command.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        let pos = args.iter().position(|arg| arg == "--gemini-dir").expect("pinned gemini dir");
+        assert_eq!(args[pos + 1], PathBuf::from(custom_home).join(".gemini").to_string_lossy());
+        assert_eq!(args.iter().filter(|arg| arg.starts_with("--gemini")).count(), 1);
+        for key in ["GEMINI_DIR", "gemini_dir"] {
+            assert!(
+                command.as_std().get_envs().any(|(name, value)| name == key && value.is_none()),
+                "{key} must be removed"
+            );
+        }
+
+        // A connection that relocates HOME and chooses its own directory keeps that
+        // choice, as the argument agy reads; the variable itself is removed.
+        let mut kept = tokio::process::Command::new("/usr/local/bin/agy");
+        kept.env("HOME", custom_home);
+        kept.env("GEMINI_DIR", chosen);
+        super::antigravity_gemini_dir_with(&mut kept, None, true, true, None);
+        let args: Vec<_> = kept.as_std().get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+        assert_eq!(args, ["--gemini-dir".to_owned(), chosen.to_owned()]);
+        assert!(kept.as_std().get_envs().any(|(name, value)| name == "GEMINI_DIR" && value.is_none()));
+        assert!(super::connection_overrides_home(&[("HOME".into(), custom_home.into())]));
+        assert!(!super::connection_overrides_home(&[("PATH".into(), "/bin".into())]));
+        assert!(super::connection_sets_gemini_dir(&[("gemini_dir".into(), "/g".into())], &[]));
+        assert!(super::connection_sets_gemini_dir(&[("ANTIGRAVITY_GEMINI_DIR".into(), "/g".into())], &[]));
+        assert!(super::connection_sets_gemini_dir(&[], &["--gemini-dir".into(), "/g".into()]));
+        assert!(!super::connection_sets_gemini_dir(&[("HOME".into(), custom_home.into())], &["--other".into()]));
+    }
+
+    #[test]
+    fn live_steer_reply_settles_a_stopped_acp_run() {
+        let mut p = Protocol::new(config("opencode"));
+        p.acp_steers.live.push((2000, "steer-1".into(), "keep going".into()));
+        assert!(p.acp_stop_settled(&json!({"jsonrpc":"2.0","id":2000,"result":{"stopReason":"end_turn"}})));
+        assert!(p.acp_stop_settled(&json!({"jsonrpc":"2.0","id":3,"error":{"code":-32800,"message":"cancelled"}})));
+        assert!(!p.acp_stop_settled(&json!({"jsonrpc":"2.0","id":2000,"method":"session/update"})));
+        assert!(!p.acp_stop_settled(&json!({"jsonrpc":"2.0","id":2001,"result":{}})));
+    }
+
+    #[test]
+    fn session_capabilities_reject_null_and_false() {
+        for bad in [Value::Null, json!(false), json!("yes"), json!(1)] {
+            let mut cfg = config("antigravity");
+            cfg.resume_id = Some("existing".into());
+            let mut caps = capabilities();
+            caps["result"]["agentCapabilities"]["loadSession"] = json!(false);
+            caps["result"]["agentCapabilities"]["sessionCapabilities"] = json!({
+                "resume": bad,
+                "load": bad,
+                "close": bad,
+            });
+            assert!(!session_capability(&caps["result"]["agentCapabilities"], "resume"));
+            assert!(!session_capability(&caps["result"]["agentCapabilities"], "load"));
+            assert!(!session_capability(&caps["result"]["agentCapabilities"], "close"));
+            let err = Protocol::new(cfg).receive(caps).err().unwrap();
+            assert!(err.contains("cannot resume"), "{bad}: {err}");
+        }
+        let valid_obj = json!({"sessionCapabilities": {"resume": {}, "load": true, "close": {}}});
+        assert!(session_capability(&valid_obj, "resume"));
+        assert!(session_capability(&valid_obj, "load"));
+        assert!(session_capability(&valid_obj, "close"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspect_state_delivers_session_close_after_grace_timeout_and_mentions_agy_login() {
+        let closed = std::env::temp_dir().join(format!("pandacode-close-{}", uuid::Uuid::new_v4()));
+        let command = fixture(&format!(
+            r#"
+            read -r init
+            printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"sessionCapabilities":{{"close":{{}}}}}}}}}}'
+            read -r sess
+            printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"close-me"}}}}'
+            read -r close_req
+            case "$close_req" in
+                *'"method":"session/close"'*'"sessionId":"close-me"'*)
+                    printf 'closed' > '{}'
+                    printf '%s\n' '{{"jsonrpc":"2.0","id":9,"result":{{}}}}'
+                    ;;
+            esac
+            "#,
+            closed.display()
+        ));
+        // wait_commands=true with short grace forces the command-grace timeout before session/close.
+        let (metadata, commands) = inspect_state(
+            command,
+            &std::env::temp_dir(),
+            true,
+            false,
+            false,
+            Duration::from_secs(2),
+            Duration::from_millis(25),
+        )
+        .await
+        .unwrap();
+        assert_eq!(metadata["sessionId"], "close-me");
+        assert!(commands.is_none());
+        assert_eq!(std::fs::read_to_string(&closed).unwrap_or_default(), "closed");
+        let _ = std::fs::remove_file(&closed);
+
+        // `sessionCapabilities.close: null` or `false` must NOT send `session/close`.
+        for bad in ["null", "false"] {
+            let unexpected = std::env::temp_dir().join(format!("pandacode-noclose-{}", uuid::Uuid::new_v4()));
+            let command = fixture(&format!(
+                r#"
+                read -r init
+                printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"sessionCapabilities":{{"close":{bad}}}}}}}}}'
+                read -r sess
+                printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"keep-open"}}}}'
+                if read -r next; then
+                    printf '%s' "$next" > '{}'
+                fi
+                "#,
+                unexpected.display()
+            ));
+            inspect_state(
+                command,
+                &std::env::temp_dir(),
+                false,
+                false,
+                false,
+                Duration::from_secs(2),
+                Duration::from_millis(20),
+            )
+            .await
+            .unwrap();
+            assert!(!unexpected.exists(), "close={bad} must not send session/close");
+        }
+
+        // `-32000` auth error mentions `agy acp --login`.
+        let auth_cmd = fixture(
+            r#"
+            read -r init
+            printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+            read -r sess
+            printf '%s\n' '{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Login required"}}'
+            read -r hold
+            "#,
+        );
+        let failure = inspect_state(
+            auth_cmd,
+            &std::env::temp_dir(),
+            false,
+            false,
+            false,
+            Duration::from_secs(2),
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap_err();
+        assert!(failure.authentication_required);
+        assert!(failure.message.contains("agy acp --login"), "{}", failure.message);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inspect_state_rejects_server_requests_while_closing() {
+        let replied = std::env::temp_dir().join(format!("pandacode-close-reply-{}", uuid::Uuid::new_v4()));
+        let command = fixture(&format!(
+            r#"
+            read -r init
+            printf '%s\n' '{{"jsonrpc":"2.0","id":1,"result":{{"protocolVersion":1,"agentCapabilities":{{"sessionCapabilities":{{"close":{{}}}}}}}}}}'
+            read -r sess
+            printf '%s\n' '{{"jsonrpc":"2.0","id":2,"result":{{"sessionId":"close-me"}}}}'
+            read -r close_req
+            printf '%s\n' '{{"jsonrpc":"2.0","id":9,"method":"session/request_permission","params":{{}}}}'
+            read -r first
+            printf '%s\n' "$first" > '{}'
+            printf '%s\n' '{{"jsonrpc":"2.0","id":77,"method":"session/request_permission","params":{{}}}}'
+            read -r second
+            printf '%s\n' "$second" >> '{}'
+            printf '%s\n' '{{"jsonrpc":"2.0","id":9,"result":{{}}}}'
+            "#,
+            replied.display(),
+            replied.display()
+        ));
+        let (metadata, _) = inspect_state(
+            command,
+            &std::env::temp_dir(),
+            false,
+            false,
+            false,
+            Duration::from_secs(2),
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap();
+        assert_eq!(metadata["sessionId"], "close-me");
+        let replies = std::fs::read_to_string(&replied).unwrap_or_default();
+        assert!(replies.contains("\"id\":9"), "{replies}");
+        assert!(replies.contains("\"id\":77"), "{replies}");
+        assert_eq!(replies.matches("-32601").count(), 2, "{replies}");
+        let _ = std::fs::remove_file(&replied);
+    }
+
+    #[cfg(unix)]
+    const INITIALIZED: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#;
+
+    #[cfg(unix)]
+    /// `/bin/sh` behind an `agy` or `agy_acp_server.par` link, so discovery runs
+    /// under that executable's real program name. `reply` answers `initialize`,
+    /// or the `session/new` after it once `ready`.
+    async fn named_server_failure(dir: &Path, program: &str, ready: bool, reply: &str, antigravity: bool) -> DiscoveryFailure {
+        std::fs::create_dir_all(dir).unwrap();
+        let link = dir.join(program);
+        if !link.exists() {
+            std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
+        }
+        let script = if ready {
+            format!("read -r init; printf '%s\\n' '{INITIALIZED}'; read -r sess; printf '%s\\n' '{reply}'; read -r hold")
+        } else {
+            format!("read -r init; printf '%s\\n' '{reply}'; read -r hold")
+        };
+        let mut command = Command::new(dir.join(program));
+        command.args(["-c", &script]);
+        inspect_state(command, &std::env::temp_dir(), false, false, antigravity, Duration::from_secs(2), Duration::from_millis(20))
+            .await
+            .unwrap_err()
+    }
+
+    #[cfg(unix)]
+    fn assert_account_limit(failure: DiscoveryFailure, acp_ready: bool, own_text: &str, state: &str) {
+        assert_eq!(failure.acp_ready, acp_ready, "{}", failure.message);
+        assert!(!failure.authentication_required, "{}", failure.message);
+        for forbidden in ["Sign in", "Authentication is required", "agy acp --login"] {
+            assert!(!failure.message.contains(forbidden), "{forbidden} must not appear in: {}", failure.message);
+        }
+        assert!(
+            failure
+                .message
+                .starts_with("The Antigravity account has reached its quota, is out of credits or is rate limited."),
+            "{}",
+            failure.message
+        );
+        assert!(failure.message.ends_with(own_text), "the server's own text must follow: {}", failure.message);
+        let status = connection_status(Err(failure));
+        assert_eq!(status.state, state);
+        assert!(!status.session_ready);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_discovery_reports_out_of_credits_as_a_limit_not_sign_in() {
+        let dir = std::env::temp_dir().join(format!("pandacode-agy-credits-{}", uuid::Uuid::new_v4()));
+        // Both Antigravity launch paths: the agy CLI and the standalone server binary.
+        for program in ["agy", "agy_acp_server.par"] {
+            assert_account_limit(
+                named_server_failure(&dir, program, true, r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"AI credits balance is too low. Add credits to continue."}}"#, true).await,
+                true,
+                "ACP session/new: AI credits balance is too low. Add credits to continue.",
+                "sessionFailed",
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_discovery_reports_a_429_as_a_limit_not_sign_in() {
+        let dir = std::env::temp_dir().join(format!("pandacode-agy-429-{}", uuid::Uuid::new_v4()));
+        let frame = |id: u64| {
+            json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"RESOURCE_EXHAUSTED: Too many requests (code 429). Resets in 45m."}}).to_string()
+        };
+        // A 429 on `initialize` fails startup; on `session/new` it fails the session.
+        for (program, ready, stage, state) in [
+            ("agy", true, "session/new", "sessionFailed"),
+            ("agy_acp_server.par", false, "initialize", "startupFailed"),
+        ] {
+            assert_account_limit(
+                named_server_failure(&dir, program, ready, &frame(if ready { 2 } else { 1 }), true).await,
+                ready,
+                &format!("ACP {stage}: RESOURCE_EXHAUSTED: Too many requests (code 429). Resets in 45m."),
+                state,
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn discovery_keeps_sign_in_for_a_real_sign_in_error_and_for_other_harnesses() {
+        let dir = std::env::temp_dir().join(format!("pandacode-agy-login-{}", uuid::Uuid::new_v4()));
+        // A genuine Antigravity sign-in error still asks for `agy acp --login`: the old
+        // fixture and agy's own "Authentication required".
+        for message in ["Login required", "Authentication required"] {
+            let failure = named_server_failure(&dir, "agy", true, &json!({"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":message}}).to_string(), true).await;
+            assert!(failure.authentication_required, "{message}");
+            assert_eq!(
+                failure.message,
+                format!("Authentication is required by the ACP server. Sign in using its CLI (such as `agy acp --login`) or official extension, then check again.\nACP session/new: {message}"),
+                "{message}"
+            );
+            assert_eq!(connection_status(Err(failure)).state, "authenticationRequired", "{message}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Another harness answering the same credits frame is reported as before.
+        let command = fixture(&format!(
+            "read -r init; printf '%s\\n' '{INITIALIZED}'; read -r sess; printf '%s\\n' '{}'; read -r hold",
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"AI credits balance is too low. Add credits to continue."}}"#
+        ));
+        let failure = inspect_state(command, &std::env::temp_dir(), false, false, false, Duration::from_secs(2), Duration::from_millis(20))
+            .await
+            .unwrap_err();
+        assert!(failure.authentication_required);
+        assert_eq!(
+            failure.message,
+            "Authentication is required by the ACP server. Sign in using its CLI (such as `agy acp --login`) or official extension, then check again.\nACP session/new: AI credits balance is too low. Add credits to continue."
+        );
+        assert_eq!(connection_status(Err(failure)).state, "authenticationRequired");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn agent_temp_is_swept_once_per_process_across_discoveries() {
+        if crate::secret_store::dir().is_none() {
+            let root = std::env::temp_dir().join(format!("pandacode-acp-sweep-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            crate::secret_store::setup(&root);
+        }
+        // A running agent keeps its unpacked runtime in agent-temp, so a second discovery
+        // or connection check must not sweep under it.
+        let before = super::super::agent_temp_sweeps();
+        let _first = ScratchDir::new("acp-sweep").unwrap();
+        let _second = ScratchDir::new("acp-sweep").unwrap();
+        assert_eq!(super::super::agent_temp_sweeps(), before.max(1), "one sweep per process");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_dir_lives_in_the_private_agent_temp_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::secret_store::dir().is_none() {
+            let root = std::env::temp_dir().join(format!("pandacode-acp-scratch-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&root).unwrap();
+            crate::secret_store::setup(&root);
+        }
+        let base = crate::secret_store::dir().unwrap().join(super::super::AGENT_TEMP_DIR);
+        let scratch = ScratchDir::new("acp-models").unwrap();
+        let path = scratch.path().to_path_buf();
+        assert!(path.starts_with(&base), "{}", path.display());
+        assert_eq!(path.parent().unwrap().file_name().unwrap(), "agent-temp");
+        assert!(path.file_name().unwrap().to_string_lossy().starts_with("pandacode-acp-models-"));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        drop(scratch);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn agy_1_5_13_models_derive_per_model_efforts_from_available_models() {
+        // Recorded shape from `agy 1.5.13 acp` `session/new`.
+        let session = json!({
+            "sessionId": "agy-session-1",
+            "configOptions": [
+                {
+                    "id": "mode",
+                    "category": "mode",
+                    "type": "select",
+                    "currentValue": "default",
+                    "options": [
+                        {"value": "default", "name": "Default"},
+                        {"value": "accept-edits", "name": "Accept Edits"},
+                        {"value": "plan", "name": "Plan"},
+                        {"value": "auto", "name": "Auto"}
+                    ]
+                },
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": "gemini-4-neon",
+                    "options": [
+                        {"value": "gemini-4-neon", "name": "Gemini 4 Neon"},
+                        {"value": "gemini-4-carbon", "name": "Gemini 4 Carbon"},
+                        {"value": "gemini-pro-orchestrator-2", "name": "Gemini Pro Orchestrator"},
+                        {"value": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"}
+                    ]
+                },
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "high",
+                    "options": [
+                        {"value": "low", "name": "Low"},
+                        {"value": "medium", "name": "Medium"},
+                        {"value": "high", "name": "High"},
+                        {"value": "xhigh", "name": "Extra"}
+                    ]
+                }
+            ],
+            "models": {
+                "currentModelId": "gemini-4-neon-high",
+                "availableModels": [
+                    {"modelId": "gemini-4-neon-low", "name": "Gemini 4 Neon (Low)"},
+                    {"modelId": "gemini-4-neon-medium", "name": "Gemini 4 Neon (Medium)"},
+                    {"modelId": "gemini-4-neon-high", "name": "Gemini 4 Neon (High)"},
+                    {"modelId": "gemini-4-neon-xhigh", "name": "Gemini 4 Neon (Extra)"},
+                    {"modelId": "gemini-4-carbon-low", "name": "Gemini 4 Carbon (Low)"},
+                    {"modelId": "gemini-4-carbon-medium", "name": "Gemini 4 Carbon (Medium)"},
+                    {"modelId": "gemini-4-carbon-high", "name": "Gemini 4 Carbon (High)"},
+                    {"modelId": "gemini-pro-orchestrator-2", "name": "Gemini Pro Orchestrator"},
+                    {"modelId": "gpt-oss-120b-medium", "name": "GPT-OSS 120B (Medium)"}
+                ]
+            }
+        });
+        let models = parse_models(&session);
+        let find = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+
+        let neon = find("gemini-4-neon");
+        assert_eq!(
+            neon.reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert_eq!(neon.reasoning_efforts[3].name, "Extra");
+        assert_eq!(neon.default_reasoning_effort.as_deref(), Some("high"));
+
+        let carbon = find("gemini-4-carbon");
+        assert_eq!(
+            carbon.reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["low", "medium", "high"]
+        );
+        assert_eq!(carbon.default_reasoning_effort.as_deref(), Some("high"));
+
+        assert!(find("gemini-pro-orchestrator-2").reasoning_efforts.is_empty());
+        assert!(find("gpt-oss-120b-medium").reasoning_efforts.is_empty());
+
+        // Guards: explicit empty `thought_level: []` on `current` stays authoritative,
+        // and standalone base models like `foo-max` in `configOptions["model"]` are not
+        // misread as effort variants of `foo`.
+        let guarded = json!({
+            "configOptions": [
+                {
+                    "id": "model",
+                    "category": "model",
+                    "type": "select",
+                    "currentValue": "gemini-4-neon",
+                    "options": [
+                        {"value": "gemini-4-neon", "name": "Gemini 4 Neon"},
+                        {"value": "foo", "name": "Foo"},
+                        {"value": "foo-max", "name": "Foo Max"}
+                    ]
+                },
+                {
+                    "id": "thought_level",
+                    "category": "thought_level",
+                    "type": "select",
+                    "currentValue": "",
+                    "options": []
+                }
+            ],
+            "models": {
+                "currentModelId": "gemini-4-neon",
+                "availableModels": [
+                    {"modelId": "gemini-4-neon-high"},
+                    {"modelId": "foo"},
+                    {"modelId": "foo-low"},
+                    {"modelId": "foo-max"}
+                ]
+            }
+        });
+        let guarded_models = parse_models(&guarded);
+        let find_g = |id: &str| guarded_models.iter().find(|m| m.id == id).unwrap();
+        assert!(
+            find_g("gemini-4-neon").reasoning_efforts.is_empty(),
+            "explicit empty thought_level on current model must stay empty"
+        );
+        assert_eq!(
+            find_g("foo").reasoning_efforts.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["low"],
+            "standalone base model foo-max must not be derived as an effort variant of foo"
+        );
+    }
+
+    #[test]
+    fn antigravity_modes_unchanged_skips_redundant_rpcs_and_stop_settled() {
+        let mode_options = json!([
+            {"value": "default", "name": "Default"},
+            {"value": "accept-edits", "name": "Accept Edits"},
+            {"value": "plan", "name": "Plan"},
+            {"value": "auto", "name": "Auto"}
+        ]);
+        for (mode, expected) in [
+            ("ask", "default"),
+            ("auto", "accept-edits"),
+            ("plan", "plan"),
+            ("full", "auto"),
+        ] {
+            let mut cfg = config("antigravity");
+            cfg.mode = mode.into();
+            let mut p = Protocol::new(cfg);
+            p.receive(capabilities()).unwrap();
+            let current = if expected == "default" { "plan" } else { "default" };
+            let step = p
+                .receive(response(
+                    2,
+                    json!({
+                        "sessionId": "ag-mode",
+                        "configOptions": [{
+                            "id": "mode",
+                            "category": "mode",
+                            "type": "select",
+                            "currentValue": current,
+                            "options": mode_options
+                        }]
+                    }),
+                ))
+                .unwrap();
+            assert_eq!(step.write[0]["method"], "session/set_config_option", "{mode}");
+            assert_eq!(step.write[0]["params"]["value"], expected, "{mode}");
+        }
+
+        // Unchanged mode/model/thought_level skips all 3 `session/set_config_option` RPCs.
+        let mut cfg = config("antigravity");
+        cfg.mode = "ask".into();
+        cfg.model = "gemini-4-neon".into();
+        cfg.reasoning_effort = Some("high".into());
+        let mut p = Protocol::new(cfg);
+        p.receive(capabilities()).unwrap();
+        let step = p
+            .receive(response(
+                2,
+                json!({
+                    "sessionId": "ag-fast",
+                    "configOptions": [
+                        {"id": "mode", "category": "mode", "type": "select", "currentValue": "default", "options": mode_options},
+                        {"id": "model", "category": "model", "type": "select", "currentValue": "gemini-4-neon", "options": [{"value": "gemini-4-neon"}]},
+                        {"id": "thought_level", "category": "thought_level", "type": "select", "currentValue": "high", "options": [{"value": "high"}]}
+                    ]
+                }),
+            ))
+            .unwrap();
+        assert_eq!(step.write.len(), 1);
+        assert_eq!(step.write[0]["method"], "session/prompt");
+
+        // `acp_stop_settled` recognizes ACP `id == 3` replies and ignores notifications or other ids.
+        let settled = Protocol::new(config("antigravity"));
+        assert!(settled.acp_stop_settled(&json!({"jsonrpc":"2.0","id":3,"result":{"stopReason":"cancelled"}})));
+        assert!(Protocol::new(config("opencode")).acp_stop_settled(&json!({"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"cancelled"}})));
+        assert!(!settled.acp_stop_settled(&json!({"jsonrpc":"2.0","id":2,"result":{"sessionId":"s"}})));
+        assert!(!settled.acp_stop_settled(&json!({"jsonrpc":"2.0","method":"session/update","params":{}})));
+        assert!(!Protocol::new(config("claude")).acp_stop_settled(&json!({"jsonrpc":"2.0","id":3,"result":{}})));
+    }
+
+    #[test]
+    fn turn_end_usage_fallback_is_antigravity_only() {
+        // Antigravity's turn-end `result.usage` is window occupancy; other agents report a
+        // per-call sum there, so their meter keeps the last `usage_update`.
+        let end = response(3, json!({"stopReason": "end_turn", "usage": {"inputTokens": 500, "totalTokens": 600}}));
+        let mut agy = Protocol::new(config("antigravity"));
+        agy.remote_id = "ag-end".into();
+        let step = agy.receive(end.clone()).unwrap();
+        assert_eq!(step.events.iter().find(|e| e.kind == "usage").expect("antigravity turn-end usage").data.as_ref().unwrap()["usedTokens"], 500);
+        for provider in ["opencode", "cline"] {
+            let mut p = Protocol::new(config(provider));
+            p.remote_id = "remote".into();
+            let step = p.receive(end.clone()).unwrap();
+            assert!(step.done, "{provider}");
+            assert!(step.events.iter().all(|e| e.kind != "usage"), "{provider} keeps its last usage_update");
+        }
+    }
+
+    #[test]
+    fn antigravity_usage_update_before_prompt_thought_null_type_and_turn_end_usage() {
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-u".into();
+        // Phase 0 `usage_update` is kept, but not emitted until the session is open.
+        let step = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "ag-u",
+                    "update": {"sessionUpdate": "usage_update", "used": 12000, "size": 1000000}
+                }
+            }))
+            .unwrap();
+        assert!(step.events.iter().all(|e| e.kind != "usage"), "phase 0 usage waits");
+        assert_eq!(p.acp_pending_phase0_usage, Some((12000, Some(1_000_000))));
+        assert_eq!(p.acp_context_window, Some(1_000_000));
+        assert!(p.acp_saw_any_usage_update);
+        assert!(!p.acp_saw_usage_update);
+        let mut flushed = Step::default();
+        p.flush_pending_phase0_usage(&mut flushed);
+        let usage = flushed.events.iter().find(|e| e.kind == "usage").expect("deferred phase 0 usage");
+        assert_eq!(usage.data.as_ref().unwrap()["usedTokens"], 12000);
+        assert_eq!(usage.data.as_ref().unwrap()["contextWindow"], 1000000);
+        assert!(p.acp_pending_phase0_usage.is_none());
+        assert!(!p.acp_saw_usage_update);
+
+        // `agent_thought_chunk` with missing `type` is accepted.
+        p.phase = 1;
+        let thought = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "ag-u",
+                    "update": {"sessionUpdate": "agent_thought_chunk", "content": {"text": "Thinking..."}}
+                }
+            }))
+            .unwrap();
+        assert!(thought.events.iter().any(|e| e.kind == "thinking" && e.text == "Thinking..."));
+
+        // Turn-end `result.usage` reported when no turn-phase `usage_update` arrived:
+        // prefers `inputTokens` and preserves `contextWindow` from phase-0 `usage_update`,
+        // including when turn-end reports `contextWindow: 0`.
+        let end = p
+            .receive(response(
+                3,
+                json!({"stopReason": "end_turn", "usage": {"inputTokens": 500, "outputTokens": 100, "totalTokens": 600, "contextWindow": 0}}),
+            ))
+            .unwrap();
+        assert!(end.done);
+        let end_usage = end.events.iter().find(|e| e.kind == "usage").expect("turn-end usage");
+        assert_eq!(end_usage.data.as_ref().unwrap()["usedTokens"], 500);
+        assert_eq!(end_usage.data.as_ref().unwrap()["contextWindow"], 1000000);
+
+        // `usage_update` with `size: 0` preserves cached `acp_context_window` instead of dropping usage.
+        let zero_size = p
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "ag-u",
+                    "update": {"sessionUpdate": "usage_update", "used": 18000, "size": 0}
+                }
+            }))
+            .unwrap();
+        let zero_size_usage = zero_size.events.iter().find(|e| e.kind == "usage").expect("size: 0 usage");
+        assert_eq!(zero_size_usage.data.as_ref().unwrap()["usedTokens"], 18000);
+        assert_eq!(zero_size_usage.data.as_ref().unwrap()["contextWindow"], 1000000);
+        p.acp_saw_usage_update = false;
+
+        // Invalid `usage_update` (`used > 1_000_000_000`) must not mark usage as seen or block turn-end fallback.
+        let mut p_overflow = Protocol::new(config("antigravity"));
+        p_overflow.remote_id = "ag-ovf".into();
+        p_overflow.phase = 1;
+        let ovf = p_overflow
+            .receive(json!({
+                "jsonrpc": "2.0",
+                "method": "session/update",
+                "params": {
+                    "sessionId": "ag-ovf",
+                    "update": {"sessionUpdate": "usage_update", "used": 2_000_000_000u64, "size": 200000}
+                }
+            }))
+            .unwrap();
+        assert!(!ovf.events.iter().any(|e| e.kind == "usage"));
+        assert!(!p_overflow.acp_saw_any_usage_update);
+        assert!(!p_overflow.acp_saw_usage_update);
+        let ovf_end = p_overflow
+            .receive(response(3, json!({"stopReason": "end_turn", "usage": {"totalTokens": 321, "contextWindow": 0}})))
+            .unwrap();
+        let ovf_usage = ovf_end.events.iter().find(|e| e.kind == "usage").expect("fallback after overflow");
+        assert_eq!(ovf_usage.data.as_ref().unwrap()["usedTokens"], 321);
+        assert_eq!(ovf_usage.data.as_ref().unwrap()["contextWindow"], 200000);
+
+        // When `usage_update` has been seen earlier in the session, a turn-end `totalTokens`-only
+        // payload must NOT clobber accurate context occupancy.
+        let end_total_only = p
+            .receive(response(
+                3,
+                json!({"stopReason": "end_turn", "usage": {"totalTokens": 99999}}),
+            ))
+            .unwrap();
+        assert!(!end_total_only.events.iter().any(|e| e.kind == "usage"));
+
+        // When NO `usage_update` was ever seen, `totalTokens` fallback is still used.
+        let mut p_fresh = Protocol::new(config("antigravity"));
+        p_fresh.remote_id = "ag-fresh".into();
+        p_fresh.phase = 1;
+        let end_fresh = p_fresh
+            .receive(response(
+                3,
+                json!({"stopReason": "end_turn", "usage": {"totalTokens": 777}}),
+            ))
+            .unwrap();
+        let fresh_usage = end_fresh.events.iter().find(|e| e.kind == "usage").expect("fresh fallback usage");
+        assert_eq!(fresh_usage.data.as_ref().unwrap()["usedTokens"], 777);
+        assert!(fresh_usage.data.as_ref().unwrap()["contextWindow"].is_null());
+
+        // When a turn-phase `usage_update` arrived, turn-end `result.usage` is skipped completely.
+        p.receive(json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": "ag-u",
+                "update": {"sessionUpdate": "usage_update", "used": 25000, "size": 1000000}
+            }
+        }))
+        .unwrap();
+        let end_after_live = p
+            .receive(response(
+                3,
+                json!({"stopReason": "end_turn", "usage": {"inputTokens": 500, "totalTokens": 600}}),
+            ))
+            .unwrap();
+        assert!(!end_after_live.events.iter().any(|e| e.kind == "usage"));
+    }
+
+    #[test]
+    fn antigravity_self_scoped_mcp_auto_approval_and_deduplication() {
+        let mut p = Protocol::new(config("antigravity"));
+        p.remote_id = "ag-mcp".into();
+        p.phase = 1;
+        p.mcp_server = Some(json!({}));
+        p.mcp_tool_names.insert("pandacode_title".into());
+        p.mcp_tool_names.insert("pandacode_run_project".into());
+
+        // Self-scoped MCP tool auto-approved with single `allow_once` ONLY for the
+        // exact Antigravity MCP prefixes and `"" | "other"` kind.
+        let perm = |title: &str, kind: &str| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "session/request_permission",
+                "params": {
+                    "sessionId": "ag-mcp",
+                    "toolCall": {"toolCallId": "tc1", "title": title, "kind": kind},
+                    "options": [
+                        {"optionId": "allow", "kind": "allow_once"},
+                        {"optionId": "deny", "kind": "reject_once"}
+                    ]
+                }
+            })
+        };
+        // Only an absent, null or empty `locations` qualifies: an object, string,
+        // number or boolean is not "no locations" and must wait for the user.
+        let locations_gate = |p: &mut Protocol, title: &str| {
+            for locations in [json!({"path": "src/main.rs"}), json!("src/main.rs"), json!(1), json!(true)] {
+                let mut request = perm(title, "other");
+                request["params"]["toolCall"]["locations"] = locations.clone();
+                assert!(p.receive(request).unwrap().write.is_empty(), "locations={locations} must wait for the user");
+            }
+            for locations in [Value::Null, json!([])] {
+                let mut request = perm(title, "other");
+                request["params"]["toolCall"]["locations"] = locations.clone();
+                assert_eq!(p.receive(request).unwrap().write[0]["result"]["outcome"]["optionId"], "allow", "locations={locations}");
+            }
+        };
+        for title in [
+            "mcp__pandacode_architect__pandacode_title",
+            "mcp_pandacode_architect_pandacode_title",
+        ] {
+            for kind in ["", "other"] {
+                let step = p.receive(perm(title, kind)).unwrap();
+                assert_eq!(step.write[0]["result"]["outcome"]["optionId"], "allow", "{title} ({kind})");
+            }
+        }
+        for rejected in [
+            "pandacode_architect__pandacode_title",
+            "pandacode_architect:pandacode_title",
+        ] {
+            assert!(
+                p.receive(perm(rejected, "other")).unwrap().write.is_empty(),
+                "{rejected} is not an Antigravity MCP prefix"
+            );
+        }
+        // Path-like `/` and `.` prefixes and bare unprefixed titles must NEVER auto-approve!
+        for rejected in [
+            "pandacode_title",
+            "pandacode_architect/pandacode_title",
+            "pandacode_architect.pandacode_title",
+        ] {
+            assert!(
+                p.receive(perm(rejected, "other")).unwrap().write.is_empty(),
+                "{rejected} must wait for user"
+            );
+        }
+        // State-changing or built-in tool kinds must NEVER bypass approval even with explicit prefix!
+        for kind in ["execute", "edit", "delete", "move", "fetch", "read", "search", "think"] {
+            assert!(
+                p.receive(perm("mcp__pandacode_architect__pandacode_title", kind))
+                    .unwrap()
+                    .write
+                    .is_empty(),
+                "kind={kind} must never auto-approve"
+            );
+        }
+        // Non-self-scoped registered tool still asks the user.
+        assert!(p.receive(perm("mcp__pandacode_architect__pandacode_run_project", "other")).unwrap().write.is_empty());
+
+        // Filesystem locations, a missing id, or a non-MCP id block auto-approval.
+        let mut located = perm("mcp__pandacode_architect__pandacode_title", "other");
+        located["params"]["toolCall"]["locations"] = json!([{"path": "src/main.rs"}]);
+        assert!(p.receive(located).unwrap().write.is_empty(), "locations must wait for the user");
+        locations_gate(&mut p, "mcp__pandacode_architect__pandacode_title");
+        let mut empty_id = perm("mcp__pandacode_architect__pandacode_title", "other");
+        empty_id["params"]["toolCall"]["toolCallId"] = json!("");
+        assert!(p.receive(empty_id).unwrap().write.is_empty(), "empty toolCallId must wait");
+        p.non_mcp_tools.insert("tc1".into());
+        assert!(
+            p.receive(perm("mcp__pandacode_architect__pandacode_title", "")).unwrap().write.is_empty(),
+            "a non-MCP tool id must not auto-approve"
+        );
+        p.non_mcp_tools.clear();
+        let long_id = "t".repeat(300);
+        p.non_mcp_tools.insert(super::super::limited(&long_id, 256));
+        let mut truncated = perm("mcp__pandacode_architect__pandacode_title", "other");
+        truncated["params"]["toolCall"]["toolCallId"] = json!(long_id);
+        assert!(p.receive(truncated).unwrap().write.is_empty(), "truncated non-MCP id must not auto-approve");
+        p.non_mcp_tools.clear();
+
+        // Without the registered MCP server, even a perfect title waits.
+        p.mcp_server = None;
+        assert!(p.receive(perm("mcp__pandacode_architect__pandacode_title", "other")).unwrap().write.is_empty());
+        p.mcp_server = Some(json!({}));
+
+        // DeepSeek (`dsh`) reports every tool as `kind: "other"`, so `self_scoped_mcp_tool`
+        // must always refuse auto-approval on `"deepseek"`.
+        let mut p_ds = Protocol::new(config("deepseek"));
+        p_ds.remote_id = "ag-mcp".into();
+        p_ds.phase = 1;
+        p_ds.mcp_server = Some(json!({}));
+        p_ds.mcp_tool_names.insert("pandacode_title".into());
+        assert!(
+            p_ds.receive(perm("mcp__pandacode_architect__pandacode_title", "other"))
+                .unwrap()
+                .write
+                .is_empty(),
+            "deepseek must never auto-approve via self_scoped_mcp_tool"
+        );
+
+        // Other ACP harnesses are not in the auto-approval set.
+        let mut p_open = Protocol::new(config("opencode"));
+        p_open.remote_id = "ag-mcp".into();
+        p_open.phase = 1;
+        p_open.mcp_server = Some(json!({}));
+        p_open.mcp_tool_names.insert("pandacode_title".into());
+        assert!(
+            p_open.receive(perm("mcp__pandacode_architect__pandacode_title", "other")).unwrap().write.is_empty(),
+            "opencode must not auto-approve MCP titles"
+        );
+
+        // On Cline, require `cline::host_tool` (no fallback to bare title or other prefixes).
+        // Cline has no ACP `mcp_server`; the registered names are enough.
+        let mut p_cline = Protocol::new(config("cline"));
+        p_cline.remote_id = "ag-mcp".into();
+        p_cline.phase = 1;
+        p_cline.mcp_server = None;
+        p_cline.mcp_tool_names.insert("pandacode_title".into());
+        assert_eq!(
+            p_cline.receive(perm("pandacode_architect__pandacode_title: {}", "other")).unwrap().write[0]["result"]["outcome"]["optionId"],
+            "allow"
+        );
+        for rejected in [
+            "pandacode_title",
+            "mcp__pandacode_architect__pandacode_title",
+            "pandacode_architect:pandacode_title",
+        ] {
+            assert!(
+                p_cline.receive(perm(rejected, "other")).unwrap().write.is_empty(),
+                "cline must reject {rejected}"
+            );
+        }
+        assert!(
+            p_cline.receive(perm("pandacode_architect__pandacode_title: {}", "execute")).unwrap().write.is_empty(),
+            "cline must reject non-other kind"
+        );
+        locations_gate(&mut p_cline, "pandacode_architect__pandacode_title: {}");
+
+        // Unambiguous prefixed MCP tool calls are deduplicated in `tool_update`.
+        for title in [
+            "mcp__pandacode_architect__pandacode_title",
+            "mcp_pandacode_architect_pandacode_title",
+            "pandacode_architect__pandacode_title",
+            "pandacode_architect:pandacode_title",
+        ] {
+            let step = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "ag-mcp",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": title,
+                            "title": title,
+                            "status": "in_progress"
+                        }
+                    }
+                }))
+                .unwrap();
+            assert!(!step.events.iter().any(|e| e.kind == "tool"), "{title} should be deduplicated");
+        }
+        // Path-like `/` and `.` prefixes are NOT treated as MCP namespaces and stay visible.
+        for title in [
+            "pandacode_architect/pandacode_title",
+            "pandacode_architect.pandacode_title",
+        ] {
+            let step = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "ag-mcp",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": title,
+                            "title": title,
+                            "status": "in_progress"
+                        }
+                    }
+                }))
+                .unwrap();
+            assert!(step.events.iter().any(|e| e.kind == "tool"), "{title} must stay visible");
+        }
+
+        // Built-in / non-MCP tool with `kind: "execute"` must NOT be hidden even with an
+        // explicit MCP prefix, must stay visible across `tool_call_update` omitting `kind`,
+        // AND its `toolCallId` must NEVER auto-approve when a later permission omits `kind`.
+        for (call_id, title) in [
+            ("exec-conflict", "pandacode_title"),
+            ("exec-prefixed", "pandacode_architect:pandacode_title"),
+        ] {
+            let exec_start = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "ag-mcp",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": call_id,
+                            "title": title,
+                            "kind": "execute",
+                            "status": "in_progress"
+                        }
+                    }
+                }))
+                .unwrap();
+            assert!(
+                exec_start.events.iter().any(|e| e.kind == "tool"),
+                "non-MCP execute tool ({title}) must stay visible"
+            );
+            let perm_no_kind = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "id": 43,
+                    "method": "session/request_permission",
+                    "params": {
+                        "sessionId": "ag-mcp",
+                        "toolCall": {"toolCallId": call_id, "title": "pandacode_architect:pandacode_title"},
+                        "options": [
+                            {"optionId": "allow", "kind": "allow_once"},
+                            {"optionId": "deny", "kind": "reject_once"}
+                        ]
+                    }
+                }))
+                .unwrap();
+            assert!(
+                perm_no_kind.write.is_empty(),
+                "toolCallId {call_id} recorded in non_mcp_tools must NEVER auto-approve when permission omits kind"
+            );
+            let exec_done = p
+                .receive(json!({
+                    "jsonrpc": "2.0",
+                    "method": "session/update",
+                    "params": {
+                        "sessionId": "ag-mcp",
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": call_id,
+                            "status": "completed"
+                        }
+                    }
+                }))
+                .unwrap();
+            assert!(
+                exec_done.events.iter().any(|e| e.kind == "tool"),
+                "subsequent update for non-MCP execute tool ({title}) must stay visible"
+            );
+        }
     }
 }

@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::time::Duration;
 use tauri::{ipc::Response, AppHandle, Emitter};
 
+use super::colab::activity::{self, ColabThreadRuntime};
 use super::{aws::Aws, aws_screen, cloudflare::Cloudflare, daytona::Daytona, http::block, split, Machine};
 use crate::Result;
 
@@ -41,6 +42,7 @@ pub fn connections() -> Vec<Connection> {
         Connection { provider: "netlify", connected: super::secret("netlify_token").is_some(), sandboxes: None, inherit_environment: None, detail: settings.providers.get("netlify").and_then(|options| options.get("siteId").cloned()) },
         Connection { provider: "gcloud", connected: settings.gcloud_project.is_some(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "gcloud"), detail: settings.gcloud_project.map(|project| match settings.gcloud_region { Some(region) => format!("{project} · {region}"), None => project }) },
         Connection { provider: "docker", connected: settings.providers.contains_key("docker"), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "docker"), detail: settings.providers.get("docker").and_then(|options| options.get("detail").cloned()) },
+        Connection { provider: "colab", connected: super::colab::is_connected(), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, "colab"), detail: settings.providers.get("colab").and_then(|options| options.get("detail").cloned()) },
     ]
     .into_iter()
     .chain(super::sandbox::KEYED.iter().map(|&provider| Connection { provider, connected: super::sandbox::ready(provider), sandboxes: None, inherit_environment: inherits_environment(&settings.providers, provider), detail: settings.providers.get(provider).and_then(|options| options.get("detail").cloned()) }))
@@ -174,6 +176,9 @@ pub async fn cloud_connect(app: AppHandle, provider: String, key: String, option
             }
             // Docker uses the local (or configured remote) engine; PandaCode stores no credentials.
             "docker" => super::docker::connect(&options)?,
+            // Colab signs in with Google (`cloud_colab_sign_in_start`); this saves its options
+            // or connects with gcloud's application default credentials (`authMode: "adc"`).
+            "colab" => super::colab::connect(&options)?,
             other if super::sandbox::KEYED.contains(&other) => super::sandbox::connect(other, key.trim(), &options)?,
             _ => return Err("Unknown cloud provider.".into()),
         }
@@ -322,6 +327,7 @@ pub async fn cloud_disconnect(app: AppHandle, provider: String) -> Result<Vec<Co
                 super::save_settings(&settings)?;
             }
             "docker" => super::docker::disconnect()?,
+            "colab" => super::colab::disconnect()?,
             "aws" => {
                 aws_screen::close(None);
                 let mut settings = super::settings();
@@ -348,6 +354,201 @@ pub async fn cloud_instabox_images() -> Result<super::instabox::Images> {
 #[tauri::command]
 pub async fn cloud_instabox_set_image(image: String) -> Result<super::instabox::Images> {
     crate::blocking(move || super::instabox::set_image(&image)).await
+}
+
+/// The regions and sizes new DigitalOcean droplets can use, for Settings → Cloud.
+#[tauri::command]
+pub async fn cloud_digitalocean_catalog() -> Result<Value> {
+    crate::blocking(|| block(super::digitalocean::catalog())).await
+}
+
+/// Save the region and size new DigitalOcean droplets use, from Settings → Cloud.
+#[tauri::command]
+pub async fn cloud_digitalocean_set_options(region: Option<String>, size: Option<String>) -> Result<Vec<Connection>> {
+    crate::blocking(move || {
+        super::digitalocean::set_options(region, size)?;
+        Ok(connections())
+    })
+    .await
+}
+
+/// Start the one-click Google sign-in for Colab; progress arrives as `colab-sign-in` events,
+/// each carrying the returned attempt `id`.
+#[tauri::command]
+pub async fn cloud_colab_sign_in_start(app: AppHandle, oauth_config_path: Option<String>, auth_mode: Option<String>) -> Result<super::colab::SignInStarted> {
+    let options = super::colab::SignInOptions { oauth_config_path: oauth_config_path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()), auth_mode };
+    super::colab::sign_in_start(app, options)
+}
+
+/// The sign-in in progress (its `id`, `state`, sign-in `url` and `message`), or null.
+#[tauri::command]
+pub async fn cloud_colab_sign_in_status() -> Result<Option<super::colab::SignInStatus>> {
+    Ok(super::colab::sign_in_status())
+}
+
+#[tauri::command]
+pub async fn cloud_colab_sign_in_cancel() -> Result<()> {
+    super::colab::sign_in_cancel();
+    Ok(())
+}
+
+/// Colab's options and installed tools; local only, so it answers at once.
+#[tauri::command]
+pub async fn cloud_colab_config() -> Result<super::colab::ColabConfig> {
+    crate::blocking(|| Ok(super::colab::config())).await
+}
+
+/// The account's compute-unit balance and hourly rate (asks Colab; may take a moment).
+#[tauri::command]
+pub async fn cloud_colab_usage() -> Result<super::colab::ColabUsage> {
+    crate::blocking(super::colab::usage_summary).await
+}
+
+/// Save Colab options: `accelerator`, `highMem`, `nativeTools`, `colabMcp`, each optional and top level.
+#[tauri::command]
+pub async fn cloud_colab_set_config(
+    app: AppHandle,
+    accelerator: Option<String>,
+    high_mem: Option<bool>,
+    native_tools: Option<bool>,
+    colab_mcp: Option<bool>,
+) -> Result<super::colab::ColabConfig> {
+    let options = colab_config_patch(accelerator, high_mem, native_tools, colab_mcp);
+    crate::blocking(move || {
+        let config = super::colab::update_config(&options)?;
+        let _ = app.emit("vm-changed", serde_json::json!({}));
+        Ok(config)
+    })
+    .await
+}
+
+/// The `update_config` patch holding only the options the caller gave.
+fn colab_config_patch(accelerator: Option<String>, high_mem: Option<bool>, native_tools: Option<bool>, colab_mcp: Option<bool>) -> Value {
+    let mut map = serde_json::Map::new();
+    if let Some(value) = accelerator {
+        map.insert("accelerator".into(), Value::String(value));
+    }
+    for (key, value) in [("highMem", high_mem), ("nativeTools", native_tools), ("colabMcp", colab_mcp)] {
+        if let Some(value) = value {
+            map.insert(key.into(), Value::Bool(value));
+        }
+    }
+    Value::Object(map)
+}
+
+/// Actions on a thread's Colab runtime from its status indicator.
+const RUNTIME_ACTIONS: [&str; 4] = ["open_browser", "restart_kernel", "stop", "dismiss"];
+
+/// A thread ID from the webview: short, printable.
+fn thread_id(session_id: &str) -> Result<String> {
+    let id = session_id.trim();
+    if id.is_empty() || id.len() > 200 || id.chars().any(char::is_control) {
+        return Err("Unknown conversation.".into());
+    }
+    Ok(id.to_string())
+}
+
+const NOT_SHOWN: &str = "That Colab runtime is not shown in this thread.";
+
+/// The checked (session, endpoint, action) of a runtime action. `dismiss` also takes a
+/// pending entry's ID (`colab:pending-<n>`); the others need a real endpoint.
+fn runtime_request(session_id: &str, endpoint: &str, action: &str) -> Result<(String, String, String)> {
+    let session_id = thread_id(session_id)?;
+    if !RUNTIME_ACTIONS.contains(&action) {
+        return Err("Unknown Colab runtime action.".into());
+    }
+    let key = endpoint.trim();
+    let endpoint = if action == "dismiss" {
+        let plain = key.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':'));
+        if key.is_empty() || key.len() > 220 || !plain {
+            return Err("Unknown Colab runtime.".into());
+        }
+        key.to_string()
+    } else {
+        let bare = key.strip_prefix("colab:").unwrap_or(key);
+        if !super::valid_native(bare) || key.starts_with("colab:pending-") {
+            return Err("Unknown Colab runtime.".into());
+        }
+        bare.to_string()
+    };
+    Ok((session_id, endpoint, action.to_string()))
+}
+
+/// The thread's live Colab runtimes. Local and instant unless `refresh` is true, which asks
+/// Colab which runtimes still exist and updates hardware (and sends `colab-runtime`).
+#[tauri::command]
+pub async fn cloud_colab_thread_runtimes(app: AppHandle, session_id: String, refresh: Option<bool>) -> Result<Vec<ColabThreadRuntime>> {
+    let session_id = thread_id(&session_id)?;
+    crate::blocking(move || {
+        if refresh != Some(true) {
+            return Ok(activity::list_for_session(&app, &session_id));
+        }
+        if !super::colab::is_connected() {
+            return Ok(activity::emit(&app, &session_id));
+        }
+        let colab = super::colab::Colab::connected()?;
+        // Asked for before the list: a runtime created while it was on its way is kept.
+        let fetched_at = activity::now_ms();
+        let live = colab.records()?;
+        Ok(activity::reconcile_live(&app, &session_id, &live, fetched_at))
+    })
+    .await
+}
+
+/// `open_browser`, `restart_kernel`, `stop` or `dismiss` on one of the thread's runtimes;
+/// answers with the thread's updated list.
+#[tauri::command]
+pub async fn cloud_colab_runtime_action(app: AppHandle, session_id: String, endpoint: String, action: String) -> Result<Vec<ColabThreadRuntime>> {
+    let (session_id, endpoint, action) = runtime_request(&session_id, &endpoint, &action)?;
+    if action != "dismiss" {
+        // Only a runtime this thread shows: an arbitrary endpoint must not become an entry.
+        let (app, session_id, endpoint) = (app.clone(), session_id.clone(), endpoint.clone());
+        if !crate::blocking(move || Ok(activity::shows(&app, &session_id, &endpoint))).await? {
+            return Err(NOT_SHOWN.into());
+        }
+    }
+    if action == "open_browser" {
+        crate::open_external_url(super::colab::browser_url(&endpoint)).await?;
+        return crate::blocking(move || Ok(activity::list_for_session(&app, &session_id))).await;
+    }
+    crate::blocking(move || match action.as_str() {
+        "dismiss" => activity::dismiss(&app, &session_id, &endpoint),
+        "restart_kernel" => {
+            let colab = super::colab::Colab::connected()?;
+            // A failed restart is reported to the caller; the runtime reads `error` only
+            // when Colab says it is gone, so a live (billing) runtime is never dismissable.
+            let restarting = activity::begin_busy(&app, &session_id, &endpoint, "restarting", "Restarting kernel…");
+            let restarted = colab.restart_kernel(&endpoint);
+            restarting.finish(&restarted);
+            restarted?;
+            Ok(activity::list_for_session(&app, &session_id))
+        }
+        _ => stop_runtime(&app, &session_id, &endpoint),
+    })
+    .await
+}
+
+/// Releases a thread's runtime. A Colab Cloud Agent's own runtime is stopped only between
+/// runs, and its task then reads as stopped.
+fn stop_runtime(app: &AppHandle, session_id: &str, endpoint: &str) -> Result<Vec<ColabThreadRuntime>> {
+    crate::cloud_agents::tasks::ensure_colab_runtime_free(app, endpoint)?;
+    let colab = super::colab::Colab::connected()?;
+    let stopping = activity::begin_busy(app, session_id, endpoint, "stopping", "Releasing runtime…");
+    if let Err(error) = super::sandbox::Sandbox::power(&colab, endpoint, "stop") {
+        stopping.finish::<()>(&Err(error.clone()));
+        return Err(error);
+    }
+    // Releasing also marks this (and any other) idle Colab task on the runtime stopped.
+    // `released` already sent `colab-runtime` to every thread that showed it.
+    stopping.released();
+    let _ = app.emit("vm-changed", serde_json::json!({}));
+    Ok(activity::list_for_session(app, session_id))
+}
+
+/// Install Google's Colab CLI with uv (`uv tool install google-colab-cli==<pinned>`).
+#[tauri::command]
+pub async fn cloud_colab_install_cli() -> Result<super::colab::ColabConfig> {
+    crate::blocking(super::colab::install_cli).await
 }
 
 #[derive(Serialize)]
@@ -385,7 +586,7 @@ pub fn machines() -> Machines {
     }
     // Google Cloud is also a deploy-only connection; list its VMs only once a cloud-agent zone is chosen.
     let gcloud_agents = super::settings().providers.get("gcloud").is_some_and(|o| o.contains_key("zone"));
-    for provider in ["gcloud", "docker", "digitalocean", "vultr", "hetzner", "runpod", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox"] {
+    for provider in ["gcloud", "docker", "digitalocean", "vultr", "hetzner", "runpod", "e2b", "modal", "vercel", "codesandbox", "runloop", "blaxel", "tensorlake", "freestyle", "boat", "instabox", "colab"] {
         if provider == "gcloud" && !gcloud_agents { continue; }
         if let Ok(sandbox) = super::sandbox::connected(provider) {
             match sandbox.list() {
@@ -461,7 +662,9 @@ pub fn exec(id: &str, command: &str, timeout: Duration) -> Result<(Option<i32>, 
         Some(("cloudflare", native)) => block(Cloudflare::connected()?.exec(native, command, timeout)),
         Some(("aws", native)) => { let aws = Aws::connected()?; let windows = aws_os(&aws, native)? == "windows"; aws.exec(native, windows, command, timeout) }
         Some(("agentcore", native)) => { let aws = Aws::connected()?; let credentials = aws.credentials()?; block(aws.interpreter_exec(native, command, &credentials, None)) }
-        Some((provider, native)) => super::sandbox::connected(provider)?.exec(native, command, timeout),
+        Some((provider, native)) => super::sandbox::connected(provider)?
+            .exec(native, command, timeout)
+            .map_err(|error| error.strip_prefix(super::colab::MACHINE_GONE).unwrap_or(&error).to_string()),
         _ => Err("Unknown cloud machine.".into()),
     }
 }
@@ -492,11 +695,24 @@ pub async fn cloud_create(app: AppHandle, provider: String, name: String) -> Res
 #[tauri::command]
 pub async fn cloud_power(app: AppHandle, id: String, action: String) -> Result<()> {
     crate::blocking(move || {
+        let released = colab_release(&id, &action);
+        if let Some(native) = released {
+            crate::cloud_agents::tasks::ensure_colab_runtime_free(&app, native)?;
+        }
         power(&id, &action)?;
+        // A Colab runtime stopped from the VM panel or Settings leaves every thread's indicator.
+        if let Some(native) = released {
+            activity::released(&app, native);
+        }
         let _ = app.emit("vm-changed", serde_json::json!({}));
         Ok(())
     })
     .await
+}
+
+/// The endpoint a power action releases, when it stops or deletes a Colab runtime.
+fn colab_release<'a>(id: &'a str, action: &str) -> Option<&'a str> {
+    split(id).filter(|(provider, _)| *provider == super::colab::PROVIDER && matches!(action, "stop" | "delete")).map(|(_, native)| native)
 }
 #[tauri::command]
 pub async fn cloud_frame(id: String) -> Result<Response> {
@@ -512,6 +728,38 @@ pub async fn cloud_input(id: String, input: Value) -> Result<String> {
 mod tests {
     use super::*;
     use crate::cloud::http::mock;
+
+    #[test]
+    fn colab_runtime_actions_are_checked() {
+        assert_eq!(runtime_request(" s1 ", "colab:abc-1", "stop").unwrap(), ("s1".into(), "abc-1".into(), "stop".into()));
+        assert_eq!(runtime_request("s1", "abc-1", "restart_kernel").unwrap().1, "abc-1");
+        assert_eq!(runtime_request("s1", "colab:pending-3", "dismiss").unwrap().1, "colab:pending-3");
+        assert!(runtime_request("s1", "abc", "delete").unwrap_err().contains("action"));
+        assert!(runtime_request("s1", "../etc", "stop").is_err());
+        assert!(runtime_request("s1", "colab:pending-3", "open_browser").is_err(), "only dismiss takes a pending ID");
+        assert!(runtime_request("s1", "a b", "dismiss").is_err());
+        assert!(runtime_request("", "abc", "stop").is_err());
+        assert!(runtime_request(&"x".repeat(201), "abc", "stop").is_err());
+    }
+
+    #[test]
+    fn only_stopping_or_deleting_a_colab_runtime_releases_it() {
+        assert_eq!(colab_release("colab:ep-1", "stop"), Some("ep-1"));
+        assert_eq!(colab_release("colab:ep-1", "delete"), Some("ep-1"));
+        assert_eq!(colab_release("colab:ep-1", "start"), None);
+        assert_eq!(colab_release("e2b:box", "stop"), None);
+        assert_eq!(colab_release("nonsense", "stop"), None);
+    }
+
+    #[test]
+    fn colab_config_patch_holds_only_the_given_options() {
+        assert_eq!(colab_config_patch(None, None, None, None), serde_json::json!({}));
+        assert_eq!(
+            colab_config_patch(Some("T4".into()), Some(true), None, Some(false)),
+            serde_json::json!({"accelerator": "T4", "highMem": true, "colabMcp": false})
+        );
+        assert_eq!(colab_config_patch(None, None, Some(true), None), serde_json::json!({"nativeTools": true}));
+    }
 
     #[test]
     fn validates_vercel_ids_and_never_stores_the_slug_as_an_id() {

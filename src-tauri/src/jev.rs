@@ -36,11 +36,15 @@ pub struct Settings {
     pub enabled: bool,
     #[serde(default)]
     pub decisions_enabled: bool,
-    /// "typesafe" (default) or "openrouter"; the OpenRouter key lives in `secret_store`.
+    /// "typesafe" (default), "openrouter" (key in `secret_store`), or "laya" (user-run
+    /// loopback server, no key).
     #[serde(default = "default_provider")]
     pub decision_provider: String,
     #[serde(default)]
     pub decision_model: String,
+    /// Loopback base URL of the local decision server; only read for "laya".
+    #[serde(default = "default_laya_base")]
+    pub decision_base_url: String,
     pub python_path: String,
     pub chrome_path: String,
     pub text_model: String,
@@ -53,6 +57,7 @@ impl Default for Settings {
             decisions_enabled: false,
             decision_provider: default_provider(),
             decision_model: String::new(),
+            decision_base_url: default_laya_base(),
             python_path: String::new(),
             chrome_path: String::new(),
             text_model: "inception/mercury-2.5".into(),
@@ -62,6 +67,10 @@ impl Default for Settings {
 }
 fn default_provider() -> String {
     "typesafe".into()
+}
+fn default_laya_base() -> String {
+    // laya-serve's default port.
+    "http://127.0.0.1:8000".into()
 }
 const SECRET_SERVICE: &str = "app.pandacode.jev";
 const OPENROUTER_ACCOUNT: &str = "openrouter";
@@ -276,13 +285,16 @@ pub(crate) fn decision_credentials() -> Result<(bool, String, crate::jev_decisio
     use crate::jev_decisions::Provider;
     let state = runtime()?;
     let settings = &state.saved.settings;
-    let (key, provider) = if settings.decision_provider == "openrouter" {
-        (
+    let (key, provider) = match settings.decision_provider.as_str() {
+        "openrouter" => (
             openrouter_key().unwrap_or_default(),
             Provider::OpenRouter { model: settings.decision_model.clone() },
-        )
-    } else {
-        (state.saved.typesafe_key.clone(), Provider::TypeSafe)
+        ),
+        "laya" => (
+            String::new(),
+            Provider::Laya { endpoint: crate::jev_decisions::laya_endpoint(&settings.decision_base_url)? },
+        ),
+        _ => (state.saved.typesafe_key.clone(), Provider::TypeSafe),
     };
     Ok((settings.decisions_enabled, key, provider))
 }
@@ -438,7 +450,12 @@ fn validate_saved(mut saved: Saved) -> Result<Saved> {
                 return Err("Choose an OpenRouter decision model.".into());
             }
         }
-        _ => return Err("Choose TypeSafe or OpenRouter for decisions.".into()),
+        "laya" => {
+            saved.settings.decision_model.clear();
+            saved.settings.decision_base_url =
+                crate::jev_decisions::laya_base_url(&saved.settings.decision_base_url)?;
+        }
+        _ => return Err("Choose TypeSafe, OpenRouter, or Local Laya for decisions.".into()),
     }
     saved.typesafe_key = key(saved.typesafe_key)?;
     saved.text_key = key(saved.text_key)?;
@@ -762,7 +779,15 @@ async fn doctor() -> Result<Doctor> {
     if !saved.settings.enabled {
         result.issues.push("Enable Jev browser testing.".into());
     }
-    if saved.typesafe_key.is_empty() {
+    if saved.settings.decision_provider == "laya" {
+        // Local Laya replaces the TypeSafe decision key for both features; only a real
+        // local evaluation proves the configured server is answering.
+        if saved.settings.decisions_enabled || saved.settings.enabled {
+            if let Err(error) = crate::jev_decisions::probe_laya(&saved.settings.decision_base_url).await {
+                result.issues.push(format!("Local decisions: {error}"));
+            }
+        }
+    } else if saved.typesafe_key.is_empty() {
         result.issues.push("Add a TypeSafe API key.".into());
     }
     if saved.text_key.is_empty() {
@@ -1310,7 +1335,8 @@ fn reserve(state: &mut Runtime, report: &Report, stopped: Arc<AtomicBool>) -> Re
     if !state.saved.settings.enabled {
         return Err("Enable Jev browser testing in Settings first.".into());
     }
-    if state.saved.typesafe_key.is_empty() || state.saved.text_key.is_empty() {
+    let local = state.saved.settings.decision_provider == "laya";
+    if (!local && state.saved.typesafe_key.is_empty()) || state.saved.text_key.is_empty() {
         return Err("Add the Jev API keys in Settings first.".into());
     }
     if state.installing {
@@ -1641,7 +1667,7 @@ async fn execute(
         let mut process = OwnedProcess::spawn(&mut command)?;
         let mut payload = serde_json::to_value(&request).map_err(|_| "Could not prepare Jev request.")?;
         let object = payload.as_object_mut().ok_or("Invalid Jev request.")?;
-        for (name, value) in [ ("runId", report.id.clone()), ("outputDir", output_dir.to_string_lossy().into_owned()), ("browserDir", profile.path.to_string_lossy().into_owned()), ("chromePath", saved.settings.chrome_path.clone()), ("textModel", saved.settings.text_model.clone()), ("textBaseUrl", saved.settings.text_base_url.clone()), ("typesafeKey", saved.typesafe_key.clone()), ("textKey", saved.text_key.clone()) ] { object.insert(name.into(), Value::String(value)); }
+        for (name, value) in [ ("runId", report.id.clone()), ("outputDir", output_dir.to_string_lossy().into_owned()), ("browserDir", profile.path.to_string_lossy().into_owned()), ("chromePath", saved.settings.chrome_path.clone()), ("textModel", saved.settings.text_model.clone()), ("textBaseUrl", saved.settings.text_base_url.clone()), ("typesafeKey", saved.typesafe_key.clone()), ("textKey", saved.text_key.clone()), ("decisionBaseUrl", if saved.settings.decision_provider == "laya" { saved.settings.decision_base_url.clone() } else { String::new() }) ] { object.insert(name.into(), Value::String(value)); }
         let bytes = serde_json::to_vec(&payload).map_err(|_| "Invalid Jev request.")?;
         if bytes.len() > MAX_LINE { return Err("Browser test request is too large.".into()); }
         let operation = async {
@@ -1757,28 +1783,37 @@ mod tests {
         .is_err());
     }
     #[test]
-    fn decision_provider_defaults_to_typesafe_and_validates_openrouter() {
+    fn decision_provider_defaults_to_typesafe_and_validates_the_alternatives() {
         assert_eq!(Settings::default().decision_provider, "typesafe");
-        let with = |provider: &str, model: &str, enabled: bool| {
+        assert_eq!(Settings::default().decision_base_url, "http://127.0.0.1:8000");
+        let with = |provider: &str, model: &str, enabled: bool, base: &str| {
             validate_saved(Saved {
                 settings: Settings {
                     decisions_enabled: enabled,
                     decision_provider: provider.into(),
                     decision_model: model.into(),
+                    decision_base_url: base.into(),
                     ..Settings::default()
                 },
                 ..Saved::default()
             })
         };
-        assert!(with("typesafe", "ignored", true).unwrap().settings.decision_model.is_empty());
-        assert!(with("openrouter", "", true).is_err());
-        assert!(with("openrouter", "", false).is_ok());
-        assert_eq!(with("openrouter", " vendor/model ", true).unwrap().settings.decision_model, "vendor/model");
-        assert!(with("other", "", false).is_err());
+        assert!(with("typesafe", "ignored", true, "").unwrap().settings.decision_model.is_empty());
+        assert!(with("openrouter", "", true, "").is_err());
+        assert!(with("openrouter", "", false, "").is_ok());
+        assert_eq!(with("openrouter", " vendor/model ", true, "").unwrap().settings.decision_model, "vendor/model");
+        assert!(with("other", "", false, "").is_err());
+        assert!(with("laya", "ignored", true, "").is_err());
+        assert_eq!(with("laya", "ignored", true, "http://127.0.0.1:8000/").unwrap().settings.decision_base_url, "http://127.0.0.1:8000");
+        assert_eq!(with("laya", "ignored", true, " http://localhost:8123 ").unwrap().settings.decision_base_url, "http://localhost:8123");
+        assert!(with("laya", "ignored", true, "https://example.com").is_err());
+        assert!(with("laya", "", true, "http://127.0.0.1:8000").unwrap().settings.decision_model.is_empty());
         let saved = Saved { settings: Settings { decisions_enabled: true, decision_provider: "openrouter".into(), decision_model: "v/m".into(), ..Settings::default() }, ..Saved::default() };
         assert!(decision_needs_key(&saved, &None));
         assert!(decision_needs_key(&saved, &Some(String::new())));
         assert!(!decision_needs_key(&saved, &Some("sk-or-test".into())));
+        let local = Saved { settings: Settings { decisions_enabled: true, decision_provider: "laya".into(), decision_base_url: "http://127.0.0.1:8000".into(), ..Settings::default() }, ..Saved::default() };
+        assert!(!decision_needs_key(&local, &None));
     }
     #[test]
     fn verifies_assertions_instead_of_model_done() {

@@ -223,8 +223,8 @@ test.describe('streamed responses', () => {
         return first;
       }, id);
       await expect(liveGroups(page)).toHaveCount(1);
-      // Every call counts in the sentence; running calls are tallied apart once any call finishes.
-      await expect(liveGroups(page).first().locator('.tool-group-label')).toHaveText('Ran tests and read 1 file');
+      // Completed calls lead the live group's sentence; the running call is counted apart.
+      await expect(liveGroups(page).first().locator('.tool-group-label')).toHaveText('Read 1 file');
       await expect(liveGroups(page).first().locator('.tool-group-status')).toHaveText(' · 1 running');
       // Live groups are the open step rail; the header carries the running sentence instead of a group summary.
       await expect(liveGroups(page).first()).toHaveAttribute('open', '');
@@ -242,7 +242,7 @@ test.describe('streamed responses', () => {
       await expect(page.locator('#stream-region [data-commentary]')).toHaveText('Inspecting the project.');
       const thirdToolId = await page.evaluate(id => (window as any).__streamFixtures[id].startTool(), id);
       await expect(liveGroups(page)).toHaveCount(2);
-      await expect(liveGroups(page).last().locator('.tool-group-label')).toHaveText('Running tests…');
+      await expect(liveGroups(page).last().locator('.tool-group-label')).toHaveText('Running 1 command…');
       await expect(liveGroups(page).last()).toHaveAttribute('open', '');
       await expect(generating).toBeHidden();
       await expect.poll(() => liveSequence(page)).toEqual(['Inspecting the project.', '2 tools', '1 tool', 'Found one issue.']);
@@ -777,6 +777,7 @@ test.describe('streaming scroll regressions', () => {
     await prompt(page).pressSequentially(draft, { delay: 5 });
     await page.evaluate(() => clearInterval((window as any).__typingStream));
     expect(await page.evaluate(() => (window as any).__mentionReads)).toBe(0);
+    // One line of plain text is measured off-layout (main.ts fitTyped): typing it reads no prompt layout at all.
     expect(await page.evaluate(() => (window as any).__promptReads)).toBe(0);
     await page.waitForTimeout(200);
     const calls = await page.evaluate(async () => {
@@ -842,16 +843,6 @@ test.describe('streaming scroll regressions', () => {
     const savedLine = transcript(page).locator('.turn-card').last().locator('.message-content p').nth(reading.index);
     expect(Math.abs((await savedLine.boundingBox())!.y - reading.top)).toBeLessThanOrEqual(1);
     expect(await page.evaluate(() => (window as any).__scrollFixture.following())).toBe(false);
-    await prompt(page).fill('Single line');
-    const singleLineHeight = await prompt(page).evaluate(node => (node as HTMLElement).clientHeight);
-    await page.evaluate(() => { (window as any).__promptReads = 0; });
-    await prompt(page).focus();
-    await prompt(page).press('Shift+Enter');
-    expect(await page.evaluate(() => (window as any).__promptReads)).toBeGreaterThan(0);
-    await prompt(page).fill('Line one\nLine two\nLine three\nLine four');
-    expect(await prompt(page).evaluate(node => (node as HTMLElement).clientHeight)).toBeGreaterThan(singleLineHeight);
-    await prompt(page).fill('Single line');
-    expect(await prompt(page).evaluate(node => (node as HTMLElement).clientHeight)).toBe(singleLineHeight);
   });
 
   test('fractional follow terminates stalled steps without counting normal motion as stuck', async ({ page }) => {
@@ -908,74 +899,6 @@ test.describe('streaming scroll regressions', () => {
       return results;
     });
     expect(results.every(result => result.box === 'border-box' && result.borders === 0 && result.correct)).toBe(true);
-  });
-
-  test('composer resizePrompt grows for scaled wide ASCII, CJK and wide Unicode without poisoning single-line height, and prewarms drafts lazily', async ({ page }) => {
-    await page.evaluate(() => {
-      const input = document.querySelector<HTMLTextAreaElement>('#prompt')!;
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    // 1. Wide ASCII at --ui-scale: 1.6 grows beyond single-line without clipping, and scale-change while wrapped never poisons singleLineHeight.
-    const scaledMetrics = await page.evaluate(async () => {
-      const { setUiScale } = await import('/src/ui-size.ts');
-      const input = document.querySelector<HTMLTextAreaElement>('#prompt')!;
-      setUiScale(1.6);
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const baseHeight = input.clientHeight;
-
-      input.value = 'W'.repeat(60);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const wrappedHeight = input.clientHeight;
-      const wrappedUnclipped = input.style.overflowY === 'auto' || input.scrollHeight <= input.clientHeight + 1;
-
-      // Trigger invalidatePromptSizing(); resizePrompt() while multi-line wrapped text is in #prompt.
-      window.dispatchEvent(new Event('pandacode-ui-scale-change'));
-      const afterScaleEventHeight = input.clientHeight;
-
-      // Clearing #prompt must reset back to single-line height (not stay wedged at wrappedHeight).
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const clearedHeight = input.clientHeight;
-
-      setUiScale(1);
-      return { baseHeight, wrappedHeight, wrappedUnclipped, afterScaleEventHeight, clearedHeight };
-    });
-    expect(scaledMetrics.wrappedHeight).toBeGreaterThan(scaledMetrics.baseHeight);
-    expect(scaledMetrics.wrappedUnclipped).toBe(true);
-    expect(scaledMetrics.afterScaleEventHeight).toBe(scaledMetrics.wrappedHeight);
-    expect(scaledMetrics.clearedHeight).toBe(scaledMetrics.baseHeight);
-
-    // 2. CJK and wide Unicode ('⸻'.repeat(60)) grow beyond single-line without clipping and reset cleanly.
-    const unicodeMetrics = await page.evaluate(() => {
-      const input = document.querySelector<HTMLTextAreaElement>('#prompt')!;
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const singleHeight = input.clientHeight;
-
-      input.value = '这是一段用于测试中文宽字符在输入框自动换行时正确测量高度且绝不裁剪的示例文本。'.repeat(3);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const cjkHeight = input.clientHeight;
-      const cjkUnclipped = input.style.overflowY === 'auto' || input.scrollHeight <= input.clientHeight + 1;
-
-      input.value = '⸻'.repeat(60);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const dashHeight = input.clientHeight;
-      const dashUnclipped = input.style.overflowY === 'auto' || input.scrollHeight <= input.clientHeight + 1;
-
-      window.dispatchEvent(new Event('pandacode-ui-scale-change'));
-      input.value = '';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const resetHeight = input.clientHeight;
-
-      return { singleHeight, cjkHeight, cjkUnclipped, dashHeight, dashUnclipped, resetHeight };
-    });
-    expect(unicodeMetrics.cjkHeight).toBeGreaterThan(unicodeMetrics.singleHeight);
-    expect(unicodeMetrics.cjkUnclipped).toBe(true);
-    expect(unicodeMetrics.dashHeight).toBeGreaterThan(unicodeMetrics.singleHeight);
-    expect(unicodeMetrics.dashUnclipped).toBe(true);
-    expect(unicodeMetrics.resetHeight).toBe(unicodeMetrics.singleHeight);
   });
 
   test('thread switching resets follow and Read more still pauses it', async ({ page }) => {

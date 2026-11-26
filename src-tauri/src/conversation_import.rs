@@ -1,11 +1,12 @@
-//! Brings conversations started in the Claude Code or Codex CLI into PandaCode.
-//! Each import becomes a task in the project for the conversation's folder
-//! (added if needed) with its readable history, and resumes the same agent
-//! session on the next prompt. Nothing is sent to a model while importing.
+//! Brings conversations started in Claude Code, Codex or ZCode into
+//! PandaCode. Each import becomes a task in the project for the conversation's
+//! folder (added if needed) with its readable history, and resumes the same
+//! agent session on the next prompt. Nothing is sent to a model while importing.
 
 mod claude;
 #[cfg(test)]
 mod tests;
+mod zcode;
 
 use crate::{command_operations, integrations::ControlClient, storage::Session, AppState, Result};
 use serde::Serialize;
@@ -122,6 +123,30 @@ fn codex_home() -> PathBuf {
     crate::agent_usage_providers::home().unwrap_or_else(std::env::temp_dir)
 }
 
+fn zcode_items(state: &AppState, search: &Option<String>) -> Result<Vec<Importable>> {
+    // The CLI's store is read before the app's store locks, like the Claude importer.
+    let rows = zcode::conversations(&zcode::db_path())?;
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let mut items = Vec::new();
+    for row in rows {
+        if !matches(search, &[row.title.as_str(), row.directory.as_str()]) {
+            continue;
+        }
+        items.push(Importable {
+            imported_task_id: store.imported_task("zcode", &row.id)?,
+            unavailable: folder_problem(&row.directory),
+            id: row.id,
+            title: row.title,
+            folder: row.directory,
+            updated_at: row.updated_at,
+            messages: Some(row.messages),
+            model: None,
+        });
+    }
+    items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
+    Ok(items)
+}
+
 async fn codex_page(state: &AppState, search: &Option<String>, cursor: &Option<String>) -> Result<ImportPage> {
     let Ok(mut client) = ControlClient::start(&codex_home()).await else {
         return Ok(ImportPage { items: Vec::new(), cursor: None, note: Some("Codex is not available. Check that its CLI is installed and signed in.".into()) });
@@ -171,7 +196,24 @@ pub async fn list_importable_conversations(app: tauri::AppHandle, window: tauri:
             .await
         }
         "codex" => codex_page(&app.state::<AppState>(), &search, &cursor).await,
-        _ => Err("Import conversations from Claude Code or Codex.".into()),
+        "zcode" => {
+            let app = app.clone();
+            crate::blocking(move || {
+                let db = zcode::db_path();
+                if !db.exists() {
+                    return Ok(ImportPage { items: Vec::new(), cursor: None, note: Some("ZCode is not available. Check that ZCode is installed on this computer.".into()) });
+                }
+                let items = match zcode_items(&app.state::<AppState>(), &search) {
+                    Ok(items) => items,
+                    // Present but unreadable: a note, not a dead dialog.
+                    Err(_) => return Ok(ImportPage { items: Vec::new(), cursor: None, note: Some("ZCode's conversations could not be read on this computer.".into()) }),
+                };
+                let note = items.is_empty().then(|| "No ZCode conversations were found on this computer.".to_owned());
+                Ok(ImportPage { items, cursor: None, note })
+            })
+            .await
+        }
+        _ => Err("Import conversations from Claude Code, Codex or ZCode.".into()),
     }
 }
 
@@ -234,6 +276,25 @@ async fn import_codex(state: &AppState, id: &str, fallback_model: &str) -> Resul
     store.import_task(&project, "codex", &model, &title, id, effort.as_deref(), created, &entries)
 }
 
+fn import_zcode(state: &AppState, id: &str, fallback_model: &str) -> Result<Session> {
+    // The CLI's store is read before the app's store locks, like the Claude importer.
+    let read = zcode::read(&zcode::db_path(), id)?.ok_or("This ZCode conversation was not found. Refresh the list.")?;
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    import_zcode_row(&store, id, fallback_model, read)
+}
+
+/// Dedupe, folder and task insert against an already-locked store, with the
+/// CLI store reads already gathered, so tests can drive it directly.
+fn import_zcode_row(store: &crate::storage::Store, id: &str, fallback_model: &str, read: zcode::Read) -> Result<Session> {
+    if let Some(existing) = store.imported_task("zcode", id)? {
+        return store.session(&existing);
+    }
+    let project = project_for(store, &read.conversation.directory)?;
+    let title = zcode::bounded_title(read.conversation.title, "Imported ZCode conversation");
+    let model = read.model.unwrap_or_else(|| fallback_model.to_owned());
+    store.import_task(&project, "zcode", &model, &title, id, None, read.conversation.created_at, &read.entries)
+}
+
 #[tauri::command]
 pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewWindow, provider: String, ids: Vec<String>, model: Option<String>) -> Result<ImportResult> {
     if window.label() != "main" {
@@ -242,13 +303,14 @@ pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewW
     if ids.is_empty() || ids.len() > MAX_IMPORT {
         return Err(format!("Choose between 1 and {MAX_IMPORT} conversations to import."));
     }
-    if !matches!(provider.as_str(), "claude" | "codex") {
-        return Err("Import conversations from Claude Code or Codex.".into());
+    if !matches!(provider.as_str(), "claude" | "codex" | "zcode") {
+        return Err("Import conversations from Claude Code, Codex or ZCode.".into());
     }
     let fallback = model.filter(|model| !model.trim().is_empty() && model.len() <= 200).unwrap_or_else(|| "default".into());
     let mut result = ImportResult::default();
     for id in ids {
-        if uuid::Uuid::parse_str(&id).is_err() {
+        // Claude and Codex ids are bare uuids; ZCode sessions are `sess_<uuid>`.
+        if uuid::Uuid::parse_str(id.strip_prefix("sess_").unwrap_or(id.as_str())).is_err() {
             result.failed.push(ImportFailure { id, message: "Not a valid conversation identifier.".into() });
             continue;
         }
@@ -258,11 +320,16 @@ pub async fn import_conversations(app: tauri::AppHandle, window: tauri::WebviewW
             result.existing.push(task);
             continue;
         }
-        let imported = if provider == "claude" {
-            let (app, id, fallback) = (app.clone(), id.clone(), fallback.clone());
-            crate::blocking(move || import_claude(&app.state::<AppState>(), &id, &fallback)).await
-        } else {
-            import_codex(&state, &id, &fallback).await
+        let imported = match provider.as_str() {
+            "claude" => {
+                let (app, id, fallback) = (app.clone(), id.clone(), fallback.clone());
+                crate::blocking(move || import_claude(&app.state::<AppState>(), &id, &fallback)).await
+            }
+            "zcode" => {
+                let (app, id, fallback) = (app.clone(), id.clone(), fallback.clone());
+                crate::blocking(move || import_zcode(&app.state::<AppState>(), &id, &fallback)).await
+            }
+            _ => import_codex(&state, &id, &fallback).await,
         };
         match imported {
             Ok(task) => result.imported.push(task),

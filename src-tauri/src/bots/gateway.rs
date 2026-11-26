@@ -442,11 +442,15 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
     }
     let next = next.ok().flatten();
     let taken = next.and_then(|entry| state.store.lock().ok().and_then(|store| {
+        if message_queue::is_queue_held(session_id) {
+            return None;
+        }
         let entry = message_queue::take(&store, &entry.id).ok()?;
         let delivery = super::shared_channels::promote_taken(&store, session_id, &entry.text);
         Some((entry, delivery))
     }));
     if let Some((entry, delivery)) = taken {
+        let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
         super::failover::before_turn(app, &bot, session_id);
         let (context, image_ids) = queued_prompt(&entry.attachments);
         super::failover::remember_images(session_id, &image_ids);
@@ -466,6 +470,7 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
                 if let Some(request) = &delivery { super::shared_channels::launch_failed(&store, session_id, request); }
                 let _ = super::log(&store, &bot.id, "error", &format!("Couldn't send a queued message: {}", error.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
             }
+            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
             let _ = app.emit("bots-changed", ());
         }
     }
@@ -475,6 +480,9 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
 /// The queued message to send next, if any; `TEAM_NEEDS_FULL_BOT` when one waits but the thread
 /// came to lead a team on a bot without Full access.
 fn next_queued(store: &Store, bot: &Bot, session_id: &str) -> Result<Option<message_queue::QueuedMessage>> {
+    if message_queue::is_queue_held(session_id) {
+        return Ok(None);
+    }
     let Some(entry) = message_queue::list(store, Some(session_id))?.into_iter().next() else { return Ok(None) };
     allow_team_turn(store, bot, session_id)?;
     Ok(Some(entry))
@@ -728,6 +736,20 @@ mod tests {
         let finished = &source[source.find("pub(crate) async fn run_finished(").unwrap()..];
         assert!(finished.contains("is_err_and(|error| error == TEAM_NEEDS_FULL_BOT)"));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn next_queued_waits_for_the_session_hold_to_clear() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let bot = bot("queue");
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let session = store.create_session(&project.id, &bot.provider, &bot.model, &bot.mode).unwrap().id;
+        let entry = message_queue::add(&store, &session, "next step", &json!([])).unwrap();
+
+        message_queue::set_queue_hold_state(&session, true, Some("limited"));
+        assert_eq!(next_queued(&store, &bot, &session), Ok(None));
+        message_queue::set_queue_hold_state(&session, false, None);
+        assert_eq!(next_queued(&store, &bot, &session), Ok(Some(entry)));
     }
 
     #[test]

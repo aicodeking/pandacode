@@ -264,20 +264,28 @@ test.describe('architect teams', () => {
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async (text:string) => { (window as any).__copiedMessage = text; }}});
     });
     await installArchitect(page, {'session-2':team('session-2')});
-    const saved = '**Worker result**\n\n```ts\nconst count = 2;\n```';
+    const saved = '## Worker result\n\n```ts\nconst count = 2;\n```';
     await seedHistory(page,'session-2','build',saved);
     await openWorkers(page).click(); await row(page,'build').click();
     const message = panel(page).locator('.architect-worker-message[data-message-id="101"]');
-    await expect(message).toContainText('Worker result');
+    const savedHeading = message.getByRole('heading', { name: 'Worker result', level: 2 });
+    await expect(savedHeading).toBeVisible();
     await expect(message.getByRole('button',{name:'Fork from here'})).toHaveAttribute('data-message-session','worker-build');
     await message.getByRole('button',{name:'Copy message',exact:true}).click();
     await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe(saved);
     expect((await calls(page,'get_message_content')).at(-1).args).toEqual({sessionId:'worker-build',messageId:101});
-    await page.evaluate(() => (window as any).__architectTest.event({sessionId:'worker-build',kind:'text',text:'**Still verifying** the worker result.'}));
-    await expect(live(page)).toContainText('Still verifying');
+    const streaming = '## Still verifying\n\nChecking the worker result.';
+    await page.evaluate(text => (window as any).__architectTest.event({sessionId:'worker-build',kind:'text',text}), streaming);
+    const liveHeading = live(page).getByRole('heading', { name: 'Still verifying', level: 2 });
+    await expect(liveHeading).toBeVisible();
+    const headingStyle = (heading: Locator) => heading.evaluate(element => {
+      const { fontSize, fontWeight, lineHeight, marginTop } = getComputedStyle(element);
+      return { fontSize, fontWeight, lineHeight, marginTop };
+    });
+    expect(await headingStyle(savedHeading)).toEqual(await headingStyle(liveHeading));
     const actions = panel(page).locator('.architect-live-actions');
     await actions.getByRole('button',{name:'Copy message',exact:true}).click();
-    await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe('**Still verifying** the worker result.');
+    await expect.poll(() => page.evaluate(() => (window as any).__copiedMessage)).toBe(streaming);
     await expect(actions.getByRole('button',{name:'Fork from here'})).toHaveCount(0);
   });
 
@@ -535,6 +543,33 @@ test.describe('architect teams', () => {
     await tools.locator('.team-progress-toggle').click();
     await expect(tools.locator('.team-progress-worker[data-worker-id="build"]')).toBeVisible();
     await expect(tools.locator('.team-progress-worker[data-worker-id="review"]')).toBeVisible();
+  });
+
+  test('workers without a dispatch row stay inside the live card and then the saved continuation card', async ({ page }) => {
+    test.setTimeout(40_000);
+    const history = [
+      { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 1000 },
+      { id: 302, sessionId: 'session-2', role: 'assistant', content: 'Initial work.', createdAt: 2000 },
+      { id: 303, sessionId: 'session-2', role: 'changes', content: '', createdAt: 2000 },
+    ];
+    await installArchitect(page, { 'session-2': team('session-2', { workers: [] }) }, { 'session-2': history });
+    await expect(transcript(page).getByText('Initial work.', { exact: true })).toBeVisible();
+    await page.evaluate(() => (window as any).__architectTest.event({ sessionId: 'session-2', kind: 'text', text: 'Continuing the work.' }));
+    const liveCard = transcript(page).locator('.turn-card.is-live');
+    await expect(liveCard.locator('.live-text')).toContainText('Continuing the work.');
+    const build = worker('build', { createdAt: await page.evaluate(() => Date.now()), status: 'completed' });
+    await publish(page, team('session-2', { status: 'completed', workers: [build] }));
+    await expect(liveCard.locator(':scope > #team-progress-host .team-progress-worker')).toHaveCount(1);
+    await expect(transcript(page).locator('.team-progress:not(.turn-card *)')).toHaveCount(0);
+    await page.evaluate(createdAt => {
+      const fixture = (window as any).__architectTest;
+      fixture.taskMessages['session-2'].push({ id: 304, sessionId: 'session-2', role: 'assistant', content: 'Continuing the work.', createdAt });
+      fixture.event({ sessionId: 'session-2', kind: 'done', text: '' });
+    }, build.createdAt);
+    await expect(liveCard).toHaveCount(0, { timeout: 20_000 });
+    const savedCard = transcript(page).locator('.turn-card:not(.is-live)').filter({ hasText: 'Continuing the work.' });
+    await expect(savedCard.locator('.team-progress-worker[data-worker-id="build"]')).toHaveCount(1);
+    await expect(transcript(page).locator('.team-progress')).toHaveCount(1);
   });
 
   test('keeps earlier workers above a resumed coordination turn', async ({ page }) => {
@@ -943,7 +978,7 @@ test.describe('architect teams', () => {
     await installArchitect(page, { 'session-2': team('session-2', { status: 'completed', workers }) }, { 'session-2': [
       { id: 301, sessionId: 'session-2', role: 'user', content: 'Build it.', createdAt: 2000 },
     ] as Message[] });
-    const list = transcript(page).locator('.team-progress'), toggle = list.locator('.team-progress-toggle');
+    const list = transcript(page).locator('.turn-card .team-progress'), toggle = list.locator('.team-progress-toggle');
     const row = list.locator('.team-progress-worker[data-worker-id="build"]');
     await expect(toggle).toHaveAttribute('aria-expanded', 'false');
     await expect(row).toBeHidden();
@@ -1498,6 +1533,36 @@ async function openShowcase(page: Page): Promise<void> {
 }
 
 test.describe('compact workers list', () => {
+test('worker labels fit their line heights at 160% in a narrow window', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.uiScale', '1.6'));
+  await openShowcase(page);
+  await page.setViewportSize({ width: 540, height: 800 });
+  const worker = row(page, 'styles');
+  await expect(page.locator('html')).toHaveCSS('--ui-scale', '1.6');
+  for (const [selector, role] of [
+    ['.architect-worker-copy strong', 'subheading'],
+    ['.architect-worker-state', 'caption'],
+    ['.architect-worker-meta-line small', 'meta'],
+    ['.architect-worker-effort', 'caption'],
+    ['.architect-worker-attempt', 'caption'],
+  ]) {
+    const { height, leading, expected } = await worker.locator(selector).evaluate((element, role) => {
+      const style = getComputedStyle(element);
+      return {
+        height: parseFloat(style.height),
+        leading: parseFloat(style.lineHeight),
+        expected: parseFloat(style.fontSize) * Number(style.getPropertyValue(`--type-${role}-leading`)),
+      };
+    }, role);
+    expect.soft(leading, selector).toBeCloseTo(expected, 1);
+    expect.soft(height, selector).toBeGreaterThanOrEqual(expected - 0.1);
+  }
+  const name = worker.locator('.architect-worker-copy strong');
+  await expect(name).toHaveCSS('text-overflow', 'ellipsis');
+  expect(await name.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+  expect(await worker.evaluate(element => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
+});
+
 test('workers are dense rows ordered by status, with effort and attempt chips', async ({ page }) => {
   await openShowcase(page);
   const rows = panel(page).locator('.architect-worker-row');
@@ -2367,7 +2432,10 @@ test.describe('compact workers round 14', () => {
     // Measured once the panel's open spring has settled (it scales the bar while it runs).
     await panelSettled(page);
     // Narrow enough that the line ends with "+N more" (at the default width every count fits).
-    await page.evaluate(() => { (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px'; });
+    await page.evaluate(() => new Promise<void>(resolve => {
+      (document.querySelector('.agents-flyout') as HTMLElement).style.width = '300px';
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
     const tally = panel(page).locator('.architect-panel-tally-text');
     for (const button of [tally.locator('.architect-tally-asking'), tally.locator('.architect-tally-more')]) {
       await expect(button).toBeVisible();

@@ -253,17 +253,12 @@ pub(super) async fn set_task_preference(
     if state.store.lock().map_err(|e| e.to_string())?.session(&session_id)?.provider == "claude" {
         // Claude reads fast mode at launch, so the choice applies from the next turn.
         let delta = json!({"serviceTier": claude_tier(request)?});
-        let session = {
-            let store = state.store.lock().map_err(|e| e.to_string())?;
-            save_preference(&store, &session_id, &delta)?
-        };
-        let running = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id);
-        if !running {
-            crate::providers::discard_warm_agent(&session_id);
-        }
-        return Ok(session);
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        return save_preference(&store, &session_id, &delta);
     }
-    let running = crate::run_requests::lock_agents(&state.agents)
+    let running = state
+        .agents
+        .lock()
         .map_err(|e| e.to_string())?
         .contains_key(&session_id);
     // An idle task is reserved through catalog discovery and persistence. Live
@@ -299,31 +294,23 @@ pub(super) async fn set_task_preference(
     if running {
         live_request(&state, &session_id, "thread/settings/update", delta.clone()).await?;
     }
-    let session = {
-        let store = state.store.lock().map_err(|e| e.to_string())?;
-        let current = store.session(&session_id)?;
-        if current.provider != task.provider
-            || current.model != task.model
-            || current.reasoning_effort != task.reasoning_effort
-        {
-            return Err("The task's model changed. Open its settings again.".into());
-        }
-        save_preference(&store, &session_id, &delta)?
-    };
-    if !running {
-        crate::providers::discard_warm_agent(&session_id);
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let current = store.session(&session_id)?;
+    if current.provider != task.provider
+        || current.model != task.model
+        || current.reasoning_effort != task.reasoning_effort
+    {
+        return Err("The task's model changed. Open its settings again.".into());
     }
-    Ok(session)
+    save_preference(&store, &session_id, &delta)
 }
 
 fn save_preference(store: &Store, sid: &str, delta: &Value) -> Result<Session> {
     let settings = merge_preference(store.session(sid)?.codex_settings, delta)?;
     store
         .db
-        .execute(
-            "UPDATE sessions SET codex_settings=?2 WHERE id=?1",
-            rusqlite::params![sid, settings.to_string()],
-        )
+        .prepare_cached("UPDATE sessions SET codex_settings=?2 WHERE id=?1")
+        .and_then(|mut update| update.execute(rusqlite::params![sid, settings.to_string()]))
         .map_err(|e| e.to_string())?;
     store.session(sid)
 }
@@ -518,8 +505,8 @@ async fn fork_codex(state: &AppState, session_id: String, remote_id: Option<Stri
         &mode,
     )?;
     store.db.execute("UPDATE sessions SET resume_id=?2,worktree_path=?3,reasoning_effort=?4,title=?5,codex_settings=?6,task_stage='in_progress' WHERE id=?1",rusqlite::params![task.id,fork.id,source.worktree_path,fork.reasoning_effort.or(source.reasoning_effort),if adopting {"Resumed Codex task".into()}else{format!("{} (fork)",source.title).chars().take(200).collect::<String>()},source.codex_settings.map(|v|v.to_string())]).map_err(|e|e.to_string())?;
-    for (role, content) in history {
-        store.message(&task.id, &role, &content)?;
+    for (role, content) in &history {
+        store.message(&task.id, role, content)?;
     }
     if !adopting {
         copy_task_messages(&store, &source.id, &task.id)?;
@@ -535,7 +522,13 @@ pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> R
     if source == target {
         return Err("A task cannot be forked into itself.".into());
     }
-    let mut query = store.db.prepare("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
+    // One transaction for the whole copy, unless the caller already holds one.
+    store.in_transaction(|| copy_task_message_rows(store, source, target))
+}
+
+fn copy_task_message_rows(store: &Store, source: &str, target: &str) -> Result<()> {
+    let mut query = store.db.prepare_cached("SELECT id,role,content,created_at,turn_duration_ms FROM messages WHERE session_id=?1 ORDER BY id").map_err(|e|e.to_string())?;
+    let mut insert = store.db.prepare_cached("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)").map_err(|e|e.to_string())?;
     let messages = query
         .query_map([source], |row| {
             Ok((
@@ -547,24 +540,24 @@ pub(crate) fn copy_task_messages(store: &Store, source: &str, target: &str) -> R
             ))
         })
         .map_err(|e| e.to_string())?;
+    // Team facts for legacy prompts are read at most once for the whole copy, as in a fork.
+    let mut legacy = crate::architect::internal_turns::LegacyScan::new(&store.db, source);
     for message in messages {
         let (id, mut role, mut content, created_at, duration) =
             message.map_err(|e| e.to_string())?;
         if role == "user" {
-            if let Some(kind) =
-                crate::architect::internal_turns::legacy_kind(store, source, id, &content)?
-            {
+            if let Some(kind) = legacy.kind(id, &content)? {
                 content = crate::architect::internal_turns::encode(kind, &content)?;
                 role = "coordination".into();
             }
         }
-        store.db.execute("INSERT INTO messages(session_id,role,content,created_at,turn_duration_ms) VALUES(?1,?2,?3,?4,?5)",rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
+        insert.execute(rusqlite::params![target,role,content,created_at,duration]).map_err(|e|e.to_string())?;
     }
     Ok(())
 }
 
 fn existing_codex_task(store: &Store, remote_id: &str) -> Result<Option<String>> {
-    store.db.query_row("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1",[remote_id],|row|row.get(0)).optional().map_err(|e|e.to_string())
+    store.db.prepare_cached("SELECT id FROM sessions WHERE provider='codex' AND resume_id=?1 ORDER BY updated_at DESC LIMIT 1").and_then(|mut query|query.query_row([remote_id],|row|row.get(0)).optional()).map_err(|e|e.to_string())
 }
 
 #[tauri::command]
@@ -596,7 +589,7 @@ pub(super) async fn export_task(state: State<'_, AppState>, session_id: String) 
     let mut output = format!("# {}\n\n", task.title);
     let mut query = store
         .db
-        .prepare("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
+        .prepare_cached("SELECT id,role,content FROM messages WHERE session_id=?1 ORDER BY id")
         .map_err(|e| e.to_string())?;
     let rows = query
         .query_map([&session_id], |r| {
@@ -690,6 +683,9 @@ pub(super) async fn start_harness_terminal(
             ensure_console_goal_inactive(goal.as_ref())?;
         }
     }
+    // Stop any lingering ACP process (e.g. `agy acp`) before opening an interactive console so
+    // the resumed CLI does not contend on the harness's SQLite/conversation store.
+    crate::providers::end_lingering(&session_id).await;
     blocking(move || {
         let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {

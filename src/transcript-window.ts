@@ -2,7 +2,7 @@
  * the steps that widen and narrow it, and how they hold the reader's place. Everything here takes its host and
  * scroller, so the main transcript and the tiles share it; what a row holds (turn cards, folds) stays with main.ts. */
 import { markdownCache, markdownHtml } from './dom';
-import { scrollAnchors } from './transcript-scroll';
+import { isFollowingTranscript, restoreScrollTop, scrollRemainder } from './transcript-scroll';
 import { widerWindow, windowAnchor, windowStart, MORE_TURNS, ROW_BUDGET, type DrawnRow, type TurnIds } from './transcript-rows';
 
 /** What a view has drawn: its thread, the anchor of its oldest drawn turn (null: all of them), every saved turn and its
@@ -67,12 +67,19 @@ export function stepWhenFormatted<Key>(busy: StepBusy<Key>, key: Key, messages: 
 }
 
 /** Reads the scroller once; the returned call puts the reader back where they were after content above them changed.
- *  An absolute position, so it lands the same whether or not the engine anchored the scroll itself. `pending` is what
- *  writes still to come (measureReplies) will change above the reader: counted now in an engine that does not anchor
- *  the scroll, so it needs no second layout; one that anchors makes up for it itself when they lay out. */
+ *  An absolute position, so it lands the same whether or not the engine anchored the scroll itself. Call it after every
+ *  write above the reader (the replies' clamps too), so it reads the final extent; `pending` is what writes still to
+ *  come will change above the reader, always counted: never trust `overflow-anchor`, which WebKit reports as supported
+ *  without anchoring the transcript. */
 export function holdPlace(scroller: HTMLElement): (pending?: number) => number {
-  const top = scroller.scrollTop, height = scroller.scrollHeight;
-  return (pending = 0) => { scroller.scrollTop = top + scroller.scrollHeight - height + (scrollAnchors ? 0 : pending); return scroller.scrollTop; };
+  // Carry what a webview that rounds scrollTop dropped last time, so repeated prepends never drift a pixel at a time.
+  const top = scroller.scrollTop + scrollRemainder(scroller), height = scroller.scrollHeight;
+  return (later = 0) => {
+    // Nothing above the reader changed: no write at all, since any scrollTop write ends a WKWebView momentum scroll.
+    if (scroller.scrollHeight === height && later === 0) return scroller.scrollTop;
+    restoreScrollTop(scroller, top + scroller.scrollHeight - height + later);
+    return scroller.scrollTop;
+  };
 }
 
 /** Puts `rows` (parsed, not yet placed) above `anchor` in one insertion. `prepare` runs on the fragment first, so
@@ -126,20 +133,35 @@ export function takeTrimmed<Turn, Views>(view: RowsWindow<Turn, Views>, from: nu
 
 /** Rows this far (px) outside the viewport skip style and layout. */
 export const FAR_MARGIN = 2400;
+/** A change in a far row's height, or in the scroll, smaller than this (px) is rounding. */
+const SHIFT_EPSILON = 0.5;
 
 /** Rows far from the reader skip style and layout (`content-visibility: auto`), so a thread scrolled deep into its
  *  history costs a step what a short one does: every forced read lays out only what is near. A row is set aside at the
  *  height it was last laid out with, read from the observer's entry (no extra layout); when it comes near it lays out
- *  again, and in an engine without scroll anchoring (WebKit) a row above the reader that changed size meanwhile (a
- *  worker joined its slot, the window narrowed) moves the scroll by what it changed, so nothing on screen shifts. */
-export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(nodes: readonly ChildNode[]): void; isAside(node: Node): boolean } {
-  if (typeof IntersectionObserver === 'undefined') return { sync() {}, isAside: () => false };
-  const anchors = scrollAnchors;
+ *  again, and a row above the reader that changed size meanwhile (a worker joined its slot, the window narrowed, its
+ *  reply formatted) moves the scroll by what it changed, less what the engine's scroll anchoring already moved it, so
+ *  nothing on screen shifts. WebKit reports `overflow-anchor` as supported yet does not anchor the transcript, so what
+ *  the engine did is measured rather than assumed. */
+export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(nodes: readonly ChildNode[]): void; isAside(node: Node): boolean; reveal(node: Node | null): void } {
+  if (typeof IntersectionObserver === 'undefined') return { sync() {}, isAside: () => false, reveal() {} };
   const aside = new WeakMap<HTMLElement, number>(), watched = new Set<HTMLElement>();
+  /** After `rows` (laid out again, read before at their held heights) changed size, moves the scroll by what those above
+   *  the reader changed and the engine's anchoring (applied in the same layout) has not moved it yet. `before` is the
+   *  scrollTop read before any write. A transcript following its bottom is pinned again by its owner after layout:
+   *  moving it here (up, for a row that shrank) would read as the reader leaving the bottom. */
+  const shiftReader = (rows: readonly { row: HTMLElement; height: number; above: boolean }[], before: number): void => {
+    if (!rows.some(({ above }) => above) || isFollowingTranscript(scroller)) return;
+    // All writes are done: one layout for every read below.
+    const shift = rows.reduce((total, { row, height, above }) => above ? total + row.getBoundingClientRect().height - height : total, 0);
+    const anchored = scroller.scrollTop - before, missing = shift - anchored;
+    if (Math.abs(missing) >= SHIFT_EPSILON) restoreScrollTop(scroller, scroller.scrollTop + missing);
+    if (Math.abs(missing) >= SHIFT_EPSILON || Math.abs(anchored) >= SHIFT_EPSILON) onShift();
+  };
   const observer = new IntersectionObserver(entries => {
     // The scroller's own top, read before any write below: the root bounds include the far margin, so they would
     // place every row that comes near (at the margin's edge) below them.
-    const readerTop = anchors ? 0 : scroller.getBoundingClientRect().top;
+    const readerTop = scroller.getBoundingClientRect().top, before = scroller.scrollTop;
     const near: { row: HTMLElement; height: number; above: boolean }[] = [];
     for (const entry of entries) {
       const row = entry.target as HTMLElement, height = entry.boundingClientRect.height;
@@ -155,14 +177,17 @@ export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(
         row.style.removeProperty('contain-intrinsic-size');
       }
     }
-    if (anchors) return;
-    // All writes are done: one layout for every read below.
-    const shift = near.reduce((total, { row, height, above }) => above ? total + row.getBoundingClientRect().height - height : total, 0);
-    if (Math.abs(shift) >= 0.5) { scroller.scrollTop += shift; onShift(); }
+    shiftReader(near, before);
   }, { root: scroller, rootMargin: `${FAR_MARGIN}px 0px` });
+  const clearAside = (row: HTMLElement): void => { row.style.removeProperty('content-visibility'); row.style.removeProperty('contain-intrinsic-size'); };
   const release = (row: HTMLElement): void => {
     observer.unobserve(row); watched.delete(row);
-    if (aside.delete(row)) { row.style.removeProperty('content-visibility'); row.style.removeProperty('contain-intrinsic-size'); }
+    if (aside.delete(row)) clearAside(row);
+  };
+  /** The direct child of the scroller holding `node`. */
+  const rowOf = (node: Node | null): HTMLElement | undefined => {
+    for (let at = node; at && at !== scroller; at = at.parentNode) if (at.parentNode === scroller) return at instanceof HTMLElement ? at : undefined;
+    return undefined;
   };
   const setRowAside = (row: HTMLElement, height: number): void => {
     aside.set(row, height);
@@ -174,6 +199,19 @@ export function skipFarRows(scroller: HTMLElement, onShift: () => void): { sync(
     isAside(node) {
       for (let at: Node | null = node; at && at !== scroller; at = at.parentNode) if (at.parentNode === scroller) return aside.has(at as HTMLElement);
       return false;
+    },
+    /** Lays out now the row holding `node` and its neighbours, if set aside, so a jump to it measures exact positions.
+     *  A revealed row above the reader that changed size moves the scroll by that change (shiftReader). */
+    reveal(node) {
+      const row = rowOf(node);
+      if (!row) return;
+      const rows = [row.previousElementSibling, row, row.nextElementSibling].filter((at): at is HTMLElement => at instanceof HTMLElement && aside.has(at));
+      if (!rows.length) return;
+      // Reads first (rows set aside lay out at their held height), then every write, then one layout for the shift.
+      const readerTop = scroller.getBoundingClientRect().top, before = scroller.scrollTop;
+      const revealed = rows.map(at => ({ row: at, height: aside.get(at)!, above: at.getBoundingClientRect().bottom <= readerTop }));
+      for (const { row: at } of revealed) { aside.delete(at); clearAside(at); }
+      shiftReader(revealed, before);
     },
     /** Watches exactly `nodes` (the drawn rows), letting go of any no longer among them. */
     sync(nodes) {

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 
-const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor'];
+const installed = ['claude', 'codex', 'kimi', 'opencode', 'glm', 'grok', 'mimo', 'pi', 'deepseek', 'commandcode', 'cline', 'kilo', 'github-copilot', 'muse', 'devin', 'zcode', 'hermes', 'cursor', 'alibaba'];
 const usageButton = (page: Page) => page.getByRole('button', { name: 'Agent usage', exact: true });
 const dialog = (page: Page) => page.getByRole('dialog', { name: 'Agent usage', exact: true });
 const card = (page: Page, name: string) => dialog(page).locator('.usage-card').filter({ hasText: name });
@@ -59,7 +59,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
       if (command === 'usage_ledger') {
         const fixture = window.__usageFixture;
         fixture.ledgerCalls.push(structuredClone(args));
-        if (fixture.ledgerError) throw new Error(fixture.ledgerError);
+        if (fixture.ledgerError) throw fixture.ledgerError;
         return structuredClone(fixture.ledger);
       }
       if (command === 'prompt_activity') return structuredClone(window.__usageFixture.prompts);
@@ -90,7 +90,7 @@ async function openApp(page: Page, hold: string[] = [], failures: string[] = [],
     `) });
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
+  await expect(usageButton(page)).toBeEnabled();
 }
 
 async function openUsage(page: Page): Promise<void> {
@@ -571,14 +571,14 @@ test('Agent usage isolates a failed IPC request and recovers on refresh', async 
   await openApp(page, [], ['codex']);
   await openUsage(page);
   await tab(page, 'Codex').click();
-  await expect(card(page, 'Codex')).toContainText('Could not read limits. Try Refresh.');
+  await expect(card(page, 'Codex')).toContainText('Usage service temporarily unavailable.');
   await expect(card(page, 'Codex').getByRole('progressbar')).toHaveCount(0);
   await expect(card(page, 'Claude Code')).toContainText('22% used');
   await expect(refresh(page)).toBeEnabled();
   await page.evaluate(() => { (window as any).__usageFixture.failures = []; });
   await refresh(page).click();
   await expect(card(page, 'Codex').getByRole('progressbar').first()).toHaveAttribute('aria-valuenow', '35');
-  await expect(card(page, 'Codex')).not.toContainText('Could not read limits. Try Refresh.');
+  await expect(card(page, 'Codex')).not.toContainText('Usage service temporarily unavailable.');
   await expect(refresh(page)).toBeEnabled();
   expect(errors).toEqual([]);
 });
@@ -667,6 +667,19 @@ test('Agent usage estimates API cost by range, agent, model, and day from local 
   await expect(table.locator('tbody tr')).toHaveCount(3);
   await expect(table.locator('tbody tr').first()).toContainText('claude-opus-5-5');
   await expect(table.locator('tbody tr').last()).toContainText('unpriced');
+  // Rendered table headers use the shared caption and subheading roles.
+  for (const [selector, size, leading] of [
+    ['thead th', 11, 14.3], ['tbody th', 14, 19.6],
+  ] as const) {
+    const header = table.locator(selector).first();
+    await expect(header).toHaveCSS('font-weight', '500');
+    const metrics = await header.evaluate(element => {
+      const style = getComputedStyle(element);
+      return { size: parseFloat(style.fontSize), leading: parseFloat(style.lineHeight) };
+    });
+    expect(metrics.size).toBeCloseTo(size, 1);
+    expect(metrics.leading).toBeCloseTo(leading, 1);
+  }
   // Re-rendering the table keeps keyboard focus on the switch that was used.
   await overview.getByRole('button', { name: 'Day', exact: true }).focus();
   await page.keyboard.press('Enter');
@@ -692,6 +705,31 @@ test('Agent usage estimates API cost by range, agent, model, and day from local 
   await page.keyboard.press('ArrowRight');
   await expect(tab(page, 'OpenCode')).toBeFocused();
   await expect(card(page, 'OpenCode')).toContainText('No activity recorded for this agent yet.');
+});
+
+test('Agent usage names Pi among the logs used for estimates', async ({ page }, testInfo) => {
+  await openApp(page);
+  await page.evaluate(() => {
+    const ledger = (window as any).__usageFixture.ledger;
+    ledger.sources = [];
+    ledger.rows = [];
+    ledger.sessions = [];
+  });
+  await openUsage(page);
+  await expect(tab(page, 'Overview')).toBeVisible({ timeout: 20_000 });
+  await expect(dialog(page).locator('.usage-cost-empty')).toHaveText('No local usage logs were found for Claude Code, Codex, and Pi.');
+  await expect(dialog(page).getByRole('img', { name: 'About estimated API cost' })).toHaveAttribute('aria-description', /Claude Code, Codex, and Pi logs/);
+  await page.evaluate(hour => {
+    Object.assign((window as any).__usageFixture.ledger, {
+      sources: [{ provider: 'pi', files: 1 }],
+      models: [{ provider: 'pi', name: 'claude-sonnet-5-5', priced: true }],
+      rows: [[hour, 0, 2000, 3500, 0, 2500, 0.12, 0.03]],
+      sessions: [{ provider: 'pi', first: hour, last: hour }],
+    });
+  }, hourOn(0));
+  await refresh(page).click();
+  await expect(dialog(page).getByRole('button', { name: /^Pi\. \$0\.12 estimated/ })).toBeVisible();
+  await dialog(page).screenshot({ path: testInfo.outputPath('pi-usage.png'), animations: 'disabled' });
 });
 
 test('Agent usage keeps limits working when local logs cannot be read', async ({ page }) => {
@@ -820,6 +858,15 @@ test('Claude Code and Codex accounts show email, plan and accessible pool state'
   await work.getByRole('button', { name: 'Open Settings' }).click();
   await expect(dialog(page)).toBeHidden();
   await expect(page.locator('#settings-panel-providers')).toBeVisible();
+  for (const selector of ['.account-meter-label', '.account-meter-reset']) {
+    const text = page.locator(`#settings-panel-providers ${selector}`).first();
+    await expect(text).toBeVisible();
+    const leading = await text.evaluate(node => {
+      const style = getComputedStyle(node);
+      return { actual: parseFloat(style.lineHeight) / parseFloat(style.fontSize), expected: parseFloat(style.getPropertyValue('--type-meta-leading')) };
+    });
+    expect(leading.actual).toBeCloseTo(leading.expected, 3);
+  }
   expect(errors).toEqual([]);
 });
 

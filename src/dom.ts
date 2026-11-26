@@ -72,6 +72,8 @@ const paths: Record<string, string> = {
   circle: '<circle cx="12" cy="12" r="8"/>',
   line: '<path d="m5 19 14-14"/>',
   minimize: '<path d="M5 12h14"/>',
+  maximize: '<path d="M8 3H3v5M16 3h5v5M3 16v5h5M21 16v5h-5"/>',
+  restore: '<path d="M9 3v6H3M15 3v6h6M3 15h6v6M21 15h-6v6"/>',
   pin: '<path d="m16 3 5 5-4 2-3 5-2-2-6 6m3-9L7 8l5-3Z"/>',
   'arrow-right': '<path d="M5 12h14m-6-6 6 6-6 6"/>',
   text: '<path d="M5 6h14M12 6v14m-4 0h8"/>',
@@ -228,18 +230,42 @@ function pendingView(value: string, html: string): string {
   const at = html.lastIndexOf('<pandacode-ui>');
   return at < 0 ? html : `${html.slice(0, at)}<pandacode-ui class="pending">${html.slice(at + 14)}`;
 }
-export async function markdown(target: HTMLElement, value: string, scroll?: HTMLElement): Promise<void> {
+/** `deferRaw`: no raw-text flash before the HTML (a long folded reply formatted as it nears the reader, whose raw text
+ *  would lay out unclamped above them); `afterWrite`: runs right after the HTML is written, inside the held place (the
+ *  reply's clamp, turn-card.ts syncReplyClamp), so the row lands at its final height in one anchored write. */
+export type MarkdownOptions = { deferRaw?: boolean; afterWrite?: () => void };
+/** The latest paint asked of each target: an older one finishing late writes nothing. */
+const paints = new WeakMap<HTMLElement, symbol>();
+export async function markdown(target: HTMLElement, value: string, scroll?: HTMLElement, options?: MarkdownOptions): Promise<void> {
   captureFileLinkContext(target);
-  const known = rendered.get(value);
-  if (known !== undefined) { remember(value, known); target.innerHTML = known; decorateFileLinks(target, target); return; }
-  // A reply that just streamed is built from its stream's settled HTML, not parsed whole again.
-  const settling = settle(value);
-  target.textContent = value;
-  const html = (settling && await settling) ?? await markdownHtml(value);
-  if (target.isConnected && target.textContent === value) {
-    const restore = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
+  const token = Symbol('paint');
+  paints.set(target, token);
+  const write = (html: string): void => {
     target.innerHTML = html;
     decorateFileLinks(target, target);
+    options?.afterWrite?.();
+  };
+  const known = rendered.get(value);
+  if (known !== undefined) {
+    remember(value, known);
+    const restore = scroll && target.isConnected ? preserveTranscriptPosition(scroll, target) : undefined;
+    write(known);
+    restore?.();
+    return;
+  }
+  // A reply that just streamed is built from its stream's settled HTML, not parsed whole again.
+  const settling = settle(value);
+  if (!options?.deferRaw) {
+    // Raw text first: in a row above a paused reader it would move their line on WebKit (no scroll anchoring) until the HTML lands.
+    const restoreRaw = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
+    target.textContent = value;
+    restoreRaw?.();
+  }
+  const html = (settling && await settling) ?? await markdownHtml(value);
+  const current = options?.deferRaw ? paints.get(target) === token : target.textContent === value;
+  if (target.isConnected && current) {
+    const restore = scroll ? preserveTranscriptPosition(scroll, target) : undefined;
+    write(html);
     restore?.();
   }
 }

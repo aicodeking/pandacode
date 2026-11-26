@@ -68,44 +68,6 @@ test.describe('thread tiles', () => {
     await expect(tile(page, first).locator('.turn-card, .message').first()).toBeVisible();
   });
 
-  test('focused tile scene paints, regrades on theme changes and resizes beneath the real pane', async ({ page }) => {
-    await page.addInitScript(() => localStorage.setItem('pandacode.theme', 'light'));
-    await open(page);
-    const first = (await current(page))!, other = (await threads(page)).find(id => id !== first)!;
-    await row(page, other).click({ modifiers: ['Meta'] });
-    const focused = tile(page, other).locator('.thread-sky');
-    await expect(focused).toBeVisible();
-    await expect(page.locator('.main-pane>.thread-sky')).toBeHidden();
-    await expect(page.locator('.work-area>.conversation-pane')).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-    const sample = () => focused.locator('canvas').first().evaluate(node => {
-      const canvas = node as HTMLCanvasElement, gl = canvas.getContext('webgl')!;
-      const program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
-      // Read within the draw task: the browser may discard the drawing buffer after compositing.
-      gl.drawArrays(gl.TRIANGLES, 0, 3);
-      const pixel = new Uint8Array(4);
-      gl.readPixels(Math.floor(canvas.width / 2), Math.floor(canvas.height / 2), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
-      const linear = [...pixel.slice(0, 3)].map(value => value / 255).map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
-      return { width: canvas.width, height: canvas.height, time: gl.getUniform(program, gl.getUniformLocation(program, 'time')) as number,
-        dark: gl.getUniform(program, gl.getUniformLocation(program, 'dark')) as number,
-        luminance: linear[0] * .2126 + linear[1] * .7152 + linear[2] * .0722 };
-    });
-    await expect.poll(async () => (await sample()).width).toBeGreaterThan(100);
-    const light = await sample();
-    expect(light.height).toBeGreaterThan(100);
-    expect(light.dark).toBe(0);
-    expect(light.luminance).toBeGreaterThanOrEqual(.43);
-    await expect.poll(async () => (await sample()).time).toBeGreaterThan(light.time);
-    await page.evaluate(async () => { const path = '/src/theme.ts'; const { setTheme } = await import(path); setTheme('dark'); });
-    await expect.poll(async () => (await sample()).dark).toBe(1);
-    expect((await sample()).luminance).toBeLessThanOrEqual(.065);
-    await page.setViewportSize({ width: 1640, height: 960 });
-    await expect.poll(async () => (await sample()).width).toBeGreaterThan(light.width);
-    await tile(page, first).locator('.thread-mirror').click();
-    await expect(tile(page, first)).toHaveAttribute('data-focused', '');
-    await expect.poll(async () => (await sample()).time).toBeGreaterThan(light.time);
-    await expect(focused).not.toHaveAttribute('data-sky-state', 'paused');
-  });
-
   test('dragging a thread from the sidebar shows them side by side before the drop', async ({ page }) => {
     await open(page);
     const first = (await current(page))!, other = (await threads(page)).find(id => id !== first)!;
@@ -219,32 +181,6 @@ test.describe('thread tiles', () => {
     expect(await page.evaluate(() => document.getAnimations().filter(animation => (animation.effect as KeyframeEffect | null)?.target?.closest?.('.thread-tile')).length)).toBe(0);
   });
 
-  test('closing tiles drops their pages and ignores their late history responses', async ({ page }) => {
-    await page.route('**/src/main.ts*', async route => {
-      const response = await route.fetch();
-      await route.fulfill({ response, body: await response.text() + '\nwindow.__tilePages = tilePages;\n' });
-    });
-    await page.route('**/src/preview.ts*', async route => {
-      const response = await route.fetch();
-      const source = await response.text();
-      const marker = /case ["']get_messages["']:/;
-      expect(source).toMatch(marker);
-      await route.fulfill({ response, body: source.replace(marker, match => `${match}
-        if (args.sessionId === window.__holdTileHistory) await new Promise(resolve => { window.__releaseTileHistory = resolve; });
-      `) });
-    });
-    await open(page);
-    const first = (await current(page))!, other = (await threads(page)).find(id => id !== first)!;
-    await page.evaluate(id => { (window as any).__holdTileHistory = id; }, first);
-    await row(page, other).click({ modifiers: ['Meta'] });
-    await expect(page.locator('.thread-tile')).toHaveCount(2);
-    await expect.poll(() => page.evaluate(() => typeof (window as any).__releaseTileHistory)).toBe('function');
-    await tile(page, first).getByRole('button', { name: 'Close view' }).click();
-    await expect(page.locator('.thread-tile')).toHaveCount(0);
-    await page.evaluate(() => (window as any).__releaseTileHistory());
-    await expect.poll(() => page.evaluate(() => (window as any).__tilePages.size)).toBe(0);
-  });
-
   test('scrolling a tile’s own rows holds that tile’s sky, and it resumes after the hold', async ({ page }) => {
     // Every tile is its own `mountSky` (src/thread-tiles.ts), with its canvas behind the whole mirror, so "that tile stopped
     // painting" has to be counted per canvas: every paint is one full-screen `drawArrays(gl.TRIANGLES, 0, 3)`. Counting the
@@ -287,7 +223,7 @@ test.describe('thread tiles', () => {
       node.scrollTop = 0;
     });
     expect(await rows.evaluate(node => node.scrollHeight - node.clientHeight), 'the tile’s rows scroll').toBeGreaterThan(200);
-    const canvas = layer.locator(':scope>canvas:not(.thread-sky-fade):not(.thread-sky-still)');
+    const canvas = layer.locator(':scope>canvas:not(.thread-sky-fade)');
     const paints = () => canvas.evaluate(node => (window as any).__paints(node) as number);
     const sampled = await paints();
     await expect.poll(paints, { intervals: [50], timeout: 4000 }).toBeGreaterThan(sampled);

@@ -51,8 +51,9 @@ returns false and the app only reports new versions.
 
 The app reads `releases/latest/download/latest.json`, so publishing a release is what
 ships the update. Signing needs two repository secrets, `TAURI_SIGNING_PRIVATE_KEY`
-and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; without them the installers still build but
-the release updates nobody. The matching public key is in `tauri.conf.json`.
+and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Forks without these secrets can still
+publish installers without automatic updates. The matching public key is in
+`tauri.conf.json`.
 
 **Keep the private key safe.** Installed apps accept only updates signed by it. If it
 is lost, existing installs can no longer update and people must reinstall a build with
@@ -68,11 +69,16 @@ release (it never blocks publishing; a failed job just means they are missing):
 - `<asset>.cdx.json`: a CycloneDX SBOM that syft generates from each installer
   (`.dmg`, `-setup.exe`, `.AppImage`) and macOS updater archive;
 - `pandacode-npm.cdx.json` and `pandacode-rust.cdx.json`: inventories of
-  `package-lock.json` and `Cargo.lock` at the release commit. The website, relay and
-  npx package are not shipped in the app and are excluded;
+  `package-lock.json` and `Cargo.lock` at the release commit. The mobile app
+  (`mobile/`), website, relay and npx package are excluded from the npm inventory;
+  none of them is shipped in the desktop app;
 - `SBOM-COVERAGE.json` and `SBOM-COVERAGE.md`: scanner names and versions, the
   vulnerability database build time, the commit, the version, each artifact's SHA-256
   and platform, the component count, grype's finding counts by severity, and the limits.
+  `SBOM-COVERAGE.json` also lists each subject's `advisories` (Critical and High
+  advisories by ID, severity, package and version), and `SBOM-COVERAGE.md` adds a
+  `Critical and High advisories` section when any are found. If grype's database build
+  time cannot be read, it is reported as `unknown` and the job logs a warning.
 
 An inventory that errors or finds no components is listed as **incomplete** and its scan
 as `not-scanned`; it is never reported as clean. Compressed installers often end up
@@ -186,25 +192,19 @@ gh run watch --exit-status "$preflight_run"
 gh run view "$preflight_run" --json headSha,status,conclusion,jobs
 ```
 
-Require `run.headSha` to equal `$release_commit`, all six build jobs to succeed,
-and `main` to remain at that SHA. Download that run's six
-`pandacode-X.Y.Z-<target>` artifacts with `gh run download` into a fresh directory
-and collect their contents into one assets directory. Before tagging, require:
+Require the run's `headSha` to equal `$release_commit` and `main` to remain at
+that SHA. The `verify_preflight` job downloads all six platform artifacts and
+the SBOM artifact and checks all six installer SHA-256 checksums. Official
+preflights and forks with an updater signing key also require all six updater
+minisign signatures to verify against the app's configured public key and
+validate the generated `latest.json`. Both official macOS build jobs must pass
+Developer ID signing, notarization, stapling and Gatekeeper assessment.
 
-- All six installers in the table above, each matching its `.sha256`.
-- Developer ID signing and successful notarization, stapling and Gatekeeper
-  assessment in both macOS build logs. **Do not tag while Apple's legal-agreement
-  HTTP 403 remains unresolved.**
-- All six updater files with valid `.sig` signatures, cryptographically verified
-  against `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` (the existing
-  `verifyMinisign(data, sigFile, pubkey)` export in `packages/npx/installer.mjs`
-  supports this; presence of `.sig` alone is insufficient).
-- Generate `latest.json` from those downloaded files with
-  `node scripts/release/updater-manifest.mjs ASSETS_DIR "$release_version" "releases/$release_version.md"`.
-  Inspect the version, all six platform entries, signatures and versioned asset
-  URLs; the generator permits partial manifests, so explicitly require all six.
+For official `aicodeking/pandacode` publishes, `prepare` requires a successful
+manual Release run on `main` for the exact commit, with `publish` skipped and
+`verify_preflight` successful. It logs the accepted run ID and URL. The
+`publish` job verifies the rebuilt assets before creating the GitHub Release.
 
-These are official-release gates; local and fork signing remains optional.
 If `main` drifts or the release commit changes, repeat CI and this preflight for
 the new final commit. Once all gates pass, recheck remote `main` immediately
 before tagging the frozen commit (the tag workflow rebuilds and publishes):
@@ -245,8 +245,9 @@ version.
 To try the build without publishing, run the workflow manually (Actions →
 Release → Run workflow) and leave **publish** unchecked: the installers are kept
 as workflow artifacts for 14 days, and the CI check is skipped. Checking
-**publish** on a manual run requires the same green CI run, then creates the
-release and the `vX.Y.Z` tag at the selected commit.
+**publish** on a manual run requires green CI and, for the official repository,
+green preflight for that commit. The workflow then creates the release and the
+`vX.Y.Z` tag at the selected commit.
 
 ## 4. Watch and verify
 
@@ -299,8 +300,10 @@ raw `tauri build` output.
 
 ## Optional signing
 
-Signing is optional for local and fork builds: without Apple credentials, macOS
-gets an ad-hoc signature. The official
+Official macOS builds require a Developer ID Application certificate and Apple
+notarization credentials. Both official macOS runners check for
+`APPLE_CERTIFICATE` and `APPLE_SIGNING_IDENTITY` before compiling.
+Local and fork builds without Apple credentials use ad-hoc signing. The official
 [v0.3.103 macOS release builds](https://github.com/aicodeking/pandacode/actions/runs/42462913784)
 passed Apple notarization and Gatekeeper assessment as `Notarized Developer ID` on
 both Apple silicon and Intel. Notarization does not suppress macOS's normal

@@ -377,14 +377,19 @@ impl Catalog {
 /// `gpt-6-luna`'s card (a PandaCode guard on top of upstream's digit check).
 const TIERS: [&str; 14] = ["mini", "nano", "micro", "tiny", "small", "lite", "flash", "air", "turbo", "pro", "max", "ultra", "plus", "highspeed"];
 
-/// Compares whole name tokens, so a tier word inside another word ("mini" in "gemini") never counts.
+/// Model-family variant tokens that identify distinct sibling models sharing the same version digits:
+/// `gemini-4-neon`, `gemini-4-carbon`, `gemini-4-hydrogen` and `gemini-pro-orchestrator-neon` must
+/// never fuzz into `openrouter-gemini-4-argon`.
+const VARIANTS: [&str; 5] = ["neon", "carbon", "argon", "hydrogen", "orchestrator"];
+
+/// Compares whole name tokens, so a tier or variant word inside another word ("mini" in "gemini") never counts.
 fn tier_differs(name: &str, card: &Card) -> bool {
     let tokens = |s: &str| -> Vec<String> {
         s.split(|c: char| !c.is_ascii_alphanumeric()).map(str::to_ascii_lowercase).filter(|t| !t.is_empty()).collect()
     };
     let wanted = tokens(name);
     let have: Vec<String> = tokens(&card.id).into_iter().chain(tokens(&card.model)).collect();
-    TIERS.iter().any(|t| wanted.iter().any(|w| w == t) != have.iter().any(|h| h == t))
+    TIERS.iter().chain(&VARIANTS).any(|t| wanted.iter().any(|w| w == t) != have.iter().any(|h| h == t))
 }
 
 fn digits(key: &str) -> String {
@@ -437,4 +442,114 @@ pub(super) fn ratio(a: &str, b: &str) -> f64 {
         }
     }
     2.0 * matched as f64 / (a.len() + b.len()) as f64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model_health;
+    use crate::panda_router::{resolve_card, tier_key, PoolModel};
+
+    #[test]
+    fn gemini_4_variants_never_collide_with_argon() {
+        let catalog = catalog().unwrap();
+        let argon = catalog.by_id("openrouter-gemini-4-argon").expect("argon card exists");
+
+        // Gemini 4 Neon, Carbon and Hydrogen resolve to their own cards, never fuzzy-matched into
+        // openrouter-gemini-4-argon; an unprofiled Neon-named model stays unrated.
+        for (provider, model, name, want) in [
+            ("antigravity", "gemini-4-neon", "Gemini 4 Neon", Some("gemini-4-neon")),
+            ("antigravity", "gemini-4-carbon", "Gemini 4 Carbon", Some("gemini-4-carbon")),
+            ("antigravity", "gemini-4-hydrogen", "Gemini 4 Hydrogen", Some("gemini-4-hydrogen")),
+            ("antigravity", "gemini-pro-orchestrator-neon", "Gemini Pro Orchestrator Neon", None),
+            ("opencode", "google/gemini-4-neon", "Gemini 4 Neon", Some("gemini-4-neon")),
+            ("opencode", "google/gemini-4-carbon", "Gemini 4 Carbon", Some("gemini-4-carbon")),
+            ("opencode", "google/gemini-4-hydrogen", "Gemini 4 Hydrogen", Some("gemini-4-hydrogen")),
+            ("opencode", "openrouter/google/gemini-4-neon", "Gemini 4 Neon", Some("gemini-4-neon")),
+            ("opencode", "openrouter/google/gemini-4-carbon", "Gemini 4 Carbon", Some("gemini-4-carbon")),
+            ("antigravity", "default", "Default · Gemini 4 Neon · Antigravity", Some("gemini-4-neon")),
+            ("antigravity", "default", "Default · Gemini 4 Carbon · Antigravity", Some("gemini-4-carbon")),
+            ("antigravity", "default", "Default · Gemini 4 Hydrogen · Antigravity", Some("gemini-4-hydrogen")),
+        ] {
+            let resolved = catalog.resolve(provider, model, name);
+            assert_ne!(resolved, Some(argon), "{provider} {model} ({name}) falsely resolved to argon");
+            assert_eq!(resolved, want.and_then(|id| catalog.by_id(id)), "{provider} {model} ({name})");
+            assert_eq!(resolve_card(provider, model, name), want);
+        }
+
+        // Argon itself still resolves cleanly across harnesses and minor typos.
+        for (provider, model, name) in [
+            ("antigravity", "gemini-4-argon", "Gemini 4 Argon"),
+            ("opencode", "gemini-4-argon", "Gemini 4 Argon"),
+            ("opencode", "google/gemini-4-argon", "Gemini 4 Argon"),
+            ("opencode", "openrouter/google/gemini-4-argon", "Gemini 4 Argon"),
+            ("commandcode", "google/gemini-4-argon", "Gemini 4 Argon"),
+            ("opencode", "gemni-4-argon", "typo"),
+        ] {
+            assert_eq!(catalog.resolve(provider, model, name), Some(argon), "{provider} {model}");
+            assert_eq!(resolve_card(provider, model, name), Some("openrouter-gemini-4-argon"));
+        }
+    }
+
+    #[test]
+    fn antigravity_harness_mappings_resolve_current_and_legacy_models() {
+        let cases = [
+            // Current Antigravity models with catalog cards
+            ("gemini-4-argon", Some("openrouter-gemini-4-argon")),
+            ("claude-opus-5-5", Some("claude-opus-5.5")),
+            ("claude-sonnet-5-5", Some("claude-sonnet-5.5")),
+            ("gpt-oss-120b-medium", Some("openrouter-gpt-oss-120b")),
+            // Legacy Antigravity models preserved
+            ("gemini-3.1-pro", Some("openrouter-gemini-3.1-pro-preview")),
+            ("gemini-3.1-pro-preview", Some("openrouter-gemini-3.1-pro-preview")),
+            ("gemini-3.5-flash", Some("openrouter-gemini-3.5-flash")),
+            ("claude-sonnet-4-6", Some("claude-sonnet-4.6")),
+            ("claude-opus-4-6", Some("claude-opus-4.6")),
+            ("gpt-oss-120b", Some("openrouter-gpt-oss-120b")),
+        ];
+        for (model, want) in cases {
+            assert_eq!(resolve_card("antigravity", model, model), want, "antigravity {model}");
+        }
+    }
+
+    #[test]
+    fn model_health_and_resolve_keep_neon_carbon_distinct_from_argon() {
+        let pm = |provider: &str, model: &str, name: &str| PoolModel {
+            provider: provider.into(),
+            model: model.into(),
+            name: name.into(),
+        };
+        let ag_neon = pm("antigravity", "gemini-4-neon", "Gemini 4 Neon");
+        let ag_carbon = pm("antigravity", "gemini-4-carbon", "Gemini 4 Carbon");
+        let ag_argon = pm("antigravity", "gemini-4-argon", "Gemini 4 Argon");
+        let cc_argon = pm("commandcode", "google/gemini-4-argon", "Gemini 4 Argon");
+        let oc_argon = pm("opencode", "openrouter/google/gemini-4-argon", "Gemini 4 Argon");
+        let oc_neon = pm("opencode", "gemini-4-neon", "Gemini 4 Neon");
+        let oc_carbon = pm("opencode", "gemini-4-carbon", "Gemini 4 Carbon");
+
+        // Distinct tier keys: Neon and Carbon keep their own cards, never merged into Argon.
+        assert_eq!(tier_key("antigravity", "gemini-4-neon", "Gemini 4 Neon"), ("gemini-4-neon".into(), Some("gemini-4-neon")));
+        assert_eq!(tier_key("antigravity", "gemini-4-carbon", "Gemini 4 Carbon"), ("gemini-4-carbon".into(), Some("gemini-4-carbon")));
+        assert_eq!(
+            tier_key("antigravity", "gemini-4-argon", "Gemini 4 Argon"),
+            ("openrouter-gemini-4-argon".into(), Some("openrouter-gemini-4-argon"))
+        );
+
+        let pool = vec![
+            ag_neon.clone(),
+            ag_carbon.clone(),
+            ag_argon.clone(),
+            cc_argon.clone(),
+            oc_argon.clone(),
+            oc_neon.clone(),
+            oc_carbon.clone(),
+        ];
+
+        // Neon only fails over to another Neon, never to Argon or Carbon.
+        assert_eq!(model_health::same_model_alternatives(&ag_neon, &pool), vec![oc_neon]);
+        // Carbon only fails over to another Carbon, never to Argon or Neon.
+        assert_eq!(model_health::same_model_alternatives(&ag_carbon, &pool), vec![oc_carbon]);
+        // Argon fails over only to Argon cards on other providers, never to Neon or Carbon.
+        assert_eq!(model_health::same_model_alternatives(&ag_argon, &pool), vec![cc_argon, oc_argon]);
+    }
 }

@@ -4,7 +4,7 @@ use crate::{
     storage::{self, Session, Store},
     AppState, Result,
 };
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -104,20 +104,36 @@ pub(crate) fn initialize(store: &Store) -> Result<()> {
         return Ok(());
     }
     // Only a missing library is seeded. Explicitly disabling defaults is durable.
-    let previous=store.db.query_row("SELECT s.provider,s.model,s.reasoning_effort,json_extract(t.content,'$.config') FROM architect_teams t JOIN sessions s ON s.id=t.session_id ORDER BY json_extract(t.content,'$.updatedAt') DESC LIMIT 1",[],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,Option<String>>(2)?,r.get::<_,String>(3)?))).optional().map_err(|e|e.to_string())?;
     let mut library = TeamLibrary::default();
-    if let Some((provider, model, reasoning_effort, config)) = previous {
-        let setup = TeamSetup {
-            architect: ModelSelection {
-                provider,
-                model,
-                reasoning_effort,
-            },
-            config: serde_json::from_str(&config).map_err(|e| e.to_string())?,
-        };
-        setup.validate()?;
-        library.enabled = true;
-        library.last_setup = Some(setup);
+    {
+        let mut statement = store.db.prepare(
+            "SELECT s.provider, s.model, s.reasoning_effort, CAST(json_extract(t.content, '$.config') AS TEXT)
+             FROM architect_teams t JOIN sessions s ON s.id=t.session_id
+             WHERE json_valid(t.content, 6) AND json_extract(t.content, '$.config') IS NOT NULL
+             ORDER BY json_extract(t.content, '$.updatedAt') DESC",
+        ).map_err(|e| e.to_string())?;
+        let snapshots = statement.query_map([], |row| {
+            let architect = ModelSelection {
+                provider: row.get(0)?,
+                model: row.get(1)?,
+                reasoning_effort: row.get(2)?,
+            };
+            Ok((architect, row.get::<_, String>(3)?))
+        }).map_err(|e| e.to_string())?;
+        for snapshot in snapshots {
+            let (architect, config) = match snapshot {
+                Ok(snapshot) => snapshot,
+                Err(rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..)) => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            let Ok(config) = serde_json::from_str(&config) else { continue };
+            let setup = TeamSetup { architect, config };
+            if setup.validate().is_ok() {
+                library.enabled = true;
+                library.last_setup = Some(setup);
+                break;
+            }
+        }
     }
     let content = serde_json::to_string(&library).map_err(|e| e.to_string())?;
     store
@@ -417,3 +433,67 @@ pub async fn architect_delete_profile(
 }
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[test]
+fn missing_library_skips_malformed_and_invalid_team_snapshots() {
+    struct TestDatabase(std::path::PathBuf);
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-profile-seed-{}.db", storage::id())));
+    let store = Store::open(&path.0).unwrap();
+    store.db.execute_batch(
+        "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
+         INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+         VALUES('malformed','project','Malformed','codex','default','ask','idle',1,1),
+               ('scalar','project','Scalar','codex','default','ask','idle',1,1),
+               ('invalid','project','Invalid','codex','default','ask','idle',1,1),
+               ('older','project','Older','codex','gpt-test','ask','idle',1,1);
+         INSERT INTO architect_teams(session_id,content) VALUES('malformed','{bad-json');
+         DELETE FROM architect_library;",
+    ).unwrap();
+    drop(store);
+
+    let store = Store::open(&path.0).unwrap();
+    let library = read(&store).unwrap();
+    assert!(!library.enabled);
+    assert!(library.last_setup.is_none());
+    assert!(library.profiles.is_empty());
+
+    let config = serde_json::json!({
+        "auto": true, "workers": [], "maxParallel": 2, "maxRounds": 7,
+        "maxAssignments": 15, "workspace": "shared", "summaryLimit": 1500,
+    });
+    let mut invalid = config.clone();
+    invalid["workspace"] = "bad-mode".into();
+    for (id, updated_at, config) in [
+        ("older", 10, config.clone()),
+        ("invalid", 20, invalid),
+        ("scalar", 30, 42.into()),
+    ] {
+        let snapshot = serde_json::json!({"status":"completed", "updatedAt":updated_at, "config":config});
+        store.db.execute(
+            "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+            params![id, snapshot.to_string()],
+        ).unwrap();
+    }
+    store.db.execute("DELETE FROM architect_library", []).unwrap();
+    drop(store);
+
+    let store = Store::open(&path.0).unwrap();
+    let library = read(&store).unwrap();
+    assert!(library.enabled);
+    assert_eq!(library.last_setup, Some(TeamSetup {
+        architect: ModelSelection { provider: "codex".into(), model: "gpt-test".into(), reasoning_effort: None },
+        config: serde_json::from_value(config).unwrap(),
+    }));
+    let malformed: String = store.db.query_row(
+        "SELECT content FROM architect_teams WHERE session_id='malformed'",
+        [],
+        |row| row.get(0),
+    ).unwrap();
+    assert_eq!(malformed, "{bad-json");
+}

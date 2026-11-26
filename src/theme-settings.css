@@ -2,40 +2,40 @@
 .colors-dialog{width:min(36rem,calc(100vw - 2rem))}
 .colors-section{display:flex;flex-direction:column;gap:6px}
 .colors-section+.colors-section{margin-top:24px}
-.colors-section h3{display:flex;align-items:center;min-height:28px;margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-sub);font-weight:var(--weight-regular);color:var(--muted)}
-.accent-choices{display:flex;flex-wrap:wrap;gap:0;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
-.accent-choice{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 9px 0 7px;border-radius:var(--ds-radius-inner);font-size:var(--ds-text-meta);background:transparent;cursor:pointer;position:relative;transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.colors-section h3{display:flex;align-items:center;min-height:28px;margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--type-heading);font-weight:var(--type-heading-weight);color:var(--muted);line-height:var(--type-heading-leading);letter-spacing:var(--tracking-tight)}
+.accent-choices{display:flex;flex-wrap:wrap;gap:0;padding:var(--ds-card-pad);border-radius:var(--ds-card-radius);background:var(--ds-card)}
+.accent-choice{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 9px 0 7px;border-radius:var(--ds-control-radius);font-size:var(--type-body);background:transparent;cursor:pointer;position:relative;transition:background-color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .accent-choice:hover:not(:disabled){background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 .accent-choice:active:not(:disabled){scale:var(--ds-press)}
 /* Locked by an imported theme: the swatch dims, the label stays legible (muted text, never a faded one). */
 .accent-choice:disabled,.accent-custom:has(input:disabled){color:var(--muted);cursor:default}
 .accent-choice:disabled .accent-swatch,.accent-custom:has(input:disabled) .accent-swatch{opacity:.45}
 .accent-choice[aria-checked="true"],.accent-custom-on{background:var(--ds-fill-hover);color:var(--text);font-weight:var(--weight-medium)}
-.accent-swatch{width:16px;height:16px;border-radius:var(--radius-full);background:var(--swatch)}
+.accent-swatch{width:16px;height:16px;border-radius:50%;background:var(--swatch)}
 .accent-choice[aria-checked="true"] .accent-swatch{box-shadow:0 0 0 2px var(--panel-surface,var(--bg)),0 0 0 3.5px var(--swatch)}
 .accent-custom input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%}
-.colors-note{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
+.colors-note{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--type-meta);color:var(--muted)}
 /* The VS Code theme card: the theme rows, then import and install as its last row. */
-.colors-card{display:flex;flex-direction:column;gap:2px;padding:var(--ds-card-pad);border-radius:var(--ds-radius-card);background:var(--ds-card)}
+.colors-card{display:flex;flex-direction:column;gap:2px;padding:var(--ds-card-pad);border-radius:var(--ds-card-radius);background:var(--ds-card)}
 .vsix-list{display:flex;flex-direction:column;gap:2px;max-height:min(40vh,20rem);overflow:auto}
 .vsix-row{display:flex;align-items:center;gap:.25rem}
-.vsix-choice{flex:1;min-width:0;display:flex;align-items:center;gap:var(--ds-row-gap);min-height:var(--ds-row-h-sub);padding:6px 10px;border-radius:var(--ds-radius-inner);text-align:left;transition:background-color var(--ds-ease-out) ease-out}
+.vsix-choice{flex:1;min-width:0;display:flex;align-items:center;gap:var(--ds-row-gap);min-height:var(--ds-row-h-sub);padding:6px 10px;border-radius:var(--ds-control-radius);text-align:left;transition:background-color var(--ds-ease-out) ease-out}
 .vsix-choice:hover{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 .vsix-choice[aria-checked="true"]{background:var(--ds-fill-hover);color:var(--text)}
-.vsix-swatches{display:flex;flex-shrink:0;border-radius:var(--ds-radius-chip);overflow:hidden}
+.vsix-swatches{display:flex;flex-shrink:0;border-radius:var(--radius-chip);overflow:hidden}
 .vsix-swatches i{width:.8rem;height:1.6rem;background:var(--swatch)}
 .vsix-swatches .vsix-bamboo{width:3.2rem;background:var(--swatch,var(--accent))}
 .vsix-name{display:flex;flex-direction:column;min-width:0}
-.vsix-name strong{font-size:var(--ds-text-body);font-weight:var(--weight-medium);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.vsix-name small{font-size:var(--ds-text-sub);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vsix-name strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none)}
+.vsix-name small{font-size:var(--type-meta);line-height:var(--type-meta-leading);color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .vsix-choice[aria-checked="true"] small{color:color-mix(in srgb,var(--text) 78%,var(--muted))}
 .vsix-remove{flex-shrink:0;width:28px;height:28px;color:var(--muted)}
-.vsix-empty{margin:6px 10px 8px;font-size:var(--ds-text-meta);color:var(--muted)}
-.vsix-empty code{font-family:var(--mono);font-size:.92em}
+.vsix-empty{margin:6px 10px 8px;font-size:var(--type-meta);color:var(--muted)}
+.vsix-empty code{font-family:var(--mono);font-size:var(--code-inline-size)}
 .vsix-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px calc(var(--ds-row-pad-x) - var(--ds-card-pad)) 6px}
 .vsix-install{display:flex;gap:6px;flex:1;min-width:14rem}
-.vsix-install input{flex:1;min-width:0;height:var(--ds-btn-h);padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--ds-text-meta);font-family:var(--mono)}
-.vsix-status{margin:0;min-height:1.2em;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted);overflow-wrap:anywhere}
+.vsix-install input{flex:1;min-width:0;height:var(--ds-btn-h);padding:0 10px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset);box-shadow:inset 0 0 0 1px var(--ds-border);font-size:var(--type-meta);font-family:var(--mono)}
+.vsix-status{margin:0;min-height:1.2em;padding:0 var(--ds-row-pad-x);font-size:var(--type-meta);color:var(--muted);overflow-wrap:anywhere}
 @media(prefers-contrast:more){.accent-choice[aria-checked="true"]{outline:2px solid var(--text)}}
 
 

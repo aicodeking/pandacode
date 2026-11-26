@@ -1,0 +1,85 @@
+/* Browser-mode (web-bridge.ts) surfaces: the token gate, path prompts and the reconnecting pill.
+   Glass and design-system tokens only; no literal accents or greys. */
+/* A top-layer modal <dialog>: the box itself stays transparent, untransformed and borderless and fills the
+   viewport so the card centres; the ::backdrop carries the scrim. A closed dialog stays display:none.
+   Scoped with `html[data-theme] dialog.web-modal` (plain `dialog.web-modal` as the fallback without a theme) so
+   motion.css's global `html[data-theme] dialog …` padding and field rules (0,1,2) never win over these. */
+:is(html[data-theme] dialog.web-modal,dialog.web-modal){box-sizing:border-box;position:fixed;inset:0;margin:0;padding:24px;border:0;background:transparent;box-shadow:none;
+  width:100%;height:100%;min-width:0;min-height:0;max-width:none;max-height:none;overflow:auto;color:var(--text)}
+:is(html[data-theme] dialog.web-modal,dialog.web-modal)[open]{display:grid;place-items:center}
+dialog.web-modal::backdrop{background:var(--scrim,color-mix(in srgb,CanvasText 20%,transparent));
+  backdrop-filter:blur(5px) saturate(1.05);-webkit-backdrop-filter:blur(5px) saturate(1.05)}
+/* System colours as fallbacks: Safari < 17.4 does not inherit custom properties into ::backdrop. */
+dialog.web-auth-gate::backdrop{background:color-mix(in srgb,var(--bg,Canvas) 82%,transparent)}
+.web-modal-card{box-sizing:border-box;width:min(440px,100%);display:grid;gap:10px;margin:0;padding:22px;
+  color:var(--text);background:var(--glass-warm,var(--ds-card,var(--panel)));border:1px solid var(--glass-border,var(--ds-border,var(--border)));
+  border-radius:var(--ds-card-radius);
+  backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
+  box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near)}
+/* The same sheet as .dialog-plate (motion.css). */
+html[data-theme="dark"] .web-modal-card{backdrop-filter:blur(54px) saturate(1.7) brightness(.92);-webkit-backdrop-filter:blur(54px) saturate(1.7) brightness(.92)}
+.web-modal-card h2{margin:0;font-size:var(--type-title);font-weight:var(--type-title-weight);line-height:var(--type-title-leading);letter-spacing:var(--tracking-tight)}
+.web-modal-desc{margin:0 0 4px;color:var(--muted);font-size:var(--type-body);line-height:var(--type-body-leading)}
+.web-modal-card label{font-size:var(--type-meta);font-weight:var(--weight-medium);color:var(--muted)}
+:is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input,.web-modal-input{box-sizing:border-box;width:100%;min-height:0;padding:8px 10px;font:inherit;font-size:var(--type-body);font-weight:var(--type-body-weight);color:var(--text);
+  background:var(--ds-card-inner,var(--surface-sunken));border:1px solid var(--ds-border,var(--border));border-radius:var(--ds-control-radius);resize:vertical;
+  transition:box-shadow var(--ds-ease-out,180ms) ease-out}
+:is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input:focus,.web-modal-input:focus{outline:2px solid transparent;background:var(--ds-card-inner,var(--surface-sunken));border-color:var(--ds-border-strong);box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 35%,transparent)}
+:is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input[aria-invalid="true"],.web-modal-input[aria-invalid="true"]{border-color:var(--ds-danger,var(--danger))}
+.web-modal-notice{margin:0;font-size:var(--type-meta);color:var(--muted)}
+.web-modal-notice[hidden]{display:none}
+.web-modal-error{display:flex;align-items:flex-start;gap:6px;margin:0;min-height:1.2em;font-size:var(--type-meta);color:var(--text)}
+.web-modal-error[data-empty]{min-height:0}
+/* The danger mark carries the tone (data-state-tone, design-system.css); the message stays in normal ink. */
+.web-modal-error-icon{display:grid;flex:none;width:14px;height:14px;margin-top:.15em;color:var(--state-tone,var(--ds-danger,var(--danger)))}
+.web-modal-error-icon[hidden]{display:none}
+.web-modal-error-icon .icon{width:14px;height:14px}
+.web-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+/* The buttons are .ds-btn-primary / .ds-btn (design-system.css), which set their height, radius, fills, hairline and
+   hovers. These zero-specificity fallbacks only apply where that sheet is missing, so they never override it. */
+:where(.web-modal-actions button){display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 14px;border:0;font:inherit;font-size:var(--type-body);
+  border-radius:var(--ds-inner-radius);transition:background-color var(--ds-ease-out,180ms) ease-out,box-shadow var(--ds-ease-out,180ms) ease-out,scale var(--ds-ease-in,120ms) ease-out}
+:where(.web-modal-primary){color:var(--bg);background:var(--text);box-shadow:var(--ds-shadow-raised,0 0 transparent)}
+:where(.web-modal-secondary){color:var(--text);background:var(--ds-raised,var(--raised));box-shadow:inset 0 0 0 1px var(--ds-border,var(--border)),var(--ds-shadow-raised,0 0 transparent)}
+.web-modal-actions button{cursor:pointer}
+.web-modal-actions button:active:not(:disabled){scale:.97}
+.web-modal-actions button:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.web-modal-primary:disabled{opacity:.6;cursor:progress}
+
+.web-conn-banner{box-sizing:border-box;position:fixed;left:16px;bottom:16px;z-index:999;display:flex;align-items:center;gap:8px;padding:6px 12px;
+  max-width:min(440px,calc(100vw - 32px));font-size:var(--type-meta);color:var(--text);background:var(--glass-warm,var(--ds-card,var(--panel)));border:1px solid var(--glass-border,var(--ds-border,var(--border)));
+  border-radius:var(--radius-popover);box-shadow:var(--ds-shadow-card,0 0 transparent);pointer-events:none;
+  backdrop-filter:blur(24px) saturate(1.6);-webkit-backdrop-filter:blur(24px) saturate(1.6)}
+.web-conn-dot{width:7px;height:7px;border-radius:50%;background:var(--muted);animation:state-pulse 1.4s ease-in-out infinite}
+/* Stopped on purpose: a calm, static notice that may wrap (no pulse, nothing pending). */
+.web-conn-banner[data-stopped]{align-items:flex-start;line-height:var(--type-meta-leading)}
+.web-conn-banner[data-stopped] .web-conn-dot{animation:none;margin-top:.4em;flex:none}
+
+@media (prefers-reduced-transparency: reduce){
+  dialog.web-modal::backdrop,.web-modal-card,html[data-theme] .web-modal-card,.web-conn-banner{backdrop-filter:none;-webkit-backdrop-filter:none}
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-card,.web-modal-card,.web-conn-banner{background:var(--ds-card,var(--panel))}
+  dialog.web-auth-gate::backdrop{background:var(--bg,Canvas)}
+}
+@media (prefers-contrast: more){
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input,:is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input:focus,:is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-card,
+  .web-modal-card,.web-conn-banner,.web-modal-input{border-color:var(--text);box-shadow:none;background:var(--bg)}
+  /* .ds-btn turns its own hairline solid here (design-system.css); this is the fallback without it. */
+  :where(.web-modal-secondary){background:var(--bg);box-shadow:inset 0 0 0 1px var(--text)}
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input:focus{outline:2px solid var(--text);outline-offset:1px}
+  .web-modal-desc,.web-modal-notice,.web-modal-card label{color:var(--text)}
+  dialog.web-modal::backdrop,.web-modal-card,html[data-theme="dark"] .web-modal-card,.web-conn-banner{backdrop-filter:none;-webkit-backdrop-filter:none}
+  dialog.web-auth-gate::backdrop{background:var(--bg,Canvas)}
+}
+@media (prefers-reduced-motion: reduce){
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input,.web-modal-input,.web-modal-actions button{transition:none}
+  .web-conn-dot{animation:none}
+  .web-modal-actions button:active:not(:disabled){scale:none}
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-actions button:not(:disabled):hover{transition:none}
+}
+@media (forced-colors: active){
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-card,.web-modal-card,.web-conn-banner{background:Canvas;color:CanvasText;border-color:CanvasText}
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input,.web-modal-input{background:Field;color:FieldText;border-color:FieldText}
+  .web-modal-primary{border:1px solid ButtonText;background:ButtonText;color:ButtonFace;forced-color-adjust:none}
+  :is(html[data-theme] dialog.web-modal,dialog.web-modal) .web-modal-input:focus,.web-modal-input:focus{outline:2px solid Highlight;outline-offset:1px}
+  .web-conn-dot{background:CanvasText}
+}

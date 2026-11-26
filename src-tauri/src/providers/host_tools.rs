@@ -165,7 +165,8 @@ impl HostTools {
     pub fn launch(&self, call: Call, jobs: &mut tokio::task::JoinSet<(Value, Value)>) {
         let handler = self.host.handler.clone();
         jobs.spawn(async move {
-            let result = tokio::time::timeout(Duration::from_secs(60), async move {
+            let limit = tool_timeout(&call.tool, &call.arguments);
+            let result = tokio::time::timeout(limit, async move {
                 (handler)(call.tool, call.arguments).await
             })
             .await
@@ -175,9 +176,26 @@ impl HostTools {
         });
     }
 }
-/// Only app-owned callbacks create this envelope. Keep image bytes out of tool
-/// activity text and render them as protocol image blocks, not a base64 transcript.
-pub(super) fn image_content(value: &Value) -> Result<Option<(String, String, String)>, String> {
+/// How long a host tool call may run: the usual minute, or a Colab call's own budget
+/// (`colab_tools::host_timeout`: its `timeoutSeconds`, plus runtime creation).
+pub(crate) const HOST_TOOL_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) fn tool_timeout(name: &str, args: &Value) -> Duration {
+    crate::cloud::colab_tools::host_timeout(name, args).unwrap_or(HOST_TOOL_TIMEOUT)
+}
+
+/// Image types an app-owned callback may return, each with the signature its bytes start with.
+const IMAGE_SIGNATURES: [(&str, &[u8]); 2] = [
+    ("image/jpeg", &[0xff, 0xd8, 0xff]),
+    ("image/png", b"\x89PNG\r\n\x1a\n"),
+];
+/// The largest image and the most text beside it.
+const IMAGE_MAX: usize = 2 * 1024 * 1024;
+pub(crate) const IMAGE_TEXT_MAX: usize = 8192;
+
+/// Only app-owned callbacks create this envelope (moodboard JPEGs, Colab plots as PNG). Keep
+/// image bytes out of tool activity text and render them as protocol image blocks, not a
+/// base64 transcript. The bytes must match the declared type.
+pub(crate) fn image_content(value: &Value) -> Result<Option<(String, String, String)>, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     let Some(image) = value.get("_pandacodeImage") else {
         return Ok(None);
@@ -187,13 +205,14 @@ pub(super) fn image_content(value: &Value) -> Result<Option<(String, String, Str
     let text = image["text"]
         .as_str()
         .unwrap_or("Moodboard visual reference");
-    if mime != "image/jpeg" || data.len() > 2 * 1024 * 1024 * 4 / 3 + 4 || text.len() > 8192 {
+    let signature = IMAGE_SIGNATURES.iter().find(|(kind, _)| *kind == mime).map(|(_, magic)| *magic);
+    if signature.is_none() || data.len() > IMAGE_MAX * 4 / 3 + 4 || text.len() > IMAGE_TEXT_MAX {
         return Err("Image response exceeds the supported limits".into());
     }
     let bytes = STANDARD
         .decode(data)
         .map_err(|_| "Invalid image response")?;
-    if bytes.len() > 2 * 1024 * 1024 || !bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+    if bytes.len() > IMAGE_MAX || !signature.is_some_and(|magic| bytes.starts_with(magic)) {
         return Err("Invalid image response".into());
     }
     Ok(Some((mime.into(), data.into(), text.into())))
@@ -249,7 +268,9 @@ impl Protocol {
             }
         };
         let protected = host.host.approval_tools.contains(&call.tool);
-        if let Some(reason) = super::worker_tool_refusal(&self.config.session_id, &call.tool) {
+        // A Python run that may create a paid Colab runtime counts as managing one.
+        let always_ask = crate::cloud::deploy::always_ask_as(&call.tool, &call.arguments);
+        if let Some(reason) = super::worker_tool_refusal(&self.config.session_id, always_ask.unwrap_or(&call.tool)) {
             // A team worker never gets an always-ask tool, however the harness words the prompt.
             host.finish(&call.id);
             step.write.push(reply(call.id, Err(reason)));
@@ -259,10 +280,7 @@ impl Protocol {
                 call.id,
                 Err("This host action is unavailable in Plan mode".into()),
             ));
-        } else if protected
-            && (self.config.mode != "full"
-                || crate::cloud::deploy::ALWAYS_ASK.contains(&call.tool.as_str()))
-        {
+        } else if protected && (self.config.mode != "full" || always_ask.is_some()) {
             let label = format!(
                 "Allow {}?\n{}",
                 call.tool,
@@ -741,6 +759,42 @@ mod protocol_tests {
         assert!(step.calls.is_empty());
         let event = step.events.iter().find(|event| event.kind == "approval").unwrap();
         assert_eq!(p.approval_step(event.request_id.as_ref().unwrap(), true).calls.len(), 1);
+    }
+    #[test]
+    fn paid_colab_runtimes_ask_even_in_full_mode() {
+        let ask = |tool: &str, arguments: Value| {
+            let mut p = protocol("full", false);
+            let mut colab = host(false);
+            colab.tools[0]["name"] = json!(tool);
+            colab.approval_tools.insert(tool.into());
+            p.host = Some(HostTools::new(colab).unwrap());
+            let mut req = request();
+            req["params"]["tool"] = json!(tool);
+            req["params"]["arguments"] = arguments;
+            let step = p.receive(req).unwrap();
+            (step.calls.is_empty(), step.events.iter().any(|event| event.kind == "approval"))
+        };
+        assert_eq!(ask("pandacode_colab_manage", json!({"action":"create"})), (true, true));
+        assert_eq!(ask("pandacode_colab_run_python", json!({"code":"1","autoCreate":true})), (true, true));
+        // A run on an existing runtime spends nothing new: full access runs it.
+        assert_eq!(ask("pandacode_colab_run_python", json!({"code":"1"})), (false, false));
+    }
+    #[test]
+    fn png_plots_and_jpeg_moodboards_pass_only_with_matching_bytes() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let png = STANDARD.encode(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR");
+        let jpeg = STANDARD.encode([0xff, 0xd8, 0xff, 0xd9]);
+        let image = |mime: &str, data: &str, text: &str| json!({"_pandacodeImage":{"mimeType":mime,"data":data,"text":text}});
+        let (mime, data, text) = image_content(&image("image/png", &png, "plot")).unwrap().unwrap();
+        assert_eq!((mime.as_str(), data.as_str(), text.as_str()), ("image/png", png.as_str(), "plot"));
+        let reply = reply(json!("rpc"), Ok(image("image/png", &png, "plot")));
+        assert_eq!(reply["result"]["contentItems"][1]["imageUrl"], format!("data:image/png;base64,{png}"));
+        assert!(image_content(&image("image/jpeg", &jpeg, "ref")).unwrap().is_some());
+        assert!(image_content(&image("image/png", &jpeg, "x")).is_err(), "JPEG bytes are not a PNG");
+        assert!(image_content(&image("image/jpeg", &png, "x")).is_err(), "PNG bytes are not a JPEG");
+        assert!(image_content(&image("image/gif", "R0lGODlh", "x")).is_err());
+        assert!(image_content(&image("image/png", &png, &"t".repeat(IMAGE_TEXT_MAX + 1))).is_err());
+        assert!(image_content(&image("image/png", &png, &"t".repeat(IMAGE_TEXT_MAX))).is_ok());
     }
     #[test]
     fn foreign_and_missing_scope_never_dispatch() {

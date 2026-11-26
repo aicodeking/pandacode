@@ -1,5 +1,5 @@
 import './agents-dock.css';
-import { call, subscribe } from './bridge';
+import { call, subscribe, webMode } from './bridge';
 import { icon } from './dom';
 import { materializeIn } from './motion';
 
@@ -74,27 +74,24 @@ export function renderAgentRows(list: HTMLElement, agents: AgentsDockAgent[], re
   rows.forEach(row => row.remove());
 }
 
-/** The one clock per window, running only while its elapsed labels can be seen. */
+/** The one clock per window: rewrites only the elapsed labels under `root`, once a second, and only while `root` holds
+ * rows. An empty list (no agents running, the usual state) runs no timer at all: a childList observer on `root` (rows are
+ * its direct children, `renderAgentRows`) starts the clock when the first row arrives and stops it when the last goes. */
 export function startElapsedTick(root: HTMLElement): () => void {
   let timer = 0;
-  const paint = () => {
+  const tick = (): void => {
     const now = Date.now();
     root.querySelectorAll<HTMLTimeElement>('.agents-dock-elapsed[data-started]').forEach(age => paintElapsed(age, now));
   };
-  const sync = () => {
-    const visible = !document.hidden && root.getClientRects().length > 0 && getComputedStyle(root).visibility !== 'hidden'
-      && root.querySelector('.agents-dock-elapsed[data-started]');
-    if (visible) { paint(); if (!timer) timer = window.setInterval(paint, 1_000); }
-    else { window.clearInterval(timer); timer = 0; }
+  const sync = (): void => {
+    const rows = root.querySelector(':scope>[data-agent-id]') !== null;
+    if (rows && !timer) timer = window.setInterval(tick, 1_000);
+    else if (!rows && timer) { window.clearInterval(timer); timer = 0; }
   };
   const observer = new MutationObserver(sync);
-  // Both the header popover and the pinned window hide an ancestor of the list.
-  for (let node: HTMLElement | null = root; node; node = node.parentElement) {
-    observer.observe(node, { attributes: true, attributeFilter: ['hidden', 'class', 'style'], childList: node === root, subtree: node === root });
-  }
-  document.addEventListener('visibilitychange', sync);
+  observer.observe(root, { childList: true });
   sync();
-  return () => { window.clearInterval(timer); observer.disconnect(); document.removeEventListener('visibilitychange', sync); };
+  return () => { observer.disconnect(); window.clearInterval(timer); timer = 0; };
 }
 
 /** Eagerly mount the live running-agents button in the workspace header. */
@@ -102,7 +99,7 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
   host.classList.add('agents-dock-host');
   host.innerHTML = `<button type="button" class="icon-button agents-dock-trigger" aria-label="Running agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-dock-popover" data-tip="Running agents">${icon('bot')}<span class="agents-dock-count" aria-hidden="true" hidden></span></button>
     <section class="agents-dock-popover" id="agents-dock-popover" role="dialog" aria-label="Running agents" hidden>
-      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" data-tip="Pin widget">${icon('pin')}</button></header>
+      <header class="agents-dock-head"><div><strong>Running agents</strong><span class="agents-dock-summary"></span></div><button type="button" class="agents-dock-pin icon-button" data-action="pin" aria-label="Pin widget" data-tip="Pin widget"${webMode ? ' hidden' : ''}>${icon('pin')}</button></header>
       <div class="agents-dock-list"></div>
     </section>`;
   const trigger = host.querySelector<HTMLButtonElement>('.agents-dock-trigger')!;
@@ -161,7 +158,8 @@ export function mountAgentsDock(host: HTMLElement, deps: AgentsDockDeps): () => 
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     if (target.closest('.agents-dock-trigger')) { window.clearTimeout(intentTimer); setOpen(!open); return; }
-    if (target.closest('[data-action="pin"]')) {
+    // A browser tab (web mode) has no desktop window to pin; the button is hidden there.
+    if (target.closest('[data-action="pin"]') && !webMode) {
       try { await call('agents_dock_pin'); preferences = { ...preferences, pinned: true }; draw(); }
       catch { /* The header remains usable if a native window cannot be created. */ }
       return;

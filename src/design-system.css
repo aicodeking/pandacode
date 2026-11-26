@@ -35,10 +35,9 @@
   --ds-chip-border:color-mix(in srgb,var(--text) 4%,transparent);
   /* Non-text trailing glyphs (chevrons) and a paused row's icons sit below text contrast, as in the reference. */
   --ds-glyph-faint:color-mix(in srgb,var(--text) 40%,var(--bg));
-  /* Headings and row titles. Tracking matches the reference's string widths (its type runs 4-6% wider). */
+  /* Headings and row titles. */
   --ds-title-ink:var(--text);
   --ds-row-ink:color-mix(in srgb,var(--text) 96%,var(--bg));
-  --ds-row-tracking:.02em;
   --ds-shadow-card:0 1px 2px rgb(0 0 0 / .04),0 2px 8px rgb(0 0 0 / .04);
   --ds-shadow-raised:0 1px 2px rgb(0 0 0 / .08),0 1px 1px rgb(0 0 0 / .04);
   --ds-row-hover:color-mix(in srgb,var(--text) 5%,transparent);
@@ -85,16 +84,13 @@
   --ds-tone-saver-fill:color-mix(in srgb,var(--ds-tone-saver) var(--ds-tone-fill-amount),transparent);
   --ds-tone-remote-fill:color-mix(in srgb,var(--ds-tone-remote) var(--ds-tone-fill-amount),transparent);
   --ds-tone-worktree-fill:color-mix(in srgb,var(--ds-tone-worktree) var(--ds-tone-fill-amount),transparent);
-  /* Geometry (the reference at 1/1.45). Rows: 38px single line, 48px with a subtitle, plus the card's 2px gap; primary 36px, its split chevron 34px wide. Inner radius = card radius less its 6px padding. */
-  --ds-radius-card:16px;--ds-radius-inner:10px;--ds-radius-control:8px;--ds-radius-chip:6px;
+  /* Geometry (the reference at 1/1.45). Rows: 38px single line, 48px with a subtitle, plus the card's 2px gap; primary 36px, its split chevron 34px wide. Radii are the canonical roles in tokens.css. */
   --ds-card-pad:6px;
   --ds-row-h:38px;--ds-row-h-sub:48px;--ds-row-pad-y:3px;--ds-row-pad-x:10px;--ds-row-gap:12px;
   --ds-btn-h:36px;--ds-btn-primary-h:36px;
   --ds-toggle-w:37px;--ds-toggle-h:24px;
   --ds-section-gap:11px;
-  /* Type scale (rem, so --ui-scale applies): title 19px, body 16px (row titles), sub 15px (row subtitles and
-   * meta), ui 14px, meta 13px, chip 12.5px. */
-  --ds-text-title:1.3571rem;--ds-text-lead:1.2143rem;--ds-text-row-lg:1.1929rem;--ds-text-body:1.1429rem;--ds-text-head:1.1071rem;--ds-text-check:1.0929rem;--ds-icon-tray:19px;--ds-text-sub:var(--text-lg);--ds-text-ui:1rem;--ds-text-meta:var(--text-md);--ds-text-chip:.8929rem;
+  --ds-icon-tray:19px;
   /* Motion: colour eases in --ds-ease-in (120ms) and out --ds-ease-out (180ms), both ease-out, defined in
    * styles.css so every sheet that loads it shares them; press scales to .98 on the spring. */
   --ds-press:.98;
@@ -188,17 +184,19 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 /* A failure: thread error rows (main.ts errorRowHtml), error toasts (notify tone 'danger'), and failed team workers
  * (rows and tally), apart from the amber of "needs you". */
 [data-state-tone="danger"]{--state-tone:var(--ds-danger)}
-@media(forced-colors:active){[data-state-tone="danger"]{--state-tone:CanvasText}}
+/* A caution that is not a failure (plain-HTTP web access off loopback). */
+[data-state-tone="warn"]{--state-tone:var(--ds-warn)}
+@media(forced-colors:active){[data-state-tone="danger"],[data-state-tone="warn"]{--state-tone:CanvasText}}
 /* Accounts (Settings → Providers): one connection-card per pooled harness, then the Connections card.
  * Lists sit 2px inside the inner card, as rows do in .ds-card-inner. */
 .named-connections-card{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}
 .named-connections-card>[data-pools]{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;gap:12px}
 .named-connections-card>[data-pools]:empty{display:none}
-.named-connection-feedback{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-meta);color:var(--muted)}
+.named-connection-feedback{margin:0;padding:0 var(--ds-row-pad-x);font-size:var(--type-meta);color:var(--muted)}
 .named-connection-feedback.error{color:var(--ds-danger)}
 .named-connections,.account-pool-members{list-style:none;margin:0 calc(-1 * var(--ds-row-pad-x));padding:0;display:grid;gap:2px}
 .named-connections{margin-bottom:6px}
-.named-connections .ds-row-trail .ds-btn,.account-pool .ds-btn{height:28px;padding:0 10px;font-size:var(--ds-text-meta)}
+.named-connections .ds-row-trail .ds-btn,.account-pool .ds-btn{height:auto;min-height:28px;padding:0 10px;font-size:var(--type-body)}
 :is(.named-connections-list,.account-pool) .ds-btn>.icon{--icon-size:14px}
 .named-connections-list>.ds-btn{align-self:flex-start}
 .connection-card.account-pool{min-width:0;padding-top:12px;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:repeat(5,auto)}
@@ -208,10 +206,10 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .connection-card.account-pool>.settings-heading.account-pool-head{position:relative;inset:auto;height:auto;margin:0 0 12px !important;padding:0}
 .account-pool-title{display:flex;flex-direction:column;gap:1px;flex:1;min-width:0}
 .account-pool-title>h3{margin:0}
-.account-pool-hint{display:flex;align-items:center;gap:5px;min-width:0;font-size:var(--ds-text-meta);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.account-pool-hint{display:flex;align-items:center;gap:5px;min-width:0;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);letter-spacing:var(--tracking-none);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .account-pool-hint>span:first-child{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .account-pool-hint>.info-mark{flex:none}
-.account-pool-checked{flex:none;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+.account-pool-checked{flex:none;font-size:var(--type-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 .account-pool-head>.icon-button{width:28px;height:28px;color:var(--muted)}
 .account-pool-head>.icon-button>.icon{--icon-size:16px}
 .account-pool-member:has(.account-usage){padding-bottom:10px}
@@ -220,14 +218,14 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .account-pool-status>.ds-dot{width:6px;height:6px}
 .account-pool-status>.ds-dot[data-state-tone]{color:var(--state-tone)}
 .account-pool-empty{min-height:var(--ds-row-h)}
-.account-pool-empty .ds-row-sub{flex:none;font-size:var(--ds-text-ui)}
+.account-pool-empty .ds-row-sub{flex:none}
 /* Account identity keeps the flexible space; status and actions never grow with their text. */
 .account-pool-member.ds-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px 12px;padding-top:14px;padding-bottom:14px}
 .account-pool-member .ds-row-main{min-width:0;gap:4px}
 .account-pool-member .ds-row-trail{gap:6px;min-width:0;align-self:start}
-.account-pool-member .account-email{user-select:text;overflow-wrap:anywhere;white-space:normal;line-height:1.4}
+.account-pool-member .account-email{user-select:text;overflow-wrap:anywhere;white-space:normal;line-height:var(--type-body-leading)}
 .account-pool-member .ds-row-sub{white-space:normal;overflow-wrap:anywhere}
-.account-pool-member .icon-button,.account-pool-status{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border-radius:var(--ds-radius-control);color:var(--muted)}
+.account-pool-member .icon-button,.account-pool-status{box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border-radius:var(--ds-control-radius);color:var(--muted)}
 .account-pool-status>.icon{--icon-size:16px}
 .account-pool-status>.icon[data-state-tone]{color:var(--state-tone,var(--muted))}
 .account-pool-status>.icon[data-state-tone="limited"] path{display:none}
@@ -236,23 +234,23 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .account-pool-head .account-pool-checked{display:none}
 @media(forced-colors:active){.account-pool-status,.account-pool-status>.icon[data-state-tone]{color:CanvasText}.account-pool-status:focus-visible{outline-color:Highlight}}
 
-.account-pool-member [data-identity-unknown]{color:var(--muted);font-weight:400}
+.account-pool-member [data-identity-unknown]{color:var(--muted);font-weight:var(--weight-regular)}
 
 /* Usage under the account's name: window and percent, thin meter, then its reset. */
-.account-usage{grid-column:1/-1;min-width:0;order:3;flex:1 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px;font-size:var(--ds-text-meta);color:var(--muted);font-variant-numeric:tabular-nums}
+.account-usage{grid-column:1/-1;min-width:0;order:3;flex:1 0 100%;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 20px;font-size:var(--type-meta);color:var(--muted);font-variant-numeric:tabular-nums}
 .account-usage:empty{display:none}
 /* A left-out account dims as one row, meters included. */
 .account-pool-member.ds-row-dim .account-usage{opacity:.62}
 .account-usage-none{display:block;color:var(--faint)}
 .account-meter{min-width:0;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:baseline;align-content:start;gap:3px 8px;white-space:nowrap}
-.account-meter-label{white-space:normal;overflow-wrap:anywhere;line-height:1.5}
-.account-meter-reset{grid-column:1/-1;color:var(--faint);white-space:normal;overflow-wrap:anywhere;line-height:1.5}
+.account-meter-label{white-space:normal;overflow-wrap:anywhere;line-height:var(--type-meta-leading)}
+.account-meter-reset{grid-column:1/-1;color:var(--faint);white-space:normal;overflow-wrap:anywhere;line-height:var(--type-meta-leading)}
 .account-meter-value{color:var(--text)}
 .account-meter .ds-meter{grid-column:1/-1;min-width:0;height:4px;color:var(--muted)}
 .account-meter[data-level=warn] .ds-meter{color:var(--ds-meter-warn,var(--ds-warn))}
 .account-meter[data-level=danger] .ds-meter{color:var(--ds-danger)}
 /* What opens under a row (sign-in, delete confirmation, edit form) is part of it: same inset, no card of its own. */
-.account-pool-sign-in,.account-pool-confirm{display:flex;flex-direction:column;gap:8px;margin-top:-4px;padding:0 var(--ds-row-pad-x) 10px;font-size:var(--ds-text-meta);color:var(--muted)}
+.account-pool-sign-in,.account-pool-confirm{display:flex;flex-direction:column;gap:8px;margin-top:-4px;padding:0 var(--ds-row-pad-x) 10px;font-size:var(--type-meta);color:var(--muted)}
 .account-pool-sign-in[role=alert]{color:var(--text)}
 .account-pool-sign-in-line{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px}
 .account-pool-sign-in-line>[role=status]{flex:1;min-width:0}
@@ -262,30 +260,30 @@ html[data-vsix]{--ds-tone-keep:62%;--ds-tone-fill-amount:8%}
 .account-pool-pulse{flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent);animation:state-pulse 1.6s ease-in-out infinite}
 .account-pool-code{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
 .account-pool-code>span{flex-basis:100%}
-.account-pool-code input{flex:1;min-width:12ch;height:28px;font-size:var(--ds-text-ui);padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card-inset);color:var(--text)}
+.account-pool-code input{flex:1;min-width:12ch;height:auto;min-height:var(--control);font-size:var(--type-body);padding:0 10px;border:1px solid var(--ds-border);border-radius:var(--ds-control-radius);background:var(--ds-card-inset);color:var(--text)}
 .account-pool-code input:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
 .account-pool-confirm{flex-direction:row;flex-wrap:wrap;align-items:center;gap:8px 12px;color:var(--text)}
-.account-pool-confirm>span:first-child{flex:1;min-width:20ch;line-height:1.5}
-.account-pool-confirm code{font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
+.account-pool-confirm>span:first-child{flex:1;min-width:20ch;line-height:var(--type-meta-leading)}
+.account-pool-confirm code{font-family:var(--mono);font-size:var(--code-inline-size);line-height:inherit;overflow-wrap:anywhere}
 .account-pool-confirm-actions{display:flex;gap:8px}
 .account-pool .ds-btn.account-pool-danger{color:var(--ds-danger)}
 .account-pool-edit{padding:0 var(--ds-row-pad-x) 10px}
 .account-pool-edit .named-connection-form>label:first-child{margin-top:0}
 .account-pool-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;margin-top:8px}
-.connection-card p.account-pool-feedback{margin:8px 0 0;font-size:var(--ds-text-meta);color:var(--muted)}
+.connection-card p.account-pool-feedback{margin:8px 0 0;font-size:var(--type-meta);color:var(--muted)}
 .connection-card p.account-pool-feedback.error{color:var(--ds-danger)}
-.account-pool-terms{flex:1;min-width:16ch;font-size:var(--ds-text-meta);color:var(--faint)}
+.account-pool-terms{flex:1;min-width:16ch;font-size:var(--type-meta);color:var(--faint)}
 .connection-card p.account-pool-terms{margin:8px 0 0}
 .account-pool-manual{margin:6px calc(-1 * var(--ds-row-pad-x)) 0}
-.account-pool-manual>summary{display:flex;align-items:center;gap:6px;min-height:32px;padding:0 var(--ds-row-pad-x);border-radius:var(--ds-radius-control);list-style:none;cursor:pointer;font-size:var(--ds-text-meta);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.account-pool-manual>summary{display:flex;align-items:center;gap:6px;min-height:32px;padding:0 var(--ds-row-pad-x);border-radius:var(--ds-control-radius);list-style:none;cursor:pointer;font-size:var(--type-meta);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
 .account-pool-manual>summary::-webkit-details-marker{display:none}
 .account-pool-manual>summary:hover{background:var(--ds-row-hover);color:var(--text);transition-duration:var(--ds-ease-in)}
 .account-pool-manual>summary:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .account-pool-manual>summary>.icon{--icon-size:14px;transition:rotate var(--ds-ease-out) ease-out}
 .account-pool-manual[open]>summary>.icon{rotate:90deg}
 .connection-card .account-pool-manual>p{margin:4px var(--ds-row-pad-x) 6px}
-.account-pool-command{display:flex;align-items:center;gap:8px;margin:0 2px 2px;padding:4px 4px 4px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-radius-control);background:var(--ds-card)}
-.account-pool-command code{flex:1;min-width:0;font-family:var(--mono);font-size:var(--ds-text-chip);overflow-wrap:anywhere}
+.account-pool-command{display:flex;align-items:center;gap:8px;margin:0 2px 2px;padding:4px 4px 4px 10px;border:1px solid var(--ds-border);border-radius:var(--ds-control-radius);background:var(--ds-card)}
+.account-pool-command code{flex:1;min-width:0;font-family:var(--mono);font-size:var(--code-inline-size);line-height:var(--leading-code);overflow-wrap:anywhere}
 @media(max-width:640px){
   /* Give the account identity the full row before its fixed-size controls and usage. */
   .account-pool-member.ds-row{grid-template-columns:minmax(0,1fr)}
@@ -310,23 +308,24 @@ html:not([data-ready]) .history-loading{opacity:0}
  * also be one outer card: .ds-card > .ds-section-head + .ds-card-inner (rows) [+ .ds-card-foot]. */
 .ds-section{display:grid;gap:var(--ds-section-gap);min-width:0}
 .ds-section+.ds-section{margin-top:12px}
-.ds-section-head{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 var(--ds-row-pad-x);font-size:var(--ds-text-head);letter-spacing:var(--ds-row-tracking);font-weight:var(--weight-regular);color:var(--muted);line-height:1.3}
+.ds-section-head{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 var(--ds-row-pad-x);font-size:var(--type-heading);letter-spacing:var(--tracking-tight);font-weight:var(--type-heading-weight);color:var(--muted);line-height:var(--type-heading-leading)}
 .ds-section-head>:first-child{flex:1;min-width:0;margin:0;font:inherit;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ds-section-head>:is(a,button,.ds-btn,.ds-link){font-size:var(--type-body);font-weight:var(--weight-medium);line-height:var(--type-body-leading);letter-spacing:var(--tracking-none)}
 .ds-section-head>.icon{--icon-size:var(--icon-md)}
 .ds-section-head .icon-button{width:28px;height:28px;margin-right:-6px}
 .ds-card>.ds-section-head{min-height:40px;padding:2px 14px 0}
 
 /* Cards: a hairline, a soft shadow, a fill one step off the surface. Inner cards nest in an outer card's padding. */
-.ds-card,.ds-card-inner,.ds-card-inset{display:flex;flex-direction:column;gap:2px;min-width:0;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-radius-card);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
-.ds-card-inner,.ds-card-inset{padding:2px;border-color:var(--ds-border-inner);border-radius:var(--ds-radius-inner);background:var(--ds-card-inner)}
+.ds-card,.ds-card-inner,.ds-card-inset{display:flex;flex-direction:column;gap:2px;min-width:0;padding:var(--ds-card-pad);border:1px solid var(--ds-border);border-radius:var(--ds-card-radius);background:var(--ds-card);box-shadow:var(--ds-shadow-card)}
+.ds-card-inner,.ds-card-inset{padding:2px;border-color:var(--ds-border-inner);border-radius:var(--ds-inner-radius);background:var(--ds-card-inner)}
 .ds-card>:is(.ds-card-inner,.ds-card-inset){margin:0}
 .ds-card>:is(.ds-card-inner,.ds-card-inset)+:is(.ds-card-inner,.ds-card-inset){margin-top:4px}
 /* A footer row on the outer card's own fill, below its inner card (Context meter + a square button). */
-.ds-card-foot{display:flex;align-items:center;gap:var(--ds-row-gap);min-height:40px;padding:4px 0 0 var(--ds-row-pad-x);font-size:var(--ds-text-body);color:var(--text)}
+.ds-card-foot{display:flex;align-items:center;gap:var(--ds-row-gap);min-height:40px;padding:4px 0 0 var(--ds-row-pad-x);font-size:var(--type-body);color:var(--text)}
 .ds-card-foot>.ds-meter{flex:1}
 .ds-card-foot .ds-btn-icon{color:var(--text)}
 
-.ds-row{display:flex;align-items:center;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:calc(var(--ds-radius-inner) - 2px);color:var(--text);text-align:left;text-decoration:none;font-size:var(--ds-text-ui);line-height:1.3;justify-content:flex-start;
+.ds-row{display:flex;align-items:center;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:var(--ds-row-h);padding:var(--ds-row-pad-y) var(--ds-row-pad-x);border-radius:var(--ds-control-radius);color:var(--text);text-align:left;text-decoration:none;font-size:var(--type-body);line-height:var(--type-body-leading);justify-content:flex-start;
   transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,opacity var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .ds-row:has(.ds-row-sub){min-height:var(--ds-row-h-sub)}
 :is(button,a).ds-row,.ds-row[data-interactive]{cursor:pointer}
@@ -337,11 +336,10 @@ html:not([data-ready]) .history-loading{opacity:0}
 /* A status dot riding the icon's top-right corner (running/scheduled), ringed in the card's colour. */
 .ds-row-icon>.ds-dot{position:absolute;top:-1px;right:-1px;width:8px;height:8px;box-shadow:0 0 0 2px var(--panel-surface,var(--bg))}
 .ds-row-main{display:flex;flex-direction:column;flex:1;min-width:0;gap:1px}
-.ds-row-title{font-size:var(--ds-text-body);font-weight:450;letter-spacing:var(--ds-row-tracking);color:var(--ds-row-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.ds-row-sub{font-size:var(--ds-text-sub);letter-spacing:var(--ds-row-tracking);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-row-title{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);color:var(--ds-row-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-row-sub{font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);letter-spacing:var(--tracking-none);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ds-row>.ds-row-title{flex:none}
-.ds-card-inner .ds-row-title{font-size:var(--ds-text-row-lg)}
-.ds-row-meta{flex:none;font-size:var(--ds-text-sub);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ds-row-meta{flex:none;font-size:var(--type-meta);font-weight:var(--type-meta-weight);line-height:var(--type-meta-leading);letter-spacing:var(--tracking-none);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
 .ds-row-trail{flex:none;display:inline-flex;align-items:center;gap:10px;margin-left:auto;color:var(--muted)}
 .ds-row-trail>.icon,.ds-row-trail .icon-button>.icon{--icon-size:22px;--icon-stroke:1.85}
 /* The small chevron after a meta ("4 of 4 ›") is the quietest ink; the reference's other trailing glyphs stay muted. */
@@ -350,26 +348,28 @@ html:not([data-ready]) .history-loading{opacity:0}
 .ds-row-dim :is(.ds-row-title,.ds-row-sub){color:var(--faint)}
 .ds-row-dim :is(.ds-row-icon,.ds-row-trail>.icon,.ds-row-trail .icon-button){color:var(--ds-glyph-faint)}
 /* A red/blue trailing text action ("Fix ↗"). */
-.ds-link{display:inline-flex;align-items:center;gap:4px;font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--ds-danger)}
+.ds-link{display:inline-flex;align-items:center;gap:4px;font-size:var(--type-body);font-weight:var(--weight-medium);color:var(--ds-danger)}
 .ds-link>.icon{--icon-size:16px}
 
 /* Segmented control. Mount with trackSegment(group, selected) (src/motion.ts): it adds the .segment-thumb.
  * The track is recessed (dark top edge, lit bottom edge); the thumb is a raised pill with a lit top edge and a soft shadow. */
-.ds-seg{display:flex;align-items:stretch;gap:2px;padding:3px;border:1px solid var(--ds-border);border-top-color:var(--ds-seg-edge-top);border-bottom-color:var(--ds-seg-edge-bottom);border-radius:calc(var(--ds-radius-inner) + 3px);background:var(--ds-card);box-shadow:var(--ds-seg-shadow);position:relative;isolation:isolate}
-.ds-seg>:is(button,a){flex:1 1 0;min-width:0;height:36px;padding:0 12px;border-radius:var(--ds-radius-inner);font-size:var(--ds-text-lead);letter-spacing:var(--ds-row-tracking);font-weight:var(--weight-regular);color:var(--muted);position:relative;z-index:1;white-space:nowrap;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
+/* Every segmented track (a .ds-seg, or any track trackSegment() tags [data-segmented]) resets to regular body weight, so a bold ancestor never leaks into its options. */
+[data-segmented],.ds-seg{font-weight:var(--type-body-weight);font-variation-settings:normal}
+.ds-seg{display:flex;align-items:stretch;gap:2px;padding:2px;border:1px solid var(--ds-border);border-top-color:var(--ds-seg-edge-top);border-bottom-color:var(--ds-seg-edge-bottom);border-radius:var(--ds-inner-radius);background:var(--ds-card);box-shadow:var(--ds-seg-shadow);position:relative;isolation:isolate}
+.ds-seg>:is(button,a){flex:1 1 0;min-width:0;height:36px;padding:0 12px;border-radius:var(--ds-control-radius);font-size:var(--type-body);line-height:var(--type-body-leading);letter-spacing:var(--tracking-none);font-weight:var(--type-body-weight);color:var(--muted);position:relative;z-index:1;white-space:nowrap;transition:color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out}
 .ds-seg>:is(button,a):hover{color:var(--text);transition-duration:var(--ds-ease-in)}
 .ds-seg>:is([aria-selected="true"],[aria-pressed="true"],[aria-checked="true"],.selected){color:var(--text)}
-.ds-seg>.segment-thumb{border-radius:var(--ds-radius-inner);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
+.ds-seg>.segment-thumb{border-radius:var(--ds-control-radius);background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
 /* Before trackSegment runs (or without JS) the selected segment paints its own thumb. */
 .ds-seg:not([data-segmented])>:is([aria-selected="true"],[aria-pressed="true"],[aria-checked="true"],.selected){background:var(--ds-thumb);box-shadow:var(--ds-thumb-shadow)}
 
 /* Buttons: one solid neutral primary; secondaries are raised hairline buttons (.ds-btn-icon: the square one). */
-.ds-btn-primary,.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:0;border-radius:var(--ds-radius-inner);white-space:nowrap;font-weight:var(--weight-medium);
+.ds-btn-primary,.ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-width:0;border-radius:var(--ds-control-radius);white-space:nowrap;font-size:var(--type-body);line-height:var(--type-body-leading);font-weight:var(--weight-medium);
   transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
-.ds-btn-primary{height:var(--ds-btn-primary-h);padding:0 18px;background:var(--ds-primary-bg);color:var(--ds-primary-fg);font-size:var(--ds-text-body);box-shadow:var(--ds-primary-shadow)}
+.ds-btn-primary{height:var(--ds-btn-primary-h);padding:0 18px;background:var(--ds-primary-bg);color:var(--ds-primary-fg);box-shadow:var(--ds-primary-shadow)}
 .ds-btn-primary>.icon{--icon-size:var(--icon-md)}
 html[data-theme] .ds-btn-primary:not(:disabled):hover{background:var(--ds-primary-hover);color:var(--ds-primary-fg);transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
-.ds-btn{height:var(--ds-btn-h);padding:0 14px;background:var(--ds-raised);color:var(--text);font-size:var(--ds-text-ui);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
+.ds-btn{height:var(--ds-btn-h);padding:0 14px;background:var(--ds-raised);color:var(--text);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
 .ds-btn:not(:disabled):hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised));transition-duration:var(--ds-ease-in),var(--ds-ease-in),var(--ds-ease-in),var(--spring-fast-duration)}
 .ds-btn.ds-btn-icon{width:var(--ds-btn-h);padding:0;color:var(--muted)}
 .ds-btn.ds-btn-icon:not(:disabled):hover{color:var(--text)}
@@ -377,8 +377,8 @@ html[data-theme] .ds-btn-primary:not(:disabled):hover{background:var(--ds-primar
 :is(.ds-btn-primary,.ds-btn):not(:disabled,[aria-haspopup]):active{scale:var(--ds-press)}
 .ds-btn-split{display:flex;gap:5px;min-width:0}
 /* One button in two parts: near-square where they meet, 8px outside. */
-.ds-btn-split>.ds-btn-primary:first-child:has(+.ds-btn-primary){border-radius:var(--ds-radius-control) 2px 2px var(--ds-radius-control)}
-.ds-btn-split>.ds-btn-primary+.ds-btn-primary{border-radius:2px var(--ds-radius-control) var(--ds-radius-control) 2px}
+.ds-btn-split>:is(.ds-btn-primary,.ds-btn):first-child:has(+:is(.ds-btn-primary,.ds-btn)){border-start-start-radius:var(--ds-control-radius);border-end-start-radius:var(--ds-control-radius);border-start-end-radius:var(--radius-hair);border-end-end-radius:var(--radius-hair)}
+.ds-btn-split>:is(.ds-btn-primary,.ds-btn)+:is(.ds-btn-primary,.ds-btn){border-start-start-radius:var(--radius-hair);border-end-start-radius:var(--radius-hair);border-start-end-radius:var(--ds-control-radius);border-end-end-radius:var(--ds-control-radius)}
 .ds-btn-split>:first-child{flex:1}
 .ds-btn-split>:not(:first-child){flex:none;width:calc(var(--ds-btn-primary-h) - 2px);padding:0}
 .ds-btn-split>.ds-btn:not(:first-child){width:var(--ds-btn-h)}
@@ -400,23 +400,24 @@ input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=chec
 .ds-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 
 /* Chips, dots, avatars. */
-.ds-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;height:24px;padding:0 8px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--faint);font-family:var(--mono);font-size:var(--ds-text-chip);line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ds-chip{display:inline-flex;align-items:center;gap:5px;max-width:100%;height:24px;padding:0 8px;border-radius:var(--radius-chip);background:var(--ds-fill);box-shadow:inset 0 0 0 1px var(--ds-chip-border);color:var(--faint);font-family:var(--mono);font-size:var(--type-caption);font-weight:var(--type-caption-weight);line-height:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ds-chip>.icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
 .ds-chip.ds-chip-text{font-family:inherit}
+:is(button,a).ds-chip{border-radius:var(--radius-full)}
 :is(button,a).ds-chip:hover{background:var(--ds-fill-hover);color:var(--text)}
 .ds-dot{display:inline-block;flex:none;width:8px;height:8px;border-radius:50%;background:currentColor;color:var(--muted)}
 .ds-dot:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:currentColor}
 /* A small coloured circle with a letter: <span class="ds-avatar" style="--ds-avatar:<colour>">M</span>. */
-.ds-avatar{display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--ds-avatar,var(--muted));color:#fff;font-size:var(--text-xs);font-weight:var(--weight-strong);line-height:1}
+.ds-avatar{display:inline-grid;place-items:center;flex:none;width:22px;height:22px;border-radius:50%;background:var(--ds-avatar,var(--muted));color:#fff;font-size:var(--type-caption);font-weight:var(--weight-medium);line-height:1}
 
 /* Meter: a 5px track; each child <span style="--ds-value:42%"> is one square segment, 1px from the next, in the reference's three tones. */
-.ds-meter{display:flex;gap:1px;width:100%;min-width:40px;height:5px;border-radius:2px;background:var(--ds-track-strong);overflow:hidden;color:var(--text)}
+.ds-meter{display:flex;gap:1px;width:100%;min-width:40px;height:5px;border-radius:var(--radius-hair);background:var(--ds-track-strong);overflow:hidden;color:var(--text)}
 .ds-meter>span{flex:none;width:var(--ds-value,0%);height:100%;background:currentColor;opacity:.94}
 .ds-meter>span:nth-child(2){opacity:.58}
 .ds-meter>span:nth-child(n+3){opacity:.37}
 /* Dot meter (turn summary): small rounded squares; a child takes .ds-success/.ds-danger, else the track tone. */
 .ds-dots{display:inline-flex;gap:3px;align-items:center}
-.ds-dots>span{width:10px;height:10px;border-radius:3px;background:var(--ds-track-strong)}
+.ds-dots>span{width:10px;height:10px;border-radius:var(--radius-hair);background:var(--ds-track-strong)}
 .ds-dots>span:is(.ds-success,.ds-danger,.ds-info,.ds-warn){background:currentColor}
 
 /* Status text. */
@@ -429,7 +430,7 @@ input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=chec
 .ds-row-sub.ds-info,.ds-row-meta.ds-info{color:var(--ds-info)}
 .ds-row-sub.ds-warn,.ds-row-meta.ds-warn{color:var(--ds-warn)}
 
-.ds-title{margin:0;font-size:var(--ds-text-title);font-weight:var(--weight-strong);letter-spacing:var(--ds-row-tracking);line-height:1.3;color:var(--ds-title-ink)}
+.ds-title{margin:0;font-size:var(--type-title);font-weight:var(--type-title-weight);letter-spacing:var(--tracking-tight);line-height:var(--type-title-leading);color:var(--ds-title-ink)}
 
 @media(prefers-contrast:more){
   .ds-card,.ds-card-inner,.ds-card-inset,.ds-seg{border-color:var(--text);box-shadow:none}
@@ -444,29 +445,37 @@ input[type=checkbox][role=switch]:not([class]):not([data-armed]),input[type=chec
 html:not([data-theme="dark"]) body :is(.sidebar .new-task-button>.icon,.sidebar .group-heading>.icon,.task-pin,.activity-heading>.icon,.goal-banner-symbol,.goal-banner-control,.header-run,.trace-glyph){color:var(--accent-ink)}
 button:focus-visible,a:focus-visible,summary:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
 
-.icon-button{border-radius:var(--ds-radius-control)}
+.icon-button{border-radius:var(--ds-control-radius)}
 .icon-button:not(:disabled):hover{background:var(--ds-row-hover)}
 .icon-button:not(:disabled,[aria-haspopup]):active{scale:.94}
 
 /* Primary actions are solid neutral (text on page colour); the accent stays for selection and focus. */
-html[data-theme] .primary-button{background:var(--ds-primary-bg);color:var(--ds-primary-fg);border-radius:var(--ds-radius-inner);font-weight:var(--weight-medium);box-shadow:var(--ds-primary-shadow)}
+html[data-theme] .primary-button{background:var(--ds-primary-bg);color:var(--ds-primary-fg);border-radius:var(--ds-control-radius);font-weight:var(--weight-medium);box-shadow:var(--ds-primary-shadow)}
 html[data-theme] .primary-button:not(:disabled):hover{background:var(--ds-primary-hover);color:var(--ds-primary-fg)}
 html[data-theme] .primary-button:not(:disabled):active{background:var(--ds-primary-hover);scale:var(--ds-press)}
 html[data-theme] .primary-button.danger{background:var(--danger);color:var(--bg)}
 /* Secondaries are raised: the raised fill, a hairline and a soft shadow (like .ds-btn). */
-html[data-theme] .secondary-button{background:var(--ds-raised);border-radius:var(--ds-radius-inner);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
+html[data-theme] .secondary-button{background:var(--ds-raised);border-radius:var(--ds-control-radius);box-shadow:inset 0 0 0 1px var(--ds-border),var(--ds-shadow-raised)}
 html[data-theme] .secondary-button:not(:disabled):hover{background:color-mix(in srgb,var(--text) 4%,var(--ds-raised))}
 html[data-theme] .secondary-button:not(:disabled):active{scale:var(--ds-press)}
 
-/* Fields: tone fill, 8px radius. Selects everywhere, and fields in dialogs and
+/* Fields: tone fill, control radius (8px on page, 6px in dialogs). Selects everywhere, and fields in dialogs and
  * Settings, carry the hairline (zero specificity, so a component that frames its own field wins). */
-input,select,textarea{border-radius:var(--ds-radius-control);transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
-:where(select),:where(dialog,.settings-content) :where(input:not([type=checkbox],[type=radio],[type=range],[type=color]),textarea){background:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
+input,select,textarea{border-radius:var(--ds-control-radius);font-weight:var(--type-body-weight);transition:background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+/* Single-line selects match neighboring field radii; WebKit needs appearance:none.
+ * --select-chevron (tokens.css, light/dark) owns the only image, including in shadow sheets.
+ * Select fills use background-color, never background. No component-owned chevrons.
+ * Set padding-block and padding-inline-start; leave padding-inline-end to this 30px base
+ * (or reserve at least 30px). Preserve all non-select and multi-line select padding. */
+select:where(:not([multiple]):not([size]),:not([multiple])[size="1"]){appearance:none;-webkit-appearance:none;background-image:var(--select-chevron);background-repeat:no-repeat;background-position:right 11px center;padding-inline-end:30px}
+select:where(:not([multiple]):not([size]),:not([multiple])[size="1"]):dir(rtl){background-position:left 11px center}
+@media(forced-colors:active){select:where(:not([multiple]):not([size]),:not([multiple])[size="1"]){appearance:auto;-webkit-appearance:menulist;background-image:none;padding-inline-end:8px}}
+:where(select),:where(dialog,.settings-content) :where(input:not([type=checkbox],[type=radio],[type=range],[type=color]),textarea){background-color:var(--ds-card-inner);box-shadow:inset 0 0 0 1px var(--ds-border)}
 /* A field framed by its wrapper: focus set by script (a panel opening, ⌘F) is a hairline; the wrapper's own --focus ring needs the keyboard. */
 html[data-theme]:not([data-keyboard-focus]) :is(#inspector .search-field,.browser-address,.btw-composer,.team-model-search,.import-search,dialog .command-search):focus-within,
 html[data-theme]:not([data-keyboard-focus]) .sidebar-search:has(:focus-visible){box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
 /* Zero-specificity hover, so fields a component frames itself (menu and search boxes) keep their own look. */
-:where(input:not([type=checkbox],[type=radio],[type=range]),select,textarea):hover{background:var(--ds-fill)}
+:where(input:not([type=checkbox],[type=radio],[type=range]),select,textarea):hover{background-color:var(--ds-fill)}
 input[type=checkbox]:not([role=switch],[class*=switch]),input[type=radio]{accent-color:var(--ds-primary-bg)}
 
 /* Scrollbars: rounded, low-contrast, darker while hovered. */
@@ -476,25 +485,24 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb{background:color-mix(in srgb,v
 html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--text) 36%,transparent)}
 
 /* Menus: the glass with a hairline edge; rows like the reference — 36px, 18px muted icon, 14px label, trailing meta or check. */
-.floating-menu{border-radius:12px;padding:6px;border:1px solid var(--glass-border)}
+.floating-menu{border-radius:var(--radius-popover);padding:6px;border:1px solid var(--glass-border)}
 .choice-menu-list{gap:1px}
-.floating-menu .choice-menu-option:not(.choice-menu-segment){min-height:36px;padding:6px 10px;gap:10px;border-radius:8px}
+.floating-menu .choice-menu-option:not(.choice-menu-segment){min-height:36px;padding:6px 10px;gap:10px;border-radius:var(--ds-control-radius)}
 .choice-menu-option{transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .choice-menu-option>.icon,.choice-menu-option>.provider-logo{width:18px;height:18px}
 .choice-menu-option>.icon:first-child{color:var(--muted)}
 .choice-menu-option>.icon[data-state-tone]:first-child{color:var(--state-tone)}
-.floating-menu .choice-menu-copy>.choice-menu-label{font-size:var(--ds-text-ui)}
-.choice-menu-description{font-size:var(--ds-text-meta);color:var(--muted);text-align:right}
+.choice-menu-description{font-size:var(--type-meta);color:var(--muted);text-align:right}
 .choice-menu-option[aria-checked="true"]>.icon:last-child{width:16px;height:16px;color:var(--text)}
 html[data-theme="dark"] .choice-menu-option[aria-checked="true"]>.icon:last-child{color:var(--text)}
 .choice-menu-option:not(:disabled):hover,.choice-menu-option.choice-menu-active,.project-menu-option:not(:disabled):hover,.project-menu-option.project-menu-active{background:var(--ds-row-hover);transition-duration:var(--ds-ease-in)}
 .choice-menu-option:not(:disabled):active,.project-menu-option:not(:disabled):active,.project-menu-open:not(:disabled):active{background:var(--ds-row-press);scale:var(--ds-press)}
 
-/* Tooltips: the floating glass with its hairline, text colour, 8px radius. */
-.tip-bubble{padding:6px 10px;border:1px solid var(--glass-border);border-radius:var(--ds-radius-control);background:var(--glass-warm);color:var(--text);backdrop-filter:blur(26px) saturate(1.45);-webkit-backdrop-filter:blur(26px) saturate(1.45);box-shadow:0 10px 28px -10px var(--glass-shadow-deep),0 2px 8px -4px var(--glass-shadow-near);font-size:var(--text-xs)}
+/* Tooltips: the same popover glass as menus and toast. */
+.tip-bubble{padding:6px 10px;border:1px solid var(--glass-border);border-radius:var(--radius-popover);background:var(--glass-warm);color:var(--text);backdrop-filter:blur(26px) saturate(1.45);-webkit-backdrop-filter:blur(26px) saturate(1.45);box-shadow:0 10px 28px -10px var(--glass-shadow-deep),0 2px 8px -4px var(--glass-shadow-near);font-size:var(--type-caption);font-weight:var(--type-caption-weight);line-height:var(--type-caption-leading)}
 
 /* Toast: the same glass with its hairline (no gradient, ring or highlight). */
-.toast{background:var(--glass-warm);border:1px solid var(--glass-border);box-shadow:0 18px 40px -16px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);border-radius:12px}
+.toast{background:var(--glass-warm);border:1px solid var(--glass-border);box-shadow:0 18px 40px -16px var(--glass-shadow-deep),0 4px 12px -6px var(--glass-shadow-near);border-radius:var(--radius-popover)}
 .toast::before{background:var(--ds-primary-bg);box-shadow:none}
 /* A lasting notice (the crash notice): the whole notice shown; its close button is every toast's (styles.css). */
 /* Block, not the clamping -webkit-box: the text wraps and the buttons follow it side by side,
@@ -509,13 +517,12 @@ html[data-theme="dark"] .choice-menu-option[aria-checked="true"]>.icon:last-chil
 /* The board's and GitHub's scrollers get room at their end while the notice sits over them. */
 :is(#project-board .board-columns,#github-hub .gh-body)::after{content:"";display:block;grid-column:1/-1;height:var(--toast-room,0px)}
 /* Its quieter second action (Show crash report after Open thread): a text button, like Undo. */
-.toast-secondary{flex:none;margin-left:2px;padding:3px 7px;border-radius:var(--ds-radius-chip);font-size:.8rem;font-weight:550;color:var(--accent-ink);--press:.96;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.toast-secondary{flex:none;margin-left:2px;padding:3px 7px;color:var(--accent-ink);--press:.96;transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out}
+.toast :is(.toast-secondary,.toast-action,.toast-undo,.toast-close){border-radius:var(--ds-control-radius);font-size:var(--type-meta);font-weight:var(--weight-medium);line-height:var(--type-meta-leading)}
 .toast-secondary:hover{background:var(--ds-row-hover);color:var(--text)}
 html[data-theme=dark] .toast-secondary{color:var(--accent)}
 
-/* Dialogs: a 16px sheet, 18px title, 10px controls. */
-.dialog-heading h2{font-size:1.2857rem;letter-spacing:var(--ds-row-tracking);color:var(--ds-title-ink)}
-dialog .primary-button{border-radius:var(--ds-radius-inner)}
+.dialog-heading h2{font-size:var(--type-title);font-weight:var(--type-title-weight);line-height:var(--type-title-leading);letter-spacing:var(--tracking-tight);color:var(--ds-title-ink)}
 
 @media(prefers-reduced-transparency:reduce){
   .tip-bubble,.toast{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}

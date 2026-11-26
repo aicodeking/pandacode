@@ -25,7 +25,18 @@ const OUTPUT: usize = 128 * 1024;
 
 /// Approval tools that ask on every call, even in full-access mode. Scheduled messages to
 /// other tasks are approval tools only while Settings asks first (`schedules::tools`).
-pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message"];
+/// Colab runtimes spend paid compute units, so managing them always asks too.
+pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message", "pandacode_colab_manage"];
+
+/// The always-ask tool a call counts as, if any: its own name, or `pandacode_colab_manage`
+/// for a Python run that may create a paid Colab runtime (`autoCreate`). Tool hosts ask (and
+/// refuse a team worker) by this, so full access never creates a runtime unasked.
+pub fn always_ask_as(name: &str, args: &Value) -> Option<&'static str> {
+    if name == "pandacode_colab_run_python" && args["autoCreate"] == true {
+        return Some("pandacode_colab_manage");
+    }
+    ALWAYS_ASK.iter().find(|tool| **tool == name).copied()
+}
 
 /// AWS global options that take a value, so the value is not mistaken for the service.
 const AWS_VALUE_FLAGS: &[&str] = &["--region", "--profile", "--output", "--endpoint-url", "--query", "--color", "--ca-bundle", "--cli-read-timeout", "--cli-connect-timeout", "--cli-binary-format"];
@@ -405,6 +416,17 @@ pub fn with_deploy(base: Option<ToolHost>, app: tauri::AppHandle, session_id: St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paid_colab_runtimes_always_ask() {
+        assert_eq!(always_ask_as("pandacode_colab_manage", &json!({"action":"create"})), Some("pandacode_colab_manage"));
+        assert_eq!(always_ask_as("pandacode_colab_manage", &json!({"action":"stop"})), Some("pandacode_colab_manage"));
+        assert_eq!(always_ask_as("pandacode_colab_run_python", &json!({"code":"1","autoCreate":true})), Some("pandacode_colab_manage"));
+        assert_eq!(always_ask_as("pandacode_colab_run_python", &json!({"code":"1"})), None);
+        assert_eq!(always_ask_as("pandacode_colab_run_python", &json!({"code":"1","autoCreate":false})), None);
+        assert_eq!(always_ask_as("pandacode_colab_exec", &json!({"command":"ls"})), None);
+        assert_eq!(always_ask_as("pandacode_cloud_cli", &json!({})), Some("pandacode_cloud_cli"));
+    }
 
     #[test]
     fn stays_inside_the_checkout() {

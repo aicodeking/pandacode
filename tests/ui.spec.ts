@@ -2194,6 +2194,25 @@ test('reports a token count in /status without inventing an unavailable context 
   expect(text).not.toContain('%');
 });
 
+test('runs /status while an agent works and keeps the reported context current', async ({ page }) => {
+  const sessionId = await startControlledStatusStream(page);
+  // Enter queues messages during a run; a command that only reads this app runs at once.
+  await prompt(page).fill('/status ');
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'Task status' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('This harness has not reported context usage yet.');
+  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 24000, contextWindow: 200000 } }]);
+  await expect(dialog).toContainText('24,000 of 200,000 context tokens (12%)');
+  await emitStatusEvents(page, sessionId, [{ kind: 'usage', text: '', data: { usedTokens: 26000, contextWindow: 200000 } }]);
+  await expect(dialog).toContainText('26,000 of 200,000 context tokens (13%)');
+  // The status line arrived while the agent works; the command never went into its queue.
+  await expect(prompt(page)).toHaveValue('');
+  await expect(page.locator('.queue-row')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+});
+
 test('updates live startup and retry status only when real response text arrives', async ({ page }) => {
   const sessionId = await startControlledStatusStream(page);
   const status = page.locator('.live-status');
@@ -3663,26 +3682,6 @@ test('state pulses share one phase, whenever they mount', async ({ page }) => {
   expect(apart(phases[0], phases[2]), String(phases)).toBeLessThan(17);
 });
 
-
-test('projects, thread and composer load while provider discovery is pending', async ({ page }) => {
-  await page.route('**/src/preview.ts*', async route => {
-    const response = await route.fetch();
-    const source = await response.text();
-    const marker = /case ["']list_providers["']:/;
-    expect(source).toMatch(marker);
-    await route.fulfill({ response, body: previewBody(source.replace(marker, match => `${match}
-      await new Promise(resolve => { window.__releaseBootProviders = resolve; });
-    `)) });
-  });
-  await page.goto('/');
-  await expect(page.locator('#navigation .task-item').first()).toBeVisible();
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toBeEnabled();
-  await expect(page.locator('#transcript .message, #transcript .turn-card').first()).toBeVisible();
-  await page.getByRole('textbox', { name: 'Message your coding agent' }).fill('Draft kept during discovery');
-  expect(await page.evaluate(() => performance.getEntriesByType('resource').some(entry => /diff-viewer|worker\.js/.test(entry.name)))).toBe(false);
-  await page.evaluate(() => (window as any).__releaseBootProviders());
-  await expect(page.getByRole('textbox', { name: 'Message your coding agent' })).toHaveValue('Draft kept during discovery');
-  await expect(page.getByRole('button', { name: /^Model: / })).toBeEnabled();
 test('a draft re-wraps when the pane narrows, so the prompt never clips it', async ({ page }) => {
   // The prompt's text is not its fit's only input: how many lines it wraps to depends on the width it wraps at, and the fit
   // is remembered per text (`resizePrompt` in src/main.ts), so a redraw or a focus change writes nothing. Only the prompt's

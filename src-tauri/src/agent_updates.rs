@@ -71,9 +71,20 @@ pub(crate) fn reserve_install(state: &crate::AppState) -> Result<InstallGuard> {
     if busy("SELECT EXISTS(SELECT 1 FROM sessions WHERE json_valid(goal_state) AND json_extract(goal_state,'$.status')='active')", "Goal")? {
         return Err("Pause active goals before updating an agent.".into());
     }
-    // Admission must inspect every team, including coordinators between turns.
-    if busy("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE json_extract(content,'$.status') IN ('running','waiting'))", "Team")? {
-        return Err("Pause active teams before updating an agent.".into());
+    // Read the saved snapshots directly so a missing tracker row cannot admit an install.
+    // Accept JSON5 snapshots, like json_extract, and report malformed snapshots separately.
+    let team_checks = "SELECT EXISTS(
+         SELECT 1 FROM architect_teams
+         WHERE CASE WHEN json_valid(content, 6) THEN json_extract(content,'$.status') END IN ('running','waiting')
+     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content, 6))";
+    let (active_team, malformed_team): (bool, bool) = store.db
+        .query_row(team_checks, [], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|_| "Team state is unavailable.")?;
+    if active_team {
+        return Err("Finish running teams before updating an agent.".into());
+    }
+    if malformed_team {
+        return Err("Cannot update an agent while a saved team snapshot is malformed JSON.".into());
     }
     if INSTALLING.swap(true, Ordering::SeqCst) {
         return Err("An agent update is already being installed.".into());
@@ -427,7 +438,24 @@ async fn inspect(installation: Installation) -> Checked {
         };
     }
     if family(&installation.provider) == "antigravity" {
-        row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        if installation
+            .path
+            .file_stem()
+            .is_some_and(|stem| stem.eq_ignore_ascii_case("agy"))
+        {
+            row.message = Some(
+                "PandaCode starts agy with auto-updates paused. Run `agy update` in a terminal outside PandaCode, or use its official installer.".into(),
+            );
+            let local = installation.clone();
+            if let Ok(Ok(version)) =
+                tokio::task::spawn_blocking(move || install::version(&local.path, "antigravity"))
+                    .await
+            {
+                row.installed_version = Some(version.text);
+            }
+        } else {
+            row.message = Some("Antigravity's ACP server is maintained separately from the agy CLI. Use its official installer to update this server.".into());
+        }
         return Checked {
             install: installation,
             row,
@@ -686,6 +714,87 @@ pub async fn update_agent(
 mod tests {
     use super::*;
 
+    fn assert_install_rejects_untracked_team(snapshot: &str, expected: &str) {
+        let (state, project_id) = crate::concurrent_task_tests::test_state();
+        {
+            let store = state.store.lock().unwrap();
+            assert!(store.team_meta_usable());
+            let task = store.create_session(&project_id, "codex", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
+                [task.id.as_str(), snapshot],
+            ).unwrap();
+            assert_eq!(store.db.execute("DELETE FROM architect_team_meta", []).unwrap(), 1);
+        }
+        assert_eq!(reserve_install(&state).err().as_deref(), Some(expected));
+    }
+
+    #[test]
+    fn install_admission_rejects_untracked_running_team() {
+        assert_install_rejects_untracked_team(
+            r#"{"status":"running"}"#,
+            "Finish running teams before updating an agent.",
+        );
+    }
+
+    #[test]
+    fn install_admission_rejects_untracked_json5_team() {
+        assert_install_rejects_untracked_team(
+            "{status:'running',}",
+            "Finish running teams before updating an agent.",
+        );
+    }
+
+    #[test]
+    fn install_admission_guards_active_and_malformed_team_snapshots() {
+        use crate::storage::{id, Store, SCHEMA_VERSION};
+
+        let (state, _) = crate::concurrent_task_tests::test_state();
+        for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
+            let path = std::env::temp_dir().join(format!("pandacode-agent-updates-{}.db", id()));
+            let store = Store::open(&path).unwrap();
+            let project = store.add_project(&std::env::temp_dir()).unwrap();
+            let task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            store.db.execute(
+                "INSERT INTO architect_teams(session_id,content) VALUES(?1,'{}')",
+                [&task.id],
+            ).unwrap();
+            store.db.pragma_update(None, "user_version", version).unwrap();
+            drop(store);
+            *state.store.lock().unwrap() = Store::open(&path).unwrap();
+
+            let set_snapshot = |snapshot| {
+                state.store.lock().unwrap().db.execute(
+                    "UPDATE architect_teams SET content=?1 WHERE session_id=?2",
+                    rusqlite::params![snapshot, task.id],
+                ).unwrap();
+            };
+            assert_eq!(state.store.lock().unwrap().team_meta_usable(), version == SCHEMA_VERSION);
+            for snapshot in ["{not valid", "{"] {
+                set_snapshot(snapshot);
+                assert_eq!(
+                    reserve_install(&state).err().as_deref(),
+                    Some("Cannot update an agent while a saved team snapshot is malformed JSON."),
+                    "schema v{version}, snapshot {snapshot:?}",
+                );
+            }
+            for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
+                set_snapshot(snapshot);
+                assert_eq!(
+                    reserve_install(&state).err().as_deref(),
+                    Some("Finish running teams before updating an agent."),
+                );
+            }
+            for snapshot in [r#"{"status":"completed"}"#, "{status:'completed',}"] {
+                set_snapshot(snapshot);
+                drop(reserve_install(&state).expect("a completed team allows admission"));
+            }
+
+            *state.store.lock().unwrap() = Store::open(std::path::Path::new(":memory:")).unwrap();
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
     #[test]
     fn parses_bounded_agent_versions_without_lexical_order_or_command_fragments() {
         for (banner, expected) in [
@@ -853,6 +962,62 @@ mod tests {
             );
             assert!(row.message.is_some() && !row.can_update);
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn antigravity_update_check_reads_agy_cli_version_but_leaves_acp_server_manual() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "pandacode-update-antigravity-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let agy_path = dir.join("agy");
+        std::fs::write(&agy_path, "#!/bin/sh\necho '1.5.13'\n").unwrap();
+        std::fs::set_permissions(&agy_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let acp_marker = dir.join("acp-ran");
+        let acp_path = dir.join("agy_acp_server.par");
+        std::fs::write(
+            &acp_path,
+            format!("#!/bin/sh\ntouch '{}'\necho '9.9.9'\n", acp_marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&acp_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let agy_group = group_installations(vec![(
+            "antigravity".into(),
+            "Antigravity".into(),
+            agy_path,
+        )])
+        .pop()
+        .unwrap();
+        let agy_row = inspect(agy_group).await.row;
+        assert_eq!(agy_row.status, "unsupported");
+        assert!(!agy_row.can_update);
+        assert_eq!(agy_row.installed_version.as_deref(), Some("1.5.13"));
+        assert_eq!(
+            agy_row.message.as_deref(),
+            Some("PandaCode starts agy with auto-updates paused. Run `agy update` in a terminal outside PandaCode, or use its official installer.")
+        );
+
+        let acp_group = group_installations(vec![(
+            "antigravity".into(),
+            "Antigravity".into(),
+            acp_path,
+        )])
+        .pop()
+        .unwrap();
+        let acp_row = inspect(acp_group).await.row;
+        assert_eq!(acp_row.status, "unsupported");
+        assert!(!acp_row.can_update);
+        assert!(acp_row.installed_version.is_none());
+        assert!(acp_row.message.as_deref().unwrap().contains("ACP server"));
+        assert!(!acp_marker.exists());
+
         std::fs::remove_dir_all(dir).unwrap();
     }
 

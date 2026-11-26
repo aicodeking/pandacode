@@ -1,0 +1,14 @@
+/* Shared base typography imported by styles.css, overlay.css and tray-popover.css,
+ * constructed into a sheet by generative-ui.ts and passed from there to custom views
+ * built in generative-ui-components.ts; also used by rich-markdown.ts HTML shadow roots.
+ * Keep sheet-specific overrides after this reset, including zero-specificity rules. */
+:where(strong,b,th){font-weight:var(--weight-medium)}
+:where(small){font-size:var(--type-meta);font-weight:var(--weight-regular);line-height:var(--type-meta-leading);letter-spacing:var(--tracking-none)}
+:where(h1,h2,h3,h4,h5,h6){margin:0;font-size:inherit;font-weight:inherit}
+:where(h1,h2,h3,h4,h5,h6) :where(strong,b){font-weight:inherit}
+:where(code,pre,samp,tt){font-family:var(--mono)}
+:where(:is(p,li,dd,small) :is(code,samp,tt):not(pre *)){font-size:var(--code-inline-size);line-height:inherit}
+/* Markdown column headers use captions; row headers follow the surrounding prose size. */
+.markdown :is(thead th:not([scope="row" i],[scope="rowgroup" i]),th:is([scope="col" i],[scope="colgroup" i])){font-size:var(--type-caption);font-weight:var(--weight-medium);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-none)}
+.markdown :is(tbody th:not([scope="col" i],[scope="colgroup" i]),th:is([scope="row" i],[scope="rowgroup" i])){font-size:1em;font-weight:var(--weight-medium);line-height:inherit;letter-spacing:var(--tracking-none)}
+kbd{font-family:var(--sans);font-size:var(--type-caption);font-weight:var(--weight-regular);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-none);white-space:nowrap}

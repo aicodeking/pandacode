@@ -6,9 +6,11 @@
  * while it has no messages) keeps its text under one key per project instead
  * (`pandacode.draft:new:<project id>`), which the next New task in that project takes over. A shared
  * bot channel's composer text is kept the same way under `pandacode.draft:channel:<channel id>`.
- * Every change is written at once (a draft is at most MAX_DRAFT_CHARS, so a write stays cheap), and
- * so is removing one (sending it, clearing it): a crash loses no keystroke and never brings a sent
- * prompt back. A draft is dropped only when
+ * Without a write timer every change is written at once. The app passes one (`DraftWriteTimer`): the
+ * first change of a burst is written at once, later ones at most every DRAFT_WRITE_DELAY (a draft
+ * can be 100 KB, too much to rewrite on every keystroke), and `flush()` writes what is waiting
+ * (window hidden, pagehide, app-quitting, a thread switch). Removing one (sending it, clearing it)
+ * is always written at once, so a crash never brings a sent prompt back. A draft is dropped only when
  * it is older than DRAFT_MAX_AGE or dated more than a day ahead (at launch, then daily and when the window shows again),
  * malformed, too large, pushed out by DRAFTS_BYTE_BUDGET (oldest first; a full store drops more
  * and retries once), or its thread is deleted (also while the app was closed: `dropDeletedDrafts`); a project's New task
@@ -68,8 +70,12 @@ export const DRAFT_FUTURE_SLACK = 24 * 60 * 60 * 1000;
 export const DRAFTS_BYTE_BUDGET = 1_000_000;
 /** How often a running app drops expired drafts, besides when its window shows again. */
 export const EXPIRE_EVERY = 24 * 60 * 60 * 1000;
-/** Debounce window (ms) for active composer typing when `set(id, text, false)` is used. */
-export const DRAFT_FLUSH_MS = 200;
+/** With a write timer, changes after the first of a burst are written at most this often (ms). */
+export const DRAFT_WRITE_DELAY = 300;
+/** Schedules the coalesced draft writes; `cancel` takes what `wait` returned. */
+export interface DraftWriteTimer { wait: Schedule; cancel: (handle: unknown) => void }
+/** The browser's timers, for the app's drafts. */
+export const browserDraftTimer: DraftWriteTimer = { wait: (run, ms) => setTimeout(run, ms), cancel: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
 
 const bytes = (text: string) => text.length * 2;
 const keep = (text: string) => Boolean(text.trim()) && text.length <= MAX_DRAFT_CHARS;
@@ -105,24 +111,20 @@ export class PersistedDrafts extends Map<string, string> {
   private readonly stored = new Map<string, number>();
   /** A New task's id → the project key it is stored under (the latest one typed in owns the key). */
   private readonly claimed = new Map<string, string>();
-  /** Draft ids changed with `immediate = false` that still await a storage write. */
-  private readonly dirty = new Set<string>();
-  private flushTimer: unknown = null;
+  /** Changed drafts waiting for the write timer. */
+  private readonly pending = new Set<string>();
+  /** The running write window; undefined when the next change may be written at once. */
+  private window: unknown;
   private loaded = false;
   private keeping: boolean;
   private readonly store: Store;
   private readonly now: () => number;
-  private readonly wait: Schedule;
-  private readonly cancel: (handle: unknown) => void;
+  private readonly timer: DraftWriteTimer | undefined;
 
-  constructor(
-    store: Store,
-    now: () => number = Date.now,
-    wait: Schedule = (run, ms) => setTimeout(run, ms),
-    cancel: (handle: unknown) => void = handle => clearTimeout(handle as ReturnType<typeof setTimeout>),
-  ) {
+  /** `timer`: coalesce writes (see the file comment); without one every change is written at once. */
+  constructor(store: Store, now: () => number = Date.now, timer?: DraftWriteTimer) {
     super();
-    this.store = store; this.now = now; this.wait = wait; this.cancel = cancel;
+    this.store = store; this.now = now; this.timer = timer;
     this.keeping = safeRead(store, KEEP_DRAFTS_KEY) !== 'off';
     for (const key of storedKeys(store)) {
       if (!this.keeping) { safeRemove(store, key); continue; }
@@ -136,63 +138,43 @@ export class PersistedDrafts extends Map<string, string> {
   /** A New task with no text of its own takes over its project's kept text. */
   override get(id: string): string | undefined { return super.get(id) ?? this.adopt(id); }
 
-  override set(id: string, text: string, immediate = true): this {
+  override set(id: string, text: string): this {
     if (!this.loaded) return super.set(id, text);
     this.claim(id);
-    if (super.get(id) === text) {
-      if (immediate && this.dirty.has(id)) this.flush(id);
-      return this;
-    }
+    if (super.get(id) === text) return this;
     super.set(id, text);
     this.savedAt.set(id, this.now());
-    if (!keep(text)) {
-      this.dropDirty(id);
-      this.unstore(id);
-    } else if (immediate) {
-      this.dropDirty(id);
-      this.write(id);
-    } else {
-      this.dirty.add(id);
-      this.scheduleFlush();
-    }
+    if (!keep(text)) { this.pending.delete(id); this.unstore(id); }
+    else if (this.timer && this.window !== undefined) this.pending.add(id);
+    else { this.write(id); this.openWindow(); }
     return this;
   }
 
-  /** Writes any pending debounced draft changes to storage immediately. */
-  flush(id?: string): void {
-    if (!this.loaded) return;
-    if (id !== undefined) {
-      if (!this.dirty.delete(id)) return;
-      if (!this.dirty.size) this.cancelFlushTimer();
-      const text = super.get(id);
-      if (text !== undefined && keep(text)) this.write(id); else this.unstore(id);
-      return;
-    }
-    this.cancelFlushTimer();
-    if (!this.dirty.size) return;
-    const pending = [...this.dirty];
-    this.dirty.clear();
-    for (const dirtyId of pending) {
-      const text = super.get(dirtyId);
-      if (text !== undefined && keep(text)) this.write(dirtyId); else this.unstore(dirtyId);
-    }
+  /** Writes every change still waiting for the write timer, at once. */
+  flush(): void {
+    if (this.window !== undefined) { this.timer?.cancel(this.window); this.window = undefined; }
+    this.writePending();
   }
 
-  private scheduleFlush(): void {
-    this.cancelFlushTimer();
-    this.flushTimer = this.wait(() => { this.flushTimer = null; this.flush(); }, DRAFT_FLUSH_MS);
+  /** Changes in the next DRAFT_WRITE_DELAY wait for the timer; a window that wrote something stays open one more. */
+  private openWindow(): void {
+    if (!this.timer) return;
+    this.window = this.timer.wait(() => {
+      this.window = undefined;
+      if (this.writePending()) this.openWindow();
+    }, DRAFT_WRITE_DELAY);
   }
-  private cancelFlushTimer(): void {
-    if (this.flushTimer === null) return;
-    this.cancel(this.flushTimer);
-    this.flushTimer = null;
-  }
-  private dropDirty(id: string): void {
-    if (this.dirty.delete(id) && !this.dirty.size) this.cancelFlushTimer();
+
+  private writePending(): boolean {
+    if (!this.pending.size) return false;
+    const ids = [...this.pending];
+    this.pending.clear();
+    for (const id of ids) if (super.has(id)) this.write(id);
+    return true;
   }
 
   override delete(id: string): boolean {
-    this.dropDirty(id);
+    this.pending.delete(id);
     this.savedAt.delete(id);
     this.unstore(id);
     this.claimed.delete(id);
@@ -204,8 +186,7 @@ export class PersistedDrafts extends Map<string, string> {
    * also any this launch never loaded) and drops them from memory, except `keep`'s: the text shown
    * in an open composer stays on screen, unstored until its next change. */
   clearStored(keep: (id: string) => boolean = () => false): void {
-    this.cancelFlushTimer();
-    this.dirty.clear();
+    this.pending.clear();
     for (const key of storedKeys(this.store)) safeRemove(this.store, key);
     this.stored.clear(); this.claimed.clear();
     for (const id of [...this.keys()]) if (!keep(id)) { super.delete(id); this.savedAt.delete(id); }
@@ -225,7 +206,6 @@ export class PersistedDrafts extends Map<string, string> {
 
   /** Drops drafts untouched for DRAFT_MAX_AGE, or dated more than DRAFT_FUTURE_SLACK ahead, from storage and memory. */
   expire(): void {
-    this.flush();
     for (const [id, at] of [...this.savedAt]) if (this.expired(at)) this.delete(id);
   }
 
@@ -250,15 +230,10 @@ export class PersistedDrafts extends Map<string, string> {
 
   /** The task's New task state may have changed (a delivered queued message published it, or a
    * failed first send left it a New task again): its text follows, as on its next keystroke. */
-  reclaim(id: string): void {
-    if (!this.loaded) return;
-    if (this.dirty.has(id)) this.flush(id);
-    else this.claim(id);
-  }
+  reclaim(id: string): void { if (this.loaded) this.claim(id); }
 
   /** `reclaim` for every thread draft: call after the session list (or a task's draft flag) changed. */
   reclaimAll(): void {
-    this.flush();
     for (const id of [...this.keys()]) if (!id.startsWith(NEW_TASK_DRAFT) && !id.startsWith(CHANNEL_DRAFT)) this.reclaim(id);
   }
 
@@ -269,19 +244,16 @@ export class PersistedDrafts extends Map<string, string> {
   private claim(id: string, rewrite = true): void {
     const key = this.newTaskKey(id), previous = this.claimed.get(id);
     if (previous === key) return;
-    const moved = this.stored.has(id) || this.dirty.has(id);
+    const moved = this.stored.has(id) || this.pending.has(id);
     safeRemove(this.store, DRAFT_PREFIX + (previous ?? id)); this.stored.delete(id);
     if (key === undefined) this.claimed.delete(id);
     else {
-      if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); this.dropDirty(key); }
-      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); this.dropDirty(other); }
+      if (super.has(key)) { super.delete(key); this.savedAt.delete(key); this.stored.delete(key); this.pending.delete(key); }
+      for (const [other, owned] of this.claimed) if (owned === key) { this.claimed.delete(other); this.stored.delete(other); this.pending.delete(other); }
       this.claimed.set(id, key);
     }
     // Moved to another project, published, or a New task again: its text moves to the new key.
-    if (rewrite && (previous !== undefined || moved) && super.has(id)) {
-      this.dropDirty(id);
-      this.write(id);
-    }
+    if (rewrite && (previous !== undefined || moved) && super.has(id)) this.write(id);
   }
 
   private unstore(id: string): void {
@@ -290,6 +262,7 @@ export class PersistedDrafts extends Map<string, string> {
   }
 
   private write(id: string): void {
+    this.pending.delete(id);
     // Its New task state may have changed since the change was typed.
     this.claim(id, false);
     if (!this.keeping) return;
@@ -334,13 +307,10 @@ export function draftThreadBatches(ids: Iterable<string>): string[][] {
   return Array.from({ length: Math.ceil(threads.length / MISSING_BATCH) }, (_, index) => threads.slice(index * MISSING_BATCH, (index + 1) * MISSING_BATCH));
 }
 
-type DraftCollection = Pick<Map<string, string>, 'keys' | 'delete'> & Partial<Pick<PersistedDrafts, 'flush'>>;
-
 /** At boot, after the task list: drops the drafts of threads deleted while the app was closed
  * (`missing` returns the asked ids that have no session at all). A failing check is logged once
  * and changes nothing more. */
-export async function dropDeletedDrafts(drafts: DraftCollection, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
-  drafts.flush?.();
+export async function dropDeletedDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, missing: (ids: string[]) => Promise<unknown>): Promise<void> {
   for (const batch of draftThreadBatches(drafts.keys())) {
     let gone: unknown;
     try { gone = await missing(batch); } catch (error) { console.warn('Could not check for drafts of deleted threads:', error); return; }
@@ -352,25 +322,29 @@ export async function dropDeletedDrafts(drafts: DraftCollection, missing: (ids: 
 
 /** At boot, once `list_projects` has answered (never after a failed load): drops the New task text
  * of projects that no longer exist, such as one removed by another window or a remote client. */
-export function dropRemovedProjectDrafts(drafts: DraftCollection, projectIds: readonly string[]): void {
-  drafts.flush?.();
+export function dropRemovedProjectDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, projectIds: readonly string[]): void {
   const live = new Set(projectIds);
   for (const id of [...drafts.keys()]) if (id.startsWith(NEW_TASK_DRAFT) && !live.has(id.slice(NEW_TASK_DRAFT.length))) drafts.delete(id);
 }
 
 /** Once a launch, after `bot_shared_channels` has answered (never after a failed load; the list
  * includes archived channels): drops the composer text of channels that no longer exist. */
-export function dropRemovedChannelDrafts(drafts: DraftCollection, channelIds: readonly string[]): void {
-  drafts.flush?.();
+export function dropRemovedChannelDrafts(drafts: Pick<Map<string, string>, 'keys' | 'delete'>, channelIds: readonly string[]): void {
   const live = new Set(channelIds);
   for (const id of [...drafts.keys()]) if (id.startsWith(CHANNEL_DRAFT) && !live.has(id.slice(CHANNEL_DRAFT.length))) drafts.delete(id);
 }
 
-/** Drops expired drafts while the app runs (once a day and whenever the window shows again) and
- * flushes pending debounced typing as soon as the window hides. */
-export function expireDraftsWhileRunning(drafts: Pick<PersistedDrafts, 'expire'> & Partial<Pick<PersistedDrafts, 'flush'>>, doc: Pick<Document, 'addEventListener' | 'visibilityState'> = document): void {
+/** Drops expired drafts while the app runs: once a day and whenever the window shows again. */
+export function expireDraftsWhileRunning(drafts: Pick<PersistedDrafts, 'expire'>, doc: Pick<Document, 'addEventListener' | 'visibilityState'> = document): void {
   setInterval(() => drafts.expire(), EXPIRE_EVERY);
-  doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'visible') drafts.expire(); else drafts.flush?.(); });
+  doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'visible') drafts.expire(); });
+}
+
+/** Writes drafts waiting for the write timer when the window is hidden or the page goes away
+ * (main.ts also flushes on `app-quitting` and before a thread switch). */
+export function flushDraftsOnLeave(drafts: Pick<PersistedDrafts, 'flush'>, doc: Pick<Document, 'addEventListener' | 'visibilityState'> = document, win: Pick<Window, 'addEventListener'> = window): void {
+  doc.addEventListener('visibilitychange', () => { if (doc.visibilityState === 'hidden') drafts.flush(); });
+  win.addEventListener('pagehide', () => drafts.flush());
 }
 
 /** Remembers the open thread; an empty id forgets it (nothing selected). `newTask`: the thread is
@@ -489,10 +463,10 @@ export function finishThreadRestore(store: Pick<Store, 'getItem' | 'removeItem'>
 }
 
 /** The page is going away in an orderly way: pagehide, or the native `app-quitting` event once a
- * deliberate exit is committed (WKWebView may not fire pagehide on Cmd+Q). Flushes any pending
- * debounced composer draft, clears any thread-restore mark, and marks an orderly close. */
-export function leavePage(store: Pick<Store, 'getItem' | 'removeItem'>, drafts?: Pick<PersistedDrafts, 'flush'>): void {
-  drafts?.flush(); finishThreadRestore(store); pageClosed(store);
+ * deliberate exit is committed (WKWebView may not fire pagehide on Cmd+Q). No thread is being
+ * opened and the window did not die (main.ts flushes waiting drafts first: `PersistedDrafts.flush`). */
+export function leavePage(store: Pick<Store, 'getItem' | 'removeItem'>): void {
+  finishThreadRestore(store); pageClosed(store);
 }
 
 type Frame = (run: () => void) => unknown;

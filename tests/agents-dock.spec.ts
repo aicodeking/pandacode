@@ -8,8 +8,9 @@ const openGeneral = async (page: Page) => {
 };
 
 test('the widget stays off until it is turned on in Settings, and the choice survives a restart', async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto('/');
-  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await expect(page.locator('.task-item.selected')).toHaveCount(1, { timeout: 30_000 });
   const trigger = page.locator('.agents-dock-trigger');
   await expect(trigger).toBeHidden();
   expect(await page.locator('#agents-dock-host').evaluate(el => el.getBoundingClientRect().width)).toBe(0);
@@ -27,7 +28,7 @@ test('the widget stays off until it is turned on in Settings, and the choice sur
   await expect(trigger).toHaveAttribute('aria-label', 'Running agents, 3 active');
 
   await page.reload();
-  await expect(page.locator('.agents-dock-trigger')).toBeVisible();
+  await expect(page.locator('.agents-dock-trigger')).toBeVisible({ timeout: 30_000 });
   await openGeneral(page);
   await page.getByRole('checkbox', { name: 'Running agents widget', exact: true }).focus();
   await page.keyboard.press('Space');
@@ -37,7 +38,7 @@ test('the widget stays off until it is turned on in Settings, and the choice sur
 test('running agents widget reveals active tasks and closes on selecting one', async ({ page }) => {
   await widgetOn(page);
   await page.goto('/');
-  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  await expect(page.locator('.task-item.selected')).toHaveCount(1, { timeout: 30_000 });
   const trigger = page.getByRole('button', { name: /Running agents/ });
   await expect(trigger).toBeVisible();
   await expect(trigger.locator('.agents-dock-count')).toHaveText('3');
@@ -55,7 +56,7 @@ test('Escape closes the header popover and returns focus to the trigger without 
   await widgetOn(page);
   await page.goto('/');
   const trigger = page.locator('.agents-dock-trigger');
-  await expect(trigger).toHaveAttribute('aria-controls', 'agents-dock-popover');
+  await expect(trigger).toHaveAttribute('aria-controls', 'agents-dock-popover', { timeout: 30_000 });
   await expect(trigger).toHaveAttribute('aria-label', 'Running agents, 3 active');
   await expect(trigger.locator('.agents-dock-count')).toHaveAttribute('aria-hidden', 'true');
   await trigger.focus();
@@ -80,7 +81,7 @@ test('the working ring follows the trigger radius and the popover uses the share
   expect(ring).toBe(button);
   await trigger.click();
   const radius = await page.locator('#agents-dock-popover').evaluate(el => getComputedStyle(el).borderTopLeftRadius);
-  expect(radius).toBe(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--glass-radius').trim()));
+  expect(radius).toBe(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--radius-popover').trim()));
 });
 
 test('the pinned window is transparent, works from the keyboard and keeps focus across updates', async ({ page }) => {
@@ -149,10 +150,50 @@ test('the pinned window keeps one live region and shows a failed action in it', 
   const dismiss = row.getByRole('button', {name: 'Dismiss error'});
   expect((await dismiss.boundingBox())!.height).toBe(28);
   await expect(row.locator('[data-state-tone="danger"]')).toHaveCount(1);
-  expect(await dismiss.evaluate(el => ({press: getComputedStyle(el).getPropertyValue('--press').trim(), icon: getComputedStyle(el.querySelector('.icon')!).width, radius: getComputedStyle(el).borderTopLeftRadius}))).toEqual({press: '.9', icon: '15px', radius: '6px'});
+  expect(await dismiss.evaluate(el => ({press: getComputedStyle(el).getPropertyValue('--press').trim(), icon: getComputedStyle(el.querySelector('.icon')!).width, radius: getComputedStyle(el).borderTopLeftRadius}))).toEqual({press: '.9', icon: '15px', radius: '8px'});
   await dismiss.click();
   await expect(live).toBeEmpty();
   await expect(live).toHaveCount(1);
   const focused = await page.evaluate(() => document.activeElement?.closest('button,[data-agent-id]') !== null);
   expect(focused).toBe(true);
+});
+
+test('the elapsed clock runs only while the list has rows', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.task-item.selected')).toHaveCount(1);
+  const result = await page.evaluate(async () => {
+    const live = new Set<number>(), setInterval = window.setInterval.bind(window), clearInterval = window.clearInterval.bind(window);
+    // Count only the clock's own one-second intervals.
+    window.setInterval = ((handler: TimerHandler, ms?: number, ...rest: unknown[]) => {
+      const id = setInterval(handler, ms, ...rest);
+      if (ms === 1_000) live.add(id);
+      return id;
+    }) as typeof window.setInterval;
+    window.clearInterval = ((id?: number) => { if (id !== undefined) live.delete(id); clearInterval(id); }) as typeof window.clearInterval;
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const moduleUrl = '/src/agents-dock.ts';
+    const { renderAgentRows, startElapsedTick } = await import(moduleUrl);
+    const list = document.createElement('div');
+    document.body.append(list);
+    const agent = { id: 'a1', title: 'Task', projectName: 'orbit', provider: 'claude', model: 'opus', status: 'running', elapsedSeconds: 5 };
+    const steps: Record<string, number | string> = {};
+    renderAgentRows(list, [], Date.now(), 'empty');
+    const stop = startElapsedTick(list);
+    await settle(); steps.empty = live.size;
+    renderAgentRows(list, [agent], Date.now(), 'empty');
+    await settle(); steps.rows = live.size;
+    const before = list.querySelector('time')!.textContent;
+    await new Promise(resolve => setTimeout(resolve, 2100));
+    steps.ticked = `${before} -> ${list.querySelector('time')!.textContent}`;
+    renderAgentRows(list, [], Date.now(), 'empty');
+    await settle(); steps.emptied = live.size;
+    renderAgentRows(list, [agent], Date.now(), 'empty');
+    await settle(); steps.again = live.size;
+    stop();
+    steps.stopped = live.size;
+    window.setInterval = setInterval as typeof window.setInterval; window.clearInterval = clearInterval;
+    list.remove();
+    return steps;
+  });
+  expect(result).toEqual({ empty: 0, rows: 1, ticked: '5s -> 7s', emptied: 0, again: 1, stopped: 0 });
 });

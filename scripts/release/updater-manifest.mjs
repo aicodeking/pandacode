@@ -5,8 +5,7 @@
 //   node scripts/release/updater-manifest.mjs <assets-dir> <version> <notes.md>
 import { readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { targets, updaterManifest } from './common.mjs';
+import { targets, updaterManifest, isMain } from './common.mjs';
 
 export async function signaturesIn(directory) {
   const signatures = {};
@@ -25,6 +24,6 @@ async function main() {
   console.log(`latest.json: ${manifest.version} for ${Object.keys(manifest.platforms).join(', ')}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

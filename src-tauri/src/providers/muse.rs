@@ -187,6 +187,22 @@ fn mcp_servers(server: &Value) -> Value {
     json!({field(server, "name"): {"transport":"streamableHttp","url":server["url"],"headers":headers}})
 }
 
+/// MSP stdio `mcpServers` entry from an ACP `McpServerStdio` (an extra server such
+/// as Colab's). Optional, so a server that fails to start never blocks the session.
+fn stdio_mcp_server(server: &Value) -> Value {
+    let mut entry = json!({"transport":"stdio","command":server["command"],"args":server["args"],"mode":"optional"});
+    let env: serde_json::Map<String, Value> = server["env"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|var| Some((var["name"].as_str()?.to_owned(), var["value"].clone())))
+        .collect();
+    if !env.is_empty() {
+        entry["env"] = Value::Object(env);
+    }
+    entry
+}
+
 fn tool_status(status: &str) -> &'static str {
     match status {
         "inProgress" => "running",
@@ -353,11 +369,15 @@ impl Protocol {
             INITIALIZE => {
                 step.write.push(json!({"jsonrpc":"2.0","method":"initialized"}));
                 let mut params = json!({"commandId":command_id()});
-                if let Some(server) = &self.mcp_server {
+                if self.mcp_server.is_some() || !self.extra_mcp_servers.is_empty() {
                     let granted = result["grantedCapabilities"].as_array().is_some_and(|c| c.iter().any(|c| c == "sessionMcp"));
                     if granted {
-                        params["config"] = json!({"mcpServers":mcp_servers(server)});
-                    } else if self.mcp_required {
+                        let mut servers = self.mcp_server.as_ref().map(mcp_servers).unwrap_or_else(|| json!({}));
+                        for extra in &self.extra_mcp_servers {
+                            servers[field(extra, "name")] = stdio_mcp_server(extra);
+                        }
+                        params["config"] = json!({"mcpServers":servers});
+                    } else if self.mcp_server.is_some() && self.mcp_required {
                         return Err("This Muse Code version cannot attach PandaCode's agent tools. Update Muse Code and retry.".into());
                     }
                 }
@@ -1107,6 +1127,34 @@ mod tests {
         assert!(step.events.is_empty());
         let step = p.receive(json!({"jsonrpc":"2.0","id":9,"method":"computerUse/whatever","params":{}})).unwrap();
         assert_eq!(step.write[0]["error"]["code"], -32601);
+    }
+
+    #[test]
+    fn colab_mcp_rides_as_an_optional_stdio_session_server() {
+        let colab = super::super::mcp_host::acp_mcp_servers(&[super::super::mcp_host::Stdio::new(
+            super::super::mcp_host::COLAB_MCP,
+            "/bin/uvx".into(),
+            vec!["colab-mcp".into()],
+        )]);
+        let bridge = json!({"type":"http","name":"pandacode_architect","url":"http://127.0.0.1:9/mcp","headers":[{"name":"Authorization","value":"Bearer t"}]});
+        let start = |bridge: Option<Value>, extra: Vec<Value>| {
+            let mut p = Protocol::new(super::super::tests::config("muse"));
+            p.mcp_server = bridge;
+            p.extra_mcp_servers = extra;
+            p.receive(initialized()).unwrap().write[1].clone()
+        };
+        let with = start(Some(bridge.clone()), colab.clone());
+        let servers = &with["params"]["config"]["mcpServers"];
+        assert_eq!(servers["pandacode_architect"]["transport"], "streamableHttp");
+        assert_eq!(servers["colab-mcp"], json!({"transport":"stdio","command":"/bin/uvx","args":["colab-mcp"],"mode":"optional"}));
+        // Colab alone still attaches.
+        let alone = start(None, colab);
+        assert_eq!(alone["params"]["config"]["mcpServers"].as_object().unwrap().len(), 1);
+        assert_eq!(alone["params"]["config"]["mcpServers"]["colab-mcp"]["transport"], "stdio");
+        // Off by default: the session carries exactly the bridge, and nothing without one.
+        let without = start(Some(bridge.clone()), Vec::new());
+        assert_eq!(without["params"]["config"], json!({"mcpServers":mcp_servers(&bridge)}));
+        assert!(start(None, Vec::new())["params"].get("config").is_none());
     }
 
     #[test]

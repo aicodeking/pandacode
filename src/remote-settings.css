@@ -1,24 +1,27 @@
 /* PandaCode Connect: Settings → Remote access. */
-.remote-dot{display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:var(--radius-full);background:var(--muted);vertical-align:middle;flex:none}
+.remote-dot{display:inline-block;width:8px;height:8px;margin-right:8px;border-radius:50%;background:var(--muted);vertical-align:middle;flex:none}
 .remote-dot[data-online="true"]{background:var(--ds-success)}
-.remote-badge{display:inline-flex;align-items:center;height:20px;margin-left:6px;padding:0 7px;border-radius:var(--ds-radius-chip);background:var(--ds-fill);color:var(--muted);font-size:var(--ds-text-chip);font-weight:var(--weight-medium)}
-.remote-note{margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--muted);font-size:var(--ds-text-meta)}
+.remote-badge{display:inline-flex;align-items:center;min-height:20px;margin-left:6px;padding:0 7px;border-radius:var(--radius-chip);background:var(--ds-fill);color:var(--muted);font-size:var(--type-caption);line-height:var(--type-caption-leading);font-weight:var(--weight-medium)}
+.remote-note{margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--muted);font-size:var(--type-meta)}
 /* Banner = the shared .error-row card from styles.css; only its margin and size are set for this surface. */
-.message-error.error-row.remote-error-row{margin:8px 0 0;font-size:var(--ds-text-ui)}
-.remote-load-error{display:flex;align-items:center;gap:var(--ds-row-gap);margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--text);font-size:var(--ds-text-ui)}
+.message-error.error-row.remote-error-row{margin:8px 0 0;font-size:var(--type-body);line-height:var(--type-body-leading)}
+.remote-load-error{display:flex;align-items:center;gap:var(--ds-row-gap);margin:8px calc(var(--ds-row-pad-x) - var(--ds-card-pad));color:var(--text);font-size:var(--type-body)}
 .remote-load-error>.icon{width:18px;height:18px;color:var(--ds-danger);flex:none}
 .remote-load-error>span{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.remote-load-error small{font-size:var(--ds-text-meta);color:var(--muted);overflow-wrap:anywhere}
+.remote-load-error small{font-size:var(--type-meta);color:var(--muted);overflow-wrap:anywhere}
 .remote-load-error .secondary-button{flex:none}
-.remote-code{padding:12px calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-radius-inner)}
+.remote-code{padding:12px calc(var(--ds-row-pad-x) - var(--ds-card-pad));border-radius:var(--ds-inner-radius)}
+.settings-page-root .settings-group .remote-code{border-radius:var(--ds-control-radius)}
+html[data-theme] .settings-page-root .settings-group .remote-code :is(button,.primary-button,.secondary-button){border-radius:var(--radius-chip)}
 .remote-code-row{display:flex;align-items:center;gap:12px;margin:.5rem 0}
-.remote-user-code{font:600 var(--text-xl)/1 var(--mono);letter-spacing:.12em}
+.remote-user-code{font:var(--type-title-weight) var(--type-title)/var(--type-title-leading) var(--mono);letter-spacing:var(--tracking-tight)}
 .remote-device-actions{display:flex;align-items:center;gap:8px;flex:none}
-.remote-device-actions select{width:auto;max-width:150px;height:32px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-fill);font-size:var(--ds-text-ui)}
+.remote-device-actions select{width:auto;max-width:150px;min-height:32px;padding-block:0;padding-inline-start:10px;border:0;border-radius:var(--ds-control-radius);background-color:var(--ds-fill);font-size:var(--type-body)}
+.remote-device-actions select:where([multiple],[size]:not([size="1"])){height:auto;padding-block:4px;padding-inline-end:10px}
 .remote-device-actions .primary-button,.remote-device-actions .secondary-button{padding:0 12px;min-height:32px}
-.setting-row .remote-device-actions input.remote-pair-input{width:84px;height:32px;padding:0 10px;border:0;border-radius:var(--ds-radius-control);background:var(--ds-card-inset);font:var(--ds-text-ui) var(--mono);letter-spacing:.08em;text-align:center}
+.setting-row .remote-device-actions input.remote-pair-input{width:84px;height:32px;padding:0 10px;border:0;border-radius:var(--ds-control-radius);background:var(--ds-card-inset);font:var(--type-body)/var(--type-body-leading) var(--mono);letter-spacing:var(--tracking-none);text-align:center}
 .remote-pending{background:var(--ds-card-inset)}
-.remote-key{font:var(--ds-text-chip) var(--mono);color:var(--text)}
+.remote-key{font:var(--type-caption)/var(--type-caption-leading) var(--mono);color:var(--text)}
 .remote-orchestration:empty{display:none}
 .remote-badge{color:var(--ds-tone-remote,var(--muted))}
 .remote-device-actions :is(select,button,input):focus-visible{outline:2px solid var(--focus);outline-offset:2px}

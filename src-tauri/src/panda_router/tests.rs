@@ -207,7 +207,7 @@ fn check_routes(router: &Router, fx: &Fixture, pick: impl Fn(&FixtureRoutes) -> 
 #[test]
 fn catalog_loads_every_card() {
     let catalog = cards::catalog().unwrap();
-    assert_eq!(catalog.cards.len(), 156);
+    assert_eq!(catalog.cards.len(), 162);
     assert!(catalog.by_id(matcher::DEFAULT_CARD).is_some());
 }
 
@@ -217,11 +217,17 @@ fn resolves_pandacode_models() {
         (("claude", "opus", "Opus"), Some("claude-opus-5.5")),
         (("claude", "sonnet", "Sonnet"), Some("claude-sonnet-5.5")),
         (("claude", "haiku", "Haiku"), Some("claude-haiku-5.5")),
-        (("claude", "fable", "Fable"), Some("claude-fable-5.1")),
+        (("claude", "fable", "Fable"), Some("claude-fable-5.2")),
+        (("claude", "claude-fable-5-2", "Fable 5.2"), Some("claude-fable-5.2")),
+        (("claude", "claude-fable-5-1", "Fable 5.1"), Some("claude-fable-5.1")),
+        (("claude", "claude-fable-5", "Fable 5"), Some("claude-fable-5")),
         (("claude", "claude-haiku-4-5-20251001", "Haiku 4.5"), Some("claude-haiku-4.5")),
         (("claude", "default", "Default · Claude Opus 5.5 · Claude Code"), Some("claude-opus-5.5")),
         (("claude", "default", "Default"), None),
         (("codex", "gpt-6-luna", "GPT-6 Luna"), Some("codex-gpt-6-luna")),
+        (("codex", "gpt-6.2-sol", "GPT-6.2 Sol"), Some("codex-gpt-6.2-sol")),
+        (("opencode", "openrouter/openai/gpt-6.2-sol", "GPT-6.2 Sol"), Some("codex-gpt-6.2-sol")),
+        (("codex", "gpt-6.2-astra", "GPT-6.2 Astra"), Some("codex-gpt-6.2-astra")),
         (("codex", "gpt-5.6-terra", "GPT-5.6 Terra"), Some("codex-gpt-5.6-terra")),
         (("codex", "gpt-5.6-luna", "GPT-5.6 Luna"), Some("codex-gpt-5.6-luna")),
         (("codex", "default", "Default · GPT-6 Luna · Codex"), Some("codex-gpt-6-luna")),
@@ -238,7 +244,17 @@ fn resolves_pandacode_models() {
         (("grok", "default", "Default"), None),
         (("muse", "muse-wonder-1.0", "Muse Wonder"), Some("muse-wonder-1.0")),
         (("muse", "muse-spark-1.3", "Muse Spark 1.3"), Some("openrouter-muse-spark-1.3")),
+        (("antigravity", "gemini-4-carbon", "Gemini 4 Carbon"), Some("gemini-4-carbon")),
+        (("antigravity", "gemini-4-carbon-high", "Gemini 4 Carbon High"), Some("gemini-4-carbon")),
+        (("antigravity", "gemini-4-hydrogen", "Gemini 4 Hydrogen"), Some("gemini-4-hydrogen")),
+        (("antigravity", "gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen Extra"), Some("gemini-4-hydrogen")),
+        (("antigravity", "gemini-4-neon", "Gemini 4 Neon"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-low", "Gemini 4 Neon Low"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-medium", "Gemini 4 Neon Medium"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-high", "Gemini 4 Neon High"), Some("gemini-4-neon")),
+        (("antigravity", "gemini-4-neon-xhigh", "Gemini 4 Neon Extra"), Some("gemini-4-neon")),
         (("kimi", "moonshot-ai/kimi-k3.1-pro-highspeed", "K3.1 Pro HS"), Some("kimi-k3.1-pro-highspeed")),
+        (("opencode", "openrouter/google/gemini-4-neon", "Gemini 4 Neon"), Some("gemini-4-neon")),
         (("opencode", "openrouter/deepseek/deepseek-v4-flash", "DeepSeek V4 Flash"), Some("openrouter-deepseek-v4-flash")),
         (("opencode", "openrouter/qwen/qwen3.8-27b", "Qwen 3.8 27B"), Some("openrouter-qwen3.8-27b")),
         (("opencode", "ollama/qwen3.8:27b", "qwen3.8:27b"), Some("ollama-qwen3.8-27b")),
@@ -301,6 +317,9 @@ fn onnx_matches_python() {
     let Some(dir) = assets() else { return };
     let router = Router::load(&dir).unwrap();
     assert!(router.is_onnx());
+    assert!(success::HEAD.covers("openrouter-gpt-6.1-sol"));
+    check_newer_models_supersede_predecessors(&router);
+    check_gemini_4_neon_prioritized_over_sol(&router);
     let onnx = router.onnx.as_ref().unwrap();
     let fx = fixture();
     for (n, task) in fx.tasks.iter().enumerate() {
@@ -433,6 +452,126 @@ fn tiered(pairs: &[(&str, Tier)]) -> Tiers {
 fn route_mid(pool: &[PoolModel], mode: Mode, failed: &[PoolModel], tiers: &Tiers) -> Route {
     let c = TaskContext { requires_tools: true, files_in_scope: Some(3), ..TaskContext::default() };
     Router::heuristic().route(MID_TASK, &c, pool, &Preferences { mode, min_p: 0.5 }, failed, tiers).unwrap()
+}
+
+#[test]
+fn new_model_cards_are_rated_and_pickable_for_tool_tasks() {
+    for id in ["claude-fable-5.2", "codex-gpt-6.2-sol", "codex-gpt-6.2-astra", "gemini-4-carbon", "gemini-4-hydrogen", "gemini-4-neon"] {
+        for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+            let route = route_mid(&[card_model(id)], mode, &[], &Tiers::new());
+            assert!(route.unrated.is_empty(), "{id} {mode:?}");
+            assert_eq!(route.ranking.len(), 1, "{id} {mode:?}");
+            let pick = route.pick.unwrap();
+            assert_eq!(pick.card_id, id, "{mode:?}");
+            assert!(pick.tier.is_none(), "{id} must have its own card");
+            assert!((0.0..=1.0).contains(&pick.p_success), "{id} {mode:?}");
+            assert_eq!(route.profiler, "heuristic");
+        }
+    }
+}
+
+fn check_newer_models_supersede_predecessors(router: &Router) {
+    let families: [(&str, &[&str]); 3] = [
+        ("codex-gpt-6.2-sol", &["openrouter-gpt-6.1-sol", "openrouter-gpt-6-sol"]),
+        ("codex-gpt-6.2-astra", &["openrouter-gpt-6-astra"]),
+        ("claude-fable-5.2", &["claude-fable-5.1", "claude-fable-5"]),
+    ];
+    let context = TaskContext { requires_tools: true, files_in_scope: Some(3), ..TaskContext::default() };
+    for (newer, predecessors) in families {
+        // Put predecessors first so pool order cannot accidentally prefer the successor.
+        let pool: Vec<_> = predecessors.iter().copied().chain([newer]).map(card_model).collect();
+        for mode in [Mode::Balanced, Mode::Cheapest, Mode::Quality] {
+            let prefs = Preferences { mode, min_p: 0.5 };
+            for tiers in [Tiers::new(), tiered(&[(predecessors[0], Tier::S)])] {
+                let route = router.route(MID_TASK, &context, &pool, &prefs, &[], &tiers).unwrap();
+                assert!(route.unrated.is_empty(), "{newer} {mode:?}");
+                assert_eq!(route.pick.as_ref().unwrap().card_id, newer, "{mode:?} {tiers:?}");
+                for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+                    assert!(!predecessors.contains(&row.card_id.as_str()), "{} survived {newer} in {mode:?} {tiers:?}", row.card_id);
+                }
+                assert_eq!(route.ranking.len(), 1, "{newer} {mode:?}");
+                assert_eq!(route.ladder.len(), 1, "{newer} {mode:?}");
+            }
+            // Superseding is conditional on availability, not a retirement of the old card.
+            for predecessor in predecessors {
+                let route = router.route(MID_TASK, &context, &[card_model(predecessor)], &prefs, &[], &Tiers::new()).unwrap();
+                assert!(route.unrated.is_empty(), "{predecessor} {mode:?}");
+                assert_eq!(route.pick.as_ref().unwrap().card_id, *predecessor, "{mode:?}");
+                assert_eq!(route.ranking.len(), 1, "{predecessor} {mode:?}");
+                assert_eq!(route.ranking[0].card_id, *predecessor, "{mode:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn newer_models_supersede_predecessors_when_available() {
+    check_newer_models_supersede_predecessors(&Router::heuristic());
+}
+
+fn check_gemini_4_neon_prioritized_over_sol(router: &Router) {
+    let context = TaskContext { requires_tools: true, files_in_scope: Some(3), ..TaskContext::default() };
+    // Put Sol cards first so pool order cannot accidentally favor Neon.
+    let with_neon: Vec<PoolModel> = ["codex-gpt-6.2-sol", "openrouter-gpt-6.1-sol", "gemini-4-neon"]
+        .into_iter()
+        .map(card_model)
+        .collect();
+    let both_s = tiered(&[("gemini-4-neon", Tier::S), ("codex-gpt-6.2-sol", Tier::S)]);
+    for mode in [Mode::Balanced, Mode::Quality, Mode::Cheapest] {
+        let prefs = Preferences { mode, min_p: 0.5 };
+        let route = router.route(MID_TASK, &context, &with_neon, &prefs, &[], &Tiers::new()).unwrap();
+        assert!(route.unrated.is_empty(), "{mode:?}");
+        assert_eq!(route.pick.as_ref().unwrap().card_id, "gemini-4-neon", "{mode:?}");
+        if mode == Mode::Balanced {
+            assert_eq!(route.ladder.first().map(|r| r.card_id.as_str()), Some("gemini-4-neon"), "{mode:?}");
+        }
+        for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived in {mode:?}");
+        }
+
+        // Equal 70% Tier::S blending compresses Δp just under EQUAL_P_MARGIN (0.05) and lets both
+        // clear min_p = 0.5 in heuristic Cheapest, so equal_p_cheaper / Cheapest may pick cheaper
+        // Sol; Quality pick, higher p_success, and Balanced ladder[0] still stay on gemini-4-neon.
+        let tiered_route = router.route(MID_TASK, &context, &with_neon, &prefs, &[], &both_s).unwrap();
+        assert!(tiered_route.unrated.is_empty(), "{mode:?} both-S");
+        assert!(
+            find(&tiered_route.ranking, "gemini-4-neon").unwrap().p_success
+                > find(&tiered_route.ranking, "codex-gpt-6.2-sol").unwrap().p_success,
+            "{mode:?} both-S"
+        );
+        if mode == Mode::Quality {
+            assert_eq!(tiered_route.pick.as_ref().unwrap().card_id, "gemini-4-neon", "{mode:?} both-S");
+        }
+        if mode == Mode::Balanced {
+            assert_eq!(
+                tiered_route.ladder.first().map(|r| r.card_id.as_str()),
+                Some("gemini-4-neon"),
+                "{mode:?} both-S"
+            );
+        }
+        for row in tiered_route.pick.iter().chain(&tiered_route.ladder).chain(&tiered_route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived in {mode:?} both-S");
+        }
+    }
+    // When Neon is absent, GPT-6.2 Sol still wins across all modes and supersedes 6.1 Sol.
+    let without_neon: Vec<PoolModel> = ["codex-gpt-6.2-sol", "openrouter-gpt-6.1-sol"]
+        .into_iter()
+        .map(card_model)
+        .collect();
+    for mode in [Mode::Balanced, Mode::Quality, Mode::Cheapest] {
+        let prefs = Preferences { mode, min_p: 0.5 };
+        let route = router.route(MID_TASK, &context, &without_neon, &prefs, &[], &Tiers::new()).unwrap();
+        assert!(route.unrated.is_empty(), "{mode:?}");
+        assert_eq!(route.pick.as_ref().unwrap().card_id, "codex-gpt-6.2-sol", "{mode:?}");
+        for row in route.pick.iter().chain(&route.ladder).chain(&route.ranking) {
+            assert_ne!(row.card_id, "openrouter-gpt-6.1-sol", "6.1 Sol survived without Neon in {mode:?}");
+        }
+    }
+}
+
+#[test]
+fn gemini_4_neon_is_prioritized_over_sol_when_available() {
+    check_gemini_4_neon_prioritized_over_sol(&Router::heuristic());
 }
 
 const WEAK: &str = "openrouter-qwen3.8-flash";

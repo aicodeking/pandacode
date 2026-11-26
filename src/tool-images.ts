@@ -218,21 +218,16 @@ export function retryLater(element: HTMLElement, attempt: () => void): void {
   setTimeout(() => { if (element.isConnected) attempt(); }, RETRY_MS);
 }
 
-const imageLoads = new WeakMap<HTMLElement, object>();
-
 /** Load (or retry) one button's image, at its size and with the thread it was stamped with; a failure is tried
  * again a few times while the button stays. A button rendered afresh asks with `retry`, so a row that re-renders
  * retries a failed image. */
 function loadButton(button: HTMLElement, load: ToolImageLoader): void {
   const path = button.dataset.toolImage, sessionId = buttonSession(button);
   const state = button.dataset.toolImageState;
-  if (!button.isConnected || !path || !sessionId || (state && state !== 'missing')) return;
+  if (!path || !sessionId || (state && state !== 'missing')) return;
   button.dataset.toolImageState = 'loading';
-  const request = {};
-  imageLoads.set(button, request);
   const cache = toolImageCache(load, buttonSize(button));
   void cache.get(sessionId, path, { retry: !state }).then(url => {
-    if (imageLoads.get(button) !== request || !button.isConnected) return;
     const error = url ? '' : cache.failure(sessionId, path);
     button.dataset.toolImageState = url ? 'loaded' : 'missing';
     fill(button, url, error);
@@ -241,20 +236,6 @@ function loadButton(button: HTMLElement, load: ToolImageLoader): void {
 }
 
 const observers = new WeakMap<ParentNode, IntersectionObserver>();
-const observedBy = new WeakMap<HTMLElement, IntersectionObserver>();
-
-/** Detached rows keep their controls and session stamps, never image payloads or observer targets. */
-export function releaseToolImages(root: Element): void {
-  const buttons = [...root.querySelectorAll<HTMLElement>('[data-tool-image]')];
-  if (root instanceof HTMLElement && root.matches('[data-tool-image]')) buttons.push(root);
-  for (const button of buttons) {
-    observedBy.get(button)?.unobserve(button);
-    observedBy.delete(button);
-    imageLoads.delete(button);
-    delete button.dataset.toolImageState;
-    button.querySelector('img')?.removeAttribute('src');
-  }
-}
 
 /** Fill every unloaded `[data-tool-image]` under `root`, lazily once near the viewport when possible. Buttons
  * not yet stamped with a thread take `sessionId`; stamped ones always load with their own. */
@@ -269,15 +250,11 @@ export function hydrateToolImages(root: ParentNode, sessionId: string, load: Too
       for (const entry of entries) {
         if (!entry.isIntersecting) continue;
         created.unobserve(entry.target);
-        observedBy.delete(entry.target as HTMLElement);
         loadButton(entry.target as HTMLElement, load);
       }
     }, { rootMargin: '200px 0px' });
     observers.set(root, created);
     observer = created;
   }
-  for (const button of buttons) {
-    observer.observe(button);
-    observedBy.set(button, observer);
-  }
+  for (const button of buttons) observer.observe(button);
 }

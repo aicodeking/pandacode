@@ -5,7 +5,7 @@
 .team-progress{display:grid;grid-template-columns:minmax(0,1fr);gap:0;margin:2px 0 12px}
 .team-progress:not([data-open])>:not(.team-progress-head){display:none}
 .team-progress-head{display:flex;align-items:center;gap:4px;min-height:32px;color:var(--muted)}
-.team-progress-toggle{flex:1;min-width:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:32px;padding:0 var(--ds-row-pad-x) 0 4px;border:0;border-radius:var(--ds-radius-control);background:none;color:inherit;font:inherit;font-size:var(--ds-text-sub);text-align:left;cursor:pointer}
+.team-progress-toggle{flex:1;min-width:0;display:flex;align-items:center;justify-content:flex-start;gap:6px;height:32px;padding:0 var(--ds-row-pad-x) 0 4px;border:0;border-radius:var(--ds-control-radius);background:none;color:inherit;font:inherit;font-size:var(--type-body);text-align:left;cursor:pointer}
 .team-progress-toggle:hover{background:var(--ds-row-hover);color:var(--text)}
 .team-progress-toggle:focus-visible{outline:2px solid var(--focus);outline-offset:-2px}
 .team-progress-toggle>.icon{flex:none;width:16px;height:16px;color:var(--ds-glyph-faint);transition:rotate var(--spring-fast-duration) var(--spring-fast)}
@@ -17,17 +17,17 @@
 .team-progress[data-count-tone=danger] .team-progress-count{color:var(--ds-danger)}
 .team-progress-menu{flex:none;width:28px;height:28px;color:var(--muted)}
 .team-progress-menu .icon{width:18px;height:18px}
-.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:32px;padding:2px var(--ds-row-pad-x) 2px 4px;border:0;border-radius:var(--ds-radius-control);background:none;text-align:left;color:var(--muted)}
-.team-progress-worker{font-size:var(--ds-text-ui);line-height:1.3}
+.team-progress-worker,.team-progress-more{display:flex;align-items:center;justify-content:flex-start;gap:var(--ds-row-gap);width:100%;min-width:0;min-height:32px;padding:2px var(--ds-row-pad-x) 2px 4px;border:0;border-radius:var(--ds-control-radius);background:none;text-align:left;color:var(--muted)}
+.team-progress-worker{font-size:var(--type-body);line-height:var(--type-body-leading)}
 .team-progress-worker:hover,.team-progress-more:hover{background:var(--ds-row-hover);color:var(--text)}
 .team-progress-worker:hover .team-progress-description small{color:var(--text)}
-.team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:var(--ds-radius-control)}
+.team-progress-worker:focus-visible,.team-progress-more:focus-visible{outline:2px solid var(--focus);outline-offset:-2px;border-radius:var(--ds-control-radius)}
 .team-progress-logo{display:flex;flex:none;width:20px;justify-content:center}
 .team-progress-logo .provider-logo{width:16px;height:16px}
 .team-progress-description{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-.team-progress-description strong{font-size:var(--ds-text-body);font-weight:var(--weight-medium);color:var(--text)}
-.team-progress-description small{margin-left:4px;font-size:var(--ds-text-ui);color:var(--muted)}
-.team-progress-status{flex:none;font-size:var(--ds-text-ui);white-space:nowrap;color:var(--muted)}
+.team-progress-description strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);color:var(--text);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none)}
+.team-progress-description small{margin-left:4px;font-size:var(--type-meta);color:var(--muted)}
+.team-progress-status{flex:none;font-size:var(--type-body);white-space:nowrap;color:var(--muted)}
 .team-progress-worker[data-status=Working] .team-progress-status{color:var(--ds-tone-team)}
 .team-progress-worker:is([data-status=Completed],[data-status=score-at]) .team-progress-status{color:var(--ds-success)}
 .team-progress-worker[data-status=score-below] .team-progress-status{color:var(--ds-tone-full)}
@@ -37,7 +37,7 @@
 .team-progress-worker[data-status=Working] .team-progress-spinner{display:block}
 @media(prefers-reduced-motion:no-preference){.team-progress-spinner{animation:state-pulse 1.6s ease-in-out infinite}}
 .team-progress-worker>.icon{width:var(--icon-md);height:var(--icon-md);flex:none;color:var(--muted)}
-.team-progress-more{font-size:var(--ds-text-ui)}
+.team-progress-more{font-size:var(--type-body)}
 .team-progress-more[hidden]{display:none}
 @media(prefers-contrast:more){.team-progress-description small{color:var(--text)}}
 @media(prefers-reduced-motion:reduce){.team-progress-toggle>.icon{transition:none}}

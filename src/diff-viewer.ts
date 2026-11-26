@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
-import type { FileDiff, FileDiffMetadata, FileDiffOptions, VirtualFileMetrics, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
+import type { FileDiff, FileDiffMetadata, FileDiffOptions, VirtualizedFileDiff, Virtualizer } from '@pierre/diffs';
 import type { WorkerPoolManager } from '@pierre/diffs/worker';
 // A real module URL, not a blob: the app CSP allows no blob: workers.
 import DiffWorker from '@pierre/diffs/worker/worker.js?worker';
-import { patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
+import { likelyFileNames, patchKey, splitPatch, type PatchChunk } from './diff-prefetch';
 import './diff-viewer.css';
 
 export interface DiffViewerInput {
@@ -13,7 +13,6 @@ export interface DiffViewerInput {
   truncated?: boolean;
   error?: string;
   layout?: 'unified' | 'split';
-  wrap?: boolean;
   /**
    * The element that scrolls when the viewer itself does not (a list of inline diffs).
    * Its first element child must hold all of its content: large files are virtualized
@@ -22,33 +21,11 @@ export interface DiffViewerInput {
   scrollRoot?: HTMLElement;
   /** Constant CSS added to every diff's shadow root (never patch content). */
   shadowCSS?: string;
-  /** Custom metadata hunk-separator height (px) when `shadowCSS` overrides Pierre's 32 px default. */
-  hunkSeparatorHeight?: number;
-  /** Custom block gap (px) when host CSS overrides `--diffs-gap-block` (Pierre's 8 px default). */
-  blockGap?: number;
-}
-
-export interface DiffViewerReaderState {
-  top: number;
-  left: number;
-  code: number[][];
-  layout: 'unified' | 'split';
-  wrap: boolean;
-  anchor?: {
-    container: number;
-    side: number;
-    index: string;
-    line: number;
-    lineSide: 'additions' | 'deletions';
-    offset: number;
-  };
 }
 
 export interface DiffViewerController {
   /** Resolves after the first render or a safe fallback; never rejects. */
   ready: Promise<void>;
-  getReaderState(): DiffViewerReaderState;
-  restoreReaderState(state: DiffViewerReaderState, options?: { vertical?: boolean }): void;
   /** Safe to call during the lazy import, and more than once. */
   dispose(): void;
 }
@@ -89,6 +66,8 @@ const SCROLL_SETTLE_MS = 120;
 // Mounting yields to the next frame after this much work, so no task blocks for long.
 const FIRST_SLICE_MS = 12;
 const SLICE_MS = 8;
+// Grammars the pool loads in the background after it starts.
+const COMMON_FILES = ['a.ts', 'a.tsx', 'a.js', 'a.json', 'a.css', 'a.html', 'a.md', 'a.rs', 'a.py', 'a.go', 'a.sh', 'a.yaml', 'a.toml'];
 const THEMES = { dark: 'pierre-dark', light: 'pierre-light' } as const;
 // The pool's options override each viewer's theme and line-diff options, so both use these.
 const HIGHLIGHT = { theme: THEMES, lineDiffType: 'word-alt', maxLineDiffLength: 1_000, tokenizeMaxLineLength: 2_000 } as const;
@@ -101,14 +80,11 @@ const mountedViewers = new WeakMap<HTMLElement, DiffViewerController>();
 // its own scroll anchor and applies its own scroll fix, so several on one root would
 // correct the same scrollTop for different anchors, and each would only notice its own
 // content's size changes.
-const sharedVirtualizers = new WeakMap<HTMLElement, { virtualizer: Virtualizer; users: number; overflowAnchor: string }>();
+const sharedVirtualizers = new WeakMap<HTMLElement, { virtualizer: Virtualizer; users: number }>();
 function acquireVirtualizer(lib: Diffs, root: HTMLElement): Virtualizer {
   let shared = sharedVirtualizers.get(root);
   if (!shared) {
-    shared = { virtualizer: new lib.Virtualizer({ overscrollSize: OVERSCROLL_PX }), users: 0, overflowAnchor: root.style.overflowAnchor };
-    // The virtualizer owns scroll anchoring; browser anchoring would apply the
-    // same height correction a second time when restored chunks are laid out.
-    root.style.overflowAnchor = 'none';
+    shared = { virtualizer: new lib.Virtualizer({ overscrollSize: OVERSCROLL_PX }), users: 0 };
     // Without a content container, pierre observes the root's first element child.
     shared.virtualizer.setup(root);
     sharedVirtualizers.set(root, shared);
@@ -120,7 +96,6 @@ function releaseVirtualizer(root: HTMLElement): void {
   const shared = sharedVirtualizers.get(root);
   if (!shared || --shared.users > 0) return;
   shared.virtualizer.cleanUp();
-  root.style.overflowAnchor = shared.overflowAnchor;
   sharedVirtualizers.delete(root);
 }
 
@@ -155,47 +130,51 @@ type Diffs = typeof import('@pierre/diffs');
 type EngineName = 'worker-wasm' | 'main-wasm' | 'main-js';
 interface Engine { lib: Diffs; pool?: WorkerPoolManager; highlighter: 'shiki-wasm' | 'shiki-js'; name: EngineName }
 let engine: Promise<Engine> | undefined;
-let engineCleanup = Promise.resolve();
-let activeViewers = 0, engineIdleTimer = 0;
-const ENGINE_IDLE_MS = 15_000;
-const HIDDEN_GRACE_MS = 1_000;
-const ANCHOR_QUIET_MS = 3_000;
-const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
-
-function scheduleEngineDispose(delayMs: number): void {
-  if (!engine) return;
-  const pending = engine;
-  clearTimeout(engineIdleTimer);
-  engineIdleTimer = window.setTimeout(() => {
-    engineIdleTimer = 0;
-    void pending.then(async loaded => {
-      const workers = await import('@pierre/diffs/worker');
-      if (activeViewers || engine !== pending) return;
-      workers.terminateWorkerPoolSingleton();
-      engineCleanup = loaded.lib.disposeHighlighter().catch(() => {});
-      engine = undefined;
-    }).catch(() => {});
-  }, delayMs);
-}
-
-function releaseEngine(): void {
-  if (--activeViewers || !engine) return;
-  scheduleEngineDispose(typeof document !== 'undefined' && document.hidden ? HIDDEN_GRACE_MS : ENGINE_IDLE_MS);
-}
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden && activeViewers === 0 && engine && engineIdleTimer) {
-      clearTimeout(engineIdleTimer);
-      scheduleEngineDispose(HIDDEN_GRACE_MS);
-    }
-  });
-}
 
 const highlightable = (file: FileDiffMetadata) => Math.max(file.additionLines.length, file.deletionLines.length) <= TOKENIZE_MAX_LINES;
 
 function parseChunk(lib: Diffs, path: string, chunk: PatchChunk): FileDiffMetadata[] {
   return lib.parsePatchFiles(chunk.text, patchKey(path, chunk.text), true).flatMap(patch => patch.files);
+}
+
+const idle = () => new Promise<void>(resolve => typeof requestIdleCallback === 'function' ? requestIdleCallback(() => resolve(), { timeout: 1_000 }) : setTimeout(resolve, 30));
+const poolBusy = (pool: WorkerPoolManager) => { const stats = pool.getStats(); return stats.busyWorkers > 0 || stats.queuedTasks > 0; };
+
+// Code-like lines in no particular language: tokenizing them compiles the grammar's
+// common rules (Oniguruma compiles each on first use), not just its entry point.
+const WARM_HUNK = '@@ -1,2 +1,2 @@\n-import { a } from "b"; const c = { d: [1, \'e\', true], f: (g) => g?.h ?? null }; // i\n'
+  + '-export function j(k: number): string { if (k > 2) return `l${k}`; } /* m */\n'
+  + '+def n(o): return [p for p in o if p] # q\n+- r: s\n';
+
+/**
+ * Loads grammars into the main thread and a worker, one per idle period while the pool
+ * has nothing visible to do: the languages in the current git status first, then common ones.
+ */
+async function warmLanguages(lib: Diffs, pool: WorkerPoolManager): Promise<void> {
+  const warmed = new Set<string>(['text']);
+  // The status list's own languages go first and at once: the next click is likely one of them.
+  // The first language warms in one worker at once (a click may be coming); the other
+  // workers get it with the rest, when idle.
+  const queue = likelyFileNames().length ? [{ name: likelyFileNames()[0], copies: 1 }] : [];
+  for (let first = queue.length > 0; ; first = false) {
+    if (!first) await idle();
+    if (!first && poolBusy(pool)) continue;
+    let next = queue.shift();
+    if (!next) {
+      const name = [...likelyFileNames(), ...COMMON_FILES].find(candidate => !warmed.has(lib.getFiletypeFromFileName(candidate)));
+      if (!name) return;
+      next = { name, copies: POOL_SIZE };
+    }
+    const { name, copies } = next;
+    if (copies < POOL_SIZE) queue.push({ name, copies: POOL_SIZE }); else warmed.add(lib.getFiletypeFromFileName(name));
+    try {
+      // Copies are sent together so each free worker takes one: any free worker takes the
+      // next task, so a grammar warmed in only one would compile again in the other.
+      const files = Array.from({ length: copies }, (_, copy) => lib.parsePatchFiles(`diff --git a/${name} b/${name}\n--- a/${name}\n+++ b/${name}\n${WARM_HUNK}`, `warm:${copies}:${copy}:${name}`, true)[0].files[0]);
+      await Promise.all(files.map(file => pool.primeDiffHighlightCache(file)));
+      for (const file of files) pool.evictDiffFromCache(file.cacheKey!);
+    } catch { return; }
+  }
 }
 
 async function startEngine(): Promise<Engine> {
@@ -220,6 +199,7 @@ async function startEngine(): Promise<Engine> {
       highlighterOptions: { ...HIGHLIGHT, preferredHighlighter: 'shiki-wasm' },
     });
     await pool.initialize();
+    void warmLanguages(lib, pool);
     return started({ lib, pool, highlighter: 'shiki-wasm', name: 'worker-wasm' });
   } catch {
     for (const worker of spare) worker.terminate();
@@ -230,9 +210,9 @@ async function startEngine(): Promise<Engine> {
   }
 }
 
-/** Starts on the first requested patch; workers load only that patch’s languages. */
+/** Starts the renderer, worker pool and themes ahead of the first diff. Safe to call often. */
 export function preloadDiffViewer(): Promise<unknown> {
-  engine ??= engineCleanup.then(startEngine);
+  engine ??= startEngine();
   return engine;
 }
 
@@ -240,7 +220,7 @@ export async function mountCodeFile(host: HTMLElement, path: string, contents: s
   engine ??= startEngine();
   const { lib, pool, highlighter } = await engine;
   if (!host.isConnected) return () => {};
-  const options = () => ({ theme: THEMES, themeType: themeType(), preferredHighlighter: highlighter, disableFileHeader: true, overflow: wrap ? 'wrap' as const : 'scroll' as const, tokenizeMaxLineLength: 2000, unsafeCSS: ':host{--diffs-font-family:var(--mono,monospace);--diffs-font-size:13px;--diffs-line-height:21px;--diffs-bg:var(--bg)}[data-gutter]{user-select:none}' });
+  const options = () => ({ theme: THEMES, themeType: themeType(), preferredHighlighter: highlighter, disableFileHeader: true, overflow: wrap ? 'wrap' as const : 'scroll' as const, tokenizeMaxLineLength: 2000, unsafeCSS: ':host{--diffs-font-family:var(--mono);--diffs-font-size:var(--mono-size);--diffs-line-height:calc(var(--mono-size) * 1.6);--diffs-bg:var(--bg)}[data-gutter]{user-select:none}' });
   const file = new lib.File(options(), pool);
   host.replaceChildren();
   file.render({ file: { name: path, contents, cacheKey: patchKey(path, contents) }, containerWrapper: host });
@@ -256,7 +236,7 @@ export async function mountCodeEditor(host: HTMLElement, path: string, contents:
   engine ??= startEngine();
   const [{ lib, pool, highlighter }, { Editor }] = await Promise.all([engine, import('@pierre/diffs/edit')]);
   if (!host.isConnected) return;
-  const options = () => ({ theme: THEMES, themeType: themeType(), preferredHighlighter: highlighter, disableFileHeader: true, tokenizeMaxLineLength: 2000, unsafeCSS: ':host{--diffs-font-family:var(--mono,monospace);--diffs-font-size:13px;--diffs-line-height:22px;--diffs-bg:var(--ds-card-inner);--diffs-editor-cursor-fg:var(--text);--diffs-editor-selection-bg:var(--accent-tint);--diffs-editor-bracket-match-bg:var(--accent-tint);--diffs-editor-bracket-match-border:var(--accent)}[data-gutter]{user-select:none}' });
+  const options = () => ({ theme: THEMES, themeType: themeType(), preferredHighlighter: highlighter, disableFileHeader: true, tokenizeMaxLineLength: 2000, unsafeCSS: ':host{--diffs-font-family:var(--mono);--diffs-font-size:var(--mono-size);--diffs-line-height:calc(var(--mono-size) * 1.6);--diffs-bg:var(--ds-card-inner);--diffs-editor-cursor-fg:var(--text);--diffs-editor-selection-bg:var(--accent-tint);--diffs-editor-bracket-match-bg:var(--accent-tint);--diffs-editor-bracket-match-border:var(--accent)}[data-gutter]{user-select:none}' });
   const file = new lib.File({ ...options(), onEditComplete: event => { event.file.cacheKey = crypto.randomUUID(); return 'accept'; } }, pool);
   let selectionFrame = 0;
   const editor = new Editor('file', { ownsVerticalViewport: true, onChange: event => { change(event.file.contents); select(undefined); scheduleSelection(); } }, stateKey);
@@ -286,23 +266,7 @@ export async function mountCodeEditor(host: HTMLElement, path: string, contents:
 /** Read-only, bounded diff rendering. Replacing a viewer cancels its old mount. */
 export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): DiffViewerController {
   mountedViewers.get(host)?.dispose();
-  let disposed = false, usesEngine = false, suspended = document.hidden, ready = false;
-  let hiddenTimer = 0, anchorQuietTimer = 0, renderGeneration = 0;
-  let hiddenReaderState: DiffViewerReaderState | undefined;
-  let hiddenReaderVertical = input.scrollRoot == null;
-  let pendingCodeScroll = new Map<number, number[]>();
-  let pendingScroll: {
-    state: DiffViewerReaderState;
-    seeds: number;
-    aligned: boolean;
-    top: number;
-    docTop: number;
-    scrollHeight: number;
-  } | undefined;
-  let lastScroll = { top: 0, left: 0 };
-  let lastAnchor: { top: number; anchor: NonNullable<DiffViewerReaderState['anchor']> } | undefined;
-  let snapshotFrame = 0;
-  const codeOffsets = new WeakMap<HTMLElement, number>();
+  let disposed = false;
   let renderers: { view: FileDiff; header: boolean; file: FileDiffMetadata }[] = [];
   let pool: WorkerPoolManager | undefined;
   let rerenderFrame = 0, primeFrame = 0, settleTimer = 0, scrolling = false, viewHeight = 0;
@@ -316,12 +280,12 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   let mountFrame = 0;
   let requestedLayout = input.layout ?? 'unified';
   let layout: 'unified' | 'split' = 'unified';
-  let wrap = input.wrap ?? false;
+  let wrap = false;
   const listeners = new AbortController();
 
   const root = element('section', 'diff-viewer');
   root.setAttribute('aria-label', input.path ? `Changes to ${input.path}` : 'File changes');
-  root.dataset.diffState = suspended ? 'suspended' : 'loading';
+  root.dataset.diffState = 'loading';
   const toolbar = element('div', 'diff-viewer-toolbar');
   const title = element('span', 'diff-viewer-title', input.path ?? 'Changes');
   title.title = input.path ?? 'Changes';
@@ -370,276 +334,12 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     tokenizeMaxLength: TOKENIZE_MAX_LINES,
     disableErrorHandling: true,
     // The content strip is each diff's one Tab stop; Chrome would also stop on the scroller inside the shadow root.
-    onPostRender: (node, _view, phase) => {
-      if (phase !== 'unmount') {
-        const reset: Array<{ code: HTMLElement; left: number }> = [];
-        node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => {
-          code.tabIndex = -1;
-          if (codeOffsets.has(code)) {
-            const left = codeOffsets.get(code) ?? 0;
-            if (left > 0 && code.clientWidth && !code.scrollLeft && code.querySelector('[data-line]')) {
-              reset.push({ code, left });
-            }
-            return;
-          }
-          codeOffsets.set(code, code.scrollLeft);
-          // Hidden panels and unmounted placeholders report zero; the node owns its listener so cleanup can collect it.
-          code.addEventListener('scroll', () => {
-            if (code.clientWidth && (code.scrollLeft > 0 || code.querySelector('[data-line]'))) {
-              codeOffsets.set(code, code.scrollLeft);
-            }
-          }, { passive: true });
-        });
-        reset.sort((a, b) => b.left - a.left).forEach(({ code, left }) => {
-          code.scrollLeft = left;
-          codeOffsets.set(code, code.scrollLeft);
-        });
-      }
-      if (pendingCodeScroll.size || pendingScroll) scheduleLayout(true);
-    },
+    onPostRender: node => node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => { code.tabIndex = -1; }),
     enableLineSelection: false,
     // This CSS is constant; no patch content is ever interpolated into it.
     // Pierre adds it to every container it creates, including hunk groups mounted later.
-    unsafeCSS: ':host { --diffs-font-family: var(--mono, monospace); --diffs-font-size: 0.86rem; --diffs-line-height: 1.45rem; }' + (input.shadowCSS ?? ''),
+    unsafeCSS: ':host { --diffs-font-family: var(--mono); --diffs-font-size:var(--mono-size); }' + (input.shadowCSS ?? ''),
   });
-
-  function clearPendingScroll(): void {
-    clearTimeout(anchorQuietTimer);
-    anchorQuietTimer = 0;
-    pendingScroll = undefined;
-  }
-
-  function armAnchorQuietTimer(): void {
-    clearTimeout(anchorQuietTimer);
-    anchorQuietTimer = window.setTimeout(() => {
-      anchorQuietTimer = 0;
-      pendingScroll = undefined;
-    }, ANCHOR_QUIET_MS);
-  }
-
-  function measureVirtualMetrics(): Partial<VirtualFileMetrics> {
-    const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-    const raw = getComputedStyle(root).getPropertyValue('--diff-line-height').trim();
-    const parsed = raw.endsWith('rem') ? parseFloat(raw) * rem : raw.endsWith('px') ? parseFloat(raw) : 0;
-    return {
-      hunkLineCount: RENDER_BATCH_LINES,
-      lineHeight: parsed > 0 ? parsed : 1.45 * rem,
-      ...(input.hunkSeparatorHeight !== undefined ? { hunkSeparatorHeight: input.hunkSeparatorHeight } : {}),
-      ...(input.blockGap !== undefined ? { spacing: input.blockGap } : {}),
-    };
-  }
-
-  function restoreCodeScroll(node: Element): void {
-    if (!pendingCodeScroll.size) return;
-    const index = Array.from(content.querySelectorAll('diffs-container')).indexOf(node);
-    const offsets = pendingCodeScroll.get(index);
-    const codes = node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]');
-    if (!offsets || !codes?.length) return;
-    // Virtualized placeholders can have a width but no lines yet. Do not consume
-    // positive offsets until real code is laid out; shorter split sides still clamp.
-    if (Array.from(codes).some((code, side) =>
-      !code.clientWidth || ((offsets[side] ?? 0) > 0 && !code.querySelector('[data-line]')))) return;
-    // Restore the farther side first so split-scroll sync cannot clamp it to the shorter side.
-    Array.from(codes, (code, side) => ({ code, left: offsets[side] ?? 0 }))
-      .sort((a, b) => b.left - a.left).forEach(({ code, left }) => { code.scrollLeft = left; codeOffsets.set(code, code.scrollLeft); });
-    pendingCodeScroll.delete(index);
-  }
-
-  function measureAnchor(): DiffViewerReaderState['anchor'] {
-    if (!scroller.clientHeight || !scroller.clientWidth) return undefined;
-    const viewport = scroller.getBoundingClientRect();
-    if (viewport.height <= 0 || viewport.width <= 0) return undefined;
-    let best: NonNullable<DiffViewerReaderState['anchor']> | undefined;
-    content.querySelectorAll('diffs-container').forEach((node, container) => {
-      const box = node.getBoundingClientRect();
-      if (box.bottom <= viewport.top || box.top >= viewport.bottom) return;
-      node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach((code, side) => {
-        const deletionsSide = code.hasAttribute('data-deletions');
-        code.querySelectorAll<HTMLElement>('[data-line][data-line-index]').forEach(line => {
-          const rect = line.getBoundingClientRect();
-          if (rect.bottom <= viewport.top || rect.top >= viewport.bottom) return;
-          const candidate: NonNullable<DiffViewerReaderState['anchor']> = {
-            container,
-            side,
-            index: line.dataset.lineIndex!,
-            line: Number(line.dataset.line),
-            lineSide: deletionsSide || line.dataset.lineType === 'change-deletion' ? 'deletions' : 'additions',
-            offset: rect.top - viewport.top,
-          };
-          if (!best
-            || candidate.offset < best.offset
-            || (candidate.offset === best.offset && (candidate.container < best.container || (candidate.container === best.container && candidate.side < best.side)))) {
-            best = candidate;
-          }
-        });
-      });
-    });
-    return best;
-  }
-
-  function snapshotVisibleReader(): DiffViewerReaderState['anchor'] {
-    if (!scroller.clientHeight || !scroller.clientWidth) return undefined;
-    lastScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
-    content.querySelectorAll('diffs-container').forEach(node => {
-      node.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]').forEach(code => {
-        if (code.clientWidth && (code.scrollLeft > 0 || code.querySelector('[data-line]'))) {
-          codeOffsets.set(code, code.scrollLeft);
-        }
-      });
-    });
-    const anchor = measureAnchor();
-    if (anchor) lastAnchor = { top: lastScroll.top, anchor };
-    return anchor;
-  }
-
-  function scheduleSnapshot(): void {
-    if (disposed || suspended || snapshotFrame) return;
-    snapshotFrame = requestAnimationFrame(() => {
-      snapshotFrame = 0;
-      if (!disposed && !suspended && !pendingScroll) snapshotVisibleReader();
-    });
-  }
-
-  function findAnchorLine(anchor: NonNullable<DiffViewerReaderState['anchor']>): HTMLElement | null {
-    const node = content.querySelectorAll('diffs-container')[anchor.container];
-    if (!node?.shadowRoot) return null;
-    const codes = node.shadowRoot.querySelectorAll<HTMLElement>('[data-code]');
-    const selector = `[data-line][data-line-index="${CSS.escape(anchor.index)}"]`;
-    return (codes[anchor.side] ?? codes[0])?.querySelector<HTMLElement>(selector)
-      ?? node.shadowRoot.querySelector<HTMLElement>(selector);
-  }
-
-  function scrollVertical(top: number): void {
-    const rounded = Math.round(top);
-    if (virtualizer) {
-      virtualizer.markDOMDirty();
-      virtualizer.scrollTo({ top: rounded, behavior: 'instant' });
-    } else {
-      scroller.scrollTop = rounded;
-    }
-    if (pendingScroll) {
-      pendingScroll.top = scroller.scrollTop;
-      pendingScroll.scrollHeight = scroller.scrollHeight;
-    }
-    if (scroller.clientHeight && scroller.clientWidth) {
-      lastScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
-    }
-  }
-
-  function readCodeScrolls(): number[][] {
-    const containers = Array.from(content.querySelectorAll('diffs-container'));
-    const count = Math.max(containers.length, pendingCodeScroll.size ? Math.max(...pendingCodeScroll.keys()) + 1 : 0);
-    return Array.from({ length: count }, (_, index) =>
-      pendingCodeScroll.get(index)
-      ?? Array.from(containers[index]?.shadowRoot?.querySelectorAll<HTMLElement>('[data-code]') ?? [], code =>
-        code.clientWidth && (code.scrollLeft > 0 || code.querySelector('[data-line]')) ? code.scrollLeft : codeOffsets.get(code) ?? 0));
-  }
-
-  function getReaderState(): DiffViewerReaderState {
-    if (suspended && hiddenReaderState) return hiddenReaderState;
-    if (pendingScroll && !pendingScroll.aligned) {
-      return { ...pendingScroll.state, layout: requestedLayout, wrap, code: readCodeScrolls() };
-    }
-    const visible = scroller.clientHeight > 0 && scroller.clientWidth > 0;
-    const liveAnchor = visible ? snapshotVisibleReader() : undefined;
-    const top = visible ? scroller.scrollTop : lastScroll.top;
-    const left = visible ? scroller.scrollLeft : lastScroll.left;
-    const anchor = visible
-      ? liveAnchor
-      : (lastAnchor && Math.abs(lastAnchor.top - top) <= 1 ? lastAnchor.anchor : undefined);
-    return { top, left, layout: requestedLayout, wrap, anchor, code: readCodeScrolls() };
-  }
-
-  function restoreReaderState(state: DiffViewerReaderState, options: { vertical?: boolean } = {}): void {
-    const vertical = options.vertical ?? input.scrollRoot == null;
-    const optionsChanged = requestedLayout !== state.layout || wrap !== state.wrap;
-    requestedLayout = state.layout;
-    wrap = state.wrap;
-    if (suspended || !ready) { hiddenReaderState = state; hiddenReaderVertical = vertical; return; }
-    clearPendingScroll();
-    if (optionsChanged) rerender();
-    pendingCodeScroll = new Map(state.code.map((offsets, index) => [index, offsets]));
-    if (vertical) {
-      pendingScroll = {
-        state,
-        seeds: 0,
-        aligned: false,
-        top: state.top,
-        docTop: state.top + (state.anchor?.offset ?? 0),
-        scrollHeight: scroller.scrollHeight,
-      };
-      scrollVertical(state.top);
-      scroller.scrollLeft = state.left;
-      if (scroller.clientHeight && scroller.clientWidth) {
-        lastScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
-        if (state.anchor) lastAnchor = { top: scroller.scrollTop, anchor: state.anchor };
-      }
-    }
-    scheduleLayout(true);
-  }
-
-  function restoreVerticalAnchor(): void {
-    if (!pendingScroll || !scroller.clientHeight || !scroller.clientWidth) return;
-    const pending = pendingScroll;
-    const { state } = pending;
-    const anchor = state.anchor;
-    if (!anchor) {
-      scrollVertical(state.top);
-      scroller.scrollLeft = state.left;
-      if (Math.abs(scroller.scrollTop - state.top) <= 1) clearPendingScroll();
-      return;
-    }
-    const viewportTop = scroller.getBoundingClientRect().top;
-    const line = findAnchorLine(anchor);
-    if (line) {
-      const offset = line.getBoundingClientRect().top - viewportTop;
-      const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      const targetTop = Math.round(Math.max(0, Math.min(maxTop, scroller.scrollTop + offset - anchor.offset)));
-      if (Math.abs(offset - anchor.offset) > 0.5 && Math.abs(targetTop - scroller.scrollTop) > 0.5) {
-        scrollVertical(targetTop);
-        const nextOffset = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-        pending.docTop = scroller.scrollTop + nextOffset;
-      } else {
-        pending.top = scroller.scrollTop;
-        pending.docTop = scroller.scrollTop + offset;
-        pending.scrollHeight = scroller.scrollHeight;
-      }
-      pending.aligned = true;
-      lastScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
-      lastAnchor = { top: scroller.scrollTop, anchor };
-      armAnchorQuietTimer();
-      return;
-    }
-    if (pending.seeds >= 8 || !virtualizer) return;
-    const node = content.querySelectorAll('diffs-container')[anchor.container];
-    const view = renderers[anchor.container]?.view as VirtualizedFileDiff | undefined;
-    const position = view?.getLinePosition(anchor.line, anchor.lineSide);
-    if (!node || !position) return;
-    const containerTop = scroller.scrollTop + (node.getBoundingClientRect().top - viewportTop);
-    const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    const targetTop = Math.round(Math.max(0, Math.min(maxTop, containerTop + position.top - anchor.offset)));
-    pending.seeds++;
-    if (Math.abs(targetTop - scroller.scrollTop) > 0.5) scrollVertical(targetTop);
-  }
-
-  // Restore after the virtualizer's render and height reconciliation. Each render
-  // restarts this bounded handoff; offscreen chunks never cause a polling loop.
-  function scheduleLayout(afterRender = false): void {
-    if (disposed || suspended) return;
-    if (afterRender) { cancelAnimationFrame(resizeFrame); resizeFrame = 0; }
-    if (resizeFrame) return;
-    const apply = () => {
-      resizeFrame = 0;
-      if (disposed || suspended) return;
-      const previousLayout = layout;
-      updateControls();
-      if (layout !== previousLayout) rerender();
-      content.querySelectorAll('diffs-container').forEach(restoreCodeScroll);
-      restoreVerticalAnchor();
-      if (!pendingScroll) snapshotVisibleReader();
-    };
-    resizeFrame = requestAnimationFrame(afterRender ? () => { resizeFrame = requestAnimationFrame(apply); } : apply);
-  }
 
   // Distance in pixels from the viewport to a virtualized renderer (0 when visible).
   function distance(entry: { view: FileDiff }, top: number, bottom: number): number {
@@ -650,7 +350,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   /** Primes the hunk groups nearest the viewport; reruns as primes finish and on scroll. */
   function primeNearby(): void {
     primeFrame = 0;
-    if (disposed || suspended || !pool || !virtualizer) return;
+    if (disposed || !pool || !virtualizer) return;
     // Cached positions only: no layout reads while the virtualizer is writing.
     const top = virtualizer.getScrollTop(), height = viewHeight || scroller.clientHeight, bottom = top + height;
     // While scrolling only visible groups prime; offscreen ones wait for the scroll to settle.
@@ -675,62 +375,21 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     }
   }
   function schedulePrime(): void {
-    if (!disposed && !suspended && pool && virtualizer && !primeFrame) primeFrame = requestAnimationFrame(primeNearby);
+    if (!disposed && pool && virtualizer && !primeFrame) primeFrame = requestAnimationFrame(primeNearby);
   }
   scroller.addEventListener('scroll', () => {
-    if (scroller.clientHeight && scroller.clientWidth) {
-      lastScroll = { top: scroller.scrollTop, left: scroller.scrollLeft };
-    }
-    if (pendingScroll) {
-      if (Math.abs(scroller.scrollTop - pendingScroll.top) > 1) {
-        const anchor = pendingScroll.state.anchor;
-        let external = false;
-        if (pendingScroll.aligned && Math.abs(scroller.scrollHeight - pendingScroll.scrollHeight) <= 1) {
-          if (!anchor) external = true;
-          else {
-            const line = findAnchorLine(anchor);
-            if (line) {
-              const offset = line.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-              const docTop = scroller.scrollTop + offset;
-              if (Math.abs(docTop - pendingScroll.docTop) <= 1 && Math.abs(offset - anchor.offset) > 1) external = true;
-            }
-          }
-        }
-        if (external) clearPendingScroll();
-        else scheduleLayout(true);
-      }
-    }
-    if (!pendingScroll) scheduleSnapshot();
     if (!virtualizer) return;
     scrolling = true;
     clearTimeout(settleTimer);
     schedulePrime();
-    settleTimer = window.setTimeout(() => {
-      scrolling = false;
-      if (!pendingScroll) snapshotVisibleReader();
-      schedulePrime();
-    }, SCROLL_SETTLE_MS);
+    settleTimer = window.setTimeout(() => { scrolling = false; schedulePrime(); }, SCROLL_SETTLE_MS);
   }, { passive: true, signal: listeners.signal });
-  scroller.addEventListener('wheel', clearPendingScroll, { passive: true, signal: listeners.signal });
-  scroller.addEventListener('touchstart', clearPendingScroll, { passive: true, signal: listeners.signal });
-  scroller.addEventListener('pointerdown', event => {
-    if (!(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) clearPendingScroll();
-  }, { passive: true, signal: listeners.signal });
-  scroller.addEventListener('keydown', event => {
-    if (SCROLL_KEYS.has(event.key) && !(event.target as Element | null)?.closest?.('button, input, textarea, [data-cv-action]')) clearPendingScroll();
-  }, { signal: listeners.signal });
 
   function cleanRenderers(): void {
     cancelAnimationFrame(mountFrame);
     cancelAnimationFrame(rerenderFrame);
     cancelAnimationFrame(primeFrame);
-    cancelAnimationFrame(resizeFrame);
-    cancelAnimationFrame(snapshotFrame);
     clearTimeout(settleTimer);
-    mountFrame = rerenderFrame = primeFrame = resizeFrame = snapshotFrame = settleTimer = 0;
-    scrolling = false;
-    pendingCodeScroll.clear();
-    clearPendingScroll();
     for (const { view } of renderers) view.cleanUp();
     renderers = [];
     if (virtualizer) releaseVirtualizer(scroller);
@@ -740,10 +399,8 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   function showFallback(message: string, showPatch = true): void {
     if (disposed) return;
     cleanRenderers();
-    if (usesEngine) { usesEngine = false; releaseEngine(); }
-    pool = undefined;
-    resizeObserver?.disconnect(); resizeObserver = undefined;
-    themeObserver?.disconnect(); themeObserver = undefined;
+    resizeObserver?.disconnect();
+    themeObserver?.disconnect();
     content.replaceChildren();
     content.setAttribute('aria-busy', 'false');
     root.dataset.diffState = 'fallback';
@@ -808,9 +465,9 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     }
   }
 
-  unified.addEventListener('click', () => { clearPendingScroll(); requestedLayout = 'unified'; rerender(); }, { signal: listeners.signal });
-  split.addEventListener('click', () => { clearPendingScroll(); requestedLayout = 'split'; rerender(); }, { signal: listeners.signal });
-  wrapping.addEventListener('click', () => { clearPendingScroll(); wrap = !wrap; rerender(); }, { signal: listeners.signal });
+  unified.addEventListener('click', () => { requestedLayout = 'unified'; rerender(); }, { signal: listeners.signal });
+  split.addEventListener('click', () => { requestedLayout = 'split'; rerender(); }, { signal: listeners.signal });
+  wrapping.addEventListener('click', () => { wrap = !wrap; rerender(); }, { signal: listeners.signal });
   layouts.addEventListener('keydown', event => {
     if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || split.disabled) return;
     event.preventDefault();
@@ -820,9 +477,6 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
   }, { signal: listeners.signal });
 
   async function initialize(): Promise<void> {
-    if (disposed || suspended) return;
-    const generation = ++renderGeneration;
-    const cancelled = () => disposed || suspended || generation !== renderGeneration;
     if (input.error) { showFallback(input.error); return; }
     if (input.binary || /^(?:GIT binary patch|Binary files .+ differ)$/m.test(input.patch)) {
       showFallback('Binary file changed. A text diff is not available.', false); return;
@@ -835,19 +489,12 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     const chunks = splitPatch(input.patch);
     const sections = chunks.filter(chunk => !chunk.continued).length;
     if (sections > MAX_FILES) { showFallback('Large diff — showing a limited plain text preview.'); return; }
-    const fail = () => {
-      if (cancelled()) return;
-      showFallback(input.truncated
-        ? 'This patch was shortened when recorded. Showing the available plain text patch.'
-        : 'Unable to format this diff. Showing the recorded patch.');
-    };
+    const fail = () => showFallback(input.truncated
+      ? 'This patch was shortened when recorded. Showing the available plain text patch.'
+      : 'Unable to format this diff. Showing the recorded patch.');
     try {
-      clearTimeout(engineIdleTimer);
-      engineIdleTimer = 0;
-      activeViewers++;
-      usesEngine = true;
       const loaded = await preloadDiffViewer() as Engine;
-      if (cancelled()) return;
+      if (disposed) return;
       const { lib } = loaded;
       pool = loaded.pool;
       highlighter = loaded.highlighter;
@@ -860,23 +507,31 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           langs: [...new Set(names.map(name => lib.getFiletypeFromFileName(name)))],
           preferredHighlighter: highlighter,
         });
-        if (cancelled()) return;
+        if (disposed) return;
       }
       updateControls();
       let list: HTMLElement = content;
-      let virtualMetrics: Partial<VirtualFileMetrics> | undefined;
+      let rowSize: HTMLElement | undefined;
+      let observedRowHeight = 0;
+      const metrics = { ...lib.DEFAULT_VIRTUAL_FILE_METRICS, hunkLineCount: RENDER_BATCH_LINES };
+      const applyRowHeight = (height: number) => {
+        metrics.lineHeight = height;
+        // Use the same layout-rounded length for the rows, spacer heights, and Pierre's estimates.
+        root.style.setProperty('--diff-row-pitch', `${height}px`);
+      };
       if (lines > VIRTUALIZE_LINES) {
         list = element('div', 'diff-viewer-list');
         content.append(list);
+        rowSize = element('div', 'diff-viewer-row-size');
+        list.append(rowSize);
+        applyRowHeight(parseFloat(getComputedStyle(rowSize).height) || metrics.lineHeight);
         virtualizer = acquireVirtualizer(lib, scroller);
-        virtualMetrics = measureVirtualMetrics();
       }
       // Every chunk gets a frame now, sized from its line count until it mounts, so the
-      // scroll height is right from the first frame. CSS resolves the row height, which
-      // the host may set (--diff-line-height), so no layout is read here.
+      // scroll height is estimated from the first frame without measuring each chunk.
       const frames = chunks.map(chunk => {
         const frame = element('div', chunk.continued ? 'diff-viewer-file diff-viewer-continued' : 'diff-viewer-file');
-        if (chunks.length > 1) frame.style.minHeight = `calc(${chunk.lines} * var(--diff-line-height))`;
+        if (chunks.length > 1) frame.style.minHeight = `calc(${chunk.lines} * var(--diff-row-pitch))`;
         list.append(frame);
         return frame;
       });
@@ -891,7 +546,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
           if (index) { const extra = element('div', 'diff-viewer-file'); target.after(extra); target = extra; }
           target.setAttribute('aria-label', file.name);
           const header = !chunk.continued && (sections > 1 || files.length > 1);
-          const view = virtualizer ? new lib.VirtualizedFileDiff(options(header), virtualizer, virtualMetrics, pool) : new lib.FileDiff(options(header), pool);
+          const view = virtualizer ? new lib.VirtualizedFileDiff(options(header), virtualizer, metrics, pool) : new lib.FileDiff(options(header), pool);
           renderers.push({ view, header, file });
           mounted.push(file);
           view.render({ fileDiff: file, containerWrapper: target });
@@ -914,10 +569,9 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
       const pump = (budget: number): void => {
         const start = performance.now();
         do mountChunk(); while (next < chunks.length && performance.now() - start < budget);
-        if (pendingCodeScroll.size || pendingScroll) scheduleLayout(true);
         if (next < chunks.length) {
           mountFrame = requestAnimationFrame(() => {
-            if (cancelled()) return;
+            if (disposed) return;
             try { pump(SLICE_MS); } catch { fail(); }
           });
         } else finish();
@@ -934,72 +588,52 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
       themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
       resizeObserver = new ResizeObserver(entries => {
         for (const entry of entries) {
-          if (entry.target === scroller) viewHeight = entry.contentRect.height;
-          else if (entry.target === root) width = entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
+          if (entry.target === rowSize) { observedRowHeight = entry.contentRect.height; continue; }
+          if (entry.target === scroller) { viewHeight = entry.contentRect.height; continue; }
+          width = entry.borderBoxSize?.[0]?.inlineSize ?? entry.contentRect.width;
         }
-        scheduleLayout();
+        if (disposed || resizeFrame) return;
+        resizeFrame = requestAnimationFrame(() => {
+          resizeFrame = 0;
+          if (disposed) return;
+          if (observedRowHeight > 0 && observedRowHeight !== metrics.lineHeight) {
+            applyRowHeight(observedRowHeight);
+            for (const { view, file } of renderers) {
+              if (!(view instanceof lib.VirtualizedFileDiff)) continue;
+              // Recompute even offscreen: setMetrics alone leaves an existing placeholder at its old height.
+              view.updateCodeViewLayout(file, view.top ?? 0, {
+                metrics,
+                resetFileLayoutCache: false,
+                resetDiffLayoutCache: true,
+                includeEstimatedDiffHeights: true,
+              });
+              view.rerender();
+            }
+          }
+          const previousLayout = layout;
+          updateControls();
+          if (layout !== previousLayout) rerender();
+        });
       });
       resizeObserver.observe(root);
       resizeObserver.observe(scroller);
-      if (scroller.firstElementChild) resizeObserver.observe(scroller.firstElementChild);
-      content.style.minHeight = '';
-      ready = true;
-      if (hiddenReaderState) {
-        const state = hiddenReaderState, vertical = hiddenReaderVertical;
-        hiddenReaderState = undefined;
-        restoreReaderState(state, { vertical });
-      } else {
-        scheduleSnapshot();
-      }
+      if (rowSize) resizeObserver.observe(rowSize);
     } catch {
       fail();
     }
   }
 
-  // Keep geometry and reader options, but give up renderers and their engine lease while hidden.
-  document.addEventListener('visibilitychange', () => {
-    clearTimeout(hiddenTimer);
-    if (document.hidden) {
-      hiddenTimer = window.setTimeout(() => {
-        if (disposed || suspended || !document.hidden || root.dataset.diffState === 'fallback') return;
-        hiddenReaderState = getReaderState();
-        hiddenReaderVertical = input.scrollRoot == null;
-        suspended = true;
-        ready = false;
-        renderGeneration++;
-        content.style.minHeight = `${content.getBoundingClientRect().height}px`;
-        resizeObserver?.disconnect(); resizeObserver = undefined;
-        themeObserver?.disconnect(); themeObserver = undefined;
-        cancelAnimationFrame(resizeFrame);
-        resizeFrame = 0;
-        cleanRenderers();
-        content.replaceChildren();
-        if (usesEngine) { usesEngine = false; releaseEngine(); }
-        pool = undefined;
-        root.dataset.diffState = 'suspended';
-      }, HIDDEN_GRACE_MS);
-    } else if (suspended && !disposed) {
-      suspended = false;
-      void initialize();
-    }
-  }, { signal: listeners.signal });
-
   const controller: DiffViewerController = {
     ready: initialize(),
-    getReaderState,
-    restoreReaderState,
     dispose() {
       if (disposed) return;
       disposed = true;
       listeners.abort();
-      clearTimeout(hiddenTimer);
-      resizeObserver?.disconnect(); resizeObserver = undefined;
-      themeObserver?.disconnect(); themeObserver = undefined;
+      resizeObserver?.disconnect();
+      themeObserver?.disconnect();
       cancelAnimationFrame(resizeFrame);
       if (virtualizer) keepFirstScreen(true);
       cleanRenderers();
-      if (usesEngine) { usesEngine = false; releaseEngine(); }
-      pool = undefined;
       root.remove();
       if (mountedViewers.get(host) === controller) mountedViewers.delete(host);
     },

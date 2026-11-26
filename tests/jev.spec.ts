@@ -4,7 +4,7 @@ const dialog = (page: Page) => page.locator('#dialog');
 const probe = `
   window.__jevCalls ??= [];
   window.__jevCalls.push({ command, args: structuredClone(args) });
-  window.__jevConfig ??= { enabled: true, pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false };
+  window.__jevConfig ??= { enabled: true, decisionsEnabled: false, decisionProvider: 'typesafe', decisionModel: '', decisionBaseUrl: 'http://127.0.0.1:8000', pythonPath: '', chromePath: '', textModel: 'inception/mercury-2.5', textBaseUrl: 'https://openrouter.ai/api/v1', typesafeKeySaved: false, textKeySaved: false };
   window.__jevRuns ??= {};
   window.__jevEmit = patch => {
     const report = { id: 'run-1', sessionId: 'session-1', url: 'http://localhost:3000/', goal: 'Check the primary interaction', viewport: 'desktop', status: 'running', verification: 'not_checked', summary: 'Exploring the app', createdAt: Date.now(), durationMs: 1000, steps: 1, checks: [], events: [], ...window.__jevRuns[patch.id || 'run-1'], ...patch };
@@ -133,6 +133,31 @@ test('OpenRouter decisions list models only when the menu opens and send the key
   expect(saved.openrouterKey).toBe('fake-openrouter-test-key');
   await expect(page.locator('#jev-openrouter-key')).toHaveValue('');
 });
+test('Local Laya decisions need no key and expose the loopback endpoint', async ({ page }) => {
+  await installProbe(page, true);
+  await settings(page);
+  await expect(page.locator('#jev-decision-provider')).toHaveValue('typesafe');
+  await expect(page.locator('[data-jev-laya-field]')).toBeHidden();
+  await page.locator('#jev-decision-provider').selectOption('laya');
+  await expect(page.locator('#jev-typesafe-key')).toBeHidden();
+  await expect(page.locator('#jev-openrouter-key')).toBeHidden();
+  await expect(page.locator('[data-jev-laya-field]')).toBeVisible();
+  await expect(page.locator('#jev-decision-model')).toHaveValue('laya-system-one');
+  await expect(page.locator('#jev-decision-url')).toHaveValue('http://127.0.0.1:8000');
+  await page.locator('#jev-decisions-enabled').check();
+  await page.locator('[data-jev-save]').click();
+  await expect.poll(async () => (await calls(page, 'jev_save_configuration')).length).toBe(1);
+  const saved = (await calls(page, 'jev_save_configuration'))[0].args;
+  expect(saved.settings.decisionProvider).toBe('laya');
+  expect(saved.settings.decisionBaseUrl).toBe('http://127.0.0.1:8000');
+  expect(saved).not.toHaveProperty('typesafeKey');
+  expect(saved).not.toHaveProperty('openrouterKey');
+  await expect(page.locator('.jev-feedback')).toContainText('Saved');
+  await page.locator('#jev-decision-provider').selectOption('openrouter');
+  await expect(page.locator('[data-jev-laya-field]')).toBeHidden();
+  await expect(page.locator('#jev-openrouter-key')).toBeVisible();
+});
+
 test('Jev setup remains editable after errors and shows installation progress', async ({ page }) => {
   await installProbe(page, true); await settings(page);
   await page.evaluate(() => { (window as any).__jevFailSave = true; });
@@ -267,6 +292,7 @@ for (const [scale, width, height] of [[1.4, 1440, 940], [1.6, 480, 780]]) {
     await expect(popover.locator('[data-jev-run]')).toBeInViewport();
     await popover.locator('.jev-local-options > summary').click();
     await expect(popover.locator('.jev-server-chip').first()).toBeVisible();
+    await expect(popover.locator('.jev-server-chip').first()).toHaveCSS('border-radius', '999px');
     await expect.poll(overflow).toEqual({ horizontalScroll: false, outside: [], fitsViewport: true });
     await expect(popover.locator('.jev-server-port')).toHaveText(Array.from({ length: 12 }, (_, index) => `:${3000 + index}`));
     expect(await popover.locator('.jev-server-port').evaluateAll(ports => ports.every(port => {
@@ -342,6 +368,7 @@ test('Jev popover keeps explanations behind accessible information buttons witho
   const popover = page.locator('#jev-test-popover:not([aria-hidden="true"])');
   const info = popover.getByRole('button', { name: 'About Jev browser tests', exact: true });
   const checksInfo = popover.getByRole('button', { name: 'About result checks', exact: true });
+  await expect(popover).toHaveCSS('border-radius', '16px');
   await expect(popover.locator('#jev-test-help')).toBeHidden();
   await expect(popover.locator('#jev-check-help')).toBeHidden();
   await expect(info).toHaveAttribute('aria-expanded', 'false');
@@ -350,6 +377,7 @@ test('Jev popover keeps explanations behind accessible information buttons witho
   const input = await popover.locator('#jev-test-goal').elementHandle();
   await info.focus(); await page.keyboard.press('Enter');
   await expect(info).toHaveAttribute('aria-expanded', 'true');
+  await expect(info).toHaveCSS('border-radius', '8px');
   await expect(popover.locator('#jev-test-help')).toBeVisible();
   await expect(popover.locator('#jev-test-help')).toContainText('separate Chrome profile');
   await info.click();
@@ -525,6 +553,10 @@ test('runtime errors recover and unsafe URLs never reach the native test runner'
 test('Jev panels stay inside a narrow viewport in both themes', async ({ page }) => {
   await installProbe(page, true); await tests(page);
   await page.setViewportSize({ width: 320, height: 900 });
+  const server = dialog(page).getByRole('button', { name: 'node :3000', exact: true });
+  await expect(server).toHaveCSS('border-radius', '999px');
+  await server.click();
+  await expect(dialog(page).locator('#jev-test-url')).toHaveValue('http://localhost:3000');
   const overflow = async () => dialog(page).evaluate(element => element.scrollWidth > element.clientWidth + 1);
   for (const theme of ['dark', 'light']) {
     await page.evaluate(theme => document.documentElement.dataset.theme = theme, theme);

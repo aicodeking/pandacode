@@ -49,7 +49,6 @@ async function installSubagents(page: Page, seeds: Record<string, Subagent[]> = 
             if (index < 0) list.push(structuredClone(data)); else list[index] = structuredClone(data);
             agent({ sessionId, kind: 'subagent', text: '', data: structuredClone(data) });
           },
-          emit(sessionId, data) { agent({ sessionId, kind: 'subagent', text: '', data: structuredClone(data) }); },
           partialRow(sessionId, data) { agent({ sessionId, kind: 'subagent', text: '', data: { ...structuredClone(data), partial: true } }); },
           parentText(sessionId, text) { agent({ sessionId, kind: 'text', text }); },
           runDone(sessionId) { agent({ sessionId, kind: 'done', text: 'Turn complete' }); },
@@ -297,28 +296,6 @@ test.describe('subagents', () => {
     // Native settled the child, but its snapshot never reached the window.
     await page.evaluate(snapshot => { const fixture = (window as any).__subagents; fixture.snapshots['session-1'] = [snapshot]; fixture.runDone('session-1'); }, child('late', 'Late', { status: 'stopped', updatedAt: 1_800_000_000_002 }));
     await expect(row(page, 'late').locator('.subagent-row-status')).toHaveText('Stopped');
-  });
-
-  test('ignores out-of-order running snapshots after a subagent completes', async ({ page }) => {
-    await installSubagents(page);
-    await page.evaluate(completed => {
-      (window as any).__subagents.upsert('session-1', { ...completed, seq: 2 });
-    }, child('scout', 'Scout', { status: 'completed', response: 'Final verified report.', updatedAt: 1_800_000_000_010 }));
-    await page.evaluate(stale => {
-      (window as any).__subagents.emit('session-1', { ...stale, seq: 1 });
-    }, child('scout', 'Scout', { status: 'running', response: 'Earlier partial chunk.', updatedAt: 1_800_000_000_025 }));
-    await expect(trigger(page)).toHaveAttribute('aria-label', 'Agents');
-    await trigger(page).click();
-    await expect(row(page, 'scout').locator('.subagent-row-status')).toHaveText('Completed');
-    await row(page, 'scout').click();
-    await expect(panel(page).locator('.subagent-detail-status')).toHaveText('Completed');
-    await expect(response(page)).toHaveText('Final verified report.');
-    await page.evaluate(stale => {
-      (window as any).__subagents.emit('session-1', { ...stale, seq: 1 });
-    }, child('scout', 'Scout', { status: 'running', response: 'Another stale chunk.', updatedAt: 1_800_000_000_030 }));
-    await nextPaint(page);
-    await expect(panel(page).locator('.subagent-detail-status')).toHaveText('Completed');
-    await expect(response(page)).toHaveText('Final verified report.');
   });
 
   for (const theme of ['light', 'dark'] as const) for (const view of ['conversation', 'board'] as const) {

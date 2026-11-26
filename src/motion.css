@@ -16,9 +16,6 @@
   /* The hairline every floating glass carries (menus, tooltips, toast, dialog plate). */
   --glass-border:rgb(0 0 0 / .08);
   --scrim:rgb(24 21 12 / .14);
-  --sheet-radius:16px;
-  /* One radius for every small floating glass (toast, dock popover, pinned dock). */
-  --glass-radius:12px;
   --press:.97;
 }
 html[data-theme="dark"]{
@@ -36,7 +33,7 @@ html[data-theme="dark"]{
 /* Modal glass. The scrim dims and blurs the workspace; the plate is the sheet. */
 .dialog-scrim{position:fixed;inset:0;z-index:90;pointer-events:none;background:var(--scrim);backdrop-filter:blur(5px) saturate(1.05);-webkit-backdrop-filter:blur(5px) saturate(1.05)}
 /* The sheet: heavy blur and saturation do the work, so the tint can stay light. */
-.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border:1px solid var(--glass-border);border-radius:var(--sheet-radius);
+.dialog-plate{position:fixed;z-index:91;pointer-events:none;box-sizing:border-box;border:1px solid var(--glass-border);border-radius:var(--ds-card-radius);
   background:var(--glass-warm);
   backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);-webkit-backdrop-filter:blur(54px) saturate(1.9) brightness(1.04);
   box-shadow:0 40px 100px -30px var(--glass-shadow-deep),0 16px 36px -20px var(--glass-shadow-near)}
@@ -48,26 +45,23 @@ html[data-theme] dialog:is(#dialog,.dialog-ghost)::backdrop{background:transpare
 .dialog-ghost::-webkit-scrollbar{display:none}
 /* Content sits on the glass as frosted fills, not solid boxes. */
 dialog .settings-group{background:var(--glass-fill)}
-dialog .settings-tabs{background:var(--glass-fill)}
-dialog:is(#dialog,.dialog-ghost){border-radius:var(--sheet-radius)}
+dialog:is(#dialog,.dialog-ghost){border-radius:var(--ds-card-radius)}
 .dialog-heading{margin-bottom:14px}
-.dialog-heading h2{font-weight:var(--weight-strong)}
-.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:50%;background:var(--glass-fill);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.dialog-heading h2{font-size:var(--type-title);font-weight:var(--type-title-weight);line-height:var(--type-title-leading);letter-spacing:var(--tracking-tight)}
+.dialog-heading [data-action="close-dialog"]{width:28px;height:28px;border-radius:var(--ds-control-radius);background:var(--glass-fill);color:var(--muted);transition:background-color var(--ds-ease-out) ease-out,color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 .dialog-heading [data-action="close-dialog"]:hover{background:var(--glass-fill-hover);color:var(--text)}
 .dialog-heading [data-action="close-dialog"] .icon{--icon-size:var(--icon-sm);--icon-stroke:var(--icon-stroke-sm)}
 /* Low specificity on purpose: fields a component frames itself (search boxes) keep their own look. */
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background:var(--glass-fill);transition:border-color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:hover){background:var(--glass-fill-hover)}
-html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background:var(--glass-fill-hover);box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){background-color:var(--glass-fill);transition:border-color var(--ds-ease-out) ease-out,background-color var(--ds-ease-out) ease-out,box-shadow var(--ds-ease-out) ease-out}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:hover){background-color:var(--glass-fill-hover)}
+html[data-theme] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus){background-color:var(--glass-fill-hover);box-shadow:inset 0 0 0 1px var(--ds-border-strong)}
 html[data-theme][data-keyboard-focus] dialog :where(input,select,textarea):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)):where(:focus-visible){box-shadow:0 0 0 2px var(--focus)}
 dialog .secondary-button{background:var(--glass-fill);box-shadow:none}
 dialog .secondary-button:not(:disabled):hover{background:var(--glass-fill-hover)}
-dialog .primary-button{border-radius:var(--radius-sm)}
 dialog .dialog-footer{margin-top:20px}
 /* Go to anything: one frosted search field and soft, rounded results. */
-html[data-theme] dialog .command-search input{background:none;border:0;box-shadow:none;padding:9px 0;font-size:var(--text-lg)}
+html[data-theme] dialog .command-search input{background:none;border:0;box-shadow:none;padding:9px 0;font-size:var(--type-body)}
 dialog .command-search:focus-within{box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
-dialog .command-results>button{border-radius:var(--radius-sm)}
 dialog .command-results>button:hover{background:var(--glass-fill-hover)}
 dialog .command-results>button.command-selected{background:color-mix(in srgb,var(--accent) 22%,transparent);box-shadow:none}
 
@@ -79,18 +73,15 @@ dialog .command-results>button.command-selected{background:color-mix(in srgb,var
    (never `transform`, which `scale` would compose with and stretch the slide). */
 [data-segmented][data-segment-ready]>.segment-thumb{transition:translate var(--spring-fast-duration) var(--spring-fast)}
 [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){background:transparent!important;box-shadow:none!important}
-.view-switch>.segment-thumb{border-radius:var(--radius-xs);background:var(--raised);box-shadow:0 1px 3px rgb(0 0 0 / .07)}
-.inspector-tabs>.segment-thumb{border-radius:var(--radius-xs);background:var(--bg);box-shadow:0 1px 3px rgb(0 0 0 / .08)}
-.settings-tabs>.segment-thumb{border-radius:var(--radius-sm);background:var(--panel);box-shadow:0 1px 4px rgb(0 0 0 / .09)}
+.inspector-tabs>.segment-thumb{border-radius:var(--ds-control-radius);background:var(--bg);box-shadow:0 1px 3px rgb(0 0 0 / .08)}
 html[data-theme="dark"] .inspector-tabs>.segment-thumb{background:#3a3a35;box-shadow:0 1px 3px rgb(0 0 0 / .25)}
-html[data-theme="dark"] :is(.view-switch,.settings-tabs)>.segment-thumb{box-shadow:0 1px 3px rgb(0 0 0 / .25)}
 html[data-theme] .workspace[data-wallpaper]>.inspector .inspector-tabs>.segment-thumb{background:color-mix(in srgb,var(--text) 12%,transparent)}
-.view-switch button,.inspector-tabs button,.settings-tabs button{transition:color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
+.inspector-tabs button{transition:color var(--ds-ease-out) ease-out,scale var(--spring-fast-duration) var(--spring-fast)}
 
 /* Respond on press: instant down, spring back on release. */
 /* `scale`, not `transform`: a pressed button keeps any transform that positions it. */
 button:not(:disabled):active{scale:var(--press)}
-.icon-button,.sidebar-bottom>button,.view-switch button,.inspector-tabs button,.settings-tabs button,.board-column>header .icon-button{--press:.9}
+.icon-button,.sidebar-bottom>button,.inspector-tabs button,.board-column>header .icon-button{--press:.9}
 .task-item,.board-card-open,.command-results>button,.command-list button,.model-menu-option,.project-menu-option,.choice-menu-option,.project-menu-open,.prompt-suggestions button,.file-row>button:first-child,.change-file{--press:.985}
 .welcome-project,.breadcrumb>button,.history-notice,.change-group-title button,.activity-heading,.activity-toggle,.message-actions button,.subagents-trigger,.team-progress-worker,.team-progress-more{--press:1}
 /* Menu anchors keep their geometry: a popover is positioned from the trigger's box on press. */
@@ -126,45 +117,105 @@ html[data-theme="dark"] .composer:focus-within{box-shadow:0 0 0 3px rgb(var(--ac
   html[data-theme="dark"] :is(.dialog-plate,.toast){background:#272724}
   html[data-theme="dark"] .dialog-scrim{background:rgb(0 0 0 / .5)}
   dialog .settings-group{background:var(--panel)}
-  dialog .settings-tabs{background:var(--raised)}
 }
+/* Costly paint (#348, #351): the sky (sky-window.ts `paintVerdict`) sets html[data-costly-paint] after ~10 s of costly
+   canvas frames on a CPU-composited renderer, where every blur re-blurs its backdrop on each frame. The glass then takes
+   its reduced-transparency solid fill (mirrored from those rules, tokens only); a GPU-composited machine never sets it. */
+html[data-costly-paint] *,html[data-costly-paint] *::before,html[data-costly-paint] *::after{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}
+html[data-costly-paint] :is(.dialog-plate,.toast,.tip-bubble){background:var(--panel)}
+html[data-costly-paint] dialog .settings-group{background:var(--panel)}
+html[data-costly-paint] dialog .settings-tabs{background:var(--raised)}
+html[data-costly-paint][data-theme] body .floating-menu{background:var(--panel)}
+html[data-costly-paint] .workspace .action-dock:not(:is(.board-view,.github-view) *),html[data-costly-paint] .workspace :is(.action-dock-tip,.agents-flyout){background:var(--panel)}
+html[data-costly-paint][data-theme] .workspace[data-scene] .conversation-pane .turn-card{background:var(--bg)}
+/* Keep the composer's card tint over an opaque panel once its frost is removed. The input,
+   model/mode triggers, state chips and attachment trays all sit inside this backing; their
+   translucent hover/state fills can stay intact without revealing sharp scenery. */
+html[data-costly-paint][data-theme] .workspace .conversation-pane .composer-area .composer{background:linear-gradient(var(--ds-card,var(--panel)) 0 0),var(--panel)}
+html[data-costly-paint] .workspace :is(.thread-tile-bar,.thread-mirror-composer){background:var(--panel,var(--bg))}
+/* A scene sets --panel-surface to transparent inside the main pane, including detached file windows. */
+html[data-costly-paint] .file-window{background:var(--bg)}
+html[data-costly-paint] .desktop-brand-launch::before{background:var(--bg)}
+html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger{background:var(--bg)}
+html[data-costly-paint][data-theme] .workspace-header .agents-dock-trigger:hover{background:linear-gradient(var(--ds-row-hover,transparent) 0 0),var(--bg)}
+/* The other glass surfaces, each with the background of its own reduced-transparency rule (named per line). */
+html[data-costly-paint] :is(.pp-pill,.pp-card){--pp-fill:var(--panel)} /* progress-pip.css */
+html[data-costly-paint][data-theme] .pp-lb-plate{background:var(--panel)}
+html[data-costly-paint] .pp-chip{background:var(--pp-dark,var(--panel))}
+html[data-costly-paint] :is(.agents-dock-popover,.agents-dock-window-panel,.agents-dock-orb){background:var(--panel)} /* agents-dock.css */
+html[data-costly-paint] :is(.command-center-dialog,.goal-banner){background:var(--panel)} /* command-center.css */
+html[data-costly-paint] .jev-activity button{background:var(--panel)} /* jev-activity.css */
+/* sidebar-tree.css: the row tint (often translucent, e.g. --ds-row-hover) laid over the opaque frame, floored by --sidebar
+   where the frame is itself translucent (native material), so the title under the actions never shows through. */
+html[data-costly-paint] .sidebar .task-actions{background:linear-gradient(var(--row-bg,var(--raised)) 0 0),linear-gradient(var(--frame,var(--sidebar,var(--bg))) 0 0),var(--sidebar,var(--bg))}
+html[data-costly-paint] .skill-manager-float{background:var(--panel)} /* skill-manager.css */
+html[data-costly-paint][data-theme] :is(.jev-popover.floating-menu,dialog.jev-dialog){background:var(--panel)} /* jev.css */
+html[data-costly-paint] :is(.jev-live,.jev-live-screen figcaption){background:var(--panel)} /* jev-live.css */
+html[data-costly-paint][data-theme] .council-panel.floating-menu{background:var(--bg)} /* council.css */
+html[data-costly-paint] .workspace :is(.architect-panel,.subagents-panel).floating-menu{background:var(--panel)} /* wallpapers.css */
+html[data-costly-paint]:root .workspace.side-thread[data-wallpaper] .conversation-pane{background:var(--bg)}
+html[data-costly-paint]:root .workspace[data-wallpaper] .board-card{background:var(--bg)}
+html[data-costly-paint]:root .workspace[data-wallpaper] .board-card.selected{background:color-mix(in srgb,var(--accent) 5%,var(--bg))}
+html[data-costly-paint] .file-mention-menu.floating-menu{background:var(--surface-3,var(--launcher-bg,var(--panel)))} /* file-mentions.css */
+html[data-costly-paint] .architect-worker-meta{background:var(--panel)} /* architect.css */
+html[data-costly-paint] .tool-trace-tip{background:var(--panel)} /* tool-trace.css */
+html[data-costly-paint][data-theme] .tool-image-viewer-plate{background:var(--panel)} /* tool-images.css */
+html[data-costly-paint] .pairing-prompt{background:var(--raised)} /* remote-pairing-prompt.css */
+html[data-costly-paint][data-theme] body .voice-pill:is([data-floating],:not([data-floating])){background:var(--panel)} /* voice-dictation.css */
+html[data-costly-paint] .drag-ghost{background:var(--raised)} /* thread-order.css */
+html[data-costly-paint] .workspace[data-wallpaper] :is(.gh-repos,.gh-tabs,.gh-compose){background:var(--panel)} /* github-hub.css */
+html[data-costly-paint][data-theme] .workspace.browser-open>.inspector:has(.browser-panel){background:var(--panel)} /* browser.css */
+html[data-costly-paint][data-theme] .workspace[data-wallpaper]>.inspector:has(>.simulator-panel:not([hidden])){background:var(--panel)} /* simulator.css */
+html[data-costly-paint] :is(.simulator-panel,.workspace[data-wallpaper] .simulator-panel){--sim-glass:var(--panel)}
+html[data-costly-paint] :is(.vm-panel,.workspace[data-wallpaper] .vm-panel){--vm-glass:var(--panel)} /* vm-panel.css */
+html[data-costly-paint][data-theme] :is(dialog.change-review-dialog,dialog.moodboards-dialog){background:var(--panel)} /* change-review.css, moodboards.css */
+html[data-costly-paint] .moodboard-lightbox{background:var(--panel)}
+html[data-costly-paint] :is(.bp-menu,.bp-avatar-pop){background:var(--panel)} /* bots-settings.css */
+html[data-costly-paint] .bot-create-menu{background:var(--panel)} /* bot-shared-channels.css */
+html[data-costly-paint] .workspace[data-wallpaper] .bots .bs-group{background:var(--panel)}
+html[data-costly-paint] :is(.wallpaper-preview-sidebar,.wallpaper-preview-composer,.wallpaper-settings-preview figcaption){background:var(--panel)} /* wallpaper-settings.css */
 @media(prefers-contrast:more){
   .dialog-plate,.toast{border:1px solid var(--border)}
   [data-segmented]>button:is([aria-pressed="true"],[aria-selected="true"],.selected){outline:1px solid var(--text);outline-offset:-1px}
 }
 
 /* Framed search fields share the sheet's frosted look. */
-html[data-theme] dialog .import-search{background:var(--glass-fill);border-radius:var(--radius-sm)}
+html[data-theme] dialog .import-search{background:var(--glass-fill)}
 html[data-theme] dialog .import-search:focus-within{box-shadow:0 0 0 3.5px rgb(var(--accent-rgb) / .16)}
 
 /* Slim controls in every modal: shorter fields and buttons, tighter rows and tabs. */
 html[data-theme] dialog{padding:18px 20px 16px}
 html[data-theme] dialog .dialog-heading{margin-bottom:12px}
-html[data-theme] dialog .dialog-heading h2{font-size:var(--text-lg)}
 html[data-theme] dialog .dialog-heading [data-action="close-dialog"]{width:24px;height:24px}
 html[data-theme] dialog .dialog-heading [data-action="close-dialog"] .icon{--icon-size:var(--icon-xs);--icon-stroke:var(--icon-stroke-xs)}
-html[data-theme] dialog .dialog-description{font-size:var(--text-xs);margin:-4px 0 12px}
-html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch)){padding:6px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm);min-height:30px}
-html[data-theme] dialog :where(textarea){padding:7px 10px;font-size:var(--text-sm);border-radius:var(--radius-sm)}
-html[data-theme] dialog :is(.primary-button,.secondary-button){min-height:30px;padding:5px 12px;font-size:var(--text-xs);border-radius:var(--radius-sm);gap:6px}
+html[data-theme] dialog .dialog-description{font-size:var(--type-meta);margin:-4px 0 12px}
+html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch,[role=switch],.ds-toggle)){padding-block:6px;padding-inline-start:10px;font-size:var(--type-body);min-height:30px}
+html[data-theme] dialog :where(input,select):where(:not([type=checkbox],[type=radio],[type=range],.bots-switch,.settings-switch,[role=switch],.ds-toggle)):where(:not(select),[multiple],[size]:not([size="1"])){
+  padding-inline-end:10px;
+}
+html[data-theme] dialog :where(textarea){padding:7px 10px;font-size:var(--type-body)}
+html[data-theme] dialog :is(.primary-button,.secondary-button){min-height:30px;padding:5px 12px;font-size:var(--type-body);gap:6px}
 html[data-theme] dialog :is(.primary-button,.secondary-button)>.icon{width:12px;height:12px}
 html[data-theme] dialog .dialog-footer{margin-top:16px;gap:6px}
-html[data-theme] dialog .field-label{margin:10px 0 5px;font-size:var(--text-xs)}
-html[data-theme] dialog .settings-tabs{padding:3px;margin-bottom:1rem;border-radius:var(--radius-sm)}
-html[data-theme] dialog .settings-tabs button{padding:.32rem .8rem;font-size:var(--text-sm)}
+html[data-theme] dialog .field-label{margin:10px 0 5px;font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
 html[data-theme] dialog .settings-home .setting-row{min-height:2.45rem;padding:.42rem .85rem}
-html[data-theme] dialog .settings-home .setting-row strong{font-size:var(--text-sm)}
-html[data-theme] dialog .settings-home .setting-row small{font-size:var(--text-xs)}
-html[data-theme] dialog .settings-home .secondary-button{min-height:1.75rem;padding:.25rem .6rem;font-size:var(--text-xs)}
-html[data-theme] dialog .settings-home .settings-select{padding:.35rem .6rem;font-size:var(--text-xs);min-width:9.5rem}
-html[data-theme] dialog .settings-home .text-size-controls button{padding:.25rem .45rem;font-size:var(--text-xs)}
-html[data-theme] dialog .settings-group{border-radius:var(--radius-md)}
-html[data-theme] dialog .bots-field :is(input,select){padding:6px 10px}
+html[data-theme] dialog .settings-home .setting-row strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);letter-spacing:var(--tracking-none);}
+html[data-theme] dialog .settings-home .setting-row small{font-size:var(--type-meta)}
+html[data-theme] dialog .settings-home .secondary-button{min-height:1.75rem;padding:.25rem .6rem;font-size:var(--type-body)}
+html[data-theme] dialog .settings-home .settings-select{padding-block:.35rem;padding-inline-start:.6rem;font-size:var(--type-body);min-width:9.5rem}
+html[data-theme] dialog .settings-home .settings-select:where(:not(select),[multiple],[size]:not([size="1"])){
+  padding-inline-end:.6rem;
+}
+html[data-theme] dialog .settings-home .text-size-controls button{padding:.25rem .45rem;font-size:var(--type-body)}
+html[data-theme] dialog .bots-field :is(input,select){padding-block:6px;padding-inline-start:10px}
+html[data-theme] dialog .bots-field :is(input,select):where(:not(select),[multiple],[size]:not([size="1"])){
+  padding-inline-end:10px;
+}
 html[data-theme] dialog .bots-field textarea{padding:7px 10px}
-html[data-theme] dialog :is(.bots-tabs,.usage-tabs)>button{padding:4px 10px;font-size:var(--text-xs)}
+html[data-theme] dialog .usage-tabs>button{padding:4px 10px;font-size:var(--type-body)}
 html[data-theme] dialog .bots-items>li{padding:7px 9px 7px 12px}
-html[data-theme] dialog .bots-items :is(.secondary-button,.primary-button){min-height:26px;padding:3px 10px;font-size:var(--text-xs)}
+html[data-theme] dialog .bots-items :is(.secondary-button,.primary-button){min-height:26px;padding:3px 10px;font-size:var(--type-body)}
 html[data-theme] dialog .command-search{padding:1px 12px}
-html[data-theme] dialog .command-search input{padding:8px 0;font-size:var(--text-md);min-height:0}
+html[data-theme] dialog .command-search input{padding:8px 0;min-height:0}
 html[data-theme] dialog .command-results>button{min-height:30px;padding:5px 10px}
 html[data-theme] dialog .import-search{height:30px}

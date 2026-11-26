@@ -13,6 +13,7 @@ const providerCalls = (page: Page) => page.evaluate(() => (window as any).__sett
 
 for (const theme of ['dark', 'light']) for (const { width, scale } of [{ width: 460, scale: 1.4 }, { width: 540, scale: 1.6 }, { width: 1100, scale: 1 }]) {
   test(`settings organization keeps full Agents tabs readable at ${width}px ${scale * 100}% ${theme}`, async ({ page }, testInfo) => {
+    test.slow();
     await page.setViewportSize({ width, height: 740 });
     await page.addInitScript(({ theme, scale }) => {
       localStorage.setItem('pandacode.theme', theme);
@@ -193,6 +194,7 @@ async function open(page: Page): Promise<void> {
     `) });
   });
   await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('html[data-ready]')).toHaveCount(1, { timeout: 15_000 });
   await expect(prompt(page)).toBeEnabled();
   await expect(page.locator('.task-item.selected')).toHaveCount(1);
 }
@@ -239,7 +241,11 @@ test('support details recover from a fetch error and offer manual copying when c
 });
 
 async function settings(page: Page): Promise<void> {
-  await page.keyboard.press('Meta+,');
+  // Under load the first shortcut can land before the keymap is wired: retry until the page opens.
+  await expect(async () => {
+    if (!(await dialog(page).isVisible())) await page.keyboard.press('Meta+,');
+    await expect(dialog(page)).toBeVisible({ timeout: 2_000 });
+  }).toPass({ timeout: 15_000 });
   await expect(dialog(page).getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   await expect(tab(page, 'Recommended')).toHaveAttribute('aria-selected', 'true');
   await expect(tab(page, 'Recommended')).toBeFocused();
@@ -514,6 +520,40 @@ for (const layout of [{ width: 860, scale: 1.4 }, { width: 540, scale: 1.6 }]) {
     expect(await dialog(page).locator('.settings-content').evaluate(node => node.scrollWidth - node.clientWidth)).toBeLessThanOrEqual(1);
     await back(page).click();
     await expect(dialog(page)).not.toBeVisible();
+  });
+}
+
+// `providers.rs` reports "ACP" only for the standalone server binary; an `agy` CLI that answers no
+// version reports "", so its row reads as any other installed agent.
+for (const { path, version, installed, reported } of [
+  { path: '/sample/bin/agy', version: '', installed: 'Installed', reported: 'Not reported' },
+  { path: '/sample/bin/agy_acp_server.par', version: 'ACP', installed: 'ACP installed', reported: 'ACP' },
+]) {
+  test(`settings organization lists Antigravity at ${path} as "${installed}"`, async ({ page }) => {
+    await page.route('**/src/preview.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const marker = /switch\s*\(command\)\s*\{/;
+      expect(source).toMatch(marker);
+      // Swap the sample entry rather than answering `list_providers` here, so the preview's version
+      // probe still reports it and the row stops showing "Checking…".
+      await route.fulfill({ response, body: source.replace(marker, `
+        if (command === 'list_providers') {
+          const index = providers.findIndex(provider => provider.id === 'antigravity');
+          providers[index] = {...providers[index], installed:true, path:${JSON.stringify(path)}, version:${JSON.stringify(version)}};
+        }
+        switch (command) {
+      `) });
+    });
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await tab(page, 'Agents').click();
+    const row = dialog(page).locator('.provider-diagnostic[data-provider="antigravity"]');
+    await expect(row.locator('.settings-installed')).toHaveText(installed);
+    await expect(row.locator('summary')).toHaveAttribute('aria-label', 'Antigravity details, Installed');
+    await row.locator('summary').click();
+    await expect(row.locator('.settings-provider-version')).toHaveText(reported);
+    await expect(row.locator('code')).toHaveText(path);
   });
 }
 

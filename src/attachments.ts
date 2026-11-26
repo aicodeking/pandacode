@@ -1,5 +1,5 @@
 import './attachments.css';
-import { call, chooseAttachmentFolder, chooseAttachments, preview } from './bridge';
+import { call, chooseAttachmentFolder, chooseAttachments, nativeDesktop, preview, webMode } from './bridge';
 import { escape, icon } from './dom';
 import { isMac } from './platform';
 
@@ -98,6 +98,8 @@ export function mountPromptAttachments(host: AttachmentsHost) {
   /** The native clipboard image, for webviews (WebKitGTK) that never expose OS
    * clipboard images as pasted files; unreadable or empty clipboards stay silent. */
   async function attachClipboardImage(taskId: string): Promise<void> {
+    // A browser tab must never read the host computer's clipboard (the preview's mock still may).
+    if (webMode) return;
     let base64: string | null;
     try {
       base64 = await call<string | null>('read_clipboard_image');
@@ -174,7 +176,8 @@ export function mountPromptAttachments(host: AttachmentsHost) {
    * (names prove it), otherwise the File objects, which have no path (Photos, Mail, a
    * failed read). */
   async function attachDropped(files: File[]): Promise<void> {
-    const paths = await call<string[]>('dragged_file_paths').catch(() => [] as string[]);
+    // A browser tab's drop has no native paths (and the host would refuse the call): attach the files' bytes.
+    const paths = webMode ? [] : await call<string[]>('dragged_file_paths').catch(() => [] as string[]);
     const names = new Set(paths.map(path => baseName(path).normalize()));
     if (paths.length && files.every(file => names.has(file.name.normalize()))) await attachPaths(paths, 'unknown', true);
     else if (files.length) await attachFiles(files, 'drop');
@@ -253,7 +256,8 @@ export function mountPromptAttachments(host: AttachmentsHost) {
       // image-only paste looks empty there; the native read covers it. Pastes with
       // any file or text are left to the browser, so only this one reads natively.
       const types = [...(data?.types ?? [])];
-      if (taskId && !data?.files.length && !types.includes('Files') && !types.some(type => type.startsWith('text/'))) {
+      // A browser tab (web mode) must never read the host computer's clipboard.
+      if (!webMode && taskId && !data?.files.length && !types.includes('Files') && !types.some(type => type.startsWith('text/'))) {
         event.preventDefault();
         attachClipboardImage(taskId).catch(host.report);
       }
@@ -266,7 +270,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
       const setActive = (active: boolean) => zone()?.classList.toggle('drop-active', active && accepting());
       // macOS drops are HTML5 events (the native handler is off, `app_context` in lib.rs), so
       // text falls through to the prompt; Windows and Linux stay on Tauri's native events.
-      if (preview || isMac) {
+      if (!nativeDesktop || isMac) {
         let depth = 0;
         const types = (event: DragEvent) => event.dataTransfer?.types ?? [];
         // The main window has no navigation guard: a file or link the page does not take

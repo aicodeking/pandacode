@@ -152,7 +152,8 @@ test('the pill and card are the action dock\'s material, and the large view is t
   const plate = page.locator('.pp-lb-plate');
   await expect(plate).toBeVisible();
   const glass = await page.evaluate(() => { const probe = document.createElement('i'); probe.style.cssText = 'color:var(--glass-warm);border:1px solid var(--glass-border)'; document.body.append(probe); const s = getComputedStyle(probe), value = { fill: s.color, line: s.borderTopColor }; probe.remove(); return value; });
-  expect(await plate.evaluate(el => { const s = getComputedStyle(el); return { fill: s.backgroundColor, line: s.borderTopColor, width: s.borderTopWidth, radius: s.borderRadius }; })).toEqual({ ...glass, width: '1px', radius: '16px' });
+  const cardRadius = await plate.evaluate(el => getComputedStyle(el).getPropertyValue('--ds-card-radius').trim());
+  expect(await plate.evaluate(el => { const s = getComputedStyle(el); return { fill: s.backgroundColor, line: s.borderTopColor, width: s.borderTopWidth, radius: s.borderRadius }; })).toEqual({ ...glass, width: '1px', radius: cardRadius });
   await page.keyboard.press('Escape');
   await expect(page.locator('dialog.pp-lightbox')).toHaveCount(0);
   await card(page).getByRole('button', { name: 'Collapse visual progress' }).click();

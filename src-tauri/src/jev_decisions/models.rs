@@ -1,5 +1,5 @@
-//! Decision models a user can pick in Jev settings. TypeSafe's list is built in; OpenRouter's
-//! public catalog is fetched only when the dropdown opens for OpenRouter.
+//! Decision models a user can pick in Jev settings. TypeSafe's and the local Laya list are
+//! built in; OpenRouter's public catalog is fetched only when the dropdown opens for it.
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -15,6 +15,11 @@ pub struct DecisionModel {
 
 pub(crate) fn typesafe() -> Vec<DecisionModel> {
     vec![DecisionModel { id: super::api::MODEL.into(), name: super::api::MODEL.into() }]
+}
+
+// The local model list is fixed; a Laya server serves one System-1 model.
+pub(crate) fn laya() -> Vec<DecisionModel> {
+    vec![DecisionModel { id: super::api::LAYA_MODEL.into(), name: super::api::LAYA_MODEL.into() }]
 }
 
 #[derive(Deserialize)]
@@ -85,7 +90,8 @@ pub(crate) async fn list(provider: &str) -> Result<Vec<DecisionModel>, String> {
     match provider {
         "typesafe" => Ok(typesafe()),
         "openrouter" => fetch(OPENROUTER_MODELS).await,
-        _ => Err("Choose TypeSafe or OpenRouter.".into()),
+        "laya" => Ok(laya()),
+        _ => Err("Choose TypeSafe, OpenRouter, or Local Laya.".into()),
     }
 }
 
@@ -108,6 +114,7 @@ mod tests {
         assert_eq!(parse(br#"{"data":[{"id":"x/y"}]}"#).unwrap().len(), 1);
         assert!(parse(b"nope").is_err());
         assert_eq!(typesafe()[0].id, "jev-1.13.0");
+        assert_eq!(laya()[0].id, "laya-system-one");
     }
 
     #[tokio::test]

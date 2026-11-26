@@ -231,6 +231,8 @@ fn parse_summary(output: &str) -> Vec<JjFile> {
 
 fn renamed_to(path: &str) -> String {
     let (Some(open), Some(close)) = (path.find('{'), path.rfind('}')) else { return path.into() };
+    // Every summary line comes through here, and a file may be named `a}b{c`: a `}` before the `{` is not a rename.
+    if close <= open { return path.into(); }
     let Some((_, to)) = path[open + 1..close].split_once(" => ") else { return path.into() };
     // `{ => b}/x` and `a/{x => }/y` leave doubled or leading slashes behind.
     format!("{}{}{}", &path[..open], to, &path[close + 1..]).replace("//", "/").trim_start_matches('/').into()
@@ -264,6 +266,15 @@ mod tests {
             [("M", "src/main.rs"), ("A", "docs/new file.md"), ("D", "old.txt"), ("R", "src/b.rs"), ("R", "y/z.rs"), ("C", "lib/sub/c.rs")]
         );
         assert!(parse_summary("Working copy changes:\n").is_empty());
+    }
+
+    #[test]
+    fn a_path_with_a_closing_brace_before_an_opening_one_is_kept() {
+        // Every summary line goes through `renamed_to`, not only renames, and `a}b{c` is a legal file name:
+        // the bytes between a `}` and a later `{` must not be sliced backwards.
+        assert_eq!(parse_summary("M notes}v2{x.md\n")[0].path, "notes}v2{x.md");
+        // The rename rewrite still works around such a name.
+        assert_eq!(parse_summary("R notes}v2/{old.md => new.md}\n")[0].path, "notes}v2/new.md");
     }
 
     #[test]

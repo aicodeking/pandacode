@@ -1,0 +1,81 @@
+/* The thread scroll indicator (src/thread-scroll-indicator.ts): a slim floating rail at the conversation's
+ * left edge, centred between the top band and the composer (the script sets `top`). It takes no layout:
+ * the rail and its shared preview bubble are absolute siblings of #transcript, and a wheel over the rail
+ * scrolls the transcript. The rail itself is bare (transparent, no box or radius); only the preview bubble
+ * carries the action dock's glass (--dock-fill over --dock-blur, --dock-edge hairline), with fallbacks
+ * that keep it solid if the dock stylesheet has not loaded. Ticks grow with `scale` only. */
+.conversation-pane:has(>.thread-scroll-indicator){position:relative}
+.thread-scroll-preview{
+  background:var(--dock-fill,var(--panel));
+  backdrop-filter:var(--dock-blur,none);-webkit-backdrop-filter:var(--dock-blur,none);
+  box-shadow:var(--dock-edge,inset 0 0 0 1px var(--ds-border))}
+.thread-scroll-indicator{position:absolute;left:6px;top:0;z-index:7;box-sizing:border-box;width:24px;padding:6px 2px;
+  display:flex;flex-direction:column;align-items:center;gap:2px;background:transparent;border-radius:0;touch-action:none;user-select:none;-webkit-user-select:none}
+.thread-scroll-indicator[hidden],.thread-scroll-preview[hidden]{display:none}
+.thread-scroll-track{display:flex;flex-direction:column;align-items:stretch;width:100%}
+
+.thread-scroll-indicator button{appearance:none;display:flex;align-items:center;box-sizing:border-box;width:20px;margin:0;padding:0;border:0;
+  border-radius:var(--ds-control-radius);background:transparent;color:var(--muted);font:inherit;cursor:pointer;
+  transition:background-color 120ms var(--ds-ease-out,ease-out),color 120ms var(--ds-ease-out,ease-out),scale 120ms var(--ds-ease-out,ease-out)}
+.thread-scroll-indicator button[hidden]{display:none}
+.thread-scroll-indicator button:focus{outline:0}
+.thread-scroll-indicator button:focus-visible{outline:2px solid var(--focus);outline-offset:1px}
+
+/* Earlier and latest: small chevron buttons that press with `scale`. */
+.thread-scroll-step{justify-content:center;height:22px}
+.thread-scroll-step svg{width:12px;height:12px;pointer-events:none}
+.thread-scroll-step:hover{background:var(--ds-row-hover);color:var(--text)}
+.thread-scroll-step:active{background:var(--ds-row-press);scale:.94}
+
+/* Ticks: a 16px hit slot holding a quiet rounded bar that grows from its left end. */
+.thread-scroll-tick{justify-content:flex-start;height:16px;padding-left:4px}
+.thread-scroll-tick-bar{display:block;width:9px;height:2px;border-radius:var(--radius-full);background:var(--muted);opacity:.62;transform-origin:left center;pointer-events:none;
+  transition:scale 140ms var(--ds-ease-out,ease-out),background-color 140ms var(--ds-ease-out,ease-out),opacity 140ms var(--ds-ease-out,ease-out)}
+.thread-scroll-tick:is(:hover,[data-hover]) .thread-scroll-tick-bar{scale:1.3 1.25;background:var(--text);opacity:.95}
+.thread-scroll-tick[data-error] .thread-scroll-tick-bar{background:var(--ds-danger);opacity:.85}
+.thread-scroll-tick[data-live] .thread-scroll-tick-bar{background:var(--ds-info);opacity:.9}
+.thread-scroll-tick[data-active] .thread-scroll-tick-bar{scale:1.45 1.5;background:var(--accent);opacity:1}
+html:not([data-theme="dark"]) .thread-scroll-tick[data-active] .thread-scroll-tick-bar{background:var(--accent-ink)}
+.thread-scroll-tick[data-active][data-live] .thread-scroll-tick-bar{background:var(--ds-info)}
+.thread-scroll-tick[data-active][data-error] .thread-scroll-tick-bar{background:var(--ds-danger)}
+.thread-scroll-indicator[data-scrubbing]{cursor:grabbing}
+.thread-scroll-indicator[data-scrubbing] button{cursor:grabbing}
+
+/* The shared preview: one glass bubble right of the rail; the script sets left and top. */
+.thread-scroll-preview{position:absolute;z-index:8;top:0;left:0;box-sizing:border-box;max-width:240px;padding:7px 10px;border-radius:var(--ds-control-radius);
+  display:flex;flex-direction:column;gap:2px;color:var(--text);font-size:var(--type-meta);line-height:var(--type-meta-leading);pointer-events:none}
+.thread-scroll-preview-title{color:var(--muted);font-size:var(--type-caption);font-weight:var(--weight-medium);line-height:var(--type-caption-leading);letter-spacing:var(--tracking-none);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.thread-scroll-preview-text{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
+.thread-scroll-preview-text:empty{display:none}
+
+@media(prefers-reduced-motion:no-preference){
+  .thread-scroll-tick[data-live] .thread-scroll-tick-bar{animation:state-pulse 1.6s ease-in-out infinite}
+  .thread-scroll-preview:not([hidden]){animation:thread-scroll-preview-in 120ms var(--ds-ease-out,ease-out)}
+}
+@keyframes thread-scroll-preview-in{from{opacity:0}}
+@media(prefers-reduced-motion:reduce){
+  .thread-scroll-indicator button,.thread-scroll-tick-bar{transition:none}
+  .thread-scroll-tick-bar,.thread-scroll-preview{animation:none}
+}
+@media(prefers-reduced-transparency:reduce){
+  html .workspace .thread-scroll-preview{background:var(--panel);backdrop-filter:none;-webkit-backdrop-filter:none}
+}
+@media(prefers-contrast:more){
+  html .workspace .thread-scroll-preview{background:var(--bg);backdrop-filter:none;-webkit-backdrop-filter:none;box-shadow:none;outline:1px solid var(--text)}
+  html .workspace .thread-scroll-indicator{background:transparent}
+  .thread-scroll-tick-bar{background:var(--text);opacity:1}
+  .thread-scroll-preview-title{color:var(--text)}
+}
+@media(forced-colors:active){
+  .thread-scroll-preview{border:1px solid CanvasText;background:Canvas;color:CanvasText;box-shadow:none}
+  .thread-scroll-indicator{background:transparent;border:0;box-shadow:none;color:CanvasText}
+  .thread-scroll-tick-bar{background:CanvasText;opacity:1;forced-color-adjust:none}
+  .thread-scroll-tick[data-active] .thread-scroll-tick-bar{background:Highlight}
+  .thread-scroll-indicator button:focus-visible{outline-color:Highlight}
+  .thread-scroll-step svg{color:ButtonText}
+}
+
+/* Views without a thread to scroll, and narrow windows. */
+.workspace:is(.board-view,.github-view) :is(.thread-scroll-indicator,.thread-scroll-preview),
+.conversation-pane:is(.new-task-page,.channel-thread)>:is(.thread-scroll-indicator,.thread-scroll-preview){display:none}
+@media(max-width:650px){.thread-scroll-indicator,.thread-scroll-preview{display:none}}

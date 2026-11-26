@@ -148,8 +148,15 @@ test('the destructive badge is reachable and reading it never toggles its row; m
   await row.locator(':scope > summary > .tool-trace-verb').click();
   expect(await row.evaluate(details => (details as HTMLDetailsElement).open)).toBe(!open);
   const mono = page.locator('.tool-trace > summary .tool-trace-object.is-mono').first();
-  const ratio = await mono.evaluate(object => parseFloat(getComputedStyle(object).fontSize) / parseFloat(getComputedStyle(object.parentElement!).fontSize));
-  expect(ratio).toBeCloseTo(0.9, 2);
+  const { got, want } = await mono.evaluate(object => {
+    const probe = document.createElement('span');
+    probe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;font-size:var(--mono-size)';
+    document.body.append(probe);
+    const expected = getComputedStyle(probe).fontSize;
+    probe.remove();
+    return { got: getComputedStyle(object).fontSize, want: expected };
+  });
+  expect(got).toBe(want);
 });
 
 test('the destructive badge shows its risks in an in-app tooltip on hover and keyboard focus, without moving the row', async ({ page }) => {
@@ -728,3 +735,27 @@ test('lone notes line up with card content', async ({ page }) => {
   for (const note of notes) expect(Math.abs(note.inset - 12), `${note.text} ${note.inset}px`).toBeLessThanOrEqual(1);
 });
 
+
+test('tool duration rows use meta typography and tabular numerals', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.workspace')).toBeVisible({ timeout: 15_000 });
+  await page.evaluate(async () => {
+    await import('/src/tool-cards.css');
+    await import('/src/tool-trace.css');
+    const host = document.createElement('div');
+    host.id = 'duration-role-probe';
+    host.innerHTML = '<span class="tc-row-time">1.2s</span><span class="trace-row-time">1.2s</span>';
+    document.body.append(host);
+  });
+  for (const selector of ['.tc-row-time', '.trace-row-time']) {
+    const time = page.locator(`#duration-role-probe ${selector}`);
+    await expect(time).toHaveCSS('font-variant-numeric', 'tabular-nums');
+    const style = await time.evaluate(el => {
+      const cs = getComputedStyle(el);
+      return {size:parseFloat(cs.fontSize),leading:parseFloat(cs.lineHeight),numeric:cs.fontVariantNumeric};
+    });
+    expect(style.size).toBeCloseTo(12, 1);
+    expect(style.leading).toBeCloseTo(16.8, 1);
+    expect(style.numeric).toBe('tabular-nums');
+  }
+});

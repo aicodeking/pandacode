@@ -160,11 +160,11 @@ embedded editor engine.
   linked, with access you set per computer. Off by default. See
   [machine orchestration](docs/machine-orchestration.md).
 - **Local VMs and cloud sandboxes.** Headless macOS/Linux VMs on Apple silicon (Tart),
-  and Daytona, Docker, DigitalOcean, Vultr, Hetzner, RunPod, Cloudflare and AWS machines
-  that agents can drive.
+  and Daytona, Docker, DigitalOcean, Vultr, Hetzner, RunPod, Cloudflare, AWS and Google
+  Colab machines that agents can drive.
 - **Cloud agents.** Pick a cloud provider in a New task's **Run on** menu and the
   agent runs on a machine in your own account (Daytona, Docker, DigitalOcean, Vultr,
-  Hetzner, RunPod, Cloudflare, AWS, Google Cloud, E2B, Modal, Vercel Sandbox,
+  Hetzner, RunPod, Cloudflare, AWS, Google Cloud, Google Colab, E2B, Modal, Vercel Sandbox,
   CodeSandbox, Runloop, Blaxel, Tensorlake, Freestyle, boat, InstaBox). PandaCode
   installs the harness there, copies your login, and keeps the run going while your
   laptop sleeps; changes come back to a local worktree. See
@@ -305,9 +305,12 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   own opt-outs (Claude Code, Codex, Kimi, Grok, DeepSeek, Command Code, Pi,
   Muse, and OpenCode sharing) plus `DO_NOT_TRACK=1`. Your agent config files
   are not changed. Each agent's row shows what the switch covers. Cline has no
-  per-launch switch, so turn it off in Cline's own settings. With the switch on,
-  Claude Code also stops fetching remote feature flags (it uses its defaults)
-  and can't take sessions started remotely on this computer.
+  per-launch switch, so turn it off in Cline's own settings. Antigravity's
+  opt-out reaches its task sessions through the agy CLI only; its console,
+  usage checks and standalone ACP server have none, and agy may save the
+  choice with your Google account. With the switch on, Claude Code also stops
+  fetching remote feature flags (it uses its defaults) and can't take sessions
+  started remotely on this computer.
 
 A few automatic checks send no personal data — just plain requests for public
 information:
@@ -317,7 +320,6 @@ information:
 | Latest versions of installed coding CLIs | `formulae.brew.sh`, `downloads.claude.ai`, `api.github.com`, `cdn.kimi.com`, `registry.npmjs.org`, `releases.openai.com`, `storage.googleapis.com`, `pypi.org` | About every 6 hours |
 | Plan usage checks for your signed-in agents | That agent's provider | When you open the menu bar item or the Usage dialog, and in Settings → Providers when account pools are shown (once, then at most every 5 minutes on window focus, or when you click Refresh) |
 | Asking your Claude Code for usage when PandaCode can't read it (on by default; Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it): PandaCode runs your installed Claude Code once, `claude -p /usage` (a local command: no model call, nothing billed), with only its config folder, network and process settings (its telemetry, error reports, nonessential traffic and self-update turned off for this run), which lets Claude Code refresh and save its own login if it needs to, as when you open it (it may answer from its own snapshot instead). PandaCode never writes Claude Code's credentials | Whatever Claude Code itself contacts to refresh its login and read usage (Anthropic) | Only during a Claude usage check that can't read usage (an expired, rejected or missing login, a Keychain or network problem, a rate limit with no saved reading; never for an API-key or other non-subscription setup, a locked Keychain or a Keychain read you denied unless you press Refresh), at most once per Claude setup every 15 minutes (a Refresh you press may run it once more), less often while runs keep failing (up to every 2 hours), never two at once, and never inside a rate limit's server-set wait (after it, a new rate limit with no or an old saved reading may run it); never while the setting is off |
-| Warm start of a coding agent: the CLI of a harness you installed and picked is launched in the background as a normal launch would, including your own startup hooks, plugins and configured MCP servers, which may contact their hosts; no prompt is sent (for Codex, the task's saved conversation may be loaded ahead, but no turn is sent). Turn off with Settings → Agents → **Start agents ahead** | That agent's provider, and whatever your hooks, plugins and MCP servers contact | After a turn ends, when you pick a task's model, effort, permissions or harness in its main thread, and when you start typing in a local task's message box (not a bot's thread); at most 2 idle at a time, each stopped after 10 minutes |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
@@ -329,6 +331,7 @@ information:
 | Push notifications (optional, mobile app): the relay sends a generic alert ("A task finished") with a `pandacode://inbox` link to your phone's device token, never task content | Apple Push Notification service, Firebase Cloud Messaging (sent by the PandaCode relay) | Only after you allow notifications in the mobile app while signed in to Connect |
 | Voice input with a speech service (optional): recorded audio, selected model and optional language, authenticated with your speech key | The transcription endpoint you configure (OpenAI, Groq, Mistral or your local/custom server) | Only with that service chosen, when you stop or transcribe a recording (Stop, Enter, Transcribe recording, Retry) or when switching threads or anything else closes the prompt box mid-recording while PandaCode keeps running; automatic stops (the two-minute or 16 MiB limit, or a failing microphone) keep the audio until you press Transcribe recording; with **This device**, audio never leaves your computer |
 | Local speech models (optional): the model file you pick and, with the first one, the Silero voice-activity model (about 1 MB), from a pinned revision, verified by SHA-256 | `huggingface.co`, `*.huggingface.co` and the download CDN `*.hf.co` | Only when you click Download in Settings → Voice; nothing at launch, while browsing models or while dictating |
+| Google Colab (optional): Google sign-in, then the Colab runtimes your tasks and agents use (Jupyter and SSH over the runtime proxy's WebSockets). **Sign in with Google** installs Google's pinned `google-colab-cli==0.8.0` with `uv tool install` when no local Colab CLI OAuth client is found; agents with Colab access run Google's `colab-mcp` from a pinned commit with `uvx` | `accounts.google.com`, `oauth2.googleapis.com`, `colab.research.google.com`, `*.colab.dev` and `*.googleusercontent.com` (runtime proxy); `github.com`, `pypi.org` and `files.pythonhosted.org` for the `google-colab-cli` and `colab-mcp` installs | Only after you click **Sign in with Google** or **Use gcloud ADC**, or turn on Google Colab in Settings → Connections → Cloud sandboxes; nothing before |
 | Netlify token check (optional): verifies the token and project you enter | `api.netlify.com` | Only when you save a Netlify token in Settings → Connections → Cloud sandboxes |
 | Adding skills (optional): `npx` fetches the `skills` CLI from the npm registry set in your `~/.npmrc`, which reads the source you choose: a GitHub or GitLab repository, or a local folder (telemetry off) | `registry.npmjs.org` (or your configured registry), `github.com` or `gitlab.com` | Only when you click Find skills, choose a folder or click Install in Settings → Tools → Skills; listing and switching skills are local |
 
