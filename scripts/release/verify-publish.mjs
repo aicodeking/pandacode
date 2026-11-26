@@ -24,7 +24,25 @@ async function verifyChecksum(directory, asset) {
   if (await digest(resolve(directory, asset)) !== match[1]) throw new Error(`${asset} does not match its SHA-256 sidecar.`);
 }
 
-async function verifyUpdaterSignatures(directory, names, pubkey) {
+function verifySignatureVersion(sigFile, releaseVersion, updaterAsset) {
+  const line = Buffer.from(sigFile.trim(), 'base64').toString('utf8').split(/\r?\n/)[2] ?? '';
+  const prefix = 'trusted comment: ';
+  if (!line.startsWith(prefix)) throw new Error(`${updaterAsset}.sig has no trusted comment.`);
+  const versions = line
+    .slice(prefix.length)
+    .split(/\s+/)
+    .filter(token => token.startsWith('version:'))
+    .map(token => token.slice('version:'.length))
+    .filter(Boolean);
+  if (versions.length === 0) {
+    throw new Error(`${updaterAsset}.sig does not bind a version in its trusted comment (expected version:${releaseVersion}).`);
+  }
+  if (versions.length > 1 || versions[0] !== releaseVersion) {
+    throw new Error(`${updaterAsset}.sig binds version ${versions.join(', ')}, not ${releaseVersion}.`);
+  }
+}
+
+async function verifyUpdaterSignatures(directory, names, pubkey, releaseVersion) {
   const signatures = {};
   for (const [target, { updaterAsset }] of Object.entries(targets)) {
     if (!names.has(updaterAsset)) throw new Error(`Updater file ${updaterAsset} is missing.`);
@@ -35,6 +53,7 @@ async function verifyUpdaterSignatures(directory, names, pubkey) {
     } catch (error) {
       throw new Error(`${updaterAsset}.sig does not verify: ${error.message}`);
     }
+    verifySignatureVersion(signature, releaseVersion, updaterAsset);
     signatures[target] = signature.trim();
   }
   return signatures;
@@ -74,7 +93,7 @@ export async function verifyPublishAssets({
   const hasUpdaterArchive = Object.values(targets).some(t => t.updaterAsset !== t.asset && names.has(t.updaterAsset));
   const signed = Boolean(requireSigned) || names.has(MANIFEST) || hasUpdaterArchive || [...names].some(name => name.endsWith('.sig'));
   if (signed) {
-    const signatures = await verifyUpdaterSignatures(directory, names, pubkey ?? await defaultPubkey());
+    const signatures = await verifyUpdaterSignatures(directory, names, pubkey ?? await defaultPubkey(), v);
     await verifyManifest(directory, names, { releaseVersion: v, notes: String(notes ?? ''), repository, signatures });
   }
   if (!names.has(SBOM_COVERAGE)) warn(`::warning::${SBOM_COVERAGE} is missing from publish assets.`);
