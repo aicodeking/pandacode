@@ -1,0 +1,130 @@
+name: Mobile release (unsigned IPA)
+# Builds an unsigned PandaCode.ipa on a macOS runner, publishes it as a GitHub Release
+# tagged ios-v<version>, and rewrites appstore/source.json so the SideStore/AltStore
+# source names the newest build. SideStore and AltStore sign the IPA with the user's
+# own Apple ID on install. See docs/app-store/sideloading.md.
+on:
+  push:
+    tags: ['ios-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Mobile version (x.y.z); defaults to mobile/app.json'
+        type: string
+        required: false
+      publish:
+        description: 'Create the GitHub Release and update appstore/source.json'
+        type: boolean
+        default: false
+permissions:
+  contents: write
+jobs:
+  ipa:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      # Public values, baked into the JS bundle at build time. Without them the app
+      # shows which value is missing on its sign-in screen.
+      EXPO_PUBLIC_PANDACODE_RELAY_URL: ${{ vars.PANDACODE_RELAY_URL }}
+      EXPO_PUBLIC_PANDACODE_GITHUB_CLIENT_ID: ${{ vars.PANDACODE_GITHUB_CLIENT_ID }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+      - name: Resolve version
+        id: version
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            version=$(node -p "require('./mobile/app.json').expo.version")
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::Version '$version' is not x.y.z."; exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "ios-v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the mobile version $version."; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Generate the iOS project
+        working-directory: mobile
+        run: npx expo prebuild --platform ios --no-install --clean
+      - name: Install CocoaPods dependencies
+        working-directory: mobile/ios
+        run: pod install
+      - name: Archive (unsigned)
+        run: |
+          xcodebuild \
+            -workspace mobile/ios/PandaCode.xcworkspace \
+            -scheme PandaCode \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/PandaCode.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            archive
+      - name: Package the IPA
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          app=$(find "$RUNNER_TEMP/PandaCode.xcarchive/Products/Applications" -maxdepth 1 -name '*.app' | head -n 1)
+          if [ -z "$app" ]; then
+            echo "::error::The archive contains no .app bundle."
+            exit 1
+          fi
+          cp -R "$app" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry PandaCode.ipa Payload)
+          cp "$RUNNER_TEMP/ipa/PandaCode.ipa" PandaCode.ipa
+          shasum -a 256 PandaCode.ipa > PandaCode.ipa.sha256
+      - name: Write the SideStore source
+        run: |
+          node scripts/release/mobile-source.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "${{ steps.version.outputs.version }}" \
+            --date "$(date -u +%F)" \
+            --size "$(stat -f%z PandaCode.ipa)" \
+            --output appstore/source.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pandacode-mobile-${{ steps.version.outputs.version }}
+          path: |
+            PandaCode.ipa
+            PandaCode.ipa.sha256
+            appstore/source.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish the release
+        if: github.ref_type == 'tag' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          Unsigned PandaCode mobile $VERSION IPA, built from source by
+          .github/workflows/mobile-release.yml. SideStore or AltStore signs it with your
+          own Apple ID on install. See docs/app-store/sideloading.md.
+          EOF
+          if gh release view "ios-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json --clobber
+          else
+            gh release create "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json \
+              --title "PandaCode mobile $VERSION" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+      - name: Commit the updated source
+        if: github.ref_type == 'tag' || inputs.publish
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -z "$(git status --porcelain appstore/source.json)" ]; then
+            echo "appstore/source.json is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appstore/source.json
+          git commit -m "chore: update SideStore source for ios-v$VERSION [skip ci]"
+          git push origin HEAD:main || echo "::warning::Could not push appstore/source.json to main; update it manually."

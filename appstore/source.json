@@ -1,0 +1,29 @@
+{
+  "name": "PandaCode",
+  "identifier": "com.aicodeking.pandacode.source",
+  "apps": [
+    {
+      "name": "PandaCode",
+      "bundleIdentifier": "com.aicodeking.pandacode",
+      "developerName": "PandaCode",
+      "subtitle": "Control your coding agents from your iPhone",
+      "localizedDescription": "PandaCode lets you watch, steer and approve the coding agents running on your computers from your iPhone. It connects to the PandaCode desktop app through PandaCode Connect, so tasks keep running on your Mac or PC while you follow and answer them from your phone. The phone never runs or downloads code.",
+      "iconURL": "https://raw.githubusercontent.com/hongkongkiwi/pandacode/main/mobile/assets/images/icon.png",
+      "tintColor": "#111111",
+      "screenshotURLs": [
+        "https://raw.githubusercontent.com/hongkongkiwi/pandacode/main/docs/app-store/screenshots/iphone-6.9/01-inbox.png",
+        "https://raw.githubusercontent.com/hongkongkiwi/pandacode/main/docs/app-store/screenshots/iphone-6.9/02-task.png",
+        "https://raw.githubusercontent.com/hongkongkiwi/pandacode/main/docs/app-store/screenshots/iphone-6.9/03-approval.png",
+        "https://raw.githubusercontent.com/hongkongkiwi/pandacode/main/docs/app-store/screenshots/iphone-6.9/04-working.png"
+      ],
+      "versions": [
+        {
+          "version": "1.0.0",
+          "date": "2026-11-26",
+          "downloadURL": "https://github.com/hongkongkiwi/pandacode/releases/download/ios-v1.0.0/PandaCode.ipa",
+          "size": 0
+        }
+      ]
+    }
+  ]
+}
