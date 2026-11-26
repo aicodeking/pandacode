@@ -274,11 +274,10 @@ fn legacy_prompt(content: &str) -> Option<(CoordinationKind, Value)> {
             .split_once(UPDATE_BODY_BOUNDED)
             .or_else(|| rest.split_once(UPDATE_BODY))?;
         (!objective.is_empty()).then_some((CoordinationKind::WorkerUpdate, summary))?
-    } else if let Some(rest) = content.strip_prefix(REVIEW_PREFIX) {
+    } else {
+        let rest = content.strip_prefix(REVIEW_PREFIX)?;
         let (objective, summary) = rest.split_once(REVIEW_BODY)?;
         (!objective.is_empty()).then_some((CoordinationKind::WorkerReview, summary))?
-    } else {
-        return None;
     };
     let summary = serde_json::from_str::<Value>(summary).ok()?;
     let object = summary.as_object()?;
