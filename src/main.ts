@@ -5331,12 +5331,19 @@ const runEndings = new Map<string, 'failed' | 'stopped' | 'limited'>();
 const sendFirst = new Map<string, { id: string; stopping?: boolean; hold?: HoldReason }>();
 function queueOf(id: string): QueuedMessage[] { return state.queues.get(id) ?? []; }
 function setQueue(id: string, entries: QueuedMessage[]): void { if (entries.length) state.queues.set(id, entries); else state.queues.delete(id); btwPanel.event(id, 'queue'); }
-/** Native team wakes only need to know whether the desktop is holding the queue. */
+function asHoldReason(value: unknown): HoldReason {
+  switch (value) {
+    case 'failed': case 'limited': case 'restart': case 'reset': return value;
+    default: return 'stopped';
+  }
+}
 function setQueueHold(sessionId: string, reason?: HoldReason): void {
-  const wasHeld = state.queueHolds.has(sessionId);
+  const prev = state.queueHolds.get(sessionId);
+  const wasHeld = prev !== undefined;
   const held = reason !== undefined && !deletedSessions.has(sessionId);
   if (held) state.queueHolds.set(sessionId, reason); else state.queueHolds.delete(sessionId);
-  if (held !== wasHeld) void call('set_queue_hold', { sessionId, held }).catch(() => undefined);
+  if (held && (!wasHeld || prev !== reason)) void call('set_queue_hold', { sessionId, held: true, reason }).catch(() => undefined);
+  if (!held && wasHeld) void call('set_queue_hold', { sessionId, held: false }).catch(() => undefined);
 }
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
@@ -5733,14 +5740,14 @@ function scheduleLimitResumes(): void {
       continue;
     }
     if (task.resumeAtReset) {
-      if (!finishingStreams.has(id)) run(continueAfterLimit(task));
+      if (!webMode && !finishingStreams.has(id)) run(continueAfterLimit(task));
       continue;
     }
     const previous = passedLimitResets.get(id);
     // A run can finish after its reset and install a new hold for the same limit.
     const limitedHold = state.queueHolds.get(id) === 'limited';
     if (!limitedHold && previous?.limitedAt === limitedAt && previous.limitedUntil === limitedUntil) continue;
-    if (limitedHold) setQueueHold(id, 'reset');
+    if (limitedHold && !webMode) setQueueHold(id, 'reset');
     passedLimitResets.set(id, { limitedAt, limitedUntil });
     if (id === state.sessionId) renderComposer();
     refresh = true;
@@ -9495,11 +9502,16 @@ async function boot(): Promise<void> {
     openSettings: intent => run(showSettings('schedules', intent)),
   }));
   // Follow-up changes are shared across clients. On the host, an idle, unheld task sends right away.
+  const queueSyncSeq = new Map<string, number>();
   listening.push(subscribe('queue-changed', payload => run((async () => {
     const id = payload?.sessionId; if (!id) return;
     if (payload.held === false) state.queueHolds.delete(id);
-    else if (payload.held === true && !state.queueHolds.has(id)) state.queueHolds.set(id, 'stopped');
-    setQueue(id, await call<QueuedMessage[]>('queue_list', { sessionId: id }));
+    else if (payload.held === true) state.queueHolds.set(id, asHoldReason(payload.reason));
+    const seq = (queueSyncSeq.get(id) ?? 0) + 1;
+    queueSyncSeq.set(id, seq);
+    const entries = await call<QueuedMessage[]>('queue_list', { sessionId: id });
+    if (queueSyncSeq.get(id) !== seq) return;
+    setQueue(id, entries);
     if (id === state.sessionId) renderComposer();
     if (payload.held !== true) await dispatchQueue(id);
   })())));
@@ -9532,10 +9544,16 @@ async function boot(): Promise<void> {
   if (Array.isArray(state.projects)) dropRemovedProjectDrafts(state.drafts, state.projects.map(project => project.id));
   replayDismissals();
   run(call<import('./connections').ConnectionSnapshot>('connections_list').then(onNamedConnections));
-  // Queues from an earlier launch wait for an explicit Resume.
+  // The desktop pauses queues left over from an earlier launch. Browser tabs load the host's holds.
   for (const entry of await call<QueuedMessage[]>('queue_list').catch(() => [])) {
     state.queues.set(entry.sessionId, [...(state.queues.get(entry.sessionId) ?? []), entry]);
-    setQueueHold(entry.sessionId, 'restart');
+    if (!webMode) setQueueHold(entry.sessionId, 'restart');
+  }
+  if (webMode) {
+    const holds = await call<Record<string, string>>('queue_holds').catch(() => ({}));
+    for (const [id, reason] of Object.entries(holds)) {
+      if (!deletedSessions.has(id)) state.queueHolds.set(id, asHoldReason(reason));
+    }
   }
   scheduleLimitResumes();
   if (state.projectFilter && !state.projects.some(p => p.id === state.projectFilter)) setProjectFilter('');

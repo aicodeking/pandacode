@@ -447,6 +447,7 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
         Some((entry, delivery))
     }));
     if let Some((entry, delivery)) = taken {
+        let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
         super::failover::before_turn(app, &bot, session_id);
         let (context, image_ids) = queued_prompt(&entry.attachments);
         super::failover::remember_images(session_id, &image_ids);
@@ -466,6 +467,7 @@ pub(crate) async fn run_finished(app: &tauri::AppHandle, session_id: &str, succe
                 if let Some(request) = &delivery { super::shared_channels::launch_failed(&store, session_id, request); }
                 let _ = super::log(&store, &bot.id, "error", &format!("Couldn't send a queued message: {}", error.chars().take(160).collect::<String>()), json!({"sessionId": session_id}));
             }
+            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));
             let _ = app.emit("bots-changed", ());
         }
     }

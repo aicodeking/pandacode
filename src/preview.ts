@@ -863,6 +863,8 @@ function sampleDailyTokens(): { date: string; tokens: number }[] {
     return [{ date: key(date), tokens: Math.round((weekend ? 900 : 2400) * (0.3 + roll * roll * 3.2)) }];
   });
 }
+const previewQueueHolds = new Map<string, string>();
+
 /** Preview queues persist in localStorage so a reload behaves like a restart. */
 type PreviewQueued = { id: string; sessionId: string; position: number; text: string; attachments: unknown[]; createdAt: number; updatedAt: number };
 function previewQueue(): PreviewQueued[] {
@@ -1967,7 +1969,14 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'tray_seen': result = null; break;
     case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
-    case 'set_queue_hold': emit('queue-changed', { sessionId: args.sessionId, held: args.held }); break;
+    case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
+    case 'set_queue_hold': {
+      const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';
+      if (held) previewQueueHolds.set(sessionId, reason);
+      else previewQueueHolds.delete(sessionId);
+      emit('queue-changed', { sessionId, held, ...(held ? { reason } : {}) });
+      break;
+    }
     case 'queue_list': result = previewQueue().filter(entry => !args.sessionId || entry.sessionId === args.sessionId); break;
     case 'queue_add': {
       session(args.sessionId);
@@ -2138,7 +2147,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       turnChanges.remove(deletedSessionIds);
       sessions = sessions.filter(task => !deletedSessionIds.includes(task.id));
       saveThreadOrder(sessions.map(threadOrder));
-      for (const id of deletedSessionIds) delete messages[id];
+      for (const id of deletedSessionIds) { delete messages[id]; previewQueueHolds.delete(id); }
       emit('sessions-deleted', { sessionIds: deletedSessionIds }); emit('sessions-changed', undefined);
       result = { deletedSessionIds }; break;
     }

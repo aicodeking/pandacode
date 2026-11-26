@@ -5,10 +5,11 @@
 //! drain, pull-request links, limit resumes) run natively here instead; see start_services.
 
 use crate::{message_queue, AppState};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex, PoisonError};
 use tauri::{Emitter, Manager};
 
 static SERVE: AtomicBool = AtomicBool::new(false);
@@ -308,6 +309,26 @@ fn start_services(app: tauri::AppHandle) {
     });
 }
 
+static DRAINING: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+
+struct DrainGuard<'a> {
+    session_id: &'a str,
+}
+
+impl Drop for DrainGuard<'_> {
+    fn drop(&mut self) {
+        DRAINING.lock().unwrap_or_else(PoisonError::into_inner).remove(self.session_id);
+    }
+}
+
+fn try_begin_drain(session_id: &str) -> Option<DrainGuard<'_>> {
+    let mut draining = DRAINING.lock().unwrap_or_else(PoisonError::into_inner);
+    if !draining.insert(session_id.to_owned()) {
+        return None;
+    }
+    Some(DrainGuard { session_id })
+}
+
 /// Sends the next queued message of a finished task — the window's dispatchQueue (main.ts)
 /// and the bot gateway's native drain, for tasks that have neither. Holds the queue like
 /// the desktop does: archived or still-limited tasks wait (the limit-resume send ends a
@@ -315,6 +336,7 @@ fn start_services(app: tauri::AppHandle) {
 /// send itself, so callers can chain it after their own run-end work.
 pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
     tauri::async_runtime::spawn(async move {
+        let Some(_draining) = try_begin_drain(&session_id) else { return };
         let now = crate::storage::now();
         let eligible = {
             let state = app.state::<AppState>();
@@ -326,7 +348,7 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
             if crate::bots::owner_of(&store, &session_id).ok().flatten().is_some() {
                 return;
             }
-            store.session(&session_id).ok().is_some_and(|task| can_drain(task.archived, task.limited_at, task.limited_until, now))
+            store.session(&session_id).ok().is_some_and(|task| can_drain(&session_id, task.archived, task.limited_at, task.limited_until, now))
         };
         if !eligible {
             return;
@@ -376,8 +398,8 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
                     eprintln!("serve: queued message {} for {session_id} lost after a failed launch: {lost}", entry.id);
                 }
             }
-            message_queue::set_queue_held(&session_id, true);
-            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true }));
+            message_queue::set_queue_hold_state(&session_id, true, Some("failed"));
+            let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": "failed" }));
             eprintln!("serve: couldn't send the next queued message: {error}");
         }
     });
@@ -385,8 +407,10 @@ pub(crate) fn drain_queue(app: tauri::AppHandle, session_id: String) {
 
 /// A task may take its next queued message when it is live and not inside a usage limit —
 /// limitActive in src/usage-limit.ts: a limit without a known reset holds indefinitely.
-fn can_drain(archived: bool, limited_at: Option<i64>, limited_until: Option<i64>, now: i64) -> bool {
-    !archived && limited_at.is_none_or(|_at| limited_until.is_some_and(|until| until <= now))
+fn can_drain(session_id: &str, archived: bool, limited_at: Option<i64>, limited_until: Option<i64>, now: i64) -> bool {
+    !archived
+        && limited_at.is_none_or(|_at| limited_until.is_some_and(|until| until <= now))
+        && !message_queue::is_queue_held(session_id)
 }
 
 /// An agent tool or a remote client queued (or removed) a message. The run-end hook drains
@@ -590,17 +614,18 @@ mod tests {
 
     #[test]
     fn only_live_unlimited_tasks_take_their_queue() {
-        assert!(can_drain(false, None, None, 1000));
-        assert!(can_drain(false, None, Some(1000), 1000));
-        assert!(can_drain(false, Some(500), Some(1000), 1000));
+        let session_id = crate::storage::id();
+        assert!(can_drain(&session_id, false, None, None, 1000));
+        assert!(can_drain(&session_id, false, None, Some(1000), 1000));
+        assert!(can_drain(&session_id, false, Some(500), Some(1000), 1000));
         // Inside a limit (with or without a known reset), or archived: hold. limitActive
         // holds a limit with an unknown reset indefinitely; the resume send ends a run,
         // which then delivers the queue.
-        assert!(!can_drain(false, Some(500), Some(1001), 1000));
-        assert!(!can_drain(false, Some(500), None, 1000));
-        assert!(!can_drain(true, None, None, 1000));
-        assert!(!can_drain(true, None, Some(999), 1000));
-        assert!(!can_drain(true, Some(500), Some(999), 1000));
+        assert!(!can_drain(&session_id, false, Some(500), Some(1001), 1000));
+        assert!(!can_drain(&session_id, false, Some(500), None, 1000));
+        assert!(!can_drain(&session_id, true, None, None, 1000));
+        assert!(!can_drain(&session_id, true, None, Some(999), 1000));
+        assert!(!can_drain(&session_id, true, Some(500), Some(999), 1000));
     }
 
     /// Round 17: the desktop's webview drains on `queue-changed`, so the native drain runs
@@ -619,26 +644,29 @@ mod tests {
     }
 
     #[test]
-    fn queue_drain_checks_holds_and_notifies_after_unlocking() {
-        let source = include_str!("headless.rs");
-        let drain = source.split_once("pub(crate) fn drain_queue").unwrap().1;
-        let drain = drain.split_once("\n}\n").unwrap().0;
-        let guard = "if message_queue::is_queue_held(&session_id) {\n                return;\n            }";
-        let (before_list, after_list) = drain.split_once("message_queue::list(").unwrap();
-        let (before_take, after_take) = after_list.split_once("message_queue::take(").unwrap();
-        assert!(before_list.contains(guard));
-        assert!(before_take.trim_end().ends_with(&format!("{guard}\n            match")));
-        let (claim, after_claim) = after_take.split_once("\n        };").unwrap();
-        assert!(claim.contains("Ok(entry) => entry"));
-        assert!(after_claim.trim_start().starts_with(
-            r#"let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id }));"#,
-        ));
-        let (_, restore) = after_claim.split_once("message_queue::restore(").unwrap();
-        let (_, after_restore) = restore.split_once("\n            }").unwrap();
-        assert!(after_restore.trim_start().starts_with(concat!(
-            "message_queue::set_queue_held(&session_id, true);\n            ",
-            r#"let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true }));"#,
-        )));
+    fn drain_guard_excludes_the_same_session_until_drop() {
+        let session_id = crate::storage::id();
+        let other_session = crate::storage::id();
+        let guard = try_begin_drain(&session_id).unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                assert!(try_begin_drain(&session_id).is_none());
+                assert!(try_begin_drain(&other_session).is_some());
+            }).join().unwrap();
+        });
+        drop(guard);
+        assert!(try_begin_drain(&session_id).is_some());
+    }
+
+    #[test]
+    fn queue_hold_blocks_an_eligible_task_until_cleared() {
+        let session_id = crate::storage::id();
+        assert!(can_drain(&session_id, false, None, None, 1000));
+        message_queue::set_queue_hold_state(&session_id, true, Some("failed"));
+        assert!(!can_drain(&session_id, false, None, None, 1000));
+        message_queue::set_queue_hold_state(&session_id, false, None);
+        assert!(can_drain(&session_id, false, None, None, 1000));
+        assert!(!can_drain(&session_id, true, None, None, 1000));
     }
 
     #[test]

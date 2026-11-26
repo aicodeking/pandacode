@@ -532,7 +532,8 @@ pub async fn bot_shared_channel_post(app:tauri::AppHandle,state:State<'_,AppStat
 async fn stop_pending(app:&tauri::AppHandle,channel_id:&str,bots:Option<&[String]>) -> Result<()> {
     let state=app.state::<AppState>();
     let mut cancelled_holds=false;
-    let stop_sessions: HashSet<String>={
+    let mut changed_queues = HashSet::new();
+    let stop_sessions = (|| -> Result<HashSet<String>> {
         let running: HashSet<String> = crate::run_requests::lock_agents(&state.agents).map_err(|e|e.to_string())?.keys().cloned().collect();
         let store=state.store.lock().map_err(|e|e.to_string())?;
         let channel=shared_channel(&store,channel_id)?;
@@ -549,6 +550,7 @@ async fn stop_pending(app:&tauri::AppHandle,channel_id:&str,bots:Option<&[String
             let queued = if status == "queued" { message_queue::list(&store,Some(&session_id))?.into_iter().find(|item| prompt_matches(&item.text,&assignment_prefix,&text)) } else { None };
             if let Some(queued) = queued {
                 let _=message_queue::remove_delivered(&store,&queued.id);
+                changed_queues.insert(session_id.clone());
             } else if status == "in_progress" {
                 let latest: Option<String> = store.db.query_row("SELECT content FROM messages WHERE session_id=?1 AND role='user' ORDER BY id DESC LIMIT 1", [&session_id], |r|r.get(0)).optional().map_err(|e|e.to_string())?;
                 if latest.as_deref().is_some_and(|content| prompt_matches(content,&assignment_prefix,&text)) {
@@ -567,9 +569,12 @@ async fn stop_pending(app:&tauri::AppHandle,channel_id:&str,bots:Option<&[String
             stopped_messages.insert(message_id);
         }
         for message_id in &stopped_messages { update_message_status(&store,message_id)?; }
-        stop_sessions
-    };
-    for id in stop_sessions { let _=crate::stop_session(app.clone(),app.state::<AppState>(),id).await; }
+        Ok(stop_sessions)
+    })();
+    for sid in changed_queues {
+        let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": sid }));
+    }
+    for id in stop_sessions? { let _=crate::stop_session(app.clone(),app.state::<AppState>(),id).await; }
     if cancelled_holds { let _=app.emit("bot-messages-changed",()); let _=app.emit("sessions-changed",()); }
     Ok(())
 }

@@ -1833,7 +1833,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "account_pool_status", "account_pool_clear", "account_sign_in_start", "account_sign_in_code",
     "account_sign_in_cancel", "agent_usage", "agent_usage_asking_claude", "tray_seen", "usage_ledger",
     "capabilities_inventory", "cache_alignment", "prompt_activity", "set_resume_at_reset", "clear_usage_limit",
-    "discard_draft", "queue_list", "queue_add", "queue_update", "queue_remove", "queue_take_steered",
+    "discard_draft", "queue_list", "queue_holds", "queue_add", "queue_update", "queue_remove", "queue_take_steered",
     "queue_reorder", "queue_take", "queue_restore", "set_queue_hold", "steer_task", "bots_list", "bot_desktop_thread",
     "bot_detail", "bot_create", "bot_update", "bot_set_paused", "bot_reset", "bot_delete", "bot_remember",
     "bot_forget", "bot_activity", "bot_project_ids", "bot_message", "bot_shared_channels",

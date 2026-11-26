@@ -59,11 +59,16 @@ const selected = (page: Page) => page.locator('#navigation .task-item.selected')
 
 const queueRows = (page: Page) => page.getByRole('region', { name: 'Queued messages' }).locator('.queue-row .queue-text');
 
-async function openQueueClients(page: Page) {
+async function openQueueClients(page: Page, beforeConnect?: (host: Page, sessionId: string, agentStatus: (running: boolean) => Promise<void>) => Promise<void>) {
   const host = await page.context().newPage();
   await host.goto('/');
   await expect(host.locator('#prompt')).toBeEnabled();
   const sessionId = (await selected(host).getAttribute('data-id'))!;
+  const agentStatus = (running: boolean) => host.evaluate(({ id, running }) => {
+    (window as any).__previewSetStatus(id, running ? 'running' : 'idle');
+    (window as any).__previewEmit('agent-event', { sessionId: id, kind: running ? 'status' : 'done', text: '' });
+  }, { id: sessionId, running });
+  await beforeConnect?.(host, sessionId, agentStatus);
   const web = await openWebMode(page, host);
   await expect.poll(() => web.subscriptions.has('queue-changed')).toBe(true);
   const queueEvents: { sessionId: string; held?: boolean }[] = [];
@@ -78,10 +83,6 @@ async function openQueueClients(page: Page) {
     const forward = (window as any).forwardHostEvent;
     for (const name of ['queue-changed', 'agent-event']) listen(name, payload => void forward(name, payload));
   });
-  const agentStatus = (running: boolean) => host.evaluate(({ id, running }) => {
-    (window as any).__previewSetStatus(id, running ? 'running' : 'idle');
-    (window as any).__previewEmit('agent-event', { sessionId: id, kind: running ? 'status' : 'done', text: '' });
-  }, { id: sessionId, running });
   const sentCount = (text: string) => host.evaluate(async ({ sessionId, text }) => {
     const { invoke } = await import('/src/preview.ts');
     const { messages } = await invoke<{ messages: { role: string; content: string }[] }>('get_messages', { sessionId });
@@ -143,6 +144,64 @@ test.describe('web mode', () => {
     expect(web.commands.filter(command => ['queue_take', 'send_message'].includes(command))).toEqual([]);
   });
 
+  test('opening and reloading a browser leaves a running host queue free to drain once', async ({ page }) => {
+    const text = 'Follow up queued before the browser connected';
+    const { host, sessionId, web, finishedRuns, agentStatus, sentCount } = await openQueueClients(page, async (host, _, agentStatus) => {
+      await agentStatus(true);
+      await expect(host.getByRole('button', { name: 'Stop task', exact: true })).toBeVisible();
+      const prompt = host.locator('#prompt');
+      await prompt.fill(text);
+      await prompt.press('Enter');
+      await expect(queueRows(host)).toHaveText([text]);
+    });
+
+    await expect(queueRows(page)).toHaveText([text]);
+    expect(web.commands).not.toContain('set_queue_hold');
+    await page.reload();
+    await expect(queueRows(page)).toHaveText([text], { timeout: 15_000 });
+    expect(web.commands).not.toContain('set_queue_hold');
+    for (const client of [host, page]) {
+      await expect(client.getByText(/^Paused/)).toHaveCount(0);
+      await expect(client.getByRole('button', { name: /^Resume/ })).toHaveCount(0);
+    }
+    expect(await sentCount(text)).toBe(0);
+
+    await agentStatus(false);
+    await expect.poll(() => finishedRuns).toEqual([sessionId, sessionId]);
+    await expect(queueRows(host)).toHaveCount(0);
+    expect(await sentCount(text)).toBe(1);
+  });
+
+  test('a browser loads the host hold reason and shows live reason changes', async ({ page }) => {
+    const text = 'Follow up in a held queue';
+    const { host, sessionId } = await openQueueClients(page, async (host, sessionId) => {
+      await host.evaluate(async sessionId => {
+        const { invoke } = await import('/src/preview.ts');
+        // Hold even an empty queue before the browser connects; a message added later must still show it.
+        await invoke('set_queue_hold', { sessionId, held: true, reason: 'failed' });
+      }, sessionId);
+    });
+    const resume = page.getByRole('button', { name: 'Resume', exact: true });
+    await host.evaluate(async ({ sessionId, text }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('queue_add', { sessionId, text, attachments: [] });
+    }, { sessionId, text });
+    await expect(queueRows(page)).toHaveText([text]);
+    await expect(page.getByText('Paused after the run failed', { exact: true })).toBeVisible();
+    await expect(resume).toBeVisible();
+
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: true, reason: 'limited' });
+    }, sessionId);
+    await expect(page.getByText('Paused until the usage limit resets', { exact: true })).toBeVisible();
+    await expect(resume).toHaveCount(0);
+
+    await page.reload();
+    await expect(page.getByText('Paused until the usage limit resets', { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(resume).toHaveCount(0);
+  });
+
   test('browser Resume clears the host hold and the desktop drains the queue once', async ({ page }) => {
     const { host, sessionId, web, queueEvents, finishedRuns, sentCount } = await openQueueClients(page);
     const text = 'Resume this follow-up';
@@ -162,7 +221,7 @@ test.describe('web mode', () => {
     await expect.poll(() => finishedRuns).toEqual([sessionId]);
     await expect(queueRows(page)).toHaveCount(0);
     await expect(queueRows(host)).toHaveCount(0);
-    expect(queueEvents.filter(event => event.held !== undefined)).toEqual([{ sessionId, held: true }, { sessionId, held: false }]);
+    expect(queueEvents.filter(event => event.held !== undefined)).toEqual([{ sessionId, held: true, reason: 'stopped' }, { sessionId, held: false }]);
     expect(await sentCount(text)).toBe(1);
     expect(web.commands.filter(command => ['set_queue_hold', 'queue_take', 'send_message'].includes(command))).toEqual(['set_queue_hold']);
   });

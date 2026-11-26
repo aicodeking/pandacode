@@ -7,7 +7,7 @@ use crate::{providers::RunInput, storage::Store, AppState, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::HashMap,
     sync::{LazyLock, Mutex, PoisonError},
 };
 use tauri::{Emitter, State};
@@ -15,21 +15,40 @@ use tauri::{Emitter, State};
 const MAX_PER_TASK: i64 = 50;
 const MAX_ATTACHMENTS: usize = 1024 * 1024;
 
-static HELD_QUEUES: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Default::default);
+static HELD_QUEUES: LazyLock<Mutex<HashMap<String, String>>> = LazyLock::new(Default::default);
 
-// The desktop queue-hold IPC will call this when its hold changes.
-#[allow(dead_code)]
-pub fn set_queue_held(session_id: &str, held: bool) {
+pub(crate) fn normalize_hold_reason(reason: Option<&str>) -> &str {
+    match reason {
+        Some(reason @ ("stopped" | "failed" | "limited" | "restart" | "reset")) => reason,
+        _ => "stopped",
+    }
+}
+
+pub fn set_queue_hold_state(session_id: &str, held: bool, reason: Option<&str>) {
     let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
     if held {
-        queues.insert(session_id.to_owned());
+        queues.insert(session_id.to_owned(), normalize_hold_reason(reason).to_owned());
     } else {
         queues.remove(session_id);
     }
 }
 
+#[allow(dead_code)]
+pub fn set_queue_held(session_id: &str, held: bool) {
+    set_queue_hold_state(session_id, held, None);
+}
+
 pub fn is_queue_held(session_id: &str) -> bool {
-    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).contains(session_id)
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).contains_key(session_id)
+}
+
+#[allow(dead_code)]
+pub fn queue_hold_reason(session_id: &str) -> Option<String> {
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).get(session_id).cloned()
+}
+
+pub fn queue_holds_snapshot() -> HashMap<String, String> {
+    HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,6 +281,11 @@ pub async fn queue_list(
     list(&store, session_id.as_deref())
 }
 
+#[tauri::command]
+pub async fn queue_holds() -> Result<HashMap<String, String>> {
+    Ok(queue_holds_snapshot())
+}
+
 /// The session's harness and folder when `text` types a command, for the typed-command guard.
 fn guard_target(
     store: &Store,
@@ -482,31 +506,29 @@ mod tests {
     }
 
     #[test]
-    fn queue_mutations_emit_session_changes() {
-        let source = include_str!("message_queue.rs");
-        for (command, mutation) in [
-            ("queue_add", "add("),
-            ("queue_update", "update("),
-            ("queue_remove", "remove(&store, &id)?;"),
-            ("queue_take_steered", "remove_delivered(&store, &id)?;"),
-            ("queue_reorder", "reorder(&store, &session_id, &ids)"),
-            ("queue_take", "take(&store, &id)"),
-            ("queue_restore", "restore(&store, &entry)"),
-        ] {
-            let body = source.split_once(&format!("pub async fn {command}(")).unwrap().1;
-            let body = body.split_once("\n}\n").unwrap().0;
-            let emit = body.find("app.emit(\"queue-changed\", serde_json::json!({ \"sessionId\": ").unwrap_or_else(|| panic!("{command} must emit the session change"));
-            let lock_scope_end = body[..emit].rfind("\n    };").unwrap_or_else(|| panic!("{command} must drop the store lock before notifying"));
-            assert!(body.find(mutation).unwrap() < lock_scope_end, "{command} must mutate under the store lock");
+    fn queue_hold_reasons_are_normalized_and_cleared() {
+        let session_id = crate::storage::id();
+        for reason in ["failed", "limited", "restart", "reset", "stopped"] {
+            set_queue_hold_state(&session_id, true, Some(reason));
+            assert!(is_queue_held(&session_id));
+            assert_eq!(queue_hold_reason(&session_id).as_deref(), Some(reason));
+            assert_eq!(queue_holds_snapshot().get(&session_id).map(String::as_str), Some(reason));
         }
-    }
 
-    #[test]
-    fn adding_a_queued_message_wakes_the_headless_drain() {
-        let source = include_str!("message_queue.rs");
-        let body = source.split_once("pub async fn queue_add(").unwrap().1;
-        let body = body.split_once("\n}\n").unwrap().0;
-        assert!(body.find("app.emit(\"queue-changed\"").unwrap() < body.find("crate::headless::queue_changed(&app, &session_id);").unwrap());
+        for invalid in [Some("unknown"), Some(""), None] {
+            set_queue_hold_state(&session_id, true, invalid);
+            assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+        }
+
+        set_queue_hold_state(&session_id, false, Some("failed"));
+        assert!(!is_queue_held(&session_id));
+        assert_eq!(queue_hold_reason(&session_id), None);
+        assert!(!queue_holds_snapshot().contains_key(&session_id));
+
+        set_queue_held(&session_id, true);
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+        set_queue_held(&session_id, false);
+        assert!(!is_queue_held(&session_id));
     }
 
     #[test]

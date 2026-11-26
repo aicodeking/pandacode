@@ -39,7 +39,7 @@ export async function subscribe(name: 'jev-install', callback: (event: { status:
 export async function subscribe(name: 'sessions-changed', callback: () => void): Promise<() => void>;
 /** A deliberate exit is committed (no payload); the page may not see pagehide. */
 export async function subscribe(name: 'app-quitting', callback: () => void): Promise<() => void>;
-export async function subscribe(name: 'queue-changed', callback: (event: { sessionId: string; held?: boolean }) => void): Promise<() => void>;
+export async function subscribe(name: 'queue-changed', callback: (event: { sessionId: string; held?: boolean; reason?: string }) => void): Promise<() => void>;
 export async function subscribe(name: 'schedules-changed', callback: (event: { sessionId: string | null }) => void): Promise<() => void>;
 export async function subscribe(name: 'bots-changed', callback: () => void): Promise<() => void>;
 export async function subscribe(name: 'bot-shared-channel-changed', callback: (event: { channelId: string }) => void): Promise<() => void>;
