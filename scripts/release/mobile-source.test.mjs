@@ -31,7 +31,7 @@ function assertKeys(object, allowed, label) {
   }
 }
 
-function assertSource(source) {
+function assertSource(source, repository = 'aicodeking/pandacode') {
   assertKeys(source, SOURCE_KEYS, 'source');
   assert.equal(source.name, 'PandaCode');
   assert.equal(source.identifier, SOURCE_ID);
@@ -42,7 +42,8 @@ function assertSource(source) {
     assert.ok(typeof app.name === 'string' && app.name.length > 0);
     assert.ok(typeof app.developerName === 'string' && app.developerName.length > 0);
     assert.ok(typeof app.localizedDescription === 'string' && app.localizedDescription.length > 0);
-    assert.match(app.iconURL, /^https:\/\//);
+    assert.match(app.iconURL, new RegExp(`^https://raw\\.githubusercontent\\.com/${repository}/main/`));
+    assert.ok(app.screenshotURLs.every(url => url.startsWith(`https://raw.githubusercontent.com/${repository}/main/`)));
     assert.ok(Array.isArray(app.versions) && app.versions.length >= 1);
     for (const version of app.versions) {
       assertKeys(version, VERSION_KEYS, 'version');
@@ -51,7 +52,7 @@ function assertSource(source) {
       assert.ok(Number.isSafeInteger(version.size) && version.size >= 0, 'size must be a non-negative integer');
       assert.equal(
         version.downloadURL,
-        `https://github.com/hongkongkiwi/pandacode/releases/download/ios-v${version.version}/PandaCode.ipa`,
+        `https://github.com/${repository}/releases/download/ios-v${version.version}/PandaCode.ipa`,
       );
     }
   }
@@ -59,7 +60,7 @@ function assertSource(source) {
 
 test('mobileSource builds a schema-shaped source', () => {
   const source = mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.0.0', date: '2026-11-26', size: 1234 });
-  assertSource(source);
+  assertSource(source, 'hongkongkiwi/pandacode');
   assert.equal(source.apps[0].tintColor, '#111111');
   assert.equal(source.apps[0].versions[0].size, 1234);
   assert.equal(source.apps[0].versions[0].version, '1.0.0');
@@ -98,7 +99,7 @@ test('the CLI writes the source file', async () => {
     ], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr);
     const written = JSON.parse(await readFile(output, 'utf8'));
-    assertSource(written);
+    assertSource(written, 'hongkongkiwi/pandacode');
     assert.deepEqual(written, mobileSource({ repository: 'hongkongkiwi/pandacode', version: '1.2.3', date: '2026-02-03', size: 4096 }));
   } finally {
     await rm(directory, { recursive: true, force: true });
