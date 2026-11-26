@@ -114,9 +114,20 @@ async function openQueueClients(page: Page, beforeConnect?: (host: Page, session
   await expect(page.locator('#prompt')).toBeEnabled();
   const queueEvents: { sessionId: string; held?: boolean }[] = [];
   const finishedRuns: string[] = [];
+  let holdEvents = false;
+  const heldEvents: { name: string; payload: unknown }[] = [];
+  const setHoldEvents = (paused: boolean) => {
+    holdEvents = paused;
+    if (!paused) {
+      for (const frame of heldEvents.splice(0)) {
+        if (!web.controls.refuseSockets && web.subscriptions.has(frame.name)) web.socket().send(JSON.stringify({ type: 'event', name: frame.name, payload: frame.payload }));
+      }
+    }
+  };
   await host.exposeFunction('forwardHostEvent', (name: string, payload: { sessionId: string; held?: boolean; kind?: string }) => {
     if (name === 'queue-changed') queueEvents.push(payload);
     if (name === 'agent-event' && payload.kind === 'done') finishedRuns.push(payload.sessionId);
+    if (holdEvents) { heldEvents.push({ name, payload }); return; }
     if (!web.controls.refuseSockets && web.subscriptions.has(name)) web.socket().send(JSON.stringify({ type: 'event', name, payload }));
   });
   await host.evaluate(async () => {
@@ -129,7 +140,7 @@ async function openQueueClients(page: Page, beforeConnect?: (host: Page, session
     const { messages } = await invoke<{ messages: { role: string; content: string }[] }>('get_messages', { sessionId });
     return messages.filter(message => message.role === 'user' && message.content === text).length;
   }, { sessionId, text });
-  return { host, sessionId, web, queueEvents, finishedRuns, agentStatus, sentCount };
+  return { host, sessionId, web, queueEvents, finishedRuns, agentStatus, sentCount, setHoldEvents };
 }
 
 /** The sidebar renders no project heading today, so a stand-in row drives the real handler (thread-order.ts:
@@ -311,6 +322,193 @@ test.describe('web mode', () => {
     web.socket().send(JSON.stringify({ type: 'lagged' }));
     await expect(hold).toHaveCount(0);
     await expect(queueRows(page)).toHaveCount(2);
+  });
+
+  test('dismissing a usage limit from a browser tab transitions limited to reset via the host without clobbering concurrent Resume', async ({ page }) => {
+    const { host, sessionId, web, finishedRuns, sentCount, setHoldEvents } = await openQueueClients(page);
+    const text = 'Follow-up held by usage limit';
+    const banner = page.getByRole('region', { name: 'Usage limit', exact: true });
+    const hold = page.locator('.queue-hold');
+    const resume = page.getByRole('button', { name: 'Resume', exact: true });
+    const setLimited = async () => {
+      await host.evaluate(async sessionId => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('set_queue_hold', { sessionId, held: true, reason: 'limited' });
+      }, sessionId);
+      web.socket().send(JSON.stringify({ type: 'event', name: 'agent-event', payload: { sessionId, kind: 'limited', text: '5-hour usage limit reached', data: { resetsAt: null, window: 'five_hour' } } }));
+      await expect(banner).toBeVisible();
+      await expect(hold).toHaveText('Paused until the usage limit resets');
+      await expect(resume).toHaveCount(0);
+    };
+
+    await host.evaluate(async ({ sessionId, text }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('set_queue_hold', { sessionId, held: true, reason: 'limited' });
+      await invoke('queue_add', { sessionId, text, attachments: [] });
+    }, { sessionId, text });
+    await setLimited();
+
+    await banner.getByRole('button', { name: 'Dismiss usage limit' }).click();
+    await expect(banner).toHaveCount(0);
+    await expect(hold).toHaveText('The usage limit has reset');
+    await expect(resume).toBeVisible();
+    expect(web.commands).toContain('clear_usage_limit');
+    expect(web.commands).not.toContain('set_queue_hold');
+    expect(await sentCount(text)).toBe(0);
+    const hostHold = await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      return (await invoke<Record<string, string>>('queue_holds', {}))[sessionId];
+    }, sessionId);
+    expect(hostHold).toBe('reset');
+
+    // Race: another client unholds/Resumes on the host before this tab receives the queue-changed events.
+    await setLimited();
+    setHoldEvents(true);
+    let concurrentDone = false;
+    web.controls.beforeReply = async command => {
+      if (command !== 'clear_usage_limit') return;
+      delete web.controls.beforeReply;
+      await host.evaluate(async sessionId => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('set_queue_hold', { sessionId, held: false });
+      }, sessionId);
+      concurrentDone = true;
+    };
+    await banner.getByRole('button', { name: 'Dismiss usage limit' }).click();
+    await expect(banner).toHaveCount(0);
+    expect(concurrentDone).toBe(true);
+    setHoldEvents(false);
+
+    await expect.poll(() => finishedRuns).toEqual([sessionId]);
+    await expect(hold).toHaveCount(0);
+    await expect(queueRows(page)).toHaveCount(0);
+    expect(await sentCount(text)).toBe(1);
+    expect(web.commands).not.toContain('set_queue_hold');
+    const finalHold = await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      return (await invoke<Record<string, string>>('queue_holds', {}))[sessionId];
+    }, sessionId);
+    expect(finalHold).toBeUndefined();
+  });
+
+  test('reconnecting after a missed done clears stale runEndings so a subsequent clean turn is not misclassified', async ({ page }) => {
+    const { host, web } = await openQueueClients(page, async host => {
+      await host.evaluate(async () => {
+        const { invoke } = await import('/src/preview.ts');
+        await invoke('bot_create', { input: { name: 'Reconnect bot', provider: 'claude', model: 'sonnet', mode: 'ask' } });
+      });
+    });
+    await page.locator('.sidebar-bots-bar').click();
+    const botRow = page.getByRole('region', { name: 'Bots', exact: true }).locator('.bot-row', { hasText: 'Reconnect bot' });
+    await botRow.getByRole('button', { name: /^Chat with Reconnect bot/ }).click();
+    await expect(page.locator('#breadcrumb .bot-crumb')).toContainText('Reconnect bot');
+    const prompt = page.locator('#prompt');
+    await expect(prompt).toBeEnabled();
+    const botSessionId = (await prompt.getAttribute('data-session-id'))!;
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+    const botStatus = (running: boolean) => host.evaluate(({ id, running }) => {
+      (window as any).__previewSetStatus(id, running ? 'running' : 'idle');
+      (window as any).__previewEmit('agent-event', { sessionId: id, kind: running ? 'status' : 'done', text: '' });
+    }, { id: botSessionId, running });
+
+    await botStatus(true);
+    await expect(stop).toBeVisible();
+    await host.evaluate(sessionId => {
+      (window as any).__previewEmit('agent-event', { sessionId, kind: 'error', text: 'Failed before disconnect' });
+    }, botSessionId);
+    await expect(page.locator('#stream-region')).toContainText('Failed before disconnect');
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await botStatus(false);
+
+    web.controls.refuseSockets = false;
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+    await expect(stop).toHaveCount(0);
+
+    // Next turn finishes cleanly: stale failed ending must not mark the bot failed.
+    await botStatus(true);
+    await expect(stop).toBeVisible();
+    await botStatus(false);
+    await expect(stop).toHaveCount(0);
+    await expect(botRow.locator('.bot-badge.failed')).toHaveCount(0);
+
+    // Control: a real failed turn does mark the bot failed.
+    await botStatus(true);
+    await expect(stop).toBeVisible();
+    await host.evaluate(sessionId => {
+      (window as any).__previewEmit('agent-event', { sessionId, kind: 'error', text: 'Real failure' });
+    }, botSessionId);
+    await botStatus(false);
+    await expect(stop).toHaveCount(0);
+    await expect(botRow.locator('.bot-badge.failed')).toHaveCount(1);
+  });
+
+  test('reconnecting after a running session was deleted on the host clears its orphaned stream state', async ({ page }) => {
+    const { host, sessionId, web, agentStatus } = await openQueueClients(page);
+    const backgroundId = (await page.locator(`#navigation .task-item:not([data-id="${sessionId}"])`).first().getAttribute('data-id'))!;
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+
+    await agentStatus(true);
+    await host.evaluate(({ sessionId, backgroundId }) => {
+      (window as any).__previewEmit('agent-event', { sessionId, kind: 'text', text: 'Live text before offline delete' });
+      (window as any).__previewSetStatus(backgroundId, 'running');
+      (window as any).__previewEmit('agent-event', { sessionId: backgroundId, kind: 'status', text: 'Working' });
+    }, { sessionId, backgroundId });
+    await expect(stop).toBeVisible();
+    await expect(page.locator('#stream-region')).toContainText('Live text before offline delete');
+    await expect(page.locator(`#navigation .task-item[data-id="${backgroundId}"] .task-indicator.running`)).toHaveCount(1);
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await host.evaluate(async ids => {
+      const { invoke } = await import('/src/preview.ts');
+      for (const id of ids) {
+        (window as any).__previewSetStatus(id, 'idle');
+        await invoke('delete_session', { sessionId: id });
+      }
+    }, [sessionId, backgroundId]);
+
+    web.controls.refuseSockets = false;
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+    await expect(page.locator(`#navigation .task-item[data-id="${sessionId}"]`)).toHaveCount(0);
+    await expect(page.locator(`#navigation .task-item[data-id="${backgroundId}"]`)).toHaveCount(0);
+    await expect(stop).toHaveCount(0);
+    await expect(page.locator('#stream-region')).toHaveCount(0);
+    await expect(page.locator('#navigation .task-item .task-indicator.running')).toHaveCount(0);
+  });
+
+  test('a concurrent reload superseding an in-flight reconnect list_sessions still reconciles stale streams', async ({ page }) => {
+    const { host, sessionId, web, finishedRuns } = await openQueueClients(page);
+    const otherId = (await page.locator(`#navigation .task-item:not([data-id="${sessionId}"])`).first().getAttribute('data-id'))!;
+    await pausePreview(host);
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('send_message', { sessionId, text: 'Finish before superseded reconnect' });
+    }, sessionId);
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+    await expect(stop).toBeVisible();
+
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await host.clock.runFor(2_000);
+    await expect.poll(() => finishedRuns).toEqual([sessionId]);
+    await expect(stop).toBeVisible();
+
+    // triggerResync sends sessions-changed first, then webResync's reconciling list_sessions (index 1).
+    const snapshot = delaySnapshot(web, 'list_sessions', 1);
+    web.controls.refuseSockets = false;
+    await page.clock.resume();
+    try {
+      await snapshot.captured;
+      await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('sessions-deleted')).toBe(true);
+      // Supersede the in-flight reconciling load by bumping sessionsReload via removeDeletedSessions.
+      web.socket().send(JSON.stringify({ type: 'event', name: 'sessions-deleted', payload: { sessionIds: [otherId] } }));
+      await expect(page.locator(`#navigation .task-item[data-id="${otherId}"]`)).toHaveCount(0);
+    } finally { snapshot.release(); }
+
+    await expect(stop).toHaveCount(0);
+    await expect(page.locator('#transcript .agent-message').last()).toContainText('This is the browser preview.');
   });
 
   test('reconnecting after a missed done clears Stop and loads the saved reply', async ({ page }) => {
