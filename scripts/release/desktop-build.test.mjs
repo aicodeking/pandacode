@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { lstat, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildPlan, builtArtifact, checksumLine, macosSigning, notarizeDmg, notarytoolArgs, verifyMacArtifacts } from './build.mjs';
+import { buildPlan, builtArtifact, checksumLine, macosSigning, notarizeDmg, notarytoolArgs, resignAppImage, verifyMacArtifacts } from './build.mjs';
 import { appImageBundleOptions } from './common.mjs';
 
 const env = { PANDACODE_LICENSE_PUBLIC_KEY: 'stale', PANDACODE_UPDATE_PUBLIC_KEY: 'stale', TAURI_SIGNING_PRIVATE_KEY: 'stale', APPLE_ID: 'someone', APPLE_SIGNING_IDENTITY: 'Developer ID Application: Someone', PATH: 'test-path' };
@@ -191,4 +191,24 @@ test('macOS validates the app inside each Developer ID download and cleans up on
       }
     });
   }
+});
+
+test('re-signing a repacked Linux AppImage binds the signature to the release version', async (t) => {
+  const scratch = await mkdtemp(join(tmpdir(), 'pandacode-resign-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const keyFile = join(scratch, 'updater.key');
+  await writeFile(keyFile, 'key-contents\n');
+
+  const calls = [];
+  const source = '/tmp/PandaCode_1.2.3_amd64.AppImage';
+  await resignAppImage(source, '1.2.3', { TAURI_SIGNING_PRIVATE_KEY: keyFile, PATH: 'test-path' }, {
+    tauriCli: '/fake/tauri.js',
+    async run(command, args, options) { calls.push({ command, args, options }); },
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, process.execPath);
+  assert.deepEqual(calls[0].args, ['/fake/tauri.js', 'signer', 'sign', '--app-version', '1.2.3', source]);
+  assert.equal(calls[0].options.env.TAURI_SIGNING_PRIVATE_KEY, 'key-contents');
+  await assert.rejects(() => resignAppImage(source, 'not-a-version', {}, { run() {} }), /Release version must be a stable SemVer/);
 });

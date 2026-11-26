@@ -1968,7 +1968,15 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.resumeAtReset = Boolean(args.enabled) && Boolean(s.limitedAt); result = s; break;
     }
     case 'tray_seen': result = null; break;
-    case 'clear_usage_limit': { const s = session(args.sessionId); s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false; result = null; break; }
+    case 'clear_usage_limit': {
+      const s = session(args.sessionId);
+      s.limitedAt = null; s.limitedUntil = null; s.resumeAtReset = false;
+      if (previewQueueHolds.get(s.id) === 'limited') {
+        previewQueueHolds.set(s.id, 'reset');
+        emit('queue-changed', { sessionId: s.id, held: true, reason: 'reset' });
+      }
+      result = null; break;
+    }
     case 'queue_holds': result = Object.fromEntries(previewQueueHolds); break;
     case 'set_queue_hold': {
       const { sessionId } = args, held = Boolean(args.held), reason = args.reason ?? 'stopped';

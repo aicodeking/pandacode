@@ -20,9 +20,9 @@ function minisignKey() {
   const keyId = randomBytes(8);
   const raw = Buffer.from(publicKey.export({ format: 'jwk' }).x, 'base64url');
   const pubkey = b64(`untrusted comment: minisign public key\n${b64(Buffer.concat([Buffer.from('Ed'), keyId, raw]))}\n`);
-  const signFile = data => {
+  const signFile = (data, { version: signedVersion = releaseVersion } = {}) => {
     const signature = sign(null, createHash('blake2b512').update(data).digest(), privateKey);
-    const comment = 'timestamp:1\tfile:update';
+    const comment = signedVersion === null ? 'timestamp:1\tfile:update' : `timestamp:1\tfile:update\tversion:${signedVersion}`;
     const global = sign(null, Buffer.concat([signature, Buffer.from(comment)]), privateKey);
     return b64(`untrusted comment: signature\n${b64(Buffer.concat([Buffer.from('ED'), keyId, signature]))}\ntrusted comment: ${comment}\n${b64(global)}\n`);
   };
@@ -102,6 +102,22 @@ test('a tampered update file or a signature from another key fails', async (t) =
   await write(mac.updaterAsset, 'update for darwin-aarch64');
   await write(`${mac.updaterAsset}.sig`, minisignKey().signFile(Buffer.from('update for darwin-aarch64')));
   await assert.rejects(verify, /does not verify: Signature was made with a different key/);
+});
+
+test('a signature without a version binding in its trusted comment fails', async (t) => {
+  const { directory, write, verify, editManifest } = await release(t);
+  const sig = key.signFile(await readFile(join(directory, linux.updaterAsset)), { version: null });
+  await write(`${linux.updaterAsset}.sig`, sig);
+  await editManifest(manifest => { manifest.platforms['linux-x86_64'].signature = sig; });
+  await assert.rejects(verify, /PandaCode-Linux-x86_64\.AppImage\.sig does not bind a version in its trusted comment \(expected version:1\.2\.3\)/);
+});
+
+test('a signature bound to a different version fails', async (t) => {
+  const { directory, write, verify, editManifest } = await release(t);
+  const sig = key.signFile(await readFile(join(directory, linux.updaterAsset)), { version: '1.2.2' });
+  await write(`${linux.updaterAsset}.sig`, sig);
+  await editManifest(manifest => { manifest.platforms['linux-x86_64'].signature = sig; });
+  await assert.rejects(verify, /PandaCode-Linux-x86_64\.AppImage\.sig binds version 1\.2\.2, not 1\.2\.3/);
 });
 
 test('latest.json must exist and match the version, notes, URLs and signatures', async (t) => {
