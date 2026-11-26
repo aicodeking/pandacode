@@ -22,6 +22,14 @@ pub(super) fn take_failure(path: &Path) -> bool {
     }
 }
 
+#[cfg(unix)]
+static FAIL_PARENT_SYNC: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+#[cfg(unix)]
+pub(super) fn take_parent_sync_failure(path: &Path) -> bool {
+    FAIL_PARENT_SYNC.lock().unwrap().remove(path)
+}
+
 pub(crate) struct Temp(pub PathBuf);
 impl Drop for Temp {
     fn drop(&mut self) {
@@ -59,6 +67,17 @@ fn state_round_trips_through_the_file() {
     let mut restarted = SessionState::open(path);
     assert_eq!(restarted.get("task", |task| task.cloned()), saved);
     assert!(restarted.get("other", |task| task.is_none()));
+}
+
+#[cfg(unix)]
+#[test]
+fn rename_sync_failure_is_reported_and_leaves_the_renamed_file() {
+    let (_dir, path) = temp();
+    write(&path, b"old state").unwrap();
+    FAIL_PARENT_SYNC.lock().unwrap().insert(path.clone());
+    assert_eq!(write(&path, b"new state").unwrap_err().to_string(), "injected parent directory sync failure");
+    assert_eq!(std::fs::read(&path).unwrap(), b"new state");
+    assert!(!temp_path(&path).exists());
 }
 
 #[test]
@@ -227,6 +246,29 @@ fn a_removed_file_is_rewritten_in_the_background_without_the_listing() {
     // No further change: the scheduled write alone brings the file back.
     let rewritten = || SessionState::open(path.clone()).get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none()));
     assert!(eventually(rewritten));
+}
+
+#[cfg(unix)]
+#[test]
+fn unlink_sync_failure_is_reported_and_the_older_snapshot_stays_blocked() {
+    let (_dir, path) = temp();
+    let state = Shared::open(path.clone());
+    state.update_now("task", |task| task.listed = listing(&["a"]));
+    state.lock().update("task", |task| task.owed = true);
+    let older = state.lock().snapshot().unwrap();
+    state.pending.store(true, Ordering::Release);
+    fail_writes(&path, 2);
+    FAIL_PARENT_SYNC.lock().unwrap().insert(path.clone());
+
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a", "b"]));
+    assert_eq!(
+        saved.unwrap_err(),
+        "injected failure; could not sync session state directory after unlink: injected parent directory sync failure"
+    );
+    assert!(!path.exists());
+    assert!(older.write().is_err());
+    state.lock().flush().unwrap();
+    assert!(SessionState::open(path).get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none())));
 }
 
 #[test]

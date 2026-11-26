@@ -14,9 +14,9 @@
 //! cannot be written, the file is rewritten without it or invalidated so a restart never trusts
 //! an older, narrower listing. Failed invalidation aborts the launch and schedules another write.
 //! Only `flush` writes under the state lock; the others write outside it. Writes are atomic (synced temp
-//! file, then rename). A missing, oversized or corrupt file is an empty one, which behaves
-//! exactly as a fresh process did: unknown history keeps everything listed. Without `init`
-//! (tests, the cloud bridge) nothing touches the disk.
+//! file, then rename and parent directory sync on Unix). A missing, oversized or corrupt file is
+//! treated as empty: unknown history keeps everything listed. Without `init` (tests, the cloud
+//! bridge) nothing touches the disk.
 //!
 //! Entries are capped at `MAX_TASKS`, least recently used first out; an evicted task is
 //! simply unknown again. Deleted tasks are cleared by their owners' `forget`, and tasks deleted
@@ -173,13 +173,21 @@ impl Snapshot {
             return Ok(true);
         };
         let invalidated = match std::fs::remove_file(&self.path) {
-            Ok(()) => Ok(()),
-            Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(remove_err) => std::fs::write(&self.path, b"").map_err(|trunc_err| {
-                std::io::Error::other(format!(
-                    "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
-                ))
+            Ok(()) => sync_parent_dir(&self.path).map_err(|sync_err| {
+                std::io::Error::other(format!("{write_err}; could not sync session state directory after unlink: {sync_err}"))
             }),
+            Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(remove_err) => std::fs::OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&self.path)
+                .and_then(|file| file.sync_all())
+                .and_then(|()| sync_parent_dir(&self.path))
+                .map_err(|trunc_err| {
+                    std::io::Error::other(format!(
+                        "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
+                    ))
+                }),
         };
         written.durable = invalidated.is_ok();
         invalidated.map(|()| false)
@@ -394,9 +402,24 @@ fn temp_path(path: &Path) -> PathBuf {
     path.with_extension(format!("json.{}.tmp", std::process::id()))
 }
 
-/// Writes next to `path`, syncs, then renames over it, so a reader never sees half a file.
-// ponytail: the directory is not synced, so a crash right after the rename can keep the previous
-// file; a listing it could hold was narrower only if this write was the widening one.
+#[cfg(unix)]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::take_parent_sync_failure(path) {
+        return Err(std::io::Error::other("injected parent directory sync failure"));
+    }
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+    let _ = path;
+    Ok(())
+}
+
+/// Syncs a temp file, renames it over `path`, then syncs the parent directory on Unix.
+/// On Windows, rename durability relies on the filesystem because this API only syncs the file.
 fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     #[cfg(test)]
@@ -413,7 +436,8 @@ fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     });
     written.and_then(|()| std::fs::rename(&temp, path)).inspect_err(|_| {
         let _ = std::fs::remove_file(&temp);
-    })
+    })?;
+    sync_parent_dir(path)
 }
 
 /// The state with its background writer.
@@ -488,8 +512,8 @@ impl Shared {
     /// change is snapshotted under the state lock and written under the write lock only, so no
     /// fsync holds up other tasks. If the write fails, the task's listing is dropped in memory and
     /// the state is rewritten without it. If that fails too, invalidate the file and retry the save.
-    // ponytail: the write (one fsync of the whole file) runs on the caller's thread. The launch
-    // moves `remember_catalog_listed` to a blocking thread; `History::of` still writes inline,
+    // ponytail: the synced write runs on the caller's thread. The launch moves
+    // `remember_catalog_listed` to a blocking thread; `History::of` still writes inline,
     // only when it binds a new conversation's listing (once per conversation).
     pub(crate) fn update_now_durable<R>(&'static self, id: &str, change: impl FnOnce(&mut TaskState) -> R) -> (R, Result<(), String>) {
         let (result, snapshot) = self.lock().change_now(id, change);

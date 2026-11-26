@@ -2009,43 +2009,57 @@ pub fn git_branches(root: &Path, trust: Trust) -> Result<BranchList, String> {
     })
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct WorktreeEntry {
+    path: PathBuf,
     branch: Option<String>,
     prunable: bool,
 }
 
-/// The registered entry for a checkout, including one whose folder is gone.
-fn worktree_entry(gate: &Gate, root: &Path, path: &Path) -> Result<Option<WorktreeEntry>, String> {
-    let output = checked(gate.git(root, &["worktree", "list", "--porcelain"], 256 * 1024)?)?;
-    let wanted = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let text = String::from_utf8_lossy(&output.bytes);
-    for block in text.split("\n\n") {
-        let mut entry = WorktreeEntry::default();
-        let mut matches = false;
-        for line in block.lines() {
-            if let Some(listed) = line.strip_prefix("worktree ") {
-                let listed = Path::new(listed);
-                // Deleted checkouts cannot be canonicalized. Git reports ordinary
-                // Windows paths while stored canonical paths retain the \\?\ prefix.
-                matches = git_path(listed) == git_path(path)
-                    || fs::canonicalize(listed).is_ok_and(|resolved| resolved == wanted);
-            } else if let Some(reference) = line.strip_prefix("branch ") {
+impl WorktreeEntry {
+    fn matches_path(&self, path: &Path, resolved: &Path) -> bool {
+        git_path(&self.path) == git_path(path) || crate::path_match::resolve_path(&self.path) == resolved
+    }
+}
+
+fn worktree_entries(gate: &Gate, root: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    // NUL records preserve paths containing newlines and avoid Git's quoting.
+    let output = checked(gate.git(root, &["worktree", "list", "--porcelain", "-z"], 256 * 1024)?)?;
+    if output.truncated {
+        return Err("The Git worktree list is too large to read safely.".into());
+    }
+    let mut entries = Vec::new();
+    for line in output.bytes.split(|byte| *byte == 0) {
+        if let Some(listed) = line.strip_prefix(b"worktree ") {
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+                PathBuf::from(std::ffi::OsStr::from_bytes(listed))
+            };
+            #[cfg(not(unix))]
+            let path = PathBuf::from(std::str::from_utf8(listed).map_err(|_| "Worktree path is not UTF-8")?);
+            entries.push(WorktreeEntry { path, branch: None, prunable: false });
+        } else if let Some(entry) = entries.last_mut() {
+            if let Some(reference) = line.strip_prefix(b"branch ") {
+                let reference = String::from_utf8_lossy(reference);
                 entry.branch = Some(
                     reference
                         .strip_prefix("refs/heads/")
-                        .unwrap_or(reference)
+                        .unwrap_or(&reference)
                         .to_string(),
                 );
-            } else if line.starts_with("prunable") {
+            } else if line.starts_with(b"prunable") {
                 entry.prunable = true;
             }
         }
-        if matches {
-            return Ok(Some(entry));
-        }
     }
-    Ok(None)
+    Ok(entries)
+}
+
+/// The registered entry for a checkout, including one whose folder is gone.
+fn worktree_entry(gate: &Gate, root: &Path, path: &Path) -> Result<Option<WorktreeEntry>, String> {
+    let resolved = crate::path_match::resolve_path(path);
+    Ok(worktree_entries(gate, root)?.into_iter().find(|entry| entry.matches_path(path, &resolved)))
 }
 
 #[derive(Debug, Serialize)]
@@ -2230,15 +2244,23 @@ pub fn remove_worktree_for(
         // The checkout's own `config.worktree` is only read from inside it.
         Gate::change(path, trust, "remove a worktree")?;
     }
-    let entry = worktree_entry(&gate, main, path)?;
+    let entries = worktree_entries(&gate, main)?;
+    let path_resolved = crate::path_match::resolve_path(path);
+    let entry = entries.iter().find(|entry| entry.matches_path(path, &path_resolved));
     let branch = stored_branch
         .map(str::to_string)
-        .or_else(|| entry.as_ref().and_then(|e| e.branch.clone()))
+        .or_else(|| entry.and_then(|entry| entry.branch.clone()))
         .unwrap_or_default();
     let present = path.is_dir();
     if present {
         if entry.is_none() {
             return Err("This folder is not a worktree of the project.".into());
+        }
+        if entries.iter().any(|entry| {
+            crate::path_match::path_in_folder(&entry.path, path, &path_resolved)
+                && crate::path_match::resolve_path(&entry.path) != path_resolved
+        }) {
+            return Err("This worktree contains a nested linked worktree. Remove it first.".into());
         }
         let path_text = git_path(path).to_str().ok_or("Worktree path is not UTF-8")?;
         checked(gate.git(main, &["worktree", "remove", "--", path_text], 16 * 1024)?)?;
@@ -3873,6 +3895,24 @@ mod tests {
         assert!(removal.removed && removal.branch_deleted && removal.note.is_empty());
         assert!(!ref_exists(&Gate::Open, &f.root, "refs/heads/pandacode/lifecycle").unwrap());
         assert!(remove_worktree(&f.root, &f.root, None, false).is_err());
+    }
+
+    #[test]
+    fn removal_refuses_an_ignored_nested_linked_worktree() {
+        let f = Fixture::new(true);
+        fs::write(f.root.join(".gitignore"), ".claude/worktrees/\n").unwrap();
+        f.git(&["add", ".gitignore"]);
+        f.git(&["-c", "core.hooksPath=/dev/null", "commit", "-m", "Ignore nested worktrees"]);
+        let outer = create_worktree_with(&f.root, "outer", None, false).unwrap();
+        let nested = outer.path.join(".claude/worktrees/inner");
+        f.git(&["worktree", "add", "--detach", git_path(&nested).to_str().unwrap(), "HEAD"]);
+        let untracked = nested.join("only-in-inner.txt");
+        fs::write(&untracked, "unsaved").unwrap();
+        assert!(worktree_status(&f.root, &outer.path, None, Trust::Desktop).unwrap().clean);
+
+        let error = remove_worktree_for(&f.root, &outer.path, None, false, Trust::Desktop).unwrap_err();
+        assert_eq!(error, "This worktree contains a nested linked worktree. Remove it first.");
+        assert_eq!(fs::read_to_string(untracked).unwrap(), "unsaved");
     }
 
     #[test]

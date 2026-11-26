@@ -133,6 +133,41 @@ impl Drop for Terminal {
     }
 }
 pub type Terminals = Arc<Mutex<HashMap<String, Terminal>>>;
+
+// Closing a tab removes its Terminal before the reader has reaped the child.
+static LIVE_HARNESS_TERMINALS: LazyLock<Mutex<HashMap<(usize, String), String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+struct LiveHarnessGuard {
+    key: Option<(usize, String)>,
+}
+
+impl LiveHarnessGuard {
+    // The caller holds the terms lock. Always acquire it before the live registry lock.
+    fn register(terms: &Terminals, id: &str, session_id: Option<&str>) -> Self {
+        let key = session_id.map(|session_id| {
+            let key = (Arc::as_ptr(terms) as usize, id.to_owned());
+            LIVE_HARNESS_TERMINALS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(key.clone(), session_id.to_owned());
+            key
+        });
+        Self { key }
+    }
+}
+
+impl Drop for LiveHarnessGuard {
+    fn drop(&mut self) {
+        if let Some(key) = &self.key {
+            LIVE_HARNESS_TERMINALS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(key);
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TerminalEvent {
@@ -920,24 +955,41 @@ fn harness_arguments_for(context: &HarnessContext<'_>) -> Result<Vec<String>, St
 }
 
 pub fn harness_running(terms: &Terminals, session_id: &str) -> Result<bool, String> {
-    let terms = terms
+    let owner = Arc::as_ptr(terms) as usize;
+    let registry = terms
         .lock()
         .map_err(|_| "Terminal registry is unavailable")?;
-    Ok(terms.values().any(|terminal| {
+    let live = LIVE_HARNESS_TERMINALS
+        .lock()
+        .map_err(|_| "Live harness terminal registry is unavailable")?;
+    Ok(registry.values().any(|terminal| {
         terminal.harness_session.as_deref() == Some(session_id)
             && !terminal.closed.load(Ordering::SeqCst)
-    }))
+    }) || live
+        .iter()
+        .any(|((registry_owner, _), session)| *registry_owner == owner && session == session_id))
 }
 
 pub fn active_harness_sessions(terms: &Terminals) -> Result<Vec<String>, String> {
-    let terms = terms
+    let owner = Arc::as_ptr(terms) as usize;
+    let registry = terms
         .lock()
         .map_err(|_| "Terminal registry is unavailable")?;
-    Ok(terms
+    let live = LIVE_HARNESS_TERMINALS
+        .lock()
+        .map_err(|_| "Live harness terminal registry is unavailable")?;
+    let sessions: HashSet<_> = registry
         .values()
         .filter(|terminal| !terminal.closed.load(Ordering::SeqCst))
-        .filter_map(|terminal| terminal.harness_session.clone())
-        .collect())
+        .filter_map(|terminal| terminal.harness_session.as_ref())
+        .chain(
+            live.iter()
+                .filter(|((registry_owner, _), _)| *registry_owner == owner)
+                .map(|(_, session)| session),
+        )
+        .cloned()
+        .collect();
+    Ok(sessions.into_iter().collect())
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -1235,6 +1287,7 @@ fn start_command(
     drop(pty.slave);
     let id = crate::storage::id();
     let log_session = harness_session.clone();
+    let live_harness = LiveHarnessGuard::register(&terms, &id, harness_session.as_deref());
     registry.insert(
         id.clone(),
         Terminal {
@@ -1334,6 +1387,7 @@ fn start_command(
         reader_closed.store(true, Ordering::SeqCst);
         let terminal = registry.lock().ok().and_then(|mut m| m.remove(&tid));
         drop(terminal);
+        drop(live_harness);
         let _ = app.emit(
             "terminal-event",
             TerminalEvent {
@@ -2005,6 +2059,10 @@ mod tests {
     }
 
     fn shell(script: &str) -> TestShell {
+        shell_with_harness(script, None)
+    }
+
+    fn shell_with_harness(script: &str, harness: Option<(&str, mpsc::Receiver<()>)>) -> TestShell {
         let pty = native_pty_system().openpty(size(80, 24)).unwrap();
         let mut command = CommandBuilder::new("/bin/sh");
         command.args(["-c", script]);
@@ -2021,6 +2079,28 @@ mod tests {
         let writer = Arc::new(Mutex::new(writer));
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let (exit_tx, exited) = mpsc::sync_channel(1);
+        let id = "terminal-under-test".to_string();
+        let terms = Terminals::default();
+        let (harness_session, wait) =
+            harness.map_or((None, None), |(sid, wait)| (Some(sid.to_owned()), Some(wait)));
+        let live_harness = {
+            let mut registry = terms.lock().unwrap();
+            let live_harness = LiveHarnessGuard::register(&terms, &id, harness_session.as_deref());
+            registry.insert(
+                id.clone(),
+                Terminal {
+                    master: pty.master,
+                    writer,
+                    shell_pid: Some(pid),
+                    shell_name: "sh".into(),
+                    closed,
+                    harness_session,
+                    run_script: false,
+                },
+            );
+            live_harness
+        };
+        let registry = terms.clone();
         std::thread::spawn(move || {
             let mut buf = [0; 8192];
             let mut ready = false;
@@ -2044,22 +2124,14 @@ mod tests {
                     let _ = ready_tx.send(());
                 }
             }
-            let _ = child.wait();
+            if let Some(wait) = wait {
+                let _ = wait.recv();
+            }
+            child.wait().unwrap();
+            drop(live_harness);
+            drop(registry);
             let _ = exit_tx.send(());
         });
-        let id = "terminal-under-test".to_string();
-        let terms = Arc::new(Mutex::new(HashMap::from([(
-            id.clone(),
-            Terminal {
-                master: pty.master,
-                writer,
-                shell_pid: Some(pid),
-                shell_name: "sh".into(),
-                closed,
-                harness_session: None,
-                run_script: false,
-            },
-        )])));
         ready_rx
             .recv_timeout(Duration::from_secs(3))
             .expect("Shell did not become ready");
@@ -2069,6 +2141,28 @@ mod tests {
             pid,
             exited,
         }
+    }
+
+    #[test]
+    fn closing_harness_stays_active_until_its_child_is_reaped() {
+        let (allow_wait, wait) = mpsc::channel();
+        let session_id = "closing-harness";
+        let shell = shell_with_harness("printf ready; read line", Some((session_id, wait)));
+        assert!(harness_running(&shell.terms, session_id).unwrap());
+        assert_eq!(active_harness_sessions(&shell.terms).unwrap(), [session_id]);
+
+        close(&shell.terms, &shell.id).unwrap();
+        assert!(shell.terms.lock().unwrap().is_empty());
+        assert!(harness_running(&shell.terms, session_id).unwrap());
+        assert_eq!(active_harness_sessions(&shell.terms).unwrap(), [session_id]);
+        let other_terms = Terminals::default();
+        assert!(!harness_running(&other_terms, session_id).unwrap());
+        assert!(active_harness_sessions(&other_terms).unwrap().is_empty());
+
+        allow_wait.send(()).unwrap();
+        shell.exited.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!harness_running(&shell.terms, session_id).unwrap());
+        assert!(active_harness_sessions(&shell.terms).unwrap().is_empty());
     }
 
     #[test]

@@ -411,6 +411,22 @@ test('--descriptive held-out output carries no pass and reads every measure as d
   assert.ok(!out.some(line => /PASS|FAIL/.test(line)));
 });
 
+test('Fv2 keeps tuned verdicts with --holm-cost and reports held-out results descriptively', () => {
+  const { summary, out } = armReport([join(import.meta.dirname, 'results/runs/v6-Fv2.csv')], { arms: 'before,after', set: 'loc', model: 'sonnet', 'holm-cost': true });
+  assert.equal(summary.loc.steps.read, 'lower');
+  assert.equal(summary.loc.steps.pHolm, 0.00537109375);
+  assert.equal(summary.gatePerBatch['v6-Fv2'].precision.pass, false);
+  assert.equal(summary.heldout.loc.steps.n, 8);
+  const heldout = Object.values(summary.heldout.loc).filter(Boolean);
+  assert.ok(heldout.every(m => m.read === 'descriptive' && !('pHolm' in m)));
+  assert.ok(Object.values(summary.heldout.gate).filter(Boolean).every(g => !('pass' in g)));
+  const tunedStart = out.findIndex(line => line.startsWith('## Localization ('));
+  assert.ok(tunedStart > 0);
+  const heldoutText = out.slice(0, tunedStart).join('\n');
+  assert.match(heldoutText, /^Held-out gate \(descriptive\):$/m);
+  assert.doesNotMatch(heldoutText, /\b(?:lower|higher|PASS|FAIL)\b/);
+});
+
 test('the analysis says MISMATCH when its code is not what a batch registered', () => {
   const now = analysisHashes();
   const entry = (batch, analysis) => ({ batch, marker: `deviation:${batch}`, analysis });

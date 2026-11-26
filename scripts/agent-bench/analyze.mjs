@@ -560,10 +560,10 @@ export function editStepsGate(runs, armA, armB, margin = EDIT_STEPS_MARGIN) {
 
 function heldoutSection(heldout, armA, armB, options, summary, out) {
   if (!heldout.length) return;
-  const { lines, stats } = setSection('Held-out localization', heldout, armA, armB, 'loc', { ...options, holm: false });
-  const g = gate(heldout, armA, armB);
-  summary.heldout = { runs: heldout.length, loc: stats, gate: options.descriptive ? withoutVerdict(g) : g, exploreUse: exploreUse(heldout) };
-  out.push(...lines, 'Held-out gate:', ...gateLines(summary.heldout.gate), '');
+  const { lines, stats } = setSection('Held-out localization', heldout, armA, armB, 'loc', { ...options, holm: false, descriptive: true });
+  const g = withoutVerdict(gate(heldout, armA, armB));
+  summary.heldout = { runs: heldout.length, loc: stats, gate: g, exploreUse: exploreUse(heldout) };
+  out.push(...lines, 'Held-out gate (descriptive):', ...gateLines(g), '');
 }
 
 function locExtras(loc, armA, armB, options, summary, out) {

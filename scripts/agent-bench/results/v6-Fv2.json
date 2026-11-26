@@ -25,7 +25,7 @@
     "n": 8,
     "better": 7,
     "worse": 0,
-    "read": "lower"
+    "read": "descriptive"
    },
    "turns (num_turns, also counts parallel tool messages)": {
     "a": 5.4375,
@@ -43,7 +43,7 @@
     "n": 8,
     "better": 3,
     "worse": 3,
-    "read": "not shown to be higher"
+    "read": "descriptive"
    },
    "wall s": {
     "a": 23.239937500000003,
@@ -61,7 +61,7 @@
     "n": 8,
     "better": 7,
     "worse": 1,
-    "read": "lower"
+    "read": "descriptive"
    },
    "duration s": {
     "a": 22.9464375,
@@ -79,7 +79,7 @@
     "n": 8,
     "better": 7,
     "worse": 1,
-    "read": "lower"
+    "read": "descriptive"
    },
    "API s": {
     "a": 20.891125000000002,
@@ -97,7 +97,7 @@
     "n": 8,
     "better": 6,
     "worse": 2,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "API s/step": {
     "a": 3.883047395833333,
@@ -115,7 +115,7 @@
     "n": 8,
     "better": 2,
     "worse": 6,
-    "read": "not shown to be higher"
+    "read": "descriptive"
    },
    "non-API s": {
     "a": 2.0553125,
@@ -133,7 +133,7 @@
     "n": 8,
     "better": 8,
     "worse": 0,
-    "read": "lower"
+    "read": "descriptive"
    },
    "cost $": {
     "a": 0.11653853125,
@@ -151,7 +151,7 @@
     "n": 8,
     "better": 5,
     "worse": 3,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "cost beyond first write $": {
     "a": 0.06286528125,
@@ -169,7 +169,7 @@
     "n": 8,
     "better": 5,
     "worse": 3,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "cost at 150k context $": {
     "a": 0.1457804875,
@@ -187,7 +187,7 @@
     "n": 8,
     "better": 6,
     "worse": 2,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "cache read tok": {
     "a": 143512.8125,
@@ -205,7 +205,7 @@
     "n": 8,
     "better": 7,
     "worse": 1,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "cache write tok": {
     "a": 20940.75,
@@ -223,7 +223,7 @@
     "n": 8,
     "better": 3,
     "worse": 5,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "output tok": {
     "a": 1840.25,
@@ -241,7 +241,7 @@
     "n": 8,
     "better": 5,
     "worse": 3,
-    "read": "not shown to be lower"
+    "read": "descriptive"
    },
    "cache write tok/step after the first": {
     "a": 1689.588095238095,
@@ -272,7 +272,6 @@
      0.046875
     ],
     "margin": -0.05,
-    "pass": true,
     "n": 8
    },
    "precision": {
@@ -284,7 +283,6 @@
      0.03392857142857142
     ],
     "margin": -0.05,
-    "pass": true,
     "n": 8
    },
    "editPass": null,

@@ -127,6 +127,10 @@ pub use warm::{
     Renew as WarmRenew,
 };
 
+pub(crate) async fn quiesce_spares_in_checkout(folder: &Path) -> Result<(), String> {
+    warm::quiesce_spares_in_checkout(folder).await
+}
+
 const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// Capacity the frame buffer keeps after a large message has been consumed.
 const FRAME_KEEP: usize = 64 * 1024;
@@ -4750,7 +4754,7 @@ async fn run_process_launch(
     let mut agent_temp = None;
     let (mut child, mut group) = if let Some(spare) = spare {
         reached_harness();
-        spare.into_parts()
+        spare.into_parts_for_launch().await
     } else {
         if lingers {
             agent_temp = AgentTemp::redirect(&mut command);

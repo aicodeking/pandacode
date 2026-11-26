@@ -78,11 +78,83 @@ pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<(
     set_at(&path(app, name)?, present)
 }
 
+fn is_hard_linked(path: &Path, meta: &std::fs::Metadata) -> std::io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        Ok(meta.nlink() > 1)
+    }
+    #[cfg(windows)]
+    {
+        use std::{
+            ffi::c_void,
+            mem::MaybeUninit,
+            os::windows::{fs::OpenOptionsExt, io::AsRawHandle},
+        };
+
+        #[repr(C)]
+        struct Filetime {
+            low: u32,
+            high: u32,
+        }
+
+        #[repr(C)]
+        struct ByHandleFileInformation {
+            file_attributes: u32,
+            creation_time: Filetime,
+            last_access_time: Filetime,
+            last_write_time: Filetime,
+            volume_serial_number: u32,
+            file_size_high: u32,
+            file_size_low: u32,
+            number_of_links: u32,
+            file_index_high: u32,
+            file_index_low: u32,
+        }
+
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetFileInformationByHandle(handle: *mut c_void, info: *mut ByHandleFileInformation) -> i32;
+        }
+
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        const FILE_SHARE_DELETE: u32 = 0x4;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+        let _ = meta;
+        // OpenOptions uses CreateFileW with OPEN_EXISTING, and File drop calls CloseHandle.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        let mut info = MaybeUninit::<ByHandleFileInformation>::uninit();
+        // SAFETY: the file owns the handle, and info points to writable storage of the required size.
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), info.as_mut_ptr()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: a successful call initialized the structure.
+        Ok(unsafe { info.assume_init() }.number_of_links > 1)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (path, meta);
+        Ok(false)
+    }
+}
+
 fn exists_at(path: Result<PathBuf>) -> Result<bool> {
+    const INVALID_MARKER: &str = "Could not read the setting: marker path is not a regular file";
     let path = path?;
     match std::fs::symlink_metadata(&path) {
-        Ok(meta) if meta.is_file() => Ok(true),
-        Ok(_) => Err("Could not read the setting: marker path is not a regular file".into()),
+        Ok(meta) if meta.is_file() => match is_hard_linked(&path, &meta) {
+            Ok(false) => Ok(true),
+            Ok(true) => Err(INVALID_MARKER.into()),
+            Err(error) => Err(format!("Could not read the setting: {error}")),
+        },
+        Ok(_) => Err(INVALID_MARKER.into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             // Windows reports ERROR_PATH_NOT_FOUND under a non-directory ancestor.
             // Walk up to the nearest existing ancestor and fail closed if it is not a directory.
@@ -120,12 +192,8 @@ fn set_at(path: &Path, present: bool) -> Result<()> {
     }
     match std::fs::symlink_metadata(path) {
         Ok(meta) if meta.is_file() => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::MetadataExt;
-                if present && meta.nlink() > 1 {
-                    return Err(INVALID_MARKER.into());
-                }
+            if present && is_hard_linked(path, &meta).map_err(save_error)? {
+                return Err(INVALID_MARKER.into());
             }
         }
         Ok(_) => return Err(INVALID_MARKER.into()),
@@ -205,9 +273,8 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
-    fn enabling_a_hard_linked_marker_leaves_its_contents_intact() {
+    fn hard_linked_markers_are_rejected_on_read_and_enable() {
         let dir = std::env::temp_dir().join(format!("app-marker-hard-link-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let target = dir.join("target");
@@ -215,9 +282,13 @@ mod tests {
         std::fs::write(&target, "keep me").unwrap();
         std::fs::hard_link(&target, &marker).unwrap();
 
+        assert!(exists_at(Ok(marker.clone())).is_err());
+        assert!(!opt_in_in(Ok(dir.clone()), "flag"));
+        assert!(!default_on_in(Ok(dir.clone()), "flag"));
         assert!(set_at(&marker, true).is_err());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
-        set_at(&marker, false).unwrap();
+        assert!(set_at(&marker, false).is_ok());
+        assert!(!marker.exists());
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
         std::fs::remove_dir_all(dir).unwrap();
     }

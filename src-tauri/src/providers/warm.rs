@@ -316,15 +316,14 @@ pub(super) fn take(session_id: &str, key: &str) -> Option<Adopting> {
 pub(super) fn take_checked(session_id: &str, key: &str, ordinary_eligible: bool, lead: bool, discard_epoch: u64) -> Option<Adopting> {
     let (spare, note) = take_since(&SPARES, session_id, key, ordinary_eligible, lead, discard_epoch);
     // A miss costs the CLI's whole startup; say why so slow turns can be traced. Every hit is
-    // logged too (by `into_parts`), with lead and ordinary totals, so each pool's speed-up can
-    // be measured.
+    // logged too, with lead and ordinary totals, so each pool's speed-up can be measured.
     if let Some(note) = note {
         eprintln!("{note}");
     }
     spare.map(|spare| Adopting { pool: &SPARES, session_id: session_id.to_owned(), spare: Some(spare) })
 }
 
-/// A spare taken for adoption, counted as adopted only once `into_parts` commits to it. Dropping
+/// A spare taken for adoption, counted as adopted only once the run commits to it. Dropping
 /// it first (a failed rebind, a Stop before the launch owned its streams) counts a miss, outside
 /// the pool's miss streak (the spare was usable), and retires the process like any other
 /// removal, so the next same-session launch waits for it instead of resuming beside it.
@@ -341,9 +340,24 @@ impl Adopting {
     }
 
     /// Adopted: the run owns the process from here and must retire it itself on failure.
-    pub(super) fn into_parts(mut self) -> (Child, ProcessGroup) {
+    pub(super) async fn into_parts_for_launch(self) -> (Child, ProcessGroup) {
+        let (lead, cwd) = self.spare.as_ref()
+            .map(|(spare, _)| (spare.lead, spare.cwd.as_deref()))
+            .expect("an adopted spare is taken once");
+        let note = record_adopted_in(self.pool, lead, cwd).await;
+        eprintln!("{note}");
+        self.take_parts()
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_parts(self) -> (Child, ProcessGroup) {
+        let lead = self.spare.as_ref().expect("an adopted spare is taken once").0.lead;
+        eprintln!("{}", record_adopted(self.pool, lead));
+        self.take_parts()
+    }
+
+    fn take_parts(mut self) -> (Child, ProcessGroup) {
         let (spare, _pending) = self.spare.take().expect("an adopted spare is taken once");
-        eprintln!("{}", record_adopted_in(self.pool, spare.lead, spare.cwd.as_deref()));
         (spare.child, spare.group)
     }
 }
@@ -370,7 +384,7 @@ fn take_since(pool: &Pool, session_id: &str, key: &str, ordinary_eligible: bool,
     // Either clock: a laptop asleep overnight stops `Instant` on some platforms, not the wall.
     let expired = age_expired(spare.born.elapsed(), spare.born_wall.elapsed().ok(), spare.idle);
     match miss(alive, &spare.key, key, expired) {
-        // Counted and logged only once the launch commits to it (`Adopting::into_parts`).
+        // Counted and logged only once the launch commits to it.
         None => (Some((spare, pending)), None),
         Some(reason) => {
             // A dead or stale spare joins the pool's miss streak; one that merely outlived its
@@ -632,6 +646,11 @@ pub async fn quiesce_spares_in(folder: &Path) -> Result<(), String> {
     quiesce_pool_spares_in(&SPARES, folder).await
 }
 
+/// Retire spares and wait for exits in just this checkout, as required for a merge.
+pub(crate) async fn quiesce_spares_in_checkout(folder: &Path) -> Result<(), String> {
+    quiesce_pool_spares_in_mode(&SPARES, folder, FolderMatch::Checkout).await
+}
+
 async fn quiesce_in(pool: &Pool, session_id: &str) -> Result<(), String> {
     if let Some((spare, pending)) = take_for_discard(pool, session_id) {
         retire_now(session_id, spare, pending);
@@ -653,9 +672,14 @@ fn take_for_discard(pool: &Pool, session_id: &str) -> Option<(Spare, Pending)> {
     pool.remove(session_id, Gone::Discarded)
 }
 
+#[derive(Clone, Copy)]
+enum FolderMatch {
+    Subtree,
+    Checkout,
+}
+
 /// Pooled spares and in-flight starts (not yet cancelled) with their working directories, copied
-/// under the pool lock so folder matching (`path_in_folder` may `canonicalize`) never runs with a
-/// lock held.
+/// under the pool lock so filesystem lookups for folder matching run without a lock held.
 struct InFolder {
     spares: Vec<(String, PathBuf)>,
     starting: Vec<(u64, String, PathBuf)>,
@@ -672,12 +696,15 @@ impl InFolder {
     }
 
     /// Only the entries inside `folder`. May touch the filesystem: never call it under a lock.
-    fn within(self, folder: &Path) -> Self {
+    fn within(self, folder: &Path, mode: FolderMatch) -> Self {
         if self.is_empty() {
             return self;
         }
         let resolved = resolve_path(folder);
-        let inside = |cwd: &Path| path_in_folder(cwd, folder, &resolved);
+        let inside = |cwd: &Path| match mode {
+            FolderMatch::Subtree => path_in_folder(cwd, folder, &resolved),
+            FolderMatch::Checkout => crate::checkout_busy::path_in_checkout_root(cwd, folder, &resolved),
+        };
         Self {
             spares: self.spares.into_iter().filter(|(_, cwd)| inside(cwd.as_path())).collect(),
             starting: self.starting.into_iter().filter(|(_, _, cwd)| inside(cwd.as_path())).collect(),
@@ -685,12 +712,12 @@ impl InFolder {
     }
 
     /// `within`, on a blocking thread so the async runtime never waits on the filesystem.
-    async fn within_off_runtime(self, folder: &Path) -> Result<Self, String> {
+    async fn within_off_runtime(self, folder: &Path, mode: FolderMatch) -> Result<Self, String> {
         if self.is_empty() {
             return Ok(self);
         }
         let folder = folder.to_path_buf();
-        tokio::task::spawn_blocking(move || self.within(&folder))
+        tokio::task::spawn_blocking(move || self.within(&folder, mode))
             .await
             .map_err(|error| format!("Could not check this folder's warm agents: {error}"))
     }
@@ -735,17 +762,21 @@ fn discard_within(pool: &Pool, within: InFolder) -> (Vec<(String, Spare, Pending
 
 #[cfg(all(test, unix))]
 fn take_for_discard_in(pool: &Pool, folder: &Path) -> (Vec<(String, Spare, Pending)>, Vec<String>) {
-    discard_within(pool, InFolder::snapshot(pool).within(folder))
+    discard_within(pool, InFolder::snapshot(pool).within(folder, FolderMatch::Subtree))
 }
 
 #[cfg(test)]
 fn has_spare_in(pool: &Pool, folder: &Path) -> bool {
-    !InFolder::snapshot(pool).within(folder).is_empty()
+    !InFolder::snapshot(pool).within(folder, FolderMatch::Subtree).is_empty()
+}
+
+async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String> {
+    quiesce_pool_spares_in_mode(pool, folder, FolderMatch::Subtree).await
 }
 
 /// Retire every spare in `folder` (folder matching off the runtime and outside the pool lock),
 /// wait for their exits, and look again until none is pooled or starting there.
-async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String> {
+async fn quiesce_pool_spares_in_mode(pool: &Pool, folder: &Path, mode: FolderMatch) -> Result<(), String> {
     let wait = async {
         loop {
             // Cross the spawn gate after reservation so a spawn that already passed its
@@ -754,7 +785,7 @@ async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String
                 let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
                 InFolder::snapshot(pool)
             };
-            let within = snapshot.within_off_runtime(folder).await?;
+            let within = snapshot.within_off_runtime(folder, mode).await?;
             let (removed, affected) = {
                 let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
                 discard_within(pool, within)
@@ -762,14 +793,20 @@ async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String
             for (id, spare, pending) in removed {
                 retire_now(&id, spare, pending);
             }
-            if !affected.is_empty() {
-                let results = futures_util::future::join_all(affected.iter().map(|id| await_exit(id))).await;
-                if let Some(error) = results.into_iter().find_map(Result::err) {
-                    return Err(error);
+            match mode {
+                FolderMatch::Subtree => {
+                    if !affected.is_empty() {
+                        let results = futures_util::future::join_all(affected.iter().map(|id| await_exit(id))).await;
+                        if let Some(error) = results.into_iter().find_map(Result::err) {
+                            return Err(error);
+                        }
+                    }
+                    await_exits_in(folder).await?;
                 }
+                // A session-wide wait could include an exit recorded in a different checkout.
+                FolderMatch::Checkout => super::exit::await_exits_in_checkout(folder).await?,
             }
-            await_exits_in(folder).await?;
-            if InFolder::snapshot(pool).within_off_runtime(folder).await?.is_empty() {
+            if InFolder::snapshot(pool).within_off_runtime(folder, mode).await?.is_empty() {
                 return Ok(());
             }
         }

@@ -3,7 +3,7 @@
 //! in docs/worker-tokens.md.
 use super::{age_expired, spares, Pool, Spares};
 use serde::Serialize;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 /// Why a lead spare left the pool before its wake.
@@ -90,22 +90,30 @@ pub(super) struct StatusBackoff {
     cooldown_until_wall: Option<SystemTime>,
 }
 
+/// Use the nearest checkout's own root, including for a linked worktree. Call this off the
+/// async runtime, before locking the pool, because it probes Git metadata on disk.
+pub(super) fn status_backoff_key(cwd: &Path) -> PathBuf {
+    let resolved = crate::path_match::resolve_path(cwd);
+    let root = crate::claude_roots::git_checkout_root(&resolved).unwrap_or(resolved);
+    crate::path_match::resolve_path(&root)
+}
+
 impl Spares {
     /// Let either clock end the cooldown, including sleep on platforms where Instant stops.
-    pub(super) fn status_cooling(&self, cwd: &Path, now: Instant, now_wall: SystemTime) -> bool {
-        self.status_backoff.get(cwd).is_some_and(|status| {
+    pub(super) fn status_cooling(&self, key: &Path, now: Instant, now_wall: SystemTime) -> bool {
+        self.status_backoff.get(key).is_some_and(|status| {
             status.cooldown_until.is_some_and(|until| now < until)
                 && status.cooldown_until_wall.is_some_and(|until| now_wall < until)
         })
     }
 
-    pub(super) fn record_unreadable_status(&mut self, cwd: &Path, now: Instant, now_wall: SystemTime) {
-        if self.status_backoff.len() >= STATUS_BACKOFF_LIMIT && !self.status_backoff.contains_key(cwd) {
+    pub(super) fn record_unreadable_status(&mut self, key: &Path, now: Instant, now_wall: SystemTime) {
+        if self.status_backoff.len() >= STATUS_BACKOFF_LIMIT && !self.status_backoff.contains_key(key) {
             if let Some(evicted) = self.status_backoff.keys().next().cloned() {
                 self.status_backoff.remove(&evicted);
             }
         }
-        let status = self.status_backoff.entry(cwd.to_path_buf()).or_default();
+        let status = self.status_backoff.entry(key.to_path_buf()).or_default();
         status.consecutive_failures = status.consecutive_failures.saturating_add(1);
         if status.consecutive_failures >= MISS_BACKOFF_STREAK {
             status.cooldown_until = now.checked_add(CHURN_COOLDOWN);
@@ -284,20 +292,32 @@ pub(super) fn record_memory_skip(pool: &Pool, lead: bool) {
     spares(pool).stats_mut(lead).memory_skipped += 1;
 }
 
-/// A launch that committed to its spare (`Adopting::into_parts`): counted as adopted, which also
+/// A launch that committed to its spare: counted as adopted, which also
 /// ends the pool's eviction, expiry and miss streaks and any churn backoff.
-pub(super) fn record_adopted_in(pool: &Pool, lead: bool, cwd: Option<&Path>) -> String {
+pub(super) async fn record_adopted_in(pool: &Pool, lead: bool, cwd: Option<&Path>) -> String {
+    let cwd = {
+        let mut locked = spares(pool);
+        match cwd {
+            Some(cwd) if !locked.status_backoff.is_empty() => cwd.to_path_buf(),
+            _ => return record_adopted_locked(&mut locked, lead),
+        }
+    };
+    let key = tokio::task::spawn_blocking(move || status_backoff_key(&cwd)).await.ok();
     let mut locked = spares(pool);
-    *locked.churn_mut(lead) = PoolChurn::default();
-    if let Some(cwd) = cwd {
-        locked.status_backoff.remove(cwd);
+    if let Some(key) = key {
+        locked.status_backoff.remove(&key);
     }
-    record_decision(&mut locked, lead, None)
+    record_adopted_locked(&mut locked, lead)
+}
+
+fn record_adopted_locked(locked: &mut Spares, lead: bool) -> String {
+    *locked.churn_mut(lead) = PoolChurn::default();
+    record_decision(locked, lead, None)
 }
 
 #[cfg(test)]
 pub(super) fn record_adopted(pool: &Pool, lead: bool) -> String {
-    record_adopted_in(pool, lead, None)
+    record_adopted_locked(&mut spares(pool), lead)
 }
 
 fn record_decision(locked: &mut Spares, lead: bool, miss: Option<&str>) -> String {

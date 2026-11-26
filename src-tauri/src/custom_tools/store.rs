@@ -184,20 +184,18 @@ pub(super) fn record_for_tool(base: &Path, project: &str, initial_scope: Scope, 
             return Ok(true);
         }
     }
-    if initial_scope == Scope::Global {
-        for entry in read_entries(&base.join("projects"))? {
-            let name = entry.file_name();
-            if !name.to_str().is_some_and(|id| id != project && valid_project_id(id)) {
-                continue;
-            }
-            if !entry.file_type().map_err(|e| format!("Could not read the tool folder: {e}"))?.is_dir() {
-                continue;
-            }
-            let dir = entry.path();
-            if try_load(&dir, &tool.name)?.is_some_and(|current| same_identity(&current, tool)) {
-                record_locked(&dir, &tool.name, session, exit, now)?;
-                return Ok(true);
-            }
+    for entry in read_entries(&base.join("projects"))? {
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|id| id != project && valid_project_id(id)) {
+            continue;
+        }
+        if !entry.file_type().map_err(|e| format!("Could not read the tool folder: {e}"))?.is_dir() {
+            continue;
+        }
+        let dir = entry.path();
+        if try_load(&dir, &tool.name)?.is_some_and(|current| same_identity(&current, tool)) {
+            record_locked(&dir, &tool.name, session, exit, now)?;
+            return Ok(true);
         }
     }
     Ok(false)

@@ -159,6 +159,58 @@ fn spare(lead: bool) -> Spare {
         born: std::time::Instant::now(), born_wall: std::time::SystemTime::now(), idle: IDLE, lead, renewal_due: false, cwd: None }
 }
 
+fn nested_worktree_fixture() -> (TempDir, PathBuf, PathBuf) {
+    let dir = TempDir(std::env::temp_dir().join(format!("warm-checkout-{}", uuid::Uuid::new_v4())));
+    let main = dir.0.join("main");
+    let inner = main.join(".claude/worktrees/inner");
+    let gitdir = main.join(".git/worktrees/inner");
+    std::fs::create_dir_all(&gitdir).unwrap();
+    std::fs::create_dir_all(&inner).unwrap();
+    std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+    std::fs::write(inner.join(".git"), "gitdir: ../../../.git/worktrees/inner\n").unwrap();
+    (dir, main, inner)
+}
+
+#[tokio::test]
+async fn checkout_quiescence_leaves_nested_worktree_spares_and_exits_alone() {
+    let (dir, main, inner) = nested_worktree_fixture();
+    let src = main.join("src");
+    std::fs::create_dir(&src).unwrap();
+    let pool = Pool::default();
+    let id = |name| format!("{}-{name}", dir.0.file_name().unwrap().to_string_lossy());
+    let (main_id, src_id, inner_id, exit_id) = (id("main"), id("src"), id("inner"), id("exit"));
+    let register_spare = |session: &str, cwd: &Path, lead| {
+        launched(session);
+        let mut spare = spare(lead);
+        spare.cwd = Some(cwd.to_path_buf());
+        let pid = pid_of(&spare);
+        assert!(register(&pool, session, epoch(session), spare));
+        pid
+    };
+    let main_pid = register_spare(&main_id, &main, false);
+    let src_pid = register_spare(&src_id, &src, true);
+    let inner_pid = register_spare(&inner_id, &inner, false);
+    let inner_exit = crate::providers::hold_exit_in_cwd_for_test(&exit_id, inner);
+
+    quiesce_pool_spares_in_mode(&pool, &main, FolderMatch::Checkout).await.unwrap();
+    assert!(!waiting_in(&pool, &main_id));
+    assert!(!waiting_in(&pool, &src_id));
+    assert_process_gone(main_pid);
+    assert_process_gone(src_pid);
+    assert!(matches!(spares(&pool).spares.get_mut(&inner_id).unwrap().child.try_wait(), Ok(None)));
+    assert!(crate::providers::pending_exits().iter().any(|(id, _)| id == &exit_id));
+
+    drop(inner_exit);
+    let main_pid = register_spare(&main_id, &main, false);
+    quiesce_pool_spares_in_mode(&pool, &main, FolderMatch::Subtree).await.unwrap();
+    assert!(spares(&pool).spares.is_empty());
+    assert_process_gone(main_pid);
+    assert_process_gone(inner_pid);
+    for id in [&main_id, &src_id, &inner_id] {
+        discard_from(&pool, id);
+    }
+}
+
 #[tokio::test]
 async fn a_switch_off_retires_both_pools_and_cancels_inflight_and_expired_renewals() {
     let pool: &'static Pool = Box::leak(Box::default());
@@ -529,28 +581,62 @@ fn unreadable_status_backs_off_per_checkout_on_both_clocks() {
     use std::time::{Instant, SystemTime};
 
     let pool = Pool::default();
-    let cwd = Path::new("checkout");
-    let other_cwd = Path::new("other-checkout");
+    let key = Path::new("checkout");
+    let other_key = Path::new("other-checkout");
     let (now, wall) = (Instant::now(), SystemTime::now());
     {
         let mut locked = spares(&pool);
         for _ in 1..MISS_BACKOFF_STREAK {
-            locked.record_unreadable_status(cwd, now, wall);
-            assert!(!locked.status_cooling(cwd, now, wall));
+            locked.record_unreadable_status(key, now, wall);
+            assert!(!locked.status_cooling(key, now, wall));
         }
-        locked.record_unreadable_status(cwd, now, wall);
+        locked.record_unreadable_status(key, now, wall);
         let almost = Duration::from_secs(299);
         assert_eq!(CHURN_COOLDOWN, Duration::from_secs(300));
-        assert!(locked.status_cooling(cwd, now + almost, wall + almost));
-        assert!(!locked.status_cooling(other_cwd, now, wall));
-        assert!(!locked.status_cooling(cwd, now + CHURN_COOLDOWN, wall));
-        assert!(!locked.status_cooling(cwd, now, wall + CHURN_COOLDOWN));
-    }
-    record_adopted_in(&pool, false, Some(cwd));
-    assert!(!spares(&pool).status_cooling(cwd, now, wall));
-    for _ in 0..MISS_BACKOFF_STREAK {
-        spares(&pool).record_unreadable_status(cwd, now, wall);
+        assert!(locked.status_cooling(key, now + almost, wall + almost));
+        assert!(!locked.status_cooling(other_key, now, wall));
+        assert!(!locked.status_cooling(key, now + CHURN_COOLDOWN, wall));
+        assert!(!locked.status_cooling(key, now, wall + CHURN_COOLDOWN));
     }
     disable_all_from(&pool);
+    assert!(spares(&pool).status_backoff.is_empty());
+}
+
+#[tokio::test]
+async fn status_failures_share_a_counter_across_subfolders_but_not_linked_worktrees() {
+    use super::stats::status_backoff_key;
+    use std::time::{Instant, SystemTime};
+
+    let (_dir, repo, worktree) = nested_worktree_fixture();
+    let subfolder = repo.join("src-tauri");
+    std::fs::create_dir(&subfolder).unwrap();
+    let (repo_key, subfolder_key, worktree_key) = tokio::task::spawn_blocking({
+        let subfolder = subfolder.clone();
+        move || {
+            let repo_key = status_backoff_key(&repo);
+            let subfolder_key = status_backoff_key(&subfolder);
+            let worktree_key = status_backoff_key(&worktree);
+            assert_eq!(repo_key, resolve_path(&repo));
+            assert_eq!(subfolder_key, repo_key);
+            assert_eq!(worktree_key, resolve_path(&worktree));
+            assert_ne!(worktree_key, repo_key);
+            (repo_key, subfolder_key, worktree_key)
+        }
+    }).await.unwrap();
+
+    let pool = Pool::default();
+    let (now, wall) = (Instant::now(), SystemTime::now());
+    {
+        let mut locked = spares(&pool);
+        locked.record_unreadable_status(&repo_key, now, wall);
+        locked.record_unreadable_status(&subfolder_key, now, wall);
+        assert!(!locked.status_cooling(&repo_key, now, wall));
+        locked.record_unreadable_status(&repo_key, now, wall);
+        assert_eq!(locked.status_backoff.len(), 1);
+        assert!(locked.status_cooling(&repo_key, now, wall));
+        assert!(locked.status_cooling(&subfolder_key, now, wall));
+        assert!(!locked.status_cooling(&worktree_key, now, wall));
+    }
+    record_adopted_in(&pool, false, Some(&subfolder)).await;
     assert!(spares(&pool).status_backoff.is_empty());
 }

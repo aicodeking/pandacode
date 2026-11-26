@@ -3,7 +3,7 @@
 use super::*;
 use super::key::{key_fields_with_disabled, prepared, without_git_status};
 use super::memory::allows_spare_off_runtime;
-use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_memory_skip, record_unused_expiry};
+use super::stats::{discarded_note_locked, expired_note, not_renewed_note, record_memory_skip, record_unused_expiry, status_backoff_key};
 use std::time::{Instant, SystemTime};
 
 pub(super) fn claude() -> Lifecycle {
@@ -424,12 +424,16 @@ pub(super) async fn spawn_claude_keyed(
     // The opt-in is read again once the status is in: removing `warm-spares-on` on a headless
     // host while `git status` runs moves no `discard_epoch`, so it is caught here, before
     // `spawn_when_current`.
+    let status_key = {
+        let cwd = config.cwd.clone();
+        crate::blocking(move || Ok(status_backoff_key(&cwd))).await?
+    };
     {
         let mut pool = spares(&SPARES);
         if pool.discard_epoch != discard_epoch {
             return Ok(None);
         }
-        if pool.status_cooling(&config.cwd, Instant::now(), SystemTime::now()) {
+        if pool.status_cooling(&status_key, Instant::now(), SystemTime::now()) {
             pool.stats_mut(lead).churn_skipped += 1;
             return Ok(None);
         }
@@ -442,8 +446,8 @@ pub(super) async fn spawn_claude_keyed(
             return Ok(None);
         }
         match &status {
-            StatusGate::Ready(_) => { pool.status_backoff.remove(&config.cwd); }
-            StatusGate::Unreadable => pool.record_unreadable_status(&config.cwd, Instant::now(), SystemTime::now()),
+            StatusGate::Ready(_) => { pool.status_backoff.remove(&status_key); }
+            StatusGate::Unreadable => pool.record_unreadable_status(&status_key, Instant::now(), SystemTime::now()),
             StatusGate::Disabled => {}
         }
     }

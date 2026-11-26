@@ -18,32 +18,53 @@ enum ReservationOwner {
     Test(u64),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReservationScope {
+    Checkout,
+    Subtree,
+}
+
+impl ReservationScope {
+    fn any_busy_path(self, root: &Path, others: &[PathBuf]) -> bool {
+        match self {
+            Self::Checkout => any_same_checkout(root, others),
+            Self::Subtree => {
+                let resolved = resolve_path(root);
+                others.iter().any(|other| path_in_folder(other, root, &resolved))
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct Reservations {
     next: u64,
-    active: Vec<(ReservationOwner, u64, Vec<PathBuf>)>,
+    active: Vec<(ReservationOwner, u64, ReservationScope, Vec<PathBuf>)>,
 }
 
 impl Reservations {
-    fn conflicts(&self, owner: Option<ReservationOwner>, checkout: &Path) -> bool {
-        self.active.iter().any(|(reserved_owner, _, roots)| {
+    fn conflicts(&self, owner: Option<ReservationOwner>, checkout: &Path, scope: ReservationScope) -> bool {
+        self.active.iter().any(|(reserved_owner, _, reserved_scope, roots)| {
             owner.is_none_or(|owner| *reserved_owner == owner)
-                && roots.iter().any(|root| checkout_overlaps(root, checkout))
+                && roots.iter().any(|root| match (reserved_scope, scope) {
+                    (ReservationScope::Checkout, ReservationScope::Checkout) => checkout_overlaps(root, checkout),
+                    _ => folder_overlaps(root, checkout),
+                })
         })
     }
 
-    fn reserve_for(&mut self, owner: ReservationOwner, roots: Vec<PathBuf>, busy_message: &str) -> Result<u64> {
-        if roots.iter().any(|root| self.conflicts(Some(owner), root)) {
+    fn reserve_for(&mut self, owner: ReservationOwner, roots: Vec<PathBuf>, scope: ReservationScope, busy_message: &str) -> Result<u64> {
+        if roots.iter().any(|root| self.conflicts(Some(owner), root, scope)) {
             return Err(busy_message.into());
         }
         let token = self.next;
         self.next += 1;
-        self.active.push((owner, token, roots));
+        self.active.push((owner, token, scope, roots));
         Ok(token)
     }
 
     fn release(&mut self, token: u64) {
-        self.active.retain(|(_, reserved_token, _)| *reserved_token != token);
+        self.active.retain(|(_, reserved_token, _, _)| *reserved_token != token);
     }
 }
 
@@ -60,20 +81,20 @@ impl Drop for Reservation {
 /// Called with the agents lock held during admission.
 pub(crate) fn checkout_reserved(agents: &Agents, checkout: &Path) -> bool {
     RESERVATIONS.lock().map_or(true, |reservations| {
-        reservations.conflicts(Some(ReservationOwner::Agents(Arc::as_ptr(agents) as usize)), checkout)
+        reservations.conflicts(Some(ReservationOwner::Agents(Arc::as_ptr(agents) as usize)), checkout, ReservationScope::Checkout)
     })
 }
 
 /// Warm spares have no app-state owner, so they must respect every reservation.
 pub(crate) fn any_checkout_reserved(checkout: &Path) -> bool {
-    RESERVATIONS.lock().map_or(true, |reservations| reservations.conflicts(None, checkout))
+    RESERVATIONS.lock().map_or(true, |reservations| reservations.conflicts(None, checkout, ReservationScope::Checkout))
 }
 
 #[cfg(test)]
 pub(crate) fn reserve_for_test(roots: Vec<PathBuf>) -> Reservation {
     let mut reservations = RESERVATIONS.lock().unwrap();
     let owner = ReservationOwner::Test(reservations.next);
-    let token = reservations.reserve_for(owner, roots, "checkout busy").unwrap();
+    let token = reservations.reserve_for(owner, roots, ReservationScope::Checkout, "checkout busy").unwrap();
     Reservation { token }
 }
 
@@ -83,17 +104,35 @@ pub(crate) async fn reserve_idle_checkouts(
     roots: Vec<PathBuf>,
     busy_message: &'static str,
 ) -> Result<Reservation> {
+    reserve_idle(state, roots, ReservationScope::Checkout, busy_message).await
+}
+
+/// Destructive operations also reserve nested checkouts inside the affected folders.
+pub(crate) async fn reserve_idle_subtrees(
+    state: &AppState,
+    roots: Vec<PathBuf>,
+    busy_message: &'static str,
+) -> Result<Reservation> {
+    reserve_idle(state, roots, ReservationScope::Subtree, busy_message).await
+}
+
+async fn reserve_idle(
+    state: &AppState,
+    roots: Vec<PathBuf>,
+    scope: ReservationScope,
+    busy_message: &'static str,
+) -> Result<Reservation> {
     let agents = state.agents.clone();
     let terminals = state.terminals.clone();
     let store = state.store.clone();
     blocking(move || {
         let agents_guard = lock_agents(&agents).map_err(|e| e.to_string())?;
         let others = busy_checkout_paths(&agents_guard, &terminals, &store, None, true)?;
-        if roots.iter().any(|root| any_same_checkout(root, &others)) {
+        if roots.iter().any(|root| scope.any_busy_path(root, &others)) {
             return Err(busy_message.into());
         }
         let token = RESERVATIONS.lock().map_err(|e| e.to_string())?
-            .reserve_for(ReservationOwner::Agents(Arc::as_ptr(&agents) as usize), roots, busy_message)?;
+            .reserve_for(ReservationOwner::Agents(Arc::as_ptr(&agents) as usize), roots, scope, busy_message)?;
         Ok(Reservation { token })
     })
     .await
@@ -102,6 +141,13 @@ pub(crate) async fn reserve_idle_checkouts(
 /// Recheck after quiescing spares while the caller holds its checkout reservation.
 pub(crate) async fn ensure_checkouts_idle(state: &AppState, roots: &[PathBuf], busy_message: &'static str) -> Result<()> {
     if any_checkout_busy_excluding(state, roots, None).await? {
+        return Err(busy_message.into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn ensure_subtrees_idle(state: &AppState, roots: &[PathBuf], busy_message: &'static str) -> Result<()> {
+    if any_subtree_busy_excluding(state, roots, None).await? {
         return Err(busy_message.into());
     }
     Ok(())
@@ -147,7 +193,11 @@ fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
 /// worktree nested below `root` (one under `root/.claude/worktrees`) is that worktree's.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
     let root_resolved = resolve_path(root);
-    others.iter().any(|other| path_in_checkout(other, root, &root_resolved))
+    others.iter().any(|other| path_in_checkout_root(other, root, &root_resolved))
+}
+
+pub(crate) fn path_in_checkout_root(other: &Path, root: &Path, resolved: &Path) -> bool {
+    path_in_checkout(other, root, resolved)
 }
 
 fn path_in_checkout(other: &Path, root: &Path, resolved: &Path) -> bool {
@@ -156,6 +206,10 @@ fn path_in_checkout(other: &Path, root: &Path, resolved: &Path) -> bool {
 
 fn checkout_overlaps(a: &Path, b: &Path) -> bool {
     path_in_checkout(b, a, &resolve_path(a)) || path_in_checkout(a, b, &resolve_path(b))
+}
+
+fn folder_overlaps(a: &Path, b: &Path) -> bool {
+    path_in_folder(b, a, &resolve_path(a)) || path_in_folder(a, b, &resolve_path(b))
 }
 
 /// Whether `other` (inside `root`) belongs to a linked worktree strictly below `root`'s own
@@ -182,12 +236,21 @@ pub(crate) async fn any_checkout_busy_excluding(
     roots: &[PathBuf],
     exclude_session: Option<&str>,
 ) -> Result<bool> {
-    checkout_busy_in_state(state, roots, exclude_session, true).await
+    checkout_busy_in_state(state, roots, exclude_session, true, ReservationScope::Checkout).await
+}
+
+/// Counts activity anywhere inside each root, including independent nested checkouts.
+pub(crate) async fn any_subtree_busy_excluding(
+    state: &AppState,
+    roots: &[PathBuf],
+    exclude_session: Option<&str>,
+) -> Result<bool> {
+    checkout_busy_in_state(state, roots, exclude_session, true, ReservationScope::Subtree).await
 }
 
 /// Whether an agent or harness console is active in `root`.
 pub(crate) async fn active_agent_in_state(state: &AppState, root: &Path) -> Result<bool> {
-    checkout_busy_in_state(state, &[root.to_path_buf()], None, false).await
+    checkout_busy_in_state(state, &[root.to_path_buf()], None, false, ReservationScope::Checkout).await
 }
 
 async fn checkout_busy_in_state(
@@ -195,6 +258,7 @@ async fn checkout_busy_in_state(
     roots: &[PathBuf],
     exclude_session: Option<&str>,
     include_exits: bool,
+    scope: ReservationScope,
 ) -> Result<bool> {
     if roots.is_empty() {
         return Ok(false);
@@ -208,7 +272,7 @@ async fn checkout_busy_in_state(
         let active = lock_agents(&agents).map_err(|e| e.to_string())?;
         let others = busy_checkout_paths(&active, &terminals, &store, exclude_session.as_deref(), include_exits)?;
         drop(active);
-        Ok(roots.iter().any(|root| any_same_checkout(root, &others)))
+        Ok(roots.iter().any(|root| scope.any_busy_path(root, &others)))
     })
     .await
 }
@@ -255,12 +319,11 @@ pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path
     .await
 }
 
-/// Refuses checks while an agent or harness console is active in `root`, and patiently waits for
-/// `session_id` and any sibling pending exits sharing `root` (matched by recorded `cwd` or
-/// persisted workspace root) before re-checking for newly started agents.
-pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &str, root: &Path) -> Result<()> {
+/// Refuses checks while the checkout is active or reserved, patiently waits for exit, then reserves
+/// the checkout for the script. Sibling exits match by recorded cwd or persisted workspace root.
+pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &str, root: &Path) -> Result<Reservation> {
     const BUSY: &str = "Wait for the agent to finish first.";
-    if active_agent_in_state(state, root).await? {
+    if checkout_reserved(&state.agents, root) || active_agent_in_state(state, root).await? {
         return Err(BUSY.into());
     }
     let wait = async {
@@ -279,10 +342,7 @@ pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &s
     tokio::time::timeout(providers::EXIT_HARD_CAP, wait)
         .await
         .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())??;
-    if active_agent_in_state(state, root).await? {
-        return Err(BUSY.into());
-    }
-    Ok(())
+    reserve_idle_checkouts(state, vec![root.to_path_buf()], BUSY).await
 }
 
 /// Refuses a worktree merge while `session_id` is actively running or any OTHER session (or
@@ -316,9 +376,9 @@ pub(crate) async fn refuse_worktree_remove_busy(state: &AppState, session_id: &s
     }
     let store = state.store.clone();
     let sid = session_id.to_owned();
-    let roots = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(_, path, _)| vec![path]))).await?;
-    if let Some(roots) = roots {
-        if any_checkout_busy_excluding(state, &roots, Some(session_id)).await? {
+    let path = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(_, path, _)| path))).await?;
+    if let Some(path) = path {
+        if any_subtree_busy_excluding(state, std::slice::from_ref(&path), Some(session_id)).await? {
             return Err(BUSY.into());
         }
     }
@@ -362,7 +422,7 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
 
 #[cfg(test)]
 mod tests {
-    use super::{any_checkout_reserved, any_same_checkout, checkout_reserved, reserve_for_test, Reservation, ReservationOwner, RESERVATIONS};
+    use super::{any_checkout_reserved, any_same_checkout, checkout_reserved, reserve_for_test, Reservation, ReservationOwner, ReservationScope, RESERVATIONS};
     use std::path::PathBuf;
 
     #[test]
@@ -403,14 +463,16 @@ mod tests {
         let agents = crate::Agents::default();
         let other_agents = crate::Agents::default();
         let owner = ReservationOwner::Agents(std::sync::Arc::as_ptr(&agents) as usize);
-        let reserve = |path| RESERVATIONS.lock().unwrap().reserve_for(owner, vec![path], "busy")
+        let reserve_scoped = |path, scope| RESERVATIONS.lock().unwrap().reserve_for(owner, vec![path], scope, "busy")
             .map(|token| Reservation { token });
+        let reserve = |path| reserve_scoped(path, ReservationScope::Checkout);
         let reservation = reserve(main.clone()).unwrap();
         for overlap in [main.clone(), main.join("src"), base.clone()] {
             assert!(checkout_reserved(&agents, &overlap));
             assert!(reserve(overlap).is_err());
         }
         assert!(!checkout_reserved(&other_agents, &main));
+        assert!(!any_checkout_reserved(&nested));
         let sibling = base.join("sibling");
         for independent in [&nested, &sibling] {
             assert!(!checkout_reserved(&agents, independent));
@@ -423,8 +485,16 @@ mod tests {
         drop(sub_reservation);
         let nested_reservation = reserve(nested.clone()).unwrap();
         assert!(!checkout_reserved(&agents, &main));
+        assert!(reserve_scoped(main.clone(), ReservationScope::Subtree).is_err());
         drop(nested_reservation);
-        assert!(reserve(main.clone()).is_ok());
+        let subtree = reserve_scoped(main.clone(), ReservationScope::Subtree).unwrap();
+        assert!(checkout_reserved(&agents, &nested));
+        assert!(any_checkout_reserved(&nested));
+        assert!(reserve(nested.clone()).is_err());
+        assert!(ReservationScope::Subtree.any_busy_path(&main, std::slice::from_ref(&nested)));
+        assert!(!ReservationScope::Subtree.any_busy_path(&main, std::slice::from_ref(&base)));
+        drop(subtree);
+        assert!(!any_checkout_reserved(&nested));
         // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
         std::fs::remove_file(nested.join(".git")).unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));

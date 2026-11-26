@@ -123,21 +123,26 @@ pub(crate) use crate::path_match::{path_in_folder, resolve_path};
 /// Wait until every pending exit whose recorded working directory lies in `folder` has exited
 /// (hurrying them as `await_exit` does), bounded by `EXIT_HARD_CAP`.
 pub(crate) async fn await_exits_in(folder: &Path) -> Result<(), String> {
-    wait_exits_in(folder, EXIT_HARD_CAP, true).await
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, false).await
+}
+
+/// Wait for pending exits in this checkout, excluding independent linked worktrees below it.
+pub(crate) async fn await_exits_in_checkout(folder: &Path) -> Result<(), String> {
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, true).await
 }
 
 /// Patient version of [`await_exits_in`]: never hurries the reap (for Turn checks), bounded by
 /// `EXIT_HARD_CAP`.
 pub(crate) async fn await_exits_in_patiently(folder: &Path) -> Result<(), String> {
-    wait_exits_in(folder, EXIT_HARD_CAP, false).await
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, false, false).await
 }
 
-async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), String> {
+async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool, checkout_only: bool) -> Result<(), String> {
     let folder = folder.to_path_buf();
     let wait = async {
         let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
         loop {
-            let snapshot: Vec<(String, PathBuf, tokio::sync::watch::Receiver<()>)> = exit_registry()
+            let snapshot: Vec<(String, PathBuf, tokio::sync::watch::Receiver<()>)> = registry
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .iter()
@@ -157,7 +162,13 @@ async fn wait_exits_in(folder: &Path, cap: Duration, hurry: bool) -> Result<(), 
                 let target_resolved = resolve_path(&target);
                 snapshot
                     .into_iter()
-                    .filter(|(_, cwd, _)| path_in_folder(cwd, &target, &target_resolved))
+                    .filter(|(_, cwd, _)| {
+                        if checkout_only {
+                            crate::checkout_busy::path_in_checkout_root(cwd, &target, &target_resolved)
+                        } else {
+                            path_in_folder(cwd, &target, &target_resolved)
+                        }
+                    })
                     .collect::<Vec<_>>()
             })
             .await
@@ -785,7 +796,7 @@ Start-Sleep -Seconds 30
         // Timeout bounds a stuck exit.
         let stuck_id = format!("exit-in-stuck-{}", uuid::Uuid::new_v4().simple());
         let hold_stuck = hold_in_cwd_for_test(&stuck_id, folder.clone());
-        assert!(wait_exits_in(&folder, Duration::from_millis(60), false).await.is_err());
+        assert!(wait_in(exit_registry(), &folder, Duration::from_millis(60), false, false).await.is_err());
         drop(hold_stuck);
         await_exit(&stuck_id).await.unwrap();
 

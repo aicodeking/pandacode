@@ -117,8 +117,8 @@ use app_instructions::{custom_tools_offered, instruct_launch, plan_tools_note, H
 #[cfg(test)]
 use app_instructions::Role;
 pub(crate) use checkout_busy::{
-    any_checkout_busy_excluding, guard_idle, prepare_checkout_for_checks, quiesce_worktree,
-    refuse_worktree_merge_busy, refuse_worktree_remove_busy,
+    guard_idle, prepare_checkout_for_checks, quiesce_worktree, refuse_worktree_merge_busy,
+    refuse_worktree_remove_busy,
 };
 use providers::{AgentEvent, RunConfig, RunInput};
 use serde::Serialize;
@@ -3432,8 +3432,8 @@ pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, tr
     let (main, path, _) = blocking(move || worktree_paths(&store, &session_id)).await?;
     let roots = vec![main.clone(), path.clone()];
     let reservation = checkout_busy::reserve_idle_checkouts(state, roots.clone(), BUSY).await?;
-    providers::quiesce_spares_in(&main).await?;
-    providers::quiesce_spares_in(&path).await?;
+    providers::quiesce_spares_in_checkout(&main).await?;
+    providers::quiesce_spares_in_checkout(&path).await?;
     checkout_busy::ensure_checkouts_idle(state, &roots, BUSY).await?;
     blocking(move || {
         // The Git operation can outlive its awaiting caller.
@@ -3463,12 +3463,12 @@ pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, d
     )
     .await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
-    let reservation = checkout_busy::reserve_idle_checkouts(state, vec![path.clone()], BUSY).await?;
+    let reservation = checkout_busy::reserve_idle_subtrees(state, vec![path.clone()], BUSY).await?;
     // A lingering agent or pooled warm spare (from a forked/sibling session) holding `&path`
     // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
     providers::end_lingering_in(&path).await;
     providers::quiesce_spares_in(&path).await?;
-    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&path), BUSY).await?;
+    checkout_busy::ensure_subtrees_idle(state, std::slice::from_ref(&path), BUSY).await?;
     let removed = blocking(move || {
         let _reservation = reservation;
         workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)
@@ -3496,7 +3496,7 @@ async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<
         BUSY,
         || async {
             if checkout_busy::session_holds_checkout(state, &session_id)?
-                || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
+                || checkout_busy::any_subtree_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
             {
                 return Err(BUSY.into());
             }
@@ -3505,11 +3505,11 @@ async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<
     )
     .await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
-    let reservation = checkout_busy::reserve_idle_checkouts(state, vec![path.clone()], BUSY).await?;
+    let reservation = checkout_busy::reserve_idle_subtrees(state, vec![path.clone()], BUSY).await?;
     // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
     providers::end_lingering_in(&path).await;
     providers::quiesce_spares_in(&path).await?;
-    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&path), BUSY).await?;
+    checkout_busy::ensure_subtrees_idle(state, std::slice::from_ref(&path), BUSY).await?;
     let store = state.store.clone();
     blocking(move || {
         let _reservation = reservation;
@@ -4111,10 +4111,11 @@ async fn run_turn_checks(state: State<'_, AppState>, session_id: String) -> Resu
         .session(&session_id)?
         .project_id;
     let root = state.root(&project_id, Some(&session_id))?;
-    if let Err(reason) = prepare_checkout_for_checks(&state, &session_id, &root).await {
-        return Ok(serde_json::json!({"checked": false, "reason": reason}));
-    }
-    Ok(checks::turn_report_after_exit(&session_id, root).await)
+    let reservation = match prepare_checkout_for_checks(&state, &session_id, &root).await {
+        Ok(reservation) => reservation,
+        Err(reason) => return Ok(serde_json::json!({"checked": false, "reason": reason})),
+    };
+    Ok(checks::turn_report_after_exit_guarded(&session_id, root, reservation).await)
 }
 #[tauri::command]
 async fn get_run_script_preview(
