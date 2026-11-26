@@ -389,7 +389,19 @@ struct TaskLease {
 }
 impl TaskLease {
     fn acquire(state: &AppState, sid: &str) -> Result<Self> {
-        let mut agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
+        let mut agents = Self::lock_idle(state, sid)?;
+        {
+            let store = state.store.lock().map_err(|e| e.to_string())?;
+            crate::architect::check_manual(&store, sid)?;
+        }
+        Ok(Self::insert(&state.agents, &mut agents, sid))
+    }
+
+    fn lock_idle<'a>(
+        state: &'a AppState,
+        sid: &str,
+    ) -> Result<crate::run_requests::RegistryGuard<'a>> {
+        let agents = crate::run_requests::lock_agents(&state.agents).map_err(|e| e.to_string())?;
         crate::agent_updates::ensure_not_installing()?;
         if state.shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
@@ -400,19 +412,23 @@ impl TaskLease {
                     .into(),
             );
         }
-        {
-            let store = state.store.lock().map_err(|e| e.to_string())?;
-            crate::architect::check_manual(&store, sid)?;
-        }
+        Ok(agents)
+    }
+
+    fn insert(
+        agents_map: &Agents,
+        agents: &mut HashMap<String, RunningAgent>,
+        sid: &str,
+    ) -> Self {
         let (tx, _rx) = unbounded_channel();
         let agent = RunningAgent::new(tx, Arc::new(AtomicBool::new(false)));
         let lease = Self {
-            agents: state.agents.clone(),
+            agents: agents_map.clone(),
             sid: sid.into(),
             run_id: agent.run_id.clone(),
         };
         agents.insert(sid.into(), agent);
-        Ok(lease)
+        lease
     }
 }
 impl Drop for TaskLease {
@@ -757,21 +773,28 @@ pub(super) async fn start_harness_terminal(
 
 const CHECKOUT_RESERVED: &str = "A worktree operation is in progress for this checkout. Try again once it finishes.";
 
-/// The console's opening checks. A team worker's session is refused (by the task lease and
+/// The console's opening checks. A team worker's session is refused (by `check_manual` and
 /// explicitly here): its console would run the harness in the worker's full access.
+/// Keeps the `agents` lock across the checkout-reservation check and lease insertion (lock order:
+/// `agents` -> `terminals` -> `store` -> `RESERVATIONS`) so a reserved checkout never briefly
+/// inserts a placeholder into `state.agents`.
 fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Session, PathBuf)> {
-    let lease = TaskLease::acquire(state, session_id)?;
-    let db = state.store.lock().map_err(|error| error.to_string())?;
-    crate::architect::refuse_worker(&db, session_id)?;
-    let task = db.session(session_id)?;
-    if crate::context_recovery::pending(&db, &task)? {
-        return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
-    }
-    let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
-    drop(db);
-    if crate::checkout_busy::checkout_reserved(&lease.agents, &cwd) {
+    let mut agents = TaskLease::lock_idle(state, session_id)?;
+    let (task, cwd) = {
+        let db = state.store.lock().map_err(|error| error.to_string())?;
+        crate::architect::check_manual(&db, session_id)?;
+        crate::architect::refuse_worker(&db, session_id)?;
+        let task = db.session(session_id)?;
+        if crate::context_recovery::pending(&db, &task)? {
+            return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
+        }
+        let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+        (task, cwd)
+    };
+    if crate::checkout_busy::checkout_reserved(&state.agents, &cwd) {
         return Err(CHECKOUT_RESERVED.into());
     }
+    let lease = TaskLease::insert(&state.agents, &mut agents, session_id);
     Ok((lease, task, cwd))
 }
 
@@ -1023,5 +1046,52 @@ mod command_tests {
         state.shutdown.store(1, Ordering::SeqCst);
         assert!(TaskLease::acquire(&state, "two").is_err());
         assert!(!state.agents.lock().unwrap().contains_key("two"));
+    }
+
+    #[tokio::test]
+    async fn console_task_refuses_reserved_checkout_without_inserting_agent_lease() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let state = state();
+        let (sid, nested_sid) = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.pkg_a).unwrap();
+            let nested_project = store.add_project(&checkout.nested).unwrap();
+            let main_task = store.create_session(&project.id, "codex", "default", "ask").unwrap();
+            let nested_task = store.create_session(&nested_project.id, "codex", "default", "ask").unwrap();
+            (main_task.id, nested_task.id)
+        };
+        let reservation = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_b.clone()],
+            "busy",
+        )
+        .await
+        .unwrap();
+
+        let error = console_task(&state, &sid).err().unwrap();
+        assert_eq!(error, CHECKOUT_RESERVED);
+        assert!(
+            state.agents.lock().unwrap().is_empty(),
+            "refusing a reserved checkout must leave state.agents untouched"
+        );
+
+        let (nested_lease, _, _) = console_task(&state, &nested_sid).unwrap();
+        assert!(state.agents.lock().unwrap().contains_key(&nested_sid));
+        drop(nested_lease);
+        assert!(state.agents.lock().unwrap().is_empty());
+
+        drop(reservation);
+        let (lease, _, _) = console_task(&state, &sid).unwrap();
+        assert!(state.agents.lock().unwrap().contains_key(&sid));
+        drop(lease);
+        assert!(state.agents.lock().unwrap().is_empty());
+
+        let source = include_str!("task_controls.rs").replace("\r\n", "\n");
+        let body = &source[source.find("fn console_task(").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(
+            body.find("checkout_reserved(").unwrap() < body.find("TaskLease::insert(").unwrap(),
+            "console_task must check checkout_reserved before inserting into state.agents"
+        );
     }
 }

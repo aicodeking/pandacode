@@ -292,11 +292,6 @@ Per-harness opt-ins take effect only while the main switch is on. If a harness
 marker is absent or unreadable, explore stays off for that harness. If a save
 fails, Settings restores the switch and shows the reason.
 
-**Codex needs a new thread.** Codex registers dynamic tools only on
-`thread/start`. Enabling **Explorer · Codex** adds the tool to new Codex threads.
-When a Codex thread that started without it resumes, PandaCode withholds the
-explorer instruction.
-
 **What the benchmark showed, and its caveats.** Batch Fv2 in
 [agent-loop-benchmark.md](agent-loop-benchmark.md) (Claude Sonnet in Claude Code 2.1.317)
 preregistered confirmatory testing on 20 tuned Sonnet tasks. With the tool on, localization took
@@ -318,7 +313,11 @@ preregistered gates. Fv2 measured only Sonnet, and the tool description and
 Claude edit instruction (`EDIT_CLAUDE`) changed afterward. Explore stays opt-in
 until a preregistered confirmation of the shipped wording clears both gates
 across Claude models. Turn it on in Settings → Agents → **Local code explorer
-(pandacode_explore)** or create `explore-on` on a headless server.
+(pandacode_explore)** or create `explore-on` on a headless server. On
+message-borne harnesses (`codex`, `kimi`, `opencode`, `grok`, etc.), turning
+**Explorer · `<harness>`** on mid-conversation exposes the MCP tool and its
+description on the next run, while the `LOOK` prompt instruction arrives on the
+next periodic 8-turn reminder or after compaction.
 
 **Turning it off.** Turn off the main switch or delete `explore-on` to disable
 the tool for every harness. Runs omit its instruction line and new conversations

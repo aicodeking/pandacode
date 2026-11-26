@@ -78,11 +78,24 @@ impl Drop for Reservation {
     }
 }
 
+fn reserved_in_scope(agents: &Agents, root: &Path, scope: ReservationScope) -> bool {
+    RESERVATIONS.lock().map_or(true, |reservations| {
+        reservations.conflicts(
+            Some(ReservationOwner::Agents(Arc::as_ptr(agents) as usize)),
+            root,
+            scope,
+        )
+    })
+}
+
 /// Called with the agents lock held during admission.
 pub(crate) fn checkout_reserved(agents: &Agents, checkout: &Path) -> bool {
-    RESERVATIONS.lock().map_or(true, |reservations| {
-        reservations.conflicts(Some(ReservationOwner::Agents(Arc::as_ptr(agents) as usize)), checkout, ReservationScope::Checkout)
-    })
+    reserved_in_scope(agents, checkout, ReservationScope::Checkout)
+}
+
+/// Whether an active reservation overlaps `root` or any nested checkout inside it.
+pub(crate) fn subtree_reserved(agents: &Agents, root: &Path) -> bool {
+    reserved_in_scope(agents, root, ReservationScope::Subtree)
 }
 
 /// Warm spares have no app-state owner, so they must respect every reservation.
@@ -259,7 +272,17 @@ pub(crate) async fn any_checkout_busy_excluding(
     roots: &[PathBuf],
     exclude_session: Option<&str>,
 ) -> Result<bool> {
-    checkout_busy_in_state(state, roots, exclude_session, true, ReservationScope::Checkout).await
+    checkout_busy_in_state(state, roots, exclude_session, true, false, ReservationScope::Checkout).await
+}
+
+/// Like [`any_checkout_busy_excluding`], and also reports active reservations overlapping any
+/// checkout in `roots` (evaluated off the Tokio runtime inside `blocking`).
+pub(crate) async fn any_checkout_busy_or_reserved_excluding(
+    state: &AppState,
+    roots: &[PathBuf],
+    exclude_session: Option<&str>,
+) -> Result<bool> {
+    checkout_busy_in_state(state, roots, exclude_session, true, true, ReservationScope::Checkout).await
 }
 
 /// Counts activity anywhere inside each root, including independent nested checkouts.
@@ -268,12 +291,22 @@ pub(crate) async fn any_subtree_busy_excluding(
     roots: &[PathBuf],
     exclude_session: Option<&str>,
 ) -> Result<bool> {
-    checkout_busy_in_state(state, roots, exclude_session, true, ReservationScope::Subtree).await
+    checkout_busy_in_state(state, roots, exclude_session, true, false, ReservationScope::Subtree).await
+}
+
+/// Like [`any_subtree_busy_excluding`], and also reports active reservations overlapping any
+/// folder or nested checkout inside `roots` (evaluated off the Tokio runtime inside `blocking`).
+pub(crate) async fn any_subtree_busy_or_reserved_excluding(
+    state: &AppState,
+    roots: &[PathBuf],
+    exclude_session: Option<&str>,
+) -> Result<bool> {
+    checkout_busy_in_state(state, roots, exclude_session, true, true, ReservationScope::Subtree).await
 }
 
 /// Whether an agent or harness console is active in `root`.
 pub(crate) async fn active_agent_in_state(state: &AppState, root: &Path) -> Result<bool> {
-    checkout_busy_in_state(state, &[root.to_path_buf()], None, false, ReservationScope::Checkout).await
+    checkout_busy_in_state(state, &[root.to_path_buf()], None, false, false, ReservationScope::Checkout).await
 }
 
 async fn checkout_busy_in_state(
@@ -281,6 +314,7 @@ async fn checkout_busy_in_state(
     roots: &[PathBuf],
     exclude_session: Option<&str>,
     include_exits: bool,
+    include_reservations: bool,
     scope: ReservationScope,
 ) -> Result<bool> {
     if roots.is_empty() {
@@ -293,6 +327,14 @@ async fn checkout_busy_in_state(
     let exclude_session = exclude_session.map(str::to_owned);
     blocking(move || {
         let active = lock_agents(&agents).map_err(|e| e.to_string())?;
+        if include_reservations
+            && roots.iter().any(|root| match scope {
+                ReservationScope::Checkout => checkout_reserved(&agents, root),
+                ReservationScope::Subtree => subtree_reserved(&agents, root),
+            })
+        {
+            return Ok(true);
+        }
         let others = busy_checkout_paths(&active, &terminals, &store, exclude_session.as_deref(), include_exits)?;
         drop(active);
         Ok(roots.iter().any(|root| scope.any_busy_path(root, &others)))
@@ -392,7 +434,7 @@ pub(crate) async fn refuse_worktree_merge_busy(state: &AppState, session_id: &st
     let sid = session_id.to_owned();
     let roots = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(main, path, _)| vec![main, path]))).await?;
     if let Some(roots) = roots {
-        if any_checkout_busy_excluding(state, &roots, Some(session_id)).await? {
+        if any_checkout_busy_or_reserved_excluding(state, &roots, Some(session_id)).await? {
             return Err(BUSY.into());
         }
     }
@@ -401,8 +443,9 @@ pub(crate) async fn refuse_worktree_merge_busy(state: &AppState, session_id: &st
 
 /// Refuses a worktree removal while `session_id` is actively running or any OTHER session (a
 /// forked task or team worker sharing `worktree_path`, or an unpersisted worker/spare with
-/// matching `cwd`) is actively running or exiting in the worktree. Allows `session_id`'s own
-/// pending exit so `remove_task_worktree` quiesces it cleanly.
+/// matching `cwd`) is actively running or exiting in the worktree, or an active reservation
+/// overlaps its subtree. Allows `session_id`'s own pending exit so `remove_task_worktree`
+/// quiesces it cleanly.
 pub(crate) async fn refuse_worktree_remove_busy(state: &AppState, session_id: &str) -> Result<()> {
     const BUSY: &str = "Stop the agent before removing its worktree.";
     if session_holds_checkout(state, session_id)? {
@@ -412,7 +455,7 @@ pub(crate) async fn refuse_worktree_remove_busy(state: &AppState, session_id: &s
     let sid = session_id.to_owned();
     let path = blocking(move || Ok(worktree_paths(&store, &sid).ok().map(|(_, path, _)| path))).await?;
     if let Some(path) = path {
-        if any_subtree_busy_excluding(state, std::slice::from_ref(&path), Some(session_id)).await? {
+        if any_subtree_busy_or_reserved_excluding(state, std::slice::from_ref(&path), Some(session_id)).await? {
             return Err(BUSY.into());
         }
     }
@@ -500,9 +543,12 @@ pub(crate) mod test_support {
 mod tests {
     use super::test_support::Checkout;
     use super::{
-        active_agent_in_state, any_checkout_reserved, any_same_checkout, checkout_identity,
-        checkout_reserved, prepare_checkout_for_checks, reserve_for_test, reserve_idle_checkouts,
-        resolve_path, Reservation, ReservationOwner, ReservationScope, RESERVATIONS,
+        active_agent_in_state, any_checkout_busy_excluding, any_checkout_busy_or_reserved_excluding,
+        any_checkout_reserved, any_same_checkout, any_subtree_busy_excluding,
+        any_subtree_busy_or_reserved_excluding, checkout_identity, checkout_reserved,
+        prepare_checkout_for_checks, refuse_worktree_merge_busy, refuse_worktree_remove_busy,
+        reserve_for_test, reserve_idle_checkouts, reserve_idle_subtrees, resolve_path,
+        subtree_reserved, Reservation, ReservationOwner, ReservationScope, RESERVATIONS,
     };
     use crate::{providers, AppState, RunningAgent};
     use std::{
@@ -868,5 +914,100 @@ mod tests {
         assert!(any_same_checkout(&root, &[canonical_nested]));
         assert!(!any_same_checkout(&root, &[sibling]));
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[tokio::test]
+    async fn busy_or_reserved_helpers_and_subtree_reserved_match_active_reservations() {
+        let checkout = Checkout::new();
+        let state = test_state();
+
+        assert!(!subtree_reserved(&state.agents, &checkout.root));
+        assert!(!any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.pkg_a), None).await.unwrap());
+        assert!(!any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+
+        let main_res = reserve_idle_checkouts(&state, vec![checkout.pkg_a.clone()], "busy").await.unwrap();
+        // `any_*_busy_excluding` stays blind to reservations so `ensure_*_idle` does not trip on its own reservation.
+        assert!(!any_checkout_busy_excluding(&state, std::slice::from_ref(&checkout.pkg_b), None).await.unwrap());
+        assert!(!any_subtree_busy_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+        assert!(any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.pkg_a), None).await.unwrap());
+        assert!(any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.pkg_b), None).await.unwrap());
+        assert!(any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+        assert!(!any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.nested), None).await.unwrap());
+        assert!(subtree_reserved(&state.agents, &checkout.root));
+        assert!(!subtree_reserved(&state.agents, &checkout.nested));
+        assert!(any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+        assert!(!any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.nested), None).await.unwrap());
+        drop(main_res);
+
+        // A checkout reservation on a nested linked worktree does not conflict with main's checkout,
+        // but DOES conflict with main's subtree.
+        let nested_res = reserve_idle_checkouts(&state, vec![checkout.nested.clone()], "busy").await.unwrap();
+        assert!(!checkout_reserved(&state.agents, &checkout.root));
+        assert!(!any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+        assert!(subtree_reserved(&state.agents, &checkout.root));
+        assert!(any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+        drop(nested_res);
+
+        // A subtree reservation on main overlaps both main and its nested linked worktree.
+        let subtree_res = reserve_idle_subtrees(&state, vec![checkout.root.clone()], "busy").await.unwrap();
+        assert!(subtree_reserved(&state.agents, &checkout.nested));
+        assert!(any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.nested), None).await.unwrap());
+        assert!(any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.nested), None).await.unwrap());
+        assert!(!any_subtree_busy_excluding(&state, std::slice::from_ref(&checkout.nested), None).await.unwrap());
+        drop(subtree_res);
+
+        assert!(!subtree_reserved(&state.agents, &checkout.root));
+        assert!(!any_checkout_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.pkg_a), None).await.unwrap());
+        assert!(!any_subtree_busy_or_reserved_excluding(&state, std::slice::from_ref(&checkout.root), None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn worktree_pre_quiesce_guards_refuse_active_reservations() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let session = {
+            let store = state.store.lock().unwrap();
+            let project = store.add_project(&checkout.root).unwrap();
+            let task = store.create_session(&project.id, "claude", "default", "full").unwrap();
+            store
+                .db
+                .execute(
+                    "UPDATE sessions SET worktree_path=?2, worktree_branch='pandacode/x' WHERE id=?1",
+                    rusqlite::params![task.id, checkout.nested.to_string_lossy()],
+                )
+                .unwrap();
+            task
+        };
+
+        assert!(refuse_worktree_merge_busy(&state, &session.id).await.is_ok());
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_ok());
+
+        // Main-checkout reservation blocks merge (touches main + worktree), not worktree removal.
+        let main_res = reserve_idle_checkouts(&state, vec![checkout.pkg_a.clone()], "busy").await.unwrap();
+        assert!(refuse_worktree_merge_busy(&state, &session.id).await.is_err());
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_ok());
+        drop(main_res);
+
+        // Worktree checkout reservation blocks both merge and removal.
+        let wt_res = reserve_idle_checkouts(&state, vec![checkout.nested.clone()], "busy").await.unwrap();
+        assert!(refuse_worktree_merge_busy(&state, &session.id).await.is_err());
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_err());
+        drop(wt_res);
+
+        // A reservation inside the worktree folder blocks removal via subtree check.
+        let inner = checkout.nested.join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        let inner_res = reserve_idle_checkouts(&state, vec![inner], "busy").await.unwrap();
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_err());
+        drop(inner_res);
+
+        // An enclosing subtree reservation blocks both merge and removal.
+        let subtree_res = reserve_idle_subtrees(&state, vec![checkout.root.clone()], "busy").await.unwrap();
+        assert!(refuse_worktree_merge_busy(&state, &session.id).await.is_err());
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_err());
+        drop(subtree_res);
+
+        assert!(refuse_worktree_merge_busy(&state, &session.id).await.is_ok());
+        assert!(refuse_worktree_remove_busy(&state, &session.id).await.is_ok());
     }
 }

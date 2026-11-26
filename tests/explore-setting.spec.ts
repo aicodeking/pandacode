@@ -15,7 +15,7 @@ test('the local code explorer switch is off by default, names its harnesses and 
   await page.goto('/');
   await openAgents(page);
   await expect(toggle(page)).not.toBeChecked();
-  await expect(settings(page).locator(`.info-mark[data-tip="Off by default. Next run (Codex: new threads). Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules."]`)).toHaveCount(1);
+  await expect(settings(page).locator(`.info-mark[data-tip="Off by default. Next run. Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules."]`)).toHaveCount(1);
 
   await toggle(page).click();
   await expect(toggle(page)).toBeChecked();
@@ -48,7 +48,7 @@ test('the explorer switch lists its harnesses: the main switch includes Claude C
   }
   // One line per row: the hint is behind the title's mark.
   const codexRow = settings(page).locator('.setting-row:has(#explore-codex)');
-  await expect(codexRow.locator('.info-mark[data-tip="Off by default: not measured. Takes effect on new threads while the switch above is on."]')).toHaveCount(1);
+  await expect(codexRow.locator('.info-mark[data-tip="Off by default: not measured. Takes effect while the switch above is on."]')).toHaveCount(1);
   await expect(codexRow.locator('small')).toBeHidden();
   const alibabaRow = settings(page).locator('.setting-row:has(#explore-alibaba)');
   await expect(alibabaRow.locator('.info-mark[data-tip="Off by default: not measured. Takes effect while the switch above is on."]')).toHaveCount(1);

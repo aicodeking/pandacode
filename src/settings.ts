@@ -108,7 +108,7 @@ const NATIVE_SWITCHES = [
   { id: 'warm-spares', name: 'warm_spares', title: 'Warm Claude spares', hint: 'Off by default. Keeps up to 4 pooled idle Claude Code processes (~195–255 MiB each) ready to skip ~0.38–0.62 s of signed-in startup. Makes pre-prompt startup requests to Anthropic or your configured Claude endpoint, starts MCP servers and SessionStart hooks early; checks git status, skips low memory, and backs off when unused.' },
   { id: 'worker-skills', name: 'worker_skills', title: 'Workers can use skills', hint: 'Applies to Claude Code, GLM, MiMo and Alibaba Token Plan team workers; off removes Skill next run.' },
   { id: 'worker-trim', name: 'worker_trim', title: 'Trim worker tools', hint: 'Fewer tools for team workers; no measured saving yet.' },
-  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Off by default. Next run (Codex: new threads). Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
+  { id: 'explore-tool', name: 'explore', title: 'Local code explorer (pandacode_explore)', hint: 'Off by default. Next run. Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules.' },
 ] as const;
 /** The warm spares row's docs button: full limits and trade-offs, opened in the browser. */
 const WARM_SPARES_DOCS = `<button type="button" class="secondary-button" data-action="open-url" data-url="${PROJECT_LINKS.warmSpares}" aria-label="Warm Claude spares limits and trade-offs">Docs${icon('forward')}</button>`;
@@ -120,7 +120,6 @@ const EXPLORE_HARNESSES: { id: ProviderId; name: string }[] = [
 ];
 const exploreHarnessRow = ({ id, name }: { id: ProviderId; name: string }) => {
   const hint = id === 'claude' ? 'Included while the switch above is on.'
-    : id === 'codex' ? 'Off by default: not measured. Takes effect on new threads while the switch above is on.'
     : 'Off by default: not measured. Takes effect while the switch above is on.';
   return settingRow(`Explorer · ${name}`, `<input type="checkbox" class="settings-switch" id="explore-${id}" aria-label="Local code explorer for ${name}" disabled>`, hint, true);
 };

@@ -28,7 +28,7 @@ const TURN_ENDS: &str = "\n\nYour turn ends when you reply, and PandaCode then c
 /// Each extra step re-reads the whole cached prompt, so lookups should take as few as they can.
 const LOOK: &str = "\n\nUse {explore} to locate code (search, symbols, outlines, ranged reads), with all your questions in one call. When a reply already names the files and symbols you need, answer; search again only for a named gap. ";
 
-/// The Claude-family edit text (claude, glm, mimo), read by name by scripts/agent-bench.
+/// The Claude-family edit text (claude, glm, mimo, alibaba), read by name by scripts/agent-bench.
 const EDIT_CLAUDE: &str = "Before editing a file, Read the lines you need with Read (explore reads don't count). Make each file's changes in as few edit calls as your editor allows.";
 /// Edit text for harnesses that are not Claude Code.
 const EDIT_OTHER: &str = "Make each file's changes in as few edit calls as your tools allow.";

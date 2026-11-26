@@ -789,9 +789,16 @@ impl Run for Write {
             super::terminal::require_full_access_to(ctx.full_access, super::terminal::EDIT_FILES)?;
             let (_, root) = resolve(&ctx.state(), &self.target).await?;
             refuse_running_in(&ctx, &root).await?;
+            let reservation = crate::checkout_busy::reserve_idle_checkouts(
+                &ctx.state(),
+                vec![root.clone()],
+                WRITE_RUNNING,
+            )
+            .await?;
             let full = device_has_full(&ctx);
             let Write { path, text, base_hash, .. } = *self;
             let reply = crate::blocking(move || {
+                let _reservation = reservation;
                 allow_secret(&root, &path, full)?;
                 write_text(&root, &path, &text, &base_hash)
             })
@@ -821,9 +828,11 @@ pub(super) async fn running_in_state(state: &AppState, root: &Path) -> Result<bo
 }
 
 /// `running_in_state` that ignores `exclude_session`'s own run and pending exit: the one shared
-/// matcher in `checkout_busy` (agents snapshotted before pending exits, canonicalizing off the runtime).
+/// matcher in `checkout_busy` (agents snapshotted before pending exits, canonicalizing off the
+/// runtime, and respecting active checkout reservations).
 pub(super) async fn running_in_state_excluding(state: &AppState, root: &Path, exclude_session: Option<&str>) -> Result<bool> {
-    crate::checkout_busy::any_checkout_busy_excluding(state, &[root.to_path_buf()], exclude_session).await
+    let root = root.to_path_buf();
+    crate::checkout_busy::any_checkout_busy_or_reserved_excluding(state, std::slice::from_ref(&root), exclude_session).await
 }
 
 /// Saves `text` over an existing text file under `root` when it still hashes to `base_hash`.
@@ -1695,5 +1704,58 @@ mod tests {
         crate::providers::await_exit(&first.id).await.unwrap();
         assert!(!running_in_state_excluding(&state, &root, Some(&first.id)).await.unwrap());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn checkout_reservation_blocks_files_write_and_write_reservation_blocks_checkout_reserved() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+        let state = test_state(store);
+
+        let desktop_res = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_a.clone()],
+            "busy",
+        )
+        .await
+        .unwrap();
+        assert!(running_in_state(&state, &checkout.pkg_a).await.unwrap());
+        assert!(running_in_state(&state, &checkout.pkg_b).await.unwrap(), "sibling subfolder shares the Git checkout");
+        assert!(running_in_state(&state, &checkout.root).await.unwrap());
+        assert!(!running_in_state(&state, &checkout.nested).await.unwrap(), "nested linked worktree is independent");
+        assert_eq!(
+            crate::checkout_busy::reserve_idle_checkouts(&state, vec![checkout.pkg_b.clone()], WRITE_RUNNING)
+                .await
+                .err()
+                .as_deref(),
+            Some(WRITE_RUNNING),
+        );
+        drop(desktop_res);
+
+        assert!(!running_in_state(&state, &checkout.pkg_a).await.unwrap());
+        let write_res = crate::checkout_busy::reserve_idle_checkouts(
+            &state,
+            vec![checkout.pkg_a.clone()],
+            WRITE_RUNNING,
+        )
+        .await
+        .unwrap();
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_a));
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_b));
+        assert!(crate::checkout_busy::checkout_reserved(&state.agents, &checkout.root));
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &checkout.nested));
+        drop(write_res);
+        assert!(!crate::checkout_busy::checkout_reserved(&state.agents, &checkout.pkg_a));
+
+        // Write::run reserves the checkout and moves the reservation into `blocking`.
+        let source = include_str!("files.rs").replace("\r\n", "\n");
+        let body = &source[source.find("impl Run for Write").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        let pre = body.find("refuse_running_in(&ctx, &root).await?").unwrap();
+        let reserve = body.find("reserve_idle_checkouts(").unwrap();
+        let blocking = body.find("crate::blocking(move ||").unwrap();
+        let hold = body[blocking..].find("let _reservation = reservation;").unwrap();
+        let write = body[blocking..].find("write_text(").unwrap();
+        assert!(pre < reserve && reserve < blocking && hold < write);
     }
 }
