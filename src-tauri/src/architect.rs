@@ -572,6 +572,11 @@ const SNAPSHOT_STATUS_SQL: &str = "SELECT CASE WHEN json_valid(content) THEN jso
 /// this data folder) disables the trackers and answers the same question from the snapshots.
 /// Without this a read would quietly report "no team": `is_active` swallows its error, so a
 /// running team would look idle and stall until some later save happened to heal the tracker.
+///
+/// `running_tools` and `running_subagents` hang off `messages` the same way, but need no twin:
+/// `SCHEMA_38_RUNNING` drops and recreates all three trackers in one batch, so this code can
+/// never leave one of those dangling. Only the *legacy* `architect_team_status` is dropped on
+/// its own, which is why the repair that removed it also had to create `architect_team_meta`.
 pub(crate) fn tracker_or_snapshot<T>(store: &Store, tracker: &str, snapshot: &str, read: impl Fn(&str) -> Result<T>) -> Result<T> {
     if !store.team_meta_usable() {
         return read(snapshot);
