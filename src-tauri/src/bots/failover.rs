@@ -364,10 +364,16 @@ pub async fn bot_model_switches(state: State<'_, AppState>, session_id: String) 
     switches(&*state.store.lock().map_err(|e| e.to_string())?, &session_id)
 }
 
+/// Reads only `model-switch` rows, newest first, through the partial index
+/// `bot_activity_model_switch(id DESC) WHERE kind='model-switch'`, so neither other activity
+/// nor a sort is touched (and other `bots::log` rows maintain no extra index). Switches are not narrowed by bot: the row's
+/// `sessionId` alone says where it belongs.
+const SWITCHES: &str = "SELECT id,summary,detail,at FROM bot_activity WHERE kind='model-switch' AND json_extract(detail,'$.sessionId')=?1 ORDER BY id DESC LIMIT 200";
+
 pub(crate) fn switches(store: &Store, session: &str) -> Result<Vec<super::Activity>> {
     let mut statement = store
         .db
-        .prepare("SELECT id,summary,detail,at FROM bot_activity WHERE kind='model-switch' AND json_extract(detail,'$.sessionId')=?1 ORDER BY id DESC LIMIT 200")
+        .prepare_cached(SWITCHES)
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([session], |r| Ok(super::Activity { id: r.get(0)?, kind: "model-switch".into(), summary: r.get(1)?, detail: serde_json::from_str(&r.get::<_, String>(2)?).unwrap_or_default(), at: r.get(3)? }))
@@ -423,6 +429,19 @@ pub async fn bot_failover_decide(app: tauri::AppHandle, session_id: String, acti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switches_read_only_model_switch_rows_through_the_partial_index() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let plan: Vec<String> = {
+            let mut statement = store.db.prepare(&format!("EXPLAIN QUERY PLAN {SWITCHES}")).unwrap();
+            let rows = statement.query_map(["s"], |r| r.get::<_, String>(3)).unwrap();
+            rows.collect::<rusqlite::Result<_>>().unwrap()
+        };
+        assert!(plan.iter().any(|step| step.contains("bot_activity_model_switch")), "{plan:?}");
+        assert!(!plan.iter().any(|step| step.contains("TEMP B-TREE")), "{plan:?}");
+        assert!(switches(&store, "s").unwrap().is_empty());
+    }
 
     fn model(provider: &str, model: &str) -> BackupModel {
         BackupModel { provider: provider.into(), model: model.into() }

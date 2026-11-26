@@ -93,9 +93,11 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedMessage> {
 const COLUMNS: &str = "id,session_id,position,text,attachments,created_at,updated_at";
 
 pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<QueuedMessage>> {
+    // One statement per shape, so a task's queue reads `queued_messages_session`.
+    let filter = if session_id.is_some() { "session_id=?1" } else { "?1 IS NULL" };
     let mut statement = store
         .db
-        .prepare(&format!("SELECT {COLUMNS} FROM queued_messages WHERE ?1 IS NULL OR session_id=?1 ORDER BY session_id,position,created_at"))
+        .prepare_cached(&format!("SELECT {COLUMNS} FROM queued_messages WHERE {filter} ORDER BY session_id,position,created_at"))
         .map_err(|e| e.to_string())?;
     let rows = statement.query_map([session_id], row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())
@@ -104,16 +106,16 @@ pub(crate) fn list(store: &Store, session_id: Option<&str>) -> Result<Vec<Queued
 fn get(store: &Store, id: &str) -> Result<QueuedMessage> {
     store
         .db
-        .query_row(&format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"), [id], row)
-        .optional()
+        .prepare_cached(&format!("SELECT {COLUMNS} FROM queued_messages WHERE id=?1"))
+        .and_then(|mut query| query.query_row([id], row).optional())
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "This queued message was already sent or removed.".into())
 }
 
 pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &serde_json::Value) -> Result<QueuedMessage> {
-    store.session(session_id)?;
+    store.require_session(session_id)?;
     let encoded = validate(text, attachments)?;
-    let count: i64 = store.db.query_row("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1", [session_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let count: i64 = store.db.prepare_cached("SELECT COUNT(*) FROM queued_messages WHERE session_id=?1").and_then(|mut query| query.query_row([session_id], |r| r.get(0))).map_err(|e| e.to_string())?;
     if count >= MAX_PER_TASK {
         return Err(format!("A task can queue up to {MAX_PER_TASK} messages."));
     }
@@ -121,10 +123,10 @@ pub(crate) fn add(store: &Store, session_id: &str, text: &str, attachments: &ser
     let now = crate::storage::now();
     store
         .db
-        .execute(
+        .prepare_cached(
             "INSERT INTO queued_messages(id,session_id,position,text,attachments,created_at,updated_at) VALUES(?1,?2,(SELECT COALESCE(MAX(position),-1)+1 FROM queued_messages WHERE session_id=?2),?3,?4,?5,?5)",
-            params![id, session_id, text, encoded, now],
         )
+        .and_then(|mut insert| insert.execute(params![id, session_id, text, encoded, now]))
         .map_err(|e| e.to_string())?;
     get(store, &id)
 }
@@ -133,7 +135,8 @@ pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_js
     let encoded = validate(text, attachments)?;
     let changed = store
         .db
-        .execute("UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1", params![id, text, encoded, crate::storage::now()])
+        .prepare_cached("UPDATE queued_messages SET text=?2,attachments=?3,updated_at=?4 WHERE id=?1")
+        .and_then(|mut update| update.execute(params![id, text, encoded, crate::storage::now()]))
         .map_err(|e| e.to_string())?;
     if changed == 0 {
         return Err("This queued message was already sent or removed.".into());
@@ -142,7 +145,7 @@ pub(crate) fn update(store: &Store, id: &str, text: &str, attachments: &serde_js
 }
 
 pub(crate) fn remove(store: &Store, id: &str) -> Result<()> {
-    store.db.execute("DELETE FROM queued_messages WHERE id=?1", [id]).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("DELETE FROM queued_messages WHERE id=?1").and_then(|mut delete| delete.execute([id])).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -156,8 +159,11 @@ pub(crate) fn reorder(store: &Store, session_id: &str, ids: &[String]) -> Result
     if current != requested {
         return Err("The queue changed. Try reordering again.".into());
     }
-    for (position, id) in ids.iter().enumerate() {
-        store.db.execute("UPDATE queued_messages SET position=?2 WHERE id=?1", params![id, position as i64]).map_err(|e| e.to_string())?;
+    {
+        let mut update = store.db.prepare_cached("UPDATE queued_messages SET position=?2 WHERE id=?1").map_err(|e| e.to_string())?;
+        for (position, id) in ids.iter().enumerate() {
+            update.execute(params![id, position as i64]).map_err(|e| e.to_string())?;
+        }
     }
     transaction.commit().map_err(|e| e.to_string())?;
     list(store, Some(session_id))
@@ -211,9 +217,14 @@ pub(crate) fn take_all_ready(
 /// entry and takes it straight back to send it itself (the run ended in between) is a direct
 /// send, not the queue moving on.
 pub(crate) fn withdraw(store: &Store, id: &str) -> Result<QueuedMessage> {
-    let entry = get(store, id)?;
-    remove(store, id)?;
-    Ok(entry)
+    store.in_transaction_immediate(|| {
+        store
+            .db
+            .prepare_cached(&format!("DELETE FROM queued_messages WHERE id=?1 RETURNING {COLUMNS}"))
+            .and_then(|mut delete| delete_returning(&mut delete, id, row))
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "This queued message was already sent or removed.".into())
+    })
 }
 
 /// Round 22: removes an entry that left the queue for a run or on someone else's behalf (the
@@ -223,11 +234,29 @@ pub(crate) fn withdraw(store: &Store, id: &str) -> Result<QueuedMessage> {
 /// is no error and counts nothing, as [`remove`]. The delete is one statement, so a racing
 /// [`take`] and this never both count.
 pub(crate) fn remove_delivered(store: &Store, id: &str) -> Result<()> {
-    let session: Option<String> = store.db.query_row("DELETE FROM queued_messages WHERE id=?1 RETURNING session_id", [id], |row| row.get(0)).optional().map_err(|e| e.to_string())?;
+    let session: Option<String> = store.in_transaction_immediate(|| {
+        store
+            .db
+            .prepare_cached("DELETE FROM queued_messages WHERE id=?1 RETURNING session_id")
+            .and_then(|mut delete| delete_returning(&mut delete, id, |row| row.get(0)))
+            .map_err(|e| e.to_string())
+    })?;
     if let Some(session) = session {
         record_deliveries(&session, 1);
     }
     Ok(())
+}
+
+fn delete_returning<T>(
+    delete: &mut rusqlite::Statement<'_>,
+    id: &str,
+    read: impl FnOnce(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
+) -> rusqlite::Result<Option<T>> {
+    let mut rows = delete.query([id])?;
+    let entry = rows.next()?.map(read).transpose()?;
+    // Finish the statement and propagate any error before committing the transaction.
+    while rows.next()?.is_some() {}
+    Ok(entry)
 }
 
 /// How many entries each task's queue has handed out for delivery since launch. Taking queued
@@ -260,14 +289,14 @@ pub(crate) fn restore(store: &Store, entry: &QueuedMessage) -> Result<QueuedMess
 /// Puts a removed (never taken) entry back at the front of its queue, as [`restore`] does,
 /// without touching the delivery count: PandaConnect's queue Undo.
 pub(crate) fn reinsert(store: &Store, entry: &QueuedMessage) -> Result<QueuedMessage> {
-    store.session(&entry.session_id)?;
+    store.require_session(&entry.session_id)?;
     let encoded = validate(&entry.text, &entry.attachments)?;
     store
         .db
-        .execute(
+        .prepare_cached(
             "INSERT INTO queued_messages(id,session_id,position,text,attachments,created_at,updated_at) VALUES(?1,?2,(SELECT COALESCE(MIN(position),1)-1 FROM queued_messages WHERE session_id=?2),?3,?4,?5,?6)",
-            params![entry.id, entry.session_id, entry.text, encoded, entry.created_at, crate::storage::now()],
         )
+        .and_then(|mut insert| insert.execute(params![entry.id, entry.session_id, entry.text, encoded, entry.created_at, crate::storage::now()]))
         .map_err(|e| e.to_string())?;
     get(store, &entry.id)
 }
@@ -503,6 +532,61 @@ mod tests {
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let task = store.create_session(&project.id, "claude", "sonnet", "full").unwrap();
         (store, task.id)
+    }
+
+    fn reject_commits(store: &Store) {
+        // The bundled SQLite exposes this hook without rusqlite's optional hooks feature.
+        unsafe extern "C" fn reject_commit(_: *mut std::ffi::c_void) -> std::ffi::c_int {
+            1
+        }
+        // SAFETY: The connection is live and the callback uses no context or borrowed data.
+        unsafe {
+            rusqlite::ffi::sqlite3_commit_hook(
+                store.db.handle(),
+                Some(reject_commit),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    #[test]
+    fn withdraw_preserves_queue_when_row_decoding_fails() {
+        let (store, task) = store();
+        store.db.execute(
+            "INSERT INTO queued_messages(id,session_id,text,attachments,created_at,updated_at,position)
+             VALUES('bad',?1,X'deadbeef','[]',1,1,0)",
+            [&task],
+        ).unwrap();
+
+        assert!(withdraw(&store, "bad").is_err());
+        let text: Vec<u8> = store.db.query_row(
+            "SELECT text FROM queued_messages WHERE id='bad'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(text, [0xde, 0xad, 0xbe, 0xef]);
+    }
+
+    #[test]
+    fn rejected_delete_commit_preserves_queue_and_delivery_count() {
+        let (store, task) = store();
+        let entry = add(&store, &task, "pending", &json!([])).unwrap();
+        reject_commits(&store);
+        let result = withdraw(&store, &entry.id);
+        assert_eq!(get(&store, &entry.id).unwrap(), entry);
+        assert_eq!(deliveries(&task), 0);
+        assert!(result.is_err(), "withdraw must report the rejected commit");
+    }
+
+    #[test]
+    fn rejected_delivery_commit_preserves_queue_and_delivery_count() {
+        let (store, task) = store();
+        let entry = add(&store, &task, "pending", &json!([])).unwrap();
+        reject_commits(&store);
+        let result = remove_delivered(&store, &entry.id);
+        assert_eq!(get(&store, &entry.id).unwrap(), entry);
+        assert_eq!(deliveries(&task), 0);
+        assert!(result.is_err(), "remove_delivered must report the rejected commit");
     }
 
     #[test]

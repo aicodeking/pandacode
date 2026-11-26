@@ -1,7 +1,7 @@
 //! Per-run snapshots keep child streaming off SQLite's shared write lock.
 use crate::{
     providers::{AgentEvent, SubagentActivity},
-    storage::Store,
+    storage::{RollbackGuard, Store},
     Result,
 };
 use std::{
@@ -198,7 +198,6 @@ impl SubagentState {
         status: &str,
     ) -> (Vec<SubagentActivity>, Result<()>) {
         let mut changed = Vec::new();
-        let mut first_error = None;
         for entry in self.entries.values_mut() {
             let child_open = running(&entry.activity.status);
             // A settled child may never have reported its last tool's result.
@@ -215,19 +214,86 @@ impl SubagentState {
                 }
                 changed.push(entry.activity.clone());
             }
-            // Always flush: the final text snapshot may still be inside the
-            // checkpoint interval even when the child already reported done.
-            if let Err(error) = store.save_subagent(session_id, &entry.activity) {
-                first_error.get_or_insert(error);
-            }
         }
-        if let Err(error) = store.finish_subagents(session_id, status) {
-            first_error.get_or_insert(error);
-        }
+        // Even a settled child's final text may still be inside the checkpoint interval.
+        let snapshots = self.entries.values().map(|entry| &entry.activity);
+        let saved = flush(store, session_id, status, snapshots);
         // The run has ended even if its final database write failed. Return
         // settlement snapshots independently so the live viewer also stops.
-        (changed, first_error.map_or(Ok(()), Err))
+        (changed, saved)
     }
+}
+
+/// Writes every snapshot and settles unfinished children in one transaction (or the caller's).
+/// A row that fails to serialize or that SQLite rejects is skipped; the rest are still written.
+/// An error that rolls back the transaction
+/// back (I/O, disk full, `RAISE(ROLLBACK)`) stops the batch, so nothing of it is kept and nothing
+/// later is written in autocommit mode. Returns the first error: the database's own, not the
+/// failed commit after it.
+fn flush<'a>(
+    store: &Store,
+    session_id: &str,
+    status: &str,
+    mut snapshots: impl Iterator<Item = &'a SubagentActivity>,
+) -> Result<()> {
+    let mut started = false;
+    let mut first_error = None;
+    // The body always returns Ok, so the commit keeps every row that was written.
+    let committed = store.in_transaction(|| {
+        started = true;
+        let guard = RollbackGuard::new(&store.db);
+        first_error = write_and_settle(store, session_id, status, &mut snapshots, guard);
+        Ok(())
+    });
+    if let Err(error) = committed {
+        first_error.get_or_insert(error);
+    }
+    // No transaction: write each row on its own rather than lose them.
+    if !started {
+        let guard = RollbackGuard::new(&store.db);
+        if let Some(error) = write_and_settle(store, session_id, status, snapshots, guard) {
+            first_error.get_or_insert(error);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// Saves each snapshot and settles the unfinished children, returning the first error.
+/// Statement failures leave the rest of the batch writable. If SQLite rolls back the
+/// transaction, the guard stops the batch before later writes can commit individually.
+fn write_and_settle<'a>(
+    store: &Store,
+    session_id: &str,
+    status: &str,
+    snapshots: impl Iterator<Item = &'a SubagentActivity>,
+    guard: RollbackGuard<'_>,
+) -> Option<String> {
+    let mut first_error = None;
+    for activity in snapshots {
+        let content = match crate::storage::serialize_subagent(activity) {
+            Ok(content) => content,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        // A FAIL trigger can report an error after changing the row.
+        if let Err(error) = crate::storage::run_savepoint(
+            &store.db,
+            "pandacode_subagent_state_row",
+            || store.upsert_subagent_row(session_id, &activity.id, &content, activity.updated_at),
+            |error| error.to_string(),
+        ) {
+            first_error.get_or_insert(error);
+            if guard.rolled_back() {
+                return first_error;
+            }
+        }
+    }
+    if let Err(error) = store.finish_subagents(session_id, status) {
+        first_error.get_or_insert(error);
+    }
+    first_error
 }
 
 #[cfg(test)]
@@ -689,5 +755,57 @@ mod tests {
             .unwrap();
         state.finish(&db, &sid, "stopped").1.unwrap();
         assert_eq!(db.subagents(&sid).unwrap()[0].status, "stopped");
+    }
+
+    #[test]
+    fn finish_rolls_back_only_the_child_rejected_after_insert() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let sid = task(&store);
+        let mut state = SubagentState::default();
+        for id in ["first", "rejected", "last"] {
+            state.entries.insert(id.into(), Entry {
+                activity: child(id, "running"),
+                last_saved: None,
+                saved_status: String::new(),
+                number: 0,
+            });
+        }
+        store.db.execute_batch(
+            "CREATE TRIGGER reject_child AFTER INSERT ON subagents WHEN NEW.id='rejected'
+             BEGIN SELECT RAISE(FAIL,'rejected child'); END;",
+        ).unwrap();
+
+        let (_, saved) = state.finish(&store, &sid, "stopped");
+        assert!(saved.unwrap_err().contains("rejected child"));
+        assert!(store.db.is_autocommit());
+        let mut ids: Vec<_> = store.subagents(&sid).unwrap().into_iter().map(|child| child.id).collect();
+        ids.sort();
+        assert_eq!(ids, ["first", "last"]);
+    }
+
+    #[test]
+    fn a_rolled_back_flush_writes_nothing_after_the_rollback() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let sid = task(&store);
+        let running = serde_json::to_string(&child("open", "running")).unwrap();
+        store.save_subagent_rows(&sid, &[("open", running.as_str(), 1)]).unwrap();
+        // RAISE(ROLLBACK) rolls the whole transaction back, as an I/O or disk-full error does.
+        store
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_boom BEFORE INSERT ON subagents WHEN NEW.id='boom'
+                 BEGIN SELECT RAISE(ROLLBACK,'simulated disk full'); END;",
+            )
+            .unwrap();
+        let snapshots = ["first", "boom", "after"].map(|id| child(id, "completed"));
+        let stream = snapshots.iter().inspect(|_| {
+            assert!(!store.db.is_autocommit(), "snapshots are pulled inside the transaction");
+        });
+        let error = flush(&store, &sid, "stopped", stream).unwrap_err();
+        assert!(error.contains("simulated disk full"), "the real error is kept: {error}");
+        assert!(store.db.is_autocommit());
+        let ids: Vec<String> = store.subagents(&sid).unwrap().into_iter().map(|child| child.id).collect();
+        assert_eq!(ids, ["open"], "rolled back rows stay out and later rows are not autocommitted");
+        assert_eq!(store.subagents(&sid).unwrap()[0].status, "running", "no settlement outside the transaction");
     }
 }

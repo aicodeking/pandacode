@@ -79,11 +79,18 @@ fn board_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Moodboard> {
     })
 }
 fn board(store: &Store, project: &str, id: &str) -> Result<Moodboard> {
-    store.db.query_row("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE b.id=?1 AND b.project_id=?2",params![id,project],board_row).optional().map_err(|e|e.to_string())?.ok_or("Moodboard is unavailable in this project.".into())
+    store.db.prepare_cached("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE b.id=?1 AND b.project_id=?2").and_then(|mut query|query.query_row(params![id,project],board_row).optional()).map_err(|e|e.to_string())?.ok_or("Moodboard is unavailable in this project.".into())
+}
+/// Marks a board as just changed, inside the caller's transaction.
+fn touch(db: &rusqlite::Connection, board_id: &str) -> Result<()> {
+    db.prepare_cached("UPDATE moodboards SET updated_at=?2 WHERE id=?1")
+        .and_then(|mut update| update.execute(params![board_id, storage::now()]))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 pub fn list(store: &Store, project: &str) -> Result<Vec<Moodboard>> {
     store.project(project)?;
-    let mut query = store.db.prepare("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE project_id=?1 ORDER BY updated_at DESC,id LIMIT 24").map_err(|e|e.to_string())?;
+    let mut query = store.db.prepare_cached("SELECT b.id,b.project_id,b.name,(SELECT COUNT(*) FROM moodboard_images WHERE board_id=b.id),b.updated_at FROM moodboards b WHERE project_id=?1 ORDER BY updated_at DESC,id LIMIT 24").map_err(|e|e.to_string())?;
     let rows = query
         .query_map([project], board_row)
         .map_err(|e| e.to_string())?;
@@ -111,7 +118,7 @@ pub fn create(store: &Store, project: &str, name: &str) -> Result<Moodboard> {
 }
 pub fn detail(store: &Store, project: &str, id: &str) -> Result<MoodboardDetail> {
     let board = board(store, project, id)?;
-    let mut query=store.db.prepare("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
+    let mut query=store.db.prepare_cached("SELECT id,name,caption,width,height,created_at FROM moodboard_images WHERE board_id=?1 ORDER BY created_at,id LIMIT 64").map_err(|e|e.to_string())?;
     let images = query
         .query_map([id], |r| {
             Ok(MoodboardImage {
@@ -255,7 +262,7 @@ fn insert(
     if board.image_count + images.len() as i64 > MAX_IMAGES {
         return Err("A moodboard can hold up to 64 images.".into());
     }
-    let used:i64=store.db.query_row("SELECT COALESCE(SUM(length(original)+length(thumbnail)+length(agent_image)),0) FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE b.project_id=?1",[project],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let used:i64=store.db.prepare_cached("SELECT COALESCE(SUM(length(original)+length(thumbnail)+length(agent_image)),0) FROM moodboard_images i JOIN moodboards b ON b.id=i.board_id WHERE b.project_id=?1").and_then(|mut query|query.query_row([project],|r|r.get(0))).map_err(|e|e.to_string())?;
     let added: usize = images
         .iter()
         .map(|i| i.original.len() + i.thumbnail.len() + i.agent.len())
@@ -265,16 +272,13 @@ fn insert(
             "This project's moodboards use the 192 MB limit. Remove unused images first.".into(),
         );
     }
-    let tx = store.db.transaction().map_err(|e| e.to_string())?;
-    for image in images {
-        tx.execute("INSERT INTO moodboard_images(id,board_id,name,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",params![storage::id(),id,image.name,image.mime,image.width,image.height,image.original,image.thumbnail,image.agent,storage::now()]).map_err(|e|e.to_string())?;
-    }
-    tx.execute(
-        "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
-        params![id, storage::now()],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
+    store.in_transaction(|| {
+        let mut add = store.db.prepare_cached("INSERT INTO moodboard_images(id,board_id,name,mime_type,width,height,original,thumbnail,agent_image,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)").map_err(|e|e.to_string())?;
+        for image in images {
+            add.execute(params![storage::id(),id,image.name,image.mime,image.width,image.height,image.original,image.thumbnail,image.agent,storage::now()]).map_err(|e|e.to_string())?;
+        }
+        touch(&store.db, id)
+    })?;
     detail(store, project, id)
 }
 fn image_bytes(
@@ -293,10 +297,14 @@ fn image_bytes(
     };
     store
         .db
-        .query_row(sql, params![image_id, board_id, project], |r| {
-            Ok((r.get(0)?, r.get(1)?))
+        .prepare_cached(sql)
+        .and_then(|mut query| {
+            query
+                .query_row(params![image_id, board_id, project], |r| {
+                    Ok((r.get(0)?, r.get(1)?))
+                })
+                .optional()
         })
-        .optional()
         .map_err(|e| e.to_string())?
         .ok_or("Image is unavailable in this project's moodboard.".into())
 }
@@ -397,15 +405,20 @@ pub async fn delete_moodboard(
     let store = state.store.clone();
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
-        board(&store, &project_id, &board_id)?;
-        store
-            .db
-            .execute("DELETE FROM moodboards WHERE id=?1", [board_id])
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        delete_in_store(&store, &project_id, &board_id)
     })
     .await
 }
+
+pub(crate) fn delete_in_store(store: &Store, project_id: &str, board_id: &str) -> Result<()> {
+    board(store, project_id, board_id)?;
+    store
+        .db
+        .execute("DELETE FROM moodboards WHERE id=?1", [board_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn add_moodboard_image(
     state: State<'_, AppState>,
@@ -467,25 +480,18 @@ pub async fn update_moodboard_image(
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
-        if store
-            .db
-            .execute(
-                "UPDATE moodboard_images SET caption=?3 WHERE id=?1 AND board_id=?2",
-                params![image_id, board_id, caption],
-            )
-            .map_err(|e| e.to_string())?
-            == 0
-        {
-            return Err("Image is no longer available.".into());
-        }
-        store
-            .db
-            .execute(
-                "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
-                params![board_id, storage::now()],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        store.in_transaction(|| {
+            if store
+                .db
+                .prepare_cached("UPDATE moodboard_images SET caption=?3 WHERE id=?1 AND board_id=?2")
+                .and_then(|mut update| update.execute(params![image_id, board_id, caption]))
+                .map_err(|e| e.to_string())?
+                == 0
+            {
+                return Err("Image is no longer available.".into());
+            }
+            touch(&store.db, &board_id)
+        })
     })
     .await
 }
@@ -500,21 +506,14 @@ pub async fn remove_moodboard_image(
     crate::blocking(move || {
         let store = store.lock().map_err(|e| e.to_string())?;
         board(&store, &project_id, &board_id)?;
-        store
-            .db
-            .execute(
-                "DELETE FROM moodboard_images WHERE id=?1 AND board_id=?2",
-                params![image_id, board_id],
-            )
-            .map_err(|e| e.to_string())?;
-        store
-            .db
-            .execute(
-                "UPDATE moodboards SET updated_at=?2 WHERE id=?1",
-                params![board_id, storage::now()],
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(())
+        store.in_transaction(|| {
+            store
+                .db
+                .prepare_cached("DELETE FROM moodboard_images WHERE id=?1 AND board_id=?2")
+                .and_then(|mut delete| delete.execute(params![image_id, board_id]))
+                .map_err(|e| e.to_string())?;
+            touch(&store.db, &board_id)
+        })
     })
     .await
 }
@@ -639,10 +638,8 @@ mod tests {
         let image = &detail.images[0].id;
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert!(image_result(&f.store, &f.project, &a.id, "../../secret").is_err());
-        f.store
-            .db
-            .execute("DELETE FROM moodboards WHERE id=?1", [a.id])
-            .unwrap();
+        assert!(delete_in_store(&f.store, &f.other, &a.id).is_err());
+        delete_in_store(&f.store, &f.project, &a.id).unwrap();
         assert!(image_result(&f.store, &f.project, &b.id, image).is_err());
         assert_eq!(
             f.store

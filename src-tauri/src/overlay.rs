@@ -1049,17 +1049,7 @@ fn open_target(
     live_child: bool,
 ) -> Result<OpenTarget> {
     use rusqlite::OptionalExtension;
-    let exists: bool = store
-        .db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
-            [session_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| e.to_string())?;
-    if !exists {
-        return Err("Conversation not found.".into());
-    }
+    store.require_session(session_id)?;
     if let Some(child) = subagent_id {
         let saved: bool = store
             .db

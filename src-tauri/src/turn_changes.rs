@@ -1557,7 +1557,9 @@ pub fn persist_dated(store: &Store, sid: &str, mut capture: Captured, last_write
     // How many files this conversation changed itself, before its workers' changes are rolled in.
     let own_files = capture.summary.files.len();
     let team_sources = team::merge(store, sid, &mut capture)?;
-    let message_id:i64=store.db.query_row("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id",params![sid,storage::now()],|r|r.get(0)).map_err(|e|e.to_string())?;
+    let message_id: i64 = store.db.prepare_cached("INSERT INTO messages(session_id,role,content,created_at) VALUES(?1,'changes','',?2) RETURNING id")
+        .and_then(|mut query| query.query_row(params![sid, storage::now()], |r| r.get(0)))
+        .map_err(|e| e.to_string())?;
     let mut saved_summary = serde_json::to_value(&capture.summary).map_err(|e| e.to_string())?;
     if !team_sources.is_empty() {
         saved_summary["teamSources"] =
@@ -1584,53 +1586,70 @@ pub fn persist_dated(store: &Store, sid: &str, mut capture: Captured, last_write
     {
         return Err("Turn change snapshot exceeded its storage limit.".into());
     }
-    store.db.execute("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)",params![capture.summary.id,sid,message_id,summary,storage::now(),bytes]).map_err(|e|e.to_string())?;
-    for (path, data) in details {
-        store
+    store.db.prepare_cached("INSERT INTO turn_changes(id,session_id,message_id,summary,created_at,diff_bytes) VALUES(?1,?2,?3,?4,?5,?6)")
+        .and_then(|mut query| query.execute(params![capture.summary.id, sid, message_id, summary, storage::now(), bytes]))
+        .map_err(|e| e.to_string())?;
+    {
+        let mut insert = store
             .db
-            .execute(
-                "INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,?2,?3)",
-                params![capture.summary.id, path, data],
-            )
+            .prepare_cached("INSERT INTO turn_change_files(change_id,path,detail) VALUES(?1,?2,?3)")
             .map_err(|e| e.to_string())?;
+        for (path, data) in details {
+            insert
+                .execute(params![capture.summary.id, path, data])
+                .map_err(|e| e.to_string())?;
+        }
     }
+    prune_retained(store)?;
+    transaction.commit().map_err(|e| e.to_string())?;
+    Ok(message_id)
+}
+/// The bytes held by retained diff previews (the partial `diff_bytes>0` index alone).
+pub(crate) const RETAINED_BYTES_SQL: &str = "SELECT COALESCE(SUM(diff_bytes),0) FROM turn_changes WHERE diff_bytes>0";
+/// Retained diff previews, oldest first (the partial `diff_bytes>0` index alone).
+pub(crate) const RETAINED_ROWS_SQL: &str = "SELECT id,diff_bytes FROM turn_changes WHERE diff_bytes>0 ORDER BY created_at,id";
+
+/// Drops the oldest diff previews (their file summaries stay) until every retained preview fits
+/// in `RETAINED_BYTES`. The total and the oldest-first walk both read the partial
+/// `diff_bytes>0` index alone.
+fn prune_retained(store: &Store) -> Result<()> {
     let mut retained: i64 = store
         .db
-        .query_row(
-            "SELECT COALESCE(SUM(diff_bytes),0) FROM turn_changes WHERE diff_bytes>0",
-            [],
-            |r| r.get(0),
-        )
+        .prepare_cached(RETAINED_BYTES_SQL)
+        .and_then(|mut query| query.query_row([], |r| r.get(0)))
         .map_err(|e| e.to_string())?;
-    if retained > RETAINED_BYTES {
+    if retained <= RETAINED_BYTES {
+        return Ok(());
+    }
+    let rows = {
         let mut stmt = store
             .db
-            .prepare(
-                "SELECT id,diff_bytes FROM turn_changes WHERE diff_bytes>0 ORDER BY created_at,id",
-            )
+            .prepare_cached(RETAINED_ROWS_SQL)
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
             .map_err(|e| e.to_string())?
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        for (id, bytes) in rows {
-            if retained <= RETAINED_BYTES {
-                break;
-            }
-            store
-                .db
-                .execute("DELETE FROM turn_change_files WHERE change_id=?1", [&id])
-                .map_err(|e| e.to_string())?;
-            store
-                .db
-                .execute("UPDATE turn_changes SET diff_bytes=0 WHERE id=?1", [id])
-                .map_err(|e| e.to_string())?;
-            retained -= bytes;
+        rows
+    };
+    let mut delete = store
+        .db
+        .prepare_cached("DELETE FROM turn_change_files WHERE change_id=?1")
+        .map_err(|e| e.to_string())?;
+    let mut clear = store
+        .db
+        .prepare_cached("UPDATE turn_changes SET diff_bytes=0 WHERE id=?1")
+        .map_err(|e| e.to_string())?;
+    for (id, bytes) in rows {
+        if retained <= RETAINED_BYTES {
+            break;
         }
+        delete.execute([&id]).map_err(|e| e.to_string())?;
+        clear.execute([&id]).map_err(|e| e.to_string())?;
+        retained -= bytes;
     }
-    transaction.commit().map_err(|e| e.to_string())?;
-    Ok(message_id)
+    Ok(())
 }
 pub fn detail(store: &Store, sid: &str, id: &str, path: &str) -> Result<TurnChangeDiff> {
     if !safe_relative(path) || uuid::Uuid::parse_str(id).is_err() {
@@ -1644,12 +1663,8 @@ pub fn detail(store: &Store, sid: &str, id: &str, path: &str) -> Result<TurnChan
         .ok_or("This file is not in this turn's change summary.")?;
     let stored: Option<String> = store
         .db
-        .query_row(
-            "SELECT detail FROM turn_change_files WHERE change_id=?1 AND path=?2",
-            params![id, path],
-            |r| r.get(0),
-        )
-        .optional()
+        .prepare_cached("SELECT detail FROM turn_change_files WHERE change_id=?1 AND path=?2")
+        .and_then(|mut query| query.query_row(params![id, path], |r| r.get(0)).optional())
         .map_err(|e| e.to_string())?;
     stored.map(|s|serde_json::from_str(&s).map_err(|e|e.to_string())).unwrap_or_else(||Ok(TurnChangeDiff{path:path.into(),old_path:file.old_path.clone(),patch:String::new(),binary:file.binary,truncated:true,error:Some("This older diff preview was removed to keep local storage bounded. Its file summary is still available.".into())}))
 }
@@ -1659,12 +1674,8 @@ pub fn summary(store: &Store, sid: &str, id: &str) -> Result<TurnChanges> {
     }
     let summary: String = store
         .db
-        .query_row(
-            "SELECT summary FROM turn_changes WHERE id=?1 AND session_id=?2",
-            params![id, sid],
-            |r| r.get(0),
-        )
-        .optional()
+        .prepare_cached("SELECT summary FROM turn_changes WHERE id=?1 AND session_id=?2")
+        .and_then(|mut query| query.query_row(params![id, sid], |r| r.get(0)).optional())
         .map_err(|e| e.to_string())?
         .ok_or("This change summary does not belong to this task.")?;
     serde_json::from_str(&summary).map_err(|e| e.to_string())

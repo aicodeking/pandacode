@@ -109,7 +109,7 @@ fn message_row(r: &rusqlite::Row) -> rusqlite::Result<Message> {
 }
 /// The newest `limit` messages addressed to `actor` after `after`, oldest first.
 fn latest(store: &Store, parent: &str, actor: &str, after: i64, limit: usize) -> Result<Vec<Message>> {
-    let mut query = store.db.prepare(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.recipient=?2 AND m.id>?3 ORDER BY m.id DESC LIMIT ?4")).map_err(|e| e.to_string())?;
+    let mut query = store.db.prepare_cached(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.recipient=?2 AND m.id>?3 ORDER BY m.id DESC LIMIT ?4")).map_err(|e| e.to_string())?;
     let mut messages = query
         .query_map(params![parent, actor, after, limit as i64], message_row)
         .map_err(|e| e.to_string())?
@@ -128,7 +128,7 @@ fn previews(messages: &[Message]) -> Vec<Value> {
 /// message would otherwise mark its unseen start read. `nextCursor` is the last message returned
 /// whole, so a retry or the next page never skips one.
 fn mailbox_page(store: &Store, parent: &str, actor: &str, after: i64, limit: usize, offset: usize, offset_id: Option<i64>) -> Result<Value> {
-    let mut query = store.db.prepare(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.recipient=?2 AND m.id>?3 ORDER BY m.id ASC LIMIT ?4")).map_err(|e| e.to_string())?;
+    let mut query = store.db.prepare_cached(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.recipient=?2 AND m.id>?3 ORDER BY m.id ASC LIMIT ?4")).map_err(|e| e.to_string())?;
     let messages = query
         .query_map(params![parent, actor, after, limit.saturating_add(1) as i64], message_row)
         .map_err(|e| e.to_string())?
@@ -234,7 +234,7 @@ pub async fn architect_team_messages(
     let store = state.store.lock().map_err(|e| e.to_string())?;
     load(&store, &session_id)?.ok_or("Team unavailable.")?;
     notes::ensure(&store)?;
-    let mut query = store.db.prepare(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.id>?2 ORDER BY m.id LIMIT ?3")).map_err(|e|e.to_string())?;
+    let mut query = store.db.prepare_cached(&format!("SELECT {MESSAGE_COLUMNS} WHERE m.parent_session_id=?1 AND m.id>?2 ORDER BY m.id LIMIT ?3")).map_err(|e|e.to_string())?;
     let mut messages = query
         .query_map(params![session_id, after, limit.saturating_add(1) as i64], message_row)
         .map_err(|e| e.to_string())?
@@ -319,7 +319,10 @@ pub(super) fn dispatch_state(
             // Only messages returned whole count as read: an empty page, a cut message or a cursor
             // past the newest message must not hide anything, nor an `afterId` that jumps over unread ones.
             if let Some(next) = page["nextCursor"].as_i64().filter(|c| *c > read.after_id) {
-                let skipped: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 AND id<=?4)", params![parent, actor.id(), cursor(&store, parent, actor.id())?, read.after_id], |r| r.get(0)).map_err(|e| e.to_string())?;
+                let seen = cursor(&store, parent, actor.id())?;
+                let skipped: bool = store.db.prepare_cached("SELECT EXISTS(SELECT 1 FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 AND id<=?4)")
+                    .and_then(|mut query| query.query_row(params![parent, actor.id(), seen, read.after_id], |r| r.get(0)))
+                    .map_err(|e| e.to_string())?;
                 if !skipped {
                     advance(&store, parent, actor.id(), next)?;
                 }
@@ -410,10 +413,16 @@ pub(super) fn dispatch_state(
 
 /// The caller's read watermark: the newest addressed message it has read or been shown.
 fn cursor(store: &Store, parent: &str, actor: &str) -> Result<i64> {
-    store.db.query_row("SELECT message_id FROM architect_mailbox_cursors WHERE parent_session_id=?1 AND actor=?2", params![parent, actor], |r| r.get(0)).optional().map(Option::unwrap_or_default).map_err(|e| e.to_string())
+    store.db.prepare_cached("SELECT message_id FROM architect_mailbox_cursors WHERE parent_session_id=?1 AND actor=?2")
+        .and_then(|mut query| query.query_row(params![parent, actor], |r| r.get(0)).optional())
+        .map(Option::unwrap_or_default)
+        .map_err(|e| e.to_string())
 }
 fn advance(store: &Store, parent: &str, actor: &str, id: i64) -> Result<()> {
-    store.db.execute("INSERT INTO architect_mailbox_cursors(parent_session_id,actor,message_id) VALUES(?1,?2,?3) ON CONFLICT(parent_session_id,actor) DO UPDATE SET message_id=MAX(message_id,excluded.message_id)", params![parent, actor, id]).map(|_| ()).map_err(|e| e.to_string())
+    store.db.prepare_cached("INSERT INTO architect_mailbox_cursors(parent_session_id,actor,message_id) VALUES(?1,?2,?3) ON CONFLICT(parent_session_id,actor) DO UPDATE SET message_id=MAX(message_id,excluded.message_id)")
+        .and_then(|mut query| query.execute(params![parent, actor, id]))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 /// Adds the inbox digest to a team tool result from the architect's own tool path, after its
 /// work committed: a digest that cannot be read leaves the result as it is.
@@ -429,7 +438,9 @@ pub(super) fn add_inbox(state: &AppState, parent: &str, actor: &str, result: &mu
     }
 }
 fn unread(store: &Store, parent: &str, actor: &str, after: i64) -> Result<i64> {
-    store.db.query_row("SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3", params![parent, actor, after], |r| r.get(0)).map_err(|e| e.to_string())
+    store.db.prepare_cached("SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3")
+        .and_then(|mut query| query.query_row(params![parent, actor, after], |r| r.get(0)))
+        .map_err(|e| e.to_string())
 }
 /// Unread count and the three newest unread previews, or nothing when all is read.
 fn digest(store: &Store, parent: &str, actor: &str) -> Result<Option<Value>> {
@@ -485,14 +496,16 @@ fn send(store: &Store, team: &TeamSnapshot, actor: &Actor, args: Value) -> Resul
         vec![send.recipient.clone()]
     };
     if let Some(reply_to) = send.reply_to {
-        let received = store.db.query_row("SELECT 1 FROM architect_messages WHERE id=?1 AND parent_session_id=?2 AND recipient=?3", params![reply_to, parent, actor.id()], |_| Ok(())).optional().map_err(|e| e.to_string())?;
+        let received = store.db.prepare_cached("SELECT 1 FROM architect_messages WHERE id=?1 AND parent_session_id=?2 AND recipient=?3")
+            .and_then(|mut query| query.query_row(params![reply_to, parent, actor.id()], |_| Ok(())).optional())
+            .map_err(|e| e.to_string())?;
         if received.is_none() {
             return Err("replyTo must be the ID of a message you received.".into());
         }
     }
     // A broadcast stores each copy as `<key>#<recipient>`; `#` never appears in a key.
     let existing: Vec<(i64, String, String, String, Option<i64>)> = {
-        let mut query = store.db.prepare("SELECT m.id,m.recipient,m.content,m.request_key,(SELECT reply_to FROM architect_message_replies WHERE message_id=m.id) FROM architect_messages m WHERE parent_session_id=?1 AND sender=?2 AND (request_key=?3 OR substr(request_key,1,length(?3)+1)=?3||'#') ORDER BY id").map_err(|e| e.to_string())?;
+        let mut query = store.db.prepare_cached("SELECT m.id,m.recipient,m.content,m.request_key,(SELECT reply_to FROM architect_message_replies WHERE message_id=m.id) FROM architect_messages m WHERE parent_session_id=?1 AND sender=?2 AND (request_key=?3 OR substr(request_key,1,length(?3)+1)=?3||'#') ORDER BY id").map_err(|e| e.to_string())?;
         let rows = query.query_map(params![parent, actor.id(), send.key], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))).map_err(|e| e.to_string())?;
         rows.collect::<std::result::Result<_, _>>().map_err(|e| e.to_string())?
     };
@@ -512,10 +525,14 @@ fn send(store: &Store, team: &TeamSnapshot, actor: &Actor, args: Value) -> Resul
     let (steer_text, whole) = steer_preview(&send.message);
     for recipient in &recipients {
         let key = if all { format!("{}#{recipient}", send.key) } else { send.key.clone() };
-        store.db.execute("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![parent, actor.id(), recipient, key, send.message, storage::now()]).map_err(|e| e.to_string())?;
+        store.db.prepare_cached("INSERT INTO architect_messages(parent_session_id,sender,recipient,request_key,content,created_at) VALUES(?1,?2,?3,?4,?5,?6)")
+            .and_then(|mut query| query.execute(params![parent, actor.id(), recipient, key, send.message, storage::now()]))
+            .map_err(|e| e.to_string())?;
         let id = store.db.last_insert_rowid();
         if let Some(reply_to) = send.reply_to {
-            store.db.execute("INSERT INTO architect_message_replies(message_id,reply_to) VALUES(?1,?2)", params![id, reply_to]).map_err(|e| e.to_string())?;
+            store.db.prepare_cached("INSERT INTO architect_message_replies(message_id,reply_to) VALUES(?1,?2)")
+                .and_then(|mut query| query.execute(params![id, reply_to]))
+                .map_err(|e| e.to_string())?;
         }
         ids.push(id);
         // The architect is woken natively; only running workers are steered.
@@ -595,7 +612,9 @@ fn steer(state: &AppState, parent: &str, sender: &str, targets: Vec<SteerTarget>
 /// unread messages would be skipped by moving the watermark past them.
 fn mark_steered(store: &Store, parent: &str, recipient: &str, id: i64) -> Result<()> {
     let after = cursor(store, parent, recipient)?;
-    let older: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 AND id<?4", params![parent, recipient, after, id], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let older: i64 = store.db.prepare_cached("SELECT COUNT(*) FROM architect_messages WHERE parent_session_id=?1 AND recipient=?2 AND id>?3 AND id<?4")
+        .and_then(|mut query| query.query_row(params![parent, recipient, after, id], |r| r.get(0)))
+        .map_err(|e| e.to_string())?;
     if older == 0 { advance(store, parent, recipient, id) } else { Ok(()) }
 }
 fn default_limit() -> usize {
