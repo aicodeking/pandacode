@@ -1752,6 +1752,7 @@ struct Protocol {
     partial_tools: HashMap<(String, u64), PartialTool>,
     image_blocks: Vec<Value>,
     active_model: String,
+    last_reported_model: Option<String>,
     kimi_thinking_values: Vec<String>,
     acp_config: Value,
     // Grok Build authenticates before session calls; the session request waits here.
@@ -1885,6 +1886,7 @@ impl Protocol {
         Self {
             remote_id: config.resume_id.clone().unwrap_or_default(),
             active_model: config.model.clone(),
+            last_reported_model: None,
             config,
             turn_id: String::new(),
             phase: 0,
@@ -1967,6 +1969,19 @@ impl Protocol {
         };
         id == 3 || self.acp_steers.has_live(id)
     }
+    fn claude_model_and_usage(&mut self, message: &Value, step: &mut Step) {
+        use crate::storage::model_audit::{exportable_model_id, REPORTED_MODEL_EVENT};
+        self.active_model = string(message, "model");
+        self.claude_usage(&message["usage"], true, step);
+        if self.active_model != "default"
+            && exportable_model_id(&self.active_model)
+            && self.last_reported_model.as_deref() != Some(self.active_model.as_str())
+        {
+            self.last_reported_model = Some(self.active_model.clone());
+            step.events.push(self.event(REPORTED_MODEL_EVENT, &self.active_model, None));
+        }
+    }
+
     fn claude_usage(&mut self, usage: &Value, fresh: bool, step: &mut Step) {
         if fresh {
             self.claude_input_tokens = usage["input_tokens"].as_u64().and_then(|input| {
@@ -3172,8 +3187,7 @@ impl Protocol {
                     self.claude_text_id(&event["message"]);
                     self.partial_tools.retain(|(owner, _), _| owner != &parent);
                     if parent.is_empty() {
-                        self.active_model = string(&event["message"], "model");
-                        self.claude_usage(&event["message"]["usage"], true, &mut step);
+                        self.claude_model_and_usage(&event["message"], &mut step);
                     }
                 }
                 if event["type"] == "message_delta" && parent.is_empty() {
@@ -3265,8 +3279,7 @@ impl Protocol {
                 if field(&value, "parent_tool_use_id").is_empty()
                     && value["message"]["usage"].is_object()
                 {
-                    self.active_model = string(&value["message"], "model");
-                    self.claude_usage(&value["message"]["usage"], true, &mut step);
+                    self.claude_model_and_usage(&value["message"], &mut step);
                 }
                 if let Some(content) = value["message"]["content"].as_array() {
                     let mut text = String::new();

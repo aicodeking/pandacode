@@ -162,6 +162,7 @@ pub struct Store {
     pub restart_interrupted: usize,
     /// The v38 trackers runtime code may use, disabled on all newer schemas.
     trackers_usable: bool,
+    model_audit_usable: bool,
 }
 type Result<T> = std::result::Result<T, String>;
 /// The WAL size limit (64 MiB) after a reset, set by `Store::open`.
@@ -176,6 +177,7 @@ const STMT_CACHE_CAPACITY: usize = 256;
 const READ_ONLY_PRAGMAS: &str = "PRAGMA cache_size=-4096; PRAGMA temp_store=MEMORY;";
 mod helpers;
 mod messages;
+pub(crate) mod model_audit;
 mod schema_v38;
 mod sessions;
 mod sql;
@@ -255,6 +257,7 @@ impl Store {
             path: path.into(),
             restart_interrupted: 0,
             trackers_usable: false,
+            model_audit_usable: false,
         })
     }
 
@@ -331,12 +334,13 @@ impl Store {
         };
         repair_v38_objects(&mut db, opened_version)?;
         before_recovery();
-        let (restart_interrupted, recovery_version) = recover_after_restart(&mut db)?;
+        let (restart_interrupted, recovery_version, model_audit_usable) = recover_after_restart(&mut db)?;
         let store = Self {
             db,
             path: path.to_path_buf(),
             restart_interrupted,
             trackers_usable: recovery_version <= SCHEMA_VERSION,
+            model_audit_usable,
         };
         tracked_recovery(&store.db, recovery_version, "team library", |_| crate::architect::profiles::initialize(&store))?;
         tracked_recovery(&store.db, recovery_version, "archived tasks", |_| store.settle_archived())?;

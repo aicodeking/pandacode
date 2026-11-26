@@ -103,10 +103,11 @@ pub(super) fn tracked_recovery<T>(
 
 /// Settles the running state that the previous process left behind. The writer lock
 /// makes the version check and the recovery use the same schema.
-pub(super) fn recover_after_restart(db: &mut Connection) -> Result<(usize, i64)> {
+pub(super) fn recover_after_restart(db: &mut Connection) -> Result<(usize, i64, bool)> {
     let recovery = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
     let version: i64 = recovery.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| e.to_string())?;
     let trackers_usable = version <= SCHEMA_VERSION;
+    let model_audit_usable = trackers_usable && super::model_audit::initialize(&recovery);
     let tracked = |step: &str, run: &dyn Fn(&Connection) -> Result<()>| tracked_recovery(&recovery, version, step, run);
     tracked("legacy prompt cutoff", &|db| Store::record_legacy_prompt_cutoff(db, trackers_usable))?;
     tracked("unfinished tools", &|db| {
@@ -139,7 +140,7 @@ pub(super) fn recover_after_restart(db: &mut Connection) -> Result<(usize, i64)>
         Ok(())
     })?;
     recovery.commit().map_err(|e| e.to_string())?;
-    Ok((restart_interrupted, version))
+    Ok((restart_interrupted, version, model_audit_usable))
 }
 
 /// Runs `work` inside a SQLite savepoint named `name`, rolling back only the savepoint on

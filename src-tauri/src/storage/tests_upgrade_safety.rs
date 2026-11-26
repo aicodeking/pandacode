@@ -37,6 +37,7 @@ impl TestDatabase {
         for table in V38_TRACKER_TABLES {
             db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
         }
+        db.execute_batch("DROP TABLE task_model_runs").unwrap();
         for index in V38_SCHEMA_INDEXES.into_iter().chain(V38_BOT_INDEXES) {
             db.execute_batch(&format!("DROP INDEX {index}")).unwrap();
         }
@@ -395,6 +396,11 @@ fn v37_0_3_151_upgrade_preserves_every_table_and_passes_integrity_checks() {
     expect(&mut before, "architect_teams", "session_id", "active", &[
         ("content", r#"{"status":"interrupted","generation":6,"revision":8,"pendingTurn":null,"workers":[{"id":"helper","status":"stopped"},{"id":"reviewer","status":"completed"}],"legacyPromptThroughId":3,"error":"PandaCode restarted. Resume explicitly to continue."}"#.to_owned().into()),
     ]);
+    before.insert("task_model_runs".into(), TableSnapshot {
+        columns: ["turn_message_id", "harness", "requested_model", "requested_effort", "reported_model"]
+            .into_iter().map(str::to_owned).collect(),
+        rows: Vec::new(),
+    });
     assert_eq!(snapshot(&store.db, false), before);
     let upgraded = snapshot(&store.db, true);
     drop(store);
