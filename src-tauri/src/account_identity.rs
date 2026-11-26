@@ -1,7 +1,8 @@
 //! Who a pool account is, for labelling it in Settings and Usage: the email and plan name the
-//! harness saved when it signed in. Read locally from the CLI's own files (Claude's
-//! `.config.json` / legacy `.claude.json` `oauthAccount`; Codex's `auth.json` ID token), only these two
-//! fields, never a token; nothing is sent anywhere.
+//! harness saved when it signed in, and whether a Codex login is still usable. Read locally from
+//! the CLI's own files (Claude's `.config.json` / legacy `.claude.json` `oauthAccount`; Codex's
+//! `auth.json` ID token, plus its access token's `exp` claim for the expiry check), only those
+//! fields, never a token's contents, and nothing is sent anywhere.
 
 use base64::Engine;
 use serde::Deserialize;
@@ -13,6 +14,8 @@ use std::time::SystemTime;
 
 /// Largest login file read; `.claude.json` also holds project history.
 const MAX_FILE: u64 = 64 << 20;
+/// How far the machine clock may be behind before a Codex access token counts as expired.
+const CLOCK_SKEW_SECONDS: i64 = 60;
 
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -116,6 +119,43 @@ pub(crate) fn local(provider: &str, env: &[(String, String)]) -> Identity {
     claude_json(env).map(|file| claude(&file)).unwrap_or_default()
 }
 
+/// Whether Codex's `auth.json` is a login that can still be used. An API-key login has no expiry;
+/// a ChatGPT login is usable only while its access token's `exp` claim is ahead, with a minute of
+/// clock skew allowed. Read locally: a missing, unreadable or malformed file is not a login.
+pub(crate) fn codex_signed_in(auth_json: &Path) -> bool {
+    let Ok(file) = std::fs::File::open(auth_json) else { return false };
+    if !file.metadata().is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_FILE) {
+        return false;
+    }
+    read_json::<Value>(file).is_some_and(|root| codex_keyed(&root) || codex_token_live(&root))
+}
+
+/// Codex selects auth_mode before token data (rust-v0.167.0 login/src/auth/manager.rs). A mode
+/// other than the two ChatGPT ones, or a key in the file, authenticates without an expiring token.
+fn codex_keyed(root: &Value) -> bool {
+    let mode = root.get("auth_mode").filter(|value| !value.is_null());
+    if mode.is_some_and(|value| !matches!(value.as_str(), Some("chatgpt" | "chatgptAuthTokens"))) {
+        return true;
+    }
+    ["OPENAI_API_KEY", "CODEX_API_KEY"].iter().any(|name| root.get(*name).is_some_and(|value| value.as_str().is_some_and(|key| !key.trim().is_empty())))
+}
+
+/// The ChatGPT access token is usable while its `exp` is ahead, never reading the token itself.
+fn codex_token_live(root: &Value) -> bool {
+    let Some(claims) = root["tokens"]["access_token"].as_str().and_then(token_claims) else { return false };
+    let now = SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)).unwrap_or_default();
+    claims.get("exp").and_then(Value::as_i64).is_some_and(|exp| exp.saturating_add(CLOCK_SKEW_SECONDS) > now)
+}
+
+/// A compact JWT's payload claims, decoded without verifying: the token is only read, never sent.
+fn token_claims(token: &str) -> Option<Value> {
+    let payload = token.split('.').nth(1)?;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload.trim_end_matches('='))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+}
+
 /// Codex: the claims of the ID token in `auth.json` (decoded without verifying; only shown).
 pub fn codex(auth_json: &Path) -> Identity {
     cached(auth_json, |file| Some(Login { identity: codex_claims(file), signed_in: false })).map(|login| login.identity).unwrap_or_default()
@@ -130,14 +170,7 @@ fn codex_claims(file: std::fs::File) -> Identity {
     {
         return Identity::default();
     }
-    let Some(payload) = root["tokens"]["id_token"].as_str().and_then(|token| token.split('.').nth(1)) else { return Identity::default() };
-    let Some(claims) = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload.trim_end_matches('='))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-    else {
-        return Identity::default();
-    };
+    let Some(claims) = root["tokens"]["id_token"].as_str().and_then(token_claims) else { return Identity::default() };
     let plan = clean(&claims["https://api.openai.com/auth"]["chatgpt_plan_type"]).map(|plan| {
         let mut chars = plan.chars();
         chars.next().map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
@@ -175,6 +208,15 @@ mod tests {
         let mut env: Vec<_> = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_CUSTOM_HEADERS", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE", "ANTHROPIC_FEDERATION_RULE_ID", "ANTHROPIC_IDENTITY_TOKEN_FILE", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_BASE_URL", "CODEX_API_KEY", "OPENAI_API_KEY"].into_iter().map(|name| (name.into(), String::new())).collect();
         env.push((if provider == "claude" { "CLAUDE_CONFIG_DIR" } else { "CODEX_HOME" }.into(), dir.to_string_lossy().into_owned()));
         env
+    }
+
+    /// A synthetic compact JWT; only the payload is ever decoded.
+    fn jwt(claims: &str) -> String {
+        format!("h.{}.s", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims))
+    }
+
+    fn unix_now() -> i64 {
+        SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)).unwrap_or_default()
     }
 
     #[test]
@@ -291,5 +333,45 @@ mod tests {
         assert_eq!(codex(&path), Identity { email: Some("b@example.com".into()), plan: Some("Plus".into()) });
         let bad = temp("auth.json", r#"{"tokens":{"id_token":"not-a-jwt"}}"#);
         assert_eq!(codex(&bad), Identity::default());
+    }
+
+    #[test]
+    fn codex_signed_in_requires_an_unexpired_access_token() {
+        let now = unix_now();
+        let live = temp("auth.json", &format!(r#"{{"tokens":{{"access_token":"{}"}}}}"#, jwt(&format!(r#"{{"exp":{}}}"#, now + 3600))));
+        assert!(codex_signed_in(&live));
+        let expired = temp("auth.json", &format!(r#"{{"tokens":{{"access_token":"{}"}}}}"#, jwt(&format!(r#"{{"exp":{}}}"#, now - 3600))));
+        assert!(!codex_signed_in(&expired));
+        // A minute of clock skew keeps a just-expired token usable.
+        let skew = temp("auth.json", &format!(r#"{{"tokens":{{"access_token":"{}"}}}}"#, jwt(&format!(r#"{{"exp":{}}}"#, now - 30))));
+        assert!(codex_signed_in(&skew));
+        let stale = temp("auth.json", &format!(r#"{{"tokens":{{"access_token":"{}"}}}}"#, jwt(&format!(r#"{{"exp":{}}}"#, now - CLOCK_SKEW_SECONDS - 30))));
+        assert!(!codex_signed_in(&stale));
+        let gpt_mode = temp("auth.json", &format!(r#"{{"auth_mode":"chatgpt","tokens":{{"access_token":"{}"}}}}"#, jwt(&format!(r#"{{"exp":{}}}"#, now - 3600))));
+        assert!(!codex_signed_in(&gpt_mode));
+        let no_exp = temp("auth.json", &format!(r#"{{"tokens":{{"access_token":"{}"}}}}"#, jwt(r#"{"email":"x@example.test"}"#)));
+        assert!(!codex_signed_in(&no_exp));
+        let not_a_jwt = temp("auth.json", r#"{"tokens":{"access_token":"not-a-jwt"}}"#);
+        assert!(!codex_signed_in(&not_a_jwt));
+        let missing = not_a_jwt.with_file_name("missing-auth.json");
+        assert!(!codex_signed_in(&missing));
+        let malformed = temp("auth.json", "{not json");
+        assert!(!codex_signed_in(&malformed));
+    }
+
+    #[test]
+    fn codex_signed_in_accepts_an_api_key_or_key_auth_mode() {
+        let expired = jwt(&format!(r#"{{"exp":{}}}"#, unix_now() - 3600));
+        for mode in ["apikey", "headers", "agentIdentity", "personalAccessToken", "bedrockApiKey", "unknown"] {
+            let path = temp("auth.json", &format!(r#"{{"auth_mode":"{mode}","tokens":{{"access_token":"{expired}"}}}}"#));
+            assert!(codex_signed_in(&path), "mode {mode} has no expiry");
+        }
+        let file_key = temp("auth.json", r#"{"OPENAI_API_KEY":"sk-test"}"#);
+        assert!(codex_signed_in(&file_key));
+        let codex_key = temp("auth.json", r#"{"CODEX_API_KEY":"sk-test"}"#);
+        assert!(codex_signed_in(&codex_key));
+        // An empty key does not authenticate; the token decides.
+        let empty_key = temp("auth.json", &format!(r#"{{"OPENAI_API_KEY":"","auth_mode":"chatgpt","tokens":{{"access_token":"{expired}"}}}}"#));
+        assert!(!codex_signed_in(&empty_key));
     }
 }
