@@ -216,3 +216,127 @@ test('a refused workflow step shows inline and leaves no partial chain', async (
   await flow.getByRole('textbox', { name: 'Step 1 message' }).press('Escape');
   await expect(panel(page).locator('.schedule-row')).toHaveCount(before);
 });
+
+const group = (page: Page, name: string) => panel(page).getByRole('region', { name, exact: true });
+
+test('the sidebar Schedules button opens Settings on the Schedules page', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await expect(prompt(page)).toBeEnabled();
+  const button = page.locator('.sidebar-actions').getByRole('button', { name: 'Schedules', exact: true });
+  await expect(button).toHaveAttribute('title', 'Schedules');
+  await button.click();
+  await expect(region(page).getByRole('tab', { name: 'Schedules', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(panel(page).getByRole('heading', { name: 'Upcoming', exact: true })).toBeVisible();
+});
+
+test('schedules are grouped into Repeating then Once, active first', async ({ page }) => {
+  await open(page);
+  const names = await panel(page).locator('.schedules-group').evaluateAll(groups => groups.map(item => item.getAttribute('aria-label')));
+  expect(names).toEqual(['Repeating', 'Once']);
+  await expect(group(page, 'Repeating').locator('h4')).toContainText('3');
+  await expect(group(page, 'Once').locator('h4')).toContainText('1');
+  await expect(group(page, 'Repeating').locator('.schedule-row', { hasText: 'Morning summary' })).toBeVisible();
+  await expect(group(page, 'Once').locator('.schedule-row', { hasText: 'Check the CI run' })).toBeVisible();
+  await expect(group(page, 'Once').locator('.schedule-row', { hasText: 'Morning summary' })).toHaveCount(0);
+  await row(page, 'Morning summary').getByRole('checkbox', { name: 'Morning summary', exact: true }).uncheck();
+  await expect(row(page, 'Morning summary')).toHaveAttribute('data-enabled', 'false');
+  const titles = await group(page, 'Repeating').locator('.schedule-row .schedule-main > strong').allTextContents();
+  expect(titles.at(-1)).toBe('Morning summary');
+  await panel(page).getByRole('button', { name: 'Agents', exact: true }).click();
+  await expect(panel(page).locator('.schedules-group')).toHaveCount(1);
+  await expect(group(page, 'Once')).toBeVisible();
+});
+
+test('a new-task schedule shows its target as text and its recent runs as links to the tasks', async ({ page }) => {
+  await open(page);
+  const daily = row(page, 'Daily check');
+  await expect(group(page, 'Repeating').locator('.schedule-row', { hasText: 'Daily check' })).toBeVisible();
+  await expect(daily.locator('.schedule-target')).toHaveText('New task each time');
+  await expect(daily.locator('button.schedule-thread')).toHaveCount(0);
+  const chip = daily.locator('button.schedule-run-chip');
+  await expect(chip).toHaveCount(1);
+  const name = (await chip.locator('.schedule-chip-title').textContent())!;
+  await expect(chip).toHaveAccessibleName(`Open task: ${name}, Started`);
+  await expect(row(page, 'Morning summary').locator('.schedule-run-chip')).toHaveCount(0);
+  await expect(row(page, 'Morning summary').locator('.schedule-target')).toHaveCount(0);
+  await chip.click();
+  await expect(region(page)).toBeHidden();
+  await expect(page.locator('#navigation .task-item[aria-current="page"]')).toContainText(name);
+});
+
+test('Run now on a new-task schedule adds a run chip for a task it started', async ({ page }) => {
+  await open(page);
+  const daily = row(page, 'Daily check');
+  await daily.getByRole('button', { name: 'More for Daily check' }).click();
+  await page.getByRole('menuitem', { name: 'Run now', exact: true }).click();
+  await expect(daily.locator('button.schedule-run-chip')).toHaveCount(2);
+  await expect(daily.locator('button.schedule-run-chip').first().locator('.schedule-chip-title')).toContainText('Daily check ·');
+});
+
+test('a schedule with no runs yet says so, and a removed task is not a link', async ({ page }) => {
+  await page.addInitScript(() => {
+    const now = Date.now();
+    const base = { sessionId: 'session-1', sessionTitle: '', projectId: 'project-1', projectName: '', prompt: 'Go', kind: 'daily', intervalMinutes: null, days: [], watchSessionId: null, watchSessionTitle: null, onlyOnSuccess: false, enabled: true, createdBy: 'user', createdBySession: null, maxRuns: null, workflowId: null, chainFromId: null, newTask: true, createdAt: now, updatedAt: now };
+    (window as any).__schedules = [
+      { ...base, id: 's-1', title: 'Nightly', timeOfDay: '02:00', nextRunAt: now + 3_600_000, lastRunAt: null, runCount: 0, lastTaskId: null },
+      { ...base, id: 's-2', title: 'Weekly', timeOfDay: '03:00', nextRunAt: now + 7_200_000, lastRunAt: now - 1000, runCount: 1, lastTaskId: 'gone' }];
+    (window as any).__scheduleRuns = [
+      { id: 'r-1', scheduleId: 's-2', sessionId: 'gone', title: 'Weekly', at: now - 1000, outcome: 'started', detail: 'Started a new task', sequence: 1, manual: false },
+      { id: 'r-2', scheduleId: 's-2', sessionId: 'session-1', title: 'Weekly', at: now - 5000, outcome: 'failed', detail: 'Could not start the task', sequence: 0, manual: false }];
+  });
+  await open(page);
+  await expect(row(page, 'Nightly')).toContainText('No runs yet.');
+  const weekly = row(page, 'Weekly');
+  await expect(weekly.locator('span.schedule-run-chip')).toContainText('Task removed');
+  await expect(weekly.locator('button', { hasText: 'Task removed' })).toHaveCount(0);
+  await expect(weekly.locator('.schedule-run-detail')).toHaveText('Could not start the task');
+});
+
+test('the New task each time switch turns Thread into Template thread and rules out After', async ({ page }) => {
+  await open(page);
+  await panel(page).getByRole('button', { name: 'New schedule', exact: true }).click();
+  const after = editor(page).getByRole('button', { name: 'After a thread finishes', exact: true });
+  const toggle = editor(page).getByRole('checkbox', { name: 'New task each time', exact: true });
+  await expect(toggle).not.toBeChecked();
+  await expect(editor(page).getByText('Each run starts its own task instead of messaging one thread.')).toBeVisible();
+  await expect(editor(page).getByRole('combobox', { name: 'Thread', exact: true })).toBeVisible();
+  await expect(after).toBeEnabled();
+  await after.click();
+  await expect(after).toHaveAttribute('aria-pressed', 'true');
+  await toggle.check();
+  await expect(after).toBeDisabled();
+  await expect(after).toHaveAttribute('title', 'Needs a clock');
+  await expect(after).toHaveAttribute('aria-pressed', 'false');
+  await expect(editor(page).getByRole('button', { name: 'Once', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(editor(page).getByRole('combobox', { name: 'Template thread', exact: true })).toBeVisible();
+  await expect(editor(page).getByText('Harness and model come from it. The thread itself isn’t messaged.')).toBeVisible();
+  await expect(editor(page).getByRole('combobox', { name: 'Thread', exact: true })).toHaveCount(0);
+  await editor(page).getByRole('textbox', { name: 'Message', exact: true }).fill('Check it');
+  await expect(editor(page).locator('.schedules-preview')).toContainText('Starts a new task each time, from');
+  await toggle.uncheck();
+  await expect(after).toBeEnabled();
+  await expect(editor(page).getByRole('combobox', { name: 'Thread', exact: true })).toBeVisible();
+  await expect(editor(page).locator('.schedules-preview')).toContainText('Sends to');
+});
+
+test('saving a new-task schedule lists it under Repeating, and editing it keeps the switch on', async ({ page }) => {
+  await open(page);
+  await panel(page).getByRole('button', { name: 'New schedule', exact: true }).click();
+  await editor(page).getByRole('checkbox', { name: 'New task each time', exact: true }).check();
+  await editor(page).getByRole('textbox', { name: 'Title', exact: true }).fill('Fresh each day');
+  await editor(page).getByRole('textbox', { name: 'Message', exact: true }).fill('Summarize the day.');
+  await editor(page).getByRole('button', { name: 'Daily', exact: true }).click();
+  await editor(page).getByRole('button', { name: 'Save schedule', exact: true }).click();
+  await expect(editor(page)).toBeHidden();
+  const saved = group(page, 'Repeating').locator('.schedule-row', { hasText: 'Fresh each day' });
+  await expect(saved.locator('.schedule-target')).toHaveText('New task each time');
+  await expect(saved).toContainText('No runs yet.');
+  await saved.getByRole('button', { name: 'More for Fresh each day' }).click();
+  await page.getByRole('menuitem', { name: 'Edit…', exact: true }).click();
+  await expect(editor(page).getByRole('checkbox', { name: 'New task each time', exact: true })).toBeChecked();
+  await expect(editor(page).getByRole('combobox', { name: 'Template thread', exact: true })).toBeVisible();
+  await editor(page).getByRole('button', { name: 'Cancel', exact: true }).click();
+  await saved.getByRole('button', { name: 'More for Fresh each day' }).click();
+  await page.getByRole('menuitem', { name: 'Duplicate', exact: true }).click();
+  await expect(editor(page).getByRole('checkbox', { name: 'New task each time', exact: true })).toBeChecked();
+});

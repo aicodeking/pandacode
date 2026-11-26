@@ -29,6 +29,7 @@ const AFTER_GAP: i64 = 30_000;
 const FAILURE_LIMIT: i64 = 3;
 const TICK_SECONDS: u64 = 15;
 const KINDS: &str = "Choose once, interval, daily, weekdays, weekly or after.";
+pub(crate) const NEW_TASK_NEEDS_CLOCK: &str = "A new-task schedule needs a clock: once, interval, daily, weekdays or weekly.";
 
 pub(crate) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS task_schedules(id TEXT PRIMARY KEY,
   created_by_session TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   run_count INTEGER NOT NULL DEFAULT 0, max_runs INTEGER, consecutive_failures INTEGER NOT NULL DEFAULT 0,
   trigger_ok INTEGER, workflow_id TEXT, chain_from_id TEXT, saved_remotely INTEGER NOT NULL DEFAULT 0,
+  new_task INTEGER NOT NULL DEFAULT 0, last_task_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
   created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS task_schedules_due ON task_schedules(enabled,next_run_at);
 CREATE INDEX IF NOT EXISTS task_schedules_session ON task_schedules(session_id);
@@ -83,6 +85,11 @@ pub struct TaskSchedule {
     pub workflow_id: Option<String>,
     /// For a workflow `after` step: the step whose run must come first.
     pub chain_from_id: Option<String>,
+    /// Each run starts a new task in the project instead of messaging `session_id`, which is
+    /// then only the template whose harness, model and mode the new task copies.
+    pub new_task: bool,
+    /// The task the latest new-task run started.
+    pub last_task_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     /// Title of the thread that created it (for the trace), not part of the IPC type.
@@ -123,6 +130,7 @@ pub struct ScheduleInput {
     pub max_runs: Option<i64>,
     pub workflow_id: Option<String>,
     pub chain_from_id: Option<String>,
+    pub new_task: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -180,7 +188,7 @@ pub(crate) fn remote_team_gate(store: &Store, schedule: &TaskSchedule, remote_fu
     Ok(leads_team.then_some(REMOTE_TEAM_SKIP))
 }
 
-const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id";
+const COLUMNS: &str = "t.id,t.session_id,s.title,s.project_id,p.name,t.title,t.prompt,t.kind,t.interval_minutes,t.time_of_day,t.days,t.watch_session_id,w.title,t.only_on_success,t.next_run_at,t.last_run_at,t.enabled,t.created_by,t.created_by_session,t.run_count,t.max_runs,t.created_at,t.updated_at,c.title,t.trigger_ok,t.workflow_id,t.chain_from_id,t.new_task,t.last_task_id";
 const FROM: &str = "FROM task_schedules t JOIN sessions s ON s.id=t.session_id JOIN projects p ON p.id=s.project_id LEFT JOIN sessions w ON w.id=t.watch_session_id LEFT JOIN sessions c ON c.id=t.created_by_session";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
@@ -212,6 +220,8 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TaskSchedule> {
         trigger_ok: r.get(24)?,
         workflow_id: r.get(25)?,
         chain_from_id: r.get(26)?,
+        new_task: r.get(27)?,
+        last_task_id: r.get(28)?,
     })
 }
 
@@ -291,7 +301,10 @@ fn validate(store: &Store, input: &ScheduleInput, existing: Option<&str>, now: i
     if input.max_runs.is_some_and(|runs| !(1..=1000).contains(&runs)) {
         return Err("Max runs must be 1 to 1000, or empty to run until removed.".into());
     }
-    let mut plan = ScheduleInput { session_id: target.id.clone(), title, prompt, kind: input.kind.clone(), max_runs: input.max_runs, ..Default::default() };
+    if input.new_task && input.kind == "after" {
+        return Err(NEW_TASK_NEEDS_CLOCK.into());
+    }
+    let mut plan = ScheduleInput { session_id: target.id.clone(), title, prompt, kind: input.kind.clone(), max_runs: input.max_runs, new_task: input.new_task, ..Default::default() };
     let next_run_at = match input.kind.as_str() {
         "once" => {
             let at = input.run_at.ok_or("Pick when the one-off run should happen.")?;
@@ -383,9 +396,9 @@ pub(crate) fn create(store: &Store, input: &ScheduleInput, created_by: &str, cre
     store
         .db
         .execute(
-            "INSERT INTO task_schedules(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,enabled,created_by,created_by_session,max_runs,created_at,updated_at,workflow_id,chain_from_id)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?14,?15,?15,?16,?17)",
-            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, created_by, created_by_session, input.max_runs, now, input.workflow_id, input.chain_from_id],
+            "INSERT INTO task_schedules(id,session_id,title,prompt,kind,interval_minutes,time_of_day,days,watch_session_id,only_on_success,next_run_at,enabled,created_by,created_by_session,max_runs,created_at,updated_at,workflow_id,chain_from_id,new_task)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,1,?12,?13,?14,?15,?15,?16,?17,?18)",
+            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, created_by, created_by_session, input.max_runs, now, input.workflow_id, input.chain_from_id, input.new_task],
         )
         .map_err(|e| e.to_string())?;
     get(store, &id)
@@ -400,8 +413,8 @@ pub(crate) fn update(store: &Store, id: &str, input: &ScheduleInput, now: i64) -
     store
         .db
         .execute(
-            "UPDATE task_schedules SET session_id=?2,title=?3,prompt=?4,kind=?5,interval_minutes=?6,time_of_day=?7,days=?8,watch_session_id=?9,only_on_success=?10,next_run_at=?11,max_runs=?12,updated_at=?13,workflow_id=?14,chain_from_id=?15 WHERE id=?1",
-            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, input.max_runs, now, input.workflow_id, input.chain_from_id],
+            "UPDATE task_schedules SET session_id=?2,title=?3,prompt=?4,kind=?5,interval_minutes=?6,time_of_day=?7,days=?8,watch_session_id=?9,only_on_success=?10,next_run_at=?11,max_runs=?12,updated_at=?13,workflow_id=?14,chain_from_id=?15,new_task=?16 WHERE id=?1",
+            params![id, input.session_id, input.title, input.prompt, input.kind, input.interval_minutes, input.time_of_day, json!(input.days).to_string(), input.watch_session_id, input.only_on_success, next_run_at, input.max_runs, now, input.workflow_id, input.chain_from_id, input.new_task],
         )
         .map_err(|e| e.to_string())?;
     get(store, id)
@@ -548,12 +561,29 @@ fn task_ref(title: Option<&str>, id: Option<&str>) -> String {
     format!("“{}” ({})", title.unwrap_or("a task"), id.unwrap_or("unknown"))
 }
 
+/// Local `YYYY-MM-DD HH:MM`, as in the trace block and a new task's title.
+pub(super) fn local_stamp(at: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local.timestamp_millis_opt(at).single().map(|time| time.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default()
+}
+
+/// The longest a task title may be, in bytes (`Store::create_board_task`).
+const TASK_TITLE_LIMIT: usize = 200;
+
+/// A new-task run's task title: the schedule's title, then the local time it started.
+pub(super) fn new_task_title(title: &str, stamp: &str) -> String {
+    let suffix = format!(" · {stamp}");
+    let mut used = suffix.len();
+    let head: String = title.chars().take_while(|c| { used += c.len_utf8(); used <= TASK_TITLE_LIMIT }).collect();
+    format!("{head}{suffix}")
+}
+
 /// The exact text a fired schedule sends (format in docs/schedules.md); `schedule` is
 /// already advanced, so `run_count` is this run.
 pub(crate) fn message(schedule: &TaskSchedule, manual: bool, at: i64) -> String {
     let of = schedule.max_runs.map(|max| format!(" of {max}")).unwrap_or_default();
     let creator = schedule.created_by_session.as_deref();
-    let own = creator == Some(schedule.session_id.as_str());
+    let own = !schedule.new_task && creator == Some(schedule.session_id.as_str());
     let agent = schedule.created_by == "agent";
     let by = match (agent, own, creator) {
         (false, _, _) => "the user".to_owned(),
@@ -569,10 +599,7 @@ pub(crate) fn message(schedule: &TaskSchedule, manual: bool, at: i64) -> String 
         Some(false) => format!("{} finished with an error", watched()),
         None => "clock time reached".to_owned(),
     };
-    let local = {
-        use chrono::TimeZone;
-        chrono::Local.timestamp_millis_opt(at).single().map(|time| time.format("%Y-%m-%d %H:%M").to_string()).unwrap_or_default()
-    };
+    let local = local_stamp(at);
     let mut text = format!(
         "{}\n\n{TRACE_HEADER}: {}\nSchedule ID: {} · {} · run {}{of} · set by {by}{manual_note}\nTrigger: {trigger} · local time {local}",
         schedule.prompt,
@@ -590,6 +617,12 @@ pub(crate) fn message(schedule: &TaskSchedule, manual: bool, at: i64) -> String 
         text.push_str("\nYou set this earlier in this thread. Pick up where you left off; cancel it with pandacode_cancel_schedule if it is no longer needed.");
     }
     text
+}
+
+/// Remembers the task a new-task run started.
+pub(super) fn set_last_task(store: &Store, id: &str, task_id: &str) -> Result<()> {
+    store.db.execute("UPDATE task_schedules SET last_task_id=?2 WHERE id=?1", params![id, task_id]).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 fn run_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleRun> {
@@ -730,7 +763,7 @@ pub async fn schedule_run_now(app: tauri::AppHandle, state: State<'_, AppState>,
         }
         schedule
     };
-    if firing::console_only(&state, &schedule.session_id) {
+    if !schedule.new_task && firing::console_only(&state, &schedule.session_id) {
         return Err("This thread's harness console is open; close it, then run the schedule.".into());
     }
     let schedule = advance(&*lock(&state)?, &schedule, crate::storage::now(), true)?;

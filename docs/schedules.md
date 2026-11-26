@@ -7,10 +7,10 @@ Agents and the user can schedule wake-ups and timed messages for any task (threa
 - Native: `src-tauri/src/schedules.rs` (types, validation, IPC commands), `src-tauri/src/schedules/firing.rs` (the clock loop, delivery, `run_finished`), `src-tauri/src/schedules/tools.rs` (agent tools), `src-tauri/src/schedules/tests.rs`. Clock arithmetic is shared with bots: `next_run_on`/`next_run_zoned` in `src-tauri/src/bots/schedule.rs`.
 - Window: the IPC contract is `src/schedules-api.ts` (keep it in step with `schedules.rs`); the thread panel is `src/schedules-thread.ts`, Settings → Schedules is `src/schedules-settings.ts`, and preview mocks are in `src/preview-schedules.ts`.
 
-## Tables (schema 35)
+## Tables (schema 38)
 
-- `task_schedules`: one row per schedule. `session_id` is the receiving task and `watch_session_id` the watched task for `after`; both cascade on task deletion. `created_by` is `user` or `agent`, and `created_by_session` (set to null when that task is deleted) is the agent's thread. Also `kind`, `interval_minutes`, `time_of_day` (HH:MM local), `days` (JSON, 0 = Sunday), `only_on_success`, `next_run_at`, `last_run_at`, `enabled`, `run_count`, `max_runs`, `consecutive_failures`, `trigger_ok` (the pending `after` trigger's result), `workflow_id` (indexed; groups a workflow's steps) and `chain_from_id` (a workflow step's predecessor).
-- `task_schedule_runs`: the run history. `schedule_id` has no foreign key, so history outlives a deleted schedule. Each run records an outcome (`started`, `queued`, `skipped` or `failed`), a detail, its sequence number and whether it was `manual` (Run now). Only the newest 200 runs per task are kept.
+- `task_schedules`: one row per schedule. `session_id` is the receiving task and `watch_session_id` the watched task for `after`; both cascade on task deletion. `created_by` is `user` or `agent`, and `created_by_session` (set to null when that task is deleted) is the agent's thread. Also `kind`, `interval_minutes`, `time_of_day` (HH:MM local), `days` (JSON, 0 = Sunday), `only_on_success`, `next_run_at`, `last_run_at`, `enabled`, `run_count`, `max_runs`, `consecutive_failures`, `trigger_ok` (the pending `after` trigger's result), `workflow_id` (indexed; groups a workflow's steps), `chain_from_id` (a workflow step's predecessor), `new_task` (schema 38, default 0) and `last_task_id` (schema 38; the task the latest new-task run started, set to null when that task is deleted).
+- `task_schedule_runs`: the run history. `schedule_id` has no foreign key, so history outlives a deleted schedule. Each run records an outcome (`started`, `queued`, `skipped` or `failed`), a detail, its sequence number and whether it was `manual` (Run now). A new-task run is recorded against the task it started, so deleting that task deletes the run. Only the newest 200 runs per task are kept.
 - `scheduler_settings`: one JSON row (`SchedulerSettings`).
 
 ## Commands
@@ -26,6 +26,7 @@ Validation rules:
 - Once: within 366 days and not more than 1 minute in the past.
 - Max runs: 1 to 1000, or none. An edit cannot set Max runs at or below the runs already made.
 - The target task must exist and must not be a draft.
+- `newTask` is refused with `after`: "A new-task schedule needs a clock: once, interval, daily, weekdays or weekly."
 - The watched task must be in the same project and must not be the target.
 - An `after` schedule is refused, with "This would loop: …", when enabled `after` schedules lead from its target back to its watched task. The check runs on create, update and re-enable.
 
@@ -38,6 +39,12 @@ Validation rules:
 - An open harness console with no agent run cannot take a message (the window's queue cannot send to it either), so that thread's due schedules are left due: not advanced, not counted as failures, no run recorded. They fire on the first tick after the console closes. Run now refuses with a message instead.
 - The loop reads due threads, checks consoles without holding the store lock, then advances; `advance` only succeeds if `run_count` is unchanged, so overlapping ticks never run a schedule twice.
 - Archived threads are recorded as `skipped` ("Thread is archived"). A delivery error is recorded as `failed`; after 3 failures in a row the schedule turns off, and the run detail says so.
+
+## New task each time
+
+A schedule with `new_task` (`newTask` in the IPC types) does not message its thread. That thread (`session_id`) is the template: each run creates a task in its project with `create_board_task`, copying the template's harness, model and mode (as `pandacode_create_task` copies the current task's). The title is `<schedule title> · YYYY-MM-DD HH:MM` (local time, cut to fit 200 bytes), the description is the prompt, and `send_prompt` starts it with the usual message and trace block. The run is recorded as `started` ("Started a new task") against the new task, and `last_task_id` is set. If creating or starting fails, a `failed` run is recorded on the template, with the usual 3-failure rule.
+
+The template being archived, busy, leading a busy team or showing an open console does not hold the run, and Run now works while its console is open. The remote team gate is still checked on the template. A phone cannot set `newTask` (it is always off for a new remote schedule) and keeps it when editing.
 
 ## Workflows
 
@@ -74,7 +81,8 @@ You set this earlier in this thread. Pick up where you left off; cancel it with 
   - `afterTaskId` fires when that thread's run ends; a run in progress counts. A wake-up cannot watch its own thread ("…would wake on its own turn end").
   - `at` takes RFC 3339, a local `YYYY-MM-DDTHH:MM`, or a local `HH:MM` (its next occurrence).
 - `pandacode_schedule_message {taskId, text, …timing}`: messages another task in the same project.
-- `pandacode_list_schedules {taskId?, project?}`: lists schedules with their last 5 runs. The result also has `thisTaskId` and the project's open `tasks` (id, title, running; at most 50), so agents can find IDs.
+- `pandacode_schedule_task {title, prompt, …timing}`: starts a NEW task in this project later, instead of waking this thread. This thread is the template. The timing arguments are those of `pandacode_schedule_wakeup`, except that `afterTaskId` and `kind` `after` are refused ("A new-task schedule needs a clock: …"). The schedule counts toward `agentLimitPerTask` and gets the same default of 20 runs.
+- `pandacode_list_schedules {taskId?, project?}`: lists schedules (each carries `newTask` and `lastTaskId`) with their last 5 runs. The result also has `thisTaskId` and the project's open `tasks` (id, title, running; at most 50), so agents can find IDs.
 - `pandacode_cancel_schedule {scheduleId}`: allowed only for agent-created schedules in this project that target this thread or that this thread created. A user-created schedule is refused with "Ask the user to remove it in Settings → Schedules."
 
 Every result carries `nowLocal`; created schedules also carry their `id`, `cadence` and `nextRunLocal`. Agents cannot edit or pause schedules: they cancel and recreate them.
@@ -83,6 +91,7 @@ Limits and approvals:
 - Each creating thread may have up to `agentLimitPerTask` active agent schedules (default 10).
 - Agent schedules without `maxRuns`: `after` runs once, other recurring kinds stop after 20 runs. Create results include `stopsAfter` ("runs once; pass maxRuns for repeats", "stops after 20 runs; pass maxRuns up to 1000 to keep going").
 - Wake-up, list and cancel need no approval. They are `schedules::tools::self_scoped`, which the Claude allow-list in `providers.rs` checks.
+- `pandacode_schedule_task` is an approval tool while `askBeforeMessagingOtherTasks` is on too, since it starts turns outside the calling thread. It is not `self_scoped` and, like `pandacode_schedule_message`, is in `ALWAYS_ASK`.
 - `pandacode_schedule_message` is an approval tool while `askBeforeMessagingOtherTasks` is on. It is in `cloud::deploy::ALWAYS_ASK`, so it asks even in Full mode, but only while the setting makes it an approval tool.
 - `TURN_ENDS` in `lib.rs` tells agents that `pandacode_schedule_wakeup`, when listed, survives the turn.
 

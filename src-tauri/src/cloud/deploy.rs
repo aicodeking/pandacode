@@ -24,9 +24,10 @@ const NETLIFY: &str = "netlify-cli@27.14.2";
 const OUTPUT: usize = 128 * 1024;
 
 /// Approval tools that ask on every call, even in full-access mode. Scheduled messages to
-/// other tasks are approval tools only while Settings asks first (`schedules::tools`).
+/// other tasks and scheduled new tasks are approval tools only while Settings asks first
+/// (`schedules::tools`).
 /// Colab runtimes spend paid compute units, so managing them always asks too.
-pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message", "pandacode_colab_manage"];
+pub const ALWAYS_ASK: &[&str] = &["pandacode_cloud_cli", "pandacode_schedule_message", "pandacode_schedule_task", "pandacode_colab_manage"];
 
 /// The always-ask tool a call counts as, if any: its own name, or `pandacode_colab_manage`
 /// for a Python run that may create a paid Colab runtime (`autoCreate`). Tool hosts ask (and

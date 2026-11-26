@@ -2,7 +2,7 @@
 //! the project later, list and cancel. Registered only while Settings allows agents
 //! to schedule; messaging another task asks first unless the user turned that off.
 
-use super::{cadence, create, get, select, settings, ScheduleInput, TaskSchedule};
+use super::{cadence, create, get, select, settings, ScheduleInput, TaskSchedule, NEW_TASK_NEEDS_CLOCK};
 use crate::agent_tools::{spec, validate_spec};
 use crate::bots::schedule::{local_offset_ms, next_run_zoned};
 use crate::providers::ToolHost;
@@ -18,6 +18,7 @@ pub(super) const PROMPT_PREVIEW: usize = 8000;
 /// Recurring agent schedules stop after this many runs unless they say otherwise (`after` ones after 1).
 pub(crate) const AGENT_DEFAULT_MAX_RUNS: i64 = 20;
 const MESSAGE: &str = "pandacode_schedule_message";
+const NEW_TASK: &str = "pandacode_schedule_task";
 
 fn with_timing(extra: Value) -> Value {
     let mut properties = json!({
@@ -44,6 +45,7 @@ pub(crate) fn catalog() -> Vec<Value> {
     vec![
         spec("schedule_wakeup", "Wake THIS thread later with a note to yourself (check a deploy in 20 min, poll CI hourly, continue after another thread finishes). The note comes back as a user message when it fires, even after this turn ends. You cannot edit or pause a schedule: cancel and recreate it.", with_timing(json!({"note": text})), &["note"]),
         spec("schedule_message", "Send a message to ANOTHER thread in this project later, as if the user sent it. taskId comes from pandacode_list_schedules (tasks).", with_timing(json!({"taskId": id, "text": text})), &["taskId", "text"]),
+        spec("schedule_task", "Start a NEW task in this project later (once or on repeat) with this prompt, instead of waking this thread. Use for routines and checks so each run starts with a fresh context.", with_timing(json!({"title": {"type":"string","maxLength":120,"description":"Short label; each run's task is titled with it and the start time."}, "prompt": text})), &["title", "prompt"]),
         spec("list_schedules", "List schedules for this thread (default), another thread (taskId) or the whole project (project: true), with their last 5 runs, plus thisTaskId and the project's open tasks (IDs for taskId/afterTaskId).", json!({"taskId": id, "project": {"type":"boolean"}}), &[]),
         spec("cancel_schedule", "Delete a schedule by ID: only agent-set schedules that target this thread or that this thread created.", json!({"scheduleId": id}), &["scheduleId"]),
     ]
@@ -56,7 +58,7 @@ fn names() -> Vec<String> {
 /// Tools that only touch this thread's own schedules, so harnesses need not ask before them.
 /// Claude-family harnesses check this beside `bots::tools::self_scoped` in `providers.rs`.
 pub(crate) fn self_scoped(name: &str) -> bool {
-    name != MESSAGE && names().iter().any(|known| known == name)
+    name != MESSAGE && name != NEW_TASK && names().iter().any(|known| known == name)
 }
 
 /// Adds schedule tools when Settings lets agents schedule; otherwise returns the host unchanged.
@@ -71,6 +73,7 @@ pub(crate) fn with_schedules(base: Option<ToolHost>, app: tauri::AppHandle, sess
     let mut approval_tools = base.as_ref().map_or_else(Default::default, |host| host.approval_tools.clone());
     if settings.ask_before_messaging_other_tasks {
         approval_tools.insert(MESSAGE.to_owned());
+        approval_tools.insert(NEW_TASK.to_owned());
     }
     tools.extend(catalog());
     Some(ToolHost {
@@ -239,7 +242,10 @@ fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &Hash
         Ok(task)
     };
     match name {
-        "pandacode_schedule_wakeup" | MESSAGE => {
+        "pandacode_schedule_wakeup" | MESSAGE | NEW_TASK => {
+            if name == NEW_TASK && (!string("afterTaskId").is_empty() || string("kind") == "after") {
+                return Err(NEW_TASK_NEEDS_CLOCK.into());
+            }
             let target = if name == MESSAGE {
                 let task = same_project(&string("taskId"))?;
                 if task.id == me.id {
@@ -262,7 +268,12 @@ fn run(store: &Store, session_id: &str, name: &str, args: &Value, running: &Hash
             }
             let mut input = timing_input(args, now)?;
             input.session_id = target;
-            input.prompt = string(if name == MESSAGE { "text" } else { "note" });
+            input.prompt = string(match name {
+                MESSAGE => "text",
+                NEW_TASK => "prompt",
+                _ => "note",
+            });
+            input.new_task = name == NEW_TASK;
             if input.max_runs.is_none() {
                 input.max_runs = match input.kind.as_str() {
                     "once" => None,

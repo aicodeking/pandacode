@@ -1,7 +1,7 @@
 //! The clock loop and delivery: due schedules are advanced under the store lock, then
 //! their message is queued behind a busy thread or sent as a turn through `send_prompt`.
 
-use super::{advance, changed, due, message, note_outcome, record_run, trigger, ScheduleRun, TaskSchedule, TICK_SECONDS};
+use super::{advance, changed, due, local_stamp, message, new_task_title, note_outcome, record_run, set_last_task, trigger, ScheduleRun, TaskSchedule, TICK_SECONDS};
 use crate::{message_queue, storage::Store, AppState, Result};
 use serde_json::json;
 use std::collections::HashSet;
@@ -19,9 +19,10 @@ pub(super) fn console_only(state: &AppState, session_id: &str) -> bool {
     !running && crate::terminal::harness_running(&state.terminals, session_id).unwrap_or(false)
 }
 
-/// Advances the due schedules whose thread is not `held`; they are the runs to deliver.
+/// Advances the due schedules whose thread is not `held` (a new-task run sends nothing to its
+/// thread, so it is never held); they are the runs to deliver.
 pub(super) fn take_due(store: &Store, now: i64, held: &HashSet<String>) -> Result<Vec<TaskSchedule>> {
-    Ok(due(store, now)?.iter().filter(|schedule| !held.contains(&schedule.session_id)).filter_map(|schedule| advance(store, schedule, now, false).ok()).collect())
+    Ok(due(store, now)?.iter().filter(|schedule| schedule.new_task || !held.contains(&schedule.session_id)).filter_map(|schedule| advance(store, schedule, now, false).ok()).collect())
 }
 
 /// Sends an advanced schedule's message: queued behind a running turn or team, or started as a turn.
@@ -31,6 +32,9 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
     // Read before the store lock: the remote state is never locked while the store is.
     // (A manual run was checked by whoever ran it.)
     let remote_full_access = manual || crate::remote::full_access_for_remote_tasks(app);
+    if schedule.new_task {
+        return start_new_task(app, schedule, manual, now, remote_full_access).await;
+    }
     let team = {
         let store = crate::run_requests::lock_store(&state.store)?;
         let session = store.session(&schedule.session_id).map_err(|_| String::from("The thread was deleted."))?;
@@ -77,18 +81,66 @@ pub(crate) async fn deliver(app: &tauri::AppHandle, schedule: &TaskSchedule, man
     Ok(run)
 }
 
+/// Creates the task a new-task run starts, in the template's project with its harness, model and mode, and remembers it as the schedule's `last_task_id`.
+pub(super) fn create_run_task(store: &Store, schedule: &TaskSchedule, now: i64) -> Result<String> {
+    let template = store.session(&schedule.session_id).map_err(|_| String::from("The thread was deleted."))?;
+    let title = new_task_title(&schedule.title, &local_stamp(now));
+    let task = store.create_board_task(&template.project_id, &template.provider, &template.model, &template.mode, &title, &schedule.prompt)?;
+    set_last_task(store, &schedule.id, &task.id)?;
+    Ok(task.id)
+}
+
+/// Starts a new task in the template thread's project for a `new_task` schedule, with the
+/// template's harness, model and mode, and records the run against the new task. The template
+/// itself is never messaged, so it may be archived or busy.
+async fn start_new_task(app: &tauri::AppHandle, schedule: &TaskSchedule, manual: bool, now: i64, remote_full_access: bool) -> Result<ScheduleRun> {
+    let state = app.state::<AppState>();
+    let created = {
+        let store = crate::run_requests::lock_store(&state.store)?;
+        if let Some(reason) = super::remote_team_gate(&store, schedule, remote_full_access)? {
+            let run = record_run(&store, schedule, now, "skipped", reason, manual)?;
+            drop(store);
+            changed(app, Some(&schedule.session_id));
+            return Ok(run);
+        }
+        create_run_task(&store, schedule, now)
+    };
+    let result = match created {
+        Ok(task_id) => {
+            let _ = app.emit("sessions-changed", ());
+            crate::send_prompt(app.clone(), state.clone(), task_id.clone(), message(schedule, manual, now), None).await.map(|_| task_id)
+        }
+        Err(error) => Err(error),
+    };
+    let run = {
+        let store = state.store.lock().map_err(|e| e.to_string())?;
+        match result {
+            Ok(task_id) => {
+                note_outcome(&store, schedule, None)?;
+                record_run(&store, &TaskSchedule { session_id: task_id, ..schedule.clone() }, now, "started", "Started a new task", manual)?
+            }
+            Err(error) => {
+                let detail = note_outcome(&store, schedule, Some(&error))?;
+                record_run(&store, schedule, now, "failed", &detail, manual)?
+            }
+        }
+    };
+    changed(app, Some(&schedule.session_id));
+    Ok(run)
+}
+
 pub(super) async fn tick(app: &tauri::AppHandle) {
     let now = crate::storage::now();
     let state = app.state::<AppState>();
     // Read the due threads first: the agents map is never locked while the store is.
-    let threads: Vec<String> = match state.store.lock() {
-        Ok(store) => due(&store, now).unwrap_or_default().into_iter().map(|schedule| schedule.session_id).collect(),
+    let due_now = match state.store.lock() {
+        Ok(store) => due(&store, now).unwrap_or_default(),
         Err(_) => return,
     };
-    if threads.is_empty() {
+    if due_now.is_empty() {
         return;
     }
-    let held: HashSet<String> = threads.into_iter().filter(|id| console_only(&state, id)).collect();
+    let held: HashSet<String> = due_now.into_iter().filter(|schedule| !schedule.new_task).map(|schedule| schedule.session_id).filter(|id| console_only(&state, id)).collect();
     let fired = match state.store.lock() {
         Ok(store) => take_due(&store, now, &held).unwrap_or_default(),
         Err(_) => return,

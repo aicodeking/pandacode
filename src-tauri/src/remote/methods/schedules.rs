@@ -234,7 +234,7 @@ fn input_param(params: &Value) -> Result<ScheduleInput> {
     if input.days.len() > 7 || input.time_of_day.as_deref().is_some_and(|time| time.len() > 8) || input.workflow_id.as_deref().is_some_and(|id| id.len() > 256) {
         return Err("Invalid schedule.".into());
     }
-    Ok(input)
+    Ok(ScheduleInput { new_task: false, ..input })
 }
 
 /// Which workflow fields an update's input names; one it leaves out keeps the schedule's own
@@ -258,6 +258,7 @@ fn keep_chain(mut input: ScheduleInput, named: &Names, before: &desktop::TaskSch
     if !named.chain {
         input.chain_from_id = before.chain_from_id.clone();
     }
+    input.new_task = before.new_task;
     input
 }
 
@@ -426,7 +427,7 @@ mod tests {
             id: "s1".into(), session_id: "t1".into(), session_title: "T".into(), project_id: "p".into(), project_name: "P".into(), title: String::new(), prompt: "x".into(),
             kind: "after".into(), interval_minutes: None, time_of_day: None, days: vec![], watch_session_id: Some("t2".into()), watch_session_title: None, only_on_success: false,
             next_run_at: None, last_run_at: None, enabled: true, created_by: "user".into(), created_by_session: None, run_count: 0, max_runs: None,
-            workflow_id: Some("wf-1".into()), chain_from_id: Some("s0".into()), created_at: 0, updated_at: 0, created_by_title: None, trigger_ok: None,
+            workflow_id: Some("wf-1".into()), chain_from_id: Some("s0".into()), new_task: false, last_task_id: None, created_at: 0, updated_at: 0, created_by_title: None, trigger_ok: None,
         };
         let params = json!({"scheduleId": "s1", "input": {"sessionId": "t1", "prompt": "y", "kind": "after", "watchSessionId": "t2"}});
         let kept = keep_chain(input_param(&params).unwrap(), &names(&params), &before);
@@ -436,6 +437,20 @@ mod tests {
         let params = json!({"scheduleId": "s1", "input": {"sessionId": "t1", "prompt": "y", "kind": "after", "workflowId": "wf-2", "chainFromId": null}});
         let named = keep_chain(input_param(&params).unwrap(), &names(&params), &before);
         assert_eq!((named.workflow_id.as_deref(), named.chain_from_id), (Some("wf-2"), None));
+    }
+
+    #[test]
+    fn a_remote_save_never_sets_new_task_and_an_edit_keeps_it() {
+        let params = json!({"input": {"sessionId": "t1", "prompt": "y", "kind": "daily", "timeOfDay": "09:00", "newTask": true}});
+        let input = input_param(&params).unwrap();
+        assert!(!input.new_task);
+        let before = desktop::TaskSchedule {
+            id: "s1".into(), session_id: "t1".into(), session_title: "T".into(), project_id: "p".into(), project_name: "P".into(), title: String::new(), prompt: "x".into(),
+            kind: "daily".into(), interval_minutes: None, time_of_day: Some("09:00".into()), days: vec![], watch_session_id: None, watch_session_title: None, only_on_success: false,
+            next_run_at: None, last_run_at: None, enabled: true, created_by: "user".into(), created_by_session: None, run_count: 0, max_runs: None,
+            workflow_id: None, chain_from_id: None, new_task: true, last_task_id: None, created_at: 0, updated_at: 0, created_by_title: None, trigger_ok: None,
+        };
+        assert!(keep_chain(input, &names(&params), &before).new_task);
     }
 
     #[test]
