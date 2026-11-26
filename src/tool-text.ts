@@ -14,10 +14,16 @@ export function basename(path: string): string {
 /** A row's text (object, note) is kept whole up to this safety cap; CSS ellipsizes it to the room the row has. */
 export const ROW_TEXT = 400;
 
-/** One line of at most `limit` characters: whitespace runs collapse to a space, a cut ends in `…`. */
+/** ASCII whitespace only: `\s` also matches U+202F (the narrow no-break space in macOS screenshot names),
+ *  U+00A0 and other Unicode spaces, which must survive so a displayed path still exists on disk. */
+const COLLAPSIBLE = /[ \t\n\v\f\r]+/g;
+const EDGE_SPACE = /^[ \t\n\v\f\r]+|[ \t\n\v\f\r]+$/g;
+
+/** One line of at most `limit` characters: ASCII whitespace runs collapse to a space, a cut ends in `…`.
+ *  Unicode spaces are kept verbatim: `clip` names files, paths and commands a reader may copy. */
 export function clip(value: string, limit = 140): string {
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length > limit ? flat.slice(0, Math.max(0, limit - 1)).trimEnd() + '…' : flat;
+  const flat = value.replace(COLLAPSIBLE, ' ').replace(EDGE_SPACE, '');
+  return flat.length > limit ? flat.slice(0, Math.max(0, limit - 1)).replace(/[ \t\n\v\f\r]+$/, '') + '…' : flat;
 }
 
 /** Terminal escapes removed: OSC sequences (titles, links), CSI sequences (colours, cursor) and lone escapes. */
