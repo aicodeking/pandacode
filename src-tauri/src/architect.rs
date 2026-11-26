@@ -572,7 +572,7 @@ const SNAPSHOT_STATUS_SQL: &str = "SELECT CASE WHEN json_valid(content) THEN jso
 /// this data folder) disables the trackers and answers the same question from the snapshots.
 /// Without this a read would quietly report "no team": `is_active` swallows its error, so a
 /// running team would look idle and stall until some later save happened to heal the tracker.
-fn tracker_or_snapshot<T>(store: &Store, tracker: &str, snapshot: &str, read: impl Fn(&str) -> Result<T>) -> Result<T> {
+pub(crate) fn tracker_or_snapshot<T>(store: &Store, tracker: &str, snapshot: &str, read: impl Fn(&str) -> Result<T>) -> Result<T> {
     if !store.team_meta_usable() {
         return read(snapshot);
     }
