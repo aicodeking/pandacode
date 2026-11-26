@@ -29,17 +29,23 @@ hand.
 
 ## Where the IPA comes from
 
-[`.github/workflows/mobile-release.yml`](../../.github/workflows/mobile-release.yml)
-builds the IPA on a `macos-latest` runner:
+There are two workflows, and either can publish the `ios-v<version>` release and refresh
+`appstore/source.json`:
 
-- `npx expo prebuild --platform ios` generates the Xcode project;
-- `xcodebuild` archives it with signing disabled;
-- the archive's `Payload/PandaCode.app` is zipped into `PandaCode.ipa`;
-- `scripts/release/mobile-source.mjs` writes `appstore/source.json` with the version,
-  build number, release date, byte size and the `ios-v<version>` download URL;
-- both are attached to a GitHub Release tagged `ios-v<version>`, and the updated
-  `appstore/source.json` is committed back to `main` so the raw URL above always names
-  the newest build.
+- [`mobile-release.yml`](../../.github/workflows/mobile-release.yml) builds an unsigned
+  IPA on a `macos-latest` runner with no Apple credentials: `npx expo prebuild`, an
+  `xcodebuild` archive with signing disabled, and the archive's `Payload/PandaCode.app`
+  zipped into `PandaCode.ipa`. Use it for forks and for testing.
+- [`mobile-testflight.yml`](../../.github/workflows/mobile-testflight.yml) builds once
+  with EAS, downloads that build's `.ipa`, saves it on the release, and then submits the
+  same build to TestFlight. The stored IPA is signed for App Store distribution, which
+  SideStore and AltStore replace with your own Apple ID on install. It needs the
+  `EXPO_TOKEN` repository secret and App Store Connect credentials configured in EAS.
+
+Both run `scripts/release/mobile-source.mjs`, which writes `appstore/source.json` with the
+version, build number, release date, byte size and the `ios-v<version>` download URL. The
+updated `appstore/source.json` is committed back to `main` so the raw URL above always
+names the newest build.
 
 SideStore compares the source's version with the app's `CFBundleShortVersionString`, so
 that field stays the plain version (`1.0.0`). The build number (`CFBundleVersion`, from
@@ -48,17 +54,23 @@ the same way TestFlight shows `1.0.0 (1)`.
 
 ## Building a release
 
-Push a tag that matches the version in `mobile/app.json`:
+Push a tag that matches the version in `mobile/app.json` (this uses the unsigned
+workflow):
 
 ```sh
 git tag ios-v1.0.0
 git push origin ios-v1.0.0
 ```
 
-Or run **Actions → Mobile release (unsigned IPA) → Run workflow**. Leave `publish`
-unchecked to only build the IPA as a workflow artifact; check it to create the release
-and commit the updated source.
+Or run a workflow manually:
 
-The build needs the repository variables `PANDACODE_RELAY_URL` and
+- **Mobile release (unsigned IPA)** — leave `publish` unchecked to only build the IPA as
+  a workflow artifact; check it to create the release and commit the updated source.
+- **Mobile TestFlight (EAS) and SideStore IPA** — builds with EAS, publishes the IPA, and
+  (with `submit` checked) uploads the same build to TestFlight.
+
+The unsigned build needs the repository variables `PANDACODE_RELAY_URL` and
 `PANDACODE_GITHUB_CLIENT_ID`, the same public values the desktop release uses. Without
-them the app installs but its sign-in screen reports the missing configuration.
+them the app installs but its sign-in screen reports the missing configuration. The EAS
+workflow reads those values from the `production` environment in EAS instead, where
+[`mobile/README.md`](../../mobile/README.md) says to create them.

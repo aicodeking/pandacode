@@ -1,0 +1,120 @@
+name: Mobile TestFlight (EAS) and SideStore IPA
+# Builds the iPhone app once with EAS, keeps that build's IPA on the ios-v<version>
+# GitHub Release for SideStore/AltStore, then submits the same build to TestFlight.
+# Manual only, because it needs the EXPO_TOKEN secret and App Store Connect credentials
+# configured in EAS. Use mobile-release.yml for an unsigned build with no Apple secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      submit:
+        description: 'Submit this build to TestFlight after saving the IPA'
+        type: boolean
+        default: true
+permissions:
+  contents: write
+jobs:
+  build-submit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Require EXPO_TOKEN
+        run: |
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::EXPO_TOKEN is not set. Add it as a repository secret, or run the 'Mobile release (unsigned IPA)' workflow instead."
+            exit 1
+          fi
+      - name: Install dependencies
+        working-directory: mobile
+        run: npm ci
+      - name: Build with EAS
+        id: eas
+        working-directory: mobile
+        run: |
+          npx eas-cli@latest build --platform ios --profile production --non-interactive --wait --json > "$RUNNER_TEMP/build.json"
+          node -e '
+            const raw = require(process.argv[1]);
+            const list = Array.isArray(raw) ? raw : (raw.results || [raw]);
+            const build = list.find(entry => entry && entry.id) || {};
+            const url = build.artifacts && build.artifacts.buildUrl;
+            if (!build.id || !url) {
+              console.error("EAS did not return a finished build with an artifact.");
+              process.exit(1);
+            }
+            console.log("id=" + build.id);
+            console.log("url=" + url);
+            console.log("version=" + (build.appVersion || ""));
+            console.log("build=" + (build.appBuildVersion || ""));
+          ' "$RUNNER_TEMP/build.json" >> "$GITHUB_OUTPUT"
+      - name: Resolve version and build
+        id: release
+        run: |
+          version="${{ steps.eas.outputs.version }}"
+          [ -n "$version" ] || version=$(node -p "require('./mobile/app.json').expo.version")
+          build="${{ steps.eas.outputs.build }}"
+          [ -n "$build" ] || build=$(node -p "String(require('./mobile/app.json').expo.ios.buildNumber || '1')")
+          printf 'version=%s\nbuild=%s\n' "$version" "$build" >> "$GITHUB_OUTPUT"
+      - name: Download the IPA
+        run: |
+          curl -fL --retry 3 --retry-max-time 300 "${{ steps.eas.outputs.url }}" -o PandaCode.ipa
+          shasum -a 256 PandaCode.ipa > PandaCode.ipa.sha256
+      - name: Write the SideStore source
+        run: |
+          node scripts/release/mobile-source.mjs \
+            --repository "$GITHUB_REPOSITORY" \
+            --version "${{ steps.release.outputs.version }}" \
+            --build "${{ steps.release.outputs.build }}" \
+            --date "$(date -u +%F)" \
+            --size "$(stat -c%s PandaCode.ipa)" \
+            --output appstore/source.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pandacode-mobile-${{ steps.release.outputs.version }}-${{ steps.release.outputs.build }}
+          path: |
+            PandaCode.ipa
+            PandaCode.ipa.sha256
+            appstore/source.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+          BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          cat > "$RUNNER_TEMP/notes.md" <<EOF
+          PandaCode mobile $VERSION (build $BUILD) IPA from the EAS build submitted to
+          TestFlight. SideStore or AltStore re-signs it with your own Apple ID on install.
+          See docs/app-store/sideloading.md.
+          EOF
+          if gh release view "ios-v$VERSION" >/dev/null 2>&1; then
+            gh release upload "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json --clobber
+          else
+            gh release create "ios-v$VERSION" PandaCode.ipa PandaCode.ipa.sha256 appstore/source.json \
+              --title "PandaCode mobile $VERSION (build $BUILD)" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+      - name: Submit to TestFlight
+        if: inputs.submit
+        working-directory: mobile
+        run: npx eas-cli@latest submit --platform ios --id "${{ steps.eas.outputs.id }}" --non-interactive
+      - name: Commit the updated source
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          if [ -z "$(git status --porcelain appstore/source.json)" ]; then
+            echo "appstore/source.json is unchanged."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appstore/source.json
+          git commit -m "chore: update SideStore source for $VERSION (build $BUILD) [skip ci]"
+          git push origin HEAD:main || echo "::warning::Could not push appstore/source.json to main; update it manually."
