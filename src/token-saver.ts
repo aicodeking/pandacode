@@ -13,7 +13,7 @@ export type Pack = { id: PackId; title: string; summary: string; saves: string; 
 /** Which optional local tools a pack can lean on; `pxpipeBin` names the detected CLI. */
 export type Available = { rtk: boolean; pxpipe?: boolean; pxpipeBin?: string };
 export type ThreadSaver = { packs: PackId[]; level: Level; sentKey?: string; turns?: number; /** When the current configuration was last sent, for measured usage. */ changedAt?: number };
-type Store = { defaults: ThreadSaver | null; threads: Record<string, ThreadSaver> };
+type Store = { defaults: ThreadSaver | null; threads: Record<string, ThreadSaver>; /** Checked skips pxpipe for every thread. */ pxpipeOff?: boolean };
 
 export const PACKS: Pack[] = [
   { id: 'caveman', title: 'Caveman', summary: 'Terse replies: answer first, no filler, every technical fact kept.', saves: '15–65% of replies', source: 'caveman · caveman-micro benchmarks' },
@@ -71,9 +71,9 @@ export const HEADER = 'Response style (PandaCode token saver';
 function read(): Store {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-    if (value && typeof value === 'object') return { defaults: value.defaults ?? null, threads: value.threads ?? {} };
+    if (value && typeof value === 'object') return { defaults: value.defaults ?? null, threads: value.threads ?? {}, pxpipeOff: value.pxpipeOff === true };
   } catch { /* Start fresh. */ }
-  return { defaults: null, threads: {} };
+  return { defaults: null, threads: {}, pxpipeOff: false };
 }
 function write(store: Store): void {
   try { localStorage.setItem(KEY, JSON.stringify(store)); } catch { /* This session keeps it. */ }
@@ -99,6 +99,23 @@ export function updateThread(sessionId: string, patch: Partial<Pick<ThreadSaver,
 export function defaults(): ThreadSaver | null { return read().defaults; }
 export function setDefaults(value: ThreadSaver | null): void {
   write({ ...read(), defaults: value && { packs: valid(value.packs), level: value.level } });
+}
+
+/** The saved switch: off skips pxpipe for every thread. */
+export function pxpipeEnabled(): boolean { return !read().pxpipeOff; }
+export function setPxpipeEnabled(on: boolean): void { write({ ...read(), pxpipeOff: !on }); }
+
+/** Whether this provider/model reads pxpipe's dense image pages at full fidelity. */
+export function pxpipeModelSupported(provider: string, model: string): boolean {
+  if (provider === 'grok' || provider === 'zcode') return false;
+  if (provider === 'claude') return /fable/i.test(model);
+  if (provider === 'antigravity') return /gemini-(?:4|3\.[678]-flash)/i.test(model);
+  return false;
+}
+
+/** The saved switch and the model's own support: pxpipe is skipped unless both allow it. */
+export function pxpipeEligible(provider: string, model: string): boolean {
+  return pxpipeEnabled() && pxpipeModelSupported(provider, model);
 }
 
 /** The guidance for a set of packs, or an explicit switch-off. */

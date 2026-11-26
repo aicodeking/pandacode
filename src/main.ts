@@ -774,13 +774,10 @@ const github = createGithub({
 /* Per-thread token saving: packs ride along with messages as folded guidance. */
 const tokenSaver = createTokenSaver({
   call, notify, notifyError,
-  // pxpipe renders text to dense PNG pages; only models that read them at full fidelity.
-  pxpipeEligible: sessionId => {
+  // pxpipe's eligibility (the saved switch plus the model's support) is decided in the saver.
+  sessionModel: sessionId => {
     const s = state.sessions.find(item => item.id === sessionId);
-    if (!s || s.provider === 'grok' || s.provider === 'zcode') return false;
-    if (s.provider === 'claude') return /fable/i.test(s.model);
-    if (s.provider === 'antigravity') return /gemini/i.test(s.model);
-    return false;
+    return s ? { provider: s.provider, model: s.model } : null;
   },
   contextUsage: sessionId => {
     const s = session();
