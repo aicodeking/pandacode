@@ -12,7 +12,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, Command},
     sync::mpsc::UnboundedReceiver,
 };
@@ -1215,40 +1215,361 @@ fn opencode_major_version(version: &str) -> Option<u64> {
         .find_map(|word| word.trim_start_matches('v').split('.').next()?.parse().ok())
 }
 
-/// OpenCode v2 removed `models --verbose`, but its local API still reports each
-/// model's variants. Only v2 gets this command: v1 has no `api` subcommand.
+const OPENCODE_EMPTY_MODELS: &str = "OpenCode returned no models";
+
+struct ZeroingBytes(Vec<u8>);
+impl Drop for ZeroingBytes {
+    fn drop(&mut self) {
+        self.0.fill(0);
+    }
+}
+
+struct ZeroingString(String);
+impl Drop for ZeroingString {
+    fn drop(&mut self) {
+        let mut bytes = std::mem::take(&mut self.0).into_bytes();
+        bytes.fill(0);
+    }
+}
+
+/// OpenCode v2 removed `models --verbose`, and v2.4.0 removed the 5 s plugin wait
+/// from `/api/model`. Start a private `serve --stdio --port 0` server and wait for
+/// `/api/plugin` readiness before fetching `/api/model`, falling back to the legacy
+/// `--standalone api model.list`, `--standalone models`, and plain `models` paths.
+/// Only v2 gets v2 commands: v1 has no `serve`, `api`, or `--standalone`.
 async fn opencode_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
     let owned = path.to_owned();
-    // Longer than `version()`'s 2 s: OpenCode's cold start can pass that, and a missed
-    // answer here would cost a v2 install its efforts.
-    let major = tokio::task::spawn_blocking(move || capture(launch::std_command(&owned).ok()?, &["--version"], Duration::from_secs(5)))
-        .await
-        .ok()
-        .flatten()
-        .as_deref()
-        .and_then(opencode_major_version);
+    // Longer than `version()`'s 2 s: Windows `@opencode/cli` runs a 3 s PowerShell
+    // AVX2 probe on cold start, and a missed answer here costs a v2 install its efforts.
+    let major = tokio::task::spawn_blocking(move || {
+        capture(launch::std_command(&owned).ok()?, &["--version"], Duration::from_secs(8))
+    })
+    .await
+    .ok()
+    .flatten()
+    .as_deref()
+    .and_then(opencode_major_version);
     if major.is_some_and(|major| major >= 2) {
         match opencode_v2_catalog(path).await {
             Ok(models) => return Ok(models),
-            // A hung CLI would hang again; anything else falls back to the bare IDs.
-            Err(error) if error.contains("timed out") => return Err("OpenCode model discovery timed out".into()),
+            // A hung CLI would hang again; anything else falls back.
+            Err(error) if error.contains("timed out") => {
+                return Err("OpenCode model discovery timed out".into());
+            }
+            Err(_) => {}
+        }
+        match opencode_v2_api_catalog(path).await {
+            Ok(models) => return Ok(models),
+            Err(error) if error.contains("timed out") => {
+                return Err("OpenCode model discovery timed out".into());
+            }
+            Err(_) => {}
+        }
+        match extra_models::opencode_v2(path).await {
+            Ok(models) => return Ok(models),
+            Err(error) if error.contains("timed out") => {
+                return Err("OpenCode model discovery timed out".into());
+            }
             Err(_) => {}
         }
     }
     extra_models::opencode(path).await
 }
 
-async fn opencode_v2_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+fn opencode_v2_app_data() -> Option<PathBuf> {
     #[cfg(test)]
-    let app_data = std::env::temp_dir().join("pandacode-test-app-data");
-    #[cfg(test)]
-    let app_data = Some(app_data.as_path());
+    {
+        Some(std::env::temp_dir().join("pandacode-test-app-data"))
+    }
     #[cfg(not(test))]
-    let app_data = crate::secret_store::dir();
-    opencode_v2_catalog_in(path, app_data).await
+    {
+        crate::secret_store::dir().map(Path::to_path_buf)
+    }
+}
+
+async fn opencode_v2_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let app_data = opencode_v2_app_data();
+    opencode_v2_catalog_in(path, app_data.as_deref()).await
+}
+
+async fn opencode_v2_api_catalog(path: &Path) -> Result<Vec<ModelInfo>, String> {
+    let app_data = opencode_v2_app_data();
+    opencode_v2_api_catalog_in(path, app_data.as_deref()).await
+}
+
+fn validate_opencode_server_url(raw: &str) -> Result<reqwest::Url, String> {
+    const INVALID: &str = "OpenCode server reported an invalid address";
+    let url = reqwest::Url::parse(raw.trim()).map_err(|_| INVALID)?;
+    if url.scheme() != "http"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(INVALID.into());
+    }
+    let host = url.host_str().ok_or(INVALID)?;
+    if host != "127.0.0.1" && host != "[::1]" && !host.eq_ignore_ascii_case("localhost") {
+        return Err(INVALID.into());
+    }
+    Ok(url)
+}
+
+fn parse_opencode_server_url_line(line: &str) -> Result<reqwest::Url, String> {
+    const INVALID: &str = "OpenCode server reported an invalid address";
+    let payload: Value = serde_json::from_str(line.trim()).map_err(|_| INVALID)?;
+    let raw = payload["url"].as_str().ok_or(INVALID)?;
+    validate_opencode_server_url(raw)
+}
+
+async fn read_bounded_body(
+    response: &mut reqwest::Response,
+    limit: usize,
+) -> Result<ZeroingBytes, String> {
+    let mut bytes = ZeroingBytes(Vec::new());
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "Could not read OpenCode model metadata".to_owned())?
+    {
+        if bytes.0.len().saturating_add(chunk.len()) > limit {
+            return Err("OpenCode model metadata exceeded its limit".into());
+        }
+        bytes.0.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn fetch_opencode_v2_catalog_from_server(
+    base_url: &reqwest::Url,
+    directory: &str,
+    auth: &str,
+    plugin_wait: Duration,
+    model_wait: Duration,
+    mut child: Option<&mut Child>,
+) -> Result<Vec<ModelInfo>, String> {
+    const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+    const PLUGIN_POLL: Duration = Duration::from_millis(50);
+    const MODEL_POLL: Duration = Duration::from_millis(100);
+    const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "Could not create OpenCode HTTP client")?;
+
+    let mut plugin_url = base_url.clone();
+    plugin_url.set_path("/api/plugin");
+    plugin_url.query_pairs_mut().clear().append_pair("directory", directory);
+
+    let mut model_url = base_url.clone();
+    model_url.set_path("/api/model");
+    model_url.query_pairs_mut().clear().append_pair("directory", directory);
+
+    let plugin_deadline = tokio::time::Instant::now() + plugin_wait;
+    loop {
+        match client
+            .get(plugin_url.clone())
+            .header(reqwest::header::AUTHORIZATION, auth)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(mut response) => {
+                let status = response.status();
+                if status == reqwest::StatusCode::OK {
+                    if let Ok(bytes) = read_bounded_body(&mut response, OUTPUT_LIMIT).await {
+                        let ready = serde_json::from_slice::<Value>(&bytes.0)
+                            .ok()
+                            .and_then(|value| value["data"].as_array().map(|data| !data.is_empty()))
+                            .unwrap_or(false);
+                        drop(bytes);
+                        if ready {
+                            break;
+                        }
+                    }
+                } else if status == reqwest::StatusCode::UNAUTHORIZED
+                    || status == reqwest::StatusCode::FORBIDDEN
+                {
+                    return Err("OpenCode server rejected discovery credentials".into());
+                } else if status == reqwest::StatusCode::NOT_FOUND
+                    || status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+                {
+                    break;
+                }
+            }
+            Err(_) => {
+                if child
+                    .as_deref_mut()
+                    .and_then(|process| process.try_wait().ok().flatten())
+                    .is_some()
+                {
+                    return Err("OpenCode server exited during discovery".into());
+                }
+            }
+        }
+        if tokio::time::Instant::now() >= plugin_deadline {
+            break;
+        }
+        tokio::time::sleep(PLUGIN_POLL).await;
+    }
+
+    let model_deadline = tokio::time::Instant::now() + model_wait;
+    loop {
+        match client
+            .get(model_url.clone())
+            .header(reqwest::header::AUTHORIZATION, auth)
+            .timeout(REQUEST_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(mut response) => {
+                let status = response.status();
+                if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                    if tokio::time::Instant::now() < model_deadline {
+                        tokio::time::sleep(MODEL_POLL).await;
+                        continue;
+                    }
+                    return Err(
+                        "OpenCode could not load models. Check its provider login and configuration."
+                            .into(),
+                    );
+                }
+                if status != reqwest::StatusCode::OK {
+                    return Err(
+                        "OpenCode could not load models. Check its provider login and configuration."
+                            .into(),
+                    );
+                }
+                let mut bytes = read_bounded_body(&mut response, OUTPUT_LIMIT).await?;
+                let parsed = parse_opencode_v2_models(&bytes.0);
+                bytes.0.fill(0);
+                drop(bytes);
+                match parsed {
+                    Ok(models) => return Ok(models),
+                    Err(error)
+                        if error == OPENCODE_EMPTY_MODELS
+                            && tokio::time::Instant::now() < model_deadline =>
+                    {
+                        tokio::time::sleep(MODEL_POLL).await;
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(_) => {
+                if child
+                    .as_deref_mut()
+                    .and_then(|process| process.try_wait().ok().flatten())
+                    .is_some()
+                {
+                    return Err("OpenCode server exited during discovery".into());
+                }
+                if tokio::time::Instant::now() < model_deadline {
+                    tokio::time::sleep(MODEL_POLL).await;
+                    continue;
+                }
+                return Err("Could not reach OpenCode model discovery server".into());
+            }
+        }
+    }
 }
 
 async fn opencode_v2_catalog_in(path: &Path, app_data: Option<&Path>) -> Result<Vec<ModelInfo>, String> {
+    const LINE_LIMIT: usize = 16 * 1024;
+    const TOTAL_TIMEOUT: Duration = Duration::from_secs(20);
+    const PLUGIN_WAIT: Duration = Duration::from_secs(5);
+    const MODEL_WAIT: Duration = Duration::from_secs(4);
+
+    // OpenCode reads config from its directory, and anyone can plant one in a shared temp folder.
+    let folder = app_data
+        .and_then(|dir| AgentTemp::create_in(&dir.join(AGENT_TEMP_DIR)))
+        .ok_or("Could not create a private folder for OpenCode discovery")?;
+    let password = ZeroingString(format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = {
+        use base64::Engine as _;
+        let credentials = ZeroingString(format!("opencode:{}", password.0));
+        let encoded = ZeroingString(
+            base64::engine::general_purpose::STANDARD.encode(credentials.0.as_bytes()),
+        );
+        ZeroingString(format!("Basic {}", encoded.0))
+    };
+    let mut command = provider_command("opencode", path)?;
+    // Explicitly override OPENCODE_PASSWORD after apply_environment so an inherited
+    // or saved password cannot shadow the per-call secret.
+    command
+        .args(["serve", "--stdio", "--port", "0"])
+        .current_dir(&folder.0)
+        .env("OPENCODE_PASSWORD", &password.0)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
+
+    let mut child = command
+        .spawn()
+        .map_err(|_| "Could not start OpenCode model discovery")?;
+    let mut group = ProcessGroup::register(child.id());
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let directory = launch::external_path(&folder.0)
+        .to_string_lossy()
+        .into_owned();
+
+    let result = tokio::time::timeout(TOTAL_TIMEOUT, async {
+        let stdout = stdout.ok_or("OpenCode server output unavailable")?;
+        let mut reader = tokio::io::BufReader::new(stdout.take((LINE_LIMIT + 1) as u64));
+        let mut line = Vec::new();
+        reader
+            .read_until(b'\n', &mut line)
+            .await
+            .map_err(|_| "Could not read OpenCode server address".to_owned())?;
+        if line.is_empty() || line.len() > LINE_LIMIT {
+            return Err("OpenCode server did not report a valid address".into());
+        }
+        let line_text = std::str::from_utf8(&line)
+            .map_err(|_| "OpenCode server reported an invalid address".to_owned())?;
+        let base_url = parse_opencode_server_url_line(line_text)?;
+        fetch_opencode_v2_catalog_from_server(
+            &base_url,
+            &directory,
+            &auth.0,
+            PLUGIN_WAIT,
+            MODEL_WAIT,
+            Some(&mut child),
+        )
+        .await
+    })
+    .await
+    .unwrap_or_else(|_| Err("OpenCode model discovery timed out".into()));
+
+    // Closing stdin signals `serve --stdio` to exit cleanly; escalate if it lingers.
+    drop(stdin);
+    if tokio::time::timeout(Duration::from_millis(500), child.wait())
+        .await
+        .is_err()
+    {
+        finish_child(&mut child, &mut group, Some(Duration::from_millis(500))).await;
+    } else {
+        release_group(&mut group);
+    }
+    drop(auth);
+    drop(password);
+    drop(folder);
+    result
+}
+
+async fn opencode_v2_api_catalog_in(path: &Path, app_data: Option<&Path>) -> Result<Vec<ModelInfo>, String> {
     const OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
     let mut command = launch::std_command(path)?;
     crate::provider_settings::apply_environment("opencode", &mut command);
@@ -1282,6 +1603,9 @@ fn parse_opencode_v2_models(bytes: &[u8]) -> Result<Vec<ModelInfo>, String> {
     const INVALID: &str = "Invalid OpenCode model catalog";
     let response: Value = serde_json::from_slice(bytes).map_err(|_| INVALID)?;
     let entries = response["data"].as_array().ok_or(INVALID)?;
+    if entries.is_empty() {
+        return Err(OPENCODE_EMPTY_MODELS.into());
+    }
     if entries.len() > MODEL_CATALOG_LIMIT {
         return Err("OpenCode returned too many models".into());
     }
@@ -1329,7 +1653,7 @@ pub(crate) async fn list_model_catalog(provider: &str) -> Result<Vec<ModelInfo>,
     ) {
         // Saving models refreshes both windows. Queue their bounded metadata
         // queries so one window does not cache incomplete ID-only fallbacks.
-        tokio::time::timeout(Duration::from_secs(if provider == "opencode" { 20 } else { 65 }), semaphore.acquire())
+        tokio::time::timeout(Duration::from_secs(if provider == "opencode" { 30 } else { 65 }), semaphore.acquire())
             .await
             .map_err(|_| "Model discovery is busy. Try again shortly.".to_owned())?
             .map_err(|_| "Model discovery is unavailable".to_owned())?
@@ -4924,6 +5248,37 @@ mod tests {
         for bad in [&b"SECRET"[..], br#"{"data":"SECRET"}"#, br#"{"data":[{"id":"SECRET"}]}"#] {
             assert!(!super::parse_opencode_v2_models(bad).unwrap_err().contains("SECRET"));
         }
+        assert_eq!(
+            super::parse_opencode_v2_models(br#"{"data":[]}"#).unwrap_err(),
+            "OpenCode returned no models"
+        );
+    }
+
+    #[test]
+    fn opencode_v2_server_url_validation_allows_only_loopback_http() {
+        for good in [
+            "http://127.0.0.1:41234",
+            "http://localhost:41234",
+            "http://[::1]:41234",
+        ] {
+            assert!(super::validate_opencode_server_url(good).is_ok(), "{good}");
+        }
+        for bad in [
+            "https://127.0.0.1:41234",
+            "http://169.254.169.254:80",
+            "http://192.168.1.10:41234",
+            "http://example.com:41234",
+            "http://0.0.0.0:41234",
+            "file:///etc/passwd",
+            "http://user:pass@127.0.0.1:41234",
+            "http://127.0.0.1:41234?next=evil",
+            "http://127.0.0.1:41234#frag",
+            "not a url",
+        ] {
+            assert!(super::validate_opencode_server_url(bad).is_err(), "{bad}");
+        }
+        assert!(super::parse_opencode_server_url_line(r#"{"url":"http://127.0.0.1:9999"}"#).is_ok());
+        assert!(super::parse_opencode_server_url_line(r#"{"url":"http://example.com:9999"}"#).is_err());
     }
 
     #[test]
@@ -4933,7 +5288,7 @@ mod tests {
         assert_eq!(super::opencode_major_version("opencode"), None);
     }
 
-    /// Runs the catalog against a stand-in CLI; `$MARK` records every `api` call.
+    /// Runs the catalog against a stand-in CLI; `$MARK` records every v2 command call.
     #[cfg(unix)]
     async fn opencode_catalog_with(version: &str, verbose: &str, api: &str) -> (Result<Vec<super::ModelInfo>, String>, bool) {
         use std::os::unix::fs::PermissionsExt;
@@ -4942,7 +5297,7 @@ mod tests {
         let (script, mark, models) = (root.join("opencode"), root.join("api-called"), root.join("models.json"));
         std::fs::write(&models, api).unwrap();
         std::fs::write(&script, format!(
-            "#!/bin/sh\ncase \"$*\" in\n*--version*) echo '{version}';;\n*'--standalone api model.list --param directory='*) : > '{mark}'; cat '{models}';;\n'models --verbose') {verbose};;\nmodels) echo opencode/plain;;\n*) exit 9;;\nesac\n",
+            "#!/bin/sh\ncase \"$*\" in\n*--version*) echo '{version}';;\n'serve --stdio --port 0') : > '{mark}'; exit 9;;\n*'--standalone api model.list --param directory='*) : > '{mark}'; cat '{models}';;\n'--standalone models') : > '{mark}'; exit 9;;\n'models --verbose') {verbose};;\nmodels) echo opencode/plain;;\n*) exit 9;;\nesac\n",
             mark = mark.display(), models = models.display(),
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -4972,6 +5327,33 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn opencode_v2_empty_api_falls_back_to_standalone_models_then_plain() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join("opencode");
+        // Empty data: [] from api model.list must NOT return Ok([default]); it must fall back
+        // to `--standalone models` before plain `models`.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncase \"$*\" in\n*--version*) echo 'opencode v2.4.1';;\n*'--standalone api model.list --param directory='*) echo '{\"data\":[]}';;\n'--standalone models') echo 'opencode/from-standalone';;\nmodels) echo 'opencode/plain';;\n*) exit 9;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let models = super::opencode_catalog(&script).await.unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[1].id, "opencode/from-standalone");
+
+        // When `--standalone models` also fails, fall back to plain `models`.
+        let (models, _) = opencode_catalog_with("opencode v2.4.1", "exit 1", r#"{"data":[]}"#).await;
+        let models = models.unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[1].id, "opencode/plain");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn opencode_v2_falls_back_to_plain_ids_when_its_api_fails() {
         let (models, _) = opencode_catalog_with("opencode v2.2.5", "exit 1", "not json").await;
         let models = models.unwrap();
@@ -4987,6 +5369,210 @@ mod tests {
         assert!(!called);
         let efforts: Vec<_> = models.unwrap()[1].reasoning_efforts.iter().map(|effort| effort.id.clone()).collect();
         assert_eq!(efforts, ["low", "high"]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn opencode_v2_serve_stdio_polls_plugins_and_models_with_basic_auth_and_exits_on_eof() {
+        use base64::Engine as _;
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let plugin_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let model_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let seen_auth = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+
+        let plugin_calls_srv = plugin_calls.clone();
+        let model_calls_srv = model_calls.clone();
+        let seen_auth_srv = seen_auth.clone();
+        let server = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let plugin_calls = plugin_calls_srv.clone();
+                let model_calls = model_calls_srv.clone();
+                let seen_auth = seen_auth_srv.clone();
+                tokio::spawn(async move {
+                    let (read_half, mut write_half) = stream.into_split();
+                    let mut reader = tokio::io::BufReader::new(read_half);
+                    let mut request_line = String::new();
+                    if reader.read_line(&mut request_line).await.unwrap_or(0) == 0 {
+                        return;
+                    }
+                    let mut auth_header = String::new();
+                    loop {
+                        let mut header = String::new();
+                        let n = reader.read_line(&mut header).await.unwrap_or(0);
+                        if n == 0 || header == "\r\n" || header == "\n" {
+                            break;
+                        }
+                        if let Some((k, v)) = header.split_once(':') {
+                            if k.eq_ignore_ascii_case("authorization") {
+                                auth_header = v.trim().to_owned();
+                            }
+                        }
+                    }
+                    seen_auth.lock().unwrap().push(auth_header);
+                    let path = request_line.split_whitespace().nth(1).unwrap_or("");
+                    let (status, body) = if path.starts_with("/api/plugin?") {
+                        let n = plugin_calls.fetch_add(1, Ordering::SeqCst);
+                        if n < 2 {
+                            ("200 OK", r#"{"data":[]}"#.to_owned())
+                        } else {
+                            ("200 OK", r#"{"data":[{"id":"opencode-provider"}]}"#.to_owned())
+                        }
+                    } else if path.starts_with("/api/model?") {
+                        let n = model_calls.fetch_add(1, Ordering::SeqCst);
+                        match n {
+                            0 => ("503 Service Unavailable", r#"{"error":"starting"}"#.to_owned()),
+                            1 => ("200 OK", r#"{"data":[]}"#.to_owned()),
+                            _ => ("200 OK", OPENCODE_V2_MODELS.to_owned()),
+                        }
+                    } else {
+                        ("404 Not Found", "{}".to_owned())
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = write_half.write_all(response.as_bytes()).await;
+                    let _ = write_half.shutdown().await;
+                });
+            }
+        });
+
+        let root = std::env::temp_dir().join(format!("pandacode-opencode-serve-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let (script, seen, eof_marker, app_data) = (
+            root.join("opencode"),
+            root.join("seen"),
+            root.join("eof-exited"),
+            root.join("app-data"),
+        );
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in\n*--version*) echo 'opencode v2.4.1';;\n'serve --stdio --port 0')\n  printf '%s\\n%s\\n%s\\n' \"$(pwd -P)\" \"$(ls -ld . | cut -c1-10)\" \"$OPENCODE_PASSWORD\" > '{seen}'\n  printf '{{\"url\":\"http://127.0.0.1:{port}\"}}\\n'\n  cat >/dev/null\n  : > '{eof}'\n  exit 0\n  ;;\n*) exit 9;;\nesac\n",
+                seen = seen.display(),
+                eof = eof_marker.display(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let models = super::opencode_v2_catalog_in(&script, Some(&app_data)).await.unwrap();
+        server.abort();
+
+        let ids: Vec<_> = models.iter().map(|model| model.id.as_str()).collect();
+        assert_eq!(ids, ["default", "opencode/big-pickle", "opencode/flint-40b-free"]);
+        assert_eq!(models[2].reasoning_efforts.len(), 5);
+        assert_eq!(models[2].context_window, Some(262144));
+        let serialized = serde_json::to_string(&models).unwrap();
+        assert!(!serialized.contains("apiKey") && !serialized.contains("baseURL"));
+
+        assert_eq!(plugin_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(model_calls.load(Ordering::SeqCst), 3);
+        assert!(eof_marker.exists(), "server should have exited cleanly on stdin EOF");
+
+        let seen_text = std::fs::read_to_string(&seen).unwrap();
+        let lines: Vec<&str> = seen_text.lines().collect();
+        let folder = Path::new(lines[0]);
+        assert!(folder.starts_with(app_data.canonicalize().unwrap().join(super::AGENT_TEMP_DIR)));
+        assert_eq!(lines[1], "drwx------");
+        let password = lines[2];
+        assert!(password.len() >= 32, "expected random per-call password");
+        let expected_auth = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode(format!("opencode:{password}"))
+        );
+        let auths = seen_auth.lock().unwrap();
+        assert_eq!(auths.len(), 6);
+        assert!(auths.iter().all(|header| header == &expected_auth));
+
+        for _ in 0..100 {
+            if !folder.exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!folder.exists(), "private folder stayed behind");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn opencode_v2_serve_rejects_unauthorized_and_non_loopback() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(read_half);
+                let mut line = String::new();
+                while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let _ = write_half
+                    .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                let _ = write_half.shutdown().await;
+            }
+        });
+        let url = reqwest::Url::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+        let err = super::fetch_opencode_v2_catalog_from_server(
+            &url,
+            "/tmp",
+            "Basic d3Jvbmc=",
+            Duration::from_secs(1),
+            Duration::from_secs(1),
+            None,
+        )
+        .await
+        .unwrap_err();
+        server.abort();
+        assert!(err.contains("credentials"), "{err}");
+
+        // Oversized response bodies are rejected by read_bounded_body.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            if let Ok((stream, _)) = listener.accept().await {
+                let (read_half, mut write_half) = stream.into_split();
+                let mut reader = tokio::io::BufReader::new(read_half);
+                let mut line = String::new();
+                while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                    if line == "\r\n" || line == "\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let body = "x".repeat(64);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = write_half.write_all(response.as_bytes()).await;
+                let _ = write_half.shutdown().await;
+            }
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
+        let mut response = client
+            .get(format!("http://127.0.0.1:{port}/api/model"))
+            .send()
+            .await
+            .unwrap();
+        let err = super::read_bounded_body(&mut response, 32).await.err().unwrap();
+        server.abort();
+        assert_eq!(err, "OpenCode model metadata exceeded its limit");
     }
 
     #[test]
@@ -7414,7 +8000,7 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
         let app_data = root.join("app-data");
 
-        opencode_v2_catalog_in(&script, Some(&app_data)).await.unwrap();
+        opencode_v2_api_catalog_in(&script, Some(&app_data)).await.unwrap();
 
         let seen = std::fs::read_to_string(&seen).unwrap();
         let lines: Vec<&str> = seen.lines().collect();
@@ -7430,10 +8016,12 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
         }
         assert!(!folder.exists(), "the private folder stayed behind");
 
-        // Without a private folder it never runs, and the error takes the bare-ID path.
+        // Without a private folder neither v2 discovery path runs, and the error takes the bare-ID path.
         let _ = std::fs::remove_file(root.join("seen"));
         for app_data in [None, Some(script.as_path())] {
             let error = opencode_v2_catalog_in(&script, app_data).await.unwrap_err();
+            assert!(!error.contains("timed out"), "{error}");
+            let error = opencode_v2_api_catalog_in(&script, app_data).await.unwrap_err();
             assert!(!error.contains("timed out"), "{error}");
         }
         assert!(!root.join("seen").exists());
