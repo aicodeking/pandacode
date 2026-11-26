@@ -641,8 +641,25 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
     let db = &store.db;
     let sql_error = |e: rusqlite::Error| e.to_string();
     let upsert = || db.prepare_cached(UPSERT)?.execute(params![team.session_id, content]);
+    // The bare upsert still fires the triggers, so a snapshot-only write is safe only once they
+    // are gone. Idempotent, and repeatable: a caller's rollback can put them back.
+    let drop_dangling = || {
+        let drops: String = crate::storage::TEAM_META_TRIGGERS
+            .iter()
+            .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
+            .collect();
+        db.execute_batch(&drops)
+    };
     if !store.team_meta_usable() {
-        return upsert().map(|_| ()).map_err(sql_error);
+        return match upsert().map(|_| ()).map_err(sql_error) {
+            // This process already healed, but a caller's transaction rolled the drops back, so
+            // the dangling triggers are attached again. Re-drop them instead of failing the save.
+            Err(error) if team_meta_table_missing(&error) => {
+                drop_dangling().map_err(sql_error)?;
+                upsert().map(|_| ()).map_err(sql_error)
+            }
+            other => other,
+        };
     }
     let saved = crate::storage::run_savepoint(db, "architect_team_save", || {
         let needs_cutoff = i64::from(team.legacy_prompt_through_id.is_none());
@@ -664,26 +681,22 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
         Ok(()) => Ok(()),
         Err(error) if team_meta_table_missing(&error) => {
             // Do not recreate the table: `repair_v38_objects` rebuilds it at the next open, and
-            // creating it here would ping-pong with the build that dropped it. Dropping the three
-            // triggers is what makes the retry safe; the bare upsert still fires them.
-            let drops: String = crate::storage::TEAM_META_TRIGGERS
-                .iter()
-                .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
-                .collect();
-            if let Err(heal) = db.execute_batch(&drops) {
+            // creating it here would ping-pong with the build that dropped it.
+            if let Err(heal) = drop_dangling() {
                 // Trackers stay enabled, so the next save runs the savepoint and can heal again
                 // instead of taking the snapshot-only branch into the same dangling triggers.
                 eprintln!("Saving team {}: dropping dangling team trackers: {heal}", team.session_id);
                 return Err(error);
             }
-            // Only once the triggers are really gone does this process stop using the tracker,
-            // so a failed or partial drop can never strand it on the snapshot-only path.
+            upsert().map_err(sql_error)?;
+            // Only now is it worth disabling trackers: the triggers are gone and the snapshot
+            // landed, so the snapshot-only path cannot run into a trigger that names the table.
             store.disable_team_trackers();
             eprintln!(
                 "Saving team {}: `architect_team_meta` is missing (another PandaCode build repaired this data folder); dropped its dangling triggers and disabled team trackers until restart: {error}",
                 team.session_id
             );
-            upsert().map(|_| ()).map_err(sql_error)
+            Ok(())
         }
         Err(error) => Err(error),
     }
@@ -3930,6 +3943,33 @@ mod team_meta_heal_tests {
         let saved = load(&store, &sid).unwrap().unwrap();
         assert_eq!(saved.objective, "saved inside a caller transaction");
         assert!(!store.team_meta_usable());
+    }
+
+    /// A caller's transaction can roll the trigger drops back after the heal decided they were
+    /// gone. The snapshot-only path must re-drop them rather than fail every later save.
+    #[test]
+    fn a_rolled_back_heal_is_repaired_by_the_next_save() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+
+        // Heal inside a transaction the caller then abandons: the DDL goes back with it.
+        let transaction = store.db.unchecked_transaction().unwrap();
+        save(&store, &mut team).expect("the heal works inside a caller transaction");
+        transaction.rollback().unwrap();
+        assert!(!store.team_meta_usable(), "the process stays healed after the rollback");
+        let triggers: i64 = store.db.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('architect_team_meta_insert','architect_team_meta_update_clear','architect_team_meta_update_sync')",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(triggers, 3, "the rollback put the dangling triggers back");
+
+        team.status = "completed".into();
+        save(&store, &mut team).expect("the next save re-drops them instead of failing");
+        assert_eq!(load(&store, &sid).unwrap().unwrap().status, "completed");
     }
 
     /// Once healed, every later save takes the snapshot-only branch. That must keep working and
