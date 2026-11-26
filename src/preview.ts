@@ -152,6 +152,7 @@ function previewRoute(text: string, pool: { provider: string; model: string; nam
 }
 let previewClaudeMode: 'inherit' | 'subscription' = 'inherit';
 let previewClaudeRefresh = true;
+let previewClaudeCodeMode = false;
 let previewTelemetryOff = false;
 /** A sample of `providers/privacy.rs` COVERAGE, one row per status. */
 const previewPrivacy = () => ({ off: previewTelemetryOff, harnesses: [
@@ -166,7 +167,7 @@ const previewEnvState = { global: [] as [string, string][], providers: {} as Rec
 const previewEnvNames = (vars: [string, string][]) => vars.map(([name]) => name);
 function previewProviderConfiguration(): Record<string, unknown> {
   return {
-    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh,
+    executablePaths: {}, claudeConnectionMode: previewClaudeMode, claudeCliRefresh: previewClaudeRefresh, claudeCodeMode: previewClaudeCodeMode,
     globalEnvironment: previewEnvNames(previewEnvState.global),
     environment: Object.fromEntries(Object.entries(previewEnvState.providers).map(([provider, vars]) => [provider, previewEnvNames(vars)])),
     useGlobalEnvironment: previewEnvState.useGlobal,
@@ -1690,6 +1691,7 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       previewTelemetryOff = args.off; result = previewPrivacy(); break;
     }
     case 'provider_set_claude_cli_refresh': previewClaudeRefresh = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
+    case 'provider_set_claude_code_mode': previewClaudeCodeMode = Boolean(args.enabled); return invoke<T>('provider_configuration', {});
     case 'provider_set_claude_connection_mode': {
       if (!['inherit', 'subscription'].includes(args.mode)) throw new Error('Choose a Claude connection mode.');
       previewClaudeMode = args.mode; return invoke<T>('provider_configuration', {});

@@ -216,6 +216,38 @@ test('the Claude Code card lets PandaCode run Claude Code to refresh an expired 
   expect(calls).toEqual([{ enabled: false }, { enabled: true }]);
 });
 
+test('provider connections opt in to Claude Code Mode at startup', async ({ page }) => {
+  const calls: unknown[] = [];
+  await page.exposeFunction('__codeModeCall', (args: unknown) => { calls.push(args); });
+  await page.route('**/src/preview.ts*', async route => {
+    const response = await route.fetch();
+    const source = await response.text();
+    await route.fulfill({ response, body: source.replace(/switch\s*\(command\)\s*\{/, `
+      if (command === 'provider_set_claude_code_mode') { await window.__codeModeCall(args); await new Promise(resolve => setTimeout(resolve, 400)); }
+      switch(command) {`) });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const settings = page.getByRole('region', { name: 'Settings', exact: true });
+  await settings.getByRole('tab', { name: 'Agents', exact: true }).click();
+  await settings.getByRole('tab', { name: 'Providers', exact: true }).click();
+  const card = page.locator('#claude-connection');
+  await card.locator(':scope > summary').click();
+  const toggle = card.getByRole('switch', { name: 'Enable Claude Code Mode' });
+  await expect(toggle).not.toBeChecked(); // off by default
+  await expect(toggle).toHaveAccessibleDescription(/off by default.*Claude Code 2\.1\.332.*resume tasks/);
+  await expect(card.getByRole('img', { name: 'About Claude Code Mode' })).toBeVisible();
+  await toggle.click();
+  await expect(toggle).toBeDisabled(); // while saving, like the other controls
+  await expect(toggle).toBeEnabled();
+  await expect(toggle).toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('Code Mode opt-in saved for Claude Code.');
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await expect(page.locator('#settings-panel-providers')).toContainText('Code Mode opt-in removed for Claude Code.');
+  expect(calls).toEqual([{ enabled: true }, { enabled: false }]);
+});
+
 async function delayedConnections(page: Page): Promise<void> {
   await page.route('**/src/preview.ts*', async route => {
     const response = await route.fetch();
