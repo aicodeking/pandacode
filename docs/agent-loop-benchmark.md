@@ -47,12 +47,11 @@ Batch Fv2 measured `bin-f` (the engine and `LOOK` text it was built from) on see
 Batch E measured the shipped engine (`bin-e`) on seeds 7 and 8, with no budget caps. The primary and the gate are judged on E alone, as pre-registered. Batch D's bottom line is kept under [Batch D results](agent-loop-benchmark-history.md#batch-d-results-round-4-engine-optimized-server).
 
 - **Speed: yes, on the tuned localization tasks.** AFTER took **10% fewer steps** (CI -20% to -2%, Wilcoxon p = 0.036, 10 of 20 tasks better, 3 worse). Wall time fell 16% (CI -22% to -10%, max-T p = 0.001) and API time 11%. The E2 extension (seeds 9, 10) gave the same -10%, but its CI reaches zero, so on its own it is "not shown to be lower"; pooled E+E2 is -11% (CI -18% to -3%, p = 0.013).
-- **Held-out tasks** (never tuned on): steps -10%, **not shown to be lower** (CI -26% to +6%, 8 tasks).
+- **Held-out tasks (descriptive, 8 tasks never used for tuning).** E's step estimate was -10% (95% CI -26% to +6%).
+  - Held-out precision estimates were lower with AFTER in E (0.764 → 0.672, 95% CI -0.222 to +0.008), E2 (0.765 → 0.718, 95% CI -0.133 to +0.033) and pooled E+E2 (0.764 → 0.695, 95% CI -0.166 to +0.002). AFTER named extra files on these tasks.
 - **Cost: within noise.** -2% (CI -6% to +3%, max-T p = 0.96). The CI is too wide to call it unchanged.
 - **Quality: not shown non-inferior.** On E's tuned tasks, recall (0.802 → 0.827) and precision (0.545 → 0.558) pass. **Edit pass fails**: 11/12 → 10/12 (CI -0.25 to 0). E2 went the other way (10/12 → 11/12), and pooled is 21/24 in both arms, which still can't clear the margin with 6 tasks.
-- **Precision fails outside E's tuned gate.**
-  - **E2's tuned precision fails** (0.543 → 0.535, CI -0.055 to +0.040: the lower bound is 0.005 past the margin), so D's precision loss did not go away; E's pass was not replicated. Pooled E+E2 tuned precision passes (CI -0.036 to +0.041).
-  - **Held-out precision fails** in E (0.764 → 0.672, CI -0.222 to +0.008), in E2 (0.765 → 0.718, CI -0.133 to +0.033) and pooled (0.764 → 0.695, CI -0.166 to +0.002). These gates are descriptive, but they point the same way: on tasks it was never tuned on, AFTER names extra files.
+- **E2's tuned precision fails** (0.543 → 0.535, CI -0.055 to +0.040, with the lower bound 0.005 past the margin). D's precision loss did not go away, and E's pass was not replicated. Pooled E+E2 tuned precision passes (CI -0.036 to +0.041).
 - **Edits: steps and output not shown to be higher.** E: steps 6.08 → 7.08 (+20%, CI +5% to +39%), output tokens +28% (CI +11% to +45%), cost +7%. Pooled E+E2: steps +18% (CI -3% to +40%), output tokens +20% (CI +5% to +32%). No edit p-value reaches 0.05 (E steps: 2 tasks tied, leaving 4, so the smallest possible p is 0.125), so by the registered rule none is read as a change. Every point estimate is an increase, which is why Fv2 tested edit steps directly. (Wording corrected post-hoc, deviation Fv2-2: it read "more steps and more output", which the rule does not allow for results that are not significant.)
 - **Long context:** 8 of 8 ran; steps 4.0 → 3.5 and duration -31%, all CIs span zero (1 seed).
 
@@ -306,13 +305,13 @@ Steps were better on 10 tasks and worse on 3. The largest savings were `loc-team
 
 | Metric | Before | After | Mean change | 95% CI | Wilcoxon p | Read |
 |---|---:|---:|---:|---:|---:|---|
-| Steps | 5.25 | 4.56 | -10% | -26% to +6% | 0.344 | not shown to be lower |
-| Wall s | 22.22 | 20.06 | -8% | -16% to +1% | 0.078 | within noise |
-| Cost $ | 0.114 | 0.112 | -1% | -13% to +12% | 0.844 | within noise |
-| Recall | 0.885 | 0.901 | +0.016 | -0.047 to +0.094 | – | gate: pass |
-| Precision | 0.764 | 0.672 | -0.091 | -0.222 to +0.008 | – | gate: **fail** |
+| Steps | 5.25 | 4.56 | -10% | -26% to +6% | 0.344 | descriptive |
+| Wall s | 22.22 | 20.06 | -8% | -16% to +1% | 0.078 | descriptive |
+| Cost $ | 0.114 | 0.112 | -1% | -13% to +12% | 0.844 | descriptive |
+| Recall | 0.885 | 0.901 | +0.016 | -0.047 to +0.094 | – | descriptive |
+| Precision | 0.764 | 0.672 | -0.091 | -0.222 to +0.008 | – | descriptive |
 
-Held-out precision fell most on `loc-deepseek-efforts` (1.00 → 0.50), `ho-content-type-case` (0.83 → 0.69) and `loc-docker-cloud` (0.46 → 0.33): AFTER again named extra related files. On the tasks it was never tuned on, the tool shows the same direction of step saving, but 8 tasks can't show it.
+Held-out precision fell most on `loc-deepseek-efforts` (1.00 → 0.50), `ho-content-type-case` (0.83 → 0.69) and `loc-docker-cloud` (0.46 → 0.33), where AFTER named extra related files. The step estimate was also lower on these 8 held-out tasks overall, with a 95% CI spanning zero.
 
 **Edits** (24 runs, 6 tasks):
 
@@ -336,9 +335,9 @@ On steps, 2 of the 6 tasks tied, leaving 4, so the smallest possible p was 0.125
 | Recall, tuned | 0.784 | 0.806 | +0.022 | -0.029 to +0.074 | – | pass |
 | Precision, tuned | 0.543 | 0.535 | -0.008 | -0.055 to +0.040 | – | fail (lower bound 0.005 past the margin) |
 | Edit pass | 0.833 (10/12) | 0.917 (11/12) | +0.083 | 0.000 to +0.250 | – | pass |
-| Steps, held-out | 5.31 | 4.88 | -8% | -18% to +4% | 0.313 | not shown to be lower |
-| Recall, held-out | 0.885 | 0.901 | +0.016 | 0.000 to +0.047 | – | pass |
-| Precision, held-out | 0.765 | 0.718 | -0.047 | -0.133 to +0.033 | – | fail |
+| Steps, held-out | 5.31 | 4.88 | -8% | -18% to +4% | 0.313 | descriptive |
+| Recall, held-out | 0.885 | 0.901 | +0.016 | 0.000 to +0.047 | – | descriptive |
+| Precision, held-out | 0.765 | 0.718 | -0.047 | -0.133 to +0.033 | – | descriptive |
 
 E2's edit failures: `edit-projects-added-order` s9 in both arms (the same test), and `edit-connect-secrets` s10 BEFORE (a build error: its change didn't add the `LOCK` name the commit's test uses).
 
@@ -355,9 +354,9 @@ E2's edit failures: `edit-projects-added-order` s9 in both arms (the same test),
 | Recall, tuned | 0.793 | 0.817 | +0.024 | -0.019 to +0.073 | – | – | pass |
 | Precision, tuned | 0.544 | 0.546 | +0.002 | -0.036 to +0.041 | – | – | pass |
 | Edit pass (48 runs) | 0.875 | 0.875 | 0.000 | -0.125 to +0.125 | – | – | fail (not shown non-inferior) |
-| Steps, held-out (64 runs) | 5.28 | 4.72 | -9% | -21% to +4% | 0.219 | – | not shown to be lower |
-| Recall, held-out | 0.885 | 0.901 | +0.016 | 0.000 to +0.047 | – | – | pass |
-| Precision, held-out | 0.764 | 0.695 | -0.069 | -0.166 to +0.002 | – | – | fail |
+| Steps, held-out (64 runs) | 5.28 | 4.72 | -9% | -21% to +4% | 0.219 | – | descriptive |
+| Recall, held-out | 0.885 | 0.901 | +0.016 | 0.000 to +0.047 | – | – | descriptive |
+| Precision, held-out | 0.764 | 0.695 | -0.069 | -0.166 to +0.002 | – | – | descriptive |
 | Edit steps | 6.38 | 7.13 | +18% | -3% to +40% | 0.344 | – | within noise |
 | Edit output tokens | 2,249 | 2,636 | +20% | +5% to +32% | 0.094 | 0.156 | within noise |
 
@@ -609,7 +608,7 @@ BEFORE → AFTER-E: 6 edits steps +11% (CI -7% to +28%, p = 0.44), cost +4% (CI 
 | Recall | 0.880 | 0.885 | +0.005 | -0.031 to +0.047 | – | descriptive |
 | Precision | 0.703 | 0.702 | -0.001 | -0.041 to +0.034 | – | descriptive |
 
-7 tasks took fewer steps and none more. Held-out precision stayed near baseline at 0.703 → 0.702 (95% CI -0.041 to +0.034), compared with the drops in E, E2 and pooled. (A post-hoc correction labels every held-out read "descriptive", as the section title says. The table used to say "lower" and "gate: pass", and the prose used to say the intervals cleared the -0.05 margin. No number changed.) (Post-hoc, deviation Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
+7 tasks took fewer steps and none more. Held-out precision stayed near baseline at 0.703 → 0.702 (95% CI -0.041 to +0.034), compared with the drops in E, E2 and pooled. (A post-hoc correction labelled these estimates descriptive and removed conclusions based on the -0.05 margin. No number changed.) (Post-hoc, deviation Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
 
 ### Long context (8 of 8 valid, 4 tasks × 1 seed; descriptive)
 

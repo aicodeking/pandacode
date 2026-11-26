@@ -183,12 +183,22 @@ jobs:
       # that matched little would still pass, so require at least 200 passed tests on macOS and
       # Windows and at least one passing test for each checked module, including Connect hard-link
       # refusal, so a `#[cfg]` or `#[ignore]` slip that drops them on one platform fails here.
-      # Portable to macOS BSD awk and Git Bash gawk (only `index` and a plain regex).
+      # Windows must also pass both Job Object cleanup tests by name. Log checks use portable awk.
       - name: Platform Rust unit tests (macOS and Windows)
         if: matrix.target == 'darwin-aarch64' || matrix.target == 'windows-x86_64'
         shell: bash
         run: |
-          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: git_config:: path_match:: lead_spare:: session_launch_tests:: cloud::colab::tests:: workspace::text_search:: remote::methods::files::tests::hard_linked_files_are_refused_for_reads_and_writes 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
+          extra_filters=()
+          windows_checks=()
+          if [ "$RUNNER_OS" = Windows ]; then
+            detached_tool_test=custom_tools::tests::stop_kills_an_immediate_detached_descendant
+            extra_filters=(providers::windows_job::tests:: "$detached_tool_test")
+            windows_checks=(
+              providers::windows_job::tests::dropping_job_terminates_child_and_immediate_detached_descendant
+              "$detached_tool_test"
+            )
+          fi
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --lib -- app_marker:: providers::warm:: turn_changes:: account_config:: connections::tests::home_and_config providers::exit checkout_busy:: claude_roots:: git_config:: path_match:: lead_spare:: session_launch_tests:: cloud::colab::tests:: workspace::text_search:: remote::methods::files::tests::hard_linked_files_are_refused_for_reads_and_writes "${extra_filters[@]}" 2>&1 | tee "$RUNNER_TEMP/platform-tests.log"
           log="$RUNNER_TEMP/platform-tests.log"
           passed=$(awk '/^test result: ok\. [0-9]+ passed/ { sum += $4 } END { print sum + 0 }' "$log")
           echo "Platform Rust unit tests passed: $passed"
@@ -199,6 +209,12 @@ jobs:
           for module in 'app_marker::' 'path_match::' 'lead_spare::' 'checkout_busy::' 'providers::warm::' 'providers::exit::' 'claude_roots::' 'git_config::' 'workspace::text_search::' 'remote::methods::files::'; do
             if ! awk -v m="test $module" 'index($0, m) == 1 && / \.\.\. ok$/ { found = 1; exit } END { exit !found }' "$log"; then
               echo "::error::No passing $module tests ran on this platform"
+              exit 1
+            fi
+          done
+          for test_name in "${windows_checks[@]}"; do
+            if ! awk -v expected="test $test_name ... ok" '$0 == expected { found = 1; exit } END { exit !found }' "$log"; then
+              echo "::error::No passing $test_name test ran on Windows"
               exit 1
             fi
           done

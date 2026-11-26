@@ -18,7 +18,8 @@
 //! resumed. For a conversation with no record (a missing or corrupt state file, an evicted
 //! entry) the history is unknown, and every family a layer can add is kept. Codex sends dynamic tools only when its thread starts, so a family that can
 //! become wanted later in the same conversation (`flips`: a read-only worker's writes) is listed
-//! from a Codex thread's first turn.
+//! from a Codex thread's first turn. The explorer is opt-in at thread start and requires a
+//! recorded registration to be listed on a resumed Codex thread.
 //!
 //! Claude's deferred native tools follow the same history (`History::lists_native`): `remember`
 //! also records the ones a launch left defined, so a conversation keeps the deny set it started
@@ -77,6 +78,17 @@ impl History {
     pub(crate) fn holding(names: &[&str]) -> Self {
         Self { known: Some(names.iter().map(|name| (*name).to_owned()).collect()), codex: false, resumed: true }
     }
+    /// Whether a wanted tool `name` can actually be registered on this turn.
+    /// Codex only registers dynamic tools on `thread/start`, so a resumed Codex thread
+    /// has `name` only when its recorded initial listing included it (unknown history
+    /// fails closed so instructions never tell Codex to call an unregistered tool).
+    pub(crate) fn can_offer_tool(&self, name: &str) -> bool {
+        if !self.codex || !self.resumed {
+            return true;
+        }
+        self.known.as_ref().is_some_and(|known| known.contains(name))
+    }
+
     /// Whether this conversation may already hold at least one tool in `names`.
     pub(crate) fn may_hold_any(&self, names: &[&str]) -> bool {
         self.known.as_ref().is_none_or(|known| names.iter().any(|name| known.contains(*name)))
@@ -272,9 +284,12 @@ pub(crate) fn build_host(plan: &super::HostPlan, history: &History, at: &mut imp
     // A cloud agent's checkout is on its machine, where screenshots cannot be read: never listed.
     let host = if plan.cloud { host } else { layers.add(host, plan.trim.progress, true, |host| at.progress(host)) };
     // Search needs the checkout on this computer, so cloud runs never list it.
+    // A retained definition for unknown Codex history would be recorded as if registered.
     let host = match plan.explore {
-        Some(strict) => layers.add(host, plan.trim.explore, false, |host| Some(at.explore(host, strict))),
-        None => host,
+        Some(strict) if history.can_offer_tool(crate::providers::EXPLORE_TOOL) => {
+            layers.add(host, plan.trim.explore, false, |host| Some(at.explore(host, strict)))
+        }
+        _ => host,
     };
     let host = layers.add(host, plan.trim.custom, false, |host| at.custom(host));
     // Plan mode offers fewer agent-made tools than another turn of the same conversation may
@@ -396,6 +411,52 @@ mod tests {
         assert!(History::holding(&["pandacode_tool_run"]).may_hold_any(custom));
         assert!(History::unknown(false).may_hold_any(&["pandacode_tool_run"]));
         assert!(!History::fresh(false).may_hold_any(&["pandacode_tool_run"]));
+    }
+
+    #[test]
+    fn explorer_offer_depends_on_recorded_registration_only_for_resumed_codex() {
+        use crate::providers::EXPLORE_TOOL;
+
+        let empty = Listed::default();
+        let holding = Listed { on: Some("thread".into()), names: [EXPLORE_TOOL.to_owned()].into() };
+        for history in [
+            History::fresh(false),
+            History::from_listed(Some(&empty), "claude", Some("thread")),
+            History::from_listed(Some(&holding), "claude", Some("thread")),
+            History::unknown(false),
+            History::fresh(true),
+            History::from_listed(Some(&holding), "codex", Some("thread")),
+        ] {
+            assert!(history.can_offer_tool(EXPLORE_TOOL), "{history:?}");
+        }
+        assert!(!History::from_listed(Some(&empty), "codex", Some("thread")).can_offer_tool(EXPLORE_TOOL));
+        assert!(!History::unknown(true).can_offer_tool(EXPLORE_TOOL));
+    }
+
+    #[test]
+    fn a_resumed_codex_catalog_never_records_explore_without_evidence_of_registration() {
+        use crate::providers::EXPLORE_TOOL;
+
+        let mut plan = super::super::HostPlan { team: false, codex: true, cloud: false, trim: super::super::Role::of(false, false).wants(), explore: Some(false) };
+        let empty = Listed::default();
+        let holding = Listed { on: Some("thread".into()), names: [EXPLORE_TOOL.to_owned()].into() };
+        plan.trim.explore = false;
+        for history in [History::from_listed(Some(&empty), "codex", Some("thread")), History::unknown(true)] {
+            let built = build_host(&plan, &history, &mut fake::FakeLayers::default());
+            let recorded = super::listing(Some("thread"), built.host.as_ref(), &[]);
+            assert!(!recorded.names.contains(EXPLORE_TOOL), "{history:?}");
+        }
+
+        let history = History::from_listed(Some(&holding), "codex", Some("thread"));
+        plan.trim.explore = true;
+        let enabled = build_host(&plan, &history, &mut fake::FakeLayers::default());
+        assert!(names(enabled.host.as_ref()).contains(EXPLORE_TOOL));
+        assert!(!enabled.refused.contains(EXPLORE_TOOL));
+
+        plan.trim.explore = false;
+        let disabled = build_host(&plan, &history, &mut fake::FakeLayers::default());
+        assert!(names(disabled.host.as_ref()).contains(EXPLORE_TOOL));
+        assert!(refuses(&disabled.host, EXPLORE_TOOL));
     }
 
     fn host_of(names: &[&str]) -> Option<ToolHost> {

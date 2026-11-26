@@ -2466,21 +2466,11 @@ fn contains_nested_linked_worktree(root: &Path) -> Result<bool, String> {
     };
     let mut pending = vec![root.to_path_buf()];
     while let Some(dir) = pending.pop() {
-        if dir != root {
-            let gitfile = dir.join(".git");
-            match fs::symlink_metadata(&gitfile) {
-                Ok(meta) => {
-                    if crate::claude_roots::is_linked_worktree_root(&dir) {
-                        return Ok(true);
-                    }
-                    if meta.is_file() {
-                        crate::claude_roots::read_git_metadata(&gitfile)
-                            .map_err(|error| inspect_error(&gitfile, &error))?;
-                    }
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-                Err(error) => return Err(inspect_error(&gitfile, &error)),
-            }
+        if dir != root
+            && crate::claude_roots::inspect_linked_worktree_root(&dir)
+                .map_err(|error| inspect_error(&dir.join(".git"), &error))?
+        {
+            return Ok(true);
         }
         for entry in fs::read_dir(&dir).map_err(|error| inspect_error(&dir, &error))? {
             let entry = entry.map_err(|error| inspect_error(&dir, &error))?;
@@ -4200,11 +4190,10 @@ mod tests {
         assert_eq!(fs::read_to_string(untracked).unwrap(), "unsaved");
     }
 
-    #[test]
-    fn removal_refuses_a_foreign_nested_linked_worktree() {
+    fn foreign_nested_worktree_fixture() -> (Fixture, Fixture, PathBuf, PathBuf) {
         let repo_a = Fixture::new(true);
         let repo_b = Fixture::new(true);
-        fs::write(repo_a.root.join(".gitignore"), "ignored/\n").unwrap();
+        fs::write(repo_a.root.join(".gitignore"), "nested/\n").unwrap();
         repo_a.git(&["add", ".gitignore"]);
         repo_a.git(&[
             "-c",
@@ -4214,7 +4203,7 @@ mod tests {
             "Ignore nested worktrees",
         ]);
         let wt_a = create_worktree_with(&repo_a.root, "outer", None, false).unwrap();
-        let foreign = wt_a.path.join("ignored/foreign_wt");
+        let foreign = wt_a.path.join("nested/foreign_wt");
         repo_b.git(&[
             "worktree",
             "add",
@@ -4229,8 +4218,13 @@ mod tests {
                 .unwrap()
                 .clean
         );
+        (repo_a, repo_b, wt_a.path, unsaved)
+    }
 
-        let error = remove_worktree(&repo_a.root, &wt_a.path, None, false).unwrap_err();
+    #[test]
+    fn removal_refuses_a_foreign_nested_linked_worktree() {
+        let (repo_a, _repo_b, outer, unsaved) = foreign_nested_worktree_fixture();
+        let error = remove_worktree(&repo_a.root, &outer, None, false).unwrap_err();
         assert_eq!(
             error,
             "This worktree contains a nested linked worktree. Remove it first."
@@ -4239,6 +4233,62 @@ mod tests {
             fs::read_to_string(unsaved).unwrap(),
             "unsaved in the foreign worktree\n"
         );
+    }
+
+    #[test]
+    fn removal_refuses_a_foreign_nested_worktree_with_missing_gitdir() {
+        let (repo_a, repo_b, outer, unsaved) = foreign_nested_worktree_fixture();
+        fs::rename(
+            repo_b.root.join(".git/worktrees/foreign_wt"),
+            repo_b.base.join("offline-admin"),
+        )
+        .unwrap();
+
+        let error = remove_worktree_for(&repo_a.root, &outer, None, false, Trust::Desktop)
+            .unwrap_err();
+        assert!(error.contains("for nested worktrees: unreadable gitdir"), "{error}");
+        assert!(outer.is_dir());
+        assert_eq!(fs::read_to_string(unsaved).unwrap(), "unsaved in the foreign worktree\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn removal_refuses_a_foreign_nested_worktree_with_unreadable_gitdir() {
+        use std::os::unix::fs::PermissionsExt;
+
+        struct RestorePermissions<'a>(&'a Path, fs::Permissions);
+        impl Drop for RestorePermissions<'_> {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(self.0, self.1.clone());
+            }
+        }
+
+        // Root can bypass the mode bits on the foreign gitdir.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let (repo_a, repo_b, outer, unsaved) = foreign_nested_worktree_fixture();
+        let admin = repo_b.root.join(".git/worktrees/foreign_wt");
+        let _restore = RestorePermissions(&admin, fs::metadata(&admin).unwrap().permissions());
+        fs::set_permissions(&admin, fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = remove_worktree_for(&repo_a.root, &outer, None, false, Trust::Desktop)
+            .unwrap_err();
+        assert!(error.contains("for nested worktrees: unreadable gitdir"), "{error}");
+        assert!(outer.is_dir());
+        assert_eq!(fs::read_to_string(unsaved).unwrap(), "unsaved in the foreign worktree\n");
+    }
+
+    #[test]
+    fn nested_worktree_scan_accepts_an_ordinary_submodule_gitfile() {
+        let f = Fixture::new(true);
+        let module = f.root.join("nested/submodule");
+        let gitdir = f.root.join(".git/modules/submodule");
+        fs::create_dir_all(&module).unwrap();
+        fs::create_dir_all(gitdir).unwrap();
+        fs::write(module.join(".git"), "gitdir: ../../.git/modules/submodule\n").unwrap();
+
+        assert_eq!(contains_nested_linked_worktree(&f.root), Ok(false));
     }
 
     #[test]

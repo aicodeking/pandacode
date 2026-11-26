@@ -209,7 +209,25 @@ fn commondir_of(gitdir: &Path) -> std::result::Result<Option<PathBuf>, &'static 
 /// A main checkout (`.git` folder), a submodule (gitfile without `commondir`) or an unreadable
 /// `.git` is not.
 pub(crate) fn is_linked_worktree_root(root: &Path) -> bool {
-    matches!(gitdir_of(root), Ok((gitdir, true)) if std::fs::symlink_metadata(gitdir.join("commondir")).is_ok())
+    matches!(inspect_linked_worktree_root(root), Ok(true))
+}
+
+/// Classify a checkout for removal safety, where unreadable metadata must stop the scan.
+pub(crate) fn inspect_linked_worktree_root(root: &Path) -> std::result::Result<bool, &'static str> {
+    match std::fs::symlink_metadata(root.join(".git")) {
+        Ok(_) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("unreadable gitfile"),
+    }
+    let (gitdir, true) = gitdir_of(root)? else {
+        return Ok(false);
+    };
+    std::fs::read_dir(&gitdir).map_err(|_| "unreadable gitdir")?;
+    match std::fs::symlink_metadata(gitdir.join("commondir")) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("unreadable commondir"),
+    }
 }
 
 /// Linked worktrees inherit the main checkout's local settings. Ordinary gitfiles (including

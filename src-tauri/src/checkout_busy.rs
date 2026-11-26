@@ -237,18 +237,19 @@ fn folder_overlaps(a: &Path, b: &Path) -> bool {
 /// Whether `other` (inside `root`) belongs to a linked worktree strictly below `root`'s own
 /// checkout. Only when `root` is itself in a checkout: a plain folder still counts every
 /// repository inside it. Submodules and vendored `.git` folders are part of `root`'s working tree
-/// (their writes touch it), so they still count; plain subfolders, deleted paths and non-git
-/// folders resolve to `root`'s checkout or none. `other` is resolved first: the checkout walk
+/// (their writes touch it), so keep walking past them to find any enclosing linked worktree.
+/// `other` is resolved first: the checkout walk
 /// is lexical, so `root/.claude/worktrees/x/..` would otherwise pass through `x` and be taken
 /// for that worktree although it names a folder of `root`'s own checkout.
 fn in_nested_checkout(other: &Path, root_id: &Path) -> bool {
+    if root_id.join(".git").symlink_metadata().is_err() {
+        return false;
+    }
     let other_resolved = resolve_path(other);
-    let Some(other_root) = crate::claude_roots::git_checkout_root(&other_resolved) else { return false };
-    let other_root_resolved = resolve_path(&other_root);
-    other_root_resolved != root_id
-        && other_root_resolved.starts_with(root_id)
-        && root_id.join(".git").symlink_metadata().is_ok()
-        && crate::claude_roots::is_linked_worktree_root(&other_root)
+    other_resolved
+        .ancestors()
+        .take_while(|&ancestor| ancestor != root_id && ancestor.starts_with(root_id))
+        .any(crate::claude_roots::is_linked_worktree_root)
 }
 
 /// Whether a run, harness console or pending exit (except for `exclude_session`) holds any
@@ -519,6 +520,89 @@ mod tests {
             terminals: Default::default(),
             shutdown: Default::default(),
         }
+    }
+
+    fn vendored_repo_in_nested_worktree(checkout: &Checkout) -> PathBuf {
+        let dep = checkout.nested.join("vendor/dep");
+        std::fs::create_dir_all(dep.join(".git")).unwrap();
+        std::fs::create_dir(dep.join("sub")).unwrap();
+        dep
+    }
+
+    #[test]
+    fn vendored_repo_matches_its_nested_worktree_in_both_directions() {
+        let checkout = Checkout::new();
+        let dep = vendored_repo_in_nested_worktree(&checkout);
+        let sub = dep.join("sub");
+        let nested_pkg = checkout.nested.join("pkg-a");
+        std::fs::create_dir(&nested_pkg).unwrap();
+
+        for (outer, inner, same) in [
+            (&checkout.root, &dep, false),
+            (&checkout.pkg_a, &sub, false),
+            (&checkout.nested, &dep, true),
+            (&nested_pkg, &sub, true),
+        ] {
+            assert_eq!(any_same_checkout(outer, std::slice::from_ref(inner)), same);
+            assert_eq!(any_same_checkout(inner, std::slice::from_ref(outer)), same);
+        }
+    }
+
+    #[test]
+    fn submodule_matches_its_nested_worktree_in_both_directions() {
+        let checkout = Checkout::new();
+        let submod = checkout.nested.join("submod");
+        let gitdir = checkout.root.join(".git/worktrees/x/modules/submod");
+        std::fs::create_dir(&submod).unwrap();
+        std::fs::create_dir_all(gitdir).unwrap();
+        std::fs::write(
+            submod.join(".git"),
+            "gitdir: ../../../../.git/worktrees/x/modules/submod\n",
+        )
+        .unwrap();
+
+        assert!(!any_same_checkout(&checkout.root, std::slice::from_ref(&submod)));
+        assert!(!any_same_checkout(&submod, std::slice::from_ref(&checkout.root)));
+        assert!(any_same_checkout(&checkout.nested, std::slice::from_ref(&submod)));
+        assert!(any_same_checkout(&submod, std::slice::from_ref(&checkout.nested)));
+    }
+
+    #[tokio::test]
+    async fn main_checkout_checks_skip_an_exit_in_a_nested_worktrees_vendored_repo() {
+        let checkout = Checkout::new();
+        let dep = vendored_repo_in_nested_worktree(&checkout);
+        let state = test_state();
+        let session_id = format!("nested-vendored-exit-{}", uuid::Uuid::new_v4());
+        let hold = providers::hold_exit_in_cwd_for_test(&session_id, dep);
+        let prepared = tokio::time::timeout(
+            Duration::from_secs(2),
+            prepare_checkout_for_checks(&state, "checks", &checkout.root),
+        )
+        .await;
+        let still_pending = providers::pending_exits().iter().any(|(id, _)| id == &session_id);
+        drop(hold);
+        providers::await_exit(&session_id).await.unwrap();
+
+        let _reservation = prepared.expect("main checks must skip the nested exit").unwrap();
+        assert!(still_pending);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn main_checkout_checks_preserve_a_spare_in_a_nested_worktrees_vendored_repo() {
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        let checkout = Checkout::new();
+        let dep = vendored_repo_in_nested_worktree(&checkout);
+        let state = test_state();
+        let session_id = format!("nested-vendored-spare-{}", uuid::Uuid::new_v4());
+        providers::insert_spare_in_cwd_for_test(&session_id, dep, false);
+
+        let prepared = prepare_checkout_for_checks(&state, "checks", &checkout.root).await;
+        let still_pooled = providers::has_spare_for_test(&session_id);
+        providers::quiesce(&session_id).await.unwrap();
+
+        let _reservation = prepared.unwrap();
+        assert!(still_pooled);
     }
 
     #[tokio::test]

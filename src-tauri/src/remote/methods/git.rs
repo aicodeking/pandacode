@@ -111,9 +111,9 @@ fn is_running_in_state(state: &crate::AppState, session_id: &str) -> Result<bool
     Ok(crate::providers::pending_exits().iter().any(|(id, _)| id == session_id))
 }
 
-/// Refuses while any agent works or is exiting in `root` (`files.rs`' `running_in`), not only this task's.
-async fn refuse_running_here(ctx: &Ctx<'_>, root: &Path) -> Result<()> {
-    if super::files::running_in(ctx, root).await? {
+/// Uses the files.write check for every agent working or exiting in `root`.
+async fn refuse_running_here(state: &crate::AppState, root: &Path) -> Result<()> {
+    if super::files::running_in_state(state, root).await? {
         return Err(RUNNING.into());
     }
     Ok(())
@@ -144,7 +144,7 @@ fn checkout_locks() -> &'static StdMutex<HashMap<PathBuf, Weak<AsyncMutex<()>>>>
 #[must_use]
 struct CheckoutGuard(#[allow(dead_code)] Vec<OwnedMutexGuard<()>>);
 
-/// The lock for each checkout in `roots`, sorted so two callers never wait on each other.
+/// The lock for each resolved path in `roots`, sorted so two callers never wait on each other.
 fn checkout_lock_list(mut roots: Vec<PathBuf>) -> Vec<Arc<AsyncMutex<()>>> {
     roots.sort();
     roots.dedup();
@@ -187,31 +187,61 @@ fn try_lock_checkouts(roots: Vec<PathBuf>) -> Result<CheckoutGuard> {
     Ok(CheckoutGuard(guards))
 }
 
-/// The task's checkout (its worktree when it has one); with `project` the project's own
-/// checkout too, for a worktree merge or removal that changes both.
-async fn task_checkouts(ctx: &Ctx<'_>, session_id: &str, project_id: &str, project: bool) -> Result<Vec<PathBuf>> {
-    let mut roots = Vec::new();
-    match task_root(&ctx.state(), session_id).await {
-        Ok(root) => roots.push(root),
-        Err(error) if !project => return Err(error),
-        Err(_) => {}
-    }
-    if project {
-        let store = ctx.state().store.clone();
-        let id = project_id.to_owned();
-        roots.push(crate::blocking(move || store.lock().map_err(|e| e.to_string())?.workspace_root(&id, None)).await?);
-    }
-    Ok(roots)
+enum CheckoutWait {
+    Wait,
+    Try,
 }
 
-/// Locks the task's checkouts ([`task_checkouts`]), waiting for any call holding them.
-async fn lock_task_checkout(ctx: &Ctx<'_>, session_id: &str, project_id: &str, project: bool) -> Result<CheckoutGuard> {
-    Ok(lock_checkouts(task_checkouts(ctx, session_id, project_id, project).await?).await)
+const CHECKOUT_LOCK_ATTEMPTS: usize = 4;
+
+/// `root` is the canonical checkout used for the preflight checks. Worktree creation can
+/// move an unstarted task before we acquire that lock, so only use the revalidated root.
+async fn lock_current_task_checkout(
+    state: &crate::AppState,
+    session_id: &str,
+    mut root: PathBuf,
+    wait: CheckoutWait,
+) -> Result<(CheckoutGuard, PathBuf)> {
+    for _ in 0..CHECKOUT_LOCK_ATTEMPTS {
+        let roots = vec![crate::path_match::external_path(&root)];
+        let guard = match wait {
+            CheckoutWait::Wait => lock_checkouts(roots).await,
+            CheckoutWait::Try => try_lock_checkouts(roots)?,
+        };
+        let current = task_root(state, session_id).await?;
+        if current == root {
+            return Ok((guard, current));
+        }
+        root = current;
+    }
+    Err(CHECKOUT_BUSY.into())
 }
 
-/// Locks the task's own checkout without waiting ([`try_lock_checkouts`]).
-async fn try_lock_task_checkout(ctx: &Ctx<'_>, session_id: &str, project_id: &str) -> Result<CheckoutGuard> {
-    try_lock_checkouts(task_checkouts(ctx, session_id, project_id, false).await?)
+/// Read both paths together, including a missing worktree that removal can still prune.
+async fn worktree_checkout_keys(state: &crate::AppState, session_id: &str) -> Result<[PathBuf; 2]> {
+    let store = state.store.clone();
+    let session_id = session_id.to_owned();
+    crate::blocking(move || {
+        let (main, worktree, _) = crate::worktree_paths(&store, &session_id)?;
+        Ok([
+            crate::path_match::external_path(&main),
+            crate::path_match::resolve_path(&worktree),
+        ])
+    })
+    .await
+}
+
+async fn lock_current_worktree_checkouts(state: &crate::AppState, session_id: &str) -> Result<CheckoutGuard> {
+    let mut roots = worktree_checkout_keys(state, session_id).await?;
+    for _ in 0..CHECKOUT_LOCK_ATTEMPTS {
+        let guard = lock_checkouts(roots.to_vec()).await;
+        let current = worktree_checkout_keys(state, session_id).await?;
+        if current == roots {
+            return Ok(guard);
+        }
+        roots = current;
+    }
+    Err(CHECKOUT_BUSY.into())
 }
 
 /// The [`Trust`] every workspace Git helper gets for this phone call: hooks run and the
@@ -226,11 +256,11 @@ fn trust_of(ctx: &Ctx<'_>) -> Trust {
 /// (`workspace::refuse_repo_config_programs`). Commits, pushes, merges and pull requests check
 /// the same inside `workspace` / `push_and_open_pull` whenever hooks are skipped.
 /// `action` names the request in the refusal ("stage files", "switch branches").
-async fn refuse_config_programs(ctx: &Ctx<'_>, session_id: &str, action: &'static str) -> Result<()> {
-    if !trust_of(ctx).untrusted() {
+async fn refuse_config_programs(root: &Path, trust: Trust, action: &'static str) -> Result<()> {
+    if !trust.untrusted() {
         return Ok(());
     }
-    let root = task_root(&ctx.state(), session_id).await?;
+    let root = root.to_owned();
     crate::blocking(move || crate::workspace::refuse_repo_config_programs_for(&root, action)).await
 }
 
@@ -371,24 +401,32 @@ fn all_paths(files: Vec<crate::workspace::GitFile>, unstage: bool) -> Vec<String
 impl Run for Stage {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let task = workspace_task(&ctx.state(), &self.session_id).await?;
             let root = task_root(&ctx.state(), &self.session_id).await?;
             // Any agent working or exiting in this checkout (another task sharing a main checkout too).
-            refuse_running_here(&ctx, &root).await?;
-            // Ordered lane: never queue behind a background commit or push.
-            let _checkout = try_lock_task_checkout(&ctx, &self.session_id, &task.project_id).await?;
-            refuse_running_here(&ctx, &root).await?;
-            // Before any status too: listing the files to stage can run the checkout's filters.
-            refuse_config_programs(&ctx, &self.session_id, "stage files").await?;
+            refuse_running_here(&ctx.state(), &root).await?;
+            self.stage(&ctx.state(), root, trust_of(&ctx)).await
+        })
+    }
+}
+
+impl Stage {
+    async fn stage(self, state: &crate::AppState, root: PathBuf, trust: Trust) -> Result<Value> {
+        // Ordered lane: never queue behind a background commit or push.
+        let (checkout, root) = lock_current_task_checkout(state, &self.session_id, root, CheckoutWait::Try).await?;
+        refuse_running_here(state, &root).await?;
+        // Before any status too: listing the files to stage can run the checkout's filters.
+        refuse_config_programs(&root, trust, "stage files").await?;
+        crate::blocking(move || {
+            let _checkout = checkout;
             let Some(paths) = self.paths else {
-                let (unstage, trust) = (self.unstage, trust_of(&ctx));
-                let (count, skipped) = crate::blocking(move || stage_all_in(&root, unstage, trust)).await?;
+                let (count, skipped) = stage_all_in(&root, self.unstage, trust)?;
                 return Ok(json!({"count": count, "skipped": skipped}));
             };
             let count = paths.len();
-            crate::stage_files(&ctx.state(), &task.project_id, Some(&self.session_id), paths, !self.unstage, trust_of(&ctx)).await?;
+            crate::workspace::git_stage(&root, paths, !self.unstage, trust)?;
             Ok(json!({"count": count}))
         })
+        .await
     }
 }
 
@@ -450,12 +488,16 @@ impl Run for Discard {
             let root = task_root(&ctx.state(), &self.session_id).await?;
             // Any agent working in this checkout (another task sharing a main checkout too), as
             // `files.write` refuses.
-            refuse_running_here(&ctx, &root).await?;
+            refuse_running_here(&ctx.state(), &root).await?;
             // Ordered lane: never queue behind a background commit or push.
-            let _checkout = try_lock_task_checkout(&ctx, &self.session_id, &task.project_id).await?;
-            refuse_running_here(&ctx, &root).await?;
+            let (checkout, root) = lock_current_task_checkout(&ctx.state(), &self.session_id, root, CheckoutWait::Try).await?;
+            refuse_running_here(&ctx.state(), &root).await?;
             let (paths, skip_folders, trust) = (self.paths, self.skip_folders, trust_of(&ctx));
-            let (count, skipped) = crate::blocking(move || discard_batch_in(&root, paths, skip_folders, trust)).await?;
+            let (count, skipped) = crate::blocking(move || {
+                let _checkout = checkout;
+                discard_batch_in(&root, paths, skip_folders, trust)
+            })
+            .await?;
             changed(&ctx);
             Ok(json!({"count": count, "skipped": skipped}))
         })
@@ -503,13 +545,12 @@ impl Run for Commit {
 
 /// `git.commit` itself.
 async fn commit(ctx: Ctx<'_>, this: Commit) -> Result<Value> {
-    let task = workspace_task(&ctx.state(), &this.session_id).await?;
     let root = task_root(&ctx.state(), &this.session_id).await?;
     // Any agent working in this checkout (another task sharing a main checkout too).
-    refuse_running_here(&ctx, &root).await?;
-    let _checkout = lock_task_checkout(&ctx, &this.session_id, &task.project_id, false).await?;
+    refuse_running_here(&ctx.state(), &root).await?;
+    let (_checkout, root) = lock_current_task_checkout(&ctx.state(), &this.session_id, root, CheckoutWait::Wait).await?;
     // Again under the lock: an agent may have started while this call waited for it.
-    refuse_running_here(&ctx, &root).await?;
+    refuse_running_here(&ctx.state(), &root).await?;
     let trust = trust_of(&ctx);
     let commit_root = root.clone();
     let message = this.message;
@@ -546,19 +587,27 @@ struct Push {
 impl Run for Push {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let task = workspace_task(&ctx.state(), &self.session_id).await?;
             let root = task_root(&ctx.state(), &self.session_id).await?;
             // Any agent working or exiting in this checkout (another task sharing a main checkout too).
-            refuse_running_here(&ctx, &root).await?;
-            let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, false).await?;
-            // Again under the lock: an agent may have started while this call waited for it.
-            refuse_running_here(&ctx, &root).await?;
-            let trust = trust_of(&ctx);
-            let output = crate::blocking(move || crate::workspace::git_push(&root, trust)).await?;
+            refuse_running_here(&ctx.state(), &root).await?;
+            let output = self.push(&ctx.state(), root, trust_of(&ctx)).await?;
             super::invalidate_pull_cache(&self.session_id);
             changed(&ctx);
             Ok(json!({"output": super::bounded_text(&output, 4096)}))
         })
+    }
+}
+
+impl Push {
+    async fn push(&self, state: &crate::AppState, root: PathBuf, trust: Trust) -> Result<String> {
+        let (checkout, root) = lock_current_task_checkout(state, &self.session_id, root, CheckoutWait::Wait).await?;
+        // Again under the lock: an agent may have started while this call waited for it.
+        refuse_running_here(state, &root).await?;
+        crate::blocking(move || {
+            let _checkout = checkout;
+            crate::workspace::git_push(&root, trust)
+        })
+        .await
     }
 }
 
@@ -604,18 +653,27 @@ struct SwitchBranch {
 impl Run for SwitchBranch {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let task = workspace_task(&ctx.state(), &self.session_id).await?;
             let root = task_root(&ctx.state(), &self.session_id).await?;
             // Any agent working in this checkout (another task sharing a main checkout too).
-            refuse_running_here(&ctx, &root).await?;
+            refuse_running_here(&ctx.state(), &root).await?;
             // Ordered lane: never queue behind a background commit, push or merge.
-            let _checkout = try_lock_task_checkout(&ctx, &self.session_id, &task.project_id).await?;
-            refuse_running_here(&ctx, &root).await?;
+            let (checkout, root) = lock_current_task_checkout(&ctx.state(), &self.session_id, root, CheckoutWait::Try).await?;
+            refuse_running_here(&ctx.state(), &root).await?;
+            let task = workspace_task(&ctx.state(), &self.session_id).await?;
+            let worktree = task.worktree_path.is_some();
+            let trust = trust_of(&ctx);
             // A checkout runs the repository's smudge filters.
-            refuse_config_programs(&ctx, &self.session_id, "switch branches").await?;
-            let list = crate::switch_branch(&ctx.state(), &task.project_id, Some(&self.session_id), self.branch, trust_of(&ctx)).await?;
+            refuse_config_programs(&root, trust, "switch branches").await?;
+            if worktree {
+                return Err("This task works in its own worktree; its branch stays as it is.".into());
+            }
+            let list = crate::blocking(move || {
+                let _checkout = checkout;
+                crate::workspace::git_switch(&root, &self.branch, trust)
+            })
+            .await?;
             changed(&ctx);
-            branches_reply(list, task.worktree_path.is_some(), false)
+            branches_reply(list, worktree, false)
         })
     }
 }
@@ -661,9 +719,9 @@ struct WorktreeMerge {
 impl Run for WorktreeMerge {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let task = workspace_task(&ctx.state(), &self.session_id).await?;
+            workspace_task(&ctx.state(), &self.session_id).await?;
             crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?;
-            let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, true).await?;
+            let _checkout = lock_current_worktree_checkouts(&ctx.state(), &self.session_id).await?;
             // Again under the lock: an agent or background exit may have started while this call waited for it.
             crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?;
             // The desktop's merge_worktree, with hooks only while the switch is on.
@@ -687,9 +745,9 @@ struct WorktreeRemove {
 impl Run for WorktreeRemove {
     fn run<'a>(self: Box<Self>, ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            let task = workspace_task(&ctx.state(), &self.session_id).await?;
+            workspace_task(&ctx.state(), &self.session_id).await?;
             crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?;
-            let _checkout = lock_task_checkout(&ctx, &self.session_id, &task.project_id, true).await?;
+            let _checkout = lock_current_worktree_checkouts(&ctx.state(), &self.session_id).await?;
             crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?;
             // `worktree remove` runs a status in the checkout and `branch -d` reads commits.
             let removed = crate::remove_task_worktree(&ctx.state(), self.session_id, self.delete_branch, trust_of(&ctx)).await?;
@@ -745,21 +803,29 @@ fn suggested_branch(task: &crate::storage::Session) -> String {
 
 /// Moves `session_id` into a new worktree when it has not started, else creates a worktree
 /// task from it. Blocking; the caller holds the project's checkout lock.
-fn create_task_worktree(store: &Arc<StdMutex<crate::storage::Store>>, session_id: &str, branch: &str, trust: Trust) -> Result<(crate::storage::Session, bool)> {
-    let (source, root, attach) = {
+fn create_task_worktree(
+    store: &Arc<StdMutex<crate::storage::Store>>,
+    session_id: &str,
+    root: &Path,
+    branch: &str,
+    trust: Trust,
+) -> Result<(crate::storage::Session, bool)> {
+    let (source, attach) = {
         let store = store.lock().map_err(|e| e.to_string())?;
         let source = workspace_session_from(&store, session_id)?;
         if source.worktree_path.is_some() {
             return Err("This task already has a worktree.".into());
         }
-        let root = store.workspace_root(&source.project_id, None)?;
+        if store.workspace_root(&source.project_id, None)? != root {
+            return Err(CHECKOUT_BUSY.into());
+        }
         let attach = store.worktree_attachable(session_id)?;
-        (source, root, attach)
+        (source, attach)
     };
     // `git worktree add` never runs hooks here, but its checkout runs the repository's filters
     // (and a submodule's own config).
-    crate::workspace::refuse_untrusted_programs_for(&root, trust, "create a worktree")?;
-    let worktree = crate::workspace::create_worktree_for(&root, branch, None, false, trust)?;
+    crate::workspace::refuse_untrusted_programs_for(root, trust, "create a worktree")?;
+    let worktree = crate::workspace::create_worktree_for(root, branch, None, false, trust)?;
     let store = store.lock().map_err(|e| e.to_string())?;
     if attach {
         let task = store.attach_worktree(&source.id, &worktree.path, &worktree.branch).map_err(|error| format!("Worktree created at {}, but the task could not be updated: {error}", worktree.path.display()))?;
@@ -798,12 +864,21 @@ async fn create_worktree(ctx: Ctx<'_>, this: WorktreeCreate) -> Result<Value> {
     }
     let root = task_root(&ctx.state(), &this.session_id).await?;
     refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?;
-    let _checkout = lock_task_checkout(&ctx, &this.session_id, &task.project_id, true).await?;
+    // An eligible task uses the project checkout, so its task lock also locks the project.
+    let (checkout, root) = lock_current_task_checkout(&ctx.state(), &this.session_id, root, CheckoutWait::Wait).await?;
+    let task = workspace_task(&ctx.state(), &this.session_id).await?;
+    if task.worktree_path.is_some() {
+        return Err("This task already has a worktree.".into());
+    }
     // Again under the lock: an agent or background exit may have started while this call waited for it.
     refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?;
-    let branch = this.branch.clone().unwrap_or_else(|| suggested_branch(&task));
-    let (store, session_id, trust) = (ctx.state().store.clone(), this.session_id.clone(), trust_of(&ctx));
-    let created = crate::blocking(move || create_task_worktree(&store, &session_id, &branch, trust)).await;
+    let branch = this.branch.unwrap_or_else(|| suggested_branch(&task));
+    let (store, session_id, trust) = (ctx.state().store.clone(), this.session_id, trust_of(&ctx));
+    let created = crate::blocking(move || {
+        let _checkout = checkout;
+        create_task_worktree(&store, &session_id, &root, &branch, trust)
+    })
+    .await;
     // As on the desktop: a new worktree changes which folders the skill switches resolve to.
     crate::skill_manager::projects_changed();
     let (saved, moved) = created?;
@@ -844,30 +919,31 @@ impl Run for PullCreate {
 
 /// `pull.create` itself.
 async fn open_pull(ctx: Ctx<'_>, this: PullCreate) -> Result<Value> {
+    let root = task_root(&ctx.state(), &this.session_id).await?;
+    // Any agent working in this checkout (another task sharing a main checkout too).
+    refuse_running_here(&ctx.state(), &root).await?;
+    // Opening a pull request pushes the task's branch from its checkout.
+    let (_checkout, root) = lock_current_task_checkout(&ctx.state(), &this.session_id, root, CheckoutWait::Wait).await?;
+    refuse_running_here(&ctx.state(), &root).await?;
     let task = workspace_task(&ctx.state(), &this.session_id).await?;
     if task.pull_request.as_ref().is_some_and(|link| link.state == "open" || link.state == "draft") {
         return Err("This task already has an open pull request.".into());
     }
-    let root = task_root(&ctx.state(), &this.session_id).await?;
-    // Any agent working in this checkout (another task sharing a main checkout too).
-    refuse_running_here(&ctx, &root).await?;
-    // Opening a pull request pushes the task's branch from its checkout.
-    let _checkout = lock_task_checkout(&ctx, &this.session_id, &task.project_id, false).await?;
-    refuse_running_here(&ctx, &root).await?;
     let base = match this.base {
         Some(base) => base,
         None => {
             // Round 24: the default branch of the remote the pull request opens in (a fork's
             // `upstream`), else origin's as before.
             let (pin_root, trust) = (root.clone(), trust_of(&ctx));
-            match crate::blocking(move || Ok(crate::workspace::pull_base_default(&pin_root, trust))).await? {
-                Some(base) => base,
-                None => {
-                    // Through the phone's trust: sorting branches reads commits a partial clone fetches lazily.
-                    let list = crate::task_branches(&ctx.state(), &task.project_id, Some(&this.session_id), trust_of(&ctx)).await?;
-                    Some(list.default_branch).filter(|base| !base.is_empty()).ok_or("Choose a base branch.")?
+            crate::blocking(move || {
+                if let Some(base) = crate::workspace::pull_base_default(&pin_root, trust) {
+                    return Ok(base);
                 }
-            }
+                // Through the phone's trust: sorting branches reads commits a partial clone fetches lazily.
+                let list = crate::workspace::git_branches(&pin_root, trust)?;
+                Some(list.default_branch).filter(|base| !base.is_empty()).ok_or_else(|| "Choose a base branch.".into())
+            })
+            .await?
         }
     };
     let trust = trust_of(&ctx);
@@ -1271,11 +1347,12 @@ mod tests {
         assert!(try_lock_checkouts(vec![root.clone()]).is_err());
         drop(background);
         let source = include_str!("git.rs").replace("\r\n", "\n");
-        for method in ["impl Run for Stage", "impl Run for SwitchBranch"] {
+        for method in ["async fn stage(", "impl Run for Discard", "impl Run for SwitchBranch"] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
-            assert!(body.contains("try_lock_task_checkout(&ctx"), "{method}");
-            assert!(!body.contains("lock_task_checkout(&ctx, &self.session_id, &task.project_id, false).await"), "{method}");
+            assert!(body.contains("lock_current_task_checkout("), "{method}");
+            assert!(body.contains("CheckoutWait::Try"), "{method}");
+            assert!(!body.contains("CheckoutWait::Wait"), "{method}");
         }
     }
 
@@ -1286,10 +1363,10 @@ mod tests {
             let body = &source[source.find(method).unwrap()..];
             body[..body.find("\n}\n").unwrap()].to_owned()
         };
-        let stage = body("impl Run for Stage");
-        let refusal = stage.find("refuse_config_programs(&ctx").expect("stage refuses");
+        let stage = body("async fn stage(");
+        let refusal = stage.find("refuse_config_programs(&root, trust").expect("stage refuses");
         assert!(refusal < stage.find("stage_all_in(&root").unwrap(), "git.stage {{all}} refuses before its status, which skips submodules with the switch off");
-        assert!(body("impl Run for SwitchBranch").contains("refuse_config_programs(&ctx"), "a branch switch runs smudge filters");
+        assert!(body("impl Run for SwitchBranch").contains("refuse_config_programs(&root, trust"), "a branch switch runs smudge filters");
         assert!(body("impl Run for Status").contains("status_for(&root, trust)"));
         let lib = include_str!("../../lib.rs").replace("\r\n", "\n");
         let pull = &lib[lib.find("pub(crate) fn push_and_open_pull").unwrap()..];
@@ -1304,14 +1381,14 @@ mod tests {
     #[test]
     fn commit_and_merge_recheck_the_agent_after_the_checkout_lock() {
         let source = include_str!("git.rs").replace("\r\n", "\n");
-        for (method, check) in [
-            ("async fn commit(", "refuse_running_here(&ctx, &root).await?"),
-            ("impl Run for WorktreeMerge", "crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?"),
-            ("impl Run for WorktreeRemove", "crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?"),
+        for (method, lock, check) in [
+            ("async fn commit(", "lock_current_task_checkout(", "refuse_running_here(&ctx.state(), &root).await?"),
+            ("impl Run for WorktreeMerge", "lock_current_worktree_checkouts(", "crate::refuse_worktree_merge_busy(&ctx.state(), &self.session_id).await?"),
+            ("impl Run for WorktreeRemove", "lock_current_worktree_checkouts(", "crate::refuse_worktree_remove_busy(&ctx.state(), &self.session_id).await?"),
         ] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
-            let lock = body.find("lock_task_checkout(&ctx").expect(method);
+            let lock = body.find(lock).expect(method);
             assert!(body[..lock].contains(check), "{method} checks before the lock");
             assert!(body[lock..].contains(check), "{method} re-checks after the lock");
         }
@@ -1332,7 +1409,7 @@ mod tests {
         let source = include_str!("git.rs").replace("\r\n", "\n");
         let remote = &source[source.find("impl Run for WorktreeMerge").unwrap()..];
         let remote = &remote[..remote.find("\n}\n").unwrap()];
-        assert!(remote.find("let _checkout = lock_task_checkout(").unwrap() < remote.find("crate::merge_task_worktree(").unwrap());
+        assert!(remote.find("let _checkout = lock_current_worktree_checkouts(").unwrap() < remote.find("crate::merge_task_worktree(").unwrap());
         assert!(remote.contains("crate::merge_task_worktree(&ctx.state(), self.session_id, trust_of(&ctx)).await?"));
     }
 
@@ -1360,10 +1437,10 @@ mod tests {
         assert!(Command::new("git").args(["config", "core.sshCommand", "touch /tmp/never"]).current_dir(&root).output().unwrap().status.success());
         assert!(upstream(&root, Trust::phone(false)).unwrap_err().contains("core.sshcommand"));
         assert!(upstream(&root, Trust::phone(true)).unwrap().is_none(), "the switch on reads as the desktop does");
-        let source = include_str!("git.rs");
+        let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[..source.find("\nmod tests {").unwrap()];
         assert!(!body.contains(concat!("Command::new(", "\"git\")")), "no raw Git command");
-        let host = include_str!("../host.rs");
+        let host = include_str!("../host.rs").replace("\r\n", "\n");
         let host = &host[..host.find("\nmod tests {").unwrap()];
         assert!(!host.contains(concat!("Command::new(", "\"git\")")), "no raw Git command in the host");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
@@ -1409,6 +1486,94 @@ mod tests {
         root
     }
 
+    struct MovingTask {
+        state: crate::AppState,
+        session_id: String,
+        main: PathBuf,
+        worktree: crate::workspace::Worktree,
+    }
+
+    impl MovingTask {
+        fn new() -> Self {
+            let main = repo();
+            let worktree = crate::workspace::create_worktree_for(&main, "moved", None, false, Trust::phone(false)).unwrap();
+            let store = crate::storage::Store::open(Path::new(":memory:")).unwrap();
+            let project = store.add_project(&main).unwrap();
+            let task = store.create_session(&project.id, "codex", "m", "full").unwrap();
+            let state = crate::AppState {
+                store: Arc::new(StdMutex::new(store)),
+                agents: Arc::new(StdMutex::new(HashMap::new())),
+                terminals: Arc::new(StdMutex::new(HashMap::new())),
+                shutdown: std::sync::atomic::AtomicU8::new(0),
+            };
+            Self { state, session_id: task.id, main, worktree }
+        }
+
+        fn attach(&self) {
+            self.state.store.lock().unwrap().attach_worktree(&self.session_id, &self.worktree.path, &self.worktree.branch).unwrap();
+        }
+    }
+
+    impl Drop for MovingTask {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(self.main.parent().unwrap());
+        }
+    }
+
+    fn fixture_git(root: &Path, args: &[&str]) -> String {
+        let output = Command::new("git").args(args).current_dir(root).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    #[tokio::test]
+    async fn push_follows_a_task_moved_while_waiting_for_its_checkout_lock() {
+        let task = MovingTask::new();
+        let remote = task.main.with_file_name("remote.git");
+        std::fs::create_dir(&remote).unwrap();
+        fixture_git(&remote, &["init", "--bare", "-b", "main"]);
+        let remote_url = crate::path_match::external_path(&remote);
+        fixture_git(&task.main, &["remote", "add", "origin", remote_url.to_str().unwrap()]);
+        fixture_git(&task.worktree.path, &["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", "commit", "--allow-empty", "-m", "Worktree commit"]);
+        let head = fixture_git(&task.worktree.path, &["rev-parse", "HEAD"]);
+
+        let root = task_root(&task.state, &task.session_id).await.unwrap();
+        assert_eq!(root, task.main);
+        let main_lock = lock_checkouts(vec![crate::path_match::external_path(&root)]).await;
+        let request = Push { session_id: task.session_id.clone() };
+        // Full access permits the test's local bare remote.
+        let push = request.push(&task.state, root, Trust::phone(true));
+        tokio::pin!(push);
+        std::future::poll_fn(|cx| {
+            // Its first await queues for the main lock, which is still held.
+            assert!(std::future::Future::poll(push.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        task.attach();
+        drop(main_lock);
+        tokio::time::timeout(Duration::from_secs(20), push).await.unwrap().unwrap();
+
+        assert_eq!(fixture_git(&remote, &["show-ref", "--heads"]), format!("{head} refs/heads/{}", task.worktree.branch));
+    }
+
+    #[tokio::test]
+    async fn stage_all_follows_a_task_moved_before_it_can_try_the_checkout_lock() {
+        let task = MovingTask::new();
+        std::fs::write(task.main.join("main.txt"), "main change\n").unwrap();
+        std::fs::write(task.worktree.path.join("worktree.txt"), "worktree change\n").unwrap();
+        let root = task_root(&task.state, &task.session_id).await.unwrap();
+        assert_eq!(root, task.main);
+        let main_lock = lock_checkouts(vec![crate::path_match::external_path(&root)]).await;
+        task.attach();
+        drop(main_lock);
+
+        let request = Stage { session_id: task.session_id.clone(), paths: None, unstage: false };
+        assert_eq!(request.stage(&task.state, root, Trust::phone(false)).await.unwrap(), json!({"count": 1, "skipped": 0}));
+        assert_eq!(fixture_git(&task.worktree.path, &["diff", "--cached", "--name-only"]), "worktree.txt");
+        assert!(fixture_git(&task.main, &["diff", "--cached", "--name-only"]).is_empty());
+    }
+
     #[test]
     fn worktree_create_moves_an_unstarted_task_and_branches_off_a_started_one() {
         let root = repo();
@@ -1421,22 +1586,22 @@ mod tests {
             store.message(&started.id, "user", "Already talking").unwrap();
             (fresh, started)
         };
-        let (moved, same) = create_task_worktree(&store, &fresh.id, "fresh-one", Trust::phone(false)).unwrap();
+        let (moved, same) = create_task_worktree(&store, &fresh.id, &root, "fresh-one", Trust::phone(false)).unwrap();
         assert!(same);
         assert_eq!(moved.id, fresh.id);
         assert_eq!(moved.worktree_branch.as_deref(), Some("pandacode/fresh-one"));
         assert!(Path::new(moved.worktree_path.as_ref().unwrap()).is_dir());
-        let again = create_task_worktree(&store, &fresh.id, "fresh-two", Trust::phone(false)).unwrap_err();
+        let again = create_task_worktree(&store, &fresh.id, &root, "fresh-two", Trust::phone(false)).unwrap_err();
         assert!(again.contains("already has a worktree"), "{again}");
 
-        let (created, same) = create_task_worktree(&store, &started.id, "started-one", Trust::Desktop).unwrap();
+        let (created, same) = create_task_worktree(&store, &started.id, &root, "started-one", Trust::Desktop).unwrap();
         assert!(!same);
         assert_ne!(created.id, started.id);
         assert_eq!(created.provider, "claude");
         assert_eq!(created.worktree_branch.as_deref(), Some("pandacode/started-one"));
         assert!(store.lock().unwrap().session(&started.id).unwrap().worktree_path.is_none(), "the source keeps the main checkout");
 
-        let taken = create_task_worktree(&store, &started.id, "started-one", Trust::Desktop).unwrap_err();
+        let taken = create_task_worktree(&store, &started.id, &root, "started-one", Trust::Desktop).unwrap_err();
         assert!(taken.contains("already exists"), "{taken}");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
@@ -1458,9 +1623,9 @@ mod tests {
             (off, on)
         };
         let leads_team = |sid: &str| -> bool { store.lock().unwrap().db.query_row("SELECT EXISTS(SELECT 1 FROM architect_teams WHERE session_id=?1)", [sid], |r| r.get(0)).unwrap() };
-        let (created, _) = create_task_worktree(&store, &off.id, "switch-off", Trust::phone(false)).unwrap();
+        let (created, _) = create_task_worktree(&store, &off.id, &root, "switch-off", Trust::phone(false)).unwrap();
         assert!(!leads_team(&created.id), "no default team without full access for remote tasks");
-        let (created, _) = create_task_worktree(&store, &on.id, "switch-on", Trust::phone(true)).unwrap();
+        let (created, _) = create_task_worktree(&store, &on.id, &root, "switch-on", Trust::phone(true)).unwrap();
         assert!(leads_team(&created.id), "the default team with the switch");
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
@@ -1475,7 +1640,7 @@ mod tests {
             let project = store.add_project(&root).unwrap();
             store.create_session(&project.id, "codex", "m", "full").unwrap()
         };
-        let refused = create_task_worktree(&store, &task.id, "filtered", Trust::phone(false)).unwrap_err();
+        let refused = create_task_worktree(&store, &task.id, &root, "filtered", Trust::phone(false)).unwrap_err();
         assert!(refused.contains("Full access"), "{refused}");
         assert!(store.lock().unwrap().session(&task.id).unwrap().worktree_path.is_none());
         let _ = std::fs::remove_dir_all(root.parent().unwrap());
@@ -1490,11 +1655,11 @@ mod tests {
         let body = &source[source.find("impl Run for Discard").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(!body.contains("refuse_running(&ctx"), "not only this task's agent");
-        let lock = body.find("try_lock_task_checkout(&ctx").unwrap();
-        assert!(body[..lock].contains("refuse_running_here(&ctx, &root).await?"), "before the lock");
-        assert!(body[lock..].contains("refuse_running_here(&ctx, &root).await?"), "again under the lock");
+        let lock = body.find("lock_current_task_checkout(").unwrap();
+        assert!(body[..lock].contains("refuse_running_here(&ctx.state(), &root).await?"), "before the lock");
+        assert!(body[lock..].contains("refuse_running_here(&ctx.state(), &root).await?"), "again under the lock");
         let here = &source[source.find("async fn refuse_running_here").unwrap()..];
-        assert!(here[..here.find("\n}\n").unwrap()].contains("super::files::running_in(ctx, root)"), "the files.write check");
+        assert!(here[..here.find("\n}\n").unwrap()].contains("super::files::running_in_state(state, root)"), "the files.write check");
         let files = include_str!("files.rs").replace("\r\n", "\n");
         let refuse = &files[files.find("async fn refuse_running_in").unwrap()..];
         assert!(refuse[..refuse.find("\n}\n").unwrap()].contains("running_in(ctx, root)"), "one check for both");
@@ -1507,19 +1672,22 @@ mod tests {
     #[test]
     fn checkout_changes_refuse_while_any_agent_works_in_the_checkout() {
         let source = include_str!("git.rs").replace("\r\n", "\n");
-        for (method, lock) in [
-            ("impl Run for Stage", "try_lock_task_checkout(&ctx"),
-            ("impl Run for SwitchBranch", "try_lock_task_checkout(&ctx"),
-            ("async fn commit(", "lock_task_checkout(&ctx"),
-            ("impl Run for Push", "lock_task_checkout(&ctx"),
-            ("async fn open_pull(", "lock_task_checkout(&ctx"),
+        for (method, work, postcheck) in [
+            ("impl Run for Stage", "async fn stage(", "refuse_running_here(state, &root).await?"),
+            ("impl Run for SwitchBranch", "impl Run for SwitchBranch", "refuse_running_here(&ctx.state(), &root).await?"),
+            ("async fn commit(", "async fn commit(", "refuse_running_here(&ctx.state(), &root).await?"),
+            ("impl Run for Push", "async fn push(", "refuse_running_here(state, &root).await?"),
+            ("async fn open_pull(", "async fn open_pull(", "refuse_running_here(&ctx.state(), &root).await?"),
         ] {
             let body = &source[source.find(method).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
             assert!(!body.contains("refuse_running(&ctx"), "{method}: not only this task's agent");
-            let lock = body.find(lock).expect(method);
-            assert!(body[..lock].contains("refuse_running_here(&ctx, &root).await?"), "{method}: before the lock");
-            assert!(body[lock..].contains("refuse_running_here(&ctx, &root).await?"), "{method}: again under the lock");
+            let preflight_end = body.find("lock_current_task_checkout(").unwrap_or(body.len());
+            assert!(body[..preflight_end].contains("refuse_running_here(&ctx.state(), &root).await?"), "{method}: before the lock");
+            let locked = &source[source.find(work).unwrap()..];
+            let locked = &locked[..locked.find("\n}\n").unwrap()];
+            let lock = locked.find("lock_current_task_checkout(").expect(work);
+            assert!(locked[lock..].contains(postcheck), "{work}: again under the lock");
         }
     }
 
@@ -1701,7 +1869,7 @@ mod tests {
         let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("async fn open_pull(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        assert!(body.find("crate::workspace::pull_base_default(&pin_root, trust)").unwrap() < body.find("crate::task_branches(").unwrap());
+        assert!(body.find("crate::workspace::pull_base_default(&pin_root, trust)").unwrap() < body.find("crate::workspace::git_branches(&pin_root, trust)").unwrap());
     }
 
     #[test]
@@ -1709,7 +1877,7 @@ mod tests {
         let source = include_str!("git.rs").replace("\r\n", "\n");
         let body = &source[source.find("async fn create_worktree(").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
-        let lock = body.find("lock_task_checkout(&ctx").unwrap();
+        let lock = body.find("lock_current_task_checkout(").unwrap();
         assert!(body[..lock].contains("refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?"), "before the lock");
         assert!(body[lock..].contains("refuse_worktree_create_busy(&ctx, &this.session_id, &root).await?"), "again under the lock");
     }

@@ -292,6 +292,11 @@ Per-harness opt-ins take effect only while the main switch is on. If a harness
 marker is absent or unreadable, explore stays off for that harness. If a save
 fails, Settings restores the switch and shows the reason.
 
+**Codex needs a new thread.** Codex registers dynamic tools only on
+`thread/start`. Enabling **Explorer · Codex** adds the tool to new Codex threads.
+When a Codex thread that started without it resumes, PandaCode withholds the
+explorer instruction.
+
 **What the benchmark showed, and its caveats.** Batch Fv2 in
 [agent-loop-benchmark.md](agent-loop-benchmark.md) (Claude Sonnet in Claude Code 2.1.317)
 preregistered confirmatory testing on 20 tuned Sonnet tasks. With the tool on, localization took
