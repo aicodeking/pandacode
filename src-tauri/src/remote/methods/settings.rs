@@ -148,9 +148,14 @@ struct TokenSaver;
 impl Run for TokenSaver {
     fn run<'a>(self: Box<Self>, _ctx: Ctx<'a>) -> Reply<'a> {
         Box::pin(async move {
-            // Detection only: installing RTK runs Homebrew, which stays a desktop action.
+            // Detection only: installing a saver tool runs Homebrew or npm, desktop actions.
             let tools = crate::token_saver::token_saver_tools().await?;
-            Ok(json!({"rtk": tools.rtk, "rtkVersion": short(&tools.rtk_version)}))
+            Ok(json!({
+                "rtk": tools.rtk,
+                "rtkVersion": short(&tools.rtk_version),
+                "pxpipe": tools.pxpipe,
+                "pxpipeVersion": short(&tools.pxpipe_version),
+            }))
         })
     }
 }

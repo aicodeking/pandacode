@@ -3,13 +3,13 @@ import { escape, icon, morph } from './dom';
 import { trackSegment } from './motion';
 import { hidePopover, showPopover } from './popover-motion';
 import { tokenCount } from './model-catalog';
-import { LEVELS, PACKS, contextFor, defaults, estimate, setDefaults, suggestion, threadSaver, updateThread, type PackId } from './token-saver';
+import { LEVELS, PACKS, contextFor, defaults, estimate, packAvailable, setDefaults, suggestion, threadSaver, updateThread, type Available, type PackId } from './token-saver';
 import type { TaskTokenUsage } from './types';
 import { errorText } from './error-text';
 
 /* The composer's Saver control and its panel: per-thread token-saving packs. */
 
-type Tools = { rtk: boolean; rtkVersion: string; rtkInstall: string };
+type Tools = { rtk: boolean; rtkVersion: string; rtkInstall: string; pxpipe: boolean; pxpipeVersion: string; pxpipeInstall: string; pxpipeBin: string };
 export type TokenSaverHost = {
   call<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   notify(text: string): void;
@@ -18,7 +18,11 @@ export type TokenSaverHost = {
   changed(sessionId: string): void;
   /** The thread's context reading, when it is the open thread; null otherwise. */
   contextUsage?(sessionId: string): { usedTokens: number; contextWindow?: number | null } | null;
+  /** Whether this thread's model reads dense image pages well enough for pxpipe. */
+  pxpipeEligible?(sessionId: string): boolean;
 };
+
+const EMPTY_TOOLS: Tools = { rtk: false, rtkVersion: '', rtkInstall: 'brew install rtk', pxpipe: false, pxpipeVersion: '', pxpipeInstall: 'npm install -g pxpipe-proxy', pxpipeBin: '' };
 
 /** Rough age for a measured-usage line: one precision step is enough. */
 function ago(at: number): string {
@@ -35,7 +39,7 @@ function measuredText(changedAt: number, usage: TaskTokenUsage): string {
 }
 
 export function createTokenSaver(host: TokenSaverHost) {
-  let tools: Tools = { rtk: false, rtkVersion: '', rtkInstall: 'brew install rtk' };
+  let tools: Tools = EMPTY_TOOLS;
   let loading: Promise<void> | undefined;
   let panel: HTMLElement | undefined, panelSession = '', cleanup: (() => void) | undefined;
   let installing = false;
@@ -43,7 +47,11 @@ export function createTokenSaver(host: TokenSaverHost) {
   let measured: TaskTokenUsage | null | undefined;
   let measuredToken = 0;
 
-  const available = () => ({ rtk: tools.rtk });
+  const available = (sessionId: string): Available => ({
+    rtk: tools.rtk,
+    pxpipe: tools.pxpipe && (host.pxpipeEligible?.(sessionId) ?? true),
+    pxpipeBin: tools.pxpipeBin,
+  });
   function loadTools(force = false): Promise<void> {
     if (!loading || force) loading = host.call<Tools>('token_saver_tools').then(value => { tools = value; }).catch(() => { /* Optional tools stay off. */ });
     return loading;
@@ -52,7 +60,7 @@ export function createTokenSaver(host: TokenSaverHost) {
   /** Measured usage since the configuration was sent; harnesses without local logs report nothing. */
   function loadMeasured(sessionId: string): void {
     const saver = threadSaver(sessionId);
-    const active = saver.packs.filter(id => id !== 'rtk' || tools.rtk);
+    const active = saver.packs.filter(id => packAvailable(id, available(sessionId)));
     // Only a configuration that has gone out has a meaningful window; a just-toggled one has not.
     if (!saver.changedAt || !active.length || saver.sentKey !== `${active.join(',')}:${saver.level}`) { measured = undefined; return; }
     measured = undefined;
@@ -68,16 +76,16 @@ export function createTokenSaver(host: TokenSaverHost) {
 
   /** The composer control: a leaf that glows and counts packs while the thread saves. */
   function button(sessionId: string): string {
-    const saver = threadSaver(sessionId), on = saver.packs.filter(id => id !== 'rtk' || tools.rtk);
-    const label = on.length ? `Token saver: ${on.length} on, about ${estimate(saver.packs, saver.level, available())}% fewer tokens` : 'Token saver: off';
+    const saver = threadSaver(sessionId), a = available(sessionId), on = saver.packs.filter(id => packAvailable(id, a));
+    const label = on.length ? `Token saver: ${on.length} on, about ${estimate(saver.packs, saver.level, a)}% fewer tokens` : 'Token saver: off';
     return `<button type="button" class="composer-saver-button" data-action="token-saver" aria-haspopup="dialog" aria-expanded="${panel && panelSession === sessionId ? 'true' : 'false'}" aria-pressed="${on.length > 0}" aria-label="${escape(label)}" data-tip="${escape(label)}">${icon('leaf')}<span class="sr-only">Saver</span>${on.length ? `<b>${on.length}</b>` : ''}</button>`;
   }
 
   /** One quiet list: name, an info mark with what it does, and a switch. */
   function render(sessionId: string): void {
     if (!panel) return;
-    const saver = threadSaver(sessionId), saving = estimate(saver.packs, saver.level, available()), on = new Set(saver.packs);
-    const active = saver.packs.filter(id => id !== 'rtk' || tools.rtk);
+    const saver = threadSaver(sessionId), a = available(sessionId), saving = estimate(saver.packs, saver.level, a), on = new Set(saver.packs);
+    const active = saver.packs.filter(id => packAvailable(id, a));
     const sentKey = active.length ? `${active.join(',')}:${saver.level}` : '';
     const preset = defaults();
     const sameAsDefault = Boolean(preset) && preset!.level === saver.level && preset!.packs.join() === saver.packs.join();
@@ -86,11 +94,17 @@ export function createTokenSaver(host: TokenSaverHost) {
     const tightenLabel = tighten ? [tighten.level === 'ultra' ? 'Ultra' : '', ...tighten.addPacks.map(id => PACKS.find(item => item.id === id)!.title)].filter(Boolean).join(' + ') : '';
     const hint = tighten ? `<div class="saver-hint"><span>Context <b>${fill}%</b> full.</span><button type="button" class="saver-tighten" data-tighten aria-label="Tighten the saver: ${escape(tightenLabel)}">Tighten: ${escape(tightenLabel)}</button></div>` : '';
     const row = (id: PackId) => {
-      const pack = PACKS.find(item => item.id === id)!, missing = pack.needs === 'rtk' && !tools.rtk, active = on.has(id) && !missing;
-      const about = `${pack.summary} Saves ${pack.saves}.${missing ? ` Not installed yet: turning it on installs it (${tools.rtkInstall}).` : id === 'rtk' && tools.rtkVersion ? ` rtk ${tools.rtkVersion} installed.` : ''}`;
+      const pack = PACKS.find(item => item.id === id)!, need = pack.needs;
+      const installed = need === 'rtk' ? tools.rtk : need === 'pxpipe' ? tools.pxpipe : true;
+      const eligible = id === 'pxpipe' ? (host.pxpipeEligible?.(sessionId) ?? true) : true;
+      const missing = Boolean(need) && !installed, blocked = !missing && !eligible;
+      const active = on.has(id) && !missing && !blocked;
+      const installName = need === 'rtk' ? tools.rtkInstall : tools.pxpipeInstall;
+      const version = id === 'rtk' && tools.rtkVersion ? ` rtk ${tools.rtkVersion} installed.` : id === 'pxpipe' && tools.pxpipeVersion ? ` pxpipe ${tools.pxpipeVersion} installed.` : '';
+      const about = `${pack.summary} Saves ${pack.saves}.${missing ? ` Not installed yet: turning it on installs it (${installName}).` : blocked ? ' Only available for models that read dense image pages well (Fable, Gemini 4 / 3.6–3.8 Flash).' : version}`;
       const levels = id === 'caveman' && active ? `<div class="saver-levels" data-segmented role="radiogroup" aria-label="Caveman intensity"><span class="segment-thumb" aria-hidden="true"></span>${LEVELS.map(level => `<button type="button" role="radio" class="${saver.level === level.id ? 'selected' : ''}" aria-checked="${saver.level === level.id}" data-level="${level.id}" title="${escape(level.hint)}">${level.label}</button>`).join('')}</div>` : '';
       const install = missing && installing ? '<span class="saver-installing" role="status">Installing…</span>' : '';
-      return `<li class="saver-row ${missing ? 'saver-missing' : ''}"><span class="saver-name" id="saver-${id}" data-tip="${escape(about)}">${pack.title}</span><span class="sr-only" id="saver-${id}-about">${escape(about)}</span>${install}<button type="button" role="switch" class="saver-switch" data-pack="${id}" aria-labelledby="saver-${id}" aria-describedby="saver-${id}-about" aria-checked="${active}" ${missing ? 'data-install="rtk"' : ''} ${missing && installing ? 'aria-busy="true" aria-disabled="true"' : ''}></button></li>${levels ? `<li class="saver-levels-row">${levels}</li>` : '<li class="saver-levels-row" hidden></li>'}`;
+      return `<li class="saver-row ${missing || blocked ? 'saver-missing' : ''}"><span class="saver-name" id="saver-${id}" data-tip="${escape(about)}">${pack.title}</span><span class="sr-only" id="saver-${id}-about">${escape(about)}</span>${install}<button type="button" role="switch" class="saver-switch" data-pack="${id}" aria-labelledby="saver-${id}" aria-describedby="saver-${id}-about" aria-checked="${active}" ${missing ? `data-install="${need}"` : ''} ${missing && installing ? 'aria-busy="true" aria-disabled="true"' : ''} ${blocked ? 'aria-disabled="true"' : ''}></button></li>${levels ? `<li class="saver-levels-row">${levels}</li>` : '<li class="saver-levels-row" hidden></li>'}`;
     };
     // morph drops what trackSegment wrote on the group: put it back first, so the thumb slides from where it was.
     const track = panel.querySelector<HTMLElement>('.saver-levels');
@@ -140,7 +154,7 @@ export function createTokenSaver(host: TokenSaverHost) {
     anchor.setAttribute('aria-expanded', 'true');
     panel.querySelector<HTMLElement>('.saver-switch')?.focus({ preventScroll: true });
     loadMeasured(sessionId);
-    // Re-checked on every open, so a fresh `brew install rtk` shows up without a restart.
+    // Re-checked on every open, so a fresh `brew install rtk` or `npm i -g pxpipe-proxy` shows up without a restart.
     void loadTools(true).then(() => { if (panelSession === sessionId) render(sessionId); });
 
     const update = (patch: Parameters<typeof updateThread>[1]) => {
@@ -170,15 +184,18 @@ export function createTokenSaver(host: TokenSaverHost) {
     };
     /** Turning on a pack whose tool is missing installs the tool, then turns the pack on. */
     const install = async (id: PackId) => {
+      const tool = PACKS.find(pack => pack.id === id)?.needs;
+      if (tool !== 'rtk' && tool !== 'pxpipe') return;
       installing = true; render(sessionId);
-      host.notify('Installing RTK with Homebrew…');
+      host.notify(tool === 'rtk' ? 'Installing RTK with Homebrew…' : 'Installing pxpipe with npm…');
       try {
-        tools = await host.call<Tools>('token_saver_install', { tool: 'rtk' });
+        tools = await host.call<Tools>('token_saver_install', { tool });
         loading = Promise.resolve();
         installing = false;
         const packs = threadSaver(sessionId).packs;
-        if (tools.rtk) update({ packs: packs.includes(id) ? packs : [...packs, id] });
-        host.notify(tools.rtk ? `RTK ${tools.rtkVersion} installed and on` : 'RTK is still not available');
+        const installed = tool === 'rtk' ? tools.rtk : tools.pxpipe;
+        if (installed) update({ packs: packs.includes(id) ? packs : [...packs, id] });
+        host.notify(installed ? `${tool === 'rtk' ? 'RTK' : 'pxpipe'} ${tool === 'rtk' ? tools.rtkVersion : tools.pxpipeVersion} installed and on` : `${tool === 'rtk' ? 'RTK' : 'pxpipe'} is still not available`);
       } catch (error) {
         installing = false;
         (host.notifyError ?? host.notify)(errorText(error));
@@ -207,6 +224,6 @@ export function createTokenSaver(host: TokenSaverHost) {
   return {
     button, open, close, loadTools,
     /** The folded guidance block for an outgoing message, if one is due. */
-    contextFor: (sessionId: string) => contextFor(sessionId, available()),
+    contextFor: (sessionId: string) => contextFor(sessionId, available(sessionId)),
   };
 }

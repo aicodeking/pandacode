@@ -35,6 +35,20 @@ test('RTK guidance needs rtk installed, and packs combine in one block', () => {
   assert.doesNotMatch(block, /caveman/i);
 });
 
+test('pxpipe guidance needs pxpipe installed and names the detected CLI', () => {
+  memory.clear();
+  updateThread('px', { packs: ['pxpipe'] });
+  assert.equal(contextFor('px', noRtk), '', 'without pxpipe the pack is inert');
+  const on = { rtk: false, pxpipe: true, pxpipeBin: '/opt/homebrew/bin/pxpipe' };
+  const block = guidance(['pxpipe'], 'full', on);
+  assert.match(block, /pxpipe is installed/);
+  assert.match(block, /\/opt\/homebrew\/bin\/pxpipe export <path>/);
+  assert.match(block, /Read factsheet\.txt first/);
+  assert.match(block, /fall back to reading the file/);
+  assert.ok(estimate(['pxpipe'], 'full', noRtk) === 0, 'unavailable pxpipe saves nothing');
+  assert.ok(estimate(['pxpipe'], 'full', on) > 0, 'installed pxpipe counts');
+});
+
 test('threads start from the saved default and keep their own changes', () => {
   memory.clear();
   assert.deepEqual(threadSaver('fresh').packs, []);
