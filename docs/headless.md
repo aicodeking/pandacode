@@ -4,7 +4,9 @@ The same PandaCode binary runs as an always-on **host** on a server: started ove
 desktop session, no one watching. Your devices — the mobile app and other computers'
 PandaCode — see the server as one more computer in PandaCode Connect and can start, watch,
 steer and approve tasks on it, including cloud runs ([cloud agents](cloud-agents.md)). There
-is no webview and no window: the desktop frontend never runs on a server.
+is no window in front of anyone and the desktop frontend never runs on a server: Tauri still
+creates the window from `tauri.conf.json`, but `serve` closes it during setup (with
+`--port` it is kept hidden and blank instead, see below).
 
 Nothing changes for the desktop app. `pandacode` with no arguments is the ordinary GUI;
 `pandacode serve …` is the host. A host can serve Connect clients (when signed in), a local
@@ -14,8 +16,9 @@ web UI in any browser (`--port`, see [Local web UI](#local-web-ui---port)), or b
 
 `serve` builds the real app — storage, provider credentials, the queue, bots, the
 cloud-agent resume loop, Connect hosting (`setup_common` in `lib.rs`, shared with the
-desktop startup) — then closes the window from `tauri.conf.json` and keeps the process
-alive. Everything user-facing happens on your devices. The few jobs the desktop window
+desktop startup) — then closes the window from `tauri.conf.json` (with `--port` it stays
+hidden instead) and keeps the process alive. Everything user-facing happens on your
+devices. The few jobs the desktop window
 would normally do are done natively in `src-tauri/src/headless.rs`:
 
 | Job | On the desktop | In serve mode |
@@ -58,6 +61,10 @@ access — no approval prompts; off by default).
 ```sh
 pandacode serve        # requires an existing sign-in; exits non-zero if none
 ```
+
+`pandacode serve --version` (or `-V`) prints `pandacode <version>` and exits 0 without
+starting the host or needing a display. So does plain `pandacode --version` on this build,
+which is how you ask a server over SSH what it is running.
 
 ## Local web UI (`--port`)
 
@@ -159,10 +166,12 @@ Security:
 
 ## Linux server
 
-1. Install the binary and Tauri's Linux runtime libraries (GTK, webkit2gtk — they are
-   linked even though plain `serve` creates no webview; `serve --port` creates only a
-   hidden `about:blank` main webview to host the web API bridge). A display must exist to *start*: run under
-   `xvfb-run` (a virtual X server; PandaCode renders nothing).
+1. Install the binary and Tauri's Linux runtime libraries (GTK, webkit2gtk). `serve` uses
+   the normal app runtime, so a Tauri window and webview are always created, with or
+   without `--port`: a plain `serve` closes that window right after setup, while
+   `serve --port` keeps it hidden and on `about:blank` because the web API replays its
+   calls through that webview. A display must exist to *start*: run under `xvfb-run` (a
+   virtual X server; PandaCode shows nothing).
 2. Install and log in each agent CLI (`claude`, `codex`, …) and `gh` (pull-request links
    and private clones use it), with the server's own logins.
 3. Sign in (above), then enable the service:
@@ -184,6 +193,16 @@ Environment=PANDACODE_SECRETS_FILE=1
 WantedBy=multi-user.target
 ```
 
+- `ExecStart` is the whole launch, on every boot: repeat every flag the host must keep there,
+  such as `--port 8787`, `--host` or `--device-name`. The crash guard is off under systemd,
+  so its relaunch flags are not involved; edit the unit to change what a restart keeps.
+- Set `RestartSec=` (for example `5s`) and a `StartLimitIntervalSec=`/`StartLimitBurst=`
+  pair: `Restart=always` otherwise retries a host that keeps failing immediately, in a tight
+  loop, where a short delay and a burst limit let systemd give up and leave the failure
+  visible in `systemctl status`.
+- Keep the `xvfb-run` wrapper: without a display Tauri aborts during GTK startup rather
+  than reaching `serve`'s friendly "pandacode serve could not start: …" error, so journald
+  shows the crash instead of the reason.
 - `PANDACODE_SECRETS_FILE=1` keeps provider credentials in the same 0600 `secrets.json`
   file macOS uses, instead of the Secret Service a server doesn't have (and which cannot
   answer noninteractive reads). Set `PANDACODE_SECRETS_FILE=0` to use a keyring anyway.
@@ -248,6 +267,10 @@ pandacode serve --import-bots bots.json
   `signing_secret` and a `config.phoneNumberId`; web needs nothing).
 - Secret values are inline or `"env:NAME"`, read from the environment at import — put the
   tokens in the systemd unit's `Environment=`/`EnvironmentFile=`, not in the file.
+- `--import-bots` is a startup, one-shot action: it runs once when this `serve` starts.
+  A crash-guard restart deliberately drops the flag and its file rather than replaying
+  them (re-applying converges, but every restart re-importing is not wanted). Re-run the
+  command, or restart the unit that carries the flag, after editing the file.
 - Importing is idempotent: bots match by name (existing profiles are updated), channels
   by kind+label, schedules by title, and rules by pattern (an edited decision replaces
   the old rule) — re-applying converges, so keep the file in version control and
@@ -290,11 +313,15 @@ limit-resume send ends a run, which then delivers the queue). Cloud runs keep go
 their machines through server restarts.
 
 Unless systemd runs it as a service, `serve` starts the crash guard (once the app is built,
-before its run loop): after a crash it restarts as a plain
-`serve`, appends all its output (including its startup line about the crash, which ends with the
-absolute path of the `crash-reports` folder and so names your home folder, the status line
-with your Connect GitHub login, and error messages, which can name threads and contain
-project and file paths) to
+before its run loop): after a crash it restarts `serve` with the serving modifiers from the
+original launch — `--port`/`-p`, `--host`, `--device-name` and `--allowed-host` keep their
+values and order, so a host started with `--port 8787` comes back with its web UI. One-shot
+flags are dropped instead: `--sign-in`, `--sign-out`, `--full-access`, `--no-full-access`,
+`--export-bots`, and `--import-bots <file>` (the file was applied at the original start; a
+restart does not replay it). The restarted host appends all its output (including its
+startup line about the crash, which ends with the absolute path of the `crash-reports`
+folder and so names your home folder, the status line with your Connect GitHub login, and
+error messages, which can name threads and contain project and file paths) to
 `serve-restart.log` in the app data folder, and writes a
 local report to `crash-reports/`. The log is owner-only on macOS and Linux (on Windows it gets
 the permissions of the profile folder it is in) and moves to `serve-restart.log.1`
