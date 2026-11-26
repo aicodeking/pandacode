@@ -65,14 +65,24 @@ const selected = (page: Page) => page.locator('#navigation .task-item.selected')
 
 const queueRows = (page: Page) => page.getByRole('region', { name: 'Queued messages' }).locator('.queue-row .queue-text');
 
-function delayQueueSnapshot(web: WebPage, name: 'queue_list' | 'queue_holds') {
+function delaySnapshot(web: WebPage, name: 'list_sessions' | 'queue_list' | 'queue_holds', skip = 0) {
   const captured = Promise.withResolvers<void>(), released = Promise.withResolvers<void>();
   web.controls.beforeReply = (command, args) => {
-    if (command !== name || args.sessionId) return;
+    if (command !== name || args.sessionId || skip-- > 0) return;
     captured.resolve();
     return released.promise;
   };
   return { captured: captured.promise, release: () => { delete web.controls.beforeReply; released.resolve(); } };
+}
+
+async function pausePreview(host: Page): Promise<void> {
+  await host.clock.install();
+  await host.clock.pauseAt(await host.evaluate(() => Date.now() + 5_000));
+}
+
+async function disconnect(web: WebPage): Promise<void> {
+  web.controls.refuseSockets = true;
+  await web.socket().close({ code: 4000, reason: 'Server restarting' });
 }
 
 async function reloadQueueClient(web: WebPage) {
@@ -107,7 +117,7 @@ async function openQueueClients(page: Page, beforeConnect?: (host: Page, session
   await host.exposeFunction('forwardHostEvent', (name: string, payload: { sessionId: string; held?: boolean; kind?: string }) => {
     if (name === 'queue-changed') queueEvents.push(payload);
     if (name === 'agent-event' && payload.kind === 'done') finishedRuns.push(payload.sessionId);
-    if (web.subscriptions.has(name)) web.socket().send(JSON.stringify({ type: 'event', name, payload }));
+    if (!web.controls.refuseSockets && web.subscriptions.has(name)) web.socket().send(JSON.stringify({ type: 'event', name, payload }));
   });
   await host.evaluate(async () => {
     const { listen } = await import('/src/preview.ts');
@@ -247,7 +257,7 @@ test.describe('web mode', () => {
     await expect(queueRows(page)).toHaveText([kept, removed]);
     await expect(hold).toHaveText('Paused after the run failed');
 
-    const list = delayQueueSnapshot(web, 'queue_list');
+    const list = delaySnapshot(web, 'queue_list');
     await reloadQueueClient(web);
     await list.captured;
     const removedReply = nextQueueEventReply(page, sessionId);
@@ -261,7 +271,7 @@ test.describe('web mode', () => {
     await expect(queueRows(page)).toHaveText([kept]);
     await expect(hold).toHaveText('Paused after the run failed');
 
-    const holds = delayQueueSnapshot(web, 'queue_holds');
+    const holds = delaySnapshot(web, 'queue_holds');
     await reloadQueueClient(web);
     await holds.captured;
     const releasedReply = nextQueueEventReply(page, sessionId);
@@ -303,6 +313,78 @@ test.describe('web mode', () => {
     await expect(queueRows(page)).toHaveCount(2);
   });
 
+  test('reconnecting after a missed done clears Stop and loads the saved reply', async ({ page }) => {
+    const { host, sessionId, web, finishedRuns } = await openQueueClients(page);
+    await pausePreview(host);
+    await host.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('send_message', { sessionId, text: 'Finish while the browser is offline' });
+    }, sessionId);
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+    await expect(stop).toBeVisible();
+    const oldSocket = web.socket();
+    await disconnect(web);
+    await host.clock.runFor(2_000);
+    await expect.poll(() => finishedRuns).toEqual([sessionId]);
+    await expect(stop).toBeVisible();
+
+    web.controls.refuseSockets = false;
+    // The clock is shared by both pages, including the browser's reconnect timer.
+    await page.clock.resume();
+    await expect.poll(() => web.socket() !== oldSocket && web.subscriptions.has('agent-event'), { timeout: 10_000 }).toBe(true);
+    await expect(stop).toHaveCount(0);
+    await expect(page.locator('#transcript .agent-message').last()).toContainText('This is the browser preview.');
+  });
+
+  test('a session snapshot from a lagged stream preserves newer live text', async ({ page }) => {
+    const web = await openWebMode(page);
+    await expect(page.locator('#prompt')).toBeEnabled();
+    const sessionId = (await selected(page).getAttribute('data-id'))!;
+    const sendAgent = (kind: string, text: string) => web.socket().send(JSON.stringify({ type: 'event', name: 'agent-event', payload: { sessionId, kind, text } }));
+    const stop = page.getByRole('button', { name: 'Stop task', exact: true });
+    sendAgent('status', 'Working');
+    await expect(stop).toBeVisible();
+
+    const queued = 'Follow-up from the host snapshot', live = 'Live text after the snapshot was taken';
+    // The preview host is idle when it takes the snapshot. Its queue row marks when resync finishes.
+    await page.evaluate(async ({ sessionId, queued }) => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('queue_add', { sessionId, text: queued, attachments: [] });
+    }, { sessionId, queued });
+    // The lag notice first emits sessions-changed, followed by the resync whose snapshot we delay.
+    const snapshot = delaySnapshot(web, 'list_sessions', 1);
+    web.socket().send(JSON.stringify({ type: 'lagged' }));
+    try {
+      await snapshot.captured;
+      sendAgent('text', live);
+      await expect(page.locator('#stream-region')).toContainText(live);
+    } finally { snapshot.release(); }
+
+    await expect(queueRows(page)).toHaveText([queued]);
+    await expect(stop).toBeVisible();
+    await expect(page.locator('#stream-region')).toContainText(live);
+  });
+
+  test('reconnecting refreshes follow-ups queued on a background task while offline', async ({ page }) => {
+    const { host, sessionId, web } = await openQueueClients(page);
+    const background = page.locator(`#navigation .task-item:not([data-id="${sessionId}"])`).first();
+    const backgroundId = (await background.getAttribute('data-id'))!;
+    const frontText = 'Queued on the open task while offline', backText = 'Queued on a background task while offline';
+    await disconnect(web);
+    await host.evaluate(async tasks => {
+      const { invoke } = await import('/src/preview.ts');
+      for (const [sessionId, text] of tasks) {
+        await invoke('set_queue_hold', { sessionId, held: true, reason: 'stopped' });
+        await invoke('queue_add', { sessionId, text, attachments: [] });
+      }
+    }, [[sessionId, frontText], [backgroundId, backText]]);
+
+    web.controls.refuseSockets = false;
+    await expect(queueRows(page)).toHaveText([frontText]);
+    await page.locator(`#navigation .task-item[data-id="${backgroundId}"]`).click();
+    await expect(queueRows(page)).toHaveText([backText]);
+  });
+
   test('browser Send now gets past the host stop hold without clearing it', async ({ page }) => {
     const kept = 'Keep this follow-up', urgent = 'Send this one now';
     const { host, sessionId, web, finishedRuns } = await openQueueClients(page, async (host, sessionId, agentStatus) => {
@@ -324,7 +406,11 @@ test.describe('web mode', () => {
     }, sessionId);
     const hold = page.locator('.queue-hold');
     await expect(hold).toHaveText('Paused after you stopped the run');
+    await pausePreview(host);
+    const sent = page.waitForResponse(response => response.url().endsWith('/api/invoke') && response.request().postDataJSON().command === 'send_message');
     await host.evaluate(() => (window as any).__stopRelease());
+    expect((await sent).ok()).toBe(true);
+    await host.clock.runFor(2_000);
 
     await expect.poll(() => finishedRuns).toEqual([sessionId, sessionId]);
     await expect(queueRows(page)).toHaveText([kept]);
@@ -509,6 +595,32 @@ test.describe('web mode', () => {
 });
 
 test.describe('desktop (preview) control', () => {
+  test('a failed bot turn leaves the desktop queue free of automatic holds', async ({ page }) => {
+    await page.goto('/');
+    const prompt = page.locator('#prompt');
+    await expect(prompt).toBeEnabled();
+    await page.evaluate(async () => {
+      const { invoke } = await import('/src/preview.ts');
+      await invoke('bot_create', { input: { name: 'Queue bot', provider: 'claude', model: 'sonnet', mode: 'ask' } });
+    });
+    await page.locator('.sidebar-bots-bar').click();
+    await page.getByRole('region', { name: 'Bots', exact: true }).getByRole('button', { name: /^Chat with Queue bot/ }).click();
+    await expect(page.locator('#breadcrumb .bot-crumb')).toContainText('Queue bot');
+    await expect(prompt).toBeEnabled();
+    const sessionId = (await prompt.getAttribute('data-session-id'))!;
+
+    await page.evaluate(sessionId => {
+      const emit = (kind: string, text: string) => (window as any).__previewEmit('agent-event', { sessionId, kind, text });
+      emit('error', 'The bot turn failed');
+      emit('done', '');
+    }, sessionId);
+    const hold = await page.evaluate(async sessionId => {
+      const { invoke } = await import('/src/preview.ts');
+      return (await invoke<Record<string, string>>('queue_holds', {}))[sessionId];
+    }, sessionId);
+    expect(hold).toBeUndefined();
+  });
+
   test('a web access CLI start off loopback shows a warning toast, not an error', async ({ page }) => {
     await page.goto('/');
     await page.locator('#navigation .task-item').first().waitFor();

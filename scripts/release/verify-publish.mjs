@@ -5,9 +5,8 @@
 //   node scripts/release/verify-publish.mjs [--require-signed] <assets-dir> <version> <notes.md>
 import { readdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { root, json, digest, targets, version } from './common.mjs';
+import { root, json, digest, targets, version, isMain } from './common.mjs';
 import { verifyMinisign } from '../../packages/npx/installer.mjs';
 
 const MANIFEST = 'latest.json';
@@ -97,6 +96,6 @@ async function main() {
   console.log(`Verified ${Object.keys(targets).length} installers${signed ? ', updater signatures and latest.json' : ' (unsigned: no updater files)'}.`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }
