@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
-// Settings → Agents → Local code explorer: on by default (Claude Code only; every other harness
-// opts in with its own switch, stored as an app-data marker), saved natively, read at each run start.
+// Settings → Agents → Local code explorer: off by default. The main switch includes Claude Code,
+// and the other harnesses require their own opt-in. The markers are read at each run start.
 const settings = (page: Page) => page.getByRole('region', { name: 'Settings', exact: true });
 const harness = (page: Page, name: string) => settings(page).getByRole('checkbox', { name: `Local code explorer for ${name}`, exact: true });
 const toggle = (page: Page) => settings(page).getByRole('checkbox', { name: 'Local code explorer (pandacode_explore)', exact: true });
@@ -11,23 +11,22 @@ async function openAgents(page: Page): Promise<void> {
   await settings(page).getByRole('tab', { name: 'Agents', exact: true }).click();
 }
 
-test('the local code explorer switch is on by default, names its harnesses and the deny-rule gap, and saves', async ({ page }) => {
+test('the local code explorer switch is off by default, names its harnesses and the deny-rule gap, and saves', async ({ page }) => {
   await page.goto('/');
   await openAgents(page);
-  await expect(toggle(page)).toBeChecked();
-  // The switch is not per harness: its hint (behind the title's mark) says on means Claude Code.
-  await expect(settings(page).locator(`.info-mark[data-tip="Next run. On for Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules."]`)).toHaveCount(1);
+  await expect(toggle(page)).not.toBeChecked();
+  await expect(settings(page).locator(`.info-mark[data-tip="Off by default. Next run. Enables Claude Code unless Claude read rules withhold it; opt-in harnesses below don’t parse harness deny rules."]`)).toHaveCount(1);
 
   await toggle(page).click();
-  await expect(toggle(page)).not.toBeChecked();
+  await expect(toggle(page)).toBeChecked();
 
   // Reopened, Settings reads the saved value back.
   await page.keyboard.press('Escape');
   await expect(settings(page)).toBeHidden();
   await openAgents(page);
-  await expect(toggle(page)).not.toBeChecked();
-  await toggle(page).click();
   await expect(toggle(page)).toBeChecked();
+  await toggle(page).click();
+  await expect(toggle(page)).not.toBeChecked();
 });
 
 test('an explorer switch that cannot be read shows no value and cannot be flipped', async ({ page }) => {
@@ -38,7 +37,7 @@ test('an explorer switch that cannot be read shows no value and cannot be flippe
   await expect(settings(page).getByText('Couldn’t read this setting.')).toBeVisible();
 });
 
-test('the explorer switch lists its harnesses: Claude Code on by default, each other one opts in and saves', async ({ page }) => {
+test('the explorer switch lists its harnesses: the main switch includes Claude Code and each other harness opt-in saves', async ({ page }) => {
   await page.goto('/');
   await openAgents(page);
   await expect(harness(page, 'Claude Code')).toBeChecked();

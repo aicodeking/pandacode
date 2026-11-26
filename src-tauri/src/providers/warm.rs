@@ -16,7 +16,9 @@ pub(super) use self::adopt::adopt_for_launch;
 #[cfg(test)]
 use self::adopt::launched_without_key_since;
 use self::key::{age_expired, miss};
-use self::stats::{decision_miss, decision_miss_in, discarded_note, no_spare_note, record_adopted, Gone, MissStreak, PoolChurn, PoolStats, WarmStatsSnapshot};
+use self::stats::{decision_miss, decision_miss_in, discarded_note, no_spare_note, record_adopted_in, Gone, MissStreak, PoolChurn, PoolStats, StatusBackoff, WarmStatsSnapshot};
+#[cfg(test)]
+use self::stats::record_adopted;
 pub(super) use self::key::{git_status_digest, key_fields, with_git_status};
 #[cfg(test)]
 pub(super) use self::key::{key, lead_key};
@@ -180,6 +182,7 @@ struct Spares {
     /// Each pool's eviction, unused-expiry and launch-time miss streaks and backoff (`spawn_spare`).
     lead_churn: PoolChurn,
     ordinary_churn: PoolChurn,
+    status_backoff: HashMap<PathBuf, StatusBackoff>,
 }
 
 /// A start or renewal check in flight. `cancelled`: a switch-off or folder discard already
@@ -194,8 +197,9 @@ struct StartingEntry {
 
 #[derive(Default)]
 pub(super) struct Pool {
-    /// Serializes the final check and process spawn with switch-off.
-    /// Lock order: spawn_gate, inner, then launch epochs or exit registry.
+    /// Serializes the final check and process spawn with switch-off and checkout quiescence.
+    /// Lock order: spawn_gate, inner (if needed), then launch epochs or exit registry.
+    /// The reservation check takes the reservation lock under spawn_gate.
     spawn_gate: Mutex<()>,
     inner: Mutex<Spares>,
 }
@@ -339,7 +343,7 @@ impl Adopting {
     /// Adopted: the run owns the process from here and must retire it itself on failure.
     pub(super) fn into_parts(mut self) -> (Child, ProcessGroup) {
         let (spare, _pending) = self.spare.take().expect("an adopted spare is taken once");
-        eprintln!("{}", record_adopted(self.pool, spare.lead));
+        eprintln!("{}", record_adopted_in(self.pool, spare.lead, spare.cwd.as_deref()));
         (spare.child, spare.group)
     }
 }
@@ -595,6 +599,7 @@ fn retire_all_from(pool: &Pool, disable: bool) {
         // Spares are off: no lead's next launch may report a miss (or count one) for them.
         if disable {
             pool.gone.clear();
+            pool.status_backoff.clear();
         }
         removed
     };
@@ -743,8 +748,17 @@ fn has_spare_in(pool: &Pool, folder: &Path) -> bool {
 async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String> {
     let wait = async {
         loop {
-            let within = InFolder::snapshot(pool).within_off_runtime(folder).await?;
-            let (removed, affected) = discard_within(pool, within);
+            // Cross the spawn gate after reservation so a spawn that already passed its
+            // reservation check has registered its pending exit before we inspect the pool.
+            let snapshot = {
+                let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
+                InFolder::snapshot(pool)
+            };
+            let within = snapshot.within_off_runtime(folder).await?;
+            let (removed, affected) = {
+                let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
+                discard_within(pool, within)
+            };
             for (id, spare, pending) in removed {
                 retire_now(&id, spare, pending);
             }

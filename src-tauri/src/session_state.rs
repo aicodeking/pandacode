@@ -10,11 +10,10 @@
 //! Counters and marks are written in the background a moment after they change (`WRITE_DELAY`:
 //! one write for a turn's several updates; a failed one is retried once) and on exit (`flush`,
 //! which also waits for and finishes a background write in progress). A tool listing is written
-//! at once (`update_now`; the launch runs it on a blocking thread beside the harness's start and
-//! joins it before the turn ends). One that cannot be written is forgotten (the listing only),
-//! and the file is rewritten or invalidated to keep a restart from trusting an older, narrower
-//! listing. A failed invalidation is logged and leaves the state dirty for another write. Only `flush`
-//! writes under the state lock; the others write outside it. Writes are atomic (synced temp
+//! at once (`update_now_durable`, on a blocking thread before the harness starts). If a listing
+//! cannot be written, the file is rewritten without it or invalidated so a restart never trusts
+//! an older, narrower listing. Failed invalidation aborts the launch and schedules another write.
+//! Only `flush` writes under the state lock; the others write outside it. Writes are atomic (synced temp
 //! file, then rename). A missing, oversized or corrupt file is an empty one, which behaves
 //! exactly as a fresh process did: unknown history keeps everything listed. Without `init`
 //! (tests, the cloud bridge) nothing touches the disk.
@@ -111,10 +110,33 @@ pub(crate) struct SessionState {
     clock: u64,
     /// Changes not yet written (`flush` or a `Snapshot` writes them).
     dirty: bool,
-    /// Snapshots taken; a snapshot older than the last one written is skipped.
+    /// Snapshots taken; an older snapshot cannot replace a newer write or invalidation.
     taken: u64,
-    /// The newest snapshot written, locked while writing so two writes never interleave.
-    written: Arc<Mutex<u64>>,
+    /// The newest write or invalidation, locked so writes never interleave.
+    written: Arc<Mutex<WriteProgress>>,
+}
+
+struct WriteProgress {
+    number: u64,
+    durable: bool,
+}
+
+impl Default for WriteProgress {
+    fn default() -> Self {
+        Self { number: 0, durable: true }
+    }
+}
+
+impl WriteProgress {
+    fn covers(&self, number: u64) -> std::io::Result<bool> {
+        if number > self.number {
+            Ok(false)
+        } else if self.durable {
+            Ok(true)
+        } else {
+            Err(std::io::Error::other("A newer session state snapshot could not invalidate the stale file"))
+        }
+    }
 }
 
 /// A serialized state, written outside the state lock.
@@ -122,41 +144,45 @@ pub(crate) struct Snapshot {
     path: PathBuf,
     number: u64,
     bytes: Vec<u8>,
-    written: Arc<Mutex<u64>>,
+    written: Arc<Mutex<WriteProgress>>,
 }
 
 impl Snapshot {
     /// Writes the file unless a newer snapshot already was.
     fn write(&self) -> std::io::Result<()> {
         let mut written = self.written.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.number <= *written {
+        if written.covers(self.number)? {
             return Ok(());
         }
         write(&self.path, &self.bytes)?;
-        *written = self.number;
+        *written = WriteProgress { number: self.number, durable: true };
         Ok(())
     }
 
-    /// `write`, invalidating the file by removing or truncating it if replacement fails.
-    /// This snapshot counts as written even on failure, so an older one taken before it
-    /// (holding a listing it dropped) can never recreate the file.
-    fn write_or_remove(&self) -> std::io::Result<()> {
+    /// Save the snapshot unless a newer one covers it. Return `Ok(false)` if this call
+    /// invalidated the file instead and a background write should restore the other entries.
+    /// Even failed invalidation prevents older snapshots from restoring stale listings.
+    fn write_or_remove(&self) -> std::io::Result<bool> {
         let mut written = self.written.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.number <= *written {
-            return Ok(());
+        if written.covers(self.number)? {
+            return Ok(true);
         }
-        *written = self.number;
-        let Err(write_err) = write(&self.path, &self.bytes) else { return Ok(()) };
-        let Err(remove_err) = std::fs::remove_file(&self.path) else { return Err(write_err) };
-        if remove_err.kind() == std::io::ErrorKind::NotFound {
-            return Err(write_err);
-        }
-        match std::fs::write(&self.path, b"") {
-            Ok(()) => Err(write_err),
-            Err(trunc_err) => Err(std::io::Error::other(format!(
-                "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
-            ))),
-        }
+        *written = WriteProgress { number: self.number, durable: false };
+        let Err(write_err) = write(&self.path, &self.bytes) else {
+            written.durable = true;
+            return Ok(true);
+        };
+        let invalidated = match std::fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(remove_err) => std::fs::write(&self.path, b"").map_err(|trunc_err| {
+                std::io::Error::other(format!(
+                    "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
+                ))
+            }),
+        };
+        written.durable = invalidated.is_ok();
+        invalidated.map(|()| false)
     }
 }
 
@@ -322,12 +348,12 @@ impl SessionState {
     pub(crate) fn flush(&mut self) -> std::io::Result<()> {
         let written = self.written.clone();
         let mut written = written.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.taken > *written {
+        if self.taken > written.number || !written.durable {
             self.dirty = true;
         }
         let Some(snapshot) = self.snapshot() else { return Ok(()) };
         write(&snapshot.path, &snapshot.bytes).inspect_err(|_| self.failed())?;
-        *written = snapshot.number;
+        *written = WriteProgress { number: snapshot.number, durable: true };
         Ok(())
     }
 }
@@ -465,18 +491,25 @@ impl Shared {
     // ponytail: the write (one fsync of the whole file) runs on the caller's thread. The launch
     // moves `remember_catalog_listed` to a blocking thread; `History::of` still writes inline,
     // only when it binds a new conversation's listing (once per conversation).
-    pub(crate) fn update_now<R>(&'static self, id: &str, change: impl FnOnce(&mut TaskState) -> R) -> R {
+    pub(crate) fn update_now_durable<R>(&'static self, id: &str, change: impl FnOnce(&mut TaskState) -> R) -> (R, Result<(), String>) {
         let (result, snapshot) = self.lock().change_now(id, change);
-        let Some(Err(error)) = snapshot.map(|snapshot| snapshot.write()) else { return result };
+        let Some(Err(error)) = snapshot.map(|snapshot| snapshot.write()) else { return (result, Ok(())) };
         eprintln!("PandaCode: could not save session state, forgetting task {id}: {error}");
         let retry = self.lock().forget_unsaved(id);
-        if let Some(Err(error)) = retry.map(|retry| retry.write_or_remove()) {
-            eprintln!("PandaCode: could not save session state after forgetting task {id}: {error}");
+        let saved = retry.map_or(Ok(true), |retry| retry.write_or_remove());
+        if !matches!(saved, Ok(true)) {
+            if let Err(error) = &saved {
+                eprintln!("PandaCode: could not save session state after forgetting task {id}: {error}");
+            }
             let mut state = self.lock();
             state.failed();
             self.schedule(&state);
         }
-        result
+        (result, saved.map(|_| ()).map_err(|error| error.to_string()))
+    }
+
+    pub(crate) fn update_now<R>(&'static self, id: &str, change: impl FnOnce(&mut TaskState) -> R) -> R {
+        self.update_now_durable(id, change).0
     }
 
     fn clear(&'static self, ids: &[String], clear: impl Fn(&mut TaskState)) {
@@ -512,6 +545,11 @@ pub(crate) fn update<R>(id: &str, change: impl FnOnce(&mut TaskState) -> R) -> R
 /// Changes one task's entry and writes the file first (`Shared::update_now`).
 pub(crate) fn update_now<R>(id: &str, change: impl FnOnce(&mut TaskState) -> R) -> R {
     STATE.update_now(id, change)
+}
+
+/// Saves a change or invalidates the old file before returning.
+pub(crate) fn update_now_durable<R>(id: &str, change: impl FnOnce(&mut TaskState) -> R) -> (R, Result<(), String>) {
+    STATE.update_now_durable(id, change)
 }
 
 /// Clears fields of deleted tasks (`SessionState::clear`).

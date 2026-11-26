@@ -315,8 +315,9 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   fetching remote feature flags (it uses its defaults) and can't take sessions
   started remotely on this computer.
 - **Warm Claude spares (off by default, opt-in).** Settings → Agents → **Warm Claude spares**,
-  once you turn it on, keeps idle Claude Code processes ready after successful turns, up to 4 in total
-  (2 ordinary and 2 for team leads), about 195–255 MiB each on short sessions (measured
+  once you turn it on, keeps up to 4 pooled idle Claude Code processes ready after successful
+  turns (2 ordinary and 2 for team leads), with brief overlap up to 2 s while a displaced spare
+  retires. Each uses about 195–255 MiB on short sessions (measured
   on Claude Code 2.1.325 after 2–3.5 s of idling, from resumed one-turn sessions to a
   full user config; one end-of-window `ps` RSS sample after 10 idle minutes read 93–235 MiB
   (n = 1 per minimal config; macOS RSS omits compressed pages, so this is not a lower figure),
@@ -344,30 +345,32 @@ Voice dictation inserts a draft without sending it. Transcribe on your computer 
   (0.17–1.71 s in the offline bench) and spends ~0.4 s of CPU starting up. The on setting is the empty `warm-spares-on` file
   in PandaCode's app data; absent or unreadable means off. Background traffic: see the
   note below this list and [warm spares](docs/worker-tokens.md#turn-speed-cached-instructions-and-warm-spares).
-- **The local code explorer reads without asking.** `pandacode_explore` is a
-  read-only search, outline and read tool agents call with no approval prompt;
-  it refuses secret files. For Claude Code, PandaCode honors user, project,
-  worktree-inherited main-checkout local, and enterprise managed `Read`, `Grep`,
+- **The local code explorer is off by default.** Turn on Settings → Agents →
+  **Local code explorer (pandacode_explore)** to enable it for Claude Code
+  (the `explore-on` marker in PandaCode's app data). Other harnesses, including
+  GLM, MiMo and Alibaba Token Plan, opt in with their own switches under it
+  (`explore-on-<provider>`). Turning off the main switch disables it for every
+  harness. It is a read-only search, outline and read tool that agents call
+  without an approval prompt. It refuses secret files. For Claude Code, PandaCode
+  honors user, project, worktree-inherited main-checkout local, and enterprise managed `Read`, `Grep`,
   `Glob` and explore `deny` and `ask` rules (including tool-name wildcards) by
-  withholding the explorer when present. Opt-in non-Claude harnesses rely on the
-  secret-file rules; their harness deny rules are not parsed. It is on by default only for
-  Claude Code, the one harness it was measured on (Claude Sonnet in Claude Code 2.1.317;
-  enabled across Claude models): there it took 12% fewer localization steps and 14% less
-  wall time on tuned tasks and 21% fewer steps on the descriptive 8-task held-out set, with held-out precision
-  and edit pass rate holding up, but tuned precision missed its non-inferiority gate and
-  edit steps were not shown unchanged ([caveats and why it stays on](docs/agent-tools.md),
-  [benchmark](docs/agent-loop-benchmark.md)). Other harnesses (GLM, MiMo and
-  Alibaba Token Plan included) get it only after you turn on their own switch listed under
-  Settings → Agents → **Local code explorer (pandacode_explore)** (stored as an
-  empty `explore-on-<provider>` file in PandaCode's app data, which you can also
-  create by hand). That main switch turns it off for every harness. See
-  [Agent tools](docs/agent-tools.md).
+  withholding the explorer when present. Other harnesses rely on PandaCode's
+  secret-file rules without checking their own deny rules. Fv2 measured only
+  Claude Sonnet in Claude Code 2.1.317.
+  The 20 tuned localization tasks took 12% fewer steps and 14% less wall time.
+  The descriptive 8-task held-out set took 21% fewer localization steps with
+  similar precision, and the edit v2 pass count held at 27/28. Tuned precision
+  and edit steps missed their preregistered gates, and the shipped wording
+  changed after Fv2. The tool stays opt-in until a preregistered confirmation
+  of the shipped wording clears both gates across Claude models.
+  [Agent tools](docs/agent-tools.md) · [Benchmark](docs/agent-loop-benchmark.md)
 
 **Warm Claude spares** (off by default; opt-in in Settings → Agents) make no
 background traffic, start no idle processes and run no early `SessionStart` hooks
-until you turn them on. Once on, they make background startup traffic that is
-not anonymous, so they are not in the table below. Each spare is a real Claude
-Code start, so before you send anything it contacts Anthropic (or your configured Claude endpoint,
+until you turn them on. Once enabled, the feature keeps up to 4 pooled idle Claude
+Code processes, with brief overlap up to 2 s while a displaced spare retires, and
+makes the pre-prompt startup requests listed in the table below. Each spare is a real
+Claude Code start, so before you send anything it contacts Anthropic (or your configured Claude endpoint,
 such as a named connection's `ANTHROPIC_BASE_URL`) under your Claude login (`HEAD /api/hello`, plus Claude Code's telemetry and feature flags unless
 **Turn off agent telemetry** is on), starts the user and project MCP servers
 configured in Claude Code (remote MCP servers connect when the spare starts),
@@ -379,11 +382,10 @@ missed it, a same-task replacement, a session or folder cleanup, quitting PandaC
 `SessionEnd`; if you rely on paired `SessionStart`/`SessionEnd` hooks, turn Warm Claude spares off. No prompt is sent (verified with a local loopback stub:
 no Messages API call is made until you send a message; live Claude sign-in
 startup traffic was not measured). Nothing starts while Settings → Agents →
-**Warm Claude spares** is off, and turning it off stops starting spares at once and retires any
-idle spares cleanly within 2 s.
+**Warm Claude spares** is off. Turning it off stops new starts at once and gives
+idle spares up to 2 s to exit.
 
-A few automatic checks send no personal data — just plain requests for public
-information:
+The app makes the following automatic and optional requests.
 
 | What | Where | How often |
 | --- | --- | --- |
@@ -392,6 +394,7 @@ information:
 | Asking your Claude Code for usage when PandaCode can't read it (on by default; Settings → Providers → Claude Code → Let PandaCode ask Claude Code for usage when it can’t read it): PandaCode runs your installed Claude Code once, `claude -p /usage` (a local command: no model call, nothing billed), with only its config folder, network and process settings (its telemetry, error reports, nonessential traffic and self-update turned off for this run), which lets Claude Code refresh and save its own login if it needs to, as when you open it (it may answer from its own snapshot instead). PandaCode never writes Claude Code's credentials | Whatever Claude Code itself contacts to refresh its login and read usage (Anthropic) | Only during a Claude usage check that can't read usage (an expired, rejected or missing login, a Keychain or network problem, a rate limit with no saved reading; never for an API-key or other non-subscription setup, a locked Keychain or a Keychain read you denied unless you press Refresh), at most once per Claude setup every 15 minutes (a Refresh you press may run it once more), less often while runs keep failing (up to every 2 hours), never two at once, and never inside a rate limit's server-set wait (after it, a new rate limit with no or an old saved reading may run it); never while the setting is off |
 | Public model price list (for cost estimates) | `raw.githubusercontent.com` | Daily |
 | PandaCode's own updates (`latest.json` on this repository's latest release) | `github.com` | At launch and about every 6 hours unless Settings → About → Updates is Off |
+| Warm Claude spares (optional, off by default): starts an idle Claude Code process after a successful Claude Code turn so the next turn skips CLI startup (up to 4 pooled: 2 ordinary + 2 team lead, with brief overlap up to 2 s while a displaced spare retires; no prompt or Messages API call is sent) | Anthropic (or your configured Claude endpoint, such as `ANTHROPIC_BASE_URL`), plus any remote MCP servers or `SessionStart` hook targets configured in Claude Code | Only after you turn on Settings → Agents → **Warm Claude spares** (or create `warm-spares-on` for `pandacode serve`), after a successful Claude Code turn (and at most 2 renewals for a waiting team lead); skips low-memory hosts and backs off when unused; nothing while off |
 | Jev decision model list (optional) | `openrouter.ai` | Only when you choose OpenRouter for Jev decisions and open the model menu or press Refresh; no key is sent |
 | Jev decisions on OpenRouter (optional) | `openrouter.ai` | Only when you choose OpenRouter in Settings → Tools → Add-ons → Jev and run a decision check; sends the selected evidence with your key |
 | Jev decisions on TypeSafe (optional, the default service): sends the selected evidence with your key | TypeSafe | Only when you save a TypeSafe key in Jev's setup and run a decision check |

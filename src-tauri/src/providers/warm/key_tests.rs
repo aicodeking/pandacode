@@ -886,3 +886,80 @@ fn git_status_fails_closed_on_local_content_transforming_clean_filter() {
     assert!(git(&["status", "--porcelain"]).is_empty(), "the clean filter normalizes the edit");
     assert!(marker.exists(), "plain status ran the clean filter");
 }
+
+#[cfg(unix)]
+#[test]
+fn retargeting_symlinked_settings_changes_the_stamp_and_warm_key() {
+    use std::os::unix::fs::symlink;
+    let repo = std::env::temp_dir().join(format!("warm-linked-settings-{}", uuid::Uuid::new_v4()));
+    let _cleanup = TempDir(repo.clone());
+    let claude = repo.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let settings = claude.join("settings.json");
+    let first = claude.join("first.json");
+    let second = claude.join("second.json");
+    std::fs::write(&first, format!("{:40}", r#"{"model":"a"}"#)).unwrap();
+    std::fs::write(&second, format!("{:40}", r#"{"model":"b"}"#)).unwrap();
+    assert!(std::process::Command::new("touch")
+        .args(["-t", "200001010000"])
+        .args([&first, &second])
+        .status().unwrap().success());
+    let first_meta = std::fs::metadata(&first).unwrap();
+    let second_meta = std::fs::metadata(&second).unwrap();
+    assert_eq!((first_meta.len(), first_meta.modified().unwrap()), (40, second_meta.modified().unwrap()));
+    assert_eq!(second_meta.len(), 40);
+
+    let config = RunConfig { cwd: repo, ..crate::providers::tests::config("claude") };
+    symlink("first.json", &settings).unwrap();
+    let first_stamp = config_file_stamp(&settings);
+    let first_key = key(&config, &[]).unwrap();
+    std::fs::remove_file(&settings).unwrap();
+    symlink("second.json", &settings).unwrap();
+    assert_ne!(config_file_stamp(&settings), first_stamp);
+    assert_ne!(key(&config, &[]).unwrap(), first_key);
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_worktree_status_refuses_shared_clean_filter_attributes() {
+    use std::process::Command;
+    let (repo, _cleanup) = init_status_repo("linked-filter");
+    let checkout = repo.join("linked");
+    let git = |cwd: &Path, args: &[&str]| {
+        let output = Command::new("git")
+            .args(["-c", "user.name=PandaCode", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"])
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        output.stdout
+    };
+    std::fs::write(repo.join("tracked.txt"), "ONE\n").unwrap();
+    git(&repo, &["add", "tracked.txt"]);
+    git(&repo, &["commit", "-q", "-m", "Tracked"]);
+    git(&repo, &["worktree", "add", "-q", "--detach", "linked"]);
+    let common = repo.join(".git");
+    let info = common.join("info");
+    std::fs::create_dir_all(&info).unwrap();
+    let attributes = info.join("attributes");
+    std::fs::write(&attributes, "*.pdf binary\n").unwrap();
+    assert!(git_status(&checkout).is_some());
+
+    let tracked = checkout.join("tracked.txt");
+    std::fs::write(&tracked, "One\n").unwrap();
+    assert!(Command::new("touch").args(["-t", "200001010000"]).arg(&tracked).status().unwrap().success());
+    std::fs::write(&attributes, "*.txt filter=norm\n").unwrap();
+    // No local driver yet: only the common attributes file can cause refusal.
+    assert_eq!(git_status(&checkout), None);
+
+    let marker = checkout.join("filter-ran");
+    git(&repo, &["config", "filter.norm.clean", "touch filter-ran; tr a-z A-Z"]);
+    git(&repo, &["config", "filter.norm.required", "true"]);
+    assert_eq!(git_status(&checkout), None);
+    assert!(!marker.exists(), "the warm probe must never run the filter");
+    assert_eq!(git(&checkout, &["status", "--porcelain", "-uno"]), b"");
+    assert!(marker.exists(), "plain status ran the shared clean filter");
+}

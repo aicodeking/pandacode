@@ -408,21 +408,20 @@ fn symbols_item(name: &str, result: JobResult) -> Item {
     item
 }
 
-/// Settings → Agents → Local code explorer: on unless this `app_marker` exists.
-const EXPLORE_OFF_FILE: &str = "explore-off";
+/// Settings → Agents → Local code explorer: off until this `app_marker` exists.
+const EXPLORE_ON_FILE: &str = "explore-on";
 
-/// The harnesses explore is on for by default: only Claude Code was measured
-/// (docs/agent-loop-benchmark.md: Sonnet in Claude Code). Every other harness in
+/// The main switch includes Claude Code automatically when enabled. Every other harness in
 /// `providers::explore_name`, the GLM, MiMo and Alibaba relays (other models) included, needs its
 /// own opt-in marker, `explore-on-<provider>` in app data (docs/agent-tools.md).
 fn on_by_default(provider: &str) -> bool {
     provider == "claude"
 }
 
-/// Whether explore is on for `provider`: `off` is the switch's marker, `opted_in` the harness's
+/// Whether explore is on for `provider`: `on` is the switch's marker, `opted_in` the harness's
 /// own; an unreadable marker (`Err`) counts as the safe value, so it fails closed.
-fn effective(provider: &str, off: Result<bool, String>, opted_in: impl FnOnce() -> Result<bool, String>) -> bool {
-    !off.unwrap_or(true) && (on_by_default(provider) || opted_in().unwrap_or(false))
+fn effective(provider: &str, on: Result<bool, String>, opted_in: impl FnOnce() -> Result<bool, String>) -> bool {
+    on.unwrap_or(false) && (on_by_default(provider) || opted_in().unwrap_or(false))
 }
 
 /// Whether `provider`'s runs get explore (the switch on, and the harness on by default or
@@ -432,7 +431,7 @@ pub(crate) fn enabled_for(app: &tauri::AppHandle, provider: &str) -> bool {
         Ok(Some(marker)) => crate::app_marker::exists(app, &marker),
         _ => Ok(false),
     };
-    effective(provider, crate::app_marker::exists(app, EXPLORE_OFF_FILE), opted_in)
+    effective(provider, crate::app_marker::exists(app, EXPLORE_ON_FILE), opted_in)
 }
 
 /// Respect native Claude read boundaries even when the explorer switch is on.
@@ -494,12 +493,12 @@ pub(crate) fn run_name(cloud: bool, enabled: bool, provider: &str) -> Option<Run
 /// error when the marker cannot be checked, which Settings shows as unreadable.
 #[tauri::command]
 pub(crate) async fn explore_enabled(app: tauri::AppHandle) -> Result<bool, String> {
-    crate::blocking(move || crate::app_marker::exists(&app, EXPLORE_OFF_FILE).map(|off| !off)).await
+    crate::blocking(move || crate::app_marker::exists(&app, EXPLORE_ON_FILE)).await
 }
 
 #[tauri::command]
 pub(crate) async fn set_explore_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
-    crate::blocking(move || crate::app_marker::set(&app, EXPLORE_OFF_FILE, !enabled)).await
+    crate::blocking(move || crate::app_marker::set(&app, EXPLORE_ON_FILE, enabled)).await
 }
 
 /// The task's checkout; refuses remote mirrors through `Store::workspace_root`.

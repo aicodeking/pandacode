@@ -3,6 +3,7 @@
 //! in docs/worker-tokens.md.
 use super::{age_expired, spares, Pool, Spares};
 use serde::Serialize;
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime};
 
 /// Why a lead spare left the pool before its wake.
@@ -78,6 +79,40 @@ pub(super) const MAX_EXPIRY_COOLDOWN: Duration = Duration::from_secs(4 * 60 * 60
 /// was unreadable. A spare that merely expired joins the expiry streak instead; a launch that
 /// ended before adopting a usable spare (a Stop) and a key check that failed to run join neither.
 pub(super) const MISS_BACKOFF_STREAK: u32 = 3;
+
+/// Bound the number of checkouts we remember across tasks.
+const STATUS_BACKOFF_LIMIT: usize = 64;
+
+#[derive(Default)]
+pub(super) struct StatusBackoff {
+    consecutive_failures: u32,
+    cooldown_until: Option<Instant>,
+    cooldown_until_wall: Option<SystemTime>,
+}
+
+impl Spares {
+    /// Let either clock end the cooldown, including sleep on platforms where Instant stops.
+    pub(super) fn status_cooling(&self, cwd: &Path, now: Instant, now_wall: SystemTime) -> bool {
+        self.status_backoff.get(cwd).is_some_and(|status| {
+            status.cooldown_until.is_some_and(|until| now < until)
+                && status.cooldown_until_wall.is_some_and(|until| now_wall < until)
+        })
+    }
+
+    pub(super) fn record_unreadable_status(&mut self, cwd: &Path, now: Instant, now_wall: SystemTime) {
+        if self.status_backoff.len() >= STATUS_BACKOFF_LIMIT && !self.status_backoff.contains_key(cwd) {
+            if let Some(evicted) = self.status_backoff.keys().next().cloned() {
+                self.status_backoff.remove(&evicted);
+            }
+        }
+        let status = self.status_backoff.entry(cwd.to_path_buf()).or_default();
+        status.consecutive_failures = status.consecutive_failures.saturating_add(1);
+        if status.consecutive_failures >= MISS_BACKOFF_STREAK {
+            status.cooldown_until = now.checked_add(CHURN_COOLDOWN);
+            status.cooldown_until_wall = now_wall.checked_add(CHURN_COOLDOWN);
+        }
+    }
+}
 
 /// A pool's evictions, unused expiries and launch-time misses since its last adoption, and the
 /// backoff they set (`CHURN_COOLDOWN`, `EXPIRY_COOLDOWN`) on both clocks: `Instant` may stand
@@ -251,10 +286,18 @@ pub(super) fn record_memory_skip(pool: &Pool, lead: bool) {
 
 /// A launch that committed to its spare (`Adopting::into_parts`): counted as adopted, which also
 /// ends the pool's eviction, expiry and miss streaks and any churn backoff.
-pub(super) fn record_adopted(pool: &Pool, lead: bool) -> String {
+pub(super) fn record_adopted_in(pool: &Pool, lead: bool, cwd: Option<&Path>) -> String {
     let mut locked = spares(pool);
     *locked.churn_mut(lead) = PoolChurn::default();
+    if let Some(cwd) = cwd {
+        locked.status_backoff.remove(cwd);
+    }
     record_decision(&mut locked, lead, None)
+}
+
+#[cfg(test)]
+pub(super) fn record_adopted(pool: &Pool, lead: bool) -> String {
+    record_adopted_in(pool, lead, None)
 }
 
 fn record_decision(locked: &mut Spares, lead: bool, miss: Option<&str>) -> String {

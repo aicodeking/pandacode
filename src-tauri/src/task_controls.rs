@@ -710,6 +710,9 @@ pub(super) async fn start_harness_terminal(
     crate::providers::end_lingering(&session_id).await;
     blocking(move || {
         let active = crate::run_requests::lock_agents(&lease.agents).map_err(|error| error.to_string())?;
+        if crate::checkout_busy::checkout_reserved(&lease.agents, &cwd) {
+            return Err(CHECKOUT_RESERVED.into());
+        }
         if app.state::<AppState>().shutdown.load(Ordering::SeqCst) != 0 {
             return Err("PandaCode is shutting down.".into());
         }
@@ -748,6 +751,8 @@ pub(super) async fn start_harness_terminal(
     .await
 }
 
+const CHECKOUT_RESERVED: &str = "A worktree operation is in progress for this checkout. Try again once it finishes.";
+
 /// The console's opening checks. A team worker's session is refused (by the task lease and
 /// explicitly here): its console would run the harness in the worker's full access.
 fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Session, PathBuf)> {
@@ -759,6 +764,10 @@ fn console_task(state: &AppState, session_id: &str) -> Result<(TaskLease, Sessio
         return Err(crate::context_recovery::RECOVERY_REQUIRED.into());
     }
     let cwd = db.workspace_root(&task.project_id, Some(session_id))?;
+    drop(db);
+    if crate::checkout_busy::checkout_reserved(&lease.agents, &cwd) {
+        return Err(CHECKOUT_RESERVED.into());
+    }
     Ok((lease, task, cwd))
 }
 

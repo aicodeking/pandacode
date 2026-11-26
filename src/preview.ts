@@ -275,7 +275,7 @@ const AGENTS_DOCK_KEY = 'pandacode.preview.agents-dock';
 let previewAgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
 try { previewAgentsDockPreferences = { ...previewAgentsDockPreferences, ...JSON.parse(localStorage.getItem(AGENTS_DOCK_KEY) ?? '{}') }; } catch { /* Defaults. */ }
 /** Settings → Agents → Local code explorer; the app keeps it in app data. */
-let previewExploreEnabled = true;
+let previewExploreEnabled = false;
 /** Settings → Agents → Warm Claude spares; opt-in, off by default (on is a marker in app data; `?warm-spares-on` starts it on in preview). */
 let previewWarmSpares: boolean | null = null;
 /** Its per-harness opt-ins (`explore-on-<provider>` markers); Claude Code is on by default. */

@@ -929,6 +929,17 @@ pub fn harness_running(terms: &Terminals, session_id: &str) -> Result<bool, Stri
     }))
 }
 
+pub fn active_harness_sessions(terms: &Terminals) -> Result<Vec<String>, String> {
+    let terms = terms
+        .lock()
+        .map_err(|_| "Terminal registry is unavailable")?;
+    Ok(terms
+        .values()
+        .filter(|terminal| !terminal.closed.load(Ordering::SeqCst))
+        .filter_map(|terminal| terminal.harness_session.clone())
+        .collect())
+}
+
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalActivity {

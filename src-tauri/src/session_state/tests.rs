@@ -187,7 +187,13 @@ fn a_listing_that_cannot_be_saved_is_unknown_after_a_restart() {
     let (_dir, path) = temp();
     // A background write never comes in this test's lifetime, so the gaps below stay open.
     let state: &'static Shared = Box::leak(Box::new(Shared::new(SessionState::open(path.clone()), Duration::from_secs(3600))));
-    state.update_now("task", |task| task.listed = listing(&["a"]));
+    let (result, saved) = state.update_now_durable("task", |task| {
+        task.listed = listing(&["a"]);
+        42
+    });
+    assert_eq!(result, 42);
+    assert_eq!(saved, Ok(()));
+    assert!(SessionState::open(path.clone()).get("task", |task| task.is_some_and(|task| task.listed == listing(&["a"]))));
     state.update_now("task", |task| task.note = Some(Note { hash: 1, count: 1 }));
     state.update_now("kept", |task| task.owed = true);
     // A background write took its snapshot (holding the narrower listing) but has not written it.
@@ -195,7 +201,8 @@ fn a_listing_that_cannot_be_saved_is_unknown_after_a_restart() {
     let older = state.lock().snapshot().unwrap();
     // Both the write and its retry fail, so the file is removed.
     fail_writes(&path, 2);
-    state.update_now("task", |task| task.listed = listing(&["a", "b"]));
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a", "b"]));
+    assert_eq!(saved, Ok(()), "removing the stale file is sufficient for launch");
     assert_eq!(failures_left(&path), 0);
     let forgotten = state.lock().get("task", |task| task.is_some_and(|task| task.listed.is_none() && task.note.is_some()));
     assert!(forgotten, "this process forgets the listing too, keeping the rest");
@@ -229,16 +236,17 @@ fn failed_invalidation_reports_all_errors_and_flush_recovers() {
     std::fs::create_dir(&path).unwrap();
     let mut state = SessionState::open(path.clone());
     state.update("task", |task| task.owed = true);
-    let snapshot = state.snapshot().unwrap();
-    fail_writes(&path, 1);
-    let error = snapshot.write_or_remove().unwrap_err().to_string();
-    assert!(error.starts_with("injected failure; could not invalidate stale session state (remove: "), "{error}");
-    assert!(error.contains("; truncate: "), "{error}");
+    let older = state.snapshot().unwrap();
 
     let state = Shared::leak(state);
     // Keep the scheduled retry from racing the dirty check and the explicit flush.
     state.pending.store(true, Ordering::Release);
-    state.update_now("task", |task| task.listed = listing(&["a", "b"]));
+    fail_writes(&path, 2);
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a", "b"]));
+    let error = saved.unwrap_err();
+    assert!(error.starts_with("injected failure; could not invalidate stale session state (remove: "), "{error}");
+    assert!(error.contains("; truncate: "), "{error}");
+    assert!(older.write().is_err(), "a superseded write cannot report durability after failed invalidation");
     let mut current = state.lock();
     assert!(current.dirty);
     assert!(current.get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none())));

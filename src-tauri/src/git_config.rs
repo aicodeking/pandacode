@@ -43,7 +43,8 @@ pub(crate) fn check_status_config_safe(
     }
     let attributes = [
         worktree_root.map(|root| root.join(".gitattributes")),
-        Some(git_dir.join("info").join("attributes")),
+        Some(common_dir.join("info").join("attributes")),
+        (git_dir != common_dir).then(|| git_dir.join("info").join("attributes")),
     ];
     for path in attributes.into_iter().flatten() {
         if crate::claude_roots::settings_path_absent(&path) {
@@ -435,6 +436,20 @@ mod tests {
         assert_eq!(check(), Err("unsupported git filter section"));
         std::fs::write(&worktree_config, "[core]\n worktree = ../other\n").unwrap();
         assert_eq!(check(), Err("unsupported git core.worktree"));
+    }
+
+    #[test]
+    fn status_config_checks_shared_attributes_in_linked_worktrees() {
+        let common = Scratch::new("status-common-attributes");
+        let worktree = Scratch::new("status-linked-attributes");
+        let info = common.0.join("info");
+        std::fs::create_dir(&info).unwrap();
+        let attributes = info.join("attributes");
+        let check = || check_status_config_safe(&worktree.0, &common.0, None);
+        std::fs::write(&attributes, "*.pdf binary\n").unwrap();
+        assert_eq!(check(), Ok(()));
+        std::fs::write(&attributes, "*.txt filter=norm\n").unwrap();
+        assert_eq!(check(), Err("unsupported git attributes filter"));
     }
 
     #[test]

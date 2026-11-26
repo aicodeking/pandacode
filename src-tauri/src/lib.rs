@@ -2537,15 +2537,6 @@ async fn launch_operation_admitted(
         });
         let inputs = HostInputs { app: &app, session_id: &session_id, stopped: &stopped, team: team.as_ref(), custom_definitions: &custom_definitions };
         let app_instructions::RunHost { host, refused, missing: team_tools_missing } = run_host(&host_plan, &inputs, &history, custom, tracker.clone(), title_run.as_ref());
-        // What this conversation holds from now on (a superset if the launch fails, which only
-        // keeps more listed later).
-        // Written on a blocking thread while the harness starts (one fsync), joined below
-        // before the turn's end is recorded (`remember_catalog_listed`).
-        let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
-        let remembered = {
-            let session_id = session_id.clone();
-            tauri::async_runtime::spawn_blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
-        };
         // What the next turn's warm agent needs: this launch and the tools it listed.
         // Team workers rarely get a follow-up, and their warm agents would push out the
         // architect's, whose review turn starts as soon as they settle. The off switch (a file
@@ -2567,11 +2558,21 @@ async fn launch_operation_admitted(
                     .into(),
             )
         } else {
-            providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await
+            // The harness can persist tool references as soon as it starts.
+            let listed = app_instructions::catalog_listing(config.resume_id.as_deref(), host.as_ref(), &providers::claude_kept_natives(config.worker, &history));
+            let remembered = {
+                let session_id = session_id.clone();
+                blocking(move || app_instructions::remember_catalog_listed(&session_id, listed))
+            };
+            match remembered.await {
+                Ok(()) if stopped.load(Ordering::SeqCst) => Ok(()),
+                Ok(()) => providers::run_with_tools_reporting(config, sink, rx, providers::RunTools { host, refused }, reached_harness.clone(), loop_took_stop.clone()).await,
+                Err(error) => {
+                    eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
+                    Err("Could not save the conversation's tool listing before starting the run. Try again.".into())
+                }
+            }
         };
-        if let Err(error) = remembered.await {
-            eprintln!("PandaCode: could not record the tool listing of {session_id}: {error}");
-        }
         // Approval snapshots and the tools' place live only as long as the run.
         custom_tools::run_ended(&session_id);
         flush_coalesced(&app, &coalescer);
@@ -3417,22 +3418,23 @@ async fn merge_worktree(state: State<'_, AppState>, session_id: String) -> Resul
 /// Merges a local task's worktree into its project's checkout (`merge_worktree`, and the
 /// phone's `worktree.merge` with its [`workspace::Trust`]), once its CLI has exited.
 pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, trust: workspace::Trust) -> Result<workspace::WorktreeMerge> {
+    const BUSY: &str = "Wait for the agent to finish before merging its worktree.";
     refuse_worktree_merge_busy(state, &session_id).await?;
     // A clean Claude-family run leaves the agents map at `result`, before its CLI has exited and
     // while it may still write to this checkout.
     guard_idle(
-        || lock_agents(&state.agents).map_or(true, |agents| agents.contains_key(&session_id)),
+        || checkout_busy::session_holds_checkout(state, &session_id).unwrap_or(true),
         providers::await_exit(&session_id),
-        "Wait for the agent to finish before merging its worktree.",
+        BUSY,
     )
     .await?;
     let store = state.store.clone();
     let (main, path, _) = blocking(move || worktree_paths(&store, &session_id)).await?;
-    let reservation = checkout_busy::reserve_idle_checkouts(
-        state,
-        vec![main.clone(), path.clone()],
-        "Wait for the agent to finish before merging its worktree.",
-    ).await?;
+    let roots = vec![main.clone(), path.clone()];
+    let reservation = checkout_busy::reserve_idle_checkouts(state, roots.clone(), BUSY).await?;
+    providers::quiesce_spares_in(&main).await?;
+    providers::quiesce_spares_in(&path).await?;
+    checkout_busy::ensure_checkouts_idle(state, &roots, BUSY).await?;
     blocking(move || {
         // The Git operation can outlive its awaiting caller.
         let _reservation = reservation;
@@ -3452,24 +3454,21 @@ async fn remove_worktree(
 
 /// `remove_worktree`, and the phone's `worktree.remove` with its [`workspace::Trust`].
 pub(crate) async fn remove_task_worktree(state: &AppState, session_id: String, delete_branch: bool, trust: workspace::Trust) -> Result<workspace::WorktreeRemoval> {
+    const BUSY: &str = "Stop the agent before removing its worktree.";
     quiesce_worktree(
         state,
         &session_id,
-        "Stop the agent before removing its worktree.",
+        BUSY,
         || refuse_worktree_remove_busy(state, &session_id),
-        None,
     )
     .await?;
     let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
+    let reservation = checkout_busy::reserve_idle_checkouts(state, vec![path.clone()], BUSY).await?;
     // A lingering agent or pooled warm spare (from a forked/sibling session) holding `&path`
     // would block removal on Windows or stay pinned to an unlinked directory inode on Unix.
     providers::end_lingering_in(&path).await;
     providers::quiesce_spares_in(&path).await?;
-    let reservation = checkout_busy::reserve_idle_checkouts(
-        state,
-        vec![path.clone()],
-        "Stop the agent before removing its worktree.",
-    ).await?;
+    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&path), BUSY).await?;
     let removed = blocking(move || {
         let _reservation = reservation;
         workspace::remove_worktree_for(&main, &path, branch.as_deref(), delete_branch, trust)
@@ -3487,27 +3486,30 @@ async fn recreate_worktree(state: State<'_, AppState>, session_id: String) -> Re
 /// the processes pinned to the old folder, then recreates it.
 async fn recreate_task_worktree(state: &AppState, session_id: String) -> Result<Session> {
     const BUSY: &str = "Stop the agent before recreating its worktree.";
-    if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id) {
+    if checkout_busy::session_holds_checkout(state, &session_id)? {
         return Err(BUSY.into());
     }
-    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
-    // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
+    let (_, path, _) = worktree_paths(&state.store, &session_id)?;
     quiesce_worktree(
         state,
         &session_id,
         BUSY,
         || async {
-            if lock_agents(&state.agents).map_err(|e| e.to_string())?.contains_key(&session_id)
+            if checkout_busy::session_holds_checkout(state, &session_id)?
                 || any_checkout_busy_excluding(state, std::slice::from_ref(&path), Some(&session_id)).await?
             {
                 return Err(BUSY.into());
             }
             Ok(())
         },
-        Some(&path),
     )
     .await?;
+    let (main, path, branch) = worktree_paths(&state.store, &session_id)?;
     let reservation = checkout_busy::reserve_idle_checkouts(state, vec![path.clone()], BUSY).await?;
+    // Retire pooled/lingering processes pinned to the deleted folder's old inode too.
+    providers::end_lingering_in(&path).await;
+    providers::quiesce_spares_in(&path).await?;
+    checkout_busy::ensure_checkouts_idle(state, std::slice::from_ref(&path), BUSY).await?;
     let store = state.store.clone();
     blocking(move || {
         let _reservation = reservation;

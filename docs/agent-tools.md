@@ -280,19 +280,17 @@ Claude Code lists explore, `pandacode_track_files` and the title tool without a 
 (`anthropic/alwaysLoad` in the MCP listing). Which harnesses get the tool, and the
 permission frames answered for them, are in `src-tauri/src/providers/explore_permissions.rs`.
 
-**Which harnesses get it by default.** Explore is on by default only for Claude Code:
-that is the only harness the benchmark measured
-([agent-loop-benchmark.md](agent-loop-benchmark.md): Sonnet in Claude Code, nothing
-else). Every other harness in `explore_name` (the GLM, MiMo and Alibaba Token Plan relays, which run other
-models, and Codex, Kimi, OpenCode, Pi, Oh My Pi, Grok) is supported but stays off until you opt it in
-with its own switch, listed under the main switch in Settings → Agents (Claude Code shows there as on by
-default). The opt-in is stored as an empty marker file `explore-on-<provider>` in PandaCode's app data,
-for example `explore-on-codex` (`explore::enabled_for`); the switches write and remove it through
-`explore_harness_enabled`/`set_explore_harness_enabled`, which refuse any harness outside
-`explore_name`, and creating the file by hand still works. A harness switch that cannot read its marker
-stays disabled, and a refused save puts it back with the reason. The opt-in counts only while the switch below is on; if the
-marker cannot be checked, explore stays off for that harness. Off for a harness, its
-runs behave exactly as with the switch off.
+**Which harnesses can opt in.** Turning on Settings → Agents →
+**Local code explorer (pandacode_explore)** writes the empty `explore-on` marker
+in PandaCode's app data and enables it for Claude Code. The other harnesses in
+`explore_name` (GLM, MiMo, Alibaba Token Plan, Codex, Kimi, OpenCode, Pi,
+Oh My Pi and Grok) each need their own switch under the main switch. Those switches
+write or remove the empty `explore-on-<provider>` markers, such as
+`explore-on-codex`, through `explore_harness_enabled` and
+`set_explore_harness_enabled`. You can also create the markers by hand.
+Per-harness opt-ins take effect only while the main switch is on. If a harness
+marker is absent or unreadable, explore stays off for that harness. If a save
+fails, Settings restores the switch and shows the reason.
 
 **What the benchmark showed, and its caveats.** Batch Fv2 in
 [agent-loop-benchmark.md](agent-loop-benchmark.md) (Claude Sonnet in Claude Code 2.1.317)
@@ -307,26 +305,26 @@ Fv2 preregistered the eight held-out tasks as descriptive. With the tool on, loc
 took 21% fewer steps and precision went from 0.703 to 0.702 (95% CI for the difference
 −0.041 to +0.034). The `edit2` pass count held at 27/28.
 
-**Why it stays on by default for Claude Code.** The tuned Sonnet reductions in localization
-steps and wall time were statistically significant. The descriptive eight-task held-out
-suite showed a reduction in the same direction for localization steps, with precision and
-edit pass rate holding up. A preregistered confirmation of the shipped wording across Claude
-models has yet to run. Fv2 measured Sonnet before the final tool description and Claude edit
-instruction (`EDIT_CLAUDE`) refinements. Turn it off with one switch in Settings → Agents →
-**Local code explorer (pandacode_explore)**, or use the `explore-off` marker on a headless
-server (below).
+**Why it is opt-in (off by default).** Fv2 confirmed reductions in localization
+steps and wall time on the tuned Sonnet tasks. The eight descriptive held-out
+localization tasks also took fewer steps and showed similar precision. The
+`edit2` pass count held steady. Tuned precision and edit steps missed their
+preregistered gates. Fv2 measured only Sonnet, and the tool description and
+Claude edit instruction (`EDIT_CLAUDE`) changed afterward. Explore stays opt-in
+until a preregistered confirmation of the shipped wording clears both gates
+across Claude models. Turn it on in Settings → Agents → **Local code explorer
+(pandacode_explore)** or create `explore-on` on a headless server.
 
-**Turning it off.** **Settings → Agents → Local code explorer (pandacode_explore)**
-is on by default. Off, runs get no instruction line for it and a new conversation
-does not list the tool; a resumed conversation that may already hold it keeps it
-listed and refuses every call (`src-tauri/src/app_instructions/catalog.rs`). The
-next turn starts a fresh agent process (the setting changes the warm-agent key).
-Harnesses other than the Claude family receive that line inside their messages, so
-an existing conversation keeps the old line in its history; it names a tool the run
-no longer has, which is harmless. The setting is a marker file, `explore-off`, in app
-data (`src-tauri/src/explore.rs`), read at each run start, so `pandacode serve`
-follows it too; if app data cannot be found or the marker cannot be checked, the
-tool stays off, and Settings shows it off when it cannot ask.
+**Turning it off.** Turn off the main switch or delete `explore-on` to disable
+the tool for every harness. Runs omit its instruction line and new conversations
+omit its tool definition. A resumed conversation that may already hold it keeps
+the definition and refuses every call (`src-tauri/src/app_instructions/catalog.rs`).
+The next turn starts a fresh agent process because the setting changes the warm
+key. Existing conversations on harnesses outside the Claude family may still have
+the old instruction in their message history. The desktop app and `pandacode serve`
+read `explore-on` at each run start (`src-tauri/src/explore.rs`). If they cannot
+find app data or read the marker, the tool stays off. Settings also shows it off
+when it cannot read the setting.
 
 `pandacode_code_search` (Codex's dynamic tools only; other harnesses do not get it)
 searches the task's checkout through the local third-party `codedb` CLI when it is

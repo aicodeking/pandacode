@@ -211,19 +211,19 @@ fn the_off_switch_and_cloud_drop_the_tool() {
     assert_eq!(run_name(true, true, "claude"), None);
 }
 
-/// Only the measured Claude Code is on by default; any other harness (the GLM and MiMo relays
-/// included) needs its own opt-in, and an unreadable marker of either kind turns explore off.
+/// Claude Code requires the main marker. Every other harness needs both markers.
 #[test]
-fn explore_is_on_by_default_only_for_claude_code() {
+fn explore_requires_the_main_opt_in_for_all_harnesses() {
     let no = || Ok(false);
-    assert!(effective("claude", Ok(false), no));
-    assert!(!effective("claude", Ok(true), no), "the switch is off");
+    assert!(!effective("claude", Ok(false), no), "the switch is off");
     assert!(!effective("claude", Err("unreadable".into()), no), "fails closed");
-    for provider in ["glm", "mimo", "codex", "kimi", "opencode", "pi", "omp", "grok"] {
-        assert!(!effective(provider, Ok(false), no), "{provider}: off until opted in");
-        assert!(effective(provider, Ok(false), || Ok(true)), "{provider}: opted in");
-        assert!(!effective(provider, Ok(false), || Err("unreadable".into())), "{provider}: fails closed");
-        assert!(!effective(provider, Ok(true), || Ok(true)), "{provider}: the switch wins");
+    assert!(effective("claude", Ok(true), no), "included when enabled");
+    for provider in ["glm", "mimo", "alibaba", "codex", "kimi", "opencode", "pi", "omp", "grok"] {
+        assert!(!effective(provider, Ok(false), || Ok(true)), "{provider}: the switch wins");
+        assert!(!effective(provider, Err("unreadable".into()), || Ok(true)), "{provider}: main marker fails closed");
+        assert!(!effective(provider, Ok(true), no), "{provider}: off until opted in");
+        assert!(effective(provider, Ok(true), || Ok(true)), "{provider}: opted in");
+        assert!(!effective(provider, Ok(true), || Err("unreadable".into())), "{provider}: harness marker fails closed");
     }
 }
 

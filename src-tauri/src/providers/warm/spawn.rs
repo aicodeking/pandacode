@@ -424,7 +424,30 @@ pub(super) async fn spawn_claude_keyed(
     // The opt-in is read again once the status is in: removing `warm-spares-on` on a headless
     // host while `git status` runs moves no `discard_epoch`, so it is caught here, before
     // `spawn_when_current`.
-    let git_status = match gate_git_status(git_status_digest(&config.cwd), enabled_off_runtime).await {
+    {
+        let mut pool = spares(&SPARES);
+        if pool.discard_epoch != discard_epoch {
+            return Ok(None);
+        }
+        if pool.status_cooling(&config.cwd, Instant::now(), SystemTime::now()) {
+            pool.stats_mut(lead).churn_skipped += 1;
+            return Ok(None);
+        }
+    }
+    let status = gate_git_status(git_status_digest(&config.cwd), enabled_off_runtime).await;
+    {
+        let mut pool = spares(&SPARES);
+        // A read still in flight when spares were switched off cannot restore its backoff.
+        if pool.discard_epoch != discard_epoch {
+            return Ok(None);
+        }
+        match &status {
+            StatusGate::Ready(_) => { pool.status_backoff.remove(&config.cwd); }
+            StatusGate::Unreadable => pool.record_unreadable_status(&config.cwd, Instant::now(), SystemTime::now()),
+            StatusGate::Disabled => {}
+        }
+    }
+    let git_status = match status {
         StatusGate::Ready(git_status) => git_status,
         StatusGate::Disabled => {
             eprintln!("{NOT_PREPARED}");
@@ -510,12 +533,17 @@ pub(super) async fn spawn_when_current_in(
     if exit.await.is_err() {
         return Ok(None);
     }
-    // Keep the final check and spawn together until switch-off can advance the pool epoch.
+    // Serialize the final check and spawn with switch-off and checkout quiescence.
     let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
-    let starting = pending_in_cwd(session_id, command.as_std().get_current_dir().map(Path::to_path_buf));
+    let cwd = command.as_std().get_current_dir().map(Path::to_path_buf);
+    let starting = pending_in_cwd(session_id, cwd.clone());
     // Checked after registering: a launch before this point moved the epoch and is refused here;
     // one after it waits for `starting`, and `register` kills the child (epoch moved).
-    if launch == 0 || epoch(session_id) != launch || quitting() {
+    if launch == 0
+        || epoch(session_id) != launch
+        || quitting()
+        || cwd.as_deref().is_some_and(crate::checkout_busy::any_checkout_reserved)
+    {
         return Ok(None);
     }
     command.spawn().map(|child| Some((child, starting))).map_err(|e| format!("Could not start Claude Code: {e}"))

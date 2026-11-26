@@ -24,7 +24,7 @@ use tauri::Manager;
 /// message note, never the instructions or the tool list. A lead's warm spare is renewed only
 /// while this is unchanged (`warm::still_current`).
 pub(crate) fn launch_inputs(app: &tauri::AppHandle, session_id: &str, provider: &str, cwd: &Path) -> String {
-    // One store lookup, bounded Claude settings reads, and marker-file stats (`explore-off`/
+    // One store lookup, bounded Claude settings reads, and marker-file stats (`explore-on`/
     // `explore-on-<provider>`, the tools switch); `warm.rs` calls it on a blocking thread, once
     // per spare start and lead-spare renewal (at most `warm::MAX_RENEWALS`).
     let catalog = custom_tools::has_catalog(app, session_id);

@@ -393,18 +393,32 @@ fn metadata_stamp(meta: &std::fs::Metadata) -> Value {
         .ok()
         .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|since| since.as_nanos().to_string());
-    json!([meta.is_dir(), meta.len(), modified])
+    #[cfg(unix)]
+    let identity = {
+        use std::os::unix::fs::MetadataExt;
+        Some((meta.dev(), meta.ino()))
+    };
+    #[cfg(not(unix))]
+    let identity: Option<(u64, u64)> = None;
+    json!([meta.is_dir(), meta.len(), modified, identity])
 }
 
 fn error_stamp(error: &std::io::Error) -> Value {
     json!(format!("err:{:?}", error.kind()))
 }
 
-fn config_file_stamp(path: &Path) -> Value {
-    match std::fs::metadata(path) {
+pub(super) fn config_file_stamp(path: &Path) -> Value {
+    let stamp = match std::fs::metadata(path) {
         Ok(meta) => metadata_stamp(&meta),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Value::Null,
         Err(error) => error_stamp(&error),
+    };
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let link = std::fs::read_link(path).ok();
+        let target = path.canonicalize().ok();
+        json!([stamp, link.as_deref().map(Path::to_string_lossy), target.as_deref().map(Path::to_string_lossy)])
+    } else {
+        stamp
     }
 }
 

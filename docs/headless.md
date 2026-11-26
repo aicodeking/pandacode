@@ -26,29 +26,25 @@ would normally do are done natively in `src-tauri/src/headless.rs`:
 | App-action tools (`pandacode_run_project`, `pandacode_preview_file`, `open_*`) | open in the window | refused with "headless host" so agents fail fast |
 | Updates | checked every 6 h, may relaunch | never (no updater; update by reinstalling) |
 
-The local code explorer (`pandacode_explore`, [agent tools](agent-tools.md)) follows the
-same markers as the desktop: on by default only for Claude Code; any other harness needs an
-empty `explore-on-<provider>` file (for example `explore-on-codex`) in the app data
-directory. To turn it off for every harness on a server, create an empty `explore-off`
-file in the app data directory (on Linux `~/.local/share/ai.pandacode.desktop/` of the
-service user, e.g. `touch ~/.local/share/ai.pandacode.desktop/explore-off`); delete it
-to turn the tool back on. Each run start reads it, so no restart is needed.
+The local code explorer (`pandacode_explore`) is off by default. To enable it for
+Claude Code, create an empty `explore-on` file in the service user's app data
+directory (on Linux, `touch ~/.local/share/ai.pandacode.desktop/explore-on`). To
+enable another supported harness, also create its `explore-on-<provider>` file,
+such as `explore-on-codex`. Delete `explore-on` to turn it off for every harness.
+Each run reads the markers at startup, so no restart is needed. See [Agent tools](agent-tools.md).
 
 Warm Claude spares are off by default, as in Settings → Agents → **Warm Claude
 spares** on desktop. To enable them for `pandacode serve`, create an empty
 `warm-spares-on` file in the service user's app data directory (on Linux, for
 example, `touch ~/.local/share/ai.pandacode.desktop/warm-spares-on`); delete it
 to turn them off again. An absent or unreadable marker means off. On a running
-host the marker takes effect without a restart for new work: creating it lets the
-next successful turn start a spare, and deleting it means no spare is started,
-adopted or renewed from then on. Both spawning a spare and adopting a pooled one
-check the marker again right after reading `git status`, just before they spawn or
-adopt, so deleting it also stops a start or adoption still waiting on `git status`.
-Spares already pooled are not stopped by deleting
-the file alone: each retires when its task's next turn launches (cold), when its 10-minute
-idle timer expires, or when the host stops (restarting `pandacode serve` retires
-them at once; on desktop, turning the Settings switch off calls `disable_all`,
-which retires pooled spares immediately).
+host, creating the marker lets the next successful turn start a spare. Deleting
+it stops any spawn (including a renewal) or adoption that has yet to pass its
+final marker check after `git status`. An operation already past that check can
+still finish once. Any spare that remains pooled retires when its task's next turn
+launches cold, when its 10-minute idle timer expires, or when you restart `pandacode serve`.
+On desktop, turning the Settings switch off calls `disable_all` and retires
+pooled spares immediately.
 Background reaping of a finished turn's Claude CLI has a similar switch: an empty
 `background-reap-off` file in the same app data directory makes every Claude-family
 launch exit inline at turn end (as managed workers do) instead of being reaped in the

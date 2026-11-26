@@ -111,15 +111,12 @@ impl History {
 /// `natives`: the deferred native tools the launch leaves defined (`History::lists_native`).
 #[cfg(test)]
 pub(crate) fn remember(session_id: &str, resume_id: Option<&str>, host: Option<&ToolHost>, natives: &[String]) {
-    remember_listed(session_id, listing(resume_id, host, natives));
+    remember_catalog_listed(session_id, listing(resume_id, host, natives)).unwrap();
 }
 
-/// `remember` with the listing already built, writing the file before it returns (a restart
-/// must never trust an older, narrower listing). The launch runs it on a blocking thread
-/// beside the harness's start and joins it before the turn ends (`lib.rs`): the harness
-/// persists nothing of the conversation within the milliseconds the write takes.
-pub(crate) fn remember_listed(session_id: &str, listed: Listed) {
-    session_state::update_now(session_id, |task| task.listed = Some(listed));
+/// Saves the prepared listing before launch so a restart can resolve any tool it names.
+pub(crate) fn remember_catalog_listed(session_id: &str, listed: Listed) -> Result<(), String> {
+    session_state::update_now_durable(session_id, |task| task.listed = Some(listed)).1
 }
 
 /// What `remember` records for a turn.

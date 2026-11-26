@@ -500,3 +500,57 @@ async fn with_spares_off_a_pending_lead_miss_is_neither_logged_nor_counted() {
     assert_eq!(spares(pool).lead, PoolStats { missed: 1, ..PoolStats::default() });
     discard_from(pool, &session);
 }
+
+#[tokio::test]
+async fn warm_spawn_refuses_a_reserved_checkout() {
+    let pool = Pool::default();
+    let session = format!("warm-reserved-{}", uuid::Uuid::new_v4());
+    let dir = std::env::temp_dir().join(&session);
+    let _cleanup = TempDir(dir.clone());
+    std::fs::create_dir_all(&dir).unwrap();
+    let reservation = crate::checkout_busy::reserve_for_test(vec![dir.clone()]);
+    launched(&session);
+    let launch = epoch(&session);
+    // An absent executable distinguishes refusal from attempting to spawn a child.
+    let mut command = Command::new(dir.join("missing-executable"));
+    command.current_dir(&dir);
+    let refused = spawn_when_current_in(&pool, &session, launch, async { Ok(()) }, &mut command, || false).await;
+    assert!(matches!(refused, Ok(None)));
+    drop(reservation);
+    let attempted = spawn_when_current_in(&pool, &session, launch, async { Ok(()) }, &mut command, || false).await;
+    assert!(matches!(attempted, Err(error) if error.starts_with("Could not start Claude Code:")));
+    await_exit(&session).await.unwrap();
+    discard_from(&pool, &session);
+}
+
+#[test]
+fn unreadable_status_backs_off_per_checkout_on_both_clocks() {
+    use super::stats::{CHURN_COOLDOWN, MISS_BACKOFF_STREAK};
+    use std::time::{Instant, SystemTime};
+
+    let pool = Pool::default();
+    let cwd = Path::new("checkout");
+    let other_cwd = Path::new("other-checkout");
+    let (now, wall) = (Instant::now(), SystemTime::now());
+    {
+        let mut locked = spares(&pool);
+        for _ in 1..MISS_BACKOFF_STREAK {
+            locked.record_unreadable_status(cwd, now, wall);
+            assert!(!locked.status_cooling(cwd, now, wall));
+        }
+        locked.record_unreadable_status(cwd, now, wall);
+        let almost = Duration::from_secs(299);
+        assert_eq!(CHURN_COOLDOWN, Duration::from_secs(300));
+        assert!(locked.status_cooling(cwd, now + almost, wall + almost));
+        assert!(!locked.status_cooling(other_cwd, now, wall));
+        assert!(!locked.status_cooling(cwd, now + CHURN_COOLDOWN, wall));
+        assert!(!locked.status_cooling(cwd, now, wall + CHURN_COOLDOWN));
+    }
+    record_adopted_in(&pool, false, Some(cwd));
+    assert!(!spares(&pool).status_cooling(cwd, now, wall));
+    for _ in 0..MISS_BACKOFF_STREAK {
+        spares(&pool).record_unreadable_status(cwd, now, wall);
+    }
+    disable_all_from(&pool);
+    assert!(spares(&pool).status_backoff.is_empty());
+}

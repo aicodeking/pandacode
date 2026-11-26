@@ -11,7 +11,7 @@ mod catalog;
 mod state;
 pub(crate) use state::{compaction_answered, compactions_after, forget, instructed_as, instructions_due, new_compaction};
 use state::{instructions_owed, owe_instructions};
-pub(crate) use catalog::{build_host, listing as catalog_listing, remember_listed as remember_catalog_listed, History, HostLayers, RunHost};
+pub(crate) use catalog::{build_host, listing as catalog_listing, remember_catalog_listed, History, HostLayers, RunHost};
 #[cfg(test)]
 pub(crate) use catalog::remember as remember_catalog;
 #[cfg(test)]

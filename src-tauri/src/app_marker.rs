@@ -80,7 +80,7 @@ pub(crate) fn set(app: &tauri::AppHandle, name: &str, present: bool) -> Result<(
 
 fn exists_at(path: Result<PathBuf>) -> Result<bool> {
     let path = path?;
-    match std::fs::metadata(&path) {
+    match std::fs::symlink_metadata(&path) {
         Ok(meta) if meta.is_file() => Ok(true),
         Ok(_) => Err("Could not read the setting: marker path is not a regular file".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -106,12 +106,40 @@ fn exists_at(path: Result<PathBuf>) -> Result<bool> {
 }
 
 fn set_at(path: &Path, present: bool) -> Result<()> {
-    let saved = if present {
-        path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, ""))
-    } else {
-        std::fs::remove_file(path).or_else(|error| if error.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(error) })
-    };
-    saved.map_err(|error| format!("Could not save the setting: {error}"))
+    use std::io::ErrorKind;
+
+    const INVALID_MARKER: &str = "Could not save the setting: marker path is not a regular file";
+    let save_error = |error| format!("Could not save the setting: {error}");
+    if present {
+        path.parent().map_or(Ok(()), std::fs::create_dir_all).map_err(save_error)?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(save_error(error)),
+        }
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if present && meta.nlink() > 1 {
+                    return Err(INVALID_MARKER.into());
+                }
+            }
+        }
+        Ok(_) => return Err(INVALID_MARKER.into()),
+        Err(error) if !present && error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(save_error(error)),
+    }
+    if present {
+        return Ok(());
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(save_error(error)),
+    }
 }
 
 #[cfg(test)]
@@ -125,7 +153,9 @@ mod tests {
         assert_eq!(exists_at(Ok(marker.clone())), Ok(false));
         set_at(&marker, true).unwrap();
         assert_eq!(exists_at(Ok(marker.clone())), Ok(true));
+        std::fs::write(&marker, "keep me").unwrap();
         set_at(&marker, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep me");
         set_at(&marker, false).unwrap();
         set_at(&marker, false).unwrap();
         assert_eq!(exists_at(Ok(marker.clone())), Ok(false));
@@ -155,6 +185,65 @@ mod tests {
         assert!(!default_on_in(Ok(dir.clone()), name));
         assert!(set_at(&marker, false).is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_a_marker() {
+        let dir = std::env::temp_dir().join(format!("app-marker-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("target");
+        let link = dir.join("flag");
+        std::fs::write(&target, "keep me").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        assert!(exists_at(Ok(link.clone())).is_err());
+        assert!(set_at(&link, true).is_err());
+        assert!(set_at(&link, false).is_err());
+        assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enabling_a_hard_linked_marker_leaves_its_contents_intact() {
+        let dir = std::env::temp_dir().join(format!("app-marker-hard-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let target = dir.join("target");
+        let marker = dir.join("flag");
+        std::fs::write(&target, "keep me").unwrap();
+        std::fs::hard_link(&target, &marker).unwrap();
+
+        assert!(set_at(&marker, true).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        set_at(&marker, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep me");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_rejected_without_opening_it() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = std::env::temp_dir().join(format!("app-marker-fifo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let marker = dir.join("flag");
+        let name = std::ffi::CString::new(marker.as_os_str().as_bytes()).unwrap();
+        // SAFETY: name is a valid NUL-terminated path for the duration of the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let checking = std::thread::spawn(move || {
+            tx.send((set_at(&marker, true), set_at(&marker, false))).unwrap();
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(5));
+        std::fs::remove_dir_all(dir).unwrap();
+        let (enable, disable) = result.expect("checking a FIFO must not block");
+        checking.join().unwrap();
+        assert!(enable.is_err());
+        assert!(disable.is_err());
     }
 
     #[tokio::test]

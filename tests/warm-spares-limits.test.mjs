@@ -70,7 +70,7 @@ test('docs/worker-tokens.md states both limits and the total', () => {
   const switchStart = text.indexOf('**Warm spare switch');
   assert.ok(switchStart >= 0, 'Warm spare switch section not found');
   // The section opens with what off means (including the post-`git status` re-check), then the sizes.
-  assert.match(text.slice(switchStart, switchStart + 1200), new RegExp(`\\bup to ${total};`));
+  assert.match(text.slice(switchStart, switchStart + 1200), new RegExp(`\\bup to ${total} pooled\\b`));
   const costStart = text.indexOf('**What a spare costs and saves.**');
   assert.ok(costStart >= 0, 'What a spare costs and saves section not found');
   assert.match(text.slice(costStart, costStart + 300), new RegExp(`\\bat most ${total} in all\\b`));
@@ -271,12 +271,16 @@ test('the Settings hint is a concise plain-English summary that points to the fu
   const text = hint[1];
   const { total } = limits();
   assert.ok(text.length <= 340, `${SETTINGS} warm-spares hint must stay concise (<= 340 chars), got ${text.length}`);
-  for (const phrase of ['Off by default', `up to ${total}`, '195–255 MiB', '0.38–0.62 s', 'Anthropic or your configured Claude endpoint', 'git status']) {
+  for (const phrase of ['Off by default', `up to ${total} pooled`, '195–255 MiB', '0.38–0.62 s', 'Anthropic or your configured Claude endpoint', 'git status']) {
     assert.ok(text.includes(phrase), `${SETTINGS} warm-spares hint must state "${phrase}"`);
   }
   // A tooltip cannot open a repository path; the full limits are a link button on the row instead.
   assert.ok(!text.includes('docs/worker-tokens.md'), `${SETTINGS} warm-spares hint must not carry the raw docs/worker-tokens.md path`);
   assert.doesNotMatch(text, /~?1\.5 s/, `${SETTINGS} warm-spares hint must not claim ~1.5 s as the signed-in saving`);
+});
+
+test('README privacy table includes Warm Claude spares', () => {
+  assert.match(readFileSync(README, 'utf8'), /^\| Warm Claude spares[^|\r\n]*\|/m);
 });
 
 test('the README and privacy page disclose configured Claude endpoints for warm spares', () => {

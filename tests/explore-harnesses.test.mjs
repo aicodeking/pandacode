@@ -45,7 +45,7 @@ test('EXPLORE_HARNESSES matches the harnesses explore_name serves', () => {
   assert.deepEqual(ui, native);
 });
 
-test('Claude Code, the default harness, leads EXPLORE_HARNESSES and is served natively', () => {
+test('Claude Code leads EXPLORE_HARNESSES and is served natively', () => {
   assert.equal(settingsHarnesses()[0], 'claude');
   assert.ok(nativeHarnesses().includes('claude'));
 });

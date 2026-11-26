@@ -327,6 +327,26 @@ fn in_flight_stats_follow_a_tool_to_either_scope() {
 }
 
 #[test]
+fn in_flight_global_tool_moved_to_another_project_keeps_its_stats() {
+    let base = temp();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let p1 = store::scope_dir(&base.0, Some("p1")).unwrap();
+    let p2 = store::scope_dir(&base.0, Some("p2")).unwrap();
+    let name = "deploy-it";
+    let original = save(&global, draft(name, "echo global", Vec::new()), author("s"), 1).unwrap();
+    store::record(&global, name, "previous", Some(0), 2).unwrap();
+    save(&p1, draft(name, "echo p1", Vec::new()), author("s"), 2).unwrap();
+    store::move_tool(&global, &p2, name).unwrap();
+
+    assert_eq!(store::record_for_tool(&base.0, "p1", Scope::Global, &original, "s", Some(1), 3), Ok(true));
+    let stats = &store::read_stats(&p2)[name];
+    assert_eq!((stats.uses, stats.failures, stats.last_used_at, stats.last_exit), (2, 1, Some(3), Some(1)));
+    assert_eq!(stats.tasks, ["previous", "s"]);
+    assert!(store::read_stats(&p1).is_empty());
+    assert!(store::read_stats(&global).is_empty());
+}
+
+#[test]
 fn in_flight_stats_skip_a_deleted_tool_and_its_same_name_replacement() {
     let base = temp();
     let project = store::scope_dir(&base.0, Some("p1")).unwrap();
