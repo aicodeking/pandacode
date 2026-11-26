@@ -284,6 +284,7 @@ jobs:
           pattern: pandacode-${{ needs.prepare.outputs.version }}-*
           merge-multiple: true
       - name: Download SBOMs and scan coverage
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: assets
@@ -354,6 +355,21 @@ jobs:
       - name: Create GitHub Release
         run: |
           ls -l assets
+          # GitHub ignores --target when the tag already exists. Prefer the peeled commit for annotated tags.
+          tag_ref="refs/tags/v$VERSION"
+          if ! tag_refs=$(git ls-remote --tags origin "$tag_ref" "${tag_ref}^{}"); then
+            echo "::error::Could not check remote tag v$VERSION."
+            exit 1
+          fi
+          tag_commit=$(awk -v ref="$tag_ref" '
+            $2 == ref { tag = $1 }
+            $2 == ref "^{}" { peeled = $1 }
+            END { print (peeled ? peeled : tag) }
+          ' <<< "$tag_refs")
+          if [ -n "$tag_commit" ] && [ "$tag_commit" != "$GITHUB_SHA" ]; then
+            echo "::error::Remote tag v$VERSION points to $tag_commit, but the release was built from $GITHUB_SHA."
+            exit 1
+          fi
           gh release create "v$VERSION" assets/* \
             --title "PandaCode $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \

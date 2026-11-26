@@ -175,6 +175,26 @@ test('an unknown reset time is shown honestly and cannot be scheduled', async ({
   expect((await calls(page, 'clear_usage_limit')).length).toBe(1);
 });
 
+test('dismissing a usage limit leaves queued work paused until Resume', async ({ page }) => {
+  await open(page);
+  await startRunWithQueue(page);
+  await hitLimit(page, null);
+  await expect(queue(page)).toContainText('Paused until the usage limit resets');
+  const resume = queue(page).getByRole('button', { name: 'Resume', exact: true });
+  await expect(resume).toHaveCount(0);
+
+  await banner(page).getByRole('button', { name: 'Dismiss usage limit' }).click();
+  await expect(banner(page)).toHaveCount(0);
+  await expect(resume).toBeVisible();
+  await expect(queue(page).locator('.queue-text')).toHaveText(['After the limit']);
+  await expect.poll(async () => (await calls(page, 'set_queue_hold')).at(-1)?.args).toEqual({ sessionId: 'session-1', held: true, reason: 'reset' });
+  expect(await sent(page)).toEqual(['Build the feature']);
+
+  await resume.click();
+  await expect.poll(() => sent(page)).toEqual(['Build the feature', 'After the limit']);
+  await expect(queue(page)).toHaveCount(0);
+});
+
 test('a message saved as the run hits a limit stays held instead of being sent', async ({ page }) => {
   await open(page);
   await prompt(page).fill('Build the feature'); await prompt(page).press('Enter');

@@ -10,8 +10,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { targets } from './common.mjs';
+import { targets, isMain } from './common.mjs';
 
 const run = promisify(execFile);
 const LIMIT = 512 * 1024 * 1024;
@@ -189,6 +188,6 @@ async function main() {
   if (!report.complete) console.log(`::warning::SBOM/scan coverage is incomplete for: ${report.incomplete.join(', ')}`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

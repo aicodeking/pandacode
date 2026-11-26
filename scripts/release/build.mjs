@@ -11,9 +11,8 @@
 import { readFile, writeFile, mkdir, copyFile, readdir, readlink, mkdtemp, rmdir, rm, lstat, chmod } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory } from './common.mjs';
+import { root, version, json, run, digest, targetConfig, hostTarget, appImageBundleOptions, releaseDirectory, isMain } from './common.mjs';
 import { repackAppImage } from './appimage.mjs';
 
 // Never forwarded to the build: leftovers of the old license check in a developer
@@ -216,6 +215,6 @@ async function main() {
   console.log(`Built ${config.asset} (${build.signing.mode}) in ${output}. Nothing was uploaded.`);
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });
 }

@@ -1715,7 +1715,11 @@ function syncNewTaskPage(): void { if (!state.messagesLoading) $('.conversation-
 let taskDetailsPending: { id: string; generation: number } | undefined;
 const threadLoading = (): boolean => state.messagesLoading || (taskDetailsPending?.id === state.sessionId && taskDetailsPending.generation === state.generation);
 function newTaskView(): boolean { const s = session(); return Boolean(s && !s.resumeId && !isRunning() && !state.messagesLoading && !state.messagesError && state.messages.length === 0); }
+let streamEventClock = 0;
+const streamEventVersion = new Map<string, number>();
+function noteStreamEvent(id: string): void { streamEventVersion.set(id, ++streamEventClock); }
 function stream(id: string): Stream {
+  noteStreamEvent(id);
   let s = state.streams.get(id);
   if (!s) {
     finishingStreams.delete(id);
@@ -4668,6 +4672,7 @@ async function changeTaskStage(s: Session, stage: TaskStage, offer = true): Prom
 let fullTaskDescription: { id: string; value: string } | undefined;
 let sessionsReload = 0;
 let sessionsLoading: Promise<void> | null = null, sessionsTrailing: Promise<void> | null = null;
+let reconcileNextSessionsLoad = false;
 const startingBoardTasks = new Set<string>();
 async function startBoardTask(id: string): Promise<void> {
   const s = state.sessions.find(task => task.id === id);
@@ -5095,26 +5100,40 @@ async function selectProject(id: string): Promise<void> {
 }
 /** After a reconnect or lagged event stream (web mode): nothing shown may be stale. */
 async function webResync(): Promise<void> {
-  await reloadSessions();
+  await reloadSessions({ reconcileStreams: true });
   const id = state.sessionId;
-  const queue = Promise.all([refreshQueueHolds().catch(report), id ? refreshQueueList(id).catch(report) : undefined]);
+  const queue = Promise.all([refreshQueueHolds().catch(report), refreshQueueList().catch(report)]);
   await Promise.all([queue.then(renderComposer), id ? mirrorMessages({ sessionId: id }) : undefined]);
 }
 /** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
-function reloadSessions(): Promise<void> {
+function reloadSessions({ reconcileStreams = false } = {}): Promise<void> {
+  reconcileNextSessionsLoad ||= reconcileStreams;
   if (!sessionsLoading) {
-    sessionsLoading = loadSessions().finally(() => { sessionsLoading = null; });
+    const options = { reconcileStreams: reconcileNextSessionsLoad };
+    reconcileNextSessionsLoad = false;
+    sessionsLoading = loadSessions(options).finally(() => { sessionsLoading = null; });
     return sessionsLoading;
   }
   return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
 }
-async function loadSessions(): Promise<void> {
+async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean }): Promise<void> {
   const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
+  const resyncAt = reconcileStreams ? ++streamEventClock : 0;
   const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
     Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
   if (request !== sessionsReload) return;
   if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId)) throw detailResult.reason;
   const details = detailResult.status === 'fulfilled' ? detailResult.value : null;
+  if (reconcileStreams) {
+    // A missed done can leave a live card behind. Events received since the request win over the snapshot.
+    for (const s of sessions) {
+      const live = state.streams.get(s.id);
+      if (!live || s.status === 'running' || (streamEventVersion.get(s.id) ?? 0) >= resyncAt) continue;
+      clearAgentInputs(live);
+      state.streams.delete(s.id);
+      updateWorkTimer();
+    }
+  }
   // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
   const listedIds = new Set(sessions.map(task => task.id));
   const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
@@ -5148,7 +5167,7 @@ function removeDeletedSessions(ids: string[]): void {
     deletedSessions.add(id); writeLink(localStorage, id, null);
     setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
-    state.streams.delete(id); finishingStreams.delete(id); teams.delete(id);
+    state.streams.delete(id); streamEventVersion.delete(id); finishingStreams.delete(id); teams.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
     attachments.clear(id); pendingPromptActivity.delete(id);
     subagents.forget(id);
@@ -5830,6 +5849,7 @@ async function continueOnConnection(task: Session, id: string): Promise<void> {
 /** Drops a task's limit; a team held by it retries on the scheduler's next tick. */
 async function clearLimit(task: Session): Promise<void> {
   await call('clear_usage_limit', { sessionId: task.id });
+  if (state.queueHolds.get(task.id) === 'limited') setQueueHold(task.id, 'reset');
   task.limitedAt = null; task.limitedUntil = null; task.resumeAtReset = false;
   const team = teams.get(task.id);
   if (team?.leadFailure) onArchitect({ ...team, leadFailure: { ...team.leadFailure, heldUntil: null } });
@@ -6478,6 +6498,7 @@ function onAgent(event: AgentEvent): void {
   if (event.kind === 'done') tilePages.delete(event.sessionId);
   queueMicrotask(() => tiles.event(event.sessionId));
   if (deletedSessions.has(event.sessionId)) return;
+  noteStreamEvent(event.sessionId);
   // Managed workers are deliberately absent from sidebar/board task summaries.
   // Route their live output and approval forms to the team's worker inspector.
   if (!state.sessions.some(s => s.id === event.sessionId)) {
@@ -6553,7 +6574,7 @@ function onAgent(event: AgentEvent): void {
     // Hold even an empty queue: a message saved a moment later must not slip past a failure or limit.
     const first = sendFirst.get(event.sessionId);
     if (first?.stopping) sendFirst.set(event.sessionId, { id: first.id });
-    if (!webMode) {
+    if (!webMode && !(s && botProjects.has(s.projectId))) {
       if (first?.stopping && ending === 'stopped') setQueueHold(event.sessionId, first.hold);
       else if (ending) setQueueHold(event.sessionId, ending);
     }
@@ -8639,6 +8660,7 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
     const onStage = (start: RemoteStart) => {
       // Once the agent has said or done something, its own status wins over a late stage.
       if (start.stage === 'error' || remoteStartCancels.has(s.id) || state.streams.get(s.id) !== live || live.text || live.tools.length) return;
+      noteStreamEvent(s.id);
       updateStreamStatus(live, startStageText(start)); live.revision++;
       if (state.sessionId === s.id) renderStream();
     };
@@ -8662,7 +8684,10 @@ async function sendRemote(s: Session, target: RemoteTarget, draft: string, text:
         return;
       }
       addMirrorPrompt(started.sessionId, { ...sent, sessionId: started.sessionId }, 0);
-      if (!state.streams.has(started.sessionId)) state.streams.set(started.sessionId, live);
+      if (!state.streams.has(started.sessionId)) {
+        noteStreamEvent(started.sessionId);
+        state.streams.set(started.sessionId, live);
+      }
     }
     const { sessionId } = started;
     attachments.consume(s.id, promptItems);
@@ -9469,7 +9494,7 @@ async function boot(): Promise<void> {
     subscribe('mirror-messages' as 'queue-changed', (event: { sessionId: string; older?: boolean }) => run(mirrorMessages(event))),
   ];
   window.addEventListener(TEAM_MODE_EVENT, () => { if (session()) renderComposer(); });
-  // A dropped or lagged event stream may have missed anything: reload the list, the open thread and its queue.
+  // A dropped or lagged event stream may have missed anything: reload the list, open thread and queues.
   if (webMode) window.addEventListener('pandacode:web-resync', () => run(webResync()));
   // `pandacode --port` run while this app is open starts web access here instead of a second app. Only the desktop
   // window says so (the preview listens too, for its tests): remote browser tabs did not run the command.

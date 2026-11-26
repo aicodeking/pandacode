@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
-import { mkdtemp, readFile, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -168,6 +168,21 @@ test('the CLI requires updater artifacts when passed --require-signed', async (t
   const required = spawnSync(process.execPath, [script, '--require-signed', ...args], { encoding: 'utf8' });
   assert.equal(required.status, 1, required.stderr);
   assert.match(required.stderr, /Updater file PandaCode-macOS-arm64\.app\.tar\.gz is missing/);
+});
+
+test('release CLIs report usage through a symlinked directory', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'pandacode-release-cli-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const scripts = join(directory, 'scripts');
+  await symlink(fileURLToPath(new URL('.', import.meta.url)), scripts, 'junction');
+
+  for (const script of ['verify-publish.mjs', 'updater-manifest.mjs']) {
+    await t.test(script, () => {
+      const result = spawnSync(process.execPath, [join(scripts, script), 'assets'], { encoding: 'utf8' });
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stderr.startsWith(`Usage: ${script} `), result.stderr);
+    });
+  }
 });
 
 test('signatures are checked against the app updater key by default', async (t) => {

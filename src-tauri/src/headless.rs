@@ -6,6 +6,7 @@
 
 use crate::{message_queue, AppState};
 use std::collections::{BTreeSet, HashMap};
+use std::future::Future;
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -276,23 +277,21 @@ fn start_services(app: tauri::AppHandle) {
                     continue;
                 }
                 println!("serve: resuming {session_id} at its usage-limit reset");
-                let previous_hold = clear_resumable_hold(&session_id);
-                if previous_hold.is_some() {
-                    let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
-                }
-                if let Err(error) = crate::send_message(
+                let send = crate::send_message(
                     limits.clone(),
                     limits.state::<AppState>(),
                     session_id.clone(),
                     "Continue where you left off.".into(),
                     None,
                     None,
-                )
-                .await
-                {
-                    let reason = message_queue::queue_hold_reason(&session_id).or(previous_hold);
-                    hold_queue(&limits, &session_id, reason.as_deref().unwrap_or("failed"));
-                    eprintln!("serve: the limit resume could not be sent: {error}");
+                );
+                match finish_limit_resume(&session_id, send, |id, reason| hold_queue(&limits, id, reason)).await {
+                    Ok(true) => {
+                        let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
+                        drain_queue(limits.clone(), session_id);
+                    }
+                    Ok(false) => {}
+                    Err(error) => eprintln!("serve: the limit resume could not be sent: {error}"),
                 }
             }
         }
@@ -331,13 +330,37 @@ pub(crate) fn run_end_hold_reason(successful: bool, stopped: bool, limited: bool
     }
 }
 
-fn clear_resumable_hold(session_id: &str) -> Option<String> {
-    let reason = message_queue::queue_hold_reason(session_id)?;
-    if !matches!(reason.as_str(), "limited" | "reset" | "restart") {
-        return None;
+async fn finish_limit_resume(
+    session_id: &str,
+    send: impl Future<Output = crate::Result<()>>,
+    hold: impl FnOnce(&str, &str),
+) -> crate::Result<bool> {
+    // Keep the hold until the continuation takes its place ahead of any queued follow-up.
+    match send.await {
+        Ok(()) => Ok(clear_resumable_hold(session_id)),
+        Err(error) => {
+            if !message_queue::is_queue_held(session_id) {
+                hold(session_id, "failed");
+            }
+            Err(error)
+        }
+    }
+}
+
+fn clear_resumable_hold(session_id: &str) -> bool {
+    if !matches!(message_queue::queue_hold_reason(session_id).as_deref(), Some("limited" | "reset" | "restart")) {
+        return false;
     }
     message_queue::set_queue_hold_state(session_id, false, None);
-    Some(reason)
+    true
+}
+
+pub(crate) fn release_limited_hold_to_reset(session_id: &str, hold: impl FnOnce(&str, &str)) -> bool {
+    if message_queue::queue_hold_reason(session_id).as_deref() != Some("limited") {
+        return false;
+    }
+    hold(session_id, "reset");
+    true
 }
 
 pub(crate) fn hold_queue(app: &tauri::AppHandle, session_id: &str, reason: &str) {
@@ -718,21 +741,66 @@ mod tests {
         }
     }
 
-    #[test]
-    fn limit_resume_clears_only_resumable_holds() {
+    fn set_hold(session_id: &str, reason: &str) {
+        message_queue::set_queue_hold_state(session_id, true, Some(reason));
+    }
+
+    #[tokio::test]
+    async fn limit_resume_keeps_the_queue_held_until_send_succeeds() {
         let session_id = crate::storage::id();
-        assert_eq!(clear_resumable_hold(&session_id), None);
-        for reason in ["limited", "reset", "restart"] {
-            message_queue::set_queue_hold_state(&session_id, true, Some(reason));
-            assert_eq!(clear_resumable_hold(&session_id).as_deref(), Some(reason));
-            assert!(!message_queue::is_queue_held(&session_id));
-        }
-        for reason in ["stopped", "failed"] {
-            message_queue::set_queue_hold_state(&session_id, true, Some(reason));
-            assert_eq!(clear_resumable_hold(&session_id), None);
-            assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
+        for (reason, cleared) in [
+            ("limited", true),
+            ("reset", true),
+            ("restart", true),
+            ("stopped", false),
+            ("failed", false),
+        ] {
+            set_hold(&session_id, reason);
+            let send = async {
+                assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
+                assert!(!can_drain(&session_id, false, Some(500), Some(1000), 1000));
+                Ok(())
+            };
+            assert_eq!(finish_limit_resume(&session_id, send, set_hold).await, Ok(cleared));
+            assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), (!cleared).then_some(reason));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
+        assert_eq!(finish_limit_resume(&session_id, async { Ok(()) }, set_hold).await, Ok(false));
+    }
+
+    #[tokio::test]
+    async fn failed_limit_resume_sets_a_hold_only_if_unheld() {
+        let session_id = crate::storage::id();
+        for reason in [None, Some("limited"), Some("reset"), Some("restart"), Some("stopped"), Some("failed")] {
+            message_queue::set_queue_hold_state(&session_id, reason.is_some(), reason);
+            let send = async { Err("send failed".to_owned()) };
+            let result = finish_limit_resume(&session_id, send, |id, reason| {
+                assert!(!message_queue::is_queue_held(id));
+                set_hold(id, reason);
+            })
+            .await;
+            assert_eq!(result, Err("send failed".to_owned()));
+            assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), reason.or(Some("failed")));
+        }
+        message_queue::set_queue_hold_state(&session_id, false, None);
+    }
+
+    #[test]
+    fn dismissing_a_usage_limit_changes_only_a_limited_hold_to_reset() {
+        let session_id = crate::storage::id();
+        for (before, after) in [
+            (Some("limited"), Some("reset")),
+            (Some("reset"), Some("reset")),
+            (Some("restart"), Some("restart")),
+            (Some("stopped"), Some("stopped")),
+            (Some("failed"), Some("failed")),
+            (None, None),
+        ] {
+            message_queue::set_queue_hold_state(&session_id, before.is_some(), before);
+            assert_eq!(release_limited_hold_to_reset(&session_id, set_hold), before != after);
+            assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), after);
+            assert_eq!(can_drain(&session_id, false, None, None, 1000), after.is_none());
+        }
     }
 
     #[test]

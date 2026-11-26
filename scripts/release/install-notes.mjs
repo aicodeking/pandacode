@@ -8,8 +8,7 @@
 // notes do not ask for any extra step.
 //
 //   node scripts/release/install-notes.mjs [--signed]
-import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from './common.mjs';
 
 /// The command that clears the quarantine attribute on an installed app.
 export const UNQUARANTINE = 'xattr -dr com.apple.quarantine /Applications/PandaCode.app';
@@ -55,6 +54,6 @@ function main() {
   process.stdout.write(installNotes({ signed }));
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main();
 }
