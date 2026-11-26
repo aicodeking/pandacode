@@ -192,13 +192,14 @@ WantedBy=multi-user.target
 - One instance per data dir. Don't run serve and the desktop app on the same data dir:
   serve skips the single-instance guard. This matters most across **versions**: a newer
   build repairs the shared database on open, and doing that underneath a running older
-  build can break its team writes and reads. A build that knows the new schema heals such a
-  process (it drops the dangling triggers and falls back to the snapshots), but a build from
-  before it does not: it cannot recreate what the newer build removed, so restarting it may
-  fail instead of help. Upgrading therefore means stopping and restarting every instance,
-  `serve` included, not just the desktop, so no two versions ever share the folder. A
-  sequential rollback of a single instance is safe: the older build recreates what it needs
-  on open, and `user_version` stays 37, so both schemas' objects survive.
+  build can leave it unable to write or even to read its teams. A build that knows the new
+  schema heals such a process (it drops the dangling triggers and falls back to the
+  snapshots), but a build from before it does not: it cannot recreate what the newer build
+  removed, so restarting it may fail instead of help. Upgrading therefore means stopping and
+  restarting every instance, `serve` included, not just the desktop, so no two versions ever
+  share the folder. A sequential rollback of a single instance is safe: the older build
+  recreates what it needs on open, and `user_version` stays 37, so both schemas' objects
+  survive.
 - Status lines go to stdout (journald): signed-in account, hosting, relay connection,
   online devices — printed only when they change.
 
