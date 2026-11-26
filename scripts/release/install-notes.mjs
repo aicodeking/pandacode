@@ -33,6 +33,9 @@ export function macosNote(signed) {
 
 /// The whole "Installing" section, for a signed or an unsigned release.
 export function installNotes({ signed = false } = {}) {
+  const terminalNote = signed
+    ? '`npx pandacode` downloads, verifies and installs the right build.'
+    : '`npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.';
   return [
     '## Installing',
     '',
@@ -42,7 +45,7 @@ export function installNotes({ signed = false } = {}) {
     '- **Windows arm64:** run `PandaCode-Windows-arm64-setup.exe` (same SmartScreen step).',
     '- **Linux x64:** `chmod +x PandaCode-Linux-x86_64.AppImage` and run it.',
     '- **Linux arm64:** `chmod +x PandaCode-Linux-aarch64.AppImage` and run it.',
-    '- **Any of the above, from a terminal:** `npx pandacode` downloads, verifies and installs the right build, and signs it locally on macOS, so no Gatekeeper warning appears.',
+    '- **Any of the above, from a terminal:** ' + terminalNote,
     '',
     'The installers each have a `.sha256` checksum beside them. Installed copies update themselves from this page. Build from source: see CONTRIBUTING.md.',
     '',

@@ -5126,7 +5126,7 @@ async function webResync(): Promise<void> {
   await reloadSessions({ reconcileStreams: true });
   const id = state.sessionId;
   const queue = Promise.all([refreshQueueHolds().catch(report), refreshQueueList().catch(report)]);
-  await Promise.all([queue.then(renderComposer), id ? mirrorMessages({ sessionId: id }) : undefined]);
+  await Promise.all([queue.then(renderComposer), id && state.sessions.some(task => task.id === id) ? mirrorMessages({ sessionId: id }) : undefined]);
 }
 /** Every worker change asks for a listing, so at most one runs and one waits. A waiter's listing starts after its call, so `await` still means "at least as new as this call". */
 function reloadSessions({ reconcileStreams = false } = {}): Promise<void> {
@@ -5140,45 +5140,78 @@ function reloadSessions({ reconcileStreams = false } = {}): Promise<void> {
   return sessionsTrailing ??= sessionsLoading.catch(() => undefined).then(() => { sessionsTrailing = null; return reloadSessions(); });
 }
 async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean }): Promise<void> {
-  const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
-  const resyncAt = reconcileStreams ? ++streamEventClock : 0;
-  const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
-    Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
-  if (request !== sessionsReload) return;
-  if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId)) throw detailResult.reason;
-  const details = detailResult.status === 'fulfilled' ? detailResult.value : null;
-  if (reconcileStreams) {
-    // A missed done can leave a live card behind. Events received since the request win over the snapshot.
-    for (const s of sessions) {
-      const live = state.streams.get(s.id);
-      if (!live || s.status === 'running' || (streamEventVersion.get(s.id) ?? 0) >= resyncAt) continue;
-      clearAgentInputs(live);
-      state.streams.delete(s.id);
-      updateWorkTimer();
+  let reconciled = false;
+  try {
+    for (;;) {
+      const selectedId = state.sessionId, generation = state.generation, request = ++sessionsReload, previousDetails = fullTaskDescription;
+      const resyncAt = reconcileStreams ? ++streamEventClock : 0;
+      const [sessions, detailResult] = await Promise.all([call<Session[]>('list_sessions'),
+        Promise.allSettled([selectedId ? call<Session>('get_task', { sessionId: selectedId }) : Promise.resolve(null)]).then(results => results[0])]);
+      if (request !== sessionsReload) {
+        if (reconcileStreams) continue;
+        return;
+      }
+      const sessionById = new Map(sessions.map(task => [task.id, task]));
+      if (detailResult.status === 'rejected' && !deletedSessions.has(selectedId) && sessionById.has(selectedId)) throw detailResult.reason;
+      const details = detailResult.status === 'fulfilled' ? detailResult.value : null;
+      const reconciledIds = new Set<string>();
+      if (reconcileStreams) {
+        // A missed done or offline deletion can leave a live card behind. Events received since the request win over the snapshot.
+        for (const [id, live] of Array.from(state.streams.entries())) {
+          const s = sessionById.get(id);
+          if (s && ['running', 'starting', 'waiting', 'waiting_approval'].includes(s.status)) continue;
+          if ((streamEventVersion.get(id) ?? 0) > resyncAt) continue;
+          clearAgentInputs(live);
+          state.streams.delete(id);
+          runEndings.delete(id);
+          for (const [steerId, item] of steers) if (item.sessionId === id) steers.delete(steerId);
+          if (s) subagents.runEnded(id); else subagents.forget(id);
+          tilePages.delete(id);
+          queueMicrotask(() => btwPanel.event(id, 'done'));
+          queueMicrotask(() => tiles.event(id));
+          reconciledIds.add(id);
+        }
+        reconciled = true;
+        if (reconciledIds.size) updateWorkTimer();
+      }
+      // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
+      const drafts = state.sessions.filter(task => task.draft && !sessionById.has(task.id)).map(task => task.id === selectedId && details ? details : task);
+      state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
+      // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
+      state.drafts.reclaimAll();
+      scheduleLimitResumes();
+      if (details && state.sessionId === selectedId && state.generation === generation && fullTaskDescription === previousDetails) fullTaskDescription = { id: selectedId, value: details.taskDescription ?? '' };
+      const selected = session();
+      if (selected && fullTaskDescription?.id === selected.id) selected.taskDescription = fullTaskDescription.value;
+      // Native transcripts flush at tool/turn boundaries. Keep responses already
+      // visible in an ongoing stream when another task refreshes session metadata.
+      for (const s of state.sessions) {
+        if (state.streams.has(s.id)) { s.taskStage = 'in_progress'; s.status = 'running'; }
+        const promptAt = pendingPromptActivity.get(s.id) ?? state.streams.get(s.id)?.lastPromptAt;
+        if (promptAt != null) s.lastPromptAt = Math.max(s.lastPromptAt ?? 0, promptAt);
+        const observed = state.streams.get(s.id)?.lastResponseAt;
+        if (observed != null) s.lastResponseAt = Math.max(s.lastResponseAt ?? 0, observed);
+        const context = state.streams.get(s.id)?.contextUsage;
+        if (context) s.contextUsage = context;
+      }
+      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && reconciledIds.has(state.sessionId)) {
+        ++state.generation; ++overlayOpenRequest;
+        closeMenus(); subagents.close(false); architectView?.close();
+        clearOpenSession(); state.messages = []; state.messagesLoading = false; state.messagesError = '';
+        state.attachments = []; state.hasOlder = false; state.boardPanel = false;
+        restoreThreadPanel(); renderInspector();
+        render(); run(refreshInspector());
+      } else {
+        if (reconciledIds.has(state.sessionId)) { renderTranscript(); renderComposer(); }
+        renderNavigation(); renderHeader();
+      }
+      refreshModelLabels(); syncCloudStrip();
+      return;
     }
+  } catch (error) {
+    if (reconcileStreams && !reconciled) reconcileNextSessionsLoad = true;
+    throw error;
   }
-  // The open draft is not listed natively until its first prompt; keep it while it is still a draft.
-  const listedIds = new Set(sessions.map(task => task.id));
-  const drafts = state.sessions.filter(task => task.draft && !listedIds.has(task.id)).map(task => task.id === selectedId && details ? details : task);
-  state.sessions = [...sessions, ...drafts].filter(task => !deletedSessions.has(task.id));
-  // A task's New task state may have changed (a failed first send left it a draft): its kept text follows.
-  state.drafts.reclaimAll();
-  scheduleLimitResumes();
-  if (details && state.sessionId === selectedId && state.generation === generation && fullTaskDescription === previousDetails) fullTaskDescription = { id: selectedId, value: details.taskDescription ?? '' };
-  const selected = session();
-  if (selected && fullTaskDescription?.id === selected.id) selected.taskDescription = fullTaskDescription.value;
-  // Native transcripts flush at tool/turn boundaries. Keep responses already
-  // visible in an ongoing stream when another task refreshes session metadata.
-  for (const s of state.sessions) {
-    if (state.streams.has(s.id)) { s.taskStage = 'in_progress'; s.status = 'running'; }
-    const promptAt = pendingPromptActivity.get(s.id) ?? state.streams.get(s.id)?.lastPromptAt;
-    if (promptAt != null) s.lastPromptAt = Math.max(s.lastPromptAt ?? 0, promptAt);
-    const observed = state.streams.get(s.id)?.lastResponseAt;
-    if (observed != null) s.lastResponseAt = Math.max(s.lastResponseAt ?? 0, observed);
-    const context = state.streams.get(s.id)?.contextUsage;
-    if (context) s.contextUsage = context;
-  }
-  renderNavigation(); renderHeader(); refreshModelLabels(); syncCloudStrip();
 }
 function removeDeletedSessions(ids: string[]): void {
   voiceDictation.discardThreads(ids);
@@ -5873,7 +5906,6 @@ async function continueOnConnection(task: Session, id: string): Promise<void> {
 /** Drops a task's limit; a team held by it retries on the scheduler's next tick. */
 async function clearLimit(task: Session): Promise<void> {
   await call('clear_usage_limit', { sessionId: task.id });
-  if (state.queueHolds.get(task.id) === 'limited') setQueueHold(task.id, 'reset');
   task.limitedAt = null; task.limitedUntil = null; task.resumeAtReset = false;
   const team = teams.get(task.id);
   if (team?.leadFailure) onArchitect({ ...team, leadFailure: { ...team.leadFailure, heldUntil: null } });

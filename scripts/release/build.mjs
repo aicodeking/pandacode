@@ -177,6 +177,14 @@ export async function verifyMacArtifacts(artifacts, commands = { run, execFileSy
   }
 }
 
+export async function resignAppImage(source, releaseVersion, env, commands = {}) {
+  const runCommand = commands.run ?? run;
+  const tauriCli = commands.tauriCli ?? resolve(root, 'node_modules/@tauri-apps/cli/tauri.js');
+  await runCommand(process.execPath, [tauriCli, 'signer', 'sign', '--app-version', version(releaseVersion), source], {
+    env: await signingEnvironment(env),
+  });
+}
+
 async function main() {
   const releaseTarget = process.argv[2] || process.env.RELEASE_TARGET || hostTarget();
   const config = targetConfig(releaseTarget);
@@ -197,10 +205,10 @@ async function main() {
   }
   if (releaseTarget.startsWith('linux-')) {
     // Drop the build host's Wayland libraries, let GDK_BACKEND be overridden (see
-    // appimage.mjs), and sign the
-    // final bytes again, since Tauri signed the image before this rebuild.
+    // appimage.mjs), and sign the final bytes again, since Tauri signed the image
+    // before this rebuild.
     await repackAppImage(source, { log: message => console.log(message) });
-    if (build.updater) await run(process.execPath, [tauriCli, 'signer', 'sign', source], { env: await signingEnvironment(build.env) });
+    if (build.updater) await resignAppImage(source, releaseVersion, build.env, { run, tauriCli });
   }
   const output = releaseDirectory(releaseVersion);
   await mkdir(output, { recursive: true });

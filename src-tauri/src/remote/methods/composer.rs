@@ -929,6 +929,7 @@ impl Run for ClearLimit {
             // Waking a held lead dispatches workers, which run in full access.
             allow_remote_team_for(&state, &self.session_id, ctx.full_access).await?;
             state.store.lock().map_err(|e| e.to_string())?.clear_limited(&self.session_id)?;
+            crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::hold_queue(ctx.app, id, reason));
             crate::architect::wake(ctx.app.clone());
             let _ = ctx.app.emit("sessions-changed", ());
             Ok(json!({}))
@@ -1491,5 +1492,56 @@ mod tests {
         assert!(holding.find("s2", "q99", now).is_some());
         assert!(holding.find("s2", "q99", now + HOLD_FOR).is_none(), "expired holds are dropped");
         assert!(holding.held.is_empty());
+    }
+
+    /// `usage.clearLimit` matches desktop `clear_usage_limit`: after clearing the store limit
+    /// and dropping the store lock, a `"limited"` queue hold transitions to `"reset"` without
+    /// auto-sending, while other holds and unheld tasks stay untouched.
+    #[test]
+    fn clear_limit_transitions_only_a_limited_hold_to_reset() {
+        let body = source_of("impl Run for ClearLimit");
+        let clear = body.find("state.store.lock().map_err(|e| e.to_string())?.clear_limited(&self.session_id)?;").unwrap();
+        let release = body.find("crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::hold_queue(ctx.app, id, reason));").unwrap();
+        let wake = body.find("crate::architect::wake(ctx.app.clone());").unwrap();
+        assert!(clear < release && release < wake, "hold transition runs after dropping the store lock and before waking");
+        assert!(!body.contains("queue_changed("), "clearing a limit must not auto-send queued messages");
+
+        let (store, task, base) = queue_store();
+        let run_clear = |before: Option<&str>| {
+            store.set_limited(&task, Some(1_000)).unwrap();
+            message_queue::set_queue_hold_state(&task, before.is_some(), before);
+            let mut hold_calls = Vec::new();
+            store.clear_limited(&task).unwrap();
+            let transitioned = crate::headless::release_limited_hold_to_reset(&task, |id, reason| {
+                hold_calls.push((id.to_owned(), reason.to_owned()));
+                message_queue::set_queue_hold_state(id, true, Some(reason));
+            });
+            assert_eq!(store.session(&task).unwrap().limited_until, None);
+            (transitioned, hold_calls)
+        };
+
+        let (transitioned, hold_calls) = run_clear(Some("limited"));
+        assert!(transitioned);
+        assert_eq!(hold_calls, vec![(task.clone(), "reset".to_owned())]);
+        assert_eq!(message_queue::queue_hold_reason(&task).as_deref(), Some("reset"));
+
+        let (transitioned, hold_calls) = run_clear(Some("failed"));
+        assert!(!transitioned);
+        assert!(hold_calls.is_empty());
+        assert_eq!(message_queue::queue_hold_reason(&task).as_deref(), Some("failed"));
+
+        let (transitioned, hold_calls) = run_clear(Some("stopped"));
+        assert!(!transitioned);
+        assert!(hold_calls.is_empty());
+        assert_eq!(message_queue::queue_hold_reason(&task).as_deref(), Some("stopped"));
+
+        let (transitioned, hold_calls) = run_clear(None);
+        assert!(!transitioned);
+        assert!(hold_calls.is_empty());
+        assert!(!message_queue::is_queue_held(&task));
+        assert_eq!(message_queue::queue_hold_reason(&task), None);
+
+        message_queue::set_queue_hold_state(&task, false, None);
+        let _ = std::fs::remove_dir_all(base);
     }
 }
