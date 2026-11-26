@@ -102,7 +102,10 @@ use exit::{reap, Reaped};
 #[cfg(all(test, unix))]
 use exit::{await_exit_with_cap, exit_registry};
 use launch_input::{next_input, stop_requested};
-pub(crate) use exit::{await_all_exits, await_exit, await_exit_patiently, await_exits_in, await_exits_in_patiently, pending_exits};
+pub(crate) use exit::{
+    await_all_exits, await_exit, await_exit_patiently, await_exits_in,
+    await_exits_in_checkout_patiently, pending_exits,
+};
 #[cfg(test)]
 pub(crate) use exit::{hold_for_test as hold_exit_for_test, hold_in_cwd_for_test as hold_exit_in_cwd_for_test};
 use host_tools::apply_step;
@@ -3952,39 +3955,31 @@ fn linger_agent(
 /// concurrent caller. The shutdown is sent before the first await, so a caller dropped mid-wait
 /// (a Stop) still leaves the agent closing and reaping in its own task.
 pub(crate) async fn end_lingering(session_id: &str) {
-    lingering_ended(signal_lingering(session_id)).await;
+    lingering_ended(signal_lingering(session_id, None)).await;
 }
 
 /// Tells the task's lingering agent to close, at once and without awaiting, and returns what
 /// says it is gone. The entry stays until its task ends, so every caller can wait on it.
-fn signal_lingering(session_id: &str) -> Option<tokio::sync::watch::Receiver<bool>> {
+fn signal_lingering(
+    session_id: &str,
+    expected_id: Option<u64>,
+) -> Option<tokio::sync::watch::Receiver<bool>> {
     let mut agents = lingering().lock().unwrap_or_else(|p| p.into_inner());
-    agents.get_mut(session_id).map(|entry| {
-        if let Some(shutdown) = entry.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        entry.done.clone()
-    })
+    agents
+        .get_mut(session_id)
+        .filter(|entry| expected_id.is_none_or(|id| id == entry.id))
+        .map(|entry| {
+            if let Some(shutdown) = entry.shutdown.take() {
+                let _ = shutdown.send(());
+            }
+            entry.done.clone()
+        })
 }
 
 /// Waits until a signalled lingering agent is closed and reaped.
 async fn lingering_ended(done: Option<tokio::sync::watch::Receiver<bool>>) {
     if let Some(mut done) = done {
         let _ = done.wait_for(|&finished| finished).await;
-    }
-}
-
-/// Ends every lingering agent. App quit still uses `shutdown_all`, which SIGKILLs the registry.
-#[cfg(test)]
-pub(crate) async fn end_all_lingering() {
-    let ids: Vec<String> = lingering()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .keys()
-        .cloned()
-        .collect();
-    for id in ids {
-        end_lingering(&id).await;
     }
 }
 
@@ -4008,31 +4003,61 @@ async fn antigravity_spawn_gate() {
 /// Ends every lingering agent working in `folder`, whichever task it belongs to, before the folder
 /// is removed: on Windows a process's working directory cannot be deleted.
 pub(crate) async fn end_lingering_in(folder: &Path) {
+    end_lingering_matching(folder, false).await;
+}
+
+/// Ends lingering agents in this Git checkout before a merge or Turn check.
+pub(crate) async fn end_lingering_in_checkout(folder: &Path) {
+    end_lingering_matching(folder, true).await;
+}
+
+async fn end_lingering_matching(folder: &Path, checkout_only: bool) {
     // Copied under the lock; matching may `canonicalize`, so it runs off the lock and the runtime.
-    let snapshot: Vec<(String, PathBuf)> = lingering()
+    let snapshot: Vec<_> = lingering()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .iter()
-        .map(|(task, lingering)| (task.clone(), lingering.cwd.clone()))
+        .map(|(task, lingering)| (task.clone(), lingering.id, lingering.cwd.clone()))
         .collect();
     if snapshot.is_empty() {
         return;
     }
-    fn lingering_in(snapshot: Vec<(String, PathBuf)>, folder: &Path) -> Vec<String> {
-        let resolved = crate::path_match::resolve_path(folder);
-        snapshot.into_iter().filter(|(_, cwd)| crate::path_match::path_in_folder(cwd, folder, &resolved)).map(|(task, _)| task).collect()
+    fn lingering_in(
+        snapshot: Vec<(String, u64, PathBuf)>,
+        folder: &Path,
+        checkout_only: bool,
+    ) -> Vec<(String, u64)> {
+        let resolved = if checkout_only {
+            crate::checkout_busy::checkout_identity(folder)
+        } else {
+            crate::path_match::resolve_path(folder)
+        };
+        snapshot
+            .into_iter()
+            .filter(|(_, _, cwd)| {
+                if checkout_only {
+                    crate::checkout_busy::path_in_checkout_identity(cwd, &resolved)
+                } else {
+                    crate::path_match::path_in_folder(cwd, folder, &resolved)
+                }
+            })
+            .map(|(task, id, _)| (task, id))
+            .collect()
     }
     let (owned, copy) = (folder.to_path_buf(), snapshot.clone());
-    let tasks = match tokio::task::spawn_blocking(move || lingering_in(copy, &owned)).await {
+    let tasks = match tokio::task::spawn_blocking(move || lingering_in(copy, &owned, checkout_only))
+        .await
+    {
         Ok(tasks) => tasks,
         Err(error) => {
             // A lingering agent must still end before its folder goes: match here instead.
             eprintln!("Could not check lingering agents off the runtime: {error}");
-            lingering_in(snapshot, folder)
+            lingering_in(snapshot, folder, checkout_only)
         }
     };
-    for task in tasks {
-        end_lingering(&task).await;
+    for (task, id) in tasks {
+        // The task could have since replaced its lingering agent in another checkout.
+        lingering_ended(signal_lingering(&task, Some(id))).await;
     }
 }
 
@@ -4724,7 +4749,7 @@ async fn run_process_launch(
     if local {
         // Signalled before the wait, so a Stop drops only the wait: the old agent still closes
         // and its own task reaps it.
-        let end = lingering_ended(signal_lingering(&config.session_id));
+        let end = lingering_ended(signal_lingering(&config.session_id, None));
         tokio::pin!(end);
         loop {
             tokio::select! {
@@ -7425,9 +7450,35 @@ sleep 0.3; echo "$$" > "$1"; exit 0"#;
         end_lingering_in(&root.join("gone")).await;
         assert!(!lingering().lock().unwrap().contains_key("linger-in-gone"));
         assert!(lingering().lock().unwrap().contains_key("linger-in-kept"));
-        end_all_lingering().await;
+        end_lingering("linger-in-kept").await;
         assert!(!lingering().lock().unwrap().contains_key("linger-in-kept"));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn subfolder_quiescence_ends_lingering_git_root_agent_but_spares_nested_worktree() {
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
+        let main = format!("linger-main-{}", uuid::Uuid::new_v4());
+        let nested = format!("linger-nested-{}", uuid::Uuid::new_v4());
+        fake_lingering(&main, &checkout.root, Duration::ZERO);
+        fake_lingering(&nested, &checkout.nested, Duration::ZERO);
+
+        end_lingering_in_checkout(&checkout.pkg_a).await;
+        let (main_alive, nested_alive) = {
+            let agents = lingering().lock().unwrap();
+            (agents.contains_key(&main), agents.contains_key(&nested))
+        };
+        end_lingering(&main).await;
+        end_lingering(&nested).await;
+
+        assert!(
+            !main_alive,
+            "quiescence must wait for the main checkout agent to leave"
+        );
+        assert!(
+            nested_alive,
+            "the nested worktree's agent must keep running"
+        );
     }
 
     #[cfg(unix)]

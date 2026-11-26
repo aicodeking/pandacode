@@ -3432,6 +3432,8 @@ pub(crate) async fn merge_task_worktree(state: &AppState, session_id: String, tr
     let (main, path, _) = blocking(move || worktree_paths(&store, &session_id)).await?;
     let roots = vec![main.clone(), path.clone()];
     let reservation = checkout_busy::reserve_idle_checkouts(state, roots.clone(), BUSY).await?;
+    providers::end_lingering_in_checkout(&main).await;
+    providers::end_lingering_in_checkout(&path).await;
     providers::quiesce_spares_in_checkout(&main).await?;
     providers::quiesce_spares_in_checkout(&path).await?;
     checkout_busy::ensure_checkouts_idle(state, &roots, BUSY).await?;

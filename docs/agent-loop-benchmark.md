@@ -36,7 +36,7 @@ Batch Fv2 measured `bin-f` (the engine and `LOOK` text it was built from) on see
 - **Gates.** Tuned recall passes (0.794 → 0.797, CI -0.043 to +0.057). **Tuned precision fails: not shown non-inferior** (0.574 → 0.562, CI -0.066 to +0.040). Edit pass passes (9/12 → 12/12, CI +0.083 to +0.417). Edit tasks v2 pass passes (27/28 → 27/28, CI 0 to 0).
 - **Edit steps: not shown to be no longer.** The registered non-superiority test at +5% fails: mean change +2% (CI -10% to +14%, one-sided p = 0.32) over the 6 + 14 edit tasks. E's +20% did not recur (6 old edits +4%, CI -11% to +20%; edit2 +1%, CI -15% to +17%), but the test can't show edits are no longer.
 - **AFTER-E (E's `LOOK` on the same engine; descriptive).** The new text against E's: edit steps -5% (CI -16% to +5%) on the 6 edits and +2% (CI -5% to +9%) on edit2; passes 9/12 → 12/12 and 27/28 → 27/28. Nothing separates the two texts.
-- **Held-out (descriptive):** steps -21% (CI -33% to -10%, Wilcoxon p = 0.016, 7 better, 0 worse); recall and precision both clear the -0.05 margin (precision 0.703 → 0.702, CI -0.041 to +0.034), unlike E.
+- **Held-out (descriptive):** steps -21% (95% CI -33% to -10%, Wilcoxon p = 0.016, 7 better, 0 worse). Recall 0.880 → 0.885 (95% CI -0.031 to +0.047) and precision 0.703 → 0.702 (95% CI -0.041 to +0.034).
 - **Long context** (8 of 8 valid, 1 seed): steps -23%, cost -22%; every p ≥ 0.125, so none is shown.
 - **Reading the failed gates (POST-HOC).** A simulation from BEFORE's own runs in E, E2 and Fv2 (deviation Fv2-2) shows that with Fv2's design tuned precision passes only 70% of batches with no effect at all, and the edit-steps test 11%. So the precision and edit-steps failures are what a tool with no effect would often produce: they are "not shown", never evidence of harm. In the same simulation, 0 of 1,000 tuned-precision trials passed with a 0.10 precision loss, and 0 of 400 edit-step trials passed with a 10% step increase. These counts describe how the gates behaved under those synthetic shifts on Fv2's task mix. Details under [the post-hoc section](#post-hoc-gate-calibration-edit-failures-and-relabelling).
 - **Edit failures:** all 9 failed Fv2 edit runs are agent failures; none was a build or infrastructure failure (POST-HOC classification, Fv2-2).
@@ -606,10 +606,10 @@ BEFORE → AFTER-E: 6 edits steps +11% (CI -7% to +28%, p = 0.44), cost +4% (CI 
 | Steps | 5.44 | 4.25 | -21% | -33% to -10% | 0.016 | descriptive |
 | Cost $ | 0.12 | 0.11 | -3% | -12% to +5% | 0.641 | descriptive |
 | Wall s | 23.24 | 18.67 | -19% | -25% to -11% | 0.016 (max-T 0.016) | descriptive |
-| Recall | 0.880 | 0.885 | +0.005 | -0.031 to +0.047 | – | descriptive (CI clears -0.05) |
-| Precision | 0.703 | 0.702 | -0.001 | -0.041 to +0.034 | – | descriptive (CI clears -0.05) |
+| Recall | 0.880 | 0.885 | +0.005 | -0.031 to +0.047 | – | descriptive |
+| Precision | 0.703 | 0.702 | -0.001 | -0.041 to +0.034 | – | descriptive |
 
-7 tasks took fewer steps and none more. Held-out precision, which failed its margin in E, E2 and pooled, clears it here. (Post-hoc correction: every held-out read is "descriptive", as the section title says; the table used to say "lower" and "gate: pass". No number changed.) (Post-hoc, deviation Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
+7 tasks took fewer steps and none more. Held-out precision stayed near baseline at 0.703 → 0.702 (95% CI -0.041 to +0.034), compared with the drops in E, E2 and pooled. (A post-hoc correction labels every held-out read "descriptive", as the section title says. The table used to say "lower" and "gate: pass", and the prose used to say the intervals cleared the -0.05 margin. No number changed.) (Post-hoc, deviation Fv2-2: the steps p was printed as "Holm 0.031"; Holm is not applied outside tuned localization, and the read is unchanged.)
 
 ### Long context (8 of 8 valid, 4 tasks × 1 seed; descriptive)
 

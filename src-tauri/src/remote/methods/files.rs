@@ -531,12 +531,10 @@ const IMAGE_UNAVAILABLE: &str = "The image is missing or larger than 8 MB";
 /// Why a read is refused when the file changed between the checks and the open.
 const FILE_CHANGED: &str = "This file changed while it was being opened. Try again.";
 
-/// Round 16: opens `path` under `root` once for a remote read and checks the handle, so the
-/// file cannot be swapped (for a symlink, a hard link or another file) between the path checks
-/// and the read. The path resolves once to its canonical target, which must stay inside the
-/// canonical root, out of `.git` and (below Full) off the secret list; that target is opened without following a symlink at its
-/// last component, and the handle must be a regular file with one link whose device and inode
-/// match the target stat'ed beforehand. Returns the canonical target and the open file.
+/// Opens `path` under `root` for a remote read. The canonical target must stay inside the
+/// canonical root, out of `.git` and (below Full) off the secret list. The final component is
+/// opened without following symlinks. The handle must be a regular file with one link and the
+/// same identity as the target checked beforehand. Returns the canonical target and the open file.
 fn open_checked(root: &Path, path: &str, full: bool, not_regular: &str) -> Result<(PathBuf, std::fs::File)> {
     let base = root.canonicalize().map_err(|e| e.to_string())?;
     let target = root.join(path).canonicalize().map_err(|e| e.to_string())?;
@@ -547,15 +545,21 @@ fn open_checked(root: &Path, path: &str, full: bool, not_regular: &str) -> Resul
     if !full && (is_secret_path(Path::new(path)) || is_secret_path(&target)) {
         return Err(SECRET_REFUSED.into());
     }
+    let file = open_checked_target(&target, not_regular)?;
+    Ok((target, file))
+}
+
+#[cfg(unix)]
+fn open_checked_target(target: &Path, not_regular: &str) -> Result<std::fs::File> {
     // Before opening: opening a FIFO blocks until a writer appears, and a device never ends.
-    let checked = std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?;
+    let checked = std::fs::symlink_metadata(target).map_err(|e| e.to_string())?;
     if !checked.is_file() {
         return Err(not_regular.into());
     }
     if link_count(&checked) > 1 {
         return Err(HARD_LINK_REFUSED.into());
     }
-    let file = open_no_follow(&target).map_err(|_| FILE_CHANGED.to_owned())?;
+    let file = open_no_follow(target).map_err(|_| FILE_CHANGED.to_owned())?;
     let opened = file.metadata().map_err(|e| e.to_string())?;
     if !opened.is_file() {
         return Err(not_regular.into());
@@ -566,23 +570,84 @@ fn open_checked(root: &Path, path: &str, full: bool, not_regular: &str) -> Resul
     if !same_file(&opened, &checked) {
         return Err(FILE_CHANGED.into());
     }
-    Ok((target, file))
+    Ok(file)
 }
 
-/// Opens without following a symlink at the last component, and without blocking on a FIFO.
+#[cfg(windows)]
+fn open_checked_target(target: &Path, not_regular: &str) -> Result<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let checked = std::fs::OpenOptions::new()
+        .access_mode(0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+        .open(target)
+        .map_err(|e| e.to_string())?;
+    let checked_info = windows_regular_file_info(&checked).map_err(|_| not_regular.to_owned())?;
+    if checked_info.links > 1 {
+        return Err(HARD_LINK_REFUSED.into());
+    }
+
+    let file = open_no_follow(target).map_err(|_| FILE_CHANGED.to_owned())?;
+    let opened_info = windows_regular_file_info(&file).map_err(|_| FILE_CHANGED.to_owned())?;
+    if opened_info.links > 1 {
+        return Err(HARD_LINK_REFUSED.into());
+    }
+    if (
+        opened_info.volume_serial,
+        opened_info.index_high,
+        opened_info.index_low,
+    ) != (
+        checked_info.volume_serial,
+        checked_info.index_high,
+        checked_info.index_low,
+    ) {
+        return Err(FILE_CHANGED.into());
+    }
+    Ok(file)
+}
+
+/// Opens without following a symlink at the last component or blocking on a Unix FIFO.
 fn open_no_follow(path: &Path) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         std::fs::OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
-        std::fs::File::open(path)
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        };
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
+            .open(path)?;
+        windows_regular_file_info(&file)?;
+        Ok(file)
     }
+}
+
+#[cfg(windows)]
+fn windows_regular_file_info(
+    file: &std::fs::File,
+) -> std::io::Result<crate::workspace::WindowsFileInfo> {
+    use windows::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let info = crate::workspace::windows_file_info(file)
+        .ok_or_else(|| std::io::Error::other("Could not inspect the opened file"))?;
+    if info.attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT).0 != 0 {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    Ok(info)
 }
 
 #[cfg(unix)]
@@ -590,21 +655,11 @@ fn link_count(meta: &std::fs::Metadata) -> u64 {
     use std::os::unix::fs::MetadataExt;
     meta.nlink()
 }
-#[cfg(not(unix))]
-fn link_count(_meta: &std::fs::Metadata) -> u64 {
-    1
-}
-
 #[cfg(unix)]
 fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     a.dev() == b.dev() && a.ino() == b.ino()
 }
-#[cfg(not(unix))]
-fn same_file(_a: &std::fs::Metadata, _b: &std::fs::Metadata) -> bool {
-    true
-}
-
 /// Reads up to `limit` bytes from the handle; None when the file is (or grew) larger.
 fn read_bounded(file: std::fs::File, limit: u64) -> Result<Option<Vec<u8>>> {
     use std::io::Read as _;
@@ -1143,7 +1198,6 @@ mod tests {
 
     /// Round 12: a hard link to a file outside the project (say `~/.ssh/id_rsa`) carries no
     /// secret name and no symlink, so remote reads and writes refuse any linked file.
-    #[cfg(unix)]
     #[test]
     fn hard_linked_files_are_refused_for_reads_and_writes() {
         let dir = std::env::temp_dir().join(format!("pandacode-files-hardlink-{}", uuid::Uuid::new_v4().simple()));
@@ -1152,19 +1206,37 @@ mod tests {
         std::fs::create_dir_all(&outside).unwrap();
         std::fs::write(outside.join("id_rsa"), "PRIVATE KEY").unwrap();
         std::fs::hard_link(outside.join("id_rsa"), dir.join("notes.txt")).unwrap();
+        std::fs::hard_link(outside.join("id_rsa"), dir.join("notes.png")).unwrap();
         std::fs::write(dir.join("plain.txt"), "hello").unwrap();
+        #[cfg(unix)]
         std::os::unix::fs::symlink(dir.join("notes.txt"), dir.join("via-link.txt")).unwrap();
         // The readers compare canonical paths (macOS temp dirs sit behind /var -> /private/var).
         let dir = dir.canonicalize().unwrap();
         assert_eq!(refuse_hard_link(&dir, "notes.txt").unwrap_err(), HARD_LINK_REFUSED);
+        #[cfg(unix)]
         assert_eq!(refuse_hard_link(&dir, "via-link.txt").unwrap_err(), HARD_LINK_REFUSED, "a symlink to a linked file too");
         assert!(refuse_hard_link(&dir, "plain.txt").is_ok());
         assert!(refuse_hard_link(&dir, "missing.txt").is_ok(), "left to the reader's error");
         assert!(refuse_hard_link(&dir, ".").is_ok(), "folders have many links; only files are refused");
+        assert!(crate::workspace::hard_linked(&dir.join("notes.txt")));
+        assert!(!crate::workspace::hard_linked(&dir.join("plain.txt")));
+        assert_eq!(
+            read_text_checked(&dir, "notes.txt", true).unwrap_err(),
+            HARD_LINK_REFUSED
+        );
+        assert_eq!(
+            image_data_url_checked(&dir, "notes.png", true).unwrap_err(),
+            HARD_LINK_REFUSED
+        );
+        assert_eq!(read_text_checked(&dir, "plain.txt", true).unwrap(), "hello");
+        assert_eq!(
+            read_text_checked(&dir, ".", true).unwrap_err(),
+            TEXT_NOT_REGULAR
+        );
         let hash = content_hash("PRIVATE KEY");
         assert_eq!(write_text(&dir, "notes.txt", "changed", &hash).unwrap_err(), HARD_LINK_REFUSED);
         assert_eq!(std::fs::read_to_string(outside.join("id_rsa")).unwrap(), "PRIVATE KEY", "nothing written");
-        write_text(&dir, "plain.txt", "changed", &content_hash("hello")).unwrap();
+        write_text(&dir, "plain.txt", "PRIVATE sample", &content_hash("hello")).unwrap();
         let source = include_str!("files.rs");
         for method in ["impl Run for Read", "fn checked_image_data_url"] {
             let body = &source[source.find(method).unwrap()..];
@@ -1174,7 +1246,8 @@ mod tests {
         }
         // files.grep: a hard link named notes.txt pointing outside the project is never returned.
         let found = crate::workspace::search_text_for_phone(&dir, "PRIVATE", true, false, false).unwrap();
-        assert!(found.files.iter().all(|file| file.path != "notes.txt" && file.path != "via-link.txt"), "{:?}", found.files.iter().map(|f| &f.path).collect::<Vec<_>>());
+        let paths: Vec<_> = found.files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["plain.txt"]);
         let grep = &source[source.find("impl Run for Grep").unwrap()..];
         assert!(grep[..grep.find("\n}\n").unwrap()].contains("search_text_for_phone("), "files.grep searches as a phone");
         let _ = std::fs::remove_dir_all(dir);

@@ -173,21 +173,21 @@ impl Snapshot {
             return Ok(true);
         };
         let invalidated = match std::fs::remove_file(&self.path) {
-            Ok(()) => sync_parent_dir(&self.path).map_err(|sync_err| {
-                std::io::Error::other(format!("{write_err}; could not sync session state directory after unlink: {sync_err}"))
-            }),
-            Err(remove_err) if remove_err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(remove_err) => std::fs::OpenOptions::new()
+            Err(remove_err) if remove_err.kind() != std::io::ErrorKind::NotFound => std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)
                 .open(&self.path)
                 .and_then(|file| file.sync_all())
-                .and_then(|()| sync_parent_dir(&self.path))
+                .and_then(|()| sync_parent_dir(&self.path, false))
                 .map_err(|trunc_err| {
                     std::io::Error::other(format!(
                         "{write_err}; could not invalidate stale session state (remove: {remove_err}; truncate: {trunc_err})"
                     ))
                 }),
+            // A previous attempt may have unlinked the file without syncing the directory.
+            removed => sync_parent_dir(&self.path, removed.is_err()).map_err(|sync_err| {
+                std::io::Error::other(format!("{write_err}; could not sync session state directory after unlink: {sync_err}"))
+            }),
         };
         written.durable = invalidated.is_ok();
         invalidated.map(|()| false)
@@ -403,18 +403,22 @@ fn temp_path(path: &Path) -> PathBuf {
 }
 
 #[cfg(unix)]
-fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
+fn sync_parent_dir(path: &Path, allow_missing: bool) -> std::io::Result<()> {
+    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+    let dir = match std::fs::File::open(dir) {
+        Ok(dir) => dir,
+        Err(error) if allow_missing && error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
     #[cfg(test)]
     if tests::take_parent_sync_failure(path) {
         return Err(std::io::Error::other("injected parent directory sync failure"));
     }
-    let dir = path.parent().filter(|dir| !dir.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    std::fs::File::open(dir)?.sync_all()
+    dir.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
-    let _ = path;
+fn sync_parent_dir(_: &Path, _: bool) -> std::io::Result<()> {
     Ok(())
 }
 
@@ -437,7 +441,7 @@ fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     written.and_then(|()| std::fs::rename(&temp, path)).inspect_err(|_| {
         let _ = std::fs::remove_file(&temp);
     })?;
-    sync_parent_dir(path)
+    sync_parent_dir(path, false)
 }
 
 /// The state with its background writer.

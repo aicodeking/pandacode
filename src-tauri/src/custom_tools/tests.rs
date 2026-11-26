@@ -367,6 +367,35 @@ fn in_flight_project_tool_moved_via_global_to_another_project_keeps_its_stats() 
     assert!(store::read_stats(&global).is_empty());
 }
 
+#[cfg(unix)]
+#[test]
+fn in_flight_stats_lookup_continues_past_an_unreadable_project() {
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let base = temp();
+    let global = store::scope_dir(&base.0, None).unwrap();
+    let projects = base.0.join("projects");
+    std::fs::create_dir_all(projects.join("p1")).unwrap();
+    std::fs::create_dir(projects.join("p2")).unwrap();
+    // Make the first entry unreadable regardless of the filesystem's iteration order.
+    let mut entries = std::fs::read_dir(projects).unwrap();
+    let unreadable = entries.next().unwrap().unwrap().path();
+    let target = entries.next().unwrap().unwrap().path();
+
+    let name = "deploy-it";
+    let original = save(&global, draft(name, "echo global", Vec::new()), author("s"), 1).unwrap();
+    store::move_tool(&global, &target, name).unwrap();
+    let _restore_mode = RestoreMode::set(unreadable, 0o000, 0o755);
+    let record = || store::record_for_tool(&base.0, "source", Scope::Global, &original, "s", Some(0), 2);
+
+    assert_eq!(record(), Ok(true));
+    assert_eq!(store::read_stats(&target)[name].uses, 1);
+    store::delete(&target, name).unwrap();
+    let error = record().unwrap_err();
+    assert!(error.starts_with("Could not read the tool folder: "), "{error}");
+}
+
 #[test]
 fn in_flight_stats_skip_a_deleted_tool_and_its_same_name_replacement() {
     let base = temp();

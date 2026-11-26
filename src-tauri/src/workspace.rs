@@ -1373,11 +1373,55 @@ pub fn hard_linked(path: &Path) -> bool {
         use std::os::unix::fs::MetadataExt as _;
         fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.nlink() > 1)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::{
+            FILE_ATTRIBUTE_DIRECTORY, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+
+        fs::OpenOptions::new()
+            .access_mode(0)
+            .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+            .open(path)
+            .ok()
+            .and_then(|file| windows_file_info(&file))
+            .is_some_and(|info| info.attributes & FILE_ATTRIBUTE_DIRECTORY.0 == 0 && info.links > 1)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = path;
         false
     }
+}
+
+#[cfg(windows)]
+pub(crate) struct WindowsFileInfo {
+    pub attributes: u32,
+    pub volume_serial: u32,
+    pub index_high: u32,
+    pub index_low: u32,
+    pub links: u32,
+}
+
+#[cfg(windows)]
+pub(crate) fn windows_file_info(file: &File) -> Option<WindowsFileInfo> {
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION},
+    };
+
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the file owns the handle, and info points to writable storage of the required size.
+    unsafe { GetFileInformationByHandle(HANDLE(file.as_raw_handle()), &mut info) }.ok()?;
+    Some(WindowsFileInfo {
+        attributes: info.dwFileAttributes,
+        volume_serial: info.dwVolumeSerialNumber,
+        index_high: info.nFileIndexHigh,
+        index_low: info.nFileIndexLow,
+        links: info.nNumberOfLinks,
+    })
 }
 
 /// The changed tracked files of a diff (`--name-only --no-renames`, so both sides of a rename)
@@ -2023,23 +2067,100 @@ impl WorktreeEntry {
 }
 
 fn worktree_entries(gate: &Gate, root: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    const LIMIT: usize = 256 * 1024;
     // NUL records preserve paths containing newlines and avoid Git's quoting.
-    let output = checked(gate.git(root, &["worktree", "list", "--porcelain", "-z"], 256 * 1024)?)?;
+    let output = gate.git(root, &["worktree", "list", "--porcelain", "-z"], LIMIT)?;
+    let legacy = !output.status.success() && is_worktree_list_z_unsupported(&output.stderr.bytes);
+    let output = checked(if legacy {
+        gate.git(root, &["worktree", "list", "--porcelain"], LIMIT)?
+    } else {
+        output
+    })?;
     if output.truncated {
         return Err("The Git worktree list is too large to read safely.".into());
     }
+    if legacy {
+        parse_worktree_porcelain_lines(&output.bytes)
+    } else {
+        parse_worktree_porcelain_z(&output.bytes)
+    }
+}
+
+fn is_worktree_list_z_unsupported(stderr: &[u8]) -> bool {
+    String::from_utf8_lossy(stderr)
+        .to_ascii_lowercase()
+        .lines()
+        .any(|line| {
+            let line = line.trim_start();
+            if line == "usage: git worktree list" || line.starts_with("usage: git worktree list ") {
+                return true;
+            }
+            let error = line.strip_prefix("error: ").unwrap_or(line);
+            error
+                .strip_prefix("unknown switch ")
+                .or_else(|| error.strip_prefix("unknown option "))
+                .and_then(|option| option.split_ascii_whitespace().next())
+                .is_some_and(|option| matches!(option.trim_matches(['\'', '"', '`']), "z" | "-z"))
+        })
+}
+
+fn parse_worktree_porcelain_z(bytes: &[u8]) -> Result<Vec<WorktreeEntry>, String> {
+    parse_worktree_porcelain(bytes.split(|&byte| byte == 0), false)
+}
+
+fn parse_worktree_porcelain_lines(bytes: &[u8]) -> Result<Vec<WorktreeEntry>, String> {
+    let crlf = bytes.ends_with(b"\r\n");
+    let lines = bytes.split(|&byte| byte == b'\n').map(|line| {
+        if crlf {
+            line.strip_suffix(b"\r").unwrap_or(line)
+        } else {
+            line
+        }
+    });
+    parse_worktree_porcelain(lines, true)
+}
+
+fn parse_worktree_porcelain<'a>(
+    mut lines: impl Iterator<Item = &'a [u8]>,
+    line_oriented: bool,
+) -> Result<Vec<WorktreeEntry>, String> {
+    const MALFORMED: &str = "Malformed Git worktree list.";
     let mut entries = Vec::new();
-    for line in output.bytes.split(|byte| *byte == 0) {
-        if let Some(listed) = line.strip_prefix(b"worktree ") {
-            #[cfg(unix)]
-            let path = {
-                use std::os::unix::ffi::OsStrExt;
-                PathBuf::from(std::ffi::OsStr::from_bytes(listed))
-            };
-            #[cfg(not(unix))]
-            let path = PathBuf::from(std::str::from_utf8(listed).map_err(|_| "Worktree path is not UTF-8")?);
-            entries.push(WorktreeEntry { path, branch: None, prunable: false });
-        } else if let Some(entry) = entries.last_mut() {
+    while let Some(line) = lines.find(|line| !line.is_empty()) {
+        let listed = line.strip_prefix(b"worktree ").ok_or(MALFORMED)?;
+        let decoded;
+        let listed = if line_oriented && listed.starts_with(b"\"") {
+            decoded = unquote_worktree_path(listed)?;
+            decoded.as_slice()
+        } else {
+            listed
+        };
+        if listed.is_empty() || listed.contains(&0) {
+            return Err(MALFORMED.into());
+        }
+        #[cfg(unix)]
+        let path = {
+            use std::os::unix::ffi::OsStrExt;
+            PathBuf::from(std::ffi::OsStr::from_bytes(listed))
+        };
+        #[cfg(not(unix))]
+        let path =
+            PathBuf::from(std::str::from_utf8(listed).map_err(|_| "Worktree path is not UTF-8")?);
+        let mut entry = WorktreeEntry {
+            path,
+            branch: None,
+            prunable: false,
+        };
+        let mut fields = lines.by_ref().take_while(|line| !line.is_empty());
+        // Older Git emits paths verbatim; reject a newline that looks like an unexpected field.
+        if line_oriented
+            && !fields
+                .next()
+                .is_some_and(|line| line == b"bare" || line.starts_with(b"HEAD "))
+        {
+            return Err(MALFORMED.into());
+        }
+        for line in fields {
             if let Some(reference) = line.strip_prefix(b"branch ") {
                 let reference = String::from_utf8_lossy(reference);
                 entry.branch = Some(
@@ -2048,12 +2169,59 @@ fn worktree_entries(gate: &Gate, root: &Path) -> Result<Vec<WorktreeEntry>, Stri
                         .unwrap_or(&reference)
                         .to_string(),
                 );
-            } else if line.starts_with(b"prunable") {
+            } else if line == b"prunable" || line.starts_with(b"prunable ") {
                 entry.prunable = true;
+            } else if line_oriented
+                && line != b"detached"
+                && line != b"locked"
+                && !line.starts_with(b"locked ")
+            {
+                return Err(MALFORMED.into());
             }
         }
+        entries.push(entry);
     }
     Ok(entries)
+}
+
+fn unquote_worktree_path(path: &[u8]) -> Result<Vec<u8>, &'static str> {
+    const MALFORMED: &str = "Malformed quoted path in the Git worktree list.";
+    let quoted = path
+        .strip_prefix(b"\"")
+        .and_then(|path| path.strip_suffix(b"\""))
+        .ok_or(MALFORMED)?;
+    let mut bytes = quoted.iter().copied();
+    let mut path = Vec::with_capacity(quoted.len());
+    while let Some(byte) = bytes.next() {
+        let byte = match byte {
+            b'"' => return Err(MALFORMED),
+            b'\\' => match bytes.next().ok_or(MALFORMED)? {
+                byte @ (b'"' | b'\\') => byte,
+                b'a' => 0x07,
+                b'b' => 0x08,
+                b't' => b'\t',
+                b'n' => b'\n',
+                b'v' => 0x0b,
+                b'f' => 0x0c,
+                b'r' => b'\r',
+                first @ b'0'..=b'3' => {
+                    let mut value = first - b'0';
+                    for _ in 0..2 {
+                        let digit = bytes
+                            .next()
+                            .filter(|digit| (b'0'..=b'7').contains(digit))
+                            .ok_or(MALFORMED)?;
+                        value = value * 8 + (digit - b'0');
+                    }
+                    value
+                }
+                _ => return Err(MALFORMED),
+            },
+            byte => byte,
+        };
+        path.push(byte);
+    }
+    Ok(path)
 }
 
 /// The registered entry for a checkout, including one whose folder is gone.
@@ -2259,7 +2427,8 @@ pub fn remove_worktree_for(
         if entries.iter().any(|entry| {
             crate::path_match::path_in_folder(&entry.path, path, &path_resolved)
                 && crate::path_match::resolve_path(&entry.path) != path_resolved
-        }) {
+        }) || contains_nested_linked_worktree(path)?
+        {
             return Err("This worktree contains a nested linked worktree. Remove it first.".into());
         }
         let path_text = git_path(path).to_str().ok_or("Worktree path is not UTF-8")?;
@@ -2285,6 +2454,48 @@ pub fn remove_worktree_for(
         branch_deleted,
         note,
     })
+}
+
+/// The Git registry only sees linked worktrees of the same repository.
+fn contains_nested_linked_worktree(root: &Path) -> Result<bool, String> {
+    let inspect_error = |path: &Path, error: &dyn std::fmt::Display| {
+        format!(
+            "Could not inspect {} for nested worktrees: {error}",
+            path.display()
+        )
+    };
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        if dir != root {
+            let gitfile = dir.join(".git");
+            match fs::symlink_metadata(&gitfile) {
+                Ok(meta) => {
+                    if crate::claude_roots::is_linked_worktree_root(&dir) {
+                        return Ok(true);
+                    }
+                    if meta.is_file() {
+                        crate::claude_roots::read_git_metadata(&gitfile)
+                            .map_err(|error| inspect_error(&gitfile, &error))?;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(inspect_error(&gitfile, &error)),
+            }
+        }
+        for entry in fs::read_dir(&dir).map_err(|error| inspect_error(&dir, &error))? {
+            let entry = entry.map_err(|error| inspect_error(&dir, &error))?;
+            let kind = entry
+                .file_type()
+                .map_err(|error| inspect_error(&entry.path(), &error))?;
+            if !kind.is_symlink()
+                && kind.is_dir()
+                && !entry.file_name().eq_ignore_ascii_case(".git")
+            {
+                pending.push(entry.path());
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Check the branch out again at the same path after its folder disappeared.
@@ -3898,6 +4109,80 @@ mod tests {
     }
 
     #[test]
+    fn nul_worktree_porcelain_preserves_spaces_and_newlines() {
+        let entries = parse_worktree_porcelain_z(
+            b"worktree /tmp/repo with spaces\nsecond line\0HEAD abc\0branch refs/heads/topic\0\0",
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].path,
+            Path::new("/tmp/repo with spaces\nsecond line")
+        );
+        assert_eq!(entries[0].branch.as_deref(), Some("topic"));
+        assert!(!entries[0].prunable);
+    }
+
+    #[test]
+    fn line_worktree_porcelain_handles_crlf_and_quoted_paths() {
+        let entries = parse_worktree_porcelain_lines(
+            b"worktree /tmp/main checkout\r\nHEAD abc\r\nbranch refs/heads/main\r\n\r\n\
+              worktree \"/tmp/space \\042quote\\\"\\\\name\\t\\303\\251\\nline\"\r\nHEAD def\r\n\
+              detached\r\nprunable gitdir file points to non-existent location\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, Path::new("/tmp/main checkout"));
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert!(!entries[0].prunable);
+        assert_eq!(
+            entries[1].path,
+            Path::new("/tmp/space \"quote\"\\name\té\nline")
+        );
+        assert_eq!(entries[1].branch, None);
+        assert!(entries[1].prunable);
+
+        for malformed in [
+            r#"worktree "/tmp/missing end"#,
+            r#"worktree "/tmp/extra"tail"#,
+            r#"worktree "/tmp/stray"quote""#,
+            r#"worktree "/tmp/invalid\q""#,
+            r#"worktree "/tmp/short\12""#,
+            r#"worktree "/tmp/invalid\400""#,
+        ] {
+            assert!(
+                parse_worktree_porcelain_lines(format!("{malformed}\nHEAD abc\n\n").as_bytes())
+                    .is_err(),
+                "{malformed}"
+            );
+        }
+        assert!(parse_worktree_porcelain_lines(
+            b"worktree /tmp/unquoted\nextra path line\nHEAD abc\n\n"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn fallback_only_for_unsupported_worktree_list_z() {
+        assert!(is_worktree_list_z_unsupported(
+            b"error: unknown switch 'z'\nusage: git worktree list [<options>]"
+        ));
+        assert!(is_worktree_list_z_unsupported(
+            b"ERROR: UNKNOWN OPTION '-Z'"
+        ));
+        assert!(is_worktree_list_z_unsupported(b"usage: git worktree list"));
+        assert!(!is_worktree_list_z_unsupported(
+            b"fatal: not a git repository"
+        ));
+        assert!(!is_worktree_list_z_unsupported(
+            b"error: unknown switch 'f'"
+        ));
+        assert!(!is_worktree_list_z_unsupported(
+            b"error: unknown option '-zz'"
+        ));
+    }
+
+    #[test]
     fn removal_refuses_an_ignored_nested_linked_worktree() {
         let f = Fixture::new(true);
         fs::write(f.root.join(".gitignore"), ".claude/worktrees/\n").unwrap();
@@ -3913,6 +4198,47 @@ mod tests {
         let error = remove_worktree_for(&f.root, &outer.path, None, false, Trust::Desktop).unwrap_err();
         assert_eq!(error, "This worktree contains a nested linked worktree. Remove it first.");
         assert_eq!(fs::read_to_string(untracked).unwrap(), "unsaved");
+    }
+
+    #[test]
+    fn removal_refuses_a_foreign_nested_linked_worktree() {
+        let repo_a = Fixture::new(true);
+        let repo_b = Fixture::new(true);
+        fs::write(repo_a.root.join(".gitignore"), "ignored/\n").unwrap();
+        repo_a.git(&["add", ".gitignore"]);
+        repo_a.git(&[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-m",
+            "Ignore nested worktrees",
+        ]);
+        let wt_a = create_worktree_with(&repo_a.root, "outer", None, false).unwrap();
+        let foreign = wt_a.path.join("ignored/foreign_wt");
+        repo_b.git(&[
+            "worktree",
+            "add",
+            "--detach",
+            git_path(&foreign).to_str().unwrap(),
+            "HEAD",
+        ]);
+        let unsaved = foreign.join("unsaved.txt");
+        fs::write(&unsaved, "unsaved in the foreign worktree\n").unwrap();
+        assert!(
+            worktree_status(&repo_a.root, &wt_a.path, None, Trust::Desktop)
+                .unwrap()
+                .clean
+        );
+
+        let error = remove_worktree(&repo_a.root, &wt_a.path, None, false).unwrap_err();
+        assert_eq!(
+            error,
+            "This worktree contains a nested linked worktree. Remove it first."
+        );
+        assert_eq!(
+            fs::read_to_string(unsaved).unwrap(),
+            "unsaved in the foreign worktree\n"
+        );
     }
 
     #[test]

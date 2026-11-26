@@ -2,6 +2,7 @@
 //! returns, and `await_exit` makes the next same-session launch wait for it.
 
 use super::{redact::redact_key, wait_child, BACKGROUND_EXIT_WAIT, Child, ChildStdin, ChildStdout, ProcessGroup, StderrReader, EXIT_HARD_CAP, EXIT_WAIT};
+use crate::checkout_busy::{checkout_identity, path_in_checkout_identity};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -131,15 +132,15 @@ pub(crate) async fn await_exits_in_checkout(folder: &Path) -> Result<(), String>
     wait_in(exit_registry(), folder, EXIT_HARD_CAP, true, true).await
 }
 
-/// Patient version of [`await_exits_in`]: never hurries the reap (for Turn checks), bounded by
+/// Patient version of [`await_exits_in_checkout`] for Turn checks, bounded by
 /// `EXIT_HARD_CAP`.
-pub(crate) async fn await_exits_in_patiently(folder: &Path) -> Result<(), String> {
-    wait_in(exit_registry(), folder, EXIT_HARD_CAP, false, false).await
+pub(crate) async fn await_exits_in_checkout_patiently(folder: &Path) -> Result<(), String> {
+    wait_in(exit_registry(), folder, EXIT_HARD_CAP, false, true).await
 }
 
 async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool, checkout_only: bool) -> Result<(), String> {
-    let folder = folder.to_path_buf();
     let wait = async {
+        let mut resolved = None;
         let mut waited: Vec<tokio::sync::watch::Receiver<()>> = Vec::new();
         loop {
             let snapshot: Vec<(String, PathBuf, tokio::sync::watch::Receiver<()>)> = registry
@@ -157,23 +158,32 @@ async fn wait_in(registry: &Registry, folder: &Path, cap: Duration, hurry: bool,
             if snapshot.is_empty() {
                 return Ok::<(), String>(());
             }
-            let target = folder.clone();
-            let matching = tokio::task::spawn_blocking(move || {
-                let target_resolved = resolve_path(&target);
-                snapshot
+            let target = folder.to_path_buf();
+            let previous = resolved.take();
+            let (target_resolved, matching) = tokio::task::spawn_blocking(move || {
+                let target_resolved = previous.unwrap_or_else(|| {
+                    if checkout_only {
+                        checkout_identity(&target)
+                    } else {
+                        resolve_path(&target)
+                    }
+                });
+                let matching = snapshot
                     .into_iter()
                     .filter(|(_, cwd, _)| {
                         if checkout_only {
-                            crate::checkout_busy::path_in_checkout_root(cwd, &target, &target_resolved)
+                            path_in_checkout_identity(cwd, &target_resolved)
                         } else {
                             path_in_folder(cwd, &target, &target_resolved)
                         }
                     })
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                (target_resolved, matching)
             })
             .await
             // Fail closed: skipping the wait could let the folder go while a process still runs in it.
             .map_err(|error| format!("Could not check exiting processes: {error}"))?;
+            resolved = Some(target_resolved);
             if matching.is_empty() {
                 return Ok(());
             }

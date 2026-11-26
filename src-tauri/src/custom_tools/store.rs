@@ -177,28 +177,52 @@ pub(super) fn record(dir: &Path, name: &str, session: &str, exit: Option<i32>, n
 pub(super) fn record_for_tool(base: &Path, project: &str, initial_scope: Scope, tool: &Tool, session: &str, exit: Option<i32>, now: i64) -> Result<bool, String> {
     let _guard = lock();
     let project_first = initial_scope == Scope::Project;
+    let mut first_error: Option<String> = None;
     for in_project in [project_first, !project_first] {
         let dir = scope_dir(base, in_project.then_some(project))?;
-        if try_load(&dir, &tool.name)?.is_some_and(|current| same_identity(&current, tool)) {
-            record_locked(&dir, &tool.name, session, exit, now)?;
-            return Ok(true);
+        match try_load(&dir, &tool.name) {
+            Ok(Some(current)) if same_identity(&current, tool) => {
+                record_locked(&dir, &tool.name, session, exit, now)?;
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
         }
     }
-    for entry in read_entries(&base.join("projects"))? {
+    let entries = match read_entries(&base.join("projects")) {
+        Ok(entries) => entries,
+        Err(error) => return Err(first_error.unwrap_or(error)),
+    };
+    for entry in entries {
         let name = entry.file_name();
         if !name.to_str().is_some_and(|id| id != project && valid_project_id(id)) {
             continue;
         }
-        if !entry.file_type().map_err(|e| format!("Could not read the tool folder: {e}"))?.is_dir() {
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                first_error.get_or_insert_with(|| format!("Could not read the tool folder: {error}"));
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
             continue;
         }
         let dir = entry.path();
-        if try_load(&dir, &tool.name)?.is_some_and(|current| same_identity(&current, tool)) {
-            record_locked(&dir, &tool.name, session, exit, now)?;
-            return Ok(true);
+        match try_load(&dir, &tool.name) {
+            Ok(Some(current)) if same_identity(&current, tool) => {
+                record_locked(&dir, &tool.name, session, exit, now)?;
+                return Ok(true);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
         }
     }
-    Ok(false)
+    first_error.map_or(Ok(false), Err)
 }
 
 fn record_locked(dir: &Path, name: &str, session: &str, exit: Option<i32>, now: i64) -> Result<(), String> {

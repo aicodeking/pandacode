@@ -107,7 +107,7 @@ async fn turn_report_after_exit_with(
     let exit = async move {
         let wait = async {
             crate::providers::await_exit_patiently(&session).await?;
-            crate::providers::await_exits_in_patiently(&wait_root).await
+            crate::providers::await_exits_in_checkout_patiently(&wait_root).await
         };
         tokio::time::timeout(crate::providers::EXIT_HARD_CAP, wait)
             .await
@@ -379,37 +379,37 @@ mod exit_wait_tests {
 
     #[tokio::test]
     async fn turn_report_after_exit_waits_for_sibling_pending_exit_in_same_root() {
-        let base = std::env::temp_dir().join(format!("pandacode-checks-sibling-{}", uuid::Uuid::new_v4().simple()));
-        let root = base.join("repo");
-        let elsewhere = base.join("other");
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::create_dir_all(&elsewhere).unwrap();
-
+        let checkout = crate::checkout_busy::test_support::Checkout::new();
         let self_id = format!("checks-self-{}", uuid::Uuid::new_v4().simple());
         let sibling_id = format!("checks-sibling-{}", uuid::Uuid::new_v4().simple());
         let other_id = format!("checks-other-{}", uuid::Uuid::new_v4().simple());
 
-        let hold_other = crate::providers::hold_exit_in_cwd_for_test(&other_id, elsewhere.clone());
-        let hold_sibling = crate::providers::hold_exit_in_cwd_for_test(&sibling_id, root.join("."));
+        let hold_other =
+            crate::providers::hold_exit_in_cwd_for_test(&other_id, checkout.nested.clone());
+        let hold_sibling =
+            crate::providers::hold_exit_in_cwd_for_test(&sibling_id, checkout.pkg_b.clone());
 
         let waiting = tokio::spawn({
-            let self_id = self_id.clone();
-            let root = root.clone();
+            let root = checkout.pkg_a.clone();
             async move { turn_report_after_exit(&self_id, root).await }
         });
         tokio::time::sleep(Duration::from_millis(80)).await;
-        assert!(!waiting.is_finished(), "checks must wait while a sibling exit is pending in the same checkout");
+        let waited_for_sibling = !waiting.is_finished();
 
         drop(hold_sibling);
-        let report = tokio::time::timeout(Duration::from_secs(2), waiting)
-            .await
+        let report = tokio::time::timeout(Duration::from_secs(2), waiting).await;
+        drop(hold_other);
+        for id in [&sibling_id, &other_id] {
+            crate::providers::await_exit(id).await.unwrap();
+        }
+        assert!(
+            waited_for_sibling,
+            "checks must wait while a sibling exit is pending in the same checkout"
+        );
+        let report = report
             .expect("checks should run once the sibling exit clears")
             .unwrap();
         assert_eq!(report["checked"], false);
         assert!(report["reason"].as_str().unwrap().contains("no fast check"));
-
-        drop(hold_other);
-        crate::providers::await_exit(&other_id).await.unwrap();
-        let _ = std::fs::remove_dir_all(base);
     }
 }

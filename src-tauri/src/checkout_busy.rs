@@ -186,26 +186,48 @@ fn session_checkout_root(store: &Store, session_id: &str) -> Option<PathBuf> {
     store.project(&task.project_id).ok().map(|project| PathBuf::from(project.path))
 }
 
-/// Whether any of `others` is `root` or lies inside it (an agent working in a subfolder of the
-/// checkout), literally or once both resolve through `path_match::resolve_path`, which also
-/// matches a deleted folder recorded under its symlinked or canonical spelling. The same matcher
-/// as folder-scoped spare discard and `await_exits_in`, except that a path inside a linked
-/// worktree nested below `root` (one under `root/.claude/worktrees`) is that worktree's.
+/// Existing Git paths share the identity of their checkout root. Keep missing paths at their
+/// own canonical spelling so a deleted worktree never inherits the parent repository's identity.
+pub(crate) fn checkout_identity(path: &Path) -> PathBuf {
+    let resolved = resolve_path(path);
+    if !resolved.exists() {
+        return resolved;
+    }
+    crate::claude_roots::git_checkout_root(&resolved).map_or(resolved, |root| resolve_path(&root))
+}
+
+/// Whether any of `others` can be working in the same checkout as `root`.
 pub(crate) fn any_same_checkout(root: &Path, others: &[PathBuf]) -> bool {
-    let root_resolved = resolve_path(root);
-    others.iter().any(|other| path_in_checkout_root(other, root, &root_resolved))
+    if others.is_empty() {
+        return false;
+    }
+    let root_id = checkout_identity(root);
+    others
+        .iter()
+        .any(|other| path_in_checkout_identity(other, &root_id))
 }
 
-pub(crate) fn path_in_checkout_root(other: &Path, root: &Path, resolved: &Path) -> bool {
-    path_in_checkout(other, root, resolved)
-}
-
-fn path_in_checkout(other: &Path, root: &Path, resolved: &Path) -> bool {
-    path_in_folder(other, root, resolved) && !in_nested_checkout(other, root, resolved)
+/// Matches activity against a precomputed checkout identity. An enclosing Git checkout can
+/// write to its submodules and vendored repositories. Independent linked worktrees stay separate.
+pub(crate) fn path_in_checkout_identity(other: &Path, root_id: &Path) -> bool {
+    if path_in_folder(other, root_id, root_id) {
+        return !in_nested_checkout(other, root_id);
+    }
+    let other_resolved = resolve_path(other);
+    if !other_resolved.exists() {
+        return false;
+    }
+    let Some(other_root) = crate::claude_roots::git_checkout_root(&other_resolved) else {
+        return false;
+    };
+    let other_id = resolve_path(&other_root);
+    path_in_folder(root_id, &other_id, &other_id) && !in_nested_checkout(root_id, &other_id)
 }
 
 fn checkout_overlaps(a: &Path, b: &Path) -> bool {
-    path_in_checkout(b, a, &resolve_path(a)) || path_in_checkout(a, b, &resolve_path(b))
+    let a_id = checkout_identity(a);
+    let b_id = checkout_identity(b);
+    path_in_checkout_identity(&b_id, &a_id) || path_in_checkout_identity(&a_id, &b_id)
 }
 
 fn folder_overlaps(a: &Path, b: &Path) -> bool {
@@ -219,13 +241,13 @@ fn folder_overlaps(a: &Path, b: &Path) -> bool {
 /// folders resolve to `root`'s checkout or none. `other` is resolved first: the checkout walk
 /// is lexical, so `root/.claude/worktrees/x/..` would otherwise pass through `x` and be taken
 /// for that worktree although it names a folder of `root`'s own checkout.
-fn in_nested_checkout(other: &Path, root: &Path, root_resolved: &Path) -> bool {
+fn in_nested_checkout(other: &Path, root_id: &Path) -> bool {
     let other_resolved = resolve_path(other);
     let Some(other_root) = crate::claude_roots::git_checkout_root(&other_resolved) else { return false };
     let other_root_resolved = resolve_path(&other_root);
-    other_root_resolved != root_resolved
-        && path_in_folder(&other_root_resolved, root, root_resolved)
-        && crate::claude_roots::git_checkout_root(root).is_some()
+    other_root_resolved != root_id
+        && other_root_resolved.starts_with(root_id)
+        && root_id.join(".git").symlink_metadata().is_ok()
         && crate::claude_roots::is_linked_worktree_root(&other_root)
 }
 
@@ -308,11 +330,16 @@ pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path
                 })
                 .collect()
         };
+        let root_id = checkout_identity(&root);
         let mut seen = std::collections::HashSet::new();
         Ok(resolved
             .into_iter()
             .filter_map(|(session_id, paths)| {
-                (any_same_checkout(&root, &paths) && seen.insert(session_id.clone())).then_some(session_id)
+                (paths
+                    .iter()
+                    .any(|path| path_in_checkout_identity(path, &root_id))
+                    && seen.insert(session_id.clone()))
+                .then_some(session_id)
             })
             .collect())
     })
@@ -320,7 +347,8 @@ pub(crate) async fn pending_exit_sessions_in_state(state: &AppState, root: &Path
 }
 
 /// Refuses checks while the checkout is active or reserved, patiently waits for exit, then reserves
-/// the checkout for the script. Sibling exits match by recorded cwd or persisted workspace root.
+/// and quiesces the checkout for the script. Sibling exits match by recorded cwd or persisted
+/// workspace root.
 pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &str, root: &Path) -> Result<Reservation> {
     const BUSY: &str = "Wait for the agent to finish first.";
     if checkout_reserved(&state.agents, root) || active_agent_in_state(state, root).await? {
@@ -328,7 +356,7 @@ pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &s
     }
     let wait = async {
         providers::await_exit_patiently(session_id).await?;
-        providers::await_exits_in_patiently(root).await?;
+        providers::await_exits_in_checkout_patiently(root).await?;
         loop {
             let sibling_ids = pending_exit_sessions_in_state(state, root).await?;
             if sibling_ids.is_empty() {
@@ -342,7 +370,12 @@ pub(crate) async fn prepare_checkout_for_checks(state: &AppState, session_id: &s
     tokio::time::timeout(providers::EXIT_HARD_CAP, wait)
         .await
         .map_err(|_| "The previous run of this conversation is still shutting down. Try again.".to_string())??;
-    reserve_idle_checkouts(state, vec![root.to_path_buf()], BUSY).await
+    let root_path = root.to_path_buf();
+    let reservation = reserve_idle_checkouts(state, vec![root_path.clone()], BUSY).await?;
+    providers::end_lingering_in_checkout(root).await;
+    providers::quiesce_spares_in_checkout(root).await?;
+    ensure_checkouts_idle(state, std::slice::from_ref(&root_path), BUSY).await?;
+    Ok(reservation)
 }
 
 /// Refuses a worktree merge while `session_id` is actively running or any OTHER session (or
@@ -421,9 +454,192 @@ pub(crate) async fn quiesce_worktree<F: std::future::Future<Output = Result<()>>
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{any_checkout_reserved, any_same_checkout, checkout_reserved, reserve_for_test, Reservation, ReservationOwner, ReservationScope, RESERVATIONS};
+pub(crate) mod test_support {
     use std::path::PathBuf;
+
+    pub(crate) struct Checkout {
+        pub(crate) root: PathBuf,
+        pub(crate) pkg_a: PathBuf,
+        pub(crate) pkg_b: PathBuf,
+        pub(crate) nested: PathBuf,
+    }
+
+    impl Checkout {
+        pub(crate) fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "pandacode-test-checkout-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            let pkg_a = root.join("pkg-a");
+            let pkg_b = root.join("pkg-b");
+            let nested = root.join(".claude/worktrees/x");
+            let admin = root.join(".git/worktrees/x");
+            for dir in [&pkg_a, &pkg_b, &nested, &admin] {
+                std::fs::create_dir_all(dir).unwrap();
+            }
+            std::fs::write(admin.join("commondir"), "../..\n").unwrap();
+            std::fs::write(nested.join(".git"), "gitdir: ../../../.git/worktrees/x\n").unwrap();
+            Self {
+                root,
+                pkg_a,
+                pkg_b,
+                nested,
+            }
+        }
+    }
+
+    impl Drop for Checkout {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::Checkout;
+    use super::{
+        active_agent_in_state, any_checkout_reserved, any_same_checkout, checkout_identity,
+        checkout_reserved, prepare_checkout_for_checks, reserve_for_test, reserve_idle_checkouts,
+        resolve_path, Reservation, ReservationOwner, ReservationScope, RESERVATIONS,
+    };
+    use crate::{providers, AppState, RunningAgent};
+    use std::{
+        path::{Path, PathBuf},
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
+
+    fn test_state() -> AppState {
+        AppState {
+            store: Arc::new(Mutex::new(
+                crate::storage::Store::open(Path::new(":memory:")).unwrap(),
+            )),
+            agents: Default::default(),
+            terminals: Default::default(),
+            shutdown: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn subfolder_checks_refuse_agents_at_the_git_root_and_sibling_project() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        for cwd in [&checkout.root, &checkout.pkg_b] {
+            let session = {
+                let store = state.store.lock().unwrap();
+                let project = store.add_project(cwd).unwrap();
+                store
+                    .create_session(&project.id, "claude", "default", "ask")
+                    .unwrap()
+            };
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            state
+                .agents
+                .lock()
+                .unwrap()
+                .insert(session.id.clone(), RunningAgent::new(tx, Arc::default()));
+
+            assert!(active_agent_in_state(&state, &checkout.pkg_a)
+                .await
+                .unwrap());
+            assert_eq!(
+                prepare_checkout_for_checks(&state, "checks", &checkout.pkg_a)
+                    .await
+                    .err()
+                    .as_deref(),
+                Some("Wait for the agent to finish first."),
+            );
+            state.agents.lock().unwrap().remove(&session.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn sibling_subfolder_reservations_conflict_but_nested_worktrees_are_independent() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let reserve =
+            |path: &Path| reserve_idle_checkouts(&state, vec![path.to_path_buf()], "busy");
+        let first = reserve(&checkout.pkg_a).await.unwrap();
+        assert!(reserve(&checkout.pkg_b).await.is_err());
+        assert!(reserve(&checkout.root).await.is_err());
+        assert!(reserve(&checkout.nested).await.is_ok());
+        drop(first);
+        assert!(reserve(&checkout.pkg_b).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn checkout_checks_and_patient_wait_skip_a_nested_linked_worktree_exit() {
+        let checkout = Checkout::new();
+        let state = test_state();
+        let session_id = format!("nested-exit-{}", uuid::Uuid::new_v4());
+        let hold = providers::hold_exit_in_cwd_for_test(&session_id, checkout.nested.clone());
+        let cap = Duration::from_secs(2);
+        let waited = tokio::time::timeout(
+            cap,
+            providers::await_exits_in_checkout_patiently(&checkout.root),
+        )
+        .await;
+        let prepared = tokio::time::timeout(
+            cap,
+            prepare_checkout_for_checks(&state, "checks", &checkout.root),
+        )
+        .await;
+        let report = if let Ok(Ok(reservation)) = prepared {
+            Some(
+                tokio::time::timeout(
+                    cap,
+                    crate::checks::turn_report_after_exit_guarded(
+                        "checks",
+                        checkout.root.clone(),
+                        reservation,
+                    ),
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        drop(hold);
+        providers::await_exit(&session_id).await.unwrap();
+
+        waited
+            .expect("patient checkout wait must skip the nested exit")
+            .unwrap();
+        let report = report
+            .expect("prepare must skip the nested exit")
+            .expect("guarded checks must skip the nested exit");
+        assert!(report["reason"].as_str().unwrap().contains("no fast check"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn subfolder_checks_reap_pooled_sibling_spares_and_preserve_nested_worktree_spares() {
+        let _serial = providers::spare_pool_test_lock().lock().await;
+        let checkout = Checkout::new();
+        let state = test_state();
+        let sibling = format!("checkout-sibling-spare-{}", uuid::Uuid::new_v4());
+        let nested = format!("checkout-nested-spare-{}", uuid::Uuid::new_v4());
+        let pid = providers::insert_spare_in_cwd_for_test(&sibling, checkout.pkg_b.clone(), false);
+        providers::insert_spare_in_cwd_for_test(&nested, checkout.nested.clone(), true);
+
+        let reservation = prepare_checkout_for_checks(&state, "checks", &checkout.pkg_a).await;
+        let sibling_reaped =
+            !providers::has_spare_for_test(&sibling) && providers::process_gone_for_test(pid);
+        let nested_pooled = providers::has_spare_for_test(&nested);
+        providers::quiesce(&sibling).await.unwrap();
+        providers::quiesce(&nested).await.unwrap();
+
+        let _reservation = reservation.unwrap();
+        assert!(
+            sibling_reaped,
+            "the sibling spare must exit before checks can start"
+        );
+        assert!(
+            nested_pooled,
+            "the nested worktree's spare belongs to another checkout"
+        );
+    }
 
     #[test]
     fn global_reservation_lookup_covers_every_owner_until_release() {
@@ -498,6 +714,8 @@ mod tests {
         // Without its `.git` (mid-recreation) the folder is just part of the main checkout again.
         std::fs::remove_file(nested.join(".git")).unwrap();
         assert!(any_same_checkout(&main, std::slice::from_ref(&nested)));
+        std::fs::remove_dir_all(&nested).unwrap();
+        assert_eq!(checkout_identity(&nested), resolve_path(&nested));
         let _ = std::fs::remove_dir_all(base);
     }
 
@@ -537,6 +755,11 @@ mod tests {
         assert!(any_same_checkout(&main, &[submodule.join("src")]));
         assert!(any_same_checkout(&main, std::slice::from_ref(&vendored)), "a vendored `.git` folder is part of the checkout");
         assert!(any_same_checkout(&main, &[vendored.join("src")]));
+        assert!(
+            any_same_checkout(&submodule, std::slice::from_ref(&main)),
+            "the superproject can write to the submodule"
+        );
+        assert!(any_same_checkout(&vendored, std::slice::from_ref(&main)));
         let _ = std::fs::remove_dir_all(base);
     }
 

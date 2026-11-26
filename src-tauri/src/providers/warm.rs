@@ -646,7 +646,7 @@ pub async fn quiesce_spares_in(folder: &Path) -> Result<(), String> {
     quiesce_pool_spares_in(&SPARES, folder).await
 }
 
-/// Retire spares and wait for exits in just this checkout, as required for a merge.
+/// Retire spares and wait for exits in this checkout before merging or running Turn checks.
 pub(crate) async fn quiesce_spares_in_checkout(folder: &Path) -> Result<(), String> {
     quiesce_pool_spares_in_mode(&SPARES, folder, FolderMatch::Checkout).await
 }
@@ -678,6 +678,15 @@ enum FolderMatch {
     Checkout,
 }
 
+impl FolderMatch {
+    fn resolve(self, folder: &Path) -> PathBuf {
+        match self {
+            Self::Subtree => resolve_path(folder),
+            Self::Checkout => crate::checkout_busy::checkout_identity(folder),
+        }
+    }
+}
+
 /// Pooled spares and in-flight starts (not yet cancelled) with their working directories, copied
 /// under the pool lock so filesystem lookups for folder matching run without a lock held.
 struct InFolder {
@@ -696,14 +705,10 @@ impl InFolder {
     }
 
     /// Only the entries inside `folder`. May touch the filesystem: never call it under a lock.
-    fn within(self, folder: &Path, mode: FolderMatch) -> Self {
-        if self.is_empty() {
-            return self;
-        }
-        let resolved = resolve_path(folder);
+    fn within(self, folder: &Path, resolved: &Path, mode: FolderMatch) -> Self {
         let inside = |cwd: &Path| match mode {
-            FolderMatch::Subtree => path_in_folder(cwd, folder, &resolved),
-            FolderMatch::Checkout => crate::checkout_busy::path_in_checkout_root(cwd, folder, &resolved),
+            FolderMatch::Subtree => path_in_folder(cwd, folder, resolved),
+            FolderMatch::Checkout => crate::checkout_busy::path_in_checkout_identity(cwd, resolved),
         };
         Self {
             spares: self.spares.into_iter().filter(|(_, cwd)| inside(cwd.as_path())).collect(),
@@ -712,12 +717,18 @@ impl InFolder {
     }
 
     /// `within`, on a blocking thread so the async runtime never waits on the filesystem.
-    async fn within_off_runtime(self, folder: &Path, mode: FolderMatch) -> Result<Self, String> {
+    async fn within_off_runtime(
+        self,
+        folder: &Path,
+        resolved: &Path,
+        mode: FolderMatch,
+    ) -> Result<Self, String> {
         if self.is_empty() {
             return Ok(self);
         }
         let folder = folder.to_path_buf();
-        tokio::task::spawn_blocking(move || self.within(&folder, mode))
+        let resolved = resolved.to_path_buf();
+        tokio::task::spawn_blocking(move || self.within(&folder, &resolved, mode))
             .await
             .map_err(|error| format!("Could not check this folder's warm agents: {error}"))
     }
@@ -762,12 +773,17 @@ fn discard_within(pool: &Pool, within: InFolder) -> (Vec<(String, Spare, Pending
 
 #[cfg(all(test, unix))]
 fn take_for_discard_in(pool: &Pool, folder: &Path) -> (Vec<(String, Spare, Pending)>, Vec<String>) {
-    discard_within(pool, InFolder::snapshot(pool).within(folder, FolderMatch::Subtree))
+    discard_within(
+        pool,
+        InFolder::snapshot(pool).within(folder, &resolve_path(folder), FolderMatch::Subtree),
+    )
 }
 
 #[cfg(test)]
 fn has_spare_in(pool: &Pool, folder: &Path) -> bool {
-    !InFolder::snapshot(pool).within(folder, FolderMatch::Subtree).is_empty()
+    !InFolder::snapshot(pool)
+        .within(folder, &resolve_path(folder), FolderMatch::Subtree)
+        .is_empty()
 }
 
 async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String> {
@@ -778,6 +794,10 @@ async fn quiesce_pool_spares_in(pool: &Pool, folder: &Path) -> Result<(), String
 /// wait for their exits, and look again until none is pooled or starting there.
 async fn quiesce_pool_spares_in_mode(pool: &Pool, folder: &Path, mode: FolderMatch) -> Result<(), String> {
     let wait = async {
+        let target = folder.to_path_buf();
+        let resolved = tokio::task::spawn_blocking(move || mode.resolve(&target))
+            .await
+            .map_err(|error| format!("Could not check this folder's warm agents: {error}"))?;
         loop {
             // Cross the spawn gate after reservation so a spawn that already passed its
             // reservation check has registered its pending exit before we inspect the pool.
@@ -785,7 +805,7 @@ async fn quiesce_pool_spares_in_mode(pool: &Pool, folder: &Path, mode: FolderMat
                 let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
                 InFolder::snapshot(pool)
             };
-            let within = snapshot.within_off_runtime(folder, mode).await?;
+            let within = snapshot.within_off_runtime(folder, &resolved, mode).await?;
             let (removed, affected) = {
                 let _gate = pool.spawn_gate.lock().unwrap_or_else(|e| e.into_inner());
                 discard_within(pool, within)
@@ -806,7 +826,11 @@ async fn quiesce_pool_spares_in_mode(pool: &Pool, folder: &Path, mode: FolderMat
                 // A session-wide wait could include an exit recorded in a different checkout.
                 FolderMatch::Checkout => super::exit::await_exits_in_checkout(folder).await?,
             }
-            if InFolder::snapshot(pool).within_off_runtime(folder, mode).await?.is_empty() {
+            if InFolder::snapshot(pool)
+                .within_off_runtime(folder, &resolved, mode)
+                .await?
+                .is_empty()
+            {
                 return Ok(());
             }
         }

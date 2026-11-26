@@ -267,8 +267,41 @@ fn unlink_sync_failure_is_reported_and_the_older_snapshot_stays_blocked() {
     );
     assert!(!path.exists());
     assert!(older.write().is_err());
+
+    fail_writes(&path, 2);
+    FAIL_PARENT_SYNC.lock().unwrap().insert(path.clone());
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a", "b"]));
+    assert_eq!(
+        saved.unwrap_err(),
+        "injected failure; could not sync session state directory after unlink: injected parent directory sync failure"
+    );
+    assert_eq!(failures_left(&path), 0);
+    assert!(!path.exists());
+    assert!(older.write().is_err());
+
+    fail_writes(&path, 2);
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a", "b"]));
+    assert_eq!(saved, Ok(()));
+    assert_eq!(failures_left(&path), 0);
+    older.write().unwrap();
+    assert!(!path.exists());
+
     state.lock().flush().unwrap();
     assert!(SessionState::open(path).get("task", |task| task.is_some_and(|task| task.owed && task.listed.is_none())));
+}
+
+#[test]
+fn invalidation_succeeds_when_the_parent_directory_has_never_existed() {
+    let (dir, _) = temp();
+    let path = dir.0.join("missing").join(FILE);
+    let state = Shared::open(path.clone());
+    state.pending.store(true, Ordering::Release);
+    fail_writes(&path, 2);
+
+    let ((), saved) = state.update_now_durable("task", |task| task.listed = listing(&["a"]));
+    assert_eq!(saved, Ok(()));
+    assert_eq!(failures_left(&path), 0);
+    assert!(!dir.0.join("missing").exists());
 }
 
 #[test]
