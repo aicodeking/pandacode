@@ -793,3 +793,5 @@ mod tests_messages;
 mod tests_migrations;
 #[cfg(test)]
 mod tests_sessions;
+#[cfg(test)]
+mod tests_upgrade_safety;
