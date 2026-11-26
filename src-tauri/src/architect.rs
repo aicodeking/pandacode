@@ -631,6 +631,11 @@ pub(crate) fn save(store: &Store, team: &mut TeamSnapshot) -> Result<()> {
 /// a new team has no tracker row yet and its insert trigger fills it. On failure the savepoint
 /// is rolled back, so `skip_sync=1` never outlives the save. Without a usable tracker (a newer
 /// schema that dropped or changed it) only the snapshot is written.
+///
+/// A different build on the same data folder can drop `architect_team_meta` while leaving its
+/// triggers on `architect_teams`, which makes every team write fail with "no such table". For
+/// that one error the dangling triggers are dropped, trackers are disabled for this process and
+/// the snapshot alone is retried.
 fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<()> {
     const UPSERT: &str = "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2) ON CONFLICT(session_id) DO UPDATE SET content=excluded.content";
     let db = &store.db;
@@ -639,7 +644,7 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
     if !store.team_meta_usable() {
         return upsert().map(|_| ()).map_err(sql_error);
     }
-    crate::storage::run_savepoint(db, "architect_team_save", || {
+    let saved = crate::storage::run_savepoint(db, "architect_team_save", || {
         let needs_cutoff = i64::from(team.legacy_prompt_through_id.is_none());
         db.prepare_cached("UPDATE architect_team_meta SET status=?2,valid_json=1,needs_legacy_cutoff=?3,skip_sync=1 WHERE session_id=?1")
             .and_then(|mut update| update.execute(params![team.session_id, team.status, needs_cutoff]))
@@ -654,7 +659,35 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
             return Err("The architect team metadata did not clear skip_sync.".into());
         }
         Ok(())
-    }, sql_error)
+    }, sql_error);
+    match saved {
+        Ok(()) => Ok(()),
+        Err(error) if team_meta_table_missing(&error) => {
+            // Do not recreate the table: `repair_v38_objects` rebuilds it at the next open, and
+            // creating it here would ping-pong with the build that dropped it. Dropping the three
+            // triggers is what makes the retry safe; the bare upsert still fires them.
+            store.disable_team_trackers();
+            let drops: String = crate::storage::TEAM_META_TRIGGERS
+                .iter()
+                .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
+                .collect();
+            if let Err(heal) = db.execute_batch(&drops) {
+                eprintln!("Saving team {}: dropping dangling team trackers: {heal}", team.session_id);
+                return Err(error);
+            }
+            eprintln!(
+                "Saving team {}: `architect_team_meta` is missing (another PandaCode build repaired this data folder); dropped its dangling triggers and disabled team trackers until restart: {error}",
+                team.session_id
+            );
+            upsert().map(|_| ()).map_err(sql_error)
+        }
+        Err(error) => Err(error),
+    }
+}
+/// The narrow error a mixed-version repair leaves behind: `architect_team_meta` is gone while its
+/// triggers stay on `architect_teams`. Every other failure keeps the savepoint rollback.
+fn team_meta_table_missing(error: &str) -> bool {
+    error.contains("no such table") && error.contains("architect_team_meta")
 }
 /// Brings `changed_at` and `council_status` up to date. A failed read keeps the last value, so the
 /// save itself still goes ahead.
@@ -3809,5 +3842,66 @@ mod is_active_tests {
         assert!(write < old_write, "a save no longer parses the snapshot: {write} us vs {old_write} us with the index");
         drop(store);
         let _ = std::fs::remove_dir_all(directory);
+    }
+}
+#[cfg(test)]
+mod team_meta_heal_tests {
+    use super::*;
+
+    fn config() -> TeamConfig {
+        serde_json::from_value(serde_json::json!({"workers": [], "maxParallel": 1, "maxRounds": 1, "maxAssignments": 1, "workspace": "shared", "summaryLimit": 100})).unwrap()
+    }
+
+    fn team_meta_triggers(db: &rusqlite::Connection) -> Vec<String> {
+        let mut query = db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name IN ('architect_team_meta_insert','architect_team_meta_update_clear','architect_team_meta_update_sync') ORDER BY name").unwrap();
+        query.query_map([], |row| row.get(0)).unwrap().collect::<std::result::Result<_, _>>().unwrap()
+    }
+
+    #[test]
+    fn a_team_save_heals_a_dropped_tracker_table() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        assert!(store.team_meta_usable());
+        assert_eq!(team_meta_triggers(&store.db).len(), 3, "the three triggers start out attached");
+
+        // Another build on the same data folder ran its repair: the table is gone while its
+        // triggers on architect_teams stay behind, so the bare upsert (and every team write) fails.
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+        team.status = "waiting".into();
+        team.objective = "saved after the tracker table vanished".into();
+        save(&store, &mut team).expect("the save heals the dangling triggers and persists the snapshot");
+
+        let saved = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(saved.status, "waiting");
+        assert_eq!(saved.objective, "saved after the tracker table vanished");
+        assert!(team_meta_triggers(&store.db).is_empty(), "the three dangling triggers are dropped");
+        assert!(!store.team_meta_usable(), "tracker reads fall back to the snapshots");
+        assert!(is_active(&store, &sid), "a tracker read degrades to parsing the snapshot");
+        // A later plain write no longer trips over a trigger naming the missing table.
+        let other = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        store.db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![other, r#"{"status":"ready"}"#]).unwrap();
+    }
+
+    #[test]
+    fn an_unrelated_save_failure_still_rolls_back() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        let before: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [&sid], |row| row.get(0)).unwrap();
+        store.db.execute_batch("CREATE TRIGGER reject_save BEFORE UPDATE ON architect_teams BEGIN SELECT RAISE(ABORT,'injected storage failure'); END;").unwrap();
+        team.status = "completed".into();
+        team.objective = "must not persist".into();
+        let error = save(&store, &mut team).unwrap_err();
+        assert!(error.contains("injected storage failure"), "{error}");
+        let after: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [&sid], |row| row.get(0)).unwrap();
+        assert_eq!(before, after, "an unrelated failure still rolls the snapshot back");
+        assert!(store.team_meta_usable(), "an unrelated failure leaves the tracker usable");
     }
 }

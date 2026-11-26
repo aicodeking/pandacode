@@ -1,6 +1,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -160,8 +161,12 @@ pub struct Store {
     /// Tasks this open marked `restart_interrupted` (running or waiting when the previous
     /// process ended, and not stopped by the user). The crash notice reads it.
     pub restart_interrupted: usize,
-    /// The v38 trackers runtime code may use, disabled on all newer schemas.
+    /// The v38 trackers this open may use, disabled on all newer schemas. A runtime loss of
+    /// `architect_team_meta` is tracked separately in `team_trackers_disabled`.
     trackers_usable: bool,
+    /// Set at runtime when this process finds `architect_team_meta` gone (another build's repair
+    /// on the same data folder): team reads fall back to the snapshots until the next open.
+    team_trackers_disabled: AtomicBool,
 }
 type Result<T> = std::result::Result<T, String>;
 /// The WAL size limit (64 MiB) after a reset, set by `Store::open`.
@@ -200,6 +205,14 @@ pub const SCHEMA_VERSION: i64 = 37;
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 /// The error every lookup of a task that has no row returns.
 pub(crate) const SESSION_NOT_FOUND: &str = "Conversation not found.";
+/// The `architect_teams` triggers that hard-reference `architect_team_meta`. A repair run by
+/// another PandaCode build on the same data folder can drop the table and leave these behind;
+/// `architect::write_snapshot` drops them so team saves keep working until the next open.
+pub(crate) const TEAM_META_TRIGGERS: [&str; 3] = [
+    "architect_team_meta_insert",
+    "architect_team_meta_update_clear",
+    "architect_team_meta_update_sync",
+];
 
 /// Stored paths canonicalized per launch lookup at most (`launch_project_at`).
 const LAUNCH_CANDIDATES: usize = 64;
@@ -255,11 +268,20 @@ impl Store {
             path: path.into(),
             restart_interrupted: 0,
             trackers_usable: false,
+            team_trackers_disabled: AtomicBool::new(false),
         })
     }
 
     /// Whether `architect_team_meta` (else `architect_teams`) answers team status queries.
-    pub(crate) fn team_meta_usable(&self) -> bool { self.trackers_usable }
+    pub(crate) fn team_meta_usable(&self) -> bool {
+        self.trackers_usable && !self.team_trackers_disabled.load(Ordering::Relaxed)
+    }
+
+    /// Stops this process from reading or writing `architect_team_meta`: another build's repair
+    /// dropped the table, and `repair_v38_objects` rebuilds it at the next open.
+    pub(crate) fn disable_team_trackers(&self) {
+        self.team_trackers_disabled.store(true, Ordering::Relaxed);
+    }
 
     pub(crate) fn launch_session_project(&self, sid: &str) -> Result<Option<(String, String)>> {
         self.db.query_row(
@@ -337,6 +359,7 @@ impl Store {
             path: path.to_path_buf(),
             restart_interrupted,
             trackers_usable: recovery_version <= SCHEMA_VERSION,
+            team_trackers_disabled: AtomicBool::new(false),
         };
         tracked_recovery(&store.db, recovery_version, "team library", |_| crate::architect::profiles::initialize(&store))?;
         tracked_recovery(&store.db, recovery_version, "archived tasks", |_| store.settle_archived())?;
