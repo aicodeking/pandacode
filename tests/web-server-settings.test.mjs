@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { register } from 'node:module';
 
-// web-server-settings.ts imports CSS and browser modules; stub them so its pure port validator loads in Node.
+// web-server-settings.ts imports CSS and browser modules; stub them so its pure validators load in Node.
 const hooks = `
 const STUBS = { './web-server-settings.css': '', './dom': 'export const escape = v => String(v), icon = () => "", isImeKey = () => false, morph = () => {};', './error-text': 'export const errorText = e => String(e);', './tooltip': 'export const infoMark = () => "";' };
 export async function resolve(specifier, context, next) {
@@ -14,7 +14,7 @@ export async function load(url, context, next) {
   return next(url, context);
 }`;
 register(`data:text/javascript,${encodeURIComponent(hooks)}`);
-const { parsePortInput, MAX_PORT, formatHost, isLoopbackHost, reachableSessionUrl, reachableDisplayUrl, movedSessionUrl } = await import('../src/web-server-settings.ts');
+const { parsePortInput, parseHostInput, parseAllowedHostsInput, MAX_PORT, MAX_ALLOWED_HOSTS, formatHost, isLoopbackHost, reachableSessionUrl, reachableDisplayUrl, movedSessionUrl } = await import('../src/web-server-settings.ts');
 
 test('accepts every port from 0 (automatic) to 65535', () => {
   for (const port of [0, 80, 3000, 47322, 65535]) assert.deepEqual(parsePortInput(String(port)), { ok: true, port });
@@ -110,4 +110,72 @@ test('reachableDisplayUrl follows the same rule', () => {
 test('movedSessionUrl keeps the tab\'s host on the new port', () => {
   assert.equal(movedSessionUrl(9200, 'http://127.0.0.1:9200/#token=t1', { protocol: 'http:', hostname: 'my-box.local' }), 'http://my-box.local:9200/#token=t1');
   assert.equal(movedSessionUrl(9200, 'http://[::1]:9200/#token=t1', { protocol: 'http:', hostname: '::1' }), 'http://[::1]:9200/#token=t1');
+});
+
+test('parseHostInput accepts IPv4 and IPv6 literals, bracketed or bare', () => {
+  for (const [raw, host] of [
+    ['127.0.0.1', '127.0.0.1'],
+    ['  100.101.102.103 \t', '100.101.102.103'],
+    ['0.0.0.0', '0.0.0.0'],
+    ['::1', '::1'],
+    ['[::1]', '::1'],
+    ['[2001:DB8::1]', '2001:db8::1'],
+    ['fe80::1', 'fe80::1'],
+    ['0:0:0:0:0:0:0:1', '0:0:0:0:0:0:0:1'],
+    ['::ffff:127.0.0.1', '::ffff:127.0.0.1'],
+  ]) assert.deepEqual(parseHostInput(raw), { ok: true, host }, raw);
+});
+
+test('parseHostInput treats empty input as the loopback default', () => {
+  for (const raw of ['', '   ', '\t\n']) assert.deepEqual(parseHostInput(raw), { ok: true, host: '127.0.0.1' }, JSON.stringify(raw));
+});
+
+test('parseHostInput rejects text, host names and malformed addresses', () => {
+  for (const raw of ['abc', 'localhost', '1.2.3.4.5', '[::1', '::1]', '[::1]:8080', '1.2.3.256', '127.00.0.1', '127.0.0.1:80']) {
+    const result = parseHostInput(raw);
+    assert.equal(result.ok, false, raw);
+    assert.match(result.error, /is not an IP address \(for example 127\.0\.0\.1 or ::1\)/, raw);
+  }
+});
+
+test('parseHostInput tolerates non-string input without throwing', () => {
+  for (const raw of [undefined, null, 42, {}]) assert.equal(parseHostInput(raw).ok, false, String(raw));
+});
+
+test('parseAllowedHostsInput splits on commas, spaces and newlines', () => {
+  assert.deepEqual(parseAllowedHostsInput('my-mac.tail1234.ts.net, Other-Box.tail5678.ts.net\nthird-host'), {
+    ok: true,
+    hosts: ['my-mac.tail1234.ts.net', 'other-box.tail5678.ts.net', 'third-host'],
+  });
+});
+
+test('parseAllowedHostsInput lowercases, trims and de-duplicates', () => {
+  assert.deepEqual(parseAllowedHostsInput('  A.TS.net,a.ts.net,\tB.ts.net  '), { ok: true, hosts: ['a.ts.net', 'b.ts.net'] });
+});
+
+test('parseAllowedHostsInput allows an empty list and a bracketed IPv6 literal', () => {
+  for (const raw of ['', '   ', ' , \n\t ']) assert.deepEqual(parseAllowedHostsInput(raw), { ok: true, hosts: [] }, JSON.stringify(raw));
+  assert.deepEqual(parseAllowedHostsInput('[::1]'), { ok: true, hosts: ['[::1]'] });
+});
+
+test('parseAllowedHostsInput rejects URLs, paths, userinfo and ports', () => {
+  for (const raw of ['https://my-mac.tail1234.ts.net', 'my-mac.tail1234.ts.net/path', 'my-mac.tail1234.ts.net:8080', 'user@my-mac.tail1234.ts.net', 'my-mac.tail1234.ts.net?x=1', 'my-mac.tail1234.ts.net#frag', 'my\\mac', '[::1]:8080']) {
+    const result = parseAllowedHostsInput(raw);
+    assert.equal(result.ok, false, raw);
+    assert.match(result.error, /(URL|not a host name|includes a port)/, raw);
+  }
+});
+
+test('parseAllowedHostsInput caps the list after de-duplicating', () => {
+  assert.equal(MAX_ALLOWED_HOSTS, 8);
+  const names = Array.from({ length: MAX_ALLOWED_HOSTS }, (_, index) => `host-${index}.ts.net`);
+  assert.deepEqual(parseAllowedHostsInput(names.join(', ')), { ok: true, hosts: names });
+  assert.deepEqual(parseAllowedHostsInput([...names, names[0]].join(', ')), { ok: true, hosts: names });
+  const tooMany = parseAllowedHostsInput([...names, 'one-too-many.ts.net'].join(', '));
+  assert.equal(tooMany.ok, false);
+  assert.match(tooMany.error, /at most 8 trusted host names/);
+});
+
+test('parseAllowedHostsInput tolerates non-string input without throwing', () => {
+  for (const raw of [undefined, null, 42, {}]) assert.equal(parseAllowedHostsInput(raw).ok, false, String(raw));
 });

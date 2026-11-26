@@ -65,8 +65,8 @@ pandacode serve        # requires an existing sign-in; exits non-zero if none
 pandacode serve --port 8787        # or -p 8787; 0 picks a free port
 ```
 
-serves the live PandaCode workspace over HTTP + WebSocket on `127.0.0.1:<PORT>` and prints
-its address to stdout:
+serves the live PandaCode workspace over HTTP + WebSocket on `127.0.0.1:<PORT>` by default
+and prints its address to stdout:
 
 ```text
 http://127.0.0.1:8787/#token=<token>
@@ -91,10 +91,38 @@ signed in, Connect hosting runs alongside it.
   On a private network such as Tailscale or WireGuard you can instead bind the machine's
   address on that interface (`--host 100.x.y.z`): WireGuard encrypts the traffic, and
   nothing is exposed as plain HTTP on your LAN. Avoid `--host 0.0.0.0` on untrusted
-  networks: pages, API calls and the token all travel as **unencrypted HTTP**. A generic
-  TLS reverse proxy in front of a `127.0.0.1` bind does not work: the `Host` and `Origin`
-  checks below refuse requests addressed to another host name, by design.
-  `--host` without `--port` is refused, by `serve` and by the desktop app alike.
+  networks: pages, API calls and the token all travel as **unencrypted HTTP**.
+  `--host` (and `--allowed-host`) without `--port` is refused, by `serve` and the desktop
+  app alike.
+- **The bind address persists.** **Settings → Connections → Remote access → Web access**
+  saves the chosen address next to the port in `web-server.json` (as `host`; absent means
+  `127.0.0.1`). A saved server therefore restarts on the same address, and turning Web
+  access off and on again keeps it instead of falling back to loopback. A command-line
+  `--host` or `PANDACODE_WEB_HOST` applies to that run only; the command line itself never
+  saves it, and Settings only writes an address it actually saves.
+- **Trusted host names (`--allowed-host`).** A listener normally only answers a `Host` that
+  is the bound address (or loopback); a DNS name is refused with `403`. Add the names it
+  should accept with the repeatable `--allowed-host <NAME>` flag, or the comma-separated
+  `PANDACODE_WEB_ALLOWED_HOSTS` environment variable (trimmed; empty entries ignored).
+  `--allowed-host` needs `--port`, and the environment list pairs only with
+  `PANDACODE_WEB_PORT`, exactly like `PANDACODE_WEB_HOST`. Names are bare DNS names or IP
+  literals: no scheme, port, path or wildcard, stored lowercased, at most 32. The same list
+  can be set in Settings, where it applies immediately without restarting the listener or
+  rotating the token. A trusted name never weakens anything else: it is only an *additional*
+  `Host`, the bearer token is still required on every API and WebSocket call, and a present
+  `Origin` must still match `Host` exactly.
+- **MagicDNS and Tailscale Serve.** Keep the loopback bind and put a TLS terminator in front
+  of it, then trust the name it forwards:
+
+  ```sh
+  tailscale serve --bg 8787   # HTTPS for this machine's MagicDNS name -> 127.0.0.1:8787
+  pandacode serve --port 8787 --allowed-host my-mac.tailXXXX.ts.net
+  ```
+
+  The printed link then starts with `https://my-mac.tailXXXX.ts.net:<port>`. Tailscale
+  Serve's own HTTPS endpoint is usually port 443, so open the `https://` name and drop the
+  port when Serve maps it to a different one. The same works for any reverse proxy that
+  terminates TLS and forwards to the loopback bind: add the public name as a trusted host.
 - **The URL is a credential.** Holding the token gives full control of this PandaCode
   session as the host user — starting coding agents, running terminal commands, and
   reading or editing workspace files. `serve --port` prints the full `#token=` URL to
@@ -116,11 +144,11 @@ signed in, Connect hosting runs alongside it.
   (or moves it to the new port), and its desktop window shows the outcome: a notification
   with **Copy link** and **Open** on success, or an error toast if the port could not be
   used. It also updates **Settings → Connections → Remote access → Web access**.
-  `PANDACODE_WEB_PORT` and `PANDACODE_WEB_HOST` only apply when they launch a new
-  instance. `PANDACODE_WEB_HOST` applies only together with `PANDACODE_WEB_PORT`: a
-  `--port` passed on the command line binds loopback unless `--host` is given too. The
-  browser and the
-  desktop window then show the same live session.
+  `PANDACODE_WEB_PORT`, `PANDACODE_WEB_HOST` and `PANDACODE_WEB_ALLOWED_HOSTS` only apply
+  when they launch a new instance. `PANDACODE_WEB_HOST` and `PANDACODE_WEB_ALLOWED_HOSTS`
+  apply only together with `PANDACODE_WEB_PORT`: a `--port` passed on the command line
+  binds loopback and trusts nothing unless `--host` / `--allowed-host` are given too. The
+  browser and the desktop window then show the same live session.
 
 Security:
 
@@ -140,13 +168,15 @@ Security:
 - On loopback the `Host` header must name the loopback address, which blocks DNS
   rebinding. A non-loopback bind also restricts `Host` to the bound address (on `0.0.0.0`
   or `::`, to IP literals and `localhost`), so a public domain rebound to the machine is
-  refused too. When an API or WebSocket request carries an `Origin` header, it must name
-  exactly the same host and port as `Host`. Requests without one, such as non-browser
-  clients, still need the bearer token.
+  refused too. A configured trusted name is accepted in addition, on either kind of bind,
+  but only that exact name and never without the token. When an API or WebSocket request
+  carries an `Origin` header, it must name exactly the same host and port as `Host`.
+  Requests without one, such as non-browser clients, still need the bearer token.
 - No CORS wildcard, and pages are served with a strict Content Security Policy.
 - Browser tabs can change the port, stop the server or rotate the token, but cannot change
-  its listen address (`host`) through the API. That block is defense in depth, not a
-  privilege boundary: anyone holding the token already has full control of the session,
+  its listen address (`host`) or its trusted host names through the API. Those are the
+  same class of exposure change and stay desktop-only. That block is defense in depth, not
+  a privilege boundary: anyone holding the token already has full control of the session,
   terminals and coding agents included (see above). Commands that only make sense on the host
   machine (voice input from its microphone, the embedded browser, the native clipboard,
   revealing or opening files, tray window controls) are refused over the web API.

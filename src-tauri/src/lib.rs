@@ -5434,11 +5434,11 @@ pub fn run() {
         // First, as its docs require: a second launch focuses this window instead of opening another.
         .plugin(tauri_plugin_single_instance::init(|app, args, _| {
             // `pandacode --port N` while PandaCode runs: serve the running session there.
-            match web_server::parse_cli(&args, None, None) {
+            match web_server::parse_cli(&args, None, None, None) {
                 Ok(Some(web)) => {
                     let app = app.clone();
                     tauri::async_runtime::spawn(async move {
-                        let result = web_server::start_cli(&app, web.port, web.host).await;
+                        let result = web_server::start_cli(&app, web.port, web.host, &web.allowed_hosts).await;
                         let failure = result.as_ref().err().cloned();
                         if let Some(status) = report_web_start(result, web.host) {
                             // Never the token: app events reach every subscribed WebSocket.
@@ -5488,7 +5488,7 @@ pub fn run() {
             // The local web UI binds a port only when asked: a flag, the environment, or a saved "on".
             match web_server::cli_from_env() {
                 Ok(Some(web)) => {
-                    report_web_start(web_server::start_from_cli(app.handle(), web.port, web.host), web.host);
+                    report_web_start(web_server::start_from_cli(app.handle(), web.port, web.host, &web.allowed_hosts), web.host);
                 }
                 Ok(None) => web_server::start_if_saved(app.handle()),
                 Err(error) => {

@@ -15,6 +15,8 @@ async function openWebAccess(page: Page): Promise<Locator> {
 }
 const toggleOf = (section: Locator) => section.getByRole('checkbox', { name: 'Serve in browser' });
 const portOf = (section: Locator) => section.getByRole('textbox', { name: 'Web server port' });
+const hostOf = (section: Locator) => section.getByRole('textbox', { name: 'Web server bind address' });
+const allowedHostsOf = (section: Locator) => section.getByRole('textbox', { name: 'Trusted host names' });
 
 async function turnOn(section: Locator) {
   await toggleOf(section).check();
@@ -29,7 +31,11 @@ test.describe('web access', () => {
     await expect(toggleOf(section)).not.toBeChecked();
     await expect(section).toContainText('Off · binds only to 127.0.0.1');
     await expect(portOf(section)).toHaveValue('47322');
-    await expect(section.getByRole('button', { name: 'Apply' })).toBeDisabled();
+    await expect(hostOf(section)).toHaveValue('127.0.0.1');
+    await expect(allowedHostsOf(section)).toHaveValue('');
+    await expect(section.locator('[data-web-apply]')).toBeDisabled();
+    await expect(section.locator('[data-web-apply-host]')).toBeDisabled();
+    await expect(section.locator('[data-web-apply-hosts]')).toBeDisabled();
     await expect(section.locator('.web-server-link')).toHaveCount(0);
   });
 
@@ -57,11 +63,11 @@ test.describe('web access', () => {
     const section = await openWebAccess(page);
     await turnOn(section);
     await portOf(section).fill('8080');
-    await expect(section.getByRole('button', { name: 'Apply' })).toBeEnabled();
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await expect(section.locator('[data-web-apply]')).toBeEnabled();
+    await section.locator('[data-web-apply]').click();
     await expect(section.locator('code.web-server-url')).toHaveText('http://127.0.0.1:8080');
     await expect(section.getByText('Listening on 127.0.0.1:8080')).toBeVisible();
-    await expect(section.getByRole('button', { name: 'Apply' })).toBeDisabled();
+    await expect(section.locator('[data-web-apply]')).toBeDisabled();
 
     await portOf(section).fill('3000');
     await portOf(section).press('Enter');
@@ -76,6 +82,70 @@ test.describe('web access', () => {
     await toggleOf(section).check();
     await expect(section.getByText('Listening on 127.0.0.1:9100')).toBeVisible();
     await expect(portOf(section)).toHaveValue('9100');
+  });
+
+  test('a bind address typed while off is used on the next start and survives a stop', async ({ page }) => {
+    const section = await openWebAccess(page);
+    await hostOf(section).fill('100.101.102.103');
+    await toggleOf(section).check();
+    await expect(section.getByText('Listening on 100.101.102.103:47322')).toBeVisible();
+    await expect(hostOf(section)).toHaveValue('100.101.102.103');
+    await toggleOf(section).uncheck();
+    await expect(section).toContainText('Off · binds only to 127.0.0.1');
+    await expect(hostOf(section)).toHaveValue('100.101.102.103');
+    await toggleOf(section).check();
+    await expect(section.getByText('Listening on 100.101.102.103:47322')).toBeVisible();
+  });
+
+  test('changing the bind address updates the subtitle, link and plain-HTTP warning', async ({ page }) => {
+    const section = await openWebAccess(page);
+    await turnOn(section);
+    await hostOf(section).fill('100.101.102.103');
+    await expect(section.locator('[data-web-apply-host]')).toBeEnabled();
+    await hostOf(section).press('Enter');
+    await expect(section.getByText('Listening on 100.101.102.103:47322')).toBeVisible();
+    await expect(section.locator('code.web-server-url')).toHaveText('http://100.101.102.103:47322');
+    const warn = section.locator('.web-server-note-warn');
+    await expect(warn).toContainText('Listening on 100.101.102.103 over plain HTTP');
+    await expect(warn).toContainText('unencrypted unless on a private Tailscale/WireGuard network');
+    await expect(hostOf(section)).toHaveValue('100.101.102.103');
+    await expect(section.locator('[data-web-apply-host]')).toBeDisabled();
+    await expect(hostOf(section)).toBeFocused();
+  });
+
+  test('a bad bind address shows an inline error bound to its field and clears when valid', async ({ page }) => {
+    const section = await openWebAccess(page);
+    const host = hostOf(section);
+    await host.fill('nope');
+    await section.locator('[data-web-apply-host]').click();
+    const alert = section.getByRole('alert');
+    await expect(alert).toContainText('is not an IP address (for example 127.0.0.1 or ::1)');
+    await expect(alert).toHaveAttribute('id', 'web-server-host-error');
+    await expect(host).toHaveAttribute('aria-invalid', 'true');
+    await expect(host).toHaveAttribute('aria-describedby', 'web-server-host-error');
+    await expect(host).toHaveAccessibleDescription(/is not an IP address/);
+    const border = await host.evaluate(el => getComputedStyle(el).borderTopColor);
+    await host.fill('100.101.102.103');
+    await expect(alert).toHaveCount(0);
+    await expect(host).not.toHaveAttribute('aria-invalid', /.*/);
+    await expect(host).not.toHaveAttribute('aria-describedby', /.*/);
+    expect(await host.evaluate(el => getComputedStyle(el).borderTopColor)).not.toBe(border);
+  });
+
+  test('trusted host names switch the link to https and add a note that the token is still needed', async ({ page }) => {
+    const section = await openWebAccess(page);
+    await turnOn(section);
+    const names = allowedHostsOf(section);
+    await names.fill('My-Mac.Tail1234.ts.net');
+    await expect(section.locator('[data-web-apply-hosts]')).toBeEnabled();
+    await section.locator('[data-web-apply-hosts]').click();
+    await expect(names).toHaveValue('my-mac.tail1234.ts.net');
+    await expect(section.locator('code.web-server-url')).toHaveText('https://my-mac.tail1234.ts.net');
+    const trusted = section.locator('.web-server-note', { hasText: 'Trusted host names:' });
+    await expect(trusted).toContainText('my-mac.tail1234.ts.net');
+    await expect(trusted).toContainText('The link below uses https://my-mac.tail1234.ts.net.');
+    await expect(trusted).toContainText('A trusted name still needs the access token.');
+    await expect(section.locator('[data-web-apply-hosts]')).toBeDisabled();
   });
 
   test('port 0 resolves to an automatic open port', async ({ page }) => {
@@ -93,7 +163,7 @@ test.describe('web access', () => {
     await turnOn(section);
     for (const bad of ['70000', 'abc']) {
       await portOf(section).fill(bad);
-      await section.getByRole('button', { name: 'Apply' }).click();
+      await section.locator('[data-web-apply]').click();
       await expect(section.getByRole('alert')).toContainText('between 0 and 65535');
       await expect(section.getByText('Listening on 127.0.0.1:47322')).toBeVisible();
       await section.getByRole('button', { name: 'Dismiss error' }).click();
@@ -191,9 +261,9 @@ test.describe('web access', () => {
     await expect(section.getByText('Listening on 127.0.0.1:8787')).toBeVisible();
     await expect(toggleOf(section)).toBeChecked();
     await expect(portOf(section)).toHaveValue('8787');
-    await expect(section.getByRole('button', { name: 'Apply' })).toBeDisabled();
+    await expect(section.locator('[data-web-apply]')).toBeDisabled();
     await portOf(section).fill('8888');
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await section.locator('[data-web-apply]').click();
     await expect(section.getByText('Listening on 127.0.0.1:8888')).toBeVisible();
     await expect(section.locator('code.web-server-url')).toHaveText('http://127.0.0.1:8888');
     await expect(toggleOf(section)).toBeChecked();
@@ -268,7 +338,7 @@ test.describe('web access', () => {
     await expect(portOf(section)).toBeFocused();
     await expect(section.getByText('Listening on 127.0.0.1:47322')).toBeVisible();
 
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await section.locator('[data-web-apply]').click();
     await confirm.getByRole('button', { name: 'Change port' }).click();
     await expect(section.getByText('Listening on 127.0.0.1:9200')).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__webServerLastRedirect)).toMatch(/:9200\/#token=/);
@@ -286,6 +356,21 @@ test.describe('web access', () => {
     await confirm.getByRole('button', { name: 'Change port' }).click();
     await expect(section.getByText('Listening on 127.0.0.1:54321')).toBeVisible();
     await expect.poll(() => page.evaluate(() => (window as any).__webServerLastRedirect)).toMatch(/:54321\/#token=/);
+  });
+
+  test('in a browser tab, the bind address and trusted names are read-only notes and are never sent', async ({ page }) => {
+    const section = await openWebAccess(page);
+    await page.evaluate(() => { (window as any).__webServerTestInWebMode = true; });
+    await turnOn(section);
+    await expect(hostOf(section)).toHaveCount(0);
+    await expect(allowedHostsOf(section)).toHaveCount(0);
+    await expect(section.getByText('The bind address and trusted host names can only be changed on the PandaCode machine.')).toBeVisible();
+    await expect(portOf(section)).toBeVisible();
+    const sent = await page.evaluate(() => (window as any).__webServerLastConfigure as Record<string, unknown>);
+    expect(sent).toBeTruthy();
+    expect(sent.enabled).toBe(true);
+    expect(sent).not.toHaveProperty('host');
+    expect(sent).not.toHaveProperty('allowedHosts');
   });
 
   test('events never carry the token link; the section keeps or fetches it', async ({ page }) => {
@@ -490,7 +575,7 @@ test.describe('web access', () => {
     await expect(portOf(section)).toBeFocused();
     await expect(section.getByText('Listening on 127.0.0.1:47322')).toBeVisible();
 
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await section.locator('[data-web-apply]').click();
     await confirm.getByRole('button', { name: 'Change port' }).click();
     await expect(section.getByText('Listening on 127.0.0.1:9300')).toBeVisible();
     expect(await page.evaluate(() => (window as any).__webServerLastRedirect)).toBeUndefined();
@@ -575,7 +660,7 @@ test.describe('web access', () => {
     const section = await openWebAccess(page);
     const port = portOf(section);
     await port.fill('70000');
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await section.locator('[data-web-apply]').click();
     const alert = section.getByRole('alert');
     await expect(alert).toContainText('between 0 and 65535');
     await expect(alert).toHaveAttribute('id', 'web-server-port-error');
@@ -590,7 +675,7 @@ test.describe('web access', () => {
     expect(await port.evaluate(el => getComputedStyle(el).borderTopColor)).not.toBe(border);
 
     await port.fill('abc');
-    await section.getByRole('button', { name: 'Apply' }).click();
+    await section.locator('[data-web-apply]').click();
     await expect(port).toHaveAttribute('aria-invalid', 'true');
     await section.getByRole('button', { name: 'Dismiss error' }).click();
     await expect(port).not.toHaveAttribute('aria-invalid', /.*/);
@@ -750,6 +835,8 @@ test.describe('web access', () => {
     for (const [heading, mark, tip] of [
       ['Serve in browser', 'About serving in a browser', /secret access token/],
       ['Port', 'About the web server port', /A browser tab that applies the change moves to the new port; other connected browsers disconnect and need the new link\./],
+      ['Bind address', 'About the web server bind address', /127\.0\.0\.1 accepts connections from this computer only/],
+      ['Trusted host names', 'About trusted host names', /Tailscale MagicDNS name/],
     ] as const) {
       const strong = section.locator('.web-server-row strong', { hasText: new RegExp(`^${heading}$`) });
       await expect(strong).toHaveCount(1);
