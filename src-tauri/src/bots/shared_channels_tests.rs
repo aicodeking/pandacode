@@ -154,3 +154,51 @@ fn corrupt_queue_preserves_other_sessions_queued_delivery_recovery() {
     assert_eq!(statuses("healthy"), ("failed".into(), "failed".into()));
     assert_eq!(statuses("corrupt"), ("queued".into(), "queued".into()));
 }
+
+#[test]
+fn corrupt_delivery_preserves_other_posts_during_recovery() {
+    for active in ["queued", "in_progress"] {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch(
+            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
+             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+             VALUES('task','project','Task','claude','default','ask','idle',1,1);
+             INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at)
+             VALUES('bot','Bot','project','claude','default','ask',1,1);
+             INSERT INTO bot_shared_channels(id,name,created_at,updated_at) VALUES('channel','launch',1,1);
+             INSERT INTO bot_shared_channel_messages(id,channel_id,kind,text,status,created_at)
+             VALUES('healthy-post','channel','user','ship it','queued',1),
+                   ('corrupt-post','channel','user','draft it','queued',2);
+             INSERT INTO bot_shared_channel_deliveries(id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at)
+             VALUES('healthy','channel','healthy-post','bot','task','queued',1,1),
+                   ('corrupt','channel','corrupt-post','bot','task','completed',2,'bad-ts');",
+        ).unwrap();
+        if active == "in_progress" {
+            store.db.execute_batch(
+                "UPDATE bot_shared_channel_messages SET status='in_progress';
+                 UPDATE bot_shared_channel_deliveries SET status='in_progress' WHERE id='healthy';",
+            ).unwrap();
+        }
+
+        let statuses = || store.db.prepare(
+            "SELECT d.status,m.status FROM bot_shared_channel_deliveries d
+             JOIN bot_shared_channel_messages m ON m.id=d.message_id ORDER BY d.id",
+        ).unwrap().query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))).unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        if active == "queued" {
+            store.db.execute_batch(
+                "CREATE TRIGGER refuse_settlement BEFORE UPDATE OF status ON bot_shared_channel_messages
+                 WHEN NEW.id='healthy-post' BEGIN SELECT RAISE(ABORT,'Invalid column type Text from trigger'); END;",
+            ).unwrap();
+            let error = reconcile_in_progress(&store).unwrap_err();
+            assert!(error.contains("from trigger"), "{error}");
+            assert_eq!(statuses(), vec![("completed".into(), "queued".into()), ("queued".into(), "queued".into())]);
+            store.db.execute_batch("DROP TRIGGER refuse_settlement").unwrap();
+        }
+
+        let error = reconcile_in_progress(&store).unwrap_err();
+        assert!(error.contains("Invalid column type Text") && error.contains("updated_at"), "{error}");
+        assert!(store.db.is_autocommit());
+        assert_eq!(statuses(), vec![("completed".into(), active.into()), ("failed".into(), "failed".into())]);
+    }
+}

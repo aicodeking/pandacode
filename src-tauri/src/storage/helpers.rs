@@ -1,7 +1,7 @@
 //! Small storage helpers kept out of `storage.rs`: the rollback detector, the newer-schema
 //! recovery wrapper, the transaction runner, and path/subagent validation.
 use rusqlite::Connection;
-use std::path::PathBuf;
+use std::{io::Write, path::PathBuf};
 
 use super::schema_v38::{settle_unfinished_subagents, settle_unfinished_tools};
 use super::sessions::{has_sidebar_ranking_columns, rank_published_drafts};
@@ -10,6 +10,56 @@ use super::sql::{
     RESET_REMOTE_STARTS_SQL,
 };
 use super::{Result, Store, SCHEMA_VERSION};
+
+/// The ordinary page cache (8 MiB), restored after migration and repair.
+const STEADY_CACHE: i64 = -8192;
+
+pub(super) fn set_steady_storage_pragmas(db: &Connection) -> Result<()> {
+    let cache = db.pragma_update(None, "cache_size", STEADY_CACHE);
+    let temp_store = db.execute_batch("PRAGMA temp_store=MEMORY;");
+    cache.and(temp_store).map_err(|error| error.to_string())
+}
+
+struct MigrationPragmasGuard<'db> {
+    db: &'db Connection,
+    restore_sidebar_trigger: bool,
+}
+
+impl Drop for MigrationPragmasGuard<'_> {
+    fn drop(&mut self) {
+        let pragmas = set_steady_storage_pragmas(self.db);
+        let sidebar_trigger = if self.restore_sidebar_trigger {
+            rank_published_drafts(self.db)
+        } else {
+            Ok(())
+        };
+        if let Err(error) = pragmas.and(sidebar_trigger) {
+            let _ = writeln!(std::io::stderr(), "Restoring database storage settings: {error}");
+        }
+    }
+}
+
+/// Lets migration sorts spill to disk. The callback must finish any transaction it
+/// starts before the guard restores the steady-state pragmas.
+pub(crate) fn with_migration_pragmas<T>(
+    db: &Connection,
+    large_cache: bool,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    // Changing temp_store clears SQLite's TEMP schema. Bot startup may run after
+    // the Store has installed the connection-local sidebar ranking trigger.
+    let restore_sidebar_trigger = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema WHERE type='trigger' AND name='rank_published_draft')",
+        [],
+        |row| row.get(0),
+    ).map_err(|error| error.to_string())?;
+    let _guard = MigrationPragmasGuard { db, restore_sidebar_trigger };
+    db.execute_batch("PRAGMA temp_store=FILE;").map_err(|error| error.to_string())?;
+    if large_cache {
+        db.execute_batch("PRAGMA cache_size=-65536;").map_err(|error| error.to_string())?;
+    }
+    work()
+}
 
 /// Detects when SQLite itself rolled back an active transaction (I/O, disk full, or
 /// `RAISE(ROLLBACK)`), so best-effort batch loops stop instead of committing later rows

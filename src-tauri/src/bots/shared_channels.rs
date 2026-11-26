@@ -228,13 +228,13 @@ fn status_label(status: String) -> String {
 /// A post's status from its deliveries. A stop or failure is superseded by any attempt made
 /// after it (Continue or Reassign), and a post left with no deliveries (its bot was deleted) is
 /// stopped, so it can be continued.
-fn message_status(store: &Store, message_id: &str) -> Result<String> {
+fn message_status(store: &Store, message_id: &str) -> rusqlite::Result<&'static str> {
     let rows: Vec<(String, i64, i64)> = {
-        let mut statement = store.db.prepare_cached(MESSAGE_DELIVERIES_SQL).map_err(|e| e.to_string())?;
-        let rows=statement.query_map([message_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(|e|e.to_string())?;
-        rows.collect::<rusqlite::Result<_>>().map_err(|e|e.to_string())?
+        let mut statement = store.db.prepare_cached(MESSAGE_DELIVERIES_SQL)?;
+        let rows = statement.query_map([message_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
     };
-    if rows.is_empty() { return Ok("stopped".into()); }
+    if rows.is_empty() { return Ok("stopped"); }
     let statuses: Vec<&str> = rows.iter()
         .filter(|(status, _, ended_at)| !matches!(status.as_str(), "stopped" | "failed") || !rows.iter().any(|(_, created, _)| created > ended_at))
         .map(|(status, _, _)| status.as_str()).collect();
@@ -243,12 +243,17 @@ fn message_status(store: &Store, message_id: &str) -> Result<String> {
         else if statuses.contains(&"failed") { "failed" }
         else if statuses.contains(&"stopped") { "stopped" }
         else { "completed" };
-    Ok(status.into())
+    Ok(status)
 }
 
 fn update_message_status(store: &Store, message_id: &str) -> Result<()> {
+    settle_post(store, message_id).map_err(|error| error.to_string())
+}
+
+fn settle_post(store: &Store, message_id: &str) -> rusqlite::Result<()> {
     let status = message_status(store, message_id)?;
-    store.db.prepare_cached("UPDATE bot_shared_channel_messages SET status=?2 WHERE id=?1").and_then(|mut statement| statement.execute(params![message_id,status])).map_err(|e| e.to_string())?;
+    store.db.prepare_cached("UPDATE bot_shared_channel_messages SET status=?2 WHERE id=?1")?
+        .execute(params![message_id, status])?;
     Ok(())
 }
 
@@ -274,15 +279,15 @@ pub(crate) fn reconcile_in_progress(store: &Store) -> Result<()> {
     // Commit interrupted deliveries and their posts before decoding any queued messages.
     let interrupted = store.in_transaction_immediate(|| reconcile_interrupted_deliveries(store));
     let queued = store.in_transaction_immediate(|| reconcile_queued_deliveries(store));
-    let queued_error = match queued {
+    let recovery_error = |result: Result<Vec<String>>| match result {
         Ok(errors) if errors.is_empty() => None,
         Ok(errors) => Some(errors.join("; ")),
         Err(error) => Some(error),
     };
     let errors: Vec<_> = [
         ("direct bot messages", direct.err()),
-        ("interrupted shared-channel deliveries", interrupted.err()),
-        ("queued shared-channel deliveries", queued_error),
+        ("interrupted shared-channel deliveries", recovery_error(interrupted)),
+        ("queued shared-channel deliveries", recovery_error(queued)),
     ].into_iter().filter_map(|(phase, error)| error.map(|error| (phase, error))).collect();
     match errors.as_slice() {
         [] => Ok(()),
@@ -291,7 +296,7 @@ pub(crate) fn reconcile_in_progress(store: &Store) -> Result<()> {
     }
 }
 
-fn reconcile_interrupted_deliveries(store: &Store) -> Result<()> {
+fn reconcile_interrupted_deliveries(store: &Store) -> Result<Vec<String>> {
     let posts = recovery_posts(
         store,
         "SELECT id FROM bot_shared_channel_messages WHERE kind='user'
@@ -300,7 +305,7 @@ fn reconcile_interrupted_deliveries(store: &Store) -> Result<()> {
          ))",
     )?;
     store.db.execute("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?1 WHERE status='in_progress'", [crate::storage::now()]).map_err(|e| e.to_string())?;
-    settle_posts(store, &posts)
+    settle_recovery_posts(store, posts, Vec::new())
 }
 
 fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
@@ -334,8 +339,20 @@ fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
         store,
         "SELECT id FROM bot_shared_channel_messages WHERE kind='user' AND status IN ('queued','in_progress')",
     )?;
-    settle_posts(store, &posts)?;
-    Ok(session_errors)
+    settle_recovery_posts(store, posts, session_errors)
+}
+
+fn settle_recovery_posts(store: &Store, posts: Vec<String>, mut errors: Vec<String>) -> Result<Vec<String>> {
+    // Keep SQLite failures distinct from malformed delivery fields.
+    for id in posts {
+        match settle_post(store, &id) {
+            Ok(()) => {}
+            Err(error @ (rusqlite::Error::InvalidColumnType(..) | rusqlite::Error::FromSqlConversionFailure(..)))
+                if !store.db.is_autocommit() => errors.push(format!("Post {id}: {error}")),
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Ok(errors)
 }
 
 fn recovery_posts(store: &Store, sql: &str) -> Result<Vec<String>> {

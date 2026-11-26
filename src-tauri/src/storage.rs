@@ -164,12 +164,6 @@ pub struct Store {
     trackers_usable: bool,
 }
 type Result<T> = std::result::Result<T, String>;
-/// Steady-state storage settings, also restored after a migration or index repair.
-macro_rules! steady_storage_pragmas {
-    () => {
-        "PRAGMA cache_size=-8192; PRAGMA temp_store=MEMORY;"
-    };
-}
 /// The WAL size limit (64 MiB) after a reset, set by `Store::open`.
 macro_rules! journal_size_limit_pragma {
     () => {
@@ -186,11 +180,12 @@ mod schema_v38;
 mod sessions;
 mod sql;
 mod subagents;
-use helpers::{recover_after_restart, tracked_recovery};
+use helpers::{recover_after_restart, set_steady_storage_pragmas, tracked_recovery};
+pub(crate) use helpers::with_migration_pragmas;
 pub(crate) use helpers::{
     resolve_workspace_root, run_savepoint, serialize_subagent, ImmediateTxError, RollbackGuard,
 };
-use schema_v38::{log_slow_upgrade, repair_v38_objects, upgrade_v38, MigrationPragmasGuard};
+use schema_v38::{log_slow_upgrade, repair_v38_objects, upgrade_v38};
 use sql::{BASE_SCHEMA, LEGACY_PROMPT_CUTOFF_SCAN_SQL, LEGACY_PROMPT_CUTOFF_SQL, SIDEBAR_ORDER};
 // `storage_bench` (test-only) reads these.
 #[cfg(test)]
@@ -324,17 +319,36 @@ impl Store {
         // pays for a larger checkpoint. No `busy_timeout` here: rusqlite opens every connection
         // with a 5 s one already.
         db.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-        db.execute_batch(concat!("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; ", steady_storage_pragmas!(), " PRAGMA mmap_size=0; ", journal_size_limit_pragma!())).map_err(|e| e.to_string())?;
+        db.execute_batch(concat!("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; PRAGMA mmap_size=0; ", journal_size_limit_pragma!())).map_err(|e| e.to_string())?;
+        set_steady_storage_pragmas(&db)?;
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| e.to_string())?;
-        // The `user_version` once the migrations below have run.
-        let mut opened_version = version;
-        if version < SCHEMA_VERSION {
-            // One transactional backfill, using the existing session/message
-            // index. Listing tasks subsequently reads only session metadata.
-            let mut pragmas = MigrationPragmasGuard::new(&mut db)?;
-            let migration = pragmas.transaction().map_err(|e| e.to_string())?;
+        let opened_version = if version < SCHEMA_VERSION {
+            Self::migrate(&db)?
+        } else {
+            version
+        };
+        repair_v38_objects(&mut db, opened_version)?;
+        before_recovery();
+        let (restart_interrupted, recovery_version) = recover_after_restart(&mut db)?;
+        let store = Self {
+            db,
+            path: path.to_path_buf(),
+            restart_interrupted,
+            trackers_usable: recovery_version <= SCHEMA_VERSION,
+        };
+        tracked_recovery(&store.db, recovery_version, "team library", |_| crate::architect::profiles::initialize(&store))?;
+        tracked_recovery(&store.db, recovery_version, "archived tasks", |_| store.settle_archived())?;
+        Ok(store)
+    }
+
+    fn migrate(db: &Connection) -> Result<i64> {
+        // One transactional backfill, using the existing session/message
+        // index. Listing tasks subsequently reads only session metadata.
+        with_migration_pragmas(db, true, || {
+            let migration = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate)
+                .map_err(|e| e.to_string())?;
             // Another app instance may have migrated while this one waited.
             let version: i64 = migration
                 .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -668,25 +682,13 @@ impl Store {
                 upgrade_v38(&migration)?;
             }
             migration.commit().map_err(|e| e.to_string())?;
-            pragmas.restore()?;
-            opened_version = version.max(SCHEMA_VERSION);
             if let Some(started) = upgrade_started {
                 log_slow_upgrade(started);
             }
-        }
-        repair_v38_objects(&mut db, opened_version)?;
-        before_recovery();
-        let (restart_interrupted, recovery_version) = recover_after_restart(&mut db)?;
-        let store = Self {
-            db,
-            path: path.to_path_buf(),
-            restart_interrupted,
-            trackers_usable: recovery_version <= SCHEMA_VERSION,
-        };
-        tracked_recovery(&store.db, recovery_version, "team library", |_| crate::architect::profiles::initialize(&store))?;
-        tracked_recovery(&store.db, recovery_version, "archived tasks", |_| store.settle_archived())?;
-        Ok(store)
+            Ok(version.max(SCHEMA_VERSION))
+        })
     }
+
     /// Stamps teams still eligible for legacy coordination prompt classification.
     fn record_legacy_prompt_cutoff(db: &Connection, team_meta: bool) -> Result<()> {
         let sql = if team_meta { LEGACY_PROMPT_CUTOFF_SQL } else { LEGACY_PROMPT_CUTOFF_SCAN_SQL };

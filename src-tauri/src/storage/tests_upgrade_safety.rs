@@ -548,7 +548,7 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
             .into(),
         ("messages", "content") => r#"CASE WHEN role='tool' AND tool_id IS NOT NULL
             AND session_id IN (SELECT id FROM sessions WHERE status IN ('running','waiting'))
-            AND CASE WHEN json_valid(content) THEN json_extract(content,'$.type')='tool_activity'
+            AND CASE WHEN json_valid(content,6) THEN json_extract(content,'$.type')='tool_activity'
             AND json_extract(content,'$.version')=1 AND json_extract(content,'$.status')='running' END
             THEN json_set(content,'$.status','failed','$.output',coalesce(json_extract(content,'$.output'),'')
                 || char(10) || char(10) || '[PandaCode was interrupted before this tool reported a result.]') ELSE content END"#
@@ -561,7 +561,7 @@ fn expected_recovery(db: &Connection, table: &str, column: &str, rowid: i64, old
                     json((SELECT json_group_array(json(CASE WHEN json_extract(value,'$.status') IN ('running','waiting')
                         THEN json_set(value,'$.status','failed') ELSE value END)) FROM json_each(content,'$.tools'))))"
             };
-            conditional("json_valid(content) AND json_extract(content,'$.status') IN ('running','waiting')", value)
+            conditional("CASE WHEN json_valid(content,6) THEN json_extract(content,'$.status') IN ('running','waiting') END", value)
         }
         ("architect_teams", "content") => "(SELECT CASE WHEN json_valid(stamped) THEN
             CASE WHEN json_extract(stamped,'$.status') IN ('running','waiting') THEN
@@ -642,27 +642,38 @@ fn assert_backup_rows_preserved(before: &Connection, after: &Connection, recover
 
 #[test]
 #[ignore = "requires a sqlite3 online backup in pandacode-upgrade-smoke under the system temporary directory"]
-fn real_existing_install_online_backup_smoke() {
-    let Some(path) = std::env::var_os("PANDACODE_UPGRADE_SMOKE_DB") else {
-        return;
-    };
-    let path = fs::canonicalize(path).unwrap();
+fn real_existing_install_backup_smoke() {
+    const INPUT_GUIDANCE: &str =
+        "Set PANDACODE_UPGRADE_SMOKE_DB=/path/to/backup.sqlite3 to run this ignored existing-install smoke test";
+    let path = std::env::var_os("PANDACODE_UPGRADE_SMOKE_DB")
+        .filter(|path| !path.is_empty())
+        .expect(INPUT_GUIDANCE);
+    let path = fs::canonicalize(path).expect(INPUT_GUIDANCE);
+    let metadata = fs::metadata(&path).expect(INPUT_GUIDANCE);
+    assert!(metadata.is_file() && metadata.len() > 0, "{INPUT_GUIDANCE}");
     let backups = fs::canonicalize(std::env::temp_dir()).unwrap().join("pandacode-upgrade-smoke");
-    assert_eq!(path.parent(), Some(backups.as_path()), "use an isolated smoke backup");
-    assert!(path.is_file() && path.extension().is_some_and(|ext| ext == "sqlite3"));
+    assert_eq!(path.parent(), Some(backups.as_path()), "{INPUT_GUIDANCE}. Use an isolated smoke backup in {backups:?}");
+    assert!(path.extension().is_some_and(|ext| ext == "sqlite3"), "{INPUT_GUIDANCE}");
     #[cfg(unix)]
     assert_eq!(
-        std::os::unix::fs::MetadataExt::nlink(&fs::metadata(&path).unwrap()),
+        std::os::unix::fs::MetadataExt::nlink(&metadata),
         1,
         "use a standalone smoke backup"
     );
     let size = || fs::metadata(&path).unwrap().len();
     // The backup has no active sidecars. Opening the copy with write access lets SQLite
     // read its WAL-mode header and create its own sidecars; snapshots below only read.
-    let baseline = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE).unwrap();
+    let baseline = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .expect(INPUT_GUIDANCE);
     batch(&baseline, "PRAGMA query_only=ON; BEGIN");
-    let older = version(&baseline);
+    let older: i64 = baseline
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect(INPUT_GUIDANCE);
     let before = table_counts(&baseline);
+    assert!(
+        before.iter().any(|(table, count)| *count > 0 && table != "sqlite_sequence" && is_user_table(table)),
+        "{INPUT_GUIDANCE}. The backup must contain at least one row in a user table."
+    );
     let violations = integrity_and_foreign_keys(&baseline);
     println!(
         "Before: {} bytes, v{older}, integrity ok, {} foreign-key violations, {before:?}",
@@ -688,6 +699,7 @@ fn real_existing_install_online_backup_smoke() {
     drop(baseline);
 
     batch(&upgraded.db, "BEGIN");
+    // Pin the pre-reopen snapshot before the second connection can change it.
     assert_eq!(version(&upgraded.db), SCHEMA_VERSION);
     let started = Instant::now();
     let reopened = Store::open(&path).unwrap();
@@ -695,7 +707,8 @@ fn real_existing_install_online_backup_smoke() {
     assert!(assert_current(&reopened.db) == violations, "foreign-key violations changed on reopen");
     assert_eq!(table_counts(&reopened.db), after);
     assert_eq!(assert_backup_rows_preserved(&upgraded.db, &reopened.db, None), 0);
+    let reopened_version = version(&reopened.db);
     drop(upgraded);
     drop(reopened);
-    println!("Reopen: {} bytes, v38, integrity ok, {elapsed:?}; every row matched", size());
+    println!("Reopen: {} bytes, v{reopened_version}, integrity ok, {elapsed:?}; every row matched", size());
 }

@@ -2,7 +2,7 @@
 //! The additive upgrade keeps `user_version` at 37 for older PandaCode releases.
 
 use super::sql::BASE_SCHEMA;
-use super::{now, run_savepoint, Result, RollbackGuard, SCHEMA_VERSION};
+use super::{now, run_savepoint, with_migration_pragmas, Result, RollbackGuard, SCHEMA_VERSION};
 use rusqlite::{params, Connection, Transaction, TransactionBehavior};
 use std::time::{Duration, Instant};
 use std::collections::HashMap;
@@ -34,21 +34,26 @@ CREATE INDEX IF NOT EXISTS message_attachments_moodboard ON message_attachments(
 CREATE INDEX IF NOT EXISTS message_attachments_moodboard_image ON message_attachments(moodboard_image_id) WHERE moodboard_image_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS task_schedules_creator ON task_schedules(created_by_session) WHERE created_by_session IS NOT NULL;";
 
+/// JSON5 can also encode status letters with hex escapes or split them with a line continuation.
+macro_rules! json5_status_escape {
+    ($p:literal) => {
+        concat!($p, "content GLOB ('*\\[x' || char(10,13,8232,8233) || ']*')")
+    };
+}
+
 /// Whether a `messages` row (columns prefixed `NEW.`, or bare) is a running tool snapshot. The
-/// `instr` tests come first so the JSON is parsed only for rows that can match: the literal
-/// `"running"`, or any `\u` escape (SQLite string literals keep backslashes, so `'\u'` is a
-/// backslash and a `u`), which could spell it as `"\u0072unning"`. The JSON test is wrapped in
-/// `COALESCE(..,0)=1` so the predicate is never NULL: a missing `$.type` or `$.version` makes
-/// `json_extract(..)=..` NULL, and `NOT (NULL)` would keep the stop trigger from firing.
+/// `instr` tests come first so the JSON is parsed only for rows that can match either a
+/// quoted `running` value (JSON5 also allows single quotes) or an escape such as `\u0072unning`.
+/// A missing type or version can produce NULL, so COALESCE keeps the stop trigger firing.
 macro_rules! running_tool {
     ($p:literal) => {
-        concat!($p, "role='tool' AND ", $p, "tool_id IS NOT NULL AND (instr(", $p, "content,'\"running\"')>0 OR instr(", $p, "content,'\\u')>0) AND COALESCE(CASE WHEN json_valid(", $p, "content) THEN json_extract(", $p, "content,'$.type')='tool_activity' AND json_extract(", $p, "content,'$.version')=1 AND json_extract(", $p, "content,'$.status')='running' ELSE 0 END,0)=1")
+        concat!($p, "role='tool' AND ", $p, "tool_id IS NOT NULL AND (instr(", $p, "content,'running')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,6) THEN json_extract(", $p, "content,'$.type')='tool_activity' AND json_extract(", $p, "content,'$.version')=1 AND json_extract(", $p, "content,'$.status')='running' ELSE 0 END,0)=1")
     };
 }
 /// Whether a `subagents` row's saved status is running or waiting, as `running_tool!`.
 macro_rules! running_subagent {
     ($p:literal) => {
-        concat!("(instr(", $p, "content,'\"running\"')>0 OR instr(", $p, "content,'\"waiting\"')>0 OR instr(", $p, "content,'\\u')>0) AND COALESCE(CASE WHEN json_valid(", $p, "content) THEN json_extract(", $p, "content,'$.status') IN ('running','waiting') ELSE 0 END,0)=1")
+        concat!("(instr(", $p, "content,'running')>0 OR instr(", $p, "content,'waiting')>0 OR instr(", $p, "content,'\\u')>0 OR ", json5_status_escape!($p), ") AND COALESCE(CASE WHEN json_valid(", $p, "content,6) THEN json_extract(", $p, "content,'$.status') IN ('running','waiting') ELSE 0 END,0)=1")
     };
 }
 
@@ -212,50 +217,12 @@ const SCHEMA_38_TRACKER_INDEXES: [&str; 3] = [
     "CREATE INDEX IF NOT EXISTS architect_team_meta_legacy_cutoff ON architect_team_meta(session_id) WHERE needs_legacy_cutoff=1",
 ];
 
-/// The page cache for migration and index creation (64 MiB).
-const V38_MIGRATION_CACHE: &str = "PRAGMA cache_size=-65536;";
 const V38_SLOW_UPGRADE: Duration = Duration::from_millis(500);
 
 pub(super) fn log_slow_upgrade(started: Instant) {
     let elapsed = started.elapsed();
     if elapsed >= V38_SLOW_UPGRADE {
         eprintln!("PandaCode: upgraded database indexes and trackers in {:.1}s", elapsed.as_secs_f64());
-    }
-}
-
-/// Switches to disk-backed temp storage before SQLite starts building indexes.
-/// The transaction borrows this guard, so it commits or rolls back before restoration.
-pub(super) struct MigrationPragmasGuard<'db> {
-    db: &'db mut Connection,
-    active: bool,
-}
-
-impl<'db> MigrationPragmasGuard<'db> {
-    pub(super) fn new(db: &'db mut Connection) -> Result<Self> {
-        let guard = Self { db, active: true };
-        guard.db.execute_batch("PRAGMA temp_store=FILE;").map_err(|e| e.to_string())?;
-        guard.db.execute_batch(V38_MIGRATION_CACHE).map_err(|e| e.to_string())?;
-        Ok(guard)
-    }
-
-    pub(super) fn transaction(&mut self) -> rusqlite::Result<Transaction<'_>> {
-        self.db.transaction_with_behavior(TransactionBehavior::Immediate)
-    }
-
-    pub(super) fn restore(mut self) -> Result<()> {
-        self.db.execute_batch(steady_storage_pragmas!()).map_err(|e| e.to_string())?;
-        self.active = false;
-        Ok(())
-    }
-}
-
-impl Drop for MigrationPragmasGuard<'_> {
-    fn drop(&mut self) {
-        if self.active {
-            if let Err(error) = self.db.execute_batch(steady_storage_pragmas!()) {
-                eprintln!("Restoring database storage settings: {error}");
-            }
-        }
     }
 }
 
@@ -685,8 +652,21 @@ fn repair_v38_objects_with(
     if !fatal && !plan_v38_repair(db, false)?.any() {
         return Ok(());
     }
-    let Some(mut pragmas) = or_skip(MigrationPragmasGuard::new(db), fatal, version)? else { return Ok(()) };
-    let Some(repair) = or_skip(pragmas.transaction(), fatal, version)? else { return Ok(()) };
+    // Only setup failures use the initial repair plan. The transaction determines
+    // whether any errors after taking the writer lock are fatal.
+    let result = with_migration_pragmas(db, true, || {
+        Ok(repair_v38_objects_in_transaction(db, version, fatal, optional_step))
+    });
+    or_skip(result, fatal, version)?.unwrap_or(Ok(()))
+}
+
+fn repair_v38_objects_in_transaction(
+    db: &Connection,
+    version: i64,
+    fatal: bool,
+    optional_step: impl FnOnce(&Connection, MissingIndexes) -> Result<()>,
+) -> Result<()> {
+    let Some(repair) = or_skip(Transaction::new_unchecked(db, TransactionBehavior::Immediate), fatal, version)? else { return Ok(()) };
     // Another instance may have migrated or repaired the database while this one waited.
     let Some(version) = or_skip(repair.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)), fatal, version)? else { return Ok(()) };
     if version > SCHEMA_VERSION {
@@ -713,7 +693,6 @@ fn repair_v38_objects_with(
     }
     let result = if missing.any() { optional_step(&repair, missing) } else { Ok(()) };
     if or_skip(result, fatal, version)?.is_some() && or_skip(repair.commit(), fatal, version)?.is_some() {
-        pragmas.restore()?;
         if let Some(started) = started {
             log_slow_upgrade(started);
         }

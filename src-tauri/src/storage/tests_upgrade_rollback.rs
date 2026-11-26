@@ -250,6 +250,95 @@ fn rollback_to_0_3_151_and_reupgrade_preserves_all_data() {
 }
 
 #[test]
+fn migration_pragmas_can_leave_the_work_cache_unchanged() {
+    let db = Connection::open_in_memory().unwrap();
+    db.pragma_update(None, "cache_size", -4096).unwrap();
+    let temp_store = with_migration_pragmas(&db, false, || {
+        assert_eq!(scalar::<i64>(&db, "PRAGMA cache_size"), -4096);
+        Ok(scalar::<i64>(&db, "PRAGMA temp_store"))
+    }).unwrap();
+    assert_eq!(temp_store, 1);
+    assert_eq!(scalar::<i64>(&db, "PRAGMA temp_store"), 2);
+    assert_eq!(scalar::<i64>(&db, "PRAGMA cache_size"), -8192);
+}
+
+#[test]
+fn migration_pragmas_restore_the_sidebar_ranking_trigger() {
+    let store = Store::open(Path::new(":memory:")).unwrap();
+    let db = &store.db;
+    super::super::sessions::rank_published_drafts(db).unwrap();
+    for outcome in [Ok(()), Err("migration failed".to_owned())] {
+        assert_eq!(with_migration_pragmas(db, true, || outcome.clone()), outcome);
+        assert!(scalar::<bool>(db, "SELECT EXISTS(SELECT 1 FROM sqlite_temp_schema
+            WHERE type='trigger' AND name='rank_published_draft')"));
+    }
+}
+
+#[test]
+fn json5_running_snapshots_are_tracked_and_recovered() {
+    let (fixture, db) = TestDatabase::v37();
+    batch(&db, "INSERT INTO projects(id,name,path) VALUES('project','Migration Lab','/work/pandacode');
+        INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+        VALUES('task','project','Recover snapshots','codex','gpt-5','auto','running',1,1);");
+    let child = "{id:'legacy-child',status:'running',updatedAt:1,tools:[{status:'waiting'}],}";
+    let tool = "{type:'tool_activity',version:1,status:'running',output:'partial',}";
+    let malformed = "{status:'running', broken";
+    let insert_snapshots = |db: &Connection, child: &str, tool: &str| {
+        db.execute(
+            "INSERT INTO subagents(session_id,id,content,updated_at) VALUES
+             ('task','legacy-child',?1,1),('task','malformed-child',?2,1)",
+            params![child, malformed],
+        ).unwrap();
+        db.execute(
+            "INSERT INTO messages(session_id,role,content,created_at,tool_id) VALUES
+             ('task','tool',?1,1,'legacy-tool'),('task','tool',?2,1,'malformed-tool')",
+            params![tool, malformed],
+        ).unwrap();
+    };
+    let assert_tracked = |db: &Connection| {
+        assert_eq!(strings(db, "SELECT id FROM running_subagents", []), ["legacy-child"]);
+        assert_eq!(strings(db, "SELECT tool_id FROM running_tools JOIN messages ON message_id=messages.id", []), ["legacy-tool"]);
+    };
+    let assert_recovered = |db: &Connection| {
+        assert_eq!(
+            scalar::<String>(db, "SELECT json_extract(content,'$.status') FROM subagents WHERE id='legacy-child'"),
+            "stopped",
+        );
+        assert_eq!(
+            scalar::<String>(db, "SELECT json_extract(content,'$.tools[0].status') FROM subagents WHERE id='legacy-child'"),
+            "failed",
+        );
+        assert_eq!(
+            scalar::<String>(db, "SELECT json_extract(content,'$.status') FROM messages WHERE tool_id='legacy-tool'"),
+            "failed",
+        );
+        assert_eq!(scalar::<String>(db, "SELECT content FROM subagents WHERE id='malformed-child'"), malformed);
+        assert_eq!(scalar::<String>(db, "SELECT content FROM messages WHERE tool_id='malformed-tool'"), malformed);
+        assert_eq!(scalar::<i64>(db, "SELECT count(*) FROM running_subagents"), 0);
+        assert_eq!(scalar::<i64>(db, "SELECT count(*) FROM running_tools"), 0);
+    };
+
+    insert_snapshots(&db, child, tool);
+    drop(db);
+    let mut upgraded = Store::open_with_before_recovery(&fixture.path(), || {
+        assert_tracked(&Connection::open(fixture.path()).unwrap());
+    }).unwrap();
+    assert_recovered(&upgraded.db);
+
+    let escaped_child = "{id:'legacy-child',status:'wait\\\ning',updatedAt:1,tools:[{status:'wait\\\ning'}],}";
+    let escaped_tool = r"{type:'tool_activity',version:1,status:'\x72unning',output:'partial',}";
+    for (child, tool) in [(child, tool), (escaped_child, escaped_tool)] {
+        batch(&upgraded.db, "UPDATE sessions SET status='running' WHERE id='task';
+            DELETE FROM subagents; DELETE FROM messages;");
+        insert_snapshots(&upgraded.db, child, tool);
+        assert_tracked(&upgraded.db);
+        drop(upgraded);
+        upgraded = Store::open(&fixture.path()).unwrap();
+        assert_recovered(&upgraded.db);
+    }
+}
+
+#[test]
 fn read_only_store_accepts_supported_and_future_versions() {
     let (fixture, db) = TestDatabase::v37();
     for schema in [36, 37, 38] {

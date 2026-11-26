@@ -22,7 +22,8 @@ use serde_json::{json, Value};
 use std::path::PathBuf;
 use tauri::{Emitter, Manager, State};
 
-pub(crate) const SCHEMA: &str = "
+macro_rules! bots_table {
+    () => { "
 CREATE TABLE IF NOT EXISTS bots(
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
@@ -51,7 +52,20 @@ CREATE TABLE IF NOT EXISTS bots(
   while_working TEXT NOT NULL DEFAULT 'queue',
   show_plan INTEGER NOT NULL DEFAULT 0 CHECK(show_plan IN (0,1)),
   skills TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(skills)),
-  mcp TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(mcp)));
+  mcp TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(mcp)));"
+    };
+}
+
+macro_rules! bot_tasks_table {
+    () => { "
+CREATE TABLE IF NOT EXISTS bot_tasks(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  brief_version INTEGER NOT NULL DEFAULT -1);"
+    };
+}
+
+pub(crate) const SCHEMA: &str = concat!(bots_table!(), "
 CREATE TABLE IF NOT EXISTS bot_memories(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -107,11 +121,7 @@ CREATE TABLE IF NOT EXISTS bot_pairings(
   status TEXT NOT NULL CHECK(status IN ('pending','approved','blocked')),
   code TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  PRIMARY KEY(channel_id,sender_id));
-CREATE TABLE IF NOT EXISTS bot_tasks(
-  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
-  brief_version INTEGER NOT NULL DEFAULT -1);
+  PRIMARY KEY(channel_id,sender_id));", bot_tasks_table!(), "
 CREATE TABLE IF NOT EXISTS bot_rules(
   id TEXT PRIMARY KEY,
   bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
@@ -168,7 +178,7 @@ CREATE TABLE IF NOT EXISTS bot_messages(
   CHECK(source_bot_id<>target_bot_id));
 CREATE INDEX IF NOT EXISTS bot_messages_target ON bot_messages(target_session_id,status,created_at,id);
 CREATE INDEX IF NOT EXISTS bot_messages_source ON bot_messages(source_session_id,created_at,id);
-";
+");
 
 /// Profile columns added after the bots table first shipped (schema 25). Fresh databases get
 /// them from `SCHEMA`; `upgrade` adds whichever are missing, so it is safe to run every start.
@@ -481,7 +491,8 @@ mod avatar_tests {
 
 /// Adds the `soul` column to a bots table created before it existed (schema 28). Idempotent.
 pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
-    db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    // A partial legacy bot schema can block indexes on unrelated tables.
+    db.execute_batch(bots_table!()).map_err(|e| e.to_string())?;
     if !has_bot_column(db, "soul")? {
         db.execute_batch("ALTER TABLE bots ADD COLUMN soul TEXT NOT NULL DEFAULT '';").map_err(|e| e.to_string())?;
     }
@@ -490,7 +501,7 @@ pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
 
 /// Adds bot skill and MCP references and the task-to-bot links (schema 29). Idempotent.
 pub(crate) fn migrate_capabilities(db: &rusqlite::Connection) -> Result<()> {
-    db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    db.execute_batch(concat!(bots_table!(), bot_tasks_table!())).map_err(|e| e.to_string())?;
     for column in ["skills", "mcp"] {
         if !has_bot_column(db, column)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]' CHECK(json_valid({column}));")).map_err(|e| e.to_string())?;
@@ -1391,7 +1402,7 @@ pub async fn bot_task_brief(
 /// Prepares the bot schema and recovers interrupted deliveries before startup.
 pub(crate) fn startup_prepare(store: &Store) -> Result<()> {
     let db = &store.db;
-    let upgraded = store.in_transaction_immediate(|| {
+    let upgrade = || {
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|error| format!("Could not read the schema version: {error}"))?;
@@ -1419,6 +1430,9 @@ pub(crate) fn startup_prepare(store: &Store) -> Result<()> {
             }
         }
         Ok(())
+    };
+    let upgraded = crate::storage::with_migration_pragmas(db, true, || {
+        store.in_transaction_immediate(upgrade)
     });
     if let Err(error) = upgraded {
         eprintln!("Could not upgrade the bots table: {error}");
@@ -1465,7 +1479,7 @@ mod startup_tests {
         let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
         let store = Store::open(&path.0).unwrap();
         store.db.execute_batch(
-            "PRAGMA foreign_keys=OFF; DROP TABLE bots; PRAGMA user_version=25;",
+            "PRAGMA foreign_keys=OFF; DROP TABLE bot_tasks; DROP TABLE bots; PRAGMA user_version=25;",
         ).unwrap();
         drop(store);
 
@@ -1473,8 +1487,80 @@ mod startup_tests {
         for column in ["soul", "skills", "mcp"] {
             assert!(has_bot_column(&store.db, column).unwrap(), "missing bots.{column}");
         }
+        store.db.prepare("SELECT session_id,bot_id,brief_version FROM bot_tasks").unwrap();
         let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
         assert_eq!(version, crate::storage::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v25_with_partial_bot_activity_migrates_bot_profile_columns() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "DROP TABLE bot_activity;
+             CREATE TABLE bot_activity(id INTEGER PRIMARY KEY, kind TEXT);
+             INSERT INTO bot_activity VALUES(1,'legacy');
+             ALTER TABLE bots DROP COLUMN soul;
+             ALTER TABLE bots DROP COLUMN skills;
+             ALTER TABLE bots DROP COLUMN mcp;
+             DROP TABLE bot_tasks;
+             PRAGMA user_version=25;",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+        for column in ["soul", "skills", "mcp"] {
+            assert!(has_bot_column(&store.db, column).unwrap(), "missing bots.{column}");
+        }
+        store.db.prepare("SELECT session_id,bot_id,brief_version FROM bot_tasks").unwrap();
+        let kind: String = store.db.query_row("SELECT kind FROM bot_activity WHERE id=1", [], |row| row.get(0)).unwrap();
+        assert_eq!(kind, "legacy");
+    }
+
+    #[test]
+    fn startup_prepare_restores_steady_storage_pragmas() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        store.db.execute_batch(
+            "DROP INDEX bots_project;
+             PRAGMA temp_store=FILE;
+             PRAGMA cache_size=-65536;",
+        ).unwrap();
+
+        startup_prepare(&store).unwrap();
+
+        let temp_store: i64 = store.db.pragma_query_value(None, "temp_store", |row| row.get(0)).unwrap();
+        let cache_size: i64 = store.db.pragma_query_value(None, "cache_size", |row| row.get(0)).unwrap();
+        assert_eq!((temp_store, cache_size), (2, -8192));
+        assert!(store.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='bots_project')",
+            [],
+            |row| row.get::<_, bool>(0),
+        ).unwrap());
+    }
+
+    #[test]
+    fn startup_prepare_keeps_published_drafts_in_sidebar_order() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
+             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at,draft,sidebar_order)
+             VALUES('ranked','project','Ranked','codex','default','ask','idle',1,1,0,0),
+                   ('draft','project','Draft','codex','default','ask','idle',2,2,1,NULL);",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        startup_prepare(&store).unwrap();
+        store.db.execute("UPDATE sessions SET draft=0 WHERE id='draft'", []).unwrap();
+        let rank = |id| store.db.query_row(
+            "SELECT sidebar_order FROM sessions WHERE id=?1",
+            [id],
+            |row| row.get::<_, Option<i64>>(0),
+        ).unwrap();
+        assert_eq!((rank("draft"), rank("ranked")), (Some(0), Some(1)));
     }
 
     #[test]

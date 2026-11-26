@@ -342,16 +342,15 @@ fn migration_and_index_repair_restore_steady_pragmas() {
 
 #[test]
 fn failed_migration_rolls_back_before_restoring_steady_pragmas() {
-    let mut db = Connection::open_in_memory().unwrap();
-    let mut migrate = || -> Result<()> {
-        let mut pragmas = MigrationPragmasGuard::new(&mut db)?;
-        let migration = pragmas.transaction().unwrap();
+    let db = Connection::open_in_memory().unwrap();
+    let result = with_migration_pragmas(&db, true, || {
+        let migration = Transaction::new_unchecked(&db, TransactionBehavior::Immediate).unwrap();
         assert_pragmas(&migration, 1, -65536);
         migration.execute_batch("CREATE TABLE work(id); CREATE INDEX broken ON work(missing);")
             .map_err(|error| error.to_string())?;
         Ok(())
-    };
-    assert!(migrate().unwrap_err().contains("no such column"));
+    });
+    assert!(result.unwrap_err().contains("no such column"));
     assert!(db.is_autocommit());
     assert_pragmas(&db, 2, -8192);
 }
