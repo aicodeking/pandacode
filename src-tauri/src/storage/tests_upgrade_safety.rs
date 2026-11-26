@@ -3,6 +3,9 @@ use super::*;
 use rusqlite::types::Value;
 use std::{collections::BTreeMap, fs, time::Instant};
 
+#[path = "tests_upgrade_rollback.rs"]
+mod rollback;
+
 // From 0.3.151 (52702085). The index below is from its old-index cleanup fixture:
 // the release dropped it on open, but a v37 install could still have it on disk.
 const TEAM_STATUS_SCHEMA: &str = "DROP INDEX IF EXISTS architect_teams_status;
@@ -107,7 +110,7 @@ fn integrity_and_foreign_keys(db: &Connection) -> Vec<ForeignKeyViolation> {
 }
 
 fn assert_current(db: &Connection) -> Vec<ForeignKeyViolation> {
-    assert_eq!(version(db), 38);
+    assert_eq!(version(db), SCHEMA_VERSION);
     assert!(legacy_objects(db).is_empty(), "legacy team status objects survived");
     integrity_and_foreign_keys(db)
 }
@@ -404,132 +407,15 @@ fn v37_0_3_151_upgrade_preserves_every_table_and_passes_integrity_checks() {
 }
 
 #[test]
-fn rollback_from_v38_to_0_3_151_and_reupgrade_preserves_all_data() {
-    let (fixture, db) = TestDatabase::v37();
-    batch(&db, CORE_ROWS);
-    install_legacy_team_status(&db);
-    drop(db);
-    let store = Store::open(&fixture.path()).unwrap();
-    assert!(assert_current(&store.db).is_empty());
-    let mut before_rollback = snapshot(&store.db, false);
-    drop(store);
-
-    let old = Connection::open(fixture.path()).unwrap();
-    batch(&old, "PRAGMA foreign_keys=ON");
-    assert!(version(&old) >= 37, "0.3.151 skips the version < 37 migrations");
-    install_legacy_team_status(&old);
-    let saved_status = "SELECT status FROM architect_team_status WHERE session_id='lead'";
-    assert_eq!(scalar::<String>(&old, saved_status), "idle");
-
-    // 0.3.151's tool/subagent upserts and save_team's two statements in one savepoint.
-    batch(
-        &old,
-        r#"
-        UPDATE sessions SET status='running' WHERE id='lead';
-        INSERT INTO messages(session_id,role,content,created_at,tool_id)
-            VALUES ('lead','tool','{"type":"tool_activity","version":1,"status":"running","output":"rollback output"}',310,'rollback-tool')
-            ON CONFLICT(session_id,tool_id) DO UPDATE SET content=excluded.content;
-        INSERT INTO subagents(session_id,id,content,updated_at)
-            VALUES ('lead','done-worker','{"id":"done-worker","status":"running","updatedAt":311,"summary":"Updated by 0.3.151","tools":[]}',311)
-            ON CONFLICT(session_id,id) DO UPDATE SET content=excluded.content,updated_at=excluded.updated_at;
-        SAVEPOINT team_save;
-    "#,
-    );
-    let team = r#"{"status":"waiting","legacyPromptThroughId":6,"workers":[{"id":"worker","status":"waiting"}],"note":"Saved by 0.3.151"}"#;
-    old.execute(TEAM_SAVE, params!["lead", team]).unwrap();
-    old.execute(TEAM_STATUS_SAVE, params!["lead", "waiting"]).unwrap();
-    batch(&old, "RELEASE team_save");
-
-    assert!(integrity_and_foreign_keys(&old).is_empty());
-    assert_eq!(legacy_objects(&old).len(), 4);
-    assert_eq!(scalar::<String>(&old, saved_status), "waiting");
-    let tracked: (i64, i64, i64) = old
-        .query_row(
-            "SELECT (SELECT count(*) FROM running_tools JOIN messages ON message_id=messages.id
-                    WHERE running_tools.session_id='lead' AND tool_id='rollback-tool'),
-                (SELECT count(*) FROM running_subagents WHERE session_id='lead' AND id='done-worker'),
-                (SELECT count(*) FROM architect_team_meta WHERE session_id='lead'
-                    AND status='waiting' AND valid_json=1 AND needs_legacy_cutoff=0 AND skip_sync=0)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(tracked, (1, 1, 1));
-
-    // Verify the exact write set of the old SQL before taking its post-write baseline.
-    let mut before = snapshot(&old, false);
-    let inserted = before["messages"].rows.last().unwrap().clone();
-    let tool_content = r#"{"type":"tool_activity","version":1,"status":"running","output":"rollback output"}"#;
-    assert_eq!(
-        inserted,
-        [
-            8_i64.into(),
-            "lead".to_owned().into(),
-            "tool".to_owned().into(),
-            tool_content.to_owned().into(),
-            310_i64.into(),
-            "rollback-tool".to_owned().into(),
-            Value::Null,
-            Value::Null,
-        ]
-    );
-    before_rollback.get_mut("messages").unwrap().rows.push(inserted);
-    expect(&mut before_rollback, "sqlite_sequence", "name", "messages", &[("seq", 8_i64.into())]);
-    expect_text(&mut before_rollback, "sessions", "id", "lead", "status", "running");
-    let worker = r#"{"id":"done-worker","status":"running","updatedAt":311,"summary":"Updated by 0.3.151","tools":[]}"#;
-    expect(
-        &mut before_rollback,
-        "subagents",
-        "id",
-        "done-worker",
-        &[("content", worker.to_owned().into()), ("updated_at", 311_i64.into())],
-    );
-    expect_text(&mut before_rollback, "architect_teams", "session_id", "lead", "content", team);
-    assert_eq!(before, before_rollback);
-    drop(old);
-
-    let started = now();
-    let reopened = Store::open(&fixture.path()).unwrap();
-    assert!(assert_current(&reopened.db).is_empty());
-    expect_interrupted_task(&mut before, "lead");
-    expect(&mut before, "messages", "tool_id", "rollback-tool", &[
-        ("content", r#"{"type":"tool_activity","version":1,"status":"failed","output":"rollback output\n\n[PandaCode was interrupted before this tool reported a result.]"}"#.to_owned().into()),
-    ]);
-    expect_stopped_subagent(
-        &mut before,
-        &reopened.db,
-        "done-worker",
-        started,
-        r#"{"id":"done-worker","status":"stopped","updatedAt":RECOVERY_TIME,"summary":"Updated by 0.3.151","tools":[]}"#,
-    );
-    expect(&mut before, "architect_teams", "session_id", "lead", &[
-        ("content", r#"{"status":"interrupted","legacyPromptThroughId":6,"workers":[{"id":"worker","status":"stopped"}],"note":"Saved by 0.3.151","pendingTurn":null,"error":"PandaCode restarted. Resume explicitly to continue.","generation":1,"revision":1}"#.to_owned().into()),
-    ]);
-    assert_eq!(snapshot(&reopened.db, false), before);
-    assert_eq!(
-        scalar::<i64>(
-            &reopened.db,
-            "SELECT (SELECT count(*) FROM running_tools) +
-        (SELECT count(*) FROM running_subagents)"
-        ),
-        0
-    );
-    assert_eq!(
-        scalar::<String>(&reopened.db, "SELECT status FROM architect_team_meta WHERE session_id='lead'"),
-        "interrupted"
-    );
-}
-
-#[test]
-fn legacy_v37_without_bot_tables_and_with_corrupt_rows_upgrades_cleanly() {
-    for old_version in [25, 29, 36, 37] {
+fn legacy_installs_with_partial_bot_schema_and_corrupt_rows_upgrade_cleanly() {
+    for (old_version, has_bots) in [(25, true), (25, false), (29, true), (36, true), (37, true), (37, false)] {
         let (fixture, db) = TestDatabase::v37();
         batch(
             &db,
             "DROP TABLE bot_shared_channel_deliveries; DROP TABLE bot_shared_channel_messages;
             DROP TABLE bot_shared_channel_members; DROP TABLE bot_shared_channels; DROP TABLE bot_messages;",
         );
-        if old_version == 37 {
+        if !has_bots {
             batch(
                 &db,
                 "DROP TABLE bot_pairings; DROP TABLE bot_channels; DROP TABLE bot_threads;
@@ -539,9 +425,16 @@ fn legacy_v37_without_bot_tables_and_with_corrupt_rows_upgrades_cleanly() {
         } else {
             batch(
                 &db,
-                "ALTER TABLE bots DROP COLUMN project_id;
-                INSERT INTO bots(id,name,provider,model,mode,created_at,updated_at)
-                    VALUES('legacy-bot','Legacy bot','codex','gpt-5','ask',31,32);",
+                "ALTER TABLE bots DROP COLUMN color;
+                ALTER TABLE bots DROP COLUMN reasoning_effort;
+                ALTER TABLE bots DROP COLUMN backup_models;
+                ALTER TABLE bots DROP COLUMN fallback_mode;
+                ALTER TABLE bots DROP COLUMN notify;
+                ALTER TABLE bots DROP COLUMN while_working;
+                ALTER TABLE bots DROP COLUMN show_plan;
+                INSERT INTO projects(id,name,path) VALUES('bot-project','Legacy bot','/work/bot');
+                INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at)
+                    VALUES('legacy-bot','Legacy bot','bot-project','codex','gpt-5','ask',31,32);",
             );
         }
         if old_version <= 29 {
@@ -559,9 +452,12 @@ fn legacy_v37_without_bot_tables_and_with_corrupt_rows_upgrades_cleanly() {
                 &db,
                 "DROP INDEX sessions_remote; ALTER TABLE sessions DROP COLUMN remote_device;
                 ALTER TABLE sessions DROP COLUMN remote_session; ALTER TABLE sessions DROP COLUMN remote_synced_id;
-                ALTER TABLE sessions DROP COLUMN cloud; ALTER TABLE bots DROP COLUMN soul;
-                ALTER TABLE bots DROP COLUMN skills; ALTER TABLE bots DROP COLUMN mcp; DROP TABLE bot_tasks;",
+                ALTER TABLE sessions DROP COLUMN cloud;",
             );
+            if has_bots {
+                batch(&db, "ALTER TABLE bots DROP COLUMN soul; ALTER TABLE bots DROP COLUMN skills;
+                    ALTER TABLE bots DROP COLUMN mcp; DROP TABLE bot_tasks;");
+            }
         }
         if old_version == 36 {
             batch(&db, "ALTER TABLE task_schedules DROP COLUMN saved_remotely;");
@@ -591,6 +487,13 @@ fn legacy_v37_without_bot_tables_and_with_corrupt_rows_upgrades_cleanly() {
         assert!(assert_current(&upgraded.db).is_empty(), "v{old_version}");
         assert_eq!(assert_backup_rows_preserved(&db, &upgraded.db, Some(started)), 0);
         assert_eq!(scalar::<i64>(&upgraded.db, "SELECT count(*) FROM running_tools"), 0);
+        let bots = crate::bots::list(&upgraded).unwrap_or_else(|error| panic!("v{old_version} listing bots: {error}"));
+        assert_eq!(bots.len(), usize::from(has_bots), "v{old_version}");
+        if let Some(bot) = bots.first() {
+            assert_eq!((bot.id.as_str(), bot.project_id.as_str()), ("legacy-bot", "bot-project"));
+            assert_eq!(bot.name, "Legacy bot");
+            assert!(bot.color.is_empty());
+        }
         for table in ["bots", "bot_messages", "bot_shared_channels", "bot_shared_channel_deliveries"] {
             assert!(
                 table_names(&upgraded.db).iter().any(|name| name == table),
@@ -785,7 +688,7 @@ fn real_existing_install_online_backup_smoke() {
     drop(baseline);
 
     batch(&upgraded.db, "BEGIN");
-    assert_eq!(version(&upgraded.db), 38);
+    assert_eq!(version(&upgraded.db), SCHEMA_VERSION);
     let started = Instant::now();
     let reopened = Store::open(&path).unwrap();
     let elapsed = started.elapsed();

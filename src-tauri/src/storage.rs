@@ -164,11 +164,10 @@ pub struct Store {
     trackers_usable: bool,
 }
 type Result<T> = std::result::Result<T, String>;
-/// The steady-state page cache (8 MiB): set by `Store::open` and restored after the version 38
-/// migration (`schema_v38::STEADY_CACHE`).
-macro_rules! steady_cache_pragma {
+/// Steady-state storage settings, also restored after a migration or index repair.
+macro_rules! steady_storage_pragmas {
     () => {
-        "PRAGMA cache_size=-8192;"
+        "PRAGMA cache_size=-8192; PRAGMA temp_store=MEMORY;"
     };
 }
 /// The WAL size limit (64 MiB) after a reset, set by `Store::open`.
@@ -187,28 +186,21 @@ mod schema_v38;
 mod sessions;
 mod sql;
 mod subagents;
-use helpers::tracked_recovery;
+use helpers::{recover_after_restart, tracked_recovery};
 pub(crate) use helpers::{
     resolve_workspace_root, run_savepoint, serialize_subagent, ImmediateTxError, RollbackGuard,
 };
-use schema_v38::{
-    repair_v38_objects, settle_unfinished_subagents, settle_unfinished_tools, upgrade_v38, STEADY_CACHE, V38_SLOW_UPGRADE,
-};
-use sessions::{has_sidebar_ranking_columns, rank_published_drafts};
-use sql::{
-    COUNT_RESTART_INTERRUPTED_SQL, INTERRUPT_TEAMS_FALLBACK_SQL, INTERRUPT_TEAMS_SQL,
-    LEGACY_PROMPT_CUTOFF_SCAN_SQL,
-    LEGACY_PROMPT_CUTOFF_SQL, PAUSE_GOALS_SQL, RESET_REMOTE_STARTS_SQL, SIDEBAR_ORDER,
-};
+use schema_v38::{log_slow_upgrade, repair_v38_objects, upgrade_v38, MigrationPragmasGuard};
+use sql::{BASE_SCHEMA, LEGACY_PROMPT_CUTOFF_SCAN_SQL, LEGACY_PROMPT_CUTOFF_SQL, SIDEBAR_ORDER};
 // `storage_bench` (test-only) reads these.
 #[cfg(test)]
 pub(crate) use schema_v38::{
     V38_BOT_INDEXES, V38_SCHEMA_INDEXES, V38_TRACKER_INDEXES, V38_TRACKER_TABLES,
     V38_TRACKER_TRIGGERS,
 };
-/// The newest `PRAGMA user_version`. Every migration step below must run for any
-/// database older than this, so the guard reads this constant, never a literal.
-pub const SCHEMA_VERSION: i64 = 38;
+/// The newest `PRAGMA user_version`. Hot-query indexes and trackers are additive
+/// at version 37 so releases through v0.3.151 can still open the database.
+pub const SCHEMA_VERSION: i64 = 37;
 /// Most error rows one dismiss call may remove; the same limit as `DISMISS_BATCH` in src/thread-errors.ts (keep the two equal).
 pub const MAX_DISMISS_ERROR_IDS: usize = 500;
 /// The error every lookup of a task that has no row returns.
@@ -260,14 +252,14 @@ impl Store {
         let version: i64 = db
             .pragma_query_value(None, "user_version", |r| r.get(0))
             .map_err(|e| e.to_string())?;
-        if version != SCHEMA_VERSION {
-            return Err(format!("Database schema {version} differs from expected {SCHEMA_VERSION}; open PandaCode to migrate it."));
+        if version < SCHEMA_VERSION {
+            return Err(format!("Database schema {version} is older than {SCHEMA_VERSION}; open PandaCode to migrate it."));
         }
         Ok(Self {
             db,
             path: path.into(),
             restart_interrupted: 0,
-            trackers_usable: true,
+            trackers_usable: false,
         })
     }
 
@@ -326,22 +318,13 @@ impl Store {
     }
 
     fn open_with_before_recovery(path: &Path, before_recovery: impl FnOnce()) -> Result<Self> {
-        const BASE_SCHEMA: &str = "
-            CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE);
-            CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-              title TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
-              created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, resume_id TEXT);
-            CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-              role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
-            CREATE INDEX IF NOT EXISTS messages_handoffs ON messages(session_id, id) WHERE role='handoff';";
         let mut db = Connection::open(path).map_err(|e| e.to_string())?;
         // Room for every `prepare_cached` statement (about 220 call sites). The WAL keeps
         // SQLite's default 1000-page autocheckpoint, so no single commit under the Store lock
         // pays for a larger checkpoint. No `busy_timeout` here: rusqlite opens every connection
         // with a 5 s one already.
         db.set_prepared_statement_cache_capacity(STMT_CACHE_CAPACITY);
-        db.execute_batch(concat!("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; ", steady_cache_pragma!(), " PRAGMA mmap_size=0; PRAGMA temp_store=MEMORY; ", journal_size_limit_pragma!())).map_err(|e| e.to_string())?;
+        db.execute_batch(concat!("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=NORMAL; ", steady_storage_pragmas!(), " PRAGMA mmap_size=0; ", journal_size_limit_pragma!())).map_err(|e| e.to_string())?;
         let version: i64 = db
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(|e| e.to_string())?;
@@ -350,9 +333,8 @@ impl Store {
         if version < SCHEMA_VERSION {
             // One transactional backfill, using the existing session/message
             // index. Listing tasks subsequently reads only session metadata.
-            let migration = db
-                .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-                .map_err(|e| e.to_string())?;
+            let mut pragmas = MigrationPragmasGuard::new(&mut db)?;
+            let migration = pragmas.transaction().map_err(|e| e.to_string())?;
             // Another app instance may have migrated while this one waited.
             let version: i64 = migration
                 .pragma_query_value(None, "user_version", |row| row.get(0))
@@ -681,75 +663,28 @@ impl Store {
                   UPDATE scheduler_settings SET content=json_remove(content,'$.remoteSaved') WHERE id=1 AND json_valid(content);
                   PRAGMA user_version=37;").map_err(|e| e.to_string())?;
             }
-            let v38_started = (version < 38).then(std::time::Instant::now);
-            if version < 38 {
+            let upgrade_started = (version < SCHEMA_VERSION).then(std::time::Instant::now);
+            if upgrade_started.is_some() {
                 upgrade_v38(&migration)?;
             }
             migration.commit().map_err(|e| e.to_string())?;
-            // Every step up to `SCHEMA_VERSION` ran (or another instance had already run them).
+            pragmas.restore()?;
             opened_version = version.max(SCHEMA_VERSION);
-            if let Some(started) = v38_started {
-                db.execute_batch(STEADY_CACHE).map_err(|e| e.to_string())?;
-                let elapsed = started.elapsed();
-                if elapsed >= V38_SLOW_UPGRADE {
-                    eprintln!("PandaCode: upgraded database schema to v38 in {:.1}s", elapsed.as_secs_f64());
-                }
+            if let Some(started) = upgrade_started {
+                log_slow_upgrade(started);
             }
         }
         repair_v38_objects(&mut db, opened_version)?;
         before_recovery();
-        let recovery = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
-        let recovery_version: i64 = recovery.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| e.to_string())?;
-        // An already-current database skipped legacy table and index creation above.
-        if version == SCHEMA_VERSION && recovery_version <= SCHEMA_VERSION {
-            recovery.execute_batch(BASE_SCHEMA).map_err(|e| e.to_string())?;
-        }
-        let trackers_usable = recovery_version <= SCHEMA_VERSION;
-        let tracked = |step: &str, run: &dyn Fn(&Connection) -> Result<()>| tracked_recovery(&recovery, recovery_version, step, run);
-        tracked("legacy prompt cutoff", &|db| Self::record_legacy_prompt_cutoff(db, trackers_usable))?;
-        tracked("unfinished tools", &|db| {
-            settle_unfinished_tools(db, None, "\n\n[PandaCode was interrupted before this tool reported a result.]", trackers_usable)
-        })?;
-        tracked("unfinished subagents", &|db| settle_unfinished_subagents(db, None, "stopped", trackers_usable))?;
-        let restart_interrupted: i64 = recovery.query_row(COUNT_RESTART_INTERRUPTED_SQL, [], |r| r.get(0)).map_err(|e| e.to_string())?;
-        recovery
-            .execute(
-                // Marked `restart_interrupted`: the restart, not the user, stopped them, so a
-                // machine-thread wake may still start their next turn. A task the user stopped
-                // (`stop_requested`) was not interrupted by the restart. A machine thread keeps
-                // its status: its host runs it, and the subscription catches up, so its parent
-                // is never told it settled.
-                "UPDATE sessions SET status='interrupted',task_stage='in_progress',completed_at=NULL,restart_interrupted=1-stop_requested WHERE status IN ('running','waiting') AND (remote_device IS NULL OR id NOT IN (SELECT session_id FROM machine_threads))",
-                [],
-            )
-            .map_err(|e| e.to_string())?;
-        // A remote start PandaCode quit during never got its host task: the row is a local
-        // draft again (an empty one is discarded with the other drafts). A machine thread
-        // stays: its start is asked about again by its id (`mirror::load_starts`).
-        recovery
-            .execute(RESET_REMOTE_STARTS_SQL, [])
-            .map_err(|e| e.to_string())?;
-        recovery
-            .execute(PAUSE_GOALS_SQL, [])
-            .map_err(|e| e.to_string())?;
-        tracked("interrupted teams", &|db| {
-            // Without the tracker, the same update tests every snapshot's own status.
-            let sql = if trackers_usable { INTERRUPT_TEAMS_SQL } else { INTERRUPT_TEAMS_FALLBACK_SQL };
-            db.execute_batch(sql).map_err(|e| e.to_string())
-        })?;
-        if trackers_usable || has_sidebar_ranking_columns(&recovery)? {
-            let ranked: bool = recovery.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE sidebar_order IS NOT NULL)", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-            if ranked { rank_published_drafts(&recovery)?; }
-        }
-        recovery.commit().map_err(|e| e.to_string())?;
+        let (restart_interrupted, recovery_version) = recover_after_restart(&mut db)?;
         let store = Self {
             db,
             path: path.to_path_buf(),
-            restart_interrupted: usize::try_from(restart_interrupted).unwrap_or(0),
-            trackers_usable,
+            restart_interrupted,
+            trackers_usable: recovery_version <= SCHEMA_VERSION,
         };
-        crate::architect::profiles::initialize(&store)?;
-        store.settle_archived()?;
+        tracked_recovery(&store.db, recovery_version, "team library", |_| crate::architect::profiles::initialize(&store))?;
+        tracked_recovery(&store.db, recovery_version, "archived tasks", |_| store.settle_archived())?;
         Ok(store)
     }
     /// Stamps teams still eligible for legacy coordination prompt classification.

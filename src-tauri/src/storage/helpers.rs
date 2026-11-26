@@ -3,6 +3,12 @@
 use rusqlite::Connection;
 use std::path::PathBuf;
 
+use super::schema_v38::{settle_unfinished_subagents, settle_unfinished_tools};
+use super::sessions::{has_sidebar_ranking_columns, rank_published_drafts};
+use super::sql::{
+    COUNT_RESTART_INTERRUPTED_SQL, INTERRUPT_TEAMS_FALLBACK_SQL, INTERRUPT_TEAMS_SQL, PAUSE_GOALS_SQL,
+    RESET_REMOTE_STARTS_SQL,
+};
 use super::{Result, Store, SCHEMA_VERSION};
 
 /// Detects when SQLite itself rolled back an active transaction (I/O, disk full, or
@@ -22,23 +28,68 @@ impl<'a> RollbackGuard<'a> {
     }
 }
 
-/// Runs a startup recovery step that reads the version 38 trackers. At or below
-/// `SCHEMA_VERSION` every error is fatal. On a newer schema (this binary is older) a future
-/// migration may have dropped or renamed what the step reads, so its error is logged and the
-/// step undone through a savepoint, unless SQLite rolled the whole recovery transaction back.
-pub(super) fn tracked_recovery(recovery: &Connection, version: i64, step: &str, run: &dyn Fn(&Connection) -> Result<()>) -> Result<()> {
+/// Runs a startup recovery step. At or below `SCHEMA_VERSION` every error is fatal.
+/// A newer schema may have dropped or renamed what the step reads. Log its error
+/// and roll back its savepoint, unless SQLite rolled the whole transaction back.
+pub(super) fn tracked_recovery<T>(
+    recovery: &Connection,
+    version: i64,
+    step: &str,
+    run: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<Option<T>> {
     if version <= SCHEMA_VERSION {
-        return run(recovery);
+        return run(recovery).map(Some);
     }
     let guard = RollbackGuard::new(recovery);
     match run_savepoint(recovery, "pandacode_newer_recovery", || run(recovery), |e| e.to_string()) {
-        Ok(()) => Ok(()),
+        Ok(value) => Ok(Some(value)),
         Err(error) if guard.rolled_back() => Err(error),
         Err(error) => {
             eprintln!("Skipping startup recovery ({step}) on newer schema v{version}: {error}");
-            Ok(())
+            Ok(None)
         }
     }
+}
+
+/// Settles the running state that the previous process left behind. The writer lock
+/// makes the version check and the recovery use the same schema.
+pub(super) fn recover_after_restart(db: &mut Connection) -> Result<(usize, i64)> {
+    let recovery = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(|e| e.to_string())?;
+    let version: i64 = recovery.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| e.to_string())?;
+    let trackers_usable = version <= SCHEMA_VERSION;
+    let tracked = |step: &str, run: &dyn Fn(&Connection) -> Result<()>| tracked_recovery(&recovery, version, step, run);
+    tracked("legacy prompt cutoff", &|db| Store::record_legacy_prompt_cutoff(db, trackers_usable))?;
+    tracked("unfinished tools", &|db| {
+        settle_unfinished_tools(db, None, "\n\n[PandaCode was interrupted before this tool reported a result.]", trackers_usable)
+    })?;
+    tracked("unfinished subagents", &|db| settle_unfinished_subagents(db, None, "stopped", trackers_usable))?;
+    let restart_interrupted = tracked_recovery(&recovery, version, "interrupted tasks", |db| {
+        let count: i64 = db.query_row(COUNT_RESTART_INTERRUPTED_SQL, [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        // The restart interrupted these tasks unless the user had requested Stop.
+        // A machine thread keeps its host's status so its parent still waits for it.
+        db.execute(
+            "UPDATE sessions SET status='interrupted',task_stage='in_progress',completed_at=NULL,restart_interrupted=1-stop_requested WHERE status IN ('running','waiting') AND (remote_device IS NULL OR id NOT IN (SELECT session_id FROM machine_threads))",
+            [],
+        ).map_err(|e| e.to_string())?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    })?.unwrap_or(0);
+    // An unresolved remote start becomes a draft again. Machine threads retain their
+    // starts so the viewer can query the host by request ID.
+    tracked_recovery(&recovery, version, "remote starts", |db| db.execute(RESET_REMOTE_STARTS_SQL, []).map_err(|e| e.to_string()))?;
+    tracked_recovery(&recovery, version, "active goals", |db| db.execute(PAUSE_GOALS_SQL, []).map_err(|e| e.to_string()))?;
+    tracked("interrupted teams", &|db| {
+        let sql = if trackers_usable { INTERRUPT_TEAMS_SQL } else { INTERRUPT_TEAMS_FALLBACK_SQL };
+        db.execute_batch(sql).map_err(|e| e.to_string())
+    })?;
+    tracked("sidebar ranking", &|db| {
+        if trackers_usable || has_sidebar_ranking_columns(db)? {
+            let ranked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE sidebar_order IS NOT NULL)", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+            if ranked { rank_published_drafts(db)?; }
+        }
+        Ok(())
+    })?;
+    recovery.commit().map_err(|e| e.to_string())?;
+    Ok((restart_interrupted, version))
 }
 
 /// Runs `work` inside a SQLite savepoint named `name`, rolling back only the savepoint on

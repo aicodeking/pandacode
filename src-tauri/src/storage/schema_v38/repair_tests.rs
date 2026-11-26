@@ -6,8 +6,7 @@ use super::tests::{current_database, schema_38_index_names, v38_counts, TempDir,
 use super::*;
 
 /// A file database with one running task holding running tool and subagent rows that no
-/// tracker knows about: the triggers and tracker tables are dropped (and, below version 38,
-/// the version 38 indexes) and `user_version` is set to `version`.
+/// tracker knows about: its triggers and tables are dropped and `user_version` is set.
 fn database_without_trackers(version: i64) -> (TempDir, std::path::PathBuf, String) {
     let directory = TempDir::new("trackers");
     let path = directory.0.join("store.db");
@@ -24,13 +23,6 @@ fn database_without_trackers(version: i64) -> (TempDir, std::path::PathBuf, Stri
         DROP TABLE running_tools; DROP TABLE running_subagents;
         DROP TRIGGER architect_team_meta_insert; DROP TRIGGER architect_team_meta_update_clear; DROP TRIGGER architect_team_meta_update_sync;
         DROP TABLE architect_team_meta;").unwrap();
-    if version < 38 {
-        for name in schema_38_index_names() {
-            db.execute_batch(&format!("DROP INDEX {name};")).unwrap();
-        }
-        db.execute_batch("DROP INDEX bot_activity_model_switch; DROP INDEX bots_project;
-            CREATE INDEX turn_changes_retained ON turn_changes(created_at,id) WHERE diff_bytes>0;").unwrap();
-    }
     seed_running_rows(&db, &sid);
     db.pragma_update(None, "user_version", version).unwrap();
     (directory, path, sid)
@@ -104,7 +96,14 @@ fn assert_tools_and_team_settled(store: &Store, sid: &str) {
 
 #[test]
 fn upgrading_from_version_37_backfills_trackers_and_settles_running_rows() {
-    let (_directory, path, sid) = database_without_trackers(37);
+    let (_directory, path, sid) = database_without_trackers(SCHEMA_VERSION);
+    let db = Connection::open(&path).unwrap();
+    for name in schema_38_index_names() {
+        db.execute_batch(&format!("DROP INDEX {name};")).unwrap();
+    }
+    db.execute_batch("DROP INDEX bot_activity_model_switch; DROP INDEX bots_project;
+        CREATE INDEX turn_changes_retained ON turn_changes(created_at,id) WHERE diff_bytes>0;").unwrap();
+    drop(db);
     let store = Store::open(&path).unwrap();
     assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert_trackers_rebuilt_and_settled(&store, &sid);
@@ -382,7 +381,7 @@ fn count_busy(_attempt: i32) -> bool {
 
 /// Asserts `repair_v38_objects(db, version)` returns `Ok(())` without even trying the write lock
 /// while another connection to `path` holds `BEGIN IMMEDIATE`.
-fn assert_repair_skips_without_write_lock(path: &std::path::Path, db: &mut Connection, version: i64) {
+pub(super) fn assert_repair_skips_without_write_lock(path: &std::path::Path, db: &mut Connection, version: i64) {
     db.busy_timeout(std::time::Duration::ZERO).unwrap();
     db.busy_handler(Some(count_busy)).unwrap();
     let writer = Connection::open(path).unwrap();
@@ -759,7 +758,7 @@ fn upgrading_from_authentic_v37_schema_without_prior_v38_objects() {
         assert!(has_object(&db, "turn_changes_retained"));
     }
     let store = Store::open(&path).unwrap();
-    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 38);
+    assert_eq!(store.db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert_eq!(v38_counts(&store.db), HEALTHY);
     assert!(!has_object(&store.db, "turn_changes_retained"));
     assert_trackers_rebuilt_and_settled(&store, sid);
@@ -781,7 +780,7 @@ fn opening_repairs_reversed_update_trigger_pairs() {
 
 #[test]
 fn opening_removes_legacy_team_status_only_on_supported_schemas() {
-    for version in [37, SCHEMA_VERSION, SCHEMA_VERSION + 1] {
+    for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
         let (_directory, path) = current_database("legacy-team-status");
         let db = Connection::open(&path).unwrap();
         db.execute_batch("CREATE TABLE architect_team_status(session_id TEXT PRIMARY KEY, status);

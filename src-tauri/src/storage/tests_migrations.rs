@@ -550,7 +550,6 @@ fn opens_the_database_at_pandacode_db_path() {
 
 #[test]
 fn schema_version_constant_matches_the_newest_migration_step() {
-    // The version 38 step lives in `schema_v38.rs`.
     let source = concat!(include_str!("../storage.rs"), include_str!("schema_v38.rs"));
     let newest = source
         .match_indices("PRAGMA user_version=")

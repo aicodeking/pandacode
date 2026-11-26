@@ -2,6 +2,17 @@
 //! they can use the prepared statement cache. Each comment names the index its query relies on;
 //! `schema_v38::tests::hot_queries_use_their_indexes` checks the plans.
 
+/// The first tables and indexes, also used to restore missing base indexes on open.
+pub(super) const BASE_SCHEMA: &str = "
+    CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT NOT NULL UNIQUE);
+    CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, resume_id TEXT);
+    CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+      role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id, id);
+    CREATE INDEX IF NOT EXISTS messages_handoffs ON messages(session_id, id) WHERE role='handoff';";
+
 /// A macro so the order can be spliced into `concat!` constants (see `SESSIONS_SQL`).
 macro_rules! sidebar_order {
     () => {

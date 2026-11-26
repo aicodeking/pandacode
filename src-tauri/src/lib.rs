@@ -1035,10 +1035,10 @@ pub(crate) fn remove_project_with_team_check(store: &Store, project_id: &str) ->
         let team_checks = "SELECT EXISTS(
              SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
              WHERE s.project_id=?1
-               AND CASE WHEN json_valid(t.content) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
+               AND CASE WHEN json_valid(t.content, 6) THEN json_extract(t.content,'$.status') END IN ('running','waiting')
          ), EXISTS(
              SELECT 1 FROM architect_teams t JOIN sessions s ON s.id=t.session_id
-             WHERE s.project_id=?1 AND NOT json_valid(t.content)
+             WHERE s.project_id=?1 AND NOT json_valid(t.content, 6)
          )";
         let (active_team, malformed_team): (bool, bool) = store.db
             .prepare_cached(team_checks)
@@ -1090,13 +1090,13 @@ mod project_removal_tests {
     #[test]
     fn project_removal_rejects_untracked_json5_team() {
         assert_removal_rejects_untracked_team(
-            "{status:'running'}",
-            "Cannot remove this project: a saved architect team snapshot is malformed JSON.",
+            "{status:'running',}",
+            "Stop this project's architect teams first.",
         );
     }
 
     #[test]
-    fn project_removal_rejects_json5_team_snapshots() {
+    fn project_removal_allows_completed_json5_team_snapshots() {
         use crate::storage::{id, SCHEMA_VERSION};
 
         for version in [SCHEMA_VERSION, SCHEMA_VERSION + 1] {
@@ -1106,7 +1106,7 @@ mod project_removal_tests {
             let session = store.create_session(&project.id, "claude", "default", "ask").unwrap();
             store.db.execute(
                 "INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)",
-                [session.id.as_str(), "{status:'completed'}"],
+                [session.id.as_str(), "{status:'completed',}"],
             ).unwrap();
             store.db.pragma_update(None, "user_version", version).unwrap();
             drop(store);
@@ -1119,10 +1119,10 @@ mod project_removal_tests {
             std::fs::remove_file(path).unwrap();
             assert_eq!(
                 result,
-                Err("Cannot remove this project: a saved architect team snapshot is malformed JSON.".into()),
+                Ok(()),
                 "schema v{version}",
             );
-            assert!(project_preserved, "schema v{version}");
+            assert!(!project_preserved, "schema v{version}");
         }
     }
 
@@ -1138,8 +1138,8 @@ mod project_removal_tests {
                 [session.id.as_str(), content],
             ).unwrap();
         };
-        for status in ["running", "waiting"] {
-            save_snapshot(&serde_json::json!({ "status": status }).to_string());
+        for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
+            save_snapshot(snapshot);
             assert_eq!(
                 remove_project_with_team_check(&store, &project.id),
                 Err("Stop this project's architect teams first.".into()),

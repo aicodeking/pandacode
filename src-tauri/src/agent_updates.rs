@@ -72,11 +72,11 @@ pub(crate) fn reserve_install(state: &crate::AppState) -> Result<InstallGuard> {
         return Err("Pause active goals before updating an agent.".into());
     }
     // Read the saved snapshots directly so a missing tracker row cannot admit an install.
-    // CASE limits json_extract to strict JSON since it also accepts JSON5.
+    // Accept JSON5 snapshots, like json_extract, and report malformed snapshots separately.
     let team_checks = "SELECT EXISTS(
          SELECT 1 FROM architect_teams
-         WHERE CASE WHEN json_valid(content) THEN json_extract(content,'$.status') END IN ('running','waiting')
-     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content))";
+         WHERE CASE WHEN json_valid(content, 6) THEN json_extract(content,'$.status') END IN ('running','waiting')
+     ), EXISTS(SELECT 1 FROM architect_teams WHERE NOT json_valid(content, 6))";
     let (active_team, malformed_team): (bool, bool) = store.db
         .query_row(team_checks, [], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|_| "Team state is unavailable.")?;
@@ -740,13 +740,13 @@ mod tests {
     #[test]
     fn install_admission_rejects_untracked_json5_team() {
         assert_install_rejects_untracked_team(
-            "{status:'running'}",
-            "Cannot update an agent while a saved team snapshot is malformed JSON.",
+            "{status:'running',}",
+            "Finish running teams before updating an agent.",
         );
     }
 
     #[test]
-    fn install_admission_rejects_malformed_team_snapshots() {
+    fn install_admission_guards_active_and_malformed_team_snapshots() {
         use crate::storage::{id, Store, SCHEMA_VERSION};
 
         let (state, _) = crate::concurrent_task_tests::test_state();
@@ -770,7 +770,7 @@ mod tests {
                 ).unwrap();
             };
             assert_eq!(state.store.lock().unwrap().team_meta_usable(), version == SCHEMA_VERSION);
-            for snapshot in ["{status:'completed'}", "{"] {
+            for snapshot in ["{not valid", "{"] {
                 set_snapshot(snapshot);
                 assert_eq!(
                     reserve_install(&state).err().as_deref(),
@@ -778,15 +778,17 @@ mod tests {
                     "schema v{version}, snapshot {snapshot:?}",
                 );
             }
-            for snapshot in [r#"{"status":"running"}"#, r#"{"status":"waiting"}"#] {
+            for snapshot in [r#"{"status":"running"}"#, "{status:'waiting',}"] {
                 set_snapshot(snapshot);
                 assert_eq!(
                     reserve_install(&state).err().as_deref(),
                     Some("Finish running teams before updating an agent."),
                 );
             }
-            set_snapshot(r#"{"status":"completed"}"#);
-            drop(reserve_install(&state).expect("a completed team allows admission"));
+            for snapshot in [r#"{"status":"completed"}"#, "{status:'completed',}"] {
+                set_snapshot(snapshot);
+                drop(reserve_install(&state).expect("a completed team allows admission"));
+            }
 
             *state.store.lock().unwrap() = Store::open(std::path::Path::new(":memory:")).unwrap();
             std::fs::remove_file(path).unwrap();

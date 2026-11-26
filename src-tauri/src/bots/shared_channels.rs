@@ -2,7 +2,7 @@
 //! assignments use each member's ordinary desktop task and the existing gateway queue.
 
 use super::{gateway, Bot, DESKTOP};
-use crate::{message_queue, storage::Store, AppState, Result};
+use crate::{message_queue, storage::{RollbackGuard, Store}, AppState, Result};
 use rusqlite::{params, OptionalExtension};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -274,10 +274,15 @@ pub(crate) fn reconcile_in_progress(store: &Store) -> Result<()> {
     // Commit interrupted deliveries and their posts before decoding any queued messages.
     let interrupted = store.in_transaction_immediate(|| reconcile_interrupted_deliveries(store));
     let queued = store.in_transaction_immediate(|| reconcile_queued_deliveries(store));
+    let queued_error = match queued {
+        Ok(errors) if errors.is_empty() => None,
+        Ok(errors) => Some(errors.join("; ")),
+        Err(error) => Some(error),
+    };
     let errors: Vec<_> = [
         ("direct bot messages", direct.err()),
         ("interrupted shared-channel deliveries", interrupted.err()),
-        ("queued shared-channel deliveries", queued.err()),
+        ("queued shared-channel deliveries", queued_error),
     ].into_iter().filter_map(|(phase, error)| error.map(|error| (phase, error))).collect();
     match errors.as_slice() {
         [] => Ok(()),
@@ -298,16 +303,30 @@ fn reconcile_interrupted_deliveries(store: &Store) -> Result<()> {
     settle_posts(store, &posts)
 }
 
-fn reconcile_queued_deliveries(store: &Store) -> Result<()> {
+fn reconcile_queued_deliveries(store: &Store) -> Result<Vec<String>> {
+    let rollback = RollbackGuard::new(&store.db);
     // A queued assignment whose queue entry is gone was taken just before PandaCode closed.
     let queued: Vec<(String,String,String,String)> = {
         let mut statement = store.db.prepare("SELECT d.id,d.session_id,c.name,m.text FROM bot_shared_channel_deliveries d JOIN bot_shared_channel_messages m ON m.id=d.message_id JOIN bot_shared_channels c ON c.id=d.channel_id WHERE d.status='queued'").map_err(|e| e.to_string())?;
         let rows = statement.query_map([], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(|e| e.to_string())?;
         rows.collect::<rusqlite::Result<_>>().map_err(|e| e.to_string())?
     };
+    let mut session_errors = Vec::new();
     for (id, session_id, name, text) in queued {
+        let queue = match message_queue::list(store, Some(&session_id)) {
+            Ok(queue) => queue,
+            // list returns strings. Only rusqlite row-decoding errors are safe to skip.
+            Err(error) if !rollback.rolled_back()
+                && (error.starts_with("Invalid column type ")
+                    || error.starts_with("Conversion error from type ")) =>
+            {
+                session_errors.push(error);
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let prefix = format!("Work requested in #{name}:");
-        if !message_queue::list(store, Some(&session_id))?.iter().any(|item| prompt_matches(&item.text, &prefix, &text)) {
+        if !queue.iter().any(|item| prompt_matches(&item.text, &prefix, &text)) {
             store.db.prepare_cached("UPDATE bot_shared_channel_deliveries SET status='failed',updated_at=?2 WHERE id=?1").and_then(|mut statement| statement.execute(params![id,crate::storage::now()])).map_err(|e| e.to_string())?;
         }
     }
@@ -315,7 +334,8 @@ fn reconcile_queued_deliveries(store: &Store) -> Result<()> {
         store,
         "SELECT id FROM bot_shared_channel_messages WHERE kind='user' AND status IN ('queued','in_progress')",
     )?;
-    settle_posts(store, &posts)
+    settle_posts(store, &posts)?;
+    Ok(session_errors)
 }
 
 fn recovery_posts(store: &Store, sql: &str) -> Result<Vec<String>> {
@@ -325,126 +345,8 @@ fn recovery_posts(store: &Store, sql: &str) -> Result<Vec<String>> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn all_recovery_phases_claim_the_write_lock_before_accessing_tables() {
-        let dir = std::env::temp_dir().join(format!("pandacode-bot-recovery-{}", crate::storage::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("store.sqlite");
-        let store = Store::open(&path).unwrap();
-        store.db.busy_timeout(std::time::Duration::ZERO).unwrap();
-        // Missing tables expose any phase that starts reading before claiming the lock.
-        store.db.execute_batch("DROP TABLE bot_messages; DROP TABLE bot_shared_channel_deliveries;").unwrap();
-        let writer = rusqlite::Connection::open(&path).unwrap();
-        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
-
-        let error = reconcile_in_progress(&store).unwrap_err();
-        assert!(store.db.is_autocommit());
-        drop(writer);
-        drop(store);
-        std::fs::remove_dir_all(dir).unwrap();
-        assert_eq!(error.matches("database is locked").count(), 3, "{error}");
-    }
-
-    #[test]
-    fn corrupt_queue_preserves_interrupted_delivery_recovery() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        store.db.execute_batch(
-            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
-             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
-             VALUES('working-task','project','Working','claude','default','ask','idle',1,1),
-                   ('queued-task','project','Queued','claude','default','ask','idle',1,1);
-             INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at)
-             VALUES('working-bot','Working','project','claude','default','ask',1,1),
-                   ('queued-bot','Queued','project','claude','default','ask',1,1);
-             INSERT INTO bot_messages(id,source_bot_id,target_bot_id,source_session_id,target_session_id,
-                                      source_channel_id,source_external_id,text,status,depth,created_at,updated_at)
-             VALUES('direct','queued-bot','working-bot','queued-task','working-task',
-                    'desktop','desktop','work on it','in_progress',1,1,1);
-             INSERT INTO bot_shared_channels(id,name,created_at,updated_at) VALUES('channel','launch',1,1);
-             INSERT INTO bot_shared_channel_messages(id,channel_id,kind,text,status,created_at)
-             VALUES('working-post','channel','user','ship it','in_progress',1),
-                   ('queued-post','channel','user','draft it','queued',2);
-             INSERT INTO bot_shared_channel_deliveries(id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at)
-             VALUES('working','channel','working-post','working-bot','working-task','in_progress',1,1),
-                   ('waiting','channel','queued-post','queued-bot','queued-task','queued',2,2);
-             INSERT INTO queued_messages(id,session_id,position,text,attachments,created_at,updated_at)
-             VALUES('bad','queued-task',0,X'deadbeef','[]',2,2);",
-        ).unwrap();
-        let decode_error = message_queue::list(&store, Some("queued-task")).unwrap_err();
-
-        assert_eq!(reconcile_in_progress(&store), Err(decode_error));
-        assert!(store.db.is_autocommit());
-        let status = |table: &str, id: &str| {
-            store.db.query_row(&format!("SELECT status FROM {table} WHERE id=?1"), [id], |row| row.get::<_, String>(0)).unwrap()
-        };
-        assert_eq!(status("bot_messages", "direct"), "failed");
-        assert_eq!(status("bot_shared_channel_deliveries", "working"), "failed");
-        assert_eq!(status("bot_shared_channel_messages", "working-post"), "failed");
-        assert_eq!(status("bot_shared_channel_deliveries", "waiting"), "queued");
-        assert_eq!(status("bot_shared_channel_messages", "queued-post"), "queued");
-    }
-
-    #[test]
-    fn shared_channel_recovery_survives_missing_direct_bot_messages() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        store.db.execute_batch(
-            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
-             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
-             VALUES('task','project','Task','claude','default','ask','idle',1,1);
-             INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at)
-             VALUES('bot','Bot','project','claude','default','ask',1,1);
-             INSERT INTO bot_shared_channels(id,name,created_at,updated_at) VALUES('channel','launch',1,1);
-             INSERT INTO bot_shared_channel_messages(id,channel_id,kind,text,status,created_at)
-             VALUES('working-post','channel','user','ship it','in_progress',1),
-                   ('queued-post','channel','user','draft it','queued',2);
-             INSERT INTO bot_shared_channel_deliveries(id,channel_id,message_id,bot_id,session_id,status,created_at,updated_at)
-             VALUES('working','channel','working-post','bot','task','in_progress',1,1),
-                   ('queued','channel','queued-post','bot','task','queued',2,2);
-             DROP TABLE bot_messages;",
-        ).unwrap();
-
-        assert!(reconcile_in_progress(&store).unwrap_err().contains("bot_messages"));
-        assert!(store.db.is_autocommit());
-        let statuses: Vec<(String, String)> = store.db.prepare(
-            "SELECT d.status,m.status FROM bot_shared_channel_deliveries d
-             JOIN bot_shared_channel_messages m ON m.id=d.message_id ORDER BY d.id",
-        ).unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
-            .collect::<rusqlite::Result<_>>().unwrap();
-        assert_eq!(statuses, vec![("failed".into(), "failed".into()); 2]);
-    }
-
-    #[test]
-    fn direct_bot_recovery_survives_missing_shared_channel_tables() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
-        store.db.execute_batch(
-            "INSERT INTO projects(id,name,path) VALUES('project','Project','/project');
-             INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
-             VALUES('source-task','project','Source','claude','default','ask','idle',1,1),
-                   ('target-task','project','Target','claude','default','ask','idle',1,1);
-             INSERT INTO bots(id,name,project_id,provider,model,mode,created_at,updated_at)
-             VALUES('source-bot','Source','project','claude','default','ask',1,1),
-                   ('target-bot','Target','project','claude','default','ask',1,1);
-             INSERT INTO bot_messages(id,source_bot_id,target_bot_id,source_session_id,target_session_id,
-                                      source_channel_id,source_external_id,text,status,depth,created_at,updated_at)
-             VALUES('direct','source-bot','target-bot','source-task','target-task',
-                    'desktop','desktop','work on it','in_progress',1,1,1);
-             DROP TABLE bot_shared_channel_deliveries;",
-        ).unwrap();
-
-        let error = reconcile_in_progress(&store).unwrap_err();
-        assert!(error.contains("interrupted shared-channel deliveries:"));
-        assert!(error.contains("queued shared-channel deliveries:"));
-        assert!(store.db.is_autocommit());
-        let (status, result): (String, String) = store.db
-            .query_row("SELECT status,result FROM bot_messages WHERE id='direct'", [], |row| Ok((row.get(0)?, row.get(1)?)))
-            .unwrap();
-        assert_eq!(status, "failed");
-        assert_eq!(result, "Interrupted when PandaCode closed.");
-    }
-}
+#[path = "shared_channels_tests.rs"]
+mod tests;
 
 /// The post, then the channel's latest other posts and replies, so the assigned bot can build on
 /// what the user and other members already said.

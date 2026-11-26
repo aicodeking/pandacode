@@ -1,8 +1,9 @@
 //! Schema version 38: index plans, tracker backfill and settling, and `repair_v38_objects`.
 
 use super::super::sql::{
-    DISCARD_EMPTY_DRAFTS_SQL, DUE_LIMIT_RESUMES_SQL, IMPORTED_TASK_SQL, PROJECT_LINKS_SQL,
-    PROMPT_ACTIVITY_SQL, SEARCH_TASKS_SQL, SETTLE_ARCHIVED_SQL, USER_TURNS_SQL,
+    COUNT_RESTART_INTERRUPTED_SQL, DISCARD_EMPTY_DRAFTS_SQL, DUE_LIMIT_RESUMES_SQL,
+    IMPORTED_TASK_SQL, INTERRUPT_TEAMS_SQL, PAUSE_GOALS_SQL, PROJECT_LINKS_SQL, PROMPT_ACTIVITY_SQL,
+    RESET_REMOTE_STARTS_SQL, SEARCH_TASKS_SQL, SETTLE_ARCHIVED_SQL, USER_TURNS_SQL,
 };
 use super::super::tests_sessions::empty_session;
 use super::super::*;
@@ -41,7 +42,7 @@ pub(super) fn current_database(tag: &str) -> (TempDir, std::path::PathBuf) {
 
 /// Counts of version 38 objects: every object, tracker objects, and bot indexes.
 pub(super) fn v38_counts(db: &Connection) -> (i64, i64, i64) {
-    let (found, trackers, bot_indexes, _) = v38_objects_present(db).unwrap();
+    let (found, trackers, bot_indexes, _, _) = v38_objects_present(db).unwrap();
     (found, trackers, bot_indexes)
 }
 
@@ -106,14 +107,14 @@ fn upgrade_v38_rolls_back_partial_bot_upgrade_in_savepoint() {
          DROP TABLE bot_shared_channels;
          ALTER TABLE bots RENAME COLUMN color TO COLOR;
          DROP INDEX bot_activity_model_switch;
-         PRAGMA user_version=37;",
+         PRAGMA user_version=36;",
     ).unwrap();
 
     drop(store);
     let store = Store::open(&path).unwrap();
 
     let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
-    assert_eq!(version, 38);
+    assert_eq!(version, SCHEMA_VERSION);
     let shared_objects: i64 = store.db.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE tbl_name GLOB 'bot_shared_channel*'",
         [],
@@ -267,7 +268,14 @@ fn optional_statements_stop_after_sqlite_rollback() {
 
 /// Forces the transaction rollback SQLite does on an I/O or disk-full error in the
 /// optional index step, then fails it the way `run_optional_statements` does.
+fn assert_pragmas(db: &Connection, expected_temp_store: i64, expected_cache: i64) {
+    let read = |name| db.pragma_query_value(None, name, |row| row.get::<_, i64>(0)).unwrap();
+    assert_eq!(read("temp_store"), expected_temp_store);
+    assert_eq!(read("cache_size"), expected_cache);
+}
+
 fn rolled_back_index_step(repair: &Connection, _missing: MissingIndexes) -> Result<()> {
+    assert_pragmas(repair, 1, -65536);
     assert!(!repair.is_autocommit(), "the repair transaction is open");
     repair.execute_batch("ROLLBACK;").unwrap();
     assert!(repair.is_autocommit(), "SQLite rolled the transaction back");
@@ -284,15 +292,68 @@ fn index_only_repair_rollback_does_not_fail_open() {
     db.execute_batch("DROP INDEX running_tools_session;").unwrap();
     assert_eq!(repair_v38_objects_with(&mut db, SCHEMA_VERSION, rolled_back_index_step), Ok(()));
     assert!(db.is_autocommit());
+    assert_pragmas(&db, 2, -8192);
     assert_eq!(v38_counts(&db), (V38_OBJECTS - 1, V38_TRACKER_OBJECTS, BOT_INDEXES), "nothing was committed");
     // (b) A tracker trigger is missing too: the same rollback fails the repair.
     db.execute_batch("DROP TRIGGER running_tools_insert;").unwrap();
     let error = repair_v38_objects_with(&mut db, SCHEMA_VERSION, rolled_back_index_step).unwrap_err();
     assert!(error.contains("database or disk is full"), "{error}");
+    assert!(db.is_autocommit());
+    assert_pragmas(&db, 2, -8192);
     assert_eq!(v38_counts(&db), (V38_OBJECTS - 2, V38_TRACKER_OBJECTS - 1, BOT_INDEXES), "nothing was committed");
     // The next open's repair restores both.
     repair_v38_objects(&mut db, SCHEMA_VERSION).unwrap();
     assert_eq!(v38_counts(&db), HEALTHY);
+}
+
+#[test]
+fn a_lone_legacy_retention_index_is_dropped_once() {
+    let (_directory, path) = current_database("legacy-retention-index");
+    let mut db = Connection::open(&path).unwrap();
+    db.execute_batch("CREATE INDEX turn_changes_retained ON turn_changes(created_at,id) WHERE diff_bytes>0").unwrap();
+    Store::open(&path).unwrap();
+    let exists: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='turn_changes_retained')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert!(!exists);
+    super::repair_tests::assert_repair_skips_without_write_lock(&path, &mut db, SCHEMA_VERSION);
+}
+
+#[test]
+fn migration_and_index_repair_restore_steady_pragmas() {
+    let (directory, path) = current_database("repair-pragmas");
+    let mut db = Connection::open(&path).unwrap();
+    db.execute_batch("DROP INDEX messages_handoffs; DROP INDEX sessions_worktree;").unwrap();
+    repair_v38_objects_with(&mut db, SCHEMA_VERSION, |repair, missing| {
+        assert!(!repair.is_autocommit());
+        assert_pragmas(repair, 1, -65536);
+        repair_optional_indexes(repair, missing)
+    }).unwrap();
+    assert_pragmas(&db, 2, -8192);
+    let found: i64 = db.query_row(
+        "SELECT count(*) FROM sqlite_schema WHERE type='index' AND name IN ('messages_handoffs','sessions_worktree')",
+        [], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(found, 2);
+    assert_pragmas(&Store::open(&path).unwrap().db, 2, -8192);
+    assert_pragmas(&Store::open(&directory.0.join("fresh.db")).unwrap().db, 2, -8192);
+}
+
+#[test]
+fn failed_migration_rolls_back_before_restoring_steady_pragmas() {
+    let mut db = Connection::open_in_memory().unwrap();
+    let mut migrate = || -> Result<()> {
+        let mut pragmas = MigrationPragmasGuard::new(&mut db)?;
+        let migration = pragmas.transaction().unwrap();
+        assert_pragmas(&migration, 1, -65536);
+        migration.execute_batch("CREATE TABLE work(id); CREATE INDEX broken ON work(missing);")
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    };
+    assert!(migrate().unwrap_err().contains("no such column"));
+    assert!(db.is_autocommit());
+    assert_pragmas(&db, 2, -8192);
 }
 
 #[test]

@@ -1,9 +1,10 @@
-//! Schema version 38: the hot-query indexes, the running-row trackers and their repair.
-//! `Store::open` runs `upgrade_v38` inside the migration transaction and checks for repair on
-//! supported schemas.
+//! Hot-query indexes, running-row trackers and their repair on supported schemas.
+//! The additive upgrade keeps `user_version` at 37 for older PandaCode releases.
 
+use super::sql::BASE_SCHEMA;
 use super::{now, run_savepoint, Result, RollbackGuard, SCHEMA_VERSION};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use std::time::{Duration, Instant};
 use std::collections::HashMap;
 
 /// Version 38's indexes (the bot indexes are `bots::INDEXES`, created by `bots::upgrade`). Each
@@ -13,7 +14,7 @@ use std::collections::HashMap;
 /// `repair_v38_objects` runs this batch again whenever one of these indexes is missing, so a new
 /// index also goes in `V38_SCHEMA_INDEXES` and gets an `EXPLAIN QUERY PLAN` check in
 /// `hot_queries_use_their_indexes`. `turn_changes_retained_bytes` supersedes version 13's
-/// `turn_changes_retained`, which only the `version < 38` migration drops.
+/// `turn_changes_retained`, which the upgrade and repair both drop.
 const SCHEMA_38_INDEXES: &str = "
 CREATE INDEX IF NOT EXISTS sessions_project ON sessions(project_id,updated_at DESC);
 CREATE INDEX IF NOT EXISTS sessions_provider_resume ON sessions(provider,resume_id,updated_at DESC) WHERE resume_id IS NOT NULL;
@@ -179,6 +180,7 @@ INSERT INTO architect_team_meta(session_id,status,valid_json,needs_legacy_cutoff
 
 const LEGACY_TEAM_STATUS_CLEANUP: &str = "
 DROP INDEX IF EXISTS architect_teams_status;
+DROP INDEX IF EXISTS turn_changes_retained;
 DROP TRIGGER IF EXISTS architect_team_status_insert;
 DROP TRIGGER IF EXISTS architect_team_status_update;
 DROP TRIGGER IF EXISTS architect_team_status_delete;
@@ -210,12 +212,52 @@ const SCHEMA_38_TRACKER_INDEXES: [&str; 3] = [
     "CREATE INDEX IF NOT EXISTS architect_team_meta_legacy_cutoff ON architect_team_meta(session_id) WHERE needs_legacy_cutoff=1",
 ];
 
-/// The steady-state page cache (8 MiB; `Store::open` sets the same `steady_cache_pragma!`).
-pub(super) const STEADY_CACHE: &str = steady_cache_pragma!();
-/// The page cache for the one-time version 37 to 38 migration (64 MiB).
+/// The page cache for migration and index creation (64 MiB).
 const V38_MIGRATION_CACHE: &str = "PRAGMA cache_size=-65536;";
-/// A version 38 upgrade at least this slow is logged.
-pub(super) const V38_SLOW_UPGRADE: std::time::Duration = std::time::Duration::from_millis(500);
+const V38_SLOW_UPGRADE: Duration = Duration::from_millis(500);
+
+pub(super) fn log_slow_upgrade(started: Instant) {
+    let elapsed = started.elapsed();
+    if elapsed >= V38_SLOW_UPGRADE {
+        eprintln!("PandaCode: upgraded database indexes and trackers in {:.1}s", elapsed.as_secs_f64());
+    }
+}
+
+/// Switches to disk-backed temp storage before SQLite starts building indexes.
+/// The transaction borrows this guard, so it commits or rolls back before restoration.
+pub(super) struct MigrationPragmasGuard<'db> {
+    db: &'db mut Connection,
+    active: bool,
+}
+
+impl<'db> MigrationPragmasGuard<'db> {
+    pub(super) fn new(db: &'db mut Connection) -> Result<Self> {
+        let guard = Self { db, active: true };
+        guard.db.execute_batch("PRAGMA temp_store=FILE;").map_err(|e| e.to_string())?;
+        guard.db.execute_batch(V38_MIGRATION_CACHE).map_err(|e| e.to_string())?;
+        Ok(guard)
+    }
+
+    pub(super) fn transaction(&mut self) -> rusqlite::Result<Transaction<'_>> {
+        self.db.transaction_with_behavior(TransactionBehavior::Immediate)
+    }
+
+    pub(super) fn restore(mut self) -> Result<()> {
+        self.db.execute_batch(steady_storage_pragmas!()).map_err(|e| e.to_string())?;
+        self.active = false;
+        Ok(())
+    }
+}
+
+impl Drop for MigrationPragmasGuard<'_> {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.db.execute_batch(steady_storage_pragmas!()) {
+                eprintln!("Restoring database storage settings: {error}");
+            }
+        }
+    }
+}
 
 /// The tables `SCHEMA_38_RUNNING` creates.
 pub(crate) const V38_TRACKER_TABLES: [&str; 3] = ["running_tools", "running_subagents", "architect_team_meta"];
@@ -230,6 +272,7 @@ pub(crate) const V38_SCHEMA_INDEXES: [&str; 17] = ["sessions_project", "sessions
 /// The indexes `bots::upgrade` creates; `bots_project` only when `bots.project_id` exists.
 pub(crate) const V38_BOT_INDEXES: [&str; 5] = ["bot_shared_channel_deliveries_message", "bot_shared_channel_deliveries_channel", "bot_shared_channel_deliveries_bot_status", "bot_activity_model_switch", "bots_project"];
 /// Every version 38 object `Store::open` repairs.
+const BASE_INDEXES: [&str; 2] = ["messages_session", "messages_handoffs"];
 const V38_OBJECTS: i64 = V38_TRACKER_OBJECTS + (V38_TRACKER_INDEXES.len() + V38_SCHEMA_INDEXES.len() + V38_BOT_INDEXES.len()) as i64;
 
 /// The table and columns a version 38 index is built on, so the repair can tell before taking the
@@ -390,32 +433,39 @@ fn v38_objects_sql() -> &'static str {
             .join(" OR ");
         format!(
             "SELECT type,name,CASE WHEN type='trigger' THEN sql END,type='index' AND name COLLATE NOCASE IN ({}) FROM sqlite_master WHERE (type='table' AND name COLLATE NOCASE IN ({})) OR (type='trigger' AND ({triggers})) OR (type='index' AND name COLLATE NOCASE IN ({}))
-                OR (type='index' AND name COLLATE NOCASE='architect_teams_status')
+                OR (type='index' AND name COLLATE NOCASE IN ('architect_teams_status','turn_changes_retained',{}))
                 OR (type='table' AND name COLLATE NOCASE='architect_team_status')
                 OR (type='trigger' AND name COLLATE NOCASE IN ('architect_team_status_insert','architect_team_status_update','architect_team_status_delete'))
                 ORDER BY rowid",
             list(&V38_BOT_INDEXES),
             list(&V38_TRACKER_TABLES),
             list(&indexes),
+            list(&BASE_INDEXES),
         )
     })
 }
 
-/// Counts matching objects and detects legacy side-table objects in one sqlite_master read.
-fn v38_objects_present(db: &Connection) -> Result<(i64, i64, i64, bool)> {
+/// Counts matching objects and detects legacy objects in one sqlite_master read.
+fn v38_objects_present(db: &Connection) -> Result<(i64, i64, i64, bool, bool)> {
     let count = || -> rusqlite::Result<_> {
         let mut statement = db.prepare(v38_objects_sql())?;
         let mut rows = statement.query([])?;
         let (mut found, mut trackers, mut bot_indexes) = (0, 0, 0);
         let mut legacy = false;
+        let mut base_indexes = 0;
         let mut first_created = [false; UPDATE_TRIGGER_ORDER.len()];
         while let Some(row) = rows.next()? {
             let kind = row.get_ref(0)?.as_str()?;
             let name = row.get_ref(1)?.as_str()?;
-            if name.eq_ignore_ascii_case("architect_teams_status")
+            if name.eq_ignore_ascii_case("turn_changes_retained")
+                || name.eq_ignore_ascii_case("architect_teams_status")
                 || name.get(.."architect_team_status".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("architect_team_status"))
             {
                 legacy = true;
+                continue;
+            }
+            if kind == "index" && BASE_INDEXES.iter().any(|index| name.eq_ignore_ascii_case(index)) {
+                base_indexes += 1;
                 continue;
             }
             match kind {
@@ -438,7 +488,7 @@ fn v38_objects_present(db: &Connection) -> Result<(i64, i64, i64, bool)> {
             }
             found += 1;
         }
-        Ok((found, trackers, bot_indexes, legacy))
+        Ok((found, trackers, bot_indexes, legacy, base_indexes < BASE_INDEXES.len()))
     };
     count().map_err(|e| e.to_string())
 }
@@ -505,16 +555,12 @@ pub(super) fn settle_unfinished_subagents(db: &Connection, sid: Option<&str>, st
     Ok(())
 }
 
-/// The version 37 to 38 step, inside `Store::open`'s migration transaction. `bots::upgrade` owns
+/// The additive upgrade inside `Store::open`'s migration transaction. `bots::upgrade` owns
 /// the bot tables and their indexes (tables added to `bots::SCHEMA` after a database passed
 /// version 29 are otherwise created only when bots start). On failure, its savepoint is rolled
 /// back and the error is logged (`repair_v38_objects` retries the bot indexes on the next open).
 /// The rest of the step is fatal.
 pub(super) fn upgrade_v38(migration: &Connection) -> Result<()> {
-    // A 64 MiB page cache for this one-time step only (`Store::open` restores `STEADY_CACHE`
-    // after the commit), so building the indexes and backfilling the trackers over `messages`
-    // does not thrash the steady-state 8 MiB cache.
-    migration.execute_batch(V38_MIGRATION_CACHE).map_err(|e| e.to_string())?;
     let guard = RollbackGuard::new(migration);
     if let Err(error) = run_savepoint(
         migration,
@@ -528,14 +574,13 @@ pub(super) fn upgrade_v38(migration: &Connection) -> Result<()> {
         }
         eprintln!("Upgrading bot tables/indexes: {error}");
     }
-    migration.execute_batch("DROP INDEX IF EXISTS turn_changes_retained;").map_err(|e| e.to_string())?;
     migration.execute_batch(SCHEMA_38_INDEXES).map_err(|e| e.to_string())?;
     migration.execute_batch(LEGACY_TEAM_STATUS_CLEANUP).map_err(|e| e.to_string())?;
     migration.execute_batch(SCHEMA_38_RUNNING).map_err(|e| e.to_string())?;
     for index in SCHEMA_38_TRACKER_INDEXES {
         migration.execute_batch(index).map_err(|e| e.to_string())?;
     }
-    migration.execute_batch("PRAGMA user_version=38;").map_err(|e| e.to_string())
+    Ok(())
 }
 
 /// Runs each `;`-separated statement of `sql` inside the open transaction `tx`, logging a failure
@@ -581,8 +626,8 @@ fn repair_bot_indexes(repair: &Connection, has_bots_project: bool) -> Result<()>
 
 /// Repairs v38 tracker tables and triggers, then restores optional tracker, schema and bot
 /// indexes, only through `SCHEMA_VERSION`. Index statement failures are logged individually.
-/// A write-lock, transaction rollback or commit error fails the open only when tracker core
-/// repair is required.
+/// A write-lock, transaction rollback or commit error fails the open only when base schema,
+/// legacy object cleanup or tracker core repair is required.
 ///
 /// A healthy database takes one `sqlite_master` read. When objects are missing, the read-only
 /// plan skips the write lock when only permanently blocked indexes are missing.
@@ -631,39 +676,47 @@ fn repair_v38_objects_with(
     if version > SCHEMA_VERSION {
         return Ok(());
     }
-    let (found, trackers_found, _, legacy) = v38_objects_present(db)?;
-    if found >= V38_OBJECTS && !legacy {
+    let (found, trackers_found, _, legacy, missing_base) = v38_objects_present(db)?;
+    // Avoid the write lock when only unbuildable indexes are missing.
+    let fatal = legacy || missing_base || trackers_found < V38_TRACKER_OBJECTS;
+    if found >= V38_OBJECTS && !fatal {
         return Ok(());
     }
-    // Avoid the write lock when only unbuildable indexes are missing.
-    let fatal = legacy || trackers_found < V38_TRACKER_OBJECTS;
     if !fatal && !plan_v38_repair(db, false)?.any() {
         return Ok(());
     }
-    let Some(repair) = or_skip(db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate), fatal, version)? else { return Ok(()) };
+    let Some(mut pragmas) = or_skip(MigrationPragmasGuard::new(db), fatal, version)? else { return Ok(()) };
+    let Some(repair) = or_skip(pragmas.transaction(), fatal, version)? else { return Ok(()) };
     // Another instance may have migrated or repaired the database while this one waited.
     let Some(version) = or_skip(repair.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)), fatal, version)? else { return Ok(()) };
     if version > SCHEMA_VERSION {
         return Ok(());
     }
-    let Some((found, trackers, _, legacy)) = or_skip(v38_objects_present(&repair), fatal, version)? else { return Ok(()) };
-    if found >= V38_OBJECTS && !legacy {
+    let Some((found, trackers, _, legacy, missing_base)) = or_skip(v38_objects_present(&repair), fatal, version)? else { return Ok(()) };
+    let rebuild_trackers = trackers < V38_TRACKER_OBJECTS;
+    let fatal = legacy || missing_base || rebuild_trackers;
+    if found >= V38_OBJECTS && !fatal {
         return Ok(());
     }
-    let rebuild_trackers = trackers < V38_TRACKER_OBJECTS;
-    let fatal = legacy || rebuild_trackers;
-    let Some(missing) = or_skip(plan_v38_repair(&repair, fatal), fatal, version)? else { return Ok(()) };
+    let started = rebuild_trackers.then(Instant::now);
+    if missing_base {
+        repair.execute_batch(BASE_SCHEMA).map_err(|e| e.to_string())?;
+    }
+    let Some(missing) = or_skip(plan_v38_repair(&repair, rebuild_trackers), fatal, version)? else { return Ok(()) };
     if legacy {
         repair.execute_batch(LEGACY_TEAM_STATUS_CLEANUP).map_err(|e| e.to_string())?;
     }
     if rebuild_trackers {
         repair.execute_batch(SCHEMA_38_RUNNING).map_err(|e| e.to_string())?;
-    } else if !legacy && !missing.any() {
+    } else if !fatal && !missing.any() {
         return Ok(());
     }
     let result = if missing.any() { optional_step(&repair, missing) } else { Ok(()) };
-    if or_skip(result, fatal, version)?.is_some() {
-        or_skip(repair.commit(), fatal, version)?;
+    if or_skip(result, fatal, version)?.is_some() && or_skip(repair.commit(), fatal, version)?.is_some() {
+        pragmas.restore()?;
+        if let Some(started) = started {
+            log_slow_upgrade(started);
+        }
     }
     Ok(())
 }

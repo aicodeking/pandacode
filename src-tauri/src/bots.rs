@@ -184,7 +184,7 @@ const ADDED_COLUMNS: [(&str, &str); 7] = [
 
 /// Indexes for the bot queries that read past a handful of rows (shared-channel deliveries,
 /// model-switch history, a project's bots). Run by `upgrade` once every bot table and column
-/// exists; `storage` schema 38 runs `upgrade`, so every database has them. The small per-bot
+/// exists. Storage setup and bot startup install them. The small per-bot
 /// tables (channels, tasks, rules, schedules, members, bot messages) stay unindexed by `bot_id`:
 /// each holds a few rows per bot, and an index would only add writes.
 /// `bots_project` is `PROJECT_INDEX`, created only when `bots.project_id` exists.
@@ -481,8 +481,8 @@ mod avatar_tests {
 
 /// Adds the `soul` column to a bots table created before it existed (schema 28). Idempotent.
 pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
-    let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name='soul')", [], |r| r.get(0)).map_err(|e| e.to_string())?;
-    if !exists {
+    db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+    if !has_bot_column(db, "soul")? {
         db.execute_batch("ALTER TABLE bots ADD COLUMN soul TEXT NOT NULL DEFAULT '';").map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -490,13 +490,13 @@ pub(crate) fn migrate_soul(db: &rusqlite::Connection) -> Result<()> {
 
 /// Adds bot skill and MCP references and the task-to-bot links (schema 29). Idempotent.
 pub(crate) fn migrate_capabilities(db: &rusqlite::Connection) -> Result<()> {
+    db.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
     for column in ["skills", "mcp"] {
-        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('bots') WHERE name=?1)", [column], |r| r.get(0)).map_err(|e| e.to_string())?;
-        if !exists {
+        if !has_bot_column(db, column)? {
             db.execute_batch(&format!("ALTER TABLE bots ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]' CHECK(json_valid({column}));")).map_err(|e| e.to_string())?;
         }
     }
-    db.execute_batch(SCHEMA).map_err(|e| e.to_string())
+    Ok(())
 }
 
 const MAX_REFERENCES: usize = 50;
@@ -1430,6 +1430,13 @@ pub(crate) fn startup_prepare(store: &Store) -> Result<()> {
 mod startup_tests {
     use super::*;
 
+    struct TestDatabase(PathBuf);
+    impl Drop for TestDatabase {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
     fn store_with_interrupted_delivery() -> Store {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
         // The recovery SQL only needs these delivery fields. Disable foreign keys
@@ -1454,13 +1461,24 @@ mod startup_tests {
     }
 
     #[test]
-    fn startup_prepare_checks_schema_after_waiting_for_the_writer() {
-        struct TestDatabase(PathBuf);
-        impl Drop for TestDatabase {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_file(&self.0);
-            }
+    fn v25_without_a_bots_table_migrates_bot_profile_columns() {
+        let path = TestDatabase(std::env::temp_dir().join(format!("pandacode-bots-{}.db", crate::storage::id())));
+        let store = Store::open(&path.0).unwrap();
+        store.db.execute_batch(
+            "PRAGMA foreign_keys=OFF; DROP TABLE bots; PRAGMA user_version=25;",
+        ).unwrap();
+        drop(store);
+
+        let store = Store::open(&path.0).unwrap();
+        for column in ["soul", "skills", "mcp"] {
+            assert!(has_bot_column(&store.db, column).unwrap(), "missing bots.{column}");
         }
+        let version: i64 = store.db.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::storage::SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn startup_prepare_checks_schema_after_waiting_for_the_writer() {
         thread_local! {
             static MIGRATION: std::cell::RefCell<Option<rusqlite::Connection>> = const {
                 std::cell::RefCell::new(None)
@@ -1535,9 +1553,9 @@ mod startup_tests {
 
         // Drop a table outside the recovery queries so we can verify both rollback
         // and successful reconciliation against the surviving delivery tables.
+        store.db.pragma_update(None, "user_version", crate::storage::SCHEMA_VERSION).unwrap();
         store.db.execute_batch(
-            "PRAGMA user_version=38;
-             ALTER TABLE bots ADD COLUMN COLOR TEXT;
+            "ALTER TABLE bots ADD COLUMN COLOR TEXT;
              DROP TABLE bot_memories;
              DROP INDEX IF EXISTS bot_activity_model_switch;
              UPDATE bot_shared_channel_deliveries SET status='in_progress';",
