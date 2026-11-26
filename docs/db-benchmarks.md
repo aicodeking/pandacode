@@ -2,7 +2,7 @@
 
 The SQLite fixture models a mature workspace with 20 projects, 665 sessions, about 25,000 messages, and teams, subagents, turn changes, bots, schedules, a moodboard and a Connect mirror. The [test-only harness](../src-tauri/src/storage_bench.rs) and its [seeded fixture](../src-tauri/src/storage_bench/fixture.rs) run against real file-backed databases.
 
-The recorded 54-case comparison used a development build that advanced the schema to 38. PandaCode 0.3.153 retains `PRAGMA user_version = 37` for full 0.3.151–0.3.152 read-only rollback compatibility. On first launch it installs the same additive indexes and trackers with `PRAGMA temp_store = FILE` during DDL so index sorts can spill to disk.
+The recorded 54-case comparison used a development build that advanced the schema to 38. PandaCode 0.3.155 retains `PRAGMA user_version = 37` for full 0.3.151–0.3.154 read-only rollback compatibility. On first launch it installs the same additive indexes and trackers with `PRAGMA temp_store = FILE` during DDL so index sorts can spill to disk.
 
 ## How to run
 
