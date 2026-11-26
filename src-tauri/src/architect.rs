@@ -666,15 +666,19 @@ fn write_snapshot(store: &Store, team: &TeamSnapshot, content: &str) -> Result<(
             // Do not recreate the table: `repair_v38_objects` rebuilds it at the next open, and
             // creating it here would ping-pong with the build that dropped it. Dropping the three
             // triggers is what makes the retry safe; the bare upsert still fires them.
-            store.disable_team_trackers();
             let drops: String = crate::storage::TEAM_META_TRIGGERS
                 .iter()
                 .map(|trigger| format!("DROP TRIGGER IF EXISTS {trigger};"))
                 .collect();
             if let Err(heal) = db.execute_batch(&drops) {
+                // Trackers stay enabled, so the next save runs the savepoint and can heal again
+                // instead of taking the snapshot-only branch into the same dangling triggers.
                 eprintln!("Saving team {}: dropping dangling team trackers: {heal}", team.session_id);
                 return Err(error);
             }
+            // Only once the triggers are really gone does this process stop using the tracker,
+            // so a failed or partial drop can never strand it on the snapshot-only path.
+            store.disable_team_trackers();
             eprintln!(
                 "Saving team {}: `architect_team_meta` is missing (another PandaCode build repaired this data folder); dropped its dangling triggers and disabled team trackers until restart: {error}",
                 team.session_id
@@ -3903,5 +3907,46 @@ mod team_meta_heal_tests {
         let after: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [&sid], |row| row.get(0)).unwrap();
         assert_eq!(before, after, "an unrelated failure still rolls the snapshot back");
         assert!(store.team_meta_usable(), "an unrelated failure leaves the tracker usable");
+    }
+
+    /// `save` is called inside a caller's transaction on the warm-up paths, so the heal has to
+    /// work there too: dropping the triggers and retrying must not need a fresh connection.
+    #[test]
+    fn a_team_save_heals_inside_a_caller_transaction() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+
+        let transaction = store.db.unchecked_transaction().unwrap();
+        team.status = "waiting".into();
+        team.objective = "saved inside a caller transaction".into();
+        save(&store, &mut team).expect("the heal works inside a caller transaction");
+        transaction.commit().unwrap();
+
+        let saved = load(&store, &sid).unwrap().unwrap();
+        assert_eq!(saved.objective, "saved inside a caller transaction");
+        assert!(!store.team_meta_usable());
+    }
+
+    /// Once healed, every later save takes the snapshot-only branch. That must keep working and
+    /// must not try the tracker again.
+    #[test]
+    fn a_second_save_after_the_heal_still_persists() {
+        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let project = store.add_project(&std::env::temp_dir()).unwrap();
+        let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
+        let mut team = new_team(sid.clone(), config());
+        team.status = "running".into();
+        save(&store, &mut team).unwrap();
+        store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
+        save(&store, &mut team).expect("first save heals");
+        team.status = "completed".into();
+        save(&store, &mut team).expect("later saves use the snapshot-only path");
+        assert_eq!(load(&store, &sid).unwrap().unwrap().status, "completed");
+        assert!(!store.team_meta_usable(), "the heal is sticky for this process");
     }
 }
