@@ -6,6 +6,7 @@ import { PROJECT_LIMIT, readCollapsed, shownTasks } from './sidebar-tree';
 import { COLLAPSED_SECTIONS_KEY, COMPLETED_OPEN_KEY, UNREVIEWED_KEY, readOpen, sectionOf, sidebarSections, type HeldSection } from './sidebar-sections';
 import { PER_PROJECT, PROJECT_ORDER_KEY, SORT_KEY, compareManual, matchesFilter, readProjectOrder, readSort, taskComparator, type SidebarSort } from './sidebar-sort';
 import './styles.css';
+import './feature-requests.css';
 import { createVoiceDictation, voiceButtonHtml } from './voice-dictation';
 import './design-system.css';
 import './model-picker.css';
@@ -104,6 +105,7 @@ import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
 import { approvalBarHtml } from './approval-bar';
+import { mountFeatureRequests } from './feature-requests';
 import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
 import { captureAccountSwitches, captureTools, fillMatchingToolBodies, fillToolBody as fillDrawnToolBody, dispatchHeld, findCounter, lastHandoff, markupShared, mergeTaskDetails, restoreAccountSwitches, restoreToolViews, rowViews, takeAccountSwitch, turnMessages, type AccountSwitchView, type HeldQueueHost, type ToolView } from './transcript-host';
@@ -692,7 +694,7 @@ $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
     <div class="navigation-frame"><div id="navigation" class="navigation"></div></div>
     <section id="sidebar-bots-panel" class="bots-panel" aria-label="Bots"></section>
     <div id="sidebar-bots" class="sidebar-bots"></div>
-    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button>${starPanda()}<button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
+    <div class="sidebar-bottom">${button('support', 'Help & support', 'help', 'support-button', 'id="support-button"')}${button('feedback', 'Feedback', 'chat', 'feedback-button', 'id="feedback-button"')}${button('agent-usage', 'Agent usage', 'activity', '', 'id="agent-usage-button"')}<button data-action="settings" title="Settings (${shortcut(',')})" aria-label="Settings">${icon('settings')}</button>${starPanda()}<button data-action="toggle-theme" id="theme-toggle" aria-label="Dark mode" aria-pressed="false"></button></div>
   </aside>
   <main class="main-pane">
     <header class="workspace-header" data-tauri-drag-region="deep"><div class="header-leading" data-tauri-drag-region>${button('toggle-sidebar', 'Hide sidebar', 'sidebar', 'sidebar-toggle', 'id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="true" aria-keyshortcuts="Meta+B Control+B"')}<span id="view-divider" class="header-divider" aria-hidden="true" hidden></span><div id="breadcrumb" class="breadcrumb" data-tauri-drag-region></div></div><div class="header-actions">${preview ? '<span class="preview-status">Browser preview · sample data</span>' : ''}</div><div id="agents-dock-host"></div><div id="action-dock" class="action-dock" role="toolbar" aria-label="Workspace actions" aria-orientation="vertical" data-tauri-drag-region="false"><div class="action-dock-group" data-group="panels">${button('toggle-inspector', 'Toggle inspector', 'panel', 'active', 'id="inspector-toggle" aria-keyshortcuts="Meta+Shift+B Control+Shift+B"', `Toggle inspector (${shortcut('B', true)})`)}${button('terminal', 'Toggle terminal', 'terminal', '', 'id="terminal-toggle" aria-controls="terminal-drawer" aria-expanded="false" aria-keyshortcuts="Meta+J Control+J"', `Toggle terminal (${shortcut('J')})`)}${button('browser', 'Open browser', 'globe', '', 'id="browser-toggle"')}${button('toggle-files', 'Toggle file explorer', 'folder', '', 'id="files-toggle" aria-controls="inspector" aria-pressed="false"')}${button('toggle-file-editor', 'Toggle editor', 'edit', '', 'id="file-editor-toggle" aria-controls="file-panel" aria-expanded="false" hidden')}${button('moodboards', 'Project moodboards', 'images')}<button type="button" id="agents-toggle" class="agents-toggle" aria-label="Agents" aria-haspopup="dialog" aria-expanded="false" aria-controls="agents-flyout" data-dock-notip hidden>${icon('team')}<b class="dock-badge" aria-hidden="true" hidden></b></button></div><div class="action-dock-group" data-group="actions"><button type="button" class="header-run" id="run-project-button" data-action="run-project" aria-label="Run project" title="Run pandacode-run.sh" hidden>${icon('play')}<span>Run</span></button>${button('deploy', 'Deploy', 'upload', '', 'id="deploy-button" aria-haspopup="dialog"')}${button('task-menu', 'Task actions', 'more', '', 'id="task-menu-trigger" aria-haspopup="dialog" aria-expanded="false"')}</div><div class="action-dock-group" data-group="status"><button type="button" id="update-status" class="update-status" hidden>${icon('refresh')}<span>Restart to update</span></button></div></div><div id="agents-flyout" class="agents-flyout" data-tauri-drag-region="false" hidden><div id="subagents-host" class="subagents-host" hidden></div><div id="lineage-host" class="lineage-host"></div></div></header>
@@ -4062,6 +4064,33 @@ function renderApprovalBar(): void {
   if (!filled) approvalGroupsOpen.delete(sessionId);
   if (appeared) settleUnfolded(host);
 }
+/** The project a feature request becomes a task in: the open task's own, else the open project. A chat has none. */
+function featureRequestProject(): Project | undefined {
+  const task = session(), own = task ? state.projects.find(p => p.id === task.projectId) : undefined;
+  if (task) return own && userProjects().includes(own) ? own : undefined;
+  return userProjects().find(p => p.id === state.projectId) ?? userProjects()[0];
+}
+async function createFeatureRequestTask(title: string, description: string): Promise<{ id: string; project: string }> {
+  const owner = featureRequestProject();
+  if (!owner) throw new Error('Open a project to create a task.');
+  const task = session(), same = task && task.projectId === owner.id ? task : undefined;
+  const provider = same?.provider ?? pickHarness(await providersForChoice())?.id;
+  if (!provider) throw new Error('Open Settings to check your installed agents.');
+  const saved = await call<Session>('create_board_task', { projectId: owner.id, provider, model: same?.model || rememberedModel(provider), mode: same?.mode ?? 'full', title, description });
+  if (!state.sessions.some(s => s.id === saved.id)) state.sessions.unshift(saved);
+  renderNavigation(); renderBoardView();
+  return { id: saved.id, project: owner.name };
+}
+/** Agent-suggested feature requests: cards above the approval bar (src/feature-requests.ts). */
+const featureRequests = mountFeatureRequests({
+  call, listen: callback => subscribe('feature-requests-changed', callback),
+  sessionId: () => state.sessionId, canCreateTask: () => Boolean(featureRequestProject()), createTask: createFeatureRequestTask,
+  openTask: id => run(selectSession(id, true)), openUrl: url => openExternalUrl(url), openSettings: () => run(showSettings('agents')),
+  notify: (text, actions) => notify(text, actions), copy: text => navigator.clipboard.writeText(text),
+  focusComposer: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus({ preventScroll: true }),
+  settle: element => settleIn(element, 6, { response: 0.1 }, 0),
+  dialog: { open: (title, body) => modal(title, body), close: closeModal },
+});
 /** A task's pending approvals as the bar above its prompt. */
 function taskApprovalsHtml(sessionId: string): string {
   const approvals = [...state.streams.get(sessionId)?.approvals ?? []].map(([id, text]) => ({ id, text }));
@@ -4329,6 +4358,7 @@ function renderComposer(): void {
   $('#composer-area').insertAdjacentHTML('afterbegin', '<div id="approval-bar"></div>');
   $('#composer').insertAdjacentHTML('beforebegin', '<div id="machine-orchestration"></div>' + cloudStrip(s) + remoteStartStrip(s.id) + remoteMissingNote(s) + (composerNotes.has(s.id) ? `<div class="composer-inline-note">${escape(composerNotes.get(s.id))}</div>` : '') + (running && !teamHeld(s.id) ? '' : limitBanner(s, Date.now(), limitAlternatives(s), teamHeld(s.id))));
   if (orchestrationSlot) $('#machine-orchestration').replaceWith(orchestrationSlot);
+  $('#composer-area').prepend(featureRequests.element); featureRequests.sync();
   renderApprovalBar(); renderBotFailover(); syncOrchestration(); promptMetricsCache = undefined; resizePrompt();
   trayStateChanged();
   $('#transcript').toggleAttribute('data-running', running);
@@ -9007,6 +9037,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
   if (name.startsWith('limit-')) { await limitAction(name, element); return; }
   switch (name) {
     case 'support': await openSupport(); break;
+    case 'feedback': featureRequests.feedback(); break;
     case 'new-task': if (state.view === 'board') showBoardTaskForm(); else await createTask(); break;
     case 'new-chat': if (state.view !== 'conversation') setWorkspaceView('conversation'); await newChat(); break;
     case 'board-view': setWorkspaceView('board'); break;

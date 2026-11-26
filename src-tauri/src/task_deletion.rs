@@ -90,10 +90,13 @@ pub(crate) fn delete_state(state: &AppState, sid: &str) -> Result<DeletedSession
     })
 }
 
-/// Deletes the rows, then the app-data files of every deleted task (progress snapshots), best effort.
+/// Deletes the rows, then the app-data files of every deleted task (progress snapshots, feature requests), best effort.
 fn delete_with_files(state: &AppState, sid: &str, app_data: Option<&std::path::Path>) -> Result<DeletedSessions> {
     let deleted = delete_state(state, sid)?;
-    if let Some(dir) = app_data { crate::progress::forget(dir, &deleted.deleted_session_ids); }
+    if let Some(dir) = app_data {
+        crate::progress::forget(dir, &deleted.deleted_session_ids);
+        crate::feature_requests::forget(dir, &deleted.deleted_session_ids);
+    }
     Ok(deleted)
 }
 
@@ -154,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_task_removes_its_and_its_workers_progress() {
+    fn deleting_a_task_removes_its_and_its_workers_progress_and_feature_requests() {
         let (state, project) = test_state();
         let (parent, child, other) = {
             let store = state.store.lock().unwrap();
@@ -168,8 +171,11 @@ mod tests {
             let draft = crate::progress::parse(&serde_json::json!({"title":"t","svg":"<svg/>"})).unwrap();
             crate::progress::save(&progress, sid, draft, crate::progress::Media::Svg("<svg/>".into())).unwrap();
         }
+        for sid in [&parent, &child, &other] { crate::feature_requests::add(&app_data, sid, "t", "d").unwrap(); }
         let deleted = delete_with_files(&state, &parent, Some(&app_data)).unwrap();
         assert_eq!(deleted.deleted_session_ids, vec![parent.clone(), child.clone()]);
+        assert!(crate::feature_requests::list(&app_data, &parent).unwrap().is_empty() && crate::feature_requests::list(&app_data, &child).unwrap().is_empty());
+        assert_eq!(crate::feature_requests::list(&app_data, &other).unwrap().len(), 1);
         assert!(!progress.join(&parent).exists() && !progress.join(&child).exists());
         assert_eq!(crate::progress::list(&progress, &other).unwrap().len(), 1);
         let _ = std::fs::remove_dir_all(&app_data);

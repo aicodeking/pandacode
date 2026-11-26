@@ -237,6 +237,15 @@ test('the destructive badge carries an in-app tooltip, not a native title', () =
 
 const panda = (name, input = {}, extra = {}) => tool(`mcp__pandacode_architect__pandacode_${name}`, input, extra);
 
+test('summaries and rows: a feature request suggestion reads as one, with its title', () => {
+  const suggestion = panda('suggest_feature', { title: 'Pin a thread', description: 'Keep my favorite thread on top.' }, { output: '{"shown":true,"id":"x"}' });
+  assert.equal(summarizeTools([suggestion]), 'Suggested 1 feature request');
+  assert.equal(summarizeTools([suggestion, panda('suggest_feature', { title: 'b', description: 'c' })]), 'Suggested 2 feature requests');
+  const row = traceRowHtml(describeTool(suggestion));
+  assert.match(row, /Suggested a feature/);
+  assert.match(row, /Pin a thread/);
+});
+
 test('summaries: snapshots, screenshots as images, files an update touched, and what is hidden', () => {
   assert.equal(summarizeTools([panda('progress_snapshot', { title: 'a' }), panda('progress_snapshot', { title: 'b' })]), 'Posted 2 snapshots');
   const shots = [panda('simulator_screenshot', { udid: 'A1' }), panda('vm_screenshot', { name: 'mac' }), panda('capture_browser'), tool('View image', { path: '/tmp/a.png' })];

@@ -50,6 +50,7 @@ const TOOL_NOUNS: Record<string, Noun> = {
   // Begin and complete are one bookkeeping act, counted without a number.
   track_files: ['Tracking', 'Tracked', '', 'file changes'],
   title: ['Naming', 'Named', '', 'the task'],
+  suggest_feature: ['Suggesting', 'Suggested', 'feature request', 'feature requests'],
 };
 const UNAVAILABLE: Noun = ['Asking for', 'Asked for', 'unavailable tool', 'unavailable tools'];
 const WEB: Noun = ['Searching', 'Searched', 'search', 'searches'];

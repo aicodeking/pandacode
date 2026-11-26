@@ -96,6 +96,30 @@ const switchRow = (id: string, title: string, detail: string, checked: boolean) 
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
 
+const FEATURE_REQUEST_DETAIL = 'When you ask for something PandaCode can’t do yet, an agent can offer a card to turn it into a feature request. Send request opens a draft on GitHub in your browser with the text in the link; it becomes an issue only when you submit it there. The Feedback button stays available.';
+
+/** The Feature request cards switch: its state lives in the app, so the row draws once that answers. */
+function mountFeatureRequestSettings(host: HTMLElement): () => void {
+  let disposed = false, enabled = true, error = '', unsubscribe: (() => void) | undefined;
+  const draw = () => {
+    if (disposed) return;
+    const focused = host.contains(document.activeElement) ? document.activeElement?.id : '';
+    host.innerHTML = `${switchRow('feature-requests-enabled', 'Feature request cards', FEATURE_REQUEST_DETAIL, enabled)}${error ? `<small class="settings-embed-error" role="alert">${escape(error)}</small>` : ''}`;
+    if (focused) host.querySelector<HTMLElement>(`#${focused}`)?.focus({ preventScroll: true });
+  };
+  const load = () => call<boolean>('feature_requests_enabled').then(value => { if (!disposed && (value !== enabled || host.childElementCount === 0)) { enabled = value; draw(); } }).catch(() => undefined);
+  const change = (event: Event) => {
+    const target = event.target instanceof HTMLInputElement && event.target.id === 'feature-requests-enabled' ? event.target : null;
+    if (!target) return;
+    const next = target.checked;
+    call('feature_requests_set_enabled', { enabled: next }).then(() => { enabled = next; error = ''; draw(); }, () => { error = 'Couldn’t save this setting. Try again.'; draw(); });
+  };
+  host.addEventListener('change', change);
+  void subscribe('feature-requests-changed', () => { void load(); }).then(stop => { if (disposed) stop(); else unsubscribe = stop; }).catch(() => undefined);
+  void load();
+  return () => { disposed = true; unsubscribe?.(); host.removeEventListener('change', change); host.replaceChildren(); };
+}
+
 function mountAgentsDockSettings(host: HTMLElement): () => void {
   let disposed = false;
   let preferences: AgentsDockPreferences = { enabled: false, keepOnScreen: true, pinned: false };
@@ -172,6 +196,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         <div class="setting-row settings-default-row"><div><strong>Default model</strong></div><button type="button" id="default-model" class="settings-select" data-action="default-model" aria-label="Default model for new tasks" aria-haspopup="dialog" aria-expanded="false"><span>${escape(options.defaultModel)}</span>${icon('down')}</button></div>
         <div class="setting-row"><div><strong>Agent updates</strong></div><button type="button" class="secondary-button" data-action="agent-updates" aria-haspopup="dialog">Check updates</button></div>
         ${switchRow('turn-checks', 'Project checks after turns', 'When a turn ends, runs the project’s own test or check command with your environment (your shell, PATH and credentials); a failure queues one fix.', options.turnChecks)}
+        <div id="feature-requests-settings"></div>
       </div>
       <div class="settings-heading settings-agents-heading"><h3>Installed agents</h3><button type="button" class="settings-refresh" aria-label="Refresh agents" title="Refresh agents">${icon('refresh')}</button></div>
       <div class="settings-provider-status" role="status" hidden></div>
@@ -429,6 +454,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       cleanups.push(mountAboutSettings(panel.querySelector<HTMLElement>('.settings-about')!));
       cleanups.push(mountResourceUsage(panel.querySelector<HTMLElement>('.settings-resources')!));
     }
+    if (id === 'agents') cleanups.push(mountFeatureRequestSettings(panel.querySelector<HTMLElement>('#feature-requests-settings')!));
     if (id === 'agents' && !discovered) void refresh();
     for (const slot of panel.querySelectorAll<HTMLElement>('[data-embed]')) {
       const mount = () => {

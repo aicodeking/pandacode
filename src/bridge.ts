@@ -48,6 +48,7 @@ export async function subscribe(name: 'bot-notification', callback: (event: { bo
 export async function subscribe(name: 'bot-failover', callback: (event: import('./bots').FailoverAsk) => void): Promise<() => void>;
 export async function subscribe(name: 'bot-model-switch', callback: (event: { botId: string; at: number; text: string; detail: Record<string, unknown> }) => void): Promise<() => void>;
 export async function subscribe(name: 'bot-pairing', callback: (event: { botId: string; channelId: string; senderName: string; code: string }) => void): Promise<() => void>;
+export async function subscribe(name: 'feature-requests-changed', callback: (event: { sessionId?: string } | null) => void): Promise<() => void>;
 export async function subscribe(name: 'sessions-deleted', callback: (event: {sessionIds: string[]}) => void): Promise<() => void>;
 export async function subscribe(name: 'provider-models-changed', callback: (event: {provider: import('./types').ProviderId}) => void): Promise<() => void>;
 export async function subscribe(name: 'overlay-open-task', callback: (event: { sessionId: string; workerId?: string; workerSessionId?: string; subagentId?: string }) => void): Promise<() => void>;

@@ -41,7 +41,7 @@ html[data-theme="dark"] .star-panda{
 .star-panda-art .star-panda-ear-right{transform-origin:25% 80%}
 
 /* Five controls at the minimum sidebar width: 160px + 12px gaps + 14px padding. */
-@container sidebar (max-width:219px){.sidebar-bottom{gap:3px;padding-inline:7px}}
+@container sidebar (max-width:219px){.sidebar-bottom{gap:2px;padding-inline:4px}.sidebar-bottom>button:not(.star-panda){width:var(--control);height:var(--control)}}
 
 /* One small offering gesture per hover/focus; no timers or idle loop. */
 @media(prefers-reduced-motion:no-preference){

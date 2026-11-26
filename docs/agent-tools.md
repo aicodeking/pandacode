@@ -19,6 +19,8 @@ to create or start separate tasks outside their assignments. Codex registers the
 app tools as dynamic functions; other supported local harnesses use the
 authenticated, run-local MCP bridge.
 
+`pandacode_suggest_feature` (title, description) lets a standalone task or team lead suggest a feature of PandaCode itself: it only shows the user a card in the thread (the text should be general, with no project paths, code, names or secrets), needs no approval, and is a no-op once the user turns the cards off; see [Feature requests](feature-requests.md).
+
 Task operations remain within the current project. File previews use the task's
 checkout and existing native path validation. Creating a worktree creates a task
 under its original project. Starting another agent uses the same admission and

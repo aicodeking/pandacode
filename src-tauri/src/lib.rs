@@ -31,6 +31,7 @@ mod context_recovery;
 mod conversation_fork;
 mod conversation_import;
 mod design;
+mod feature_requests;
 mod progress;
 mod file_preview;
 mod run_script;
@@ -791,7 +792,7 @@ fn app_instructions(chat: bool, worker: bool) -> String {
         return [turn_changes::instruction(), TURN_ENDS].concat();
     }
     let run = if chat { "" } else { run_script::INSTRUCTIONS };
-    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat()
+    [session_titles::GUIDANCE, run, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS, FEATURE_REQUESTS].concat()
 }
 
 /// The largest prompt, steer or task description PandaCode accepts: large enough for long
@@ -810,6 +811,9 @@ const GENERATIVE_UI: &str = "\n\nGenerative UI: when a visual beats prose, a rep
 /// Agents building a GUI post one annotated screenshot per iteration to the progress timeline.
 const VISUAL_PROGRESS: &str = "\n\nVisual progress: only when your work has a graphical interface you can actually capture (a web page, desktop or mobile app, simulator, VM screen or design artboard), after each meaningful visual iteration save a screenshot of only that app's own window or page (a headless browser screenshot, a simulator or VM screenshot tool, or `screencapture -l<windowid>` on macOS; never the whole screen or other windows) under .pandacode/progress-shots/, call pandacode_progress_snapshot with a short title, an optional note and a few annotations pointing at what changed, then delete the file, since the image is copied. Before a UI exists you may post an svg idea sketch instead. Post at most one per iteration, and skip this entirely for CLIs, libraries, backend or docs work, or when no such screenshot can be taken.";
 
+/// Wishes for PandaCode itself become a card the user decides on; the agent never sends one.
+const FEATURE_REQUESTS: &str = "\n\nFeature requests: when the user wants something PandaCode itself does not do (a feature of the app, not a change to their project), call pandacode_suggest_feature once with a short title and a description of the problem and your proposal. The user decides on the card shown in this thread; write it in general terms about PandaCode, with no file paths, code, names or secrets from the user's project (the text goes to GitHub if the user sends it); never open an issue or send anything yourself.";
+
 /// Harnesses without a system prompt hear the app instructions again every few turns.
 const INSTRUCTION_REMINDER_EVERY: i64 = 8;
 fn reminder_turn(turns: i64) -> bool {
@@ -826,22 +830,23 @@ mod instruction_tests {
         assert_eq!(reminded, [1, 9, 17]);
         assert!(!reminder_turn(0));
         let text = app_instructions(false, false);
-        for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:", "Visual progress:"] {
+        for part in ["Sidebar titles:", "Run and preview workflow:", "File change tracking:", "Questions you ask through the request_user_input tool", "Your turn ends when you reply", "Generative UI:", "Visual progress:", "Feature requests:"] {
             assert!(text.contains(part), "{part}");
         }
         assert!(text.contains("wait for every subagent you started"), "a harness whose turn end closes its subagents waits for them");
         let chat = app_instructions(true, false);
-        assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:"));
+        assert!(!chat.contains("Run and preview workflow:") && chat.contains("Sidebar titles:") && chat.contains("Visual progress:") && chat.contains("pandacode_suggest_feature"));
+        assert!(text.contains("no file paths, code, names or secrets from the user's project"), "feature requests stay general");
     }
 
     #[test]
     fn team_workers_get_only_change_tracking_and_turn_end() {
         let lead = app_instructions(false, false);
         let worker = app_instructions(false, true);
-        assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS].concat());
+        assert_eq!(lead, [session_titles::GUIDANCE, run_script::INSTRUCTIONS, turn_changes::instruction(), TURN_ENDS, RICH_QUESTIONS, GENERATIVE_UI, VISUAL_PROGRESS, FEATURE_REQUESTS].concat());
         assert_eq!(worker, [turn_changes::instruction(), TURN_ENDS].concat());
         assert!(worker.contains("File change tracking:") && worker.contains("Your turn ends when you reply"));
-        for gone in ["Sidebar titles:", "Run and preview workflow:", "Generative UI:", "request_user_input"] {
+        for gone in ["Sidebar titles:", "Run and preview workflow:", "Generative UI:", "request_user_input", "Feature requests:", "pandacode_suggest_feature"] {
             assert!(!worker.contains(gone), "{gone}");
         }
         eprintln!("app instructions: lead {} B, worker {} B", lead.len(), worker.len());
@@ -2713,6 +2718,8 @@ async fn launch_operation_admitted(
         let host = design::with_design(host, app.clone(), session_id.clone(), stopped.clone());
         // A cloud agent's checkout is on its machine, where screenshots cannot be read.
         let host = if cloud { host } else { progress::with_progress(host, app.clone(), session_id.clone(), stopped.clone()) };
+        // Team workers never hear the feature request instruction, and nobody reads their threads.
+        let host = if team.as_ref().is_some_and(|admission| admission.parent != session_id) { host } else { feature_requests::with_feature_requests(host, app.clone(), session_id.clone(), stopped.clone()) };
         let host = cloud::deploy::with_deploy(host, app.clone(), session_id.clone(), stopped.clone());
         let host = Some(agent_tools::with_preview(host, app.clone(), session_id.clone(), stopped.clone()));
         let host = Some(turn_changes::with_host(host, tracker.clone(), stopped.clone()));
@@ -5107,6 +5114,11 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         progress::progress_media,
         progress::progress_thumb,
         progress::progress_clear,
+        feature_requests::feature_requests_list,
+        feature_requests::feature_request_update,
+        feature_requests::feature_request_dismiss,
+        feature_requests::feature_requests_enabled,
+        feature_requests::feature_requests_set_enabled,
         workspace_image,
         tool_image,
         resolve_workspace_files,
