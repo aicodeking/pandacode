@@ -66,6 +66,7 @@ Area → key files → detail (read it before touching the area).
 - Providers, harnesses, routing, Devin, ZCode: `src-tauri/src/providers*`, `acp.rs`, `panda_router*`; [docs/providers.md](docs/providers.md), [docs/model-routing.md](docs/model-routing.md) → [ref](docs/agent-reference.md#providers-and-harnesses).
 - Local VMs, cloud sandboxes and agents: `src-tauri/src/vm*`, `cloud*`, `cloud_agents/`; [docs/cloud-agents.md](docs/cloud-agents.md) → [ref](docs/agent-reference.md#local-vms-and-cloud).
 - Crash guard, restart after a crash: `src-tauri/src/crash_guard*`, `src/crash-recovery*.ts`; [docs/crash-recovery.md](docs/crash-recovery.md) → [ref](docs/agent-reference.md#crash-recovery).
+- Context relay, checkpoints: `src-tauri/src/relay.rs`, `src-tauri/src/storage/schema_v38.rs`; [docs/context-relay.md](docs/context-relay.md) → [ref](docs/agent-reference.md#context-relay).
 - Connect, headless host: `src-tauri/src/remote*`, `headless.rs`, `relay/`; [docs/remote-access.md](docs/remote-access.md), [docs/headless.md](docs/headless.md) → [ref](docs/agent-reference.md#remote-access-and-headless).
 - Bots, chats: `src-tauri/src/bots*`, `chats.rs`; [docs/bots.md](docs/bots.md), [docs/chats.md](docs/chats.md) → [ref](docs/agent-reference.md#bots-and-chats).
 - Progress, design canvas, Skills manager, Rules & library, jj, capabilities, schedules, recipes, checks: `progress-pip.ts`, `design-canvas.ts`, `skill-manager*.ts`, `skills-library.ts`, `jj.rs`, `schedules.rs`, `recipes.rs`, `checks.rs`; matching `docs/*.md` → [ref](docs/agent-reference.md#smaller-features).

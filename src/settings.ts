@@ -30,6 +30,7 @@ import { mountRecommended } from './recommended-settings';
 import { enabled as turnChecksEnabled } from './turn-checks';
 import { crashRestartSettingsHtml, mountCrashRestartSettings, type KeepDrafts } from './crash-restart-settings';
 import { setStillSkyEnabled, stillSkyEnabled } from './sky-window';
+import { RELAY_TOGGLES, relayToggles, relayTogglesCached, setRelayToggle } from './relay';
 
 /** Panels that live elsewhere and are embedded here: each mounts into a host and returns its cleanup. */
 type Embed = (host: HTMLElement) => Promise<() => void>;
@@ -89,10 +90,10 @@ const PLANS = new Set<ProviderId>(['glm', 'mimo', 'alibaba']);
 
 /** A row: title, its control, then the info mark named after it (after the control in Tab order); the help's
  * text stays in the DOM for screen readers. */
-const settingRow = (title: string, control: string, detail = '') =>
-  `<div class="setting-row"><div><strong>${title}</strong>${detail ? `<span class="sr-only">${detail}</span>` : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
-const switchRow = (id: string, title: string, detail: string, checked: boolean) =>
-  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}>`, detail);
+const settingRow = (title: string, control: string, detail = '', describe = false) =>
+  `<div class="setting-row"><div><strong>${title}</strong>${detail ? (describe ? `<small class="setting-desc">${escape(detail)}</small>` : `<span class="sr-only">${detail}</span>`) : ''}</div>${control}${detail ? infoMark(detail, `About ${title}`) : ''}</div>`;
+const switchRow = (id: string, title: string, detail: string, checked: boolean, describe = false) =>
+  settingRow(title, `<input type="checkbox" class="settings-switch" id="${id}" aria-label="${title}" ${checked ? 'checked' : ''}>`, detail, describe);
 /** A closed fold; what it holds mounts the first time it opens. */
 const fold = (title: string, body: string) => `<details class="settings-fold"><summary><h3>${title}</h3>${icon('chevron')}</summary>${body}</details>`;
 
@@ -181,6 +182,10 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
+    case 'relay': {
+      const toggles = relayTogglesCached();
+      return `<div class="settings-group"><p class="setting-desc">How PandaCode carries a task across a crash, a stuck run or a change of agent. These preferences apply to this computer.</p>${RELAY_TOGGLES.map(toggle => switchRow(`relay-${toggle.id}`, toggle.label, toggle.description, toggles[toggle.id], true)).join('')}</div>`;
+    }
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>Tools & integrations</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">Manage</button></div>
         ${settingRow('Jev', '<button type="button" class="secondary-button" data-action="jev-settings">Set up Jev</button>', 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
@@ -368,6 +373,28 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
     if (id === 'recommended') {
       recommended = mountRecommended(panel.querySelector<HTMLElement>('#recommended-settings')!, knownRecommended, askRecommended);
       cleanups.push(() => recommended?.dispose());
+    }
+    if (id === 'relay') {
+      // The backend holds these, so read them before showing the switches, then save on change.
+      const inputs = () => [...panel.querySelectorAll<HTMLInputElement>('input[id^="relay-"]')];
+      void relayToggles().then(state => {
+        for (const input of inputs()) {
+          const toggle = RELAY_TOGGLES.find(item => `relay-${item.id}` === input.id);
+          if (toggle) input.checked = state[toggle.id];
+        }
+      });
+      const change = (event: Event) => {
+        const input = event.target;
+        if (!(input instanceof HTMLInputElement)) return;
+        const toggle = RELAY_TOGGLES.find(item => `relay-${item.id}` === input.id);
+        if (!toggle) return;
+        void setRelayToggle(toggle.id, input.checked).then(state => {
+          // A failed save reverts the switch to what the backend actually holds.
+          input.checked = state[toggle.id];
+        });
+      };
+      panel.addEventListener('change', change);
+      cleanups.push(() => panel.removeEventListener('change', change));
     }
     // In a browser tab the microphone would be this device's, not the PandaCode machine's: say so instead of failing voice_* calls.
     if (id === 'voice' && webMode) panel.querySelector<HTMLElement>('#voice-settings')!.innerHTML = '<div class="settings-group"><div class="setting-row"><div><strong>Voice input</strong><small>Voice dictation uses the microphone on the PandaCode machine and is only available in the desktop app.</small></div></div></div>';

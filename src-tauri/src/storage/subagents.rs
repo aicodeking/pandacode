@@ -145,6 +145,17 @@ impl Store {
             return Err("Write a message under 16 MiB first.".into());
         }
         let transaction = self.db.unchecked_transaction().map_err(|e| e.to_string())?;
+        // A task the last quit/crash interrupted and the user now resumes: that was the agent dying,
+        // so it advances the resume-then-relay ladder before the claim below clears the flag. Read
+        // here, never at startup, so opening the app writes nothing.
+        let crashed = self
+            .db
+            .query_row(
+                "SELECT restart_interrupted=1 AND stop_requested=0 AND status='interrupted' FROM sessions WHERE id=?1",
+                [sid],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
         let current_title: String = self.session_columns("SELECT title FROM sessions WHERE id=?1", sid, |r| r.get(0))?;
         let title: String = if kind.is_none() && current_title == "New conversation"
             && crate::session_titles::automatic(self, sid)? {
@@ -181,6 +192,19 @@ impl Store {
             // of it once (`reported_by`), and its end reports as usual.
             self.db.execute("UPDATE machine_threads SET reported_by=?3,reported=NOT EXISTS(SELECT 1 FROM sessions WHERE id=?1 AND status IN ('running','waiting')) WHERE session_id=?1 AND parent_session_id=?2", params![child, sid, message_id]).map_err(|e| e.to_string())?;
         }
+        // Fail open: escalation bookkeeping never blocks a start. A task this run resumes after a
+        // crash has now recorded that death, so its next failure relays instead of resuming again.
+        if crashed {
+            match crate::relay::record_death(self, sid, crate::relay::EndKind::Crashed) {
+                Ok(crate::relay::EscalationStep::Relay) => {
+                    if let Err(error) = crate::relay::queue_from_checkpoint(self, sid) {
+                        eprintln!("Relay: could not queue a packet after a crashed run: {error}");
+                    }
+                }
+                Ok(crate::relay::EscalationStep::Resume) => {}
+                Err(error) => eprintln!("Relay: could not record a crashed run: {error}"),
+            }
+        }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(message_id)
     }
@@ -215,6 +239,25 @@ impl Store {
                 params![sid, status, successful && !stopped, now(), restore_stage],
             )
             .map_err(|e| e.to_string())?;
+        // A run that actually died advances the resume-then-relay ladder; a success, a user's Stop
+        // and a context command all start the task over. Fail open: escalation bookkeeping must
+        // never fail the run end itself.
+        if !successful && !stopped && restore_stage.is_none() {
+            match crate::relay::record_death(self, sid, crate::relay::EndKind::Harness) {
+                // The resume attempt is spent and this death relays: queue the packet now, so the
+                // next run of this task (whoever drives it) starts from the checkpoint. A run that
+                // fails again just replaces the undelivered packet with a newer one.
+                Ok(crate::relay::EscalationStep::Relay) => {
+                    if let Err(error) = crate::relay::queue_from_checkpoint(self, sid) {
+                        eprintln!("Relay: could not queue a packet after a failed run: {error}");
+                    }
+                }
+                Ok(crate::relay::EscalationStep::Resume) => {}
+                Err(error) => eprintln!("Relay: could not record a failed run: {error}"),
+            }
+        } else if let Err(error) = crate::relay::clear_escalation(self, sid) {
+            eprintln!("Relay: could not reset the escalation ladder: {error}");
+        }
         Ok(())
     }
 

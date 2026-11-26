@@ -191,6 +191,41 @@ DROP TRIGGER IF EXISTS architect_team_status_update;
 DROP TRIGGER IF EXISTS architect_team_status_delete;
 DROP TABLE IF EXISTS architect_team_status;";
 
+/// Context Relay's tables (issue #397). Created idempotently at every open, like the bot tables,
+/// so `user_version` stays 37 and an older PandaCode release still opens the database. Nothing
+/// here is rebuilt data: a checkpoint, a queued packet and an escalation row are all durable
+/// state, so the plain `Store::open` migration also creates them for a database crossing 37.
+pub(crate) const RELAY_SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS task_checkpoints(
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL CHECK(ordinal>0),
+  at INTEGER NOT NULL,
+  message_high_water INTEGER NOT NULL DEFAULT 0,
+  goal TEXT NOT NULL DEFAULT '',
+  task_stage TEXT NOT NULL DEFAULT 'in_progress',
+  decisions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(decisions)),
+  open_questions TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(open_questions)),
+  files TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(files)),
+  commands TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(commands)),
+  UNIQUE(session_id,ordinal));
+CREATE INDEX IF NOT EXISTS task_checkpoints_task ON task_checkpoints(session_id,ordinal DESC);
+CREATE TABLE IF NOT EXISTS task_relays(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  relay_id TEXT NOT NULL,
+  packet TEXT NOT NULL CHECK(json_valid(packet)),
+  created_at INTEGER NOT NULL,
+  delivered_at INTEGER);
+CREATE TABLE IF NOT EXISTS task_escalations(
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+  last_end TEXT,
+  resumes INTEGER NOT NULL DEFAULT 0 CHECK(resumes>=0),
+  relays INTEGER NOT NULL DEFAULT 0 CHECK(relays>=0),
+  updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS relay_settings(
+  id INTEGER PRIMARY KEY CHECK(id=1),
+  content TEXT NOT NULL CHECK(json_valid(content)));";
+
 const UPDATE_TRIGGER_ORDER: [(&str, &str); 3] = [
     ("running_tools_update_stop", "running_tools_update_start"),
     ("running_subagents_update_stop", "running_subagents_update_start"),
@@ -522,6 +557,31 @@ pub(super) fn settle_unfinished_subagents(db: &Connection, sid: Option<&str>, st
     Ok(())
 }
 
+/// Ensures the Context Relay tables exist, at every open. `CREATE ... IF NOT EXISTS` is a
+/// `sqlite_master` lookup when they do, so a healthy database pays almost nothing; a database
+/// created before relay shipped (already at `SCHEMA_VERSION`, so no migration runs) still gets
+/// them. A database from a newer release that lacks them is left alone by `repair_v38_objects`,
+/// which is why this is separate from that repair.
+pub(super) fn ensure_relay_schema(db: &Connection) -> Result<()> {
+    // A newer database's own relay tables are not ours to reshape: only add what is missing.
+    const TABLES: [&str; 4] = ["task_checkpoints", "task_relays", "task_escalations", "relay_settings"];
+    let mut all_present = true;
+    for table in TABLES {
+        let present: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        all_present &= present;
+    }
+    if all_present {
+        return Ok(());
+    }
+    db.execute_batch(RELAY_SCHEMA).map_err(|e| e.to_string())
+}
+
 /// The additive upgrade inside `Store::open`'s migration transaction. `bots::upgrade` owns
 /// the bot tables and their indexes (tables added to `bots::SCHEMA` after a database passed
 /// version 29 are otherwise created only when bots start). On failure, its savepoint is rolled
@@ -542,6 +602,8 @@ pub(super) fn upgrade_v38(migration: &Connection) -> Result<()> {
         eprintln!("Upgrading bot tables/indexes: {error}");
     }
     migration.execute_batch(SCHEMA_38_INDEXES).map_err(|e| e.to_string())?;
+    // Context Relay's tables are additive and idempotent, so they never move `user_version`.
+    migration.execute_batch(RELAY_SCHEMA).map_err(|e| e.to_string())?;
     migration.execute_batch(LEGACY_TEAM_STATUS_CLEANUP).map_err(|e| e.to_string())?;
     migration.execute_batch(SCHEMA_38_RUNNING).map_err(|e| e.to_string())?;
     for index in SCHEMA_38_TRACKER_INDEXES {

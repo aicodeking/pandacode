@@ -218,6 +218,24 @@ const messages: Record<string, Message[]> = { ...(showCards ? { 'session-cards':
   { id: 7, sessionId: 'session-1', role: 'tool', content: 'Legacy tool report\nOlder saved output remains readable.', createdAt: now - 280000 },
   { id: 8, sessionId: 'session-1', role: 'tool', content: 'Tool finished', createdAt: now - 270000 },
 ], 'session-4': [{ id: 6, sessionId: 'session-4', role: 'assistant', content: 'The project is a small native workspace for coding agents.', createdAt: now - 259200000 }] };
+// ?relay: one saved relay row so the card and its Expand action can be tried. The compact
+// record is the shape src/relay.ts decodes; the IPC fixtures below use the Rust structs.
+if (typeof location !== 'undefined' && new URLSearchParams(location.search).has('relay')) {
+  messages['session-1'].push({ id: 9, sessionId: 'session-1', role: 'relay', createdAt: now - 230000, content: JSON.stringify({
+    relayId: 'relay-preview-1', taskId: 'session-1',
+    source: { sessionId: 'session-1', provider: 'claude', model: 'sonnet' }, toProvider: 'codex',
+    checkpoint: { id: 'relay-cp-3', ordinal: 3, at: now - 240000, messageHighWater: 8 },
+    goal: 'Make search respond instantly while keeping keyboard navigation working.',
+    summary: 'The previous agent traced the search input, moved the index outside the keystroke handler and left the tests green. Continue from the checkpoint, then decide whether a sync should update the index incrementally.',
+    messages: [{ id: 1, role: 'user', excerpt: 'Search feels slow.', shortened: false }, { id: 2, role: 'assistant', excerpt: 'I’ll trace how the input updates the results.', shortened: false }, { id: 4, role: 'assistant', excerpt: 'One index per dataset.', shortened: true }],
+    files: ['src/components/search.ts', 'src/lib/search-index.ts', 'src/components/search.test.ts'],
+    decisions: ['Build the search index once per dataset.', 'Keep ↑/↓ and Enter navigation unchanged.'],
+    openQuestions: ['Should a sync update the index incrementally?'],
+    commands: ['npm test -- search'],
+    truncated: { omittedMessages: 2, droppedNewest: 0, shortenedMessages: 1 },
+    tokenAccounting: { before: 42816, packet: 8192 },
+  }) });
+}
 const providers: Provider[] = [
   { id: 'claude', name: 'Claude Code', installed: true, path: '/sample/bin/claude', version: 'Sample provider', models: ['sonnet', 'opus', 'haiku'].map(id => fallbackModel('claude', id)) },
   { id: 'codex', name: 'Codex', installed: true, path: '/sample/bin/codex', version: 'Sample provider', models: [] },
@@ -1532,6 +1550,46 @@ async function previewVoice(command: string, args: Record<string, any>): Promise
   throw new Error(`Unknown voice command: ${command}`);
 }
 
+/* Context relay (src-tauri/src/relay.rs): one task with real progress, an undelivered packet and
+ * a done-gate that is holding. The shapes are the Rust structs, field for field. */
+let previewRelayOrdinal = 3;
+let previewRelaySettings = { autoRelayOnCrash: true, retrySameAgentFirst: true, requireCheckpointBeforeRelay: false, doneGate: true };
+const previewRelayCheckpoint = (sessionId: string, ordinal = 3) => ({
+  id: `relay-cp-${ordinal}`,
+  sessionId,
+  ordinal,
+  at: now - 240000,
+  messageHighWater: 8,
+  goal: 'Make search respond instantly while keeping keyboard navigation working.',
+  taskStage: 'review',
+  decisions: ['Build the search index once per dataset.', 'Keep ↑/↓ and Enter navigation unchanged.'],
+  openQuestions: ['Should a sync update the index incrementally?'],
+  files: ['src/components/search.ts', 'src/lib/search-index.ts', 'src/components/search.test.ts'],
+  commands: ['npm test -- search'],
+});
+function previewRelayPacket(sessionId: string) {
+  return {
+    v: 1,
+    relayId: 'relay-preview-1',
+    taskId: sessionId,
+    source: { sessionId, provider: 'claude', model: 'sonnet', cwd: '/Users/you/Projects/orbit', branch: 'pandacode/search', resumeId: 'preview-session' },
+    goal: 'Make search respond instantly while keeping keyboard navigation working.',
+    taskStage: 'review',
+    checkpoint: { id: 'relay-cp-3', ordinal: 3, at: now - 240000, messageHighWater: 8 },
+    decisions: ['Build the search index once per dataset.', 'Keep ↑/↓ and Enter navigation unchanged.'],
+    openQuestions: ['Should a sync update the index incrementally?'],
+    files: ['src/components/search.ts', 'src/lib/search-index.ts', 'src/components/search.test.ts'],
+    commands: ['npm test -- search'],
+    messages: [
+      { id: 1, role: 'user', excerpt: 'Search feels slow. Make it respond instantly as I type, and keep keyboard navigation working.', shortened: false },
+      { id: 2, role: 'assistant', excerpt: 'I’ll trace how the search input updates the results.', shortened: false },
+      { id: 4, role: 'assistant', excerpt: 'The input was rebuilding the index on every keystroke. I moved the index outside the handler.', shortened: true },
+    ],
+    truncated: { omittedMessages: 2, droppedNewest: 0, shortenedMessages: 1 },
+    tokenAccounting: { before: 42816, packet: 8192 },
+  };
+}
+
 export async function invoke<T>(command: string, args: Record<string, any>): Promise<T> {
   if (command.startsWith('voice_')) return await previewVoice(command, args) as T;
   if (/^schedules?_|^scheduler_/.test(command)) return (await import('./preview-schedules')).invokeSchedules<T>(command, args, {
@@ -2433,6 +2491,47 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
       s.pullRequest = { kind: 'pull', number, url: `${repo.url}/pull/${number}`, title: pull.title, state: 'open', checkedAt: Date.now() };
       result = s; break;
     }
+    case 'relay_state': {
+      const sid = String(args.sessionId ?? 'session-1'), checkpoint = previewRelayCheckpoint(sid);
+      result = {
+        sessionId: sid,
+        escalation: { sessionId: sid, lastEnd: 'harness', resumes: 1, relays: 1, updatedAt: now - 60000 },
+        latestCheckpoint: checkpoint,
+        pending: { relayId: 'relay-preview-1', sessionId: sid, packet: previewRelayPacket(sid), createdAt: now - 45000 },
+        doneGate: { sessionId: sid, done: false, stage: 'review', completedAt: null, checkpoint, blocked: true },
+        checkpoints: [checkpoint],
+        nextStep: 'relay',
+        settings: { ...previewRelaySettings },
+      }; break;
+    }
+    case 'relay_checkpoint': {
+      const sid = String(args.sessionId ?? 'session-1');
+      previewRelayOrdinal += 1;
+      const base = previewRelayCheckpoint(sid, previewRelayOrdinal);
+      const list = (value: unknown, fallback: string[]) => Array.isArray(value) ? value.slice(0, 32).map(item => String(item)) : fallback;
+      result = {
+        ...base,
+        at: Date.now(),
+        goal: String(args.goal ?? '').trim() || base.goal,
+        decisions: list(args.decisions, base.decisions),
+        openQuestions: list(args.openQuestions, base.openQuestions),
+        files: list(args.files, base.files),
+        commands: list(args.commands, base.commands),
+      }; break;
+    }
+    case 'relay_queue': result = previewRelayPacket(String(args.sessionId ?? 'session-1')); break;
+    case 'relay_settings': result = { ...previewRelaySettings }; break;
+    case 'relay_set_settings': {
+      const incoming = args.settings;
+      if (incoming && typeof incoming === 'object') previewRelaySettings = { ...previewRelaySettings, ...(incoming as Record<string, boolean>) };
+      result = { ...previewRelaySettings }; break;
+    }
+    case 'relay_expand': {
+      const sid = String(args.sessionId ?? 'session-1');
+      const ids = Array.isArray(args.ids) ? args.ids.map(Number).filter((id: number) => Number.isSafeInteger(id) && id > 0).slice(0, 200) : [];
+      result = (messages[sid] ?? []).filter(message => ids.includes(message.id)).map(message => ({ id: message.id, role: message.role, content: message.content, createdAt: message.createdAt })); break;
+    }
+    case 'relay_cancel': result = null; break;
     case 'task_token_usage': result = { input: 91234, cacheRead: 1000000, cacheWrite: 45000, output: 152340, firstUsed: Date.now() - 86400000, lastUsed: Date.now() - 300000 }; break;
     case 'token_saver_tools': result = { rtk: previewRtk, rtkVersion: previewRtk ? '1.0.1' : '', rtkInstall: 'brew install rtk' }; break;
     case 'token_saver_install': {
