@@ -263,9 +263,13 @@ fn identity(provider: &str, connection: Option<&Connection>) -> String {
     }
 }
 
+/// The variables that authenticate a harness without a login file.
+fn credential_names(provider: &str) -> &'static [&'static str] {
+    if provider == "claude" { &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] } else { &["CODEX_API_KEY", "OPENAI_API_KEY"] }
+}
+
 fn owns_credentials(provider: &str, connection: &Connection) -> bool {
-    let names: &[&str] = if provider == "claude" { &["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] } else { &["CODEX_API_KEY", "OPENAI_API_KEY"] };
-    names.iter().any(|name| connection.env.get(*name).is_some_and(|value| !value.trim().is_empty()) || connection.secret_env.iter().any(|key| key == *name))
+    credential_names(provider).iter().any(|name| connection.env.get(*name).is_some_and(|value| !value.trim().is_empty()) || connection.secret_env.iter().any(|key| key == *name))
 }
 
 fn environment(provider: &str, connection: Option<&Connection>) -> Option<Vec<(String, String)>> {
@@ -297,6 +301,30 @@ fn candidates(provider: &str) -> Vec<(String, bool, Option<String>)> {
 fn signed_in(provider: &str, id: &str) -> bool {
     let Some(connection) = connections::get(id) else { return id == DEFAULT };
     signed_in_connection(provider, &connection)
+}
+
+/// Whether the harness's own setup (the one routing launches when a task has no connection) has a
+/// saved login. `None` when that cannot be told: only Claude Code and Codex keep a login this code
+/// can read, and an unreadable home folder is no answer. Callers keep the harness then, so a probe
+/// that cannot tell never drops a working one.
+pub(crate) fn default_signed_in(provider: &str) -> Option<bool> {
+    if !POOLED.contains(&provider) { return None; }
+    let env = crate::account_config::environment(provider, &[]);
+    // A token in the saved or process environment authenticates the CLI without a login file.
+    if credential_names(provider).iter().any(|name| crate::account_config::var(&env, name).is_some_and(|value| !value.trim().is_empty())) {
+        return Some(true);
+    }
+    signed_in_files(provider, &env)
+}
+
+/// The login files a harness writes on sign-in, under the config folder `env` selects.
+fn signed_in_files(provider: &str, env: &[(String, String)]) -> Option<bool> {
+    let dir = crate::account_config::config_dir(provider, env)?;
+    if provider == "codex" {
+        return Some(dir.join("auth.json").is_file());
+    }
+    // Metadata also covers logins whose credentials are held by the CLI's protected storage.
+    Some(dir.join(".credentials.json").is_file() || crate::account_identity::claude_json(env).is_some_and(|file| crate::account_identity::claude_signed_in(&file)))
 }
 
 fn signed_in_connection(provider: &str, connection: &Connection) -> bool {
