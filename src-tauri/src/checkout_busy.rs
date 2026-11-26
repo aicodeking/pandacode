@@ -89,7 +89,7 @@ pub(crate) async fn reserve_idle_checkouts(
     blocking(move || {
         let agents_guard = lock_agents(&agents).map_err(|e| e.to_string())?;
         let others = busy_checkout_paths(&agents_guard, &terminals, &store, None, true)?;
-        if busy_paths_overlap(&roots, &others) {
+        if roots.iter().any(|root| any_same_checkout(root, &others)) {
             return Err(busy_message.into());
         }
         let token = RESERVATIONS.lock().map_err(|e| e.to_string())?
@@ -158,10 +158,6 @@ fn checkout_overlaps(a: &Path, b: &Path) -> bool {
     path_in_checkout(b, a, &resolve_path(a)) || path_in_checkout(a, b, &resolve_path(b))
 }
 
-fn busy_paths_overlap(roots: &[PathBuf], others: &[PathBuf]) -> bool {
-    roots.iter().any(|root| others.iter().any(|other| checkout_overlaps(root, other)))
-}
-
 /// Whether `other` (inside `root`) belongs to a linked worktree strictly below `root`'s own
 /// checkout. Only when `root` is itself in a checkout: a plain folder still counts every
 /// repository inside it. Submodules and vendored `.git` folders are part of `root`'s working tree
@@ -212,7 +208,7 @@ async fn checkout_busy_in_state(
         let active = lock_agents(&agents).map_err(|e| e.to_string())?;
         let others = busy_checkout_paths(&active, &terminals, &store, exclude_session.as_deref(), include_exits)?;
         drop(active);
-        Ok(busy_paths_overlap(&roots, &others))
+        Ok(roots.iter().any(|root| any_same_checkout(root, &others)))
     })
     .await
 }

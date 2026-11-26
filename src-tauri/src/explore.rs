@@ -566,8 +566,9 @@ mod harness_marker_tests {
         assert_eq!(harness_marker("glm"), Ok(Some("explore-on-glm".into())));
         assert_eq!(harness_marker("alibaba"), Ok(Some("explore-on-alibaba".into())));
         assert_eq!(run_name(false, true, "alibaba"), Some(RunExplore { name: "pandacode_explore", claude_code: true }));
-        assert!(!effective("alibaba", Ok(false), || Ok(false)), "alibaba is opt-in");
-        assert!(effective("alibaba", Ok(false), || Ok(true)), "alibaba opted in");
+        assert!(!effective("alibaba", Ok(false), || Ok(true)), "alibaba requires main opt-in");
+        assert!(!effective("alibaba", Ok(true), || Ok(false)), "alibaba is opt-in");
+        assert!(effective("alibaba", Ok(true), || Ok(true)), "alibaba opted in");
         for refused in ["gemini", "cursor", "../secrets", ""] {
             assert!(harness_marker(refused).is_err(), "{refused}");
         }
