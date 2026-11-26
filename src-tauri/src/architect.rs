@@ -3951,37 +3951,39 @@ mod team_meta_heal_tests {
     }
 
     /// A drop that itself fails must leave the process able to heal on a later save, not
-    /// disabled with the dangling triggers still attached.
+    /// disabled with the dangling triggers still attached. A read-only connection makes the
+    /// `DROP TRIGGER` genuinely fail (SQLite rejects a trigger on `sqlite_master`, so that
+    /// cannot be the injector).
     #[test]
     fn a_failed_trigger_drop_keeps_the_process_healable() {
-        let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+        let directory = std::env::temp_dir().join(format!("pandacode-team-heal-dropfail-{}", crate::storage::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("store.sqlite");
+        let store = Store::open(&path).unwrap();
         let project = store.add_project(&std::env::temp_dir()).unwrap();
         let sid = store.create_session(&project.id, "claude", "default", "ask").unwrap().id;
         let mut team = new_team(sid.clone(), config());
         team.status = "running".into();
         save(&store, &mut team).unwrap();
         store.db.execute_batch("DROP TABLE architect_team_meta").unwrap();
-        // Refuse the DROP TRIGGER the heal needs, so `drop_dangling` reports an error.
-        store.db.execute_batch(
-            "CREATE TRIGGER refuse_trigger_drop BEFORE DELETE ON sqlite_master BEGIN SELECT RAISE(IGNORE); END;",
-        ).unwrap_or(());
+        drop(store);
 
-        team.status = "waiting".into();
-        let first = save(&store, &mut team);
-
-        // Whatever happened, the process must not be left disabled with live dangling triggers:
-        // either the heal succeeded (trackers off, triggers gone) or it failed cleanly and the
-        // next save still runs the savepoint path.
-        let triggers: i64 = store.db.query_row(
+        let readonly = Store::open_read_only(&path).unwrap();
+        let triggers: i64 = readonly.db.query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger' AND name IN ('architect_team_meta_insert','architect_team_meta_update_clear','architect_team_meta_update_sync')",
             [], |row| row.get(0)).unwrap();
-        if first.is_err() {
-            assert!(store.team_meta_usable(), "a failed heal leaves the tracker usable so the next save retries");
-            assert_eq!(triggers, 3, "the triggers are still attached");
-        } else {
-            assert!(!store.team_meta_usable());
-            assert_eq!(triggers, 0, "the heal only completes once the triggers are gone");
-        }
+        assert_eq!(triggers, 3, "the dangling triggers are still attached");
+        let blocked = readonly.db.execute_batch("DROP TRIGGER IF EXISTS architect_team_meta_insert");
+        assert!(blocked.is_err(), "a read-only connection cannot drop the trigger");
+        drop(readonly);
+
+        // A writable open afterwards heals normally, so a failed drop never strands the process.
+        let store = Store::open(&path).unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.status = "completed".into();
+        save(&store, &mut team).expect("a later writable save heals");
+        assert_eq!(load(&store, &sid).unwrap().unwrap().status, "completed");
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     /// The heal is per process. A reopen must rebuild the tracker from the snapshots, so the
@@ -4056,7 +4058,8 @@ mod team_meta_heal_tests {
         assert_eq!(runnable_team_rows_in(&store).unwrap().len(), 1);
     }
 
-    /// A read that is not about a missing table must keep its error; only the tracker loss heals.
+    /// Only the tracker-loss error heals: a failure that is not about `architect_team_meta`
+    /// must surface as an error rather than be answered with a snapshot read.
     #[test]
     fn a_read_error_that_is_not_the_missing_tracker_surfaces() {
         let store = Store::open(std::path::Path::new(":memory:")).unwrap();
@@ -4065,8 +4068,30 @@ mod team_meta_heal_tests {
         let mut team = new_team(sid.clone(), config());
         team.status = "running".into();
         save(&store, &mut team).unwrap();
-        store.db.execute_batch("DROP TABLE architect_team_meta; DROP TABLE architect_teams").unwrap();
-        assert!(active_team_session_ids(&store).is_err(), "a real failure is still an error");
+        // The tracker table is present but its query fails for a reason that is NOT the missing
+        // table: a view of the same name whose body errors. The heal must not swallow that.
+        store.db.execute_batch(
+            "ALTER TABLE architect_team_meta RENAME TO architect_team_meta_moved;
+             CREATE VIEW architect_team_meta AS SELECT * FROM no_such_source;",
+        ).unwrap();
+        assert!(store.team_meta_usable(), "the tracker itself is still there");
+        let error = active_team_session_ids(&store).unwrap_err();
+        assert!(error.contains("no_such_source"), "a real failure is still an error: {error}");
+        assert!(store.team_meta_usable(), "a non-tracker error does not disable the tracker");
+    }
+
+    /// The matcher must not treat an unrelated missing table as the tracker loss.
+    #[test]
+    fn the_matcher_is_narrow() {
+        assert!(team_meta_table_missing("no such table: main.architect_team_meta"));
+        for other in [
+            "no such table: main.architect_teams",
+            "no such column: architect_team_meta.status",
+            "no such table: main.architect_team_status",
+            "database is locked",
+        ] {
+            assert!(!team_meta_table_missing(other), "{other} must not heal");
+        }
     }
 
     /// A caller's transaction can roll the trigger drops back after the heal decided they were
