@@ -12,9 +12,9 @@
 .conversation-pane.channel-thread .bc-header { padding: 16px 32px; }
 .conversation-pane.channel-thread .bc-history { width: min(100%, 894px); align-self: center; padding: 20px 32px; }
 .conversation-pane.channel-thread .bc-message { max-width: min(88%, 760px); }
-.conversation-pane.channel-thread .bc-archived { width: min(calc(100% - 64px), 830px); margin: 14px auto 0; }
-.conversation-pane.channel-thread #composer-area .bc-channel-actions { max-width: 830px; }
-.conversation-pane.channel-thread #composer-area .bc-composer { max-width: 830px; margin: 0 auto; }
+.conversation-pane.channel-thread .bc-archived { width: min(calc(100% - 64px), var(--reading-width)); margin: 14px auto 0; }
+.conversation-pane.channel-thread #composer-area .bc-channel-actions { max-width: var(--reading-width); }
+.conversation-pane.channel-thread #composer-area .bc-composer { max-width: var(--reading-width); margin: 0 auto; }
 .channel-back { display: inline-grid !important; width: 24px; height: 24px; flex: none; place-items: center; border-radius: var(--ds-control-radius); color: var(--muted) !important; }
 .channel-back:hover { background: var(--ds-fill); }
 .channel-back .icon { width: 14px; height: 14px; transform: rotate(180deg); }
@@ -59,7 +59,7 @@
 .bc-working { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 7px 10px; padding: 12px 0; }
 .bc-working-faces { display: flex; }
 .bc-working-faces .bc-face { width: max(23px, 1.6em); height: max(23px, 1.6em); font-size: var(--type-caption); line-height: 1; }
-.bc-channel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 830px; margin: 0 auto 8px; padding: 0 6px; color: var(--muted); font-size:var(--type-meta); line-height:var(--type-meta-leading); }
+.bc-channel-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: var(--reading-width); margin: 0 auto 8px; padding: 0 6px; color: var(--muted); font-size:var(--type-meta); line-height:var(--type-meta-leading); }
 .bc-channel-actions > span[role=status] { margin-right: auto; }
 .bc-channel-actions > span:not([role=status]) { flex: 1; }
 .bc-reassign-menu { display: flex; flex-basis: 100%; flex-direction: column; gap: 2px; }

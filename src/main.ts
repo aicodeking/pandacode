@@ -103,6 +103,8 @@ import { Subagents } from './subagents';
 import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
+// Applies the saved reading width before Settings (a lazy import) ever renders it.
+import './reading-width';
 import { approvalBarHtml } from './approval-bar';
 import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
