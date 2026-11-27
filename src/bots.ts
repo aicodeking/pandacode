@@ -126,6 +126,7 @@ const permissionOptions = (provider: ProviderId, current: string) => {
 };
 const CHECK_INS = [{ minutes: 0, label: 'Off' }, { minutes: 30, label: 'Every 30 minutes' }, { minutes: 60, label: 'Every hour' }, { minutes: 180, label: 'Every 3 hours' }, { minutes: 360, label: 'Every 6 hours' }, { minutes: 1440, label: 'Once a day' }];
 const PURPOSE_MAX = 2000;
+const BOT_MISSING = 'This bot no longer exists.';
 const SAVE_TEXT = { '': '', saving: 'Saving…', saved: 'Saved', error: 'Not saved' } as const;
 
 /** Suggested bots: picking one fills the create form's name and purpose. */
@@ -192,18 +193,29 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const id = ++request;
     invalidateActivity();
     try {
-      const next = await options.call<Bot[]>('bots_list');
+      // The single-bot dialog already has its ID. Only the multi-bot window needs the sidebar summaries.
+      if (!single) {
+        const next = await options.call<Bot[]>('bots_list');
+        if (disposed || id !== request) return;
+        bots = next;
+        if (!bots.some(bot => bot.id === selected)) selected = bots[0]?.id ?? '';
+      }
+      const nextDetail = selected ? await options.call<BotDetail>('bot_detail', { botId: selected }) : null;
       if (disposed || id !== request) return;
-      bots = next;
-      if (!bots.some(bot => bot.id === selected)) selected = single ? '' : bots[0]?.id ?? '';
-      detail = selected ? await options.call<BotDetail>('bot_detail', { botId: selected }) : null;
-      if (disposed || id !== request) return;
+      detail = nextDetail;
       if (!bots.length && !single) editing ??= 'new';
       // A background refresh keeps a message the user has not acted on yet; the next action clears it.
     } catch (cause) {
+      if (disposed || id !== request) return;
       error = message(cause);
-      // Never leave another bot's settings actionable under the newly selected row.
-      if (detail && detail.bot.id !== selected) detail = null;
+      if (single && error === BOT_MISSING) {
+        selected = '';
+        detail = null;
+        error = '';
+      } else if (detail && detail.bot.id !== selected) {
+        // Never leave another bot's settings actionable under the newly selected row.
+        detail = null;
+      }
     }
     loading = false;
     render();
@@ -508,8 +520,13 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const focusTag = typing?.tagName;
     // A selected bot whose detail is loading or failed shows only that state, never the create form.
     if (!detail && selected && editing !== 'new' && !single) { pane.innerHTML = alert || '<p class="dialog-loading" role="status">Loading bot…</p>'; return; }
+    if (single && !detail) {
+      const note = selected ? 'Bot settings could not load. Close and reopen this dialog to retry.' : BOT_MISSING;
+      pane.innerHTML = alert || `<p class="bots-empty-note">${note}</p>`;
+      return;
+    }
     if (editing === 'new' || !detail) {
-      pane.innerHTML = alert + (single && !detail ? '<p class="bots-empty-note">This bot no longer exists.</p>' : renderCreate());
+      pane.innerHTML = alert + renderCreate();
       const list = pane.querySelector<HTMLElement>('.bc-rail');
       if (list) { list.scrollLeft = rail; railFades(list); }
     } else {
@@ -613,7 +630,12 @@ export function mountBots(host: HTMLElement, options: BotsOptions): BotsView {
     const action = target.dataset.botsAction;
     if (moreOpen && action !== 'more') moreOpen = false;
     if (action === 'new') { editing = 'new'; draft = newDraft(); nameError = ''; confirming = null; render(); pane.querySelector<HTMLInputElement>('input[name=name]')?.focus(); }
-    else if (action === 'dismiss-error') { error = ''; render(); pane.querySelector<HTMLElement>('[role=tab][aria-selected=true],.bots-form input[name=name],button')?.focus(); }
+    else if (action === 'dismiss-error') {
+      error = ''; render();
+      const focus = pane.querySelector<HTMLElement>('[role=tab][aria-selected=true],.bots-form input[name=name],button')
+        ?? host.closest('dialog')?.querySelector<HTMLElement>('[data-action="close-dialog"]');
+      focus?.focus();
+    }
     else if (action === 'models-retry') { const select = pane.querySelector<HTMLSelectElement>('.bots-form select[name=model]'), provider = pane.querySelector<HTMLSelectElement>('.bots-form select[name=provider]'); if (select && provider) { loadFormModels(provider.value as ProviderId, select, select.value); select.focus(); } }
     else if (action === 'cancel-edit') { editing = null; nameError = ''; render(); }
     else if (action === 'more') { moreOpen = !moreOpen; render(); if (moreOpen) pane.querySelector<HTMLElement>('.bp-menu [role=menuitem]')?.focus(); }

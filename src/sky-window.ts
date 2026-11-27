@@ -234,7 +234,8 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   let shownGradient = '';
   const setData = (key: string, value: string): void => { if (layer.dataset[key] !== value) layer.dataset[key] = value; };
   const running = (): boolean => transcript()?.hasAttribute('data-running') ?? pane.hasAttribute('data-running');
-  const covered = (): boolean => workspace.matches('.settings-open,.board-view,.github-view') || pane.querySelector('.conversation-pane')?.hasAttribute('inert') === true;
+  const dialog = document.querySelector<HTMLDialogElement>('#dialog');
+  const covered = (): boolean => dialog?.open === true || workspace.matches('.settings-open,.board-view,.github-view') || pane.querySelector('.conversation-pane')?.hasAttribute('inert') === true;
   const active = (): boolean => shown && visible && !document.hidden && focused && !covered();
   const minutes = (): number => options.fixedMinutes ?? minutesOf(new Date());
 
@@ -285,11 +286,11 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
    * while the pointer stirs the scene, so a first visit to a scene draws without a compile stall. With
    * KHR_parallel_shader_compile the driver compiles in the background and a later slot only collects the result. */
   function precompile(): void {
-    if (options.tileRoot || idle || idleTimer || disposed || !ctx || typeof requestIdleCallback !== 'function') return;
+    if (options.tileRoot || idle || idleTimer || disposed || dialog?.open || !ctx || typeof requestIdleCallback !== 'function') return;
     idle = requestIdleCallback(deadline => {
       idle = 0;
       const c = ctx;
-      if (!c || disposed) return;
+      if (!c || disposed || dialog?.open) return;
       const later = (ms: number): void => { idleTimer = window.setTimeout(() => { idleTimer = 0; precompile(); }, ms); };
       if (performance.now() - inputAt < INPUT_QUIET_MS || stirring || deadline.timeRemaining() < 8) { later(INPUT_QUIET_MS / 2); return; }
       for (const id of [...c.pending.keys()]) programFor(c, sceneById(id)!, false);
@@ -689,7 +690,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
     if (shown && (active() || !ctx)) paint();
   }
   function move(event: PointerEvent): void {
-    if (!shown || still || event.pointerType === 'touch') return;
+    if (!shown || still || dialog?.open || event.pointerType === 'touch') return;
     if ((event.target as Element | null)?.closest?.(READABLE)) { leave(); return; }
     const rect = layer.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
@@ -720,6 +721,14 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   function onFocus(event: Event): void { focused = event.type === 'focus'; schedule(); }
 
   const observer = new MutationObserver(records => {
+    // A native modal makes the thread inert without setting an inert attribute in the workspace.
+    if (records.some(record => record.target === dialog)) {
+      if (dialog?.open) {
+        leave();
+        cancelFade();
+      } else precompile();
+      schedule();
+    }
     for (const record of records) {
       if (record.attributeName === 'data-running') windChanged();
       if (record.attributeName === 'class' || record.attributeName === 'inert' || record.attributeName === 'data-wallpaper') { syncScene(); schedule(); return; }
@@ -729,6 +738,7 @@ export function mountSky(pane: HTMLElement, workspace: HTMLElement, options: Sky
   observer.observe(workspace, { attributes: true, attributeFilter: ['class', 'data-wallpaper'] });
   observer.observe(pane, { attributes: true, subtree: true, attributeFilter: ['data-running', 'inert'] });
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  if (dialog) observer.observe(dialog, { attributes: true, attributeFilter: ['open'] });
   const intersection = new IntersectionObserver(entries => { visible = entries.at(-1)?.isIntersecting ?? true; schedule(); });
   intersection.observe(layer);
   const resize = new ResizeObserver(entries => {

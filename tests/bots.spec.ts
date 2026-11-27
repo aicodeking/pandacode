@@ -57,6 +57,70 @@ async function openSettings(page: Page, section?: string, name = 'Scout'): Promi
 }
 
 test.describe('bots', () => {
+  test('Bot settings loads while the sidebar bot list is still pending', async ({ page }) => {
+    await page.route('**/src/preview-bots.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const marker = /switch\s*\(command\)\s*\{/;
+      expect(source).toMatch(marker);
+      await route.fulfill({ response, body: source.replace(marker, `
+        if (command === 'bots_list' && document.querySelector('#dialog.bot-settings-dialog[open]')) await new Promise(() => {});
+        switch (command) {
+      `) });
+    });
+    await newBot(page);
+    await openSettings(page);
+    await expect(panel(page).getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('Scout');
+  });
+
+  test('Bot settings stops showing controls after the bot is removed elsewhere', async ({ page }) => {
+    await newBot(page);
+    const botId = await page.locator('#breadcrumb').getByRole('button', { name: 'Scout settings', exact: true }).getAttribute('data-bot');
+    await openSettings(page);
+    await expect(panel(page).getByRole('textbox', { name: 'Name', exact: true })).toHaveValue('Scout');
+    await page.evaluate(async botId => {
+      const module = '/src/bridge.ts';
+      await (await import(module)).call('bot_delete', { botId });
+    }, botId);
+    await expect(panel(page).getByText('This bot no longer exists.', { exact: true })).toBeVisible();
+    await expect(panel(page).getByRole('textbox', { name: 'Name', exact: true })).toHaveCount(0);
+  });
+
+  test('Bot settings distinguishes a read error from a deleted bot', async ({ page }) => {
+    await page.route('**/src/preview-bots.ts*', async route => {
+      const response = await route.fetch();
+      const source = await response.text();
+      const marker = /switch\s*\(command\)\s*\{/;
+      expect(source).toMatch(marker);
+      await route.fulfill({ response, body: source.replace(marker, `
+        if (command === 'bot_detail' && document.querySelector('#dialog.bot-settings-dialog[open]')) throw new Error('Unable to read bot details.');
+        switch (command) {
+      `) });
+    });
+    await newBot(page);
+    await openSettings(page);
+    await expect(panel(page).getByRole('alert')).toHaveText('Unable to read bot details.');
+    await panel(page).getByRole('button', { name: 'Dismiss error' }).click();
+    await expect(panel(page).getByText('Bot settings could not load.', { exact: false })).toBeVisible();
+    await expect(panel(page).getByText('This bot no longer exists.', { exact: true })).toHaveCount(0);
+    await expect(panel(page).getByRole('button', { name: 'Close dialog' })).toBeFocused();
+  });
+
+  test('Bot settings pauses the animated sky until the dialog closes', async ({ page }) => {
+    await newBot(page);
+    const sky = page.locator('.main-pane > .thread-sky');
+    const paints = () => page.evaluate(() => (window as any).__sky.frames as number);
+    await expect(sky).toHaveAttribute('data-sky-state', /idle|moving/);
+    await openSettings(page);
+    await expect(sky).toHaveAttribute('data-sky-state', 'paused');
+    const before = await paints();
+    await page.waitForTimeout(400);
+    expect(await paints()).toBe(before);
+    await page.keyboard.press('Escape');
+    await expect(panel(page)).toBeHidden();
+    await expect(sky).toHaveAttribute('data-sky-state', /idle|moving/);
+  });
+
   test('a new bot keeps its draft and caret through background refreshes', async ({ page }) => {
     await openBots(page);
     const form = bots(page).getByRole('form', { name: 'New bot' });
