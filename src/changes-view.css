@@ -218,5 +218,5 @@
 }
 .cv-repo:first-child { margin-top: 2px; }
 .cv-repo-name { overflow: hidden; text-overflow: ellipsis; font-weight: var(--weight-medium); color: var(--text); }
-.cv-repo-branch, .cv-repo-ahead, .cv-repo-behind { font-family: var(--mono); font-size: var(--text-2xs); flex: 0 0 auto; }
+.cv-repo-branch, .cv-repo-ahead, .cv-repo-behind { font-family: var(--mono); font-size: var(--mono-size);line-height:var(--leading-code); flex: 0 0 auto; }
 .cv-repo .cv-icon { width: 22px; height: 22px; }

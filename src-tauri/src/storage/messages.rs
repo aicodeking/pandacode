@@ -193,7 +193,7 @@ impl Store {
     /// Linked numbers for one project with each link's repo key, so states can
     /// be refreshed per repository in one batch.
     pub fn project_links(&self, project_id: &str) -> Result<Vec<(String, String, TaskLink)>> {
-        let mut stmt = self.db.prepare_cached("SELECT l.session_id,l.repo,l.kind,l.number,l.url,l.title,l.state,l.checked_at FROM task_links l JOIN sessions s ON s.id=l.session_id WHERE s.project_id=?1 ORDER BY l.number").map_err(|e| e.to_string())?;
+        let mut stmt = self.db.prepare_cached(PROJECT_LINKS_SQL).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([project_id], |r| {
                 Ok((

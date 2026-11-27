@@ -23,6 +23,8 @@ A project can hold several folders, so one task works across a backend, a fronte
 
 ## Limits
 
+- Folder associations and per-repository links require database schema 38. Older releases that require schema 37 refuse to open the migrated database.
+
 - Remote mirrors and cloud agents refuse multi-folder projects until they learn to sync several repositories.
 - `attach_worktree` attaches to the primary repository only.
 - The mobile app shows the primary repository's changes and PR.
