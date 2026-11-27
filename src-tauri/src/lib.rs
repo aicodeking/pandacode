@@ -1223,7 +1223,7 @@ async fn set_resume_at_reset(state: State<'_, AppState>, session_id: String, ena
 #[tauri::command]
 async fn clear_usage_limit(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<()> {
     state.store.lock().map_err(|e| e.to_string())?.clear_limited(&session_id)?;
-    headless::release_limited_hold_to_reset(&session_id, |id, reason| headless::hold_queue(&app, id, reason));
+    headless::release_limited_hold_to_reset(&session_id, |id, reason| headless::emit_queue_hold(&app, id, reason));
     // A team held on this limit goes now, not at the next watchdog tick.
     architect::wake(app);
     Ok(())

@@ -5134,19 +5134,31 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
       const reconciledIds = new Set<string>();
       if (reconcileStreams) {
         // A missed done or offline deletion can leave a live card behind. Events received since the request win over the snapshot.
+        const isLiveStatus = (task: Session | undefined) => Boolean(task && ['running', 'starting', 'waiting', 'waiting_approval'].includes(task.status));
         for (const [id, live] of Array.from(state.streams.entries())) {
           const s = sessionById.get(id);
-          if (s && ['running', 'starting', 'waiting', 'waiting_approval'].includes(s.status)) continue;
+          if (isLiveStatus(s)) continue;
           if ((streamEventVersion.get(id) ?? 0) > resyncAt) continue;
           clearAgentInputs(live);
           state.streams.delete(id);
           runEndings.delete(id);
+          sendFirst.delete(id);
           for (const [steerId, item] of steers) if (item.sessionId === id) steers.delete(steerId);
           if (s) subagents.runEnded(id); else subagents.forget(id);
           tilePages.delete(id);
           queueMicrotask(() => btwPanel.event(id, 'done'));
           queueMicrotask(() => tiles.event(id));
           reconciledIds.add(id);
+        }
+        // A tab connected mid-run may hold runEndings or a stopping sendFirst without a state.streams entry.
+        for (const id of Array.from(runEndings.keys())) {
+          if (isLiveStatus(sessionById.get(id)) || (streamEventVersion.get(id) ?? 0) > resyncAt) continue;
+          runEndings.delete(id);
+        }
+        for (const [id, first] of Array.from(sendFirst.entries())) {
+          const s = sessionById.get(id);
+          if (isLiveStatus(s) || (!first.stopping && s) || (streamEventVersion.get(id) ?? 0) > resyncAt) continue;
+          sendFirst.delete(id);
         }
         reconciled = true;
         if (reconciledIds.size) updateWorkTimer();
@@ -5171,7 +5183,9 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
         const context = state.streams.get(s.id)?.contextUsage;
         if (context) s.contextUsage = context;
       }
-      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && reconciledIds.has(state.sessionId)) {
+      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && (reconciledIds.has(state.sessionId) || (reconcileStreams && selectedId === state.sessionId && detailResult.status === 'rejected'))) {
+        const vanishedId = state.sessionId;
+        subagents.forget(vanishedId); tilePages.delete(vanishedId); sendFirst.delete(vanishedId);
         ++state.generation; ++overlayOpenRequest;
         closeMenus(); subagents.close(false); architectView?.close();
         clearOpenSession(); state.messages = []; state.messagesLoading = false; state.messagesError = '';
@@ -5201,6 +5215,7 @@ function removeDeletedSessions(ids: string[]): void {
     setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); streamEventVersion.delete(id); finishingStreams.delete(id); teams.delete(id);
+    runEndings.delete(id); sendFirst.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
     attachments.clear(id); pendingPromptActivity.delete(id);
     subagents.forget(id);

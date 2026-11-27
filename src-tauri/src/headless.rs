@@ -285,7 +285,7 @@ fn start_services(app: tauri::AppHandle) {
                     None,
                     None,
                 );
-                match finish_limit_resume(&session_id, send, |id, reason| hold_queue(&limits, id, reason)).await {
+                match finish_limit_resume(&session_id, send, |id, reason| emit_queue_hold(&limits, id, reason)).await {
                     Ok(true) => {
                         let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
                         drain_queue(limits.clone(), session_id);
@@ -333,14 +333,14 @@ pub(crate) fn run_end_hold_reason(successful: bool, stopped: bool, limited: bool
 async fn finish_limit_resume(
     session_id: &str,
     send: impl Future<Output = crate::Result<()>>,
-    hold: impl FnOnce(&str, &str),
+    notify: impl FnOnce(&str, &str),
 ) -> crate::Result<bool> {
     // Keep the hold until the continuation takes its place ahead of any queued follow-up.
     match send.await {
         Ok(()) => Ok(clear_resumable_hold(session_id)),
         Err(error) => {
-            if !message_queue::is_queue_held(session_id) {
-                hold(session_id, "failed");
+            if message_queue::hold_queue_if_unheld(session_id, "failed") {
+                notify(session_id, "failed");
             }
             Err(error)
         }
@@ -348,24 +348,24 @@ async fn finish_limit_resume(
 }
 
 fn clear_resumable_hold(session_id: &str) -> bool {
-    if !matches!(message_queue::queue_hold_reason(session_id).as_deref(), Some("limited" | "reset" | "restart")) {
+    message_queue::clear_queue_hold_if(session_id, &["limited", "reset", "restart"])
+}
+
+pub(crate) fn release_limited_hold_to_reset(session_id: &str, notify: impl FnOnce(&str, &str)) -> bool {
+    if !message_queue::transition_queue_hold_reason(session_id, "limited", "reset") {
         return false;
     }
-    message_queue::set_queue_hold_state(session_id, false, None);
+    notify(session_id, "reset");
     true
 }
 
-pub(crate) fn release_limited_hold_to_reset(session_id: &str, hold: impl FnOnce(&str, &str)) -> bool {
-    if message_queue::queue_hold_reason(session_id).as_deref() != Some("limited") {
-        return false;
-    }
-    hold(session_id, "reset");
-    true
+pub(crate) fn emit_queue_hold(app: &tauri::AppHandle, session_id: &str, reason: &str) {
+    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
 }
 
 pub(crate) fn hold_queue(app: &tauri::AppHandle, session_id: &str, reason: &str) {
     message_queue::set_queue_hold_state(session_id, true, Some(reason));
-    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
+    emit_queue_hold(app, session_id, reason);
 }
 
 static DRAINING: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Default::default);
@@ -756,16 +756,32 @@ mod tests {
             ("failed", false),
         ] {
             set_hold(&session_id, reason);
+            let mut notified = Vec::new();
             let send = async {
                 assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
                 assert!(!can_drain(&session_id, false, Some(500), Some(1000), 1000));
                 Ok(())
             };
-            assert_eq!(finish_limit_resume(&session_id, send, set_hold).await, Ok(cleared));
+            assert_eq!(
+                finish_limit_resume(&session_id, send, |id, reason| {
+                    notified.push((id.to_owned(), reason.to_owned()));
+                })
+                .await,
+                Ok(cleared)
+            );
+            assert!(notified.is_empty());
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), (!cleared).then_some(reason));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
-        assert_eq!(finish_limit_resume(&session_id, async { Ok(()) }, set_hold).await, Ok(false));
+        let mut notified = Vec::new();
+        assert_eq!(
+            finish_limit_resume(&session_id, async { Ok(()) }, |id, reason| {
+                notified.push((id.to_owned(), reason.to_owned()));
+            })
+            .await,
+            Ok(false)
+        );
+        assert!(notified.is_empty());
     }
 
     #[tokio::test]
@@ -773,13 +789,22 @@ mod tests {
         let session_id = crate::storage::id();
         for reason in [None, Some("limited"), Some("reset"), Some("restart"), Some("stopped"), Some("failed")] {
             message_queue::set_queue_hold_state(&session_id, reason.is_some(), reason);
+            let mut notified = Vec::new();
             let send = async { Err("send failed".to_owned()) };
             let result = finish_limit_resume(&session_id, send, |id, reason| {
-                assert!(!message_queue::is_queue_held(id));
-                set_hold(id, reason);
+                assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
+                notified.push((id.to_owned(), reason.to_owned()));
             })
             .await;
             assert_eq!(result, Err("send failed".to_owned()));
+            assert_eq!(
+                notified,
+                if reason.is_none() {
+                    vec![(session_id.clone(), "failed".to_owned())]
+                } else {
+                    Vec::new()
+                }
+            );
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), reason.or(Some("failed")));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
@@ -797,10 +822,24 @@ mod tests {
             (None, None),
         ] {
             message_queue::set_queue_hold_state(&session_id, before.is_some(), before);
-            assert_eq!(release_limited_hold_to_reset(&session_id, set_hold), before != after);
+            let mut notified = Vec::new();
+            let transitioned = release_limited_hold_to_reset(&session_id, |id, reason| {
+                assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
+                notified.push((id.to_owned(), reason.to_owned()));
+            });
+            assert_eq!(transitioned, before != after);
+            assert_eq!(
+                notified,
+                if before != after {
+                    vec![(session_id.clone(), "reset".to_owned())]
+                } else {
+                    Vec::new()
+                }
+            );
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), after);
             assert_eq!(can_drain(&session_id, false, None, None, 1000), after.is_none());
         }
+        message_queue::set_queue_hold_state(&session_id, false, None);
     }
 
     #[test]
