@@ -133,10 +133,10 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     button('back').hidden = !android; button('recents').hidden = !android;
     button('appearance').innerHTML = icon(appearance === 'dark' ? 'sun' : 'moon');
     const pose = button('pose'), shown = poseName(status?.pose);
-    pose.hidden = !chosen?.duo; pose.setAttribute('aria-label', t`${t('iPhone Duo pose')}: ${shown}`); pose.title = shown; pose.disabled = !booted() || busy;
+    pose.hidden = !chosen?.duo; pose.setAttribute('aria-label', t`iPhone Duo pose: ${shown}`); pose.title = shown; pose.disabled = !booted() || busy;
     const look = chosenFinish(spec());
     button('finish').style.setProperty('--finish', look.color);
-    button('finish').setAttribute('aria-label', t`${t('Device finish')}: ${look.name}`); button('finish').title = look.name;
+    button('finish').setAttribute('aria-label', t`Device finish: ${look.name}`); button('finish').title = look.name;
     button('finish').disabled = !chosen;
     const axeNote = root.querySelector<HTMLElement>('.sim-axe')!;
     axeNote.hidden = !status || !status.available || status.axe;

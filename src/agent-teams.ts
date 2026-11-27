@@ -112,7 +112,7 @@ export function mountAgentTeams(host: HTMLElement, options: AgentTeamsOptions): 
     const leadModel = shown.find(model => modelKey(model) === lead);
     if (lead !== leadSelected) { leadEffort.innerHTML = effortOptions(leadModel); leadSelected = lead; }
     leadEffort.parentElement!.hidden = !leadModel?.efforts?.length;
-    count.textContent = included.length >= TEAM_MODELS_MAX ? TEAM_FULL : included.length ? `${included.length} model${included.length === 1 ? '' : 's'}` : t('Choose models');
+    count.textContent = included.length >= TEAM_MODELS_MAX ? TEAM_FULL : included.length ? (included.length === 1 ? t`1 model` : t`${included.length} models`) : t('Choose models');
   }
   function applyFilter(): void {
     const query = filter.value.trim().toLowerCase();

@@ -108,17 +108,17 @@ const FULL_BACKENDS = [
 
 
 /** Uses cooked literal text, just like t() at runtime, without matching prose or comments. */
-function extractKeys(text) {
-  const keys = new Set();
+function extractCalls(text) {
+  const keys = [];
   const source = ts.createSourceFile('catalog.ts', text, ts.ScriptTarget.Latest, true);
   const isT = node => ts.isIdentifier(node) && node.text === 't';
   function visit(node) {
-    if (ts.isCallExpression(node) && isT(node.expression) && node.arguments.length === 1) {
+    if (ts.isCallExpression(node) && isT(node.expression) && node.arguments.length >= 1) {
       const value = node.arguments[0];
-      if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) keys.add(value.text);
+      if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) keys.push(value.text);
     } else if (ts.isTaggedTemplateExpression(node) && isT(node.tag)) {
       const value = node.template;
-      keys.add(ts.isNoSubstitutionTemplateLiteral(value) ? value.text
+      keys.push(ts.isNoSubstitutionTemplateLiteral(value) ? value.text
         : value.head.text + value.templateSpans.map((span, index) => `{${index}}${span.literal.text}`).join(''));
     }
     ts.forEachChild(node, visit);
@@ -126,6 +126,8 @@ function extractKeys(text) {
   visit(source);
   return keys;
 }
+
+function extractKeys(text) { return new Set(extractCalls(text)); }
 
 test('key extraction ignores template suffixes, examples, comments and other tags', () => {
   const source = [
@@ -145,9 +147,10 @@ test('key extraction preserves escaped text and traverses nested template expres
     const b = t("Say \"hello\"");
     const c = t\`Outer \${({ nested: \`value \${t('Inner')}\` }).nested} end\`;
     const d = t\`Line\n\${value} and \${other}\`;
-    const e = t(\`Static template\`);`.replace(/\\`/g, '`').replace(/\\\$/g, '$');
+    const e = t(\`Static template\`);
+    const f = t('Call {0}', value);`.replace(/\\`/g, '`').replace(/\\\$/g, '$');
   assert.deepEqual([...extractKeys(source)].sort(), [
-    '\n[Display truncated]', 'Say "hello"', 'Outer {0} end', 'Inner', 'Line\n{0} and {1}', 'Static template',
+    '\n[Display truncated]', 'Say "hello"', 'Outer {0} end', 'Inner', 'Line\n{0} and {1}', 'Static template', 'Call {0}',
   ].sort());
 });
 
@@ -188,12 +191,25 @@ test('every wrapped t() key in src/ is present in every full catalog', () => {
   const files = readdirSync(srcDir).filter(name => name.endsWith('.ts') && !/^(preview|locales|i18n\.ts|entry\.ts)/.test(name));
   const missing = [];
   const referenced = new Set();
+  const callSites = new Map();
   for (const file of files) {
-    for (const key of extractKeys(readFileSync(`${srcDir}/${file}`, 'utf8'))) {
+    for (const key of extractCalls(readFileSync(`${srcDir}/${file}`, 'utf8'))) {
       referenced.add(key);
+      if (!callSites.has(key)) callSites.set(key, new Map());
+      const counts = callSites.get(key);
+      counts.set(file, (counts.get(file) ?? 0) + 1);
       for (const [name, catalog] of FULL_CATALOGS) {
         if (catalog[key] === undefined) missing.push(`${name}: ${JSON.stringify(key)} (${file})`);
       }
+    }
+  }
+  // Guard each catalog key and call count in each file: another call elsewhere
+  // must not hide a removed translation. File names, rather than line numbers, survive formatting.
+  // Intentional copy changes or file moves require updating this snapshot.
+  const snapshot = JSON.parse(readFileSync(new URL('./fixtures/i18n-call-sites.json', import.meta.url), 'utf8'));
+  for (const [key, expectedFiles] of Object.entries(snapshot)) {
+    for (const [file, count] of Object.entries(expectedFiles)) {
+      assert.ok((callSites.get(key)?.get(file) ?? 0) >= count, `translation call removed from ${file}: ${JSON.stringify(key)} (expected at least ${count})`);
     }
   }
   // These catalog-backed calls were lost in the rebase; guard the reverse direction too.

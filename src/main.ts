@@ -6749,7 +6749,7 @@ function onAgent(event: AgentEvent): void {
     if (s) { s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false; }
     runEndings.set(event.sessionId, 'limited');
     // A bot's limit already shows as its sidebar chip and above its composer.
-    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? t('Task')}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(t`${s?.title ?? t('Task')}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     scheduleLimitResumes();
     return;

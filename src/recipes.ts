@@ -94,7 +94,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
         busy = true; draw();
         const messages = plan.messages;
         for (const text of messages) await host.enqueue(text);
-        busy = false; message = `Queued ${messages.length} ${messages.length === 1 ? 'message' : 'messages'}.`; draw();
+        busy = false; message = messages.length === 1 ? t`Queued ${messages.length} message.` : t`Queued ${messages.length} messages.`; draw();
         host.done?.(messages.length);
       }
     } catch (error) { busy = false; message = error instanceof SyntaxError ? `Not valid JSON: ${error.message}` : errorText(error); draw(); }

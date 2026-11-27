@@ -51,7 +51,7 @@ function parseBlock(block: string): MessageAttachment[] {
   }
   if ((match = head.match(/^Attached browser screenshot: (.*)$/))) {
     const viewport = block.match(/^Viewport: (\d+ × \d+)$/m)?.[1];
-    return [{ kind: 'image', name: match[1].trim() || t('Browser screenshot'), detail: `Screenshot${viewport ? ' · ' + viewport : ''}`, imageId, raw: block }];
+    return [{ kind: 'image', name: match[1].trim() || t('Browser screenshot'), detail: t`Screenshot${viewport ? ` · ${viewport}` : ''}`, imageId, raw: block }];
   }
   if (head.startsWith('GitHub context')) {
     const items = [...block.matchAll(GITHUB_ITEM)].flatMap(([t, number, kind, state, title, url]) => {

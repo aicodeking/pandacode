@@ -116,7 +116,8 @@ export function mountSlashCommands(textarea: HTMLTextAreaElement, options: Optio
     refreshButton.setAttribute('aria-label', loadError ? t('Retry commands') : t('Refresh commands'));
     refreshButton.title = loadError ? t('Retry commands') : t('Refresh commands');
     list.setAttribute('aria-busy', String(loading && !commands.length));
-    status.textContent = loading ? `${slow ? t('Waiting for the harness to start…') : t('Loading commands…')}${commands.length ? t(' Available commands can be used now.') : ''}` : loadError || (!matches.length ? query ? t`Unknown command /${query}. Refresh commands or edit the name.` : t('No commands are available for this agent.') : `${visibleCommands.length}${matches.length > visibleCommands.length ? t` of ${matches.length}` : ''} command${matches.length === 1 ? '' : 's'}`);
+    const count = `${visibleCommands.length}${matches.length > visibleCommands.length ? t` of ${matches.length}` : ''}`;
+    status.textContent = loading ? `${slow ? t('Waiting for the harness to start…') : t('Loading commands…')}${commands.length ? t(' Available commands can be used now.') : ''}` : loadError || (!matches.length ? query ? t`Unknown command /${query}. Refresh commands or edit the name.` : t('No commands are available for this agent.') : matches.length === 1 ? t`${count} command` : t`${count} commands`);
     warning.hidden = !warnings.length;
     warning.textContent = warnings.slice(0, 3).join('\n');
     position();

@@ -126,7 +126,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
         if (selected?.id === boardId) selected = detail;
       }
       } finally { if (!disposed && selected?.id === boardId) renderImages(); }
-      report(`${files.length} ${files.length === 1 ? 'image added' : 'images added'}.`);
+      report(files.length === 1 ? t`${files.length} image added.` : t`${files.length} images added.`);
     });
   }
   async function addPaths(paths: string[]): Promise<void> {
@@ -138,7 +138,7 @@ export function mountMoodboards(host: HTMLElement, options: MoodboardOptions): (
       if (disposed) return;
       updateBoard(detail);
       if (selected?.id === boardId) { selected = detail; renderImages(); }
-      report(`${paths.length} ${paths.length === 1 ? 'image added' : 'images added'}.`);
+      report(paths.length === 1 ? t`${paths.length} image added.` : t`${paths.length} images added.`);
     });
   }
   function showCreate(): void { createForm.hidden = false; nameInput.focus(); }

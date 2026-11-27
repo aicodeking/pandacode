@@ -56,7 +56,8 @@ export function teamDetail(profile: TeamProfile, harnessName: (id: ProviderId) =
   const { architect, config } = profile.setup;
   const lead = config.workers.find(worker => worker.provider === architect.provider && worker.model === architect.model);
   const count = config.workers.length;
-  return `${count} model${count === 1 ? '' : 's'} · led by ${lead ? lead.name : t`${architect.model || t('Default')} · ${harnessName(architect.provider)}`}`;
+  const ledBy = lead ? lead.name : t`${architect.model || t('Default')} · ${harnessName(architect.provider)}`;
+  return count === 1 ? t`${count} model · led by ${ledBy}` : t`${count} models · led by ${ledBy}`;
 }
 
 /** Whether a task's team is this named team. */

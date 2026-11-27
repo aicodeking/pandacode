@@ -2062,6 +2062,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "provider_save_mimo_key", "provider_remove_mimo_key", "provider_save_alibaba_key",
     "provider_remove_alibaba_key", "provider_save_deepseek_key", "provider_remove_deepseek_key",
     "provider_save_commandcode_key", "provider_remove_commandcode_key", "provider_set_mimo_endpoint",
+    "set_ui_language",
     "architect_profiles", "architect_set_lead_guidance", "architect_save_profile", "architect_delete_profile",
     "architect_get", "architect_configure", "architect_set_council", "architect_council_accept",
     "architect_start", "architect_control", "architect_worker_messages", "architect_team_messages", "task_goal",

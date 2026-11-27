@@ -203,7 +203,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if (!input.checked) {
       void run(async () => {
         const change = await options.call<{ kept: string[] }>('skills_deactivate', { id, harness, scope, ...scopeArgs(scope) });
-        return change.kept.length ? `Left ${change.kept.length} edited file${change.kept.length === 1 ? '' : 's'} in place: ${change.kept.join(', ')}` : t`${item.name} is off for ${harnessName(harness)}.`;
+        return change.kept.length === 1 ? t`Left 1 edited file in place: ${change.kept.join(', ')}` : change.kept.length ? t`Left ${change.kept.length} edited files in place: ${change.kept.join(', ')}` : t`${item.name} is off for ${harnessName(harness)}.`;
       });
       return;
     }
@@ -232,7 +232,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
-      return `${t`Imported ${item.name}.`}${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
+      return item.findings.length === 1 ? t`Imported ${item.name}. 1 safety finding to review.` : item.findings.length ? t`Imported ${item.name}. ${item.findings.length} safety findings to review.` : t`Imported ${item.name}.`;
     });
   }
 

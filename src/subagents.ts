@@ -247,7 +247,7 @@ export class Subagents {
     const agents = [...task?.agents.values() ?? []].map(entry => ({ ...entry.value, name: agentName(entry) }));
     const running = agents.filter(active).length;
     this.trigger.hidden = !agents.length && !task?.error;
-    const label = running ? t`${running} running` : agents.length ? `${agents.length} subagent${agents.length === 1 ? '' : 's'}` : t('Subagents');
+    const label = running ? t`${running} running` : agents.length === 1 ? t`1 subagent` : agents.length ? t`${agents.length} subagents` : t('Subagents');
     const text = this.trigger.querySelector('span')!; if (text.textContent !== label) text.textContent = label;
     this.trigger.classList.toggle('has-running', running > 0);
     dispatchEvent(new Event('pandacode:agents'));

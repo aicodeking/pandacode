@@ -21,7 +21,9 @@ export function renderLimitHero(host: HTMLElement, limits: readonly AgentLimit[]
   const circumference = 2 * Math.PI * 26;
   const caption = average === null
     ? pending ? t('Checking account limits…') : t('No agent reported a limit.')
-    : `Across ${reporting} ${reporting === 1 ? 'agent' : 'agents'}${pending ? t` · ${pending} still checking` : ''}`;
+    : reporting === 1
+      ? t`Across 1 agent${pending ? t` · ${pending} still checking` : ''}`
+      : t`Across ${reporting} agents${pending ? t` · ${pending} still checking` : ''}`;
   host.dataset.tone = tone(value);
   host.innerHTML = `<svg class="usage-ring" viewBox="0 0 64 64" role="img" aria-label="${average === null ? t('Average limit use unavailable') : t`Average limit use ${percent.format(value)}%`}">
       <circle cx="32" cy="32" r="26" class="usage-ring-track"/>
@@ -42,7 +44,7 @@ export function renderAgents(host: HTMLElement, limits: readonly AgentLimit[], c
     const tracked = cost.kind === 'ready' && cost.tracked.includes(limit.provider);
     const amount = agent ? formatUsd(agent.cost) : tracked ? '$0.00' : '';
     const detail = agent
-      ? `${t`${formatShare(agent.cost, total)} of cost`} · ${t`${formatTokens(agent.tokens)} tokens`}${agent.sessions ? ` · ${agent.sessions} ${agent.sessions === 1 ? 'session' : 'sessions'}` : ''}`
+      ? `${t`${formatShare(agent.cost, total)} of cost`} · ${t`${formatTokens(agent.tokens)} tokens`}${agent.sessions ? ` · ${agent.sessions === 1 ? t`1 session` : t`${agent.sessions} sessions`}` : ''}`
       : tracked ? t('No usage in this period') : t('Cost not tracked');
     const peak = limit.peak === null ? `<span class="usage-agent-limit" data-state="none">${escape(limit.state)}</span>`
       : `<span class="usage-agent-limit" data-tone="${tone(limit.peak)}"><span class="usage-mini-track"><span style="width:${Math.min(100, limit.peak)}%"></span></span>${percent.format(limit.peak)}%</span>`;
@@ -83,7 +85,7 @@ export function renderCostHero(host: HTMLElement, cost: CostState): void {
   if (cost.kind === 'error') { host.innerHTML = `${label}<strong class="usage-hero-value">—</strong><small role="alert">${escape(cost.message)}</small>`; return; }
   const { summary } = cost;
   const unpriced = summary.totals.unpricedTokens / (summary.totals.tokens || 1);
-  const notes = [`${summary.sessions} ${summary.sessions === 1 ? 'session' : 'sessions'}`, RANGE_LABEL[summary.range].toLowerCase()];
+  const notes = [summary.sessions === 1 ? t`1 session` : t`${summary.sessions} sessions`, RANGE_LABEL[summary.range].toLowerCase()];
   if (unpriced > 0) notes.push(t`excludes ${formatShare(summary.totals.unpricedTokens, summary.totals.tokens)} unpriced tokens`);
   host.innerHTML = `${label}<strong class="usage-hero-value">${formatUsd(summary.totals.cost)}</strong><small>${escape(notes.join(' · '))}</small>`;
 }
@@ -92,7 +94,7 @@ export function renderCostDetails(host: HTMLElement, cost: CostState, names: (id
   if (cost.kind !== 'ready') { host.replaceChildren(); return; }
   const { summary } = cost;
   if (!summary.totals.tokens) {
-    host.innerHTML = `<p class="usage-cost-empty">${cost.tracked.length ? 'No usage from tracked agents in this period.' : `No local usage logs were found for ${TRACKED_LOGS}.`}</p>`;
+    host.innerHTML = `<p class="usage-cost-empty">${cost.tracked.length ? t`No ${TRACKED_LOGS} usage in this period.` : t`No ${TRACKED_LOGS} logs were found on this computer.`}</p>`;
     return;
   }
   const chart = document.createElement('section'); chart.className = 'usage-section usage-chart-section';

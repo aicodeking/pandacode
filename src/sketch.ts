@@ -268,7 +268,7 @@ export function showSketch(options: SketchOptions): void {
     editor.querySelector<HTMLButtonElement>('[data-history=undo]')!.disabled = !history.length;
     editor.querySelector<HTMLButtonElement>('[data-history=redo]')!.disabled = !future.length;
     for (const button of editor.querySelectorAll<HTMLButtonElement>('[data-edit=duplicate],[data-edit=delete]')) button.disabled = !shape;
-    canvas.setAttribute('aria-label', `${t('Mockup canvas')}, ${scene.shapes.length} ${scene.shapes.length === 1 ? 'shape' : 'shapes'}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
+    canvas.setAttribute('aria-label', `${t('Mockup canvas')}, ${scene.shapes.length === 1 ? t`${scene.shapes.length} shape` : t`${scene.shapes.length} shapes`}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
     editor.dataset.tool = tool; editor.dataset.selection = shape ? 'true' : 'false';
     drafts.set(options.taskId, clone(scene));
   }

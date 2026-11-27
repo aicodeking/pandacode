@@ -222,7 +222,7 @@ export function createGithub(host: GithubHost) {
       host.upsert(linked); imported++;
     }
     host.closeModal(); host.changed();
-    host.notify(imported ? `Imported ${imported} issue${imported === 1 ? '' : 's'} to Pending.` : t('Those issues are already on the board.'));
+    host.notify(imported ? imported === 1 ? t`Imported 1 issue to Pending.` : t`Imported ${imported} issues to Pending.` : t('Those issues are already on the board.'));
   }
 
   /* Pull requests: push the branch, open the PR, link it to the task. */
@@ -313,7 +313,7 @@ export function createGithub(host: GithubHost) {
       if (!githubEnabled()) return t('Off · no gh commands run');
       if (!value) return projectId ? t('Could not check the GitHub CLI') : t('Open a project to check its connection');
       if (!value.installed) return t('Install the GitHub CLI (gh) to connect');
-      if (!value.authenticated) return `${t('Run gh auth login to connect')}${value.version ? ` · gh ${value.version}` : ''}`;
+      if (!value.authenticated) return value.version ? t`Run gh auth login to connect · gh ${value.version}` : t('Run gh auth login to connect');
       const who = value.login ? t`Connected as ${value.login}` : t('Connected');
       return value.repo ? t`${who} · ${value.repo.nameWithOwner}` : t`${who} · no GitHub remote here`;
     };

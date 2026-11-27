@@ -1,0 +1,7962 @@
+{
+  "\n[Display truncated]": {
+    "tool-activity.ts": 1
+  },
+  " (optional)": {
+    "agent-input.ts": 1
+  },
+  " (the project checkout moved from {0})": {
+    "worktrees.ts": 1
+  },
+  " Available commands can be used now.": {
+    "slash-commands.ts": 1
+  },
+  " Commit or discard them first.": {
+    "worktrees.ts": 1
+  },
+  " Not installed yet: turning it on installs it ({0}).": {
+    "token-saver-panel.ts": 1
+  },
+  " Search to narrow the list.": {
+    "choice-menu.ts": 1
+  },
+  " and delete ": {
+    "worktrees.ts": 1
+  },
+  " and its branch is merged": {
+    "worktrees.ts": 1
+  },
+  " and {0} more": {
+    "approval-bar.ts": 1
+  },
+  " become Pending tasks in ": {
+    "github.ts": 1
+  },
+  " has commits that are not pushed or merged": {
+    "worktrees.ts": 1
+  },
+  " in ": {
+    "worktrees.ts": 1
+  },
+  " is kept until it is merged": {
+    "worktrees.ts": 1
+  },
+  " of {0}": {
+    "slash-commands.ts": 1
+  },
+  " rtk {0} installed.": {
+    "token-saver-panel.ts": 1
+  },
+  " to its remote and opens a pull request in ": {
+    "github.ts": 1
+  },
+  " · Not installed": {
+    "bots.ts": 1
+  },
+  " · Not paired": {
+    "remote-target.ts": 2
+  },
+  " · Offline": {
+    "remote-target.ts": 2
+  },
+  " · attempt {0}": {
+    "github-actions.ts": 1
+  },
+  " · conflict": {
+    "jj.ts": 2
+  },
+  " · first 32 KB": {
+    "attachments.ts": 1,
+    "message-attachments.ts": 1
+  },
+  " · next {0}": {
+    "bots-panels.ts": 1
+  },
+  " · off": {
+    "bots-panels.ts": 1
+  },
+  " · partial": {
+    "attachments.ts": 1,
+    "message-attachments.ts": 1
+  },
+  " · queued": {
+    "main.ts": 1
+  },
+  " · {0} input tokens": {
+    "jev-assist.ts": 1
+  },
+  " · {0} still checking": {
+    "usage-overview.ts": 2
+  },
+  " · {0}%": {
+    "app-updates-policy.ts": 1,
+    "remote-progress.ts": 1
+  },
+  "#123 or {0}/pull/123": {
+    "github.ts": 1
+  },
+  "(attachments only)": {
+    "message-queue.ts": 2
+  },
+  "(no description)": {
+    "jj.ts": 1
+  },
+  "(set it under Environment for this harness)": {
+    "connections.ts": 1
+  },
+  "(sets {0})": {
+    "connections.ts": 1
+  },
+  ", but ": {
+    "worktrees.ts": 1
+  },
+  ", {0} selected": {
+    "sketch.ts": 1
+  },
+  ".": {
+    "jj.ts": 1
+  },
+  ". Nothing runs until you start them.": {
+    "github.ts": 1
+  },
+  ". Uncommitted changes stop it; commit them in the Changes tab first.": {
+    "github.ts": 1
+  },
+  "1 active day": {
+    "usage-heatmap.ts": 1
+  },
+  "1 changed files": {
+    "jj.ts": 1
+  },
+  "1 file": {
+    "changes-view.ts": 1
+  },
+  "1 local branch": {
+    "worktrees.ts": 1
+  },
+  "1 model": {
+    "agent-teams.ts": 1
+  },
+  "1 prompt": {
+    "usage-heatmap.ts": 1
+  },
+  "1 session": {
+    "usage-overview.ts": 2
+  },
+  "1 subagent": {
+    "subagents.ts": 1
+  },
+  "1 worker model · {0}": {
+    "team-profiles.ts": 1
+  },
+  "100 selected · limit reached": {
+    "opencode-model-settings.ts": 1
+  },
+  "15 min": {
+    "bots-connect.ts": 1
+  },
+  "2 min": {
+    "bots-connect.ts": 1
+  },
+  "32 characters": {
+    "bots-connect.ts": 1
+  },
+  "32 hexadecimal characters": {
+    "cloud-settings.ts": 1
+  },
+  "4 min": {
+    "bots-connect.ts": 2
+  },
+  "6 am – noon": {
+    "wallpaper-settings.ts": 1
+  },
+  "6 pm – 6 am": {
+    "wallpaper-settings.ts": 1
+  },
+  "7 days · 21 scenes": {
+    "wallpaper-settings.ts": 1
+  },
+  "?": {
+    "main.ts": 1
+  },
+  "A VS Code theme is active, so its own colors are used and wallpapers no longer change them.": {
+    "theme-settings.ts": 1
+  },
+  "A chart needs at least one series of \"values\".": {
+    "generative-ui-components.ts": 1
+  },
+  "A chat page served by this computer. Only people with the private link can use it, and only while PandaCode is running.": {
+    "bots-connect.ts": 1
+  },
+  "A custom view may hold at most 64 KB of HTML.": {
+    "generative-ui-components.ts": 1
+  },
+  "A custom view needs \"html\".": {
+    "generative-ui-components.ts": 1
+  },
+  "A form needs \"fields\" with a \"name\".": {
+    "generative-ui-components.ts": 1
+  },
+  "A little room to think.": {
+    "wallpaper-settings.ts": 1
+  },
+  "A one-time code skips the approval prompt for one new device. It works once, for 10 minutes, and gives the access you pick. Enter it on the other computer under Pair with a code.": {
+    "remote-settings.ts": 1
+  },
+  "A private chat page on this computer": {
+    "bots-connect.ts": 1
+  },
+  "A project can only be changed before starting the task.": {
+    "main.ts": 1
+  },
+  "A quick question": {
+    "agent-input.ts": 1
+  },
+  "A reviewer model approves safe steps and asks you about the rest": {
+    "bots.ts": 1
+  },
+  "A snapshot of the native core. The system webview and agent processes are not included in core memory.": {
+    "resource-usage-settings.ts": 1
+  },
+  "A table needs \"columns\".": {
+    "generative-ui-components.ts": 1
+  },
+  "A team takes messages between runs, so this one was queued.": {
+    "main.ts": 1
+  },
+  "A view may hold at most {0} parts.": {
+    "generative-ui-components.ts": 1
+  },
+  "A view needs a \"type\".": {
+    "generative-ui-components.ts": 1
+  },
+  "A worktree task stays with its original project. Start a new task to use another project.": {
+    "main.ts": 1
+  },
+  "ACP executable missing": {
+    "provider-readiness.ts": 1
+  },
+  "ACP startup failed": {
+    "provider-readiness.ts": 1
+  },
+  "API URL": {
+    "cloud-settings.ts": 2
+  },
+  "API key": {
+    "cloud-settings.ts": 11
+  },
+  "API token": {
+    "cloud-settings.ts": 4
+  },
+  "AWS AgentCore session": {
+    "vm-machines.ts": 1
+  },
+  "AWS Linux desktop": {
+    "vm-machines.ts": 1
+  },
+  "AWS Windows desktop": {
+    "vm-machines.ts": 1
+  },
+  "About": {
+    "settings-sections.ts": 2
+  },
+  "About Jev browser tests": {
+    "jev.ts": 1
+  },
+  "About PandaCode": {
+    "about-settings.ts": 1
+  },
+  "About agent usage": {
+    "agent-usage.ts": 1
+  },
+  "About average limit use": {
+    "usage-overview.ts": 1
+  },
+  "About check-ins": {
+    "bots.ts": 1
+  },
+  "About device access": {
+    "remote-settings.ts": 1
+  },
+  "About estimated API cost": {
+    "usage-overview.ts": 1
+  },
+  "About full access for remote tasks": {
+    "remote-settings.ts": 1
+  },
+  "About inheriting environment variables": {
+    "cloud-settings.ts": 1
+  },
+  "About machine images": {
+    "cloud-settings.ts": 1
+  },
+  "About pairing": {
+    "bots-panels.ts": 1
+  },
+  "About pairing codes": {
+    "remote-settings.ts": 1
+  },
+  "About pairing with a code": {
+    "remote-settings.ts": 1
+  },
+  "About personality": {
+    "bots.ts": 1
+  },
+  "About phone notifications": {
+    "remote-settings.ts": 1
+  },
+  "About remote control": {
+    "remote-settings.ts": 1
+  },
+  "About result checks": {
+    "jev.ts": 1
+  },
+  "About rules": {
+    "bots.ts": 1
+  },
+  "About the Claude login": {
+    "cloud-settings.ts": 1
+  },
+  "About this calendar": {
+    "agent-usage.ts": 1
+  },
+  "About this computer’s key": {
+    "remote-settings.ts": 1
+  },
+  "About this dialog": {
+    "main.ts": 1
+  },
+  "About {0}% fewer tokens": {
+    "token-saver-panel.ts": 1
+  },
+  "Accent": {
+    "theme-settings.ts": 1
+  },
+  "Accent follows the wallpaper": {
+    "theme-settings.ts": 1
+  },
+  "Accept edits": {
+    "approval-modes.ts": 5
+  },
+  "Access for {0}": {
+    "remote-settings.ts": 1
+  },
+  "Access levels could not be loaded: {0}": {
+    "remote-settings.ts": 1
+  },
+  "Access the pairing code gives": {
+    "remote-settings.ts": 1
+  },
+  "Access token": {
+    "bots-connect.ts": 1,
+    "cloud-settings.ts": 1
+  },
+  "Account ID": {
+    "cloud-settings.ts": 1
+  },
+  "Across 1 agent{0}": {
+    "usage-overview.ts": 1
+  },
+  "Across {0} agents{1}": {
+    "usage-overview.ts": 1
+  },
+  "Actions": {
+    "github-hub.ts": 1
+  },
+  "Actions will appear as Jev works.": {
+    "jev-live.ts": 1
+  },
+  "Active": {
+    "main.ts": 1
+  },
+  "Active agents": {
+    "overlay.ts": 2,
+    "resource-usage-settings.ts": 1
+  },
+  "Active for {0}.": {
+    "skills-library.ts": 1
+  },
+  "Active tasks": {
+    "main.ts": 1
+  },
+  "Activity": {
+    "bots.ts": 1,
+    "usage-heatmap.ts": 1
+  },
+  "Activity log": {
+    "bots.ts": 1
+  },
+  "Actual size": {
+    "office-viewer.ts": 1
+  },
+  "Add": {
+    "sketch.ts": 1
+  },
+  "Add a channel": {
+    "bots-connect.ts": 1,
+    "bots-panels.ts": 1
+  },
+  "Add a component": {
+    "sketch.ts": 1
+  },
+  "Add a desktop": {
+    "vm-panel.ts": 1
+  },
+  "Add a desktop for computer use": {
+    "vm-panel.ts": 1
+  },
+  "Add a memory": {
+    "bots-panels.ts": 1
+  },
+  "Add a project rule before checking changes.": {
+    "jev-assist.ts": 1
+  },
+  "Add another channel": {
+    "bots-panels.ts": 1
+  },
+  "Add bot or channel": {
+    "sidebar-bots.ts": 1
+  },
+  "Add comment": {
+    "design-canvas.ts": 1
+  },
+  "Add iPhone Duo": {
+    "simulator.ts": 1
+  },
+  "Add images": {
+    "moodboards.ts": 2
+  },
+  "Add images to moodboard": {
+    "moodboards.ts": 1
+  },
+  "Add it to your server": {
+    "bots-connect.ts": 1
+  },
+  "Add pandacode-run.sh to this checkout to run the project.": {
+    "run-project.ts": 1
+  },
+  "Add pending task": {
+    "task-board.ts": 1
+  },
+  "Add rule": {
+    "bots-panels.ts": 1
+  },
+  "Add schedule": {
+    "bots-panels.ts": 1
+  },
+  "Add task": {
+    "main.ts": 1,
+    "task-board.ts": 1
+  },
+  "Add to a server": {
+    "bots-connect.ts": 1
+  },
+  "Add to pending": {
+    "main.ts": 1
+  },
+  "Add to prompt": {
+    "generative-ui-components.ts": 1
+  },
+  "Add up to eight images at a time.": {
+    "moodboards.ts": 1
+  },
+  "Add variable": {
+    "connections.ts": 1
+  },
+  "Add worker profiles to this task’s team first.": {
+    "jev-assist.ts": 1
+  },
+  "Add your TypeSafe key to run this check.": {
+    "jev-assist.ts": 1
+  },
+  "Add {0}": {
+    "sketch.ts": 2
+  },
+  "Add-ons": {
+    "settings-sections.ts": 1
+  },
+  "Added": {
+    "changes-view.ts": 1
+  },
+  "Added by you": {
+    "bots-panels.ts": 1
+  },
+  "Added to the architect's built-in rules for every team.": {
+    "agent-teams.ts": 1
+  },
+  "Added {0}. Using {1}.": {
+    "theme-settings.ts": 1
+  },
+  "Adding a desktop to {0} (a few minutes)…": {
+    "vm-panel.ts": 1
+  },
+  "Adding iPhone Duo…": {
+    "simulator.ts": 1
+  },
+  "Adding image {0} of {1}…": {
+    "moodboards.ts": 1
+  },
+  "Adding images…": {
+    "moodboards.ts": 1
+  },
+  "Address saved": {
+    "bots-connect.ts": 1
+  },
+  "Advanced": {
+    "bots.ts": 1,
+    "jev.ts": 1,
+    "settings.ts": 1
+  },
+  "Advisory": {
+    "jev-assist.ts": 1
+  },
+  "After you connect, the steps for the webhook (with everything to copy) appear on the channel.": {
+    "bots-connect.ts": 1
+  },
+  "Against {0} in {1}.": {
+    "github.ts": 1
+  },
+  "Agent finished": {
+    "jev-activity.ts": 1,
+    "jev.ts": 2
+  },
+  "Agent questions": {
+    "agent-input.ts": 1
+  },
+  "Agent team": {
+    "agent-teams.ts": 1
+  },
+  "Agent teams": {
+    "agent-teams.ts": 2,
+    "settings-sections.ts": 1
+  },
+  "Agent updates": {
+    "agent-updates.ts": 3
+  },
+  "Agent updates could not be checked.": {
+    "agent-updates.ts": 1
+  },
+  "Agent usage": {
+    "main.ts": 1
+  },
+  "Agent working": {
+    "task-board.ts": 3
+  },
+  "Agents": {
+    "settings-sections.ts": 1
+  },
+  "Agents ": {
+    "agent-usage.ts": 1
+  },
+  "Agents can see, click, type and run commands in an isolated machine.": {
+    "vm-panel.ts": 1
+  },
+  "Agents deploy with Wrangler using this token. Container sandboxes are a separate one-time setup that deploys a small PandaCode Worker; it needs Docker running and a Workers Paid plan.": {
+    "cloud-settings.ts": 1
+  },
+  "Agents run the Vercel CLI with this token; it never enters their prompts. Cloud agents on Vercel Sandbox also need the project ID, and the team ID for a team project.": {
+    "cloud-settings.ts": 1
+  },
+  "Agents use it with commands (vm_exec).": {
+    "vm-panel.ts": 1
+  },
+  "Alignment": {
+    "capabilities-panel.ts": 1
+  },
+  "All changes": {
+    "changes-view.ts": 1
+  },
+  "All events": {
+    "github-actions.ts": 1
+  },
+  "All projects": {
+    "main.ts": 2,
+    "task-board.ts": 1
+  },
+  "All pull requests": {
+    "github-actions.ts": 1
+  },
+  "Allow": {
+    "bots-panels.ts": 1
+  },
+  "Allow remote control of this computer": {
+    "remote-settings.ts": 2
+  },
+  "Allow routine tools automatically. Ask you about sensitive actions.": {
+    "approval-modes.ts": 1
+  },
+  "Allows the page through a private tunnel. The link still works only with its token.": {
+    "bots-connect.ts": 1
+  },
+  "Also chat from any browser on this computer.": {
+    "bots-panels.ts": 1
+  },
+  "Also used by {0}.": {
+    "agent-updates.ts": 1
+  },
+  "Always approve: Grok runs every tool without asking (its --always-approve).": {
+    "approval-modes.ts": 1
+  },
+  "Always approve: ZCode runs every tool without asking (its yolo mode).": {
+    "approval-modes.ts": 1
+  },
+  "An accordion needs \"items\"": {
+    "generative-ui-components.ts": 1
+  },
+  "Android SDK needed": {
+    "simulator.ts": 1
+  },
+  "Android emulator ready": {
+    "simulator.ts": 1
+  },
+  "Android setup {0}/{1} · {2}": {
+    "simulator.ts": 1
+  },
+  "Another computer shows this key when it asks you to approve this one. Approve only if the keys match.": {
+    "remote-settings.ts": 1
+  },
+  "Answer the bot's requests for you. Deny wins over allow, and * matches anything, as in npm test*. Risky actions such as sudo, force pushes, deleting files or anything about passwords always ask, whatever the rules say.": {
+    "bots.ts": 1
+  },
+  "Answer “{0}” before continuing.": {
+    "agent-input.ts": 1
+  },
+  "App URL": {
+    "jev.ts": 1
+  },
+  "App action is no longer active for the visible task.": {
+    "main.ts": 1
+  },
+  "App details copied. Paste them into your support request.": {
+    "support-settings.ts": 1
+  },
+  "App details for support": {
+    "settings.ts": 1
+  },
+  "App secret": {
+    "bots-connect.ts": 2
+  },
+  "App-level token": {
+    "bots-connect.ts": 1
+  },
+  "Appearance": {
+    "settings-sections.ts": 2
+  },
+  "Applies to this thread. Guidance rides along folded with your next message, then every few messages. Savings are estimates from each project's benchmarks.": {
+    "token-saver-panel.ts": 1
+  },
+  "Applying…": {
+    "choice-menu.ts": 1,
+    "model-picker.ts": 1
+  },
+  "Approval needed": {
+    "approval-bar.ts": 2
+  },
+  "Approve": {
+    "approval-bar.ts": 1,
+    "bots-panels.ts": 1,
+    "remote-settings.ts": 1
+  },
+  "Approve all": {
+    "approval-bar.ts": 1
+  },
+  "Approve for me": {
+    "approval-modes.ts": 3,
+    "bots.ts": 1
+  },
+  "Approve {0}": {
+    "remote-settings.ts": 1
+  },
+  "Approve {0} as": {
+    "remote-settings.ts": 1
+  },
+  "Approved": {
+    "github-hub.ts": 1,
+    "github-pull.ts": 1
+  },
+  "Apps": {
+    "integrations.ts": 1
+  },
+  "Architect": {
+    "team-messages.ts": 1
+  },
+  "Architect & workers": {
+    "architect.ts": 3,
+    "main.ts": 2
+  },
+  "Archived": {
+    "github-hub.ts": 1
+  },
+  "Arrow": {
+    "sketch.ts": 1
+  },
+  "Artboards. Drag to pan, Shift-scroll to pan horizontally, or pinch and Ctrl/Command-scroll to zoom.": {
+    "design-canvas.ts": 1
+  },
+  "Artifacts": {
+    "github-actions.ts": 1
+  },
+  "Ask": {
+    "bots-panels.ts": 1
+  },
+  "Ask an agent to check .github/workflows for YAML errors, unknown runner labels and missing actions": {
+    "github-actions.ts": 1
+  },
+  "Ask an agent to work on {0}…": {
+    "github-hub.ts": 1
+  },
+  "Ask first": {
+    "bots.ts": 2
+  },
+  "Ask when needed": {
+    "approval-modes.ts": 1
+  },
+  "Asks before edits and commands": {
+    "bots.ts": 1
+  },
+  "Assigned to me": {
+    "github.ts": 1
+  },
+  "Assigned to {0}": {
+    "github-hub.ts": 1
+  },
+  "Assignment": {
+    "subagents.ts": 1
+  },
+  "Assignment for the worker": {
+    "jev-assist.ts": 1
+  },
+  "At": {
+    "bots-panels.ts": 1
+  },
+  "Attach": {
+    "main.ts": 1
+  },
+  "Attach a folder…": {
+    "attachments.ts": 1
+  },
+  "Attach an element": {
+    "browser.ts": 1
+  },
+  "Attach an existing pull request to this task.": {
+    "github.ts": 1
+  },
+  "Attach files…": {
+    "attachments.ts": 1
+  },
+  "Attach screenshot": {
+    "browser.ts": 1
+  },
+  "Attach to message": {
+    "sketch.ts": 1
+  },
+  "Attach to task": {
+    "moodboards.ts": 1
+  },
+  "Attach up to 5 files per message.": {
+    "main.ts": 1
+  },
+  "Attach up to eight browser items per message.": {
+    "main.ts": 1
+  },
+  "Attach up to eight moodboards per message.": {
+    "main.ts": 1
+  },
+  "Attach up to four screenshots per message.": {
+    "main.ts": 1
+  },
+  "Attach up to {0} documents per message.": {
+    "attachments.ts": 1
+  },
+  "Attach up to {0} folders per message.": {
+    "attachments.ts": 1
+  },
+  "Attach up to {0} images per message, including browser screenshots.": {
+    "attachments.ts": 1,
+    "main.ts": 2
+  },
+  "Attached context": {
+    "message-attachments.ts": 1
+  },
+  "Attached {0}": {
+    "attachments.ts": 2
+  },
+  "Attached {0} items": {
+    "attachments.ts": 2
+  },
+  "Attachments cleared for the new project.": {
+    "main.ts": 1
+  },
+  "Attachments travel with queued messages, so this one was queued.": {
+    "main.ts": 1
+  },
+  "Attempt {0}": {
+    "github-actions.ts": 2
+  },
+  "Automatic": {
+    "about-settings.ts": 1,
+    "wallpaper-settings.ts": 1
+  },
+  "Automatic restarts when no agent is working; Notify me asks first.": {
+    "about-settings.ts": 1
+  },
+  "Automatic updates are off.": {
+    "app-updates-policy.ts": 1
+  },
+  "Automatic weekly rotation": {
+    "wallpaper-settings.ts": 1
+  },
+  "Automatically approve edit requests offered by the server.": {
+    "approval-modes.ts": 1
+  },
+  "Available OpenCode models": {
+    "opencode-model-settings.ts": 1
+  },
+  "Available commands": {
+    "slash-commands.ts": 1
+  },
+  "Available conversations": {
+    "command-center.ts": 1
+  },
+  "Available imports": {
+    "command-center.ts": 1
+  },
+  "Available local servers": {
+    "jev.ts": 1
+  },
+  "Available to your architect and workers when enabled.": {
+    "jev.ts": 1
+  },
+  "Avatar": {
+    "sketch.ts": 1
+  },
+  "Average limit use ": {
+    "usage-overview.ts": 1
+  },
+  "Average limit use unavailable": {
+    "usage-overview.ts": 1
+  },
+  "Average limit use {0}%": {
+    "usage-overview.ts": 1
+  },
+  "Back": {
+    "settings.ts": 1,
+    "simulator.ts": 2
+  },
+  "Back (Esc)": {
+    "settings.ts": 1
+  },
+  "Back to Subagents": {
+    "subagents.ts": 1
+  },
+  "Back to settings": {
+    "main.ts": 4
+  },
+  "Back to tasks": {
+    "sidebar-bots.ts": 1
+  },
+  "Back to the workspace": {
+    "settings.ts": 1
+  },
+  "Background commands": {
+    "main.ts": 2
+  },
+  "Base branch": {
+    "github.ts": 1
+  },
+  "Binary": {
+    "change-review.ts": 1,
+    "turn-changes.ts": 2
+  },
+  "Binary file changed. A text diff is not available.": {
+    "diff-viewer.ts": 1
+  },
+  "Block": {
+    "bots-panels.ts": 1,
+    "remote-settings.ts": 1
+  },
+  "Block {0}": {
+    "remote-settings.ts": 1
+  },
+  "Blocked": {
+    "bots-panels.ts": 1,
+    "jev-live.ts": 1,
+    "jev.ts": 2,
+    "recipes.ts": 1,
+    "remote-settings.ts": 1
+  },
+  "Blue": {
+    "sketch.ts": 1,
+    "theme-settings.ts": 1
+  },
+  "Board": {
+    "main.ts": 2
+  },
+  "Board name": {
+    "moodboards.ts": 1
+  },
+  "Board renamed.": {
+    "moodboards.ts": 1
+  },
+  "Boards": {
+    "moodboards.ts": 1
+  },
+  "Bold": {
+    "sketch.ts": 2
+  },
+  "Book": {
+    "simulator.ts": 1
+  },
+  "Boot": {
+    "simulator.ts": 2
+  },
+  "Boot simulator": {
+    "simulator.ts": 2
+  },
+  "Booting…": {
+    "simulator.ts": 2
+  },
+  "Bot": {
+    "main.ts": 1
+  },
+  "Bot settings": {
+    "bots.ts": 1,
+    "main.ts": 1
+  },
+  "Bot token": {
+    "bots-connect.ts": 3
+  },
+  "BotFather is Telegram’s official bot for creating bots. {0}": {
+    "bots-connect.ts": 1
+  },
+  "Bots": {
+    "bots.ts": 3,
+    "main.ts": 3,
+    "sidebar-bots.ts": 2
+  },
+  "Brain": {
+    "bots.ts": 1
+  },
+  "Branch actions run on {0}, not here.": {
+    "worktrees.ts": 1
+  },
+  "Branch and worktree": {
+    "worktrees.ts": 1
+  },
+  "Branch and worktree actions": {
+    "worktrees.ts": 1
+  },
+  "Branch name": {
+    "worktrees.ts": 1
+  },
+  "Branch {0}": {
+    "changes-view.ts": 1
+  },
+  "Break down by": {
+    "usage-overview.ts": 1
+  },
+  "Breakdown": {
+    "usage-overview.ts": 1
+  },
+  "Brief, normal grammar": {
+    "token-saver.ts": 1
+  },
+  "Browser URL": {
+    "browser.ts": 1
+  },
+  "Browser actions": {
+    "jev-live.ts": 1,
+    "jev.ts": 1
+  },
+  "Browser attachments": {
+    "main.ts": 1
+  },
+  "Browser could not be opened.": {
+    "main.ts": 2
+  },
+  "Browser element": {
+    "message-attachments.ts": 1
+  },
+  "Browser is closed.": {
+    "browser.ts": 2
+  },
+  "Browser preview values are samples.": {
+    "capabilities-panel.ts": 1
+  },
+  "Browser preview · integration status is sample data.": {
+    "integrations.ts": 1
+  },
+  "Browser preview · sample agent availability.": {
+    "settings.ts": 1
+  },
+  "Browser preview · sample limits and costs": {
+    "agent-usage.ts": 1
+  },
+  "Browser preview · sample page": {
+    "browser.ts": 1
+  },
+  "Browser runtime": {
+    "jev.ts": 1
+  },
+  "Browser screenshot": {
+    "message-attachments.ts": 1
+  },
+  "Browser testing runs in the desktop app. No model API calls are made by this preview.": {
+    "jev.ts": 1
+  },
+  "Browser tests with Jev": {
+    "main.ts": 1
+  },
+  "Browser tests, work review, context matching, and worker suggestions. No Jev key is needed for normal agent work.": {
+    "integrations.ts": 1
+  },
+  "Built in · accent and wallpaper apply": {
+    "theme-settings.ts": 1
+  },
+  "Button": {
+    "sketch.ts": 3
+  },
+  "CLI profile": {
+    "cloud-settings.ts": 1
+  },
+  "Cache alignment": {
+    "capabilities-panel.ts": 2
+  },
+  "Cache creation": {
+    "capabilities-panel.ts": 1
+  },
+  "Cache reads": {
+    "capabilities-panel.ts": 1
+  },
+  "Cache savings": {
+    "usage-overview.ts": 1
+  },
+  "Cached input": {
+    "usage-overview.ts": 2
+  },
+  "Cached system prompt": {
+    "capabilities-panel.ts": 1
+  },
+  "Callback URL": {
+    "bots-connect.ts": 1
+  },
+  "Cancel": {
+    "agent-input.ts": 1,
+    "agent-teams.ts": 1,
+    "bots-connect.ts": 2,
+    "bots.ts": 2,
+    "cloud-agents.ts": 1,
+    "cloud-settings.ts": 3,
+    "connections.ts": 3,
+    "conversation-import.ts": 1,
+    "design-canvas.ts": 1,
+    "github-pull.ts": 1,
+    "github.ts": 3,
+    "main.ts": 6,
+    "overlay-settings.ts": 1,
+    "recipes.ts": 1,
+    "remote-settings.ts": 2,
+    "remote-target.ts": 1,
+    "settings.ts": 1,
+    "sketch.ts": 1,
+    "team-profiles.ts": 1,
+    "worktrees.ts": 2
+  },
+  "Cancel edit": {
+    "message-queue.ts": 1
+  },
+  "Cancelled": {
+    "github-actions.ts": 1,
+    "jev-live.ts": 1,
+    "jev.ts": 1
+  },
+  "Canvas": {
+    "sketch.ts": 2
+  },
+  "Canvas size": {
+    "sketch.ts": 1
+  },
+  "Capabilities and cache": {
+    "settings.ts": 1
+  },
+  "Capability": {
+    "capabilities-panel.ts": 1
+  },
+  "Capability alignment": {
+    "capabilities-panel.ts": 1
+  },
+  "Capability and cache alignment": {
+    "capabilities-panel.ts": 1
+  },
+  "Capability inventory": {
+    "capabilities-panel.ts": 1
+  },
+  "Caption for {0}": {
+    "moodboards.ts": 1
+  },
+  "Caption saved.": {
+    "moodboards.ts": 1
+  },
+  "Card": {
+    "sketch.ts": 1
+  },
+  "Caveman intensity": {
+    "token-saver-panel.ts": 1
+  },
+  "Caveman voice": {
+    "token-saver.ts": 1
+  },
+  "Change description": {
+    "jj.ts": 1
+  },
+  "Change task project": {
+    "main.ts": 1
+  },
+  "Change tracking details": {
+    "turn-changes.ts": 2
+  },
+  "Change tracking is limited; some files or details were not captured.": {
+    "turn-changes.ts": 1
+  },
+  "Changed files": {
+    "change-review.ts": 1
+  },
+  "Changes": {
+    "changes-view.ts": 1,
+    "diff-viewer.ts": 2,
+    "jj.ts": 1
+  },
+  "Changes committed": {
+    "main.ts": 2
+  },
+  "Changes requested": {
+    "github-hub.ts": 1,
+    "github-pull.ts": 1
+  },
+  "Changes to {0}": {
+    "diff-viewer.ts": 1
+  },
+  "Channel": {
+    "bots-connect.ts": 1
+  },
+  "Channel removed": {
+    "bots-panels.ts": 1
+  },
+  "Chat": {
+    "main.ts": 2
+  },
+  "Chat in its own folder": {
+    "main.ts": 1
+  },
+  "Chat with {0}": {
+    "sidebar-bots.ts": 1
+  },
+  "Chat with {0}{1}": {
+    "sidebar-bots.ts": 1
+  },
+  "Check connection": {
+    "provider-readiness.ts": 1
+  },
+  "Check in": {
+    "bots.ts": 1
+  },
+  "Check my GitHub notifications and summarize anything that needs me": {
+    "bots-panels.ts": 1
+  },
+  "Check now": {
+    "about-settings.ts": 1
+  },
+  "Check rules": {
+    "jev-assist.ts": 1
+  },
+  "Check saved changes against rules written in your own words.": {
+    "jev-assist.ts": 1
+  },
+  "Check setup": {
+    "jev.ts": 1
+  },
+  "Check the branch out again at the same path.": {
+    "worktrees.ts": 1
+  },
+  "Check updates": {
+    "agent-updates.ts": 1
+  },
+  "Check whether the saved work and evidence support calling this task finished.": {
+    "jev-assist.ts": 1
+  },
+  "Check workflow files": {
+    "github-actions.ts": 1
+  },
+  "Check-ins": {
+    "bots.ts": 2
+  },
+  "Checkbox": {
+    "sketch.ts": 1
+  },
+  "Checked independently on the final page. An agent saying it finished is not a verified pass.": {
+    "jev.ts": 1
+  },
+  "Checking GitHub CLI…": {
+    "github.ts": 1
+  },
+  "Checking GitHub Releases…": {
+    "app-updates-policy.ts": 1
+  },
+  "Checking account limits…": {
+    "agent-usage.ts": 1,
+    "usage-overview.ts": 1
+  },
+  "Checking agents…": {
+    "settings.ts": 1
+  },
+  "Checking available integrations…": {
+    "integrations.ts": 1
+  },
+  "Checking installed agents…": {
+    "agent-updates.ts": 2
+  },
+  "Checking setup…": {
+    "jev.ts": 1
+  },
+  "Checking…": {
+    "cloud-settings.ts": 2,
+    "provider-readiness.ts": 1
+  },
+  "Checks GitHub Releases automatically.": {
+    "about-settings.ts": 1,
+    "app-updates-policy.ts": 1
+  },
+  "Checks failed": {
+    "jev-activity.ts": 1,
+    "jev.ts": 1
+  },
+  "Checks passed": {
+    "jev-activity.ts": 1,
+    "jev.ts": 1
+  },
+  "Checks pending": {
+    "jev.ts": 1
+  },
+  "Checks run every 6 hours. Updates start only when you choose Update.": {
+    "agent-updates.ts": 1
+  },
+  "Checks {0}": {
+    "github-hub.ts": 1
+  },
+  "Choose PNG, JPEG or WebP images up to 12 MB each.": {
+    "moodboards.ts": 1
+  },
+  "Choose VM": {
+    "vm-panel.ts": 1
+  },
+  "Choose a bot before the task's first message.": {
+    "main.ts": 1
+  },
+  "Choose a machine below.": {
+    "vm-panel.ts": 1
+  },
+  "Choose a model…": {
+    "jev.ts": 1
+  },
+  "Choose a project": {
+    "main.ts": 1
+  },
+  "Choose a recipe, or create one.": {
+    "recipes.ts": 1
+  },
+  "Choose a repository": {
+    "github-hub.ts": 1
+  },
+  "Choose a saved message to fork from.": {
+    "overlay-client.ts": 1
+  },
+  "Choose a saved team": {
+    "team-profiles.ts": 1
+  },
+  "Choose a scene to use it every day.": {
+    "wallpaper-settings.ts": 2
+  },
+  "Choose a task to watch its browser tests.": {
+    "jev-live.ts": 1
+  },
+  "Choose a whole worker count or Unlimited.": {
+    "architect.ts": 1
+  },
+  "Choose an available approval behavior.": {
+    "main.ts": 2
+  },
+  "Choose an available command or edit the name before sending.": {
+    "slash-commands.ts": 1
+  },
+  "Choose at least one model for this team.": {
+    "agent-teams.ts": 1
+  },
+  "Choose harness and model": {
+    "overlay.ts": 1
+  },
+  "Choose models": {
+    "agent-teams.ts": 1
+  },
+  "Choose project": {
+    "project-picker.ts": 1
+  },
+  "Choose simulator": {
+    "simulator.ts": 1
+  },
+  "Choose team profile": {
+    "team-profiles.ts": 1
+  },
+  "Choose the OpenCode models you want in your model selectors.": {
+    "opencode-model-settings.ts": 1
+  },
+  "Choose the requested number of options for “{0}”.": {
+    "agent-input.ts": 1
+  },
+  "Choose when PandaCode asks before a change.": {
+    "bots.ts": 1
+  },
+  "Choose when it should run.": {
+    "bots-panels.ts": 1
+  },
+  "Choose where to clone {0}": {
+    "github-hub.ts": 1
+  },
+  "Choose worker": {
+    "jev-assist.ts": 1
+  },
+  "Choose…": {
+    "agent-input.ts": 1
+  },
+  "Chrome executable": {
+    "jev.ts": 1
+  },
+  "Classic": {
+    "theme-settings.ts": 1
+  },
+  "Classic team setup": {
+    "agent-teams.ts": 2
+  },
+  "Classic yellow accent": {
+    "theme-settings.ts": 1
+  },
+  "Claude Code’s auto mode: its safety reviewer approves routine actions and blocks risky ones. Needs a recent Claude Code.": {
+    "approval-modes.ts": 1
+  },
+  "Claude Work": {
+    "connections.ts": 1
+  },
+  "Claude login for cloud agents": {
+    "cloud-settings.ts": 2
+  },
+  "Claude token for cloud agents": {
+    "cloud-settings.ts": 1
+  },
+  "Clear": {
+    "github-actions.ts": 1,
+    "sketch.ts": 1
+  },
+  "Clear goal": {
+    "command-center.ts": 1
+  },
+  "Clear the canvas": {
+    "sketch.ts": 1
+  },
+  "Click": {
+    "jev.ts": 1
+  },
+  "Click an element": {
+    "browser.ts": 1
+  },
+  "Click an element to attach it. Press Esc to cancel.": {
+    "browser.ts": 1
+  },
+  "Click to toggle actual size": {
+    "office-viewer.ts": 1
+  },
+  "Click where the text should start, then type. Enter adds a line; Escape finishes.": {
+    "sketch.ts": 1
+  },
+  "Cline acts with its auto-approve on: every tool runs without asking.": {
+    "approval-modes.ts": 1
+  },
+  "Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.": {
+    "approval-modes.ts": 1
+  },
+  "Cline’s Plan mode: it explores, fetches and proposes a plan; file edits are declined, commands still ask.": {
+    "approval-modes.ts": 1
+  },
+  "Clone repository": {
+    "github-hub.ts": 1
+  },
+  "Clone this repository to start threads, review pull requests and work on issues.": {
+    "github-hub.ts": 1
+  },
+  "Clone to this computer": {
+    "github-hub.ts": 1
+  },
+  "Cloned {0}": {
+    "github-hub.ts": 1
+  },
+  "Cloning…": {
+    "github-hub.ts": 2
+  },
+  "Close": {
+    "cloud-settings.ts": 1,
+    "command-center.ts": 1,
+    "integrations.ts": 1,
+    "jev.ts": 1
+  },
+  "Close (Esc)": {
+    "thread-find.ts": 1
+  },
+  "Close Jev assistance": {
+    "jev-assist.ts": 1
+  },
+  "Close Test with Jev": {
+    "jev.ts": 1
+  },
+  "Close browser": {
+    "browser.ts": 1
+  },
+  "Close dialog": {
+    "architect.ts": 1,
+    "main.ts": 1
+  },
+  "Close find": {
+    "thread-find.ts": 1
+  },
+  "Close image preview": {
+    "moodboards.ts": 1
+  },
+  "Close launcher": {
+    "overlay.ts": 1
+  },
+  "Close subagents": {
+    "subagents.ts": 1
+  },
+  "Close terminal": {
+    "terminal-panel.ts": 1
+  },
+  "Close terminal?": {
+    "terminal-panel.ts": 1
+  },
+  "Close {0}": {
+    "jev.ts": 1
+  },
+  "Closed": {
+    "github-pull.ts": 1,
+    "simulator.ts": 3
+  },
+  "Closing may stop {0}. Minimize to keep them running.": {
+    "terminal-panel.ts": 1
+  },
+  "Cloud Run or Cloud Storage": {
+    "deploy.ts": 1
+  },
+  "Cloud machine": {
+    "main.ts": 1
+  },
+  "Cloud machine actions": {
+    "cloud-agents.ts": 2
+  },
+  "Cloud machines for agents.": {
+    "cloud-settings.ts": 1
+  },
+  "Cloud providers": {
+    "cloud-settings.ts": 1
+  },
+  "Cloud sandboxes": {
+    "cloud-settings.ts": 1,
+    "settings-sections.ts": 1
+  },
+  "Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.": {
+    "vm-panel.ts": 1
+  },
+  "Cloud · {0}": {
+    "cloud-agents.ts": 1,
+    "remote-target.ts": 1
+  },
+  "Cloudflare container": {
+    "vm-machines.ts": 1
+  },
+  "Codex preferences": {
+    "main.ts": 1
+  },
+  "Codex usage": {
+    "main.ts": 2
+  },
+  "Codex uses its own coding tools, your configured MCP servers, and skills for this project.": {
+    "integrations.ts": 1
+  },
+  "Collapse all": {
+    "changes-view.ts": 2
+  },
+  "Collapse {0}": {
+    "changes-view.ts": 2
+  },
+  "Collect screenshots, layouts and ideas for your agents to reference.": {
+    "moodboards.ts": 2
+  },
+  "Color": {
+    "bots.ts": 1,
+    "sketch.ts": 1
+  },
+  "Colors": {
+    "settings.ts": 1
+  },
+  "Command discovery took too long. Retry to load harness commands.": {
+    "slash-commands.ts": 1
+  },
+  "Commands": {
+    "main.ts": 1,
+    "slash-commands.ts": 1
+  },
+  "Commands only · ends after an hour": {
+    "vm-machines.ts": 1
+  },
+  "Comment on an element": {
+    "design-canvas.ts": 1
+  },
+  "Comment on {0}": {
+    "design-canvas.ts": 2
+  },
+  "Comment: click an element": {
+    "design-canvas.ts": 1
+  },
+  "Commit": {
+    "changes-view.ts": 1,
+    "jj.ts": 1
+  },
+  "Commit message": {
+    "changes-view.ts": 2
+  },
+  "Commits": {
+    "github-pull.ts": 1
+  },
+  "Commit…": {
+    "changes-view.ts": 1
+  },
+  "Complete the requested step in your browser, then continue.": {
+    "agent-input.ts": 1
+  },
+  "Completed": {
+    "overlay.ts": 1,
+    "subagents.ts": 1
+  },
+  "Computer to pair with": {
+    "remote-settings.ts": 1
+  },
+  "Computer: {0}": {
+    "remote-target.ts": 1
+  },
+  "Computer: {0} (fixed for this task)": {
+    "remote-target.ts": 1
+  },
+  "Computer: {0} cloud machine (fixed for this task) · {1}": {
+    "cloud-agents.ts": 1
+  },
+  "Config folder": {
+    "connections.ts": 1
+  },
+  "Configure servers through Codex CLI. PandaCode inherits that configuration on the next task run. Codex desktop-only services, including its hosted image generation and automations, are not included in this bridge.": {
+    "integrations.ts": 1
+  },
+  "Conflict": {
+    "changes-view.ts": 1
+  },
+  "Connect": {
+    "cloud-settings.ts": 12
+  },
+  "Connect GitHub": {
+    "github-hub.ts": 1
+  },
+  "Connect GitHub in Settings to import issues.": {
+    "github.ts": 1
+  },
+  "Connect GitHub in Settings to link pull requests.": {
+    "github.ts": 1
+  },
+  "Connect GitHub in Settings to open pull requests.": {
+    "github.ts": 1
+  },
+  "Connect it in Settings → Agents → Cloud sandboxes": {
+    "deploy.ts": 1
+  },
+  "Connect {0}": {
+    "bots-connect.ts": 1
+  },
+  "Connect, then point Meta at this computer": {
+    "bots-connect.ts": 1
+  },
+  "Connected": {
+    "github.ts": 1
+  },
+  "Connected as {0}": {
+    "github.ts": 1
+  },
+  "Connecting to computer": {
+    "remote-progress.ts": 1
+  },
+  "Connecting to the screen…": {
+    "vm-panel.ts": 1
+  },
+  "Connection not checked": {
+    "provider-readiness.ts": 1
+  },
+  "Connection ready": {
+    "provider-readiness.ts": 1
+  },
+  "Connections": {
+    "bots.ts": 1,
+    "jev.ts": 1,
+    "settings-sections.ts": 1
+  },
+  "Cons": {
+    "generative-ui-components.ts": 1
+  },
+  "Context": {
+    "message-attachments.ts": 1
+  },
+  "Continue": {
+    "agent-input.ts": 2,
+    "remote-target.ts": 1
+  },
+  "Continue now": {
+    "usage-limit.ts": 1
+  },
+  "Conversation": {
+    "main.ts": 2
+  },
+  "Conversation carried forward": {
+    "main.ts": 1,
+    "overlay-thread.ts": 1
+  },
+  "Conversation forked. Both tasks use the same checkout.": {
+    "main.ts": 1
+  },
+  "Conversation forked. Your new task is in the task list.": {
+    "main.ts": 1
+  },
+  "Conversations": {
+    "bots.ts": 1,
+    "conversation-import.ts": 1
+  },
+  "Conversations, approval rules and everything the bot did.": {
+    "bots.ts": 1
+  },
+  "Coordinating": {
+    "overlay.ts": 1
+  },
+  "Copied": {
+    "bots-connect.ts": 1,
+    "changes-view.ts": 1,
+    "generative-ui-components.ts": 1,
+    "message-actions.ts": 1
+  },
+  "Copy": {
+    "bots-connect.ts": 9,
+    "generative-ui-components.ts": 1,
+    "simulator.ts": 1
+  },
+  "Copy an access token": {
+    "bots-connect.ts": 1
+  },
+  "Copy branch name": {
+    "main.ts": 1
+  },
+  "Copy code": {
+    "remote-settings.ts": 1
+  },
+  "Copy failed": {
+    "generative-ui-components.ts": 1
+  },
+  "Copy file": {
+    "main.ts": 1
+  },
+  "Copy link": {
+    "bots-panels.ts": 1
+  },
+  "Copy link for my phone": {
+    "bots-connect.ts": 1
+  },
+  "Copy manifest instead": {
+    "bots-connect.ts": 1
+  },
+  "Copy message": {
+    "message-actions.ts": 2
+  },
+  "Copy path": {
+    "changes-view.ts": 2
+  },
+  "Copy project path": {
+    "main.ts": 2,
+    "worktrees.ts": 1
+  },
+  "Copy screenshot": {
+    "simulator.ts": 2
+  },
+  "Copy task ID": {
+    "main.ts": 1
+  },
+  "Copy the app secret": {
+    "bots-connect.ts": 1
+  },
+  "Copy the bot token": {
+    "bots-connect.ts": 1
+  },
+  "Copy the phone number ID": {
+    "bots-connect.ts": 1
+  },
+  "Copy the selected app details using your keyboard.": {
+    "support-settings.ts": 1
+  },
+  "Copy worktree path": {
+    "main.ts": 2,
+    "worktrees.ts": 1
+  },
+  "Copy {0}": {
+    "generative-ui-components.ts": 1
+  },
+  "Copying logins": {
+    "cloud-agents.ts": 1
+  },
+  "Core app tools are available in new Codex tasks and their continuations. Older tasks keep their original catalog. When enabled, Jev joins new and resumed tasks across connected harnesses. App actions use your approval mode; embedded browser controls require the task to be visible.": {
+    "integrations.ts": 1
+  },
+  "Cost": {
+    "usage-overview.ts": 1
+  },
+  "Cost not tracked": {
+    "usage-overview.ts": 1
+  },
+  "Could not check setup": {
+    "jev.ts": 1
+  },
+  "Could not check the GitHub CLI": {
+    "github.ts": 1
+  },
+  "Could not check this agent.": {
+    "agent-updates.ts": 1
+  },
+  "Could not complete the request. Try again.": {
+    "agent-updates.ts": 1
+  },
+  "Could not copy this message. Please select its text and copy it manually.": {
+    "message-actions.ts": 1
+  },
+  "Could not list pull requests. Paste a number or URL above.": {
+    "github.ts": 1
+  },
+  "Could not load app details.": {
+    "support-settings.ts": 1
+  },
+  "Could not read cache alignment. Try refreshing.": {
+    "capabilities-panel.ts": 1
+  },
+  "Could not read local agent logs.": {
+    "agent-usage.ts": 1
+  },
+  "Could not read the capability inventory. Try refreshing.": {
+    "capabilities-panel.ts": 1
+  },
+  "Could not read the image.": {
+    "attachments.ts": 1
+  },
+  "Could not read {0}.": {
+    "moodboards.ts": 1
+  },
+  "Could not start: {0}": {
+    "remote-progress.ts": 1
+  },
+  "Couldn’t check agents. Try refreshing again.": {
+    "settings.ts": 1
+  },
+  "Couldn’t check for updates: {0}": {
+    "app-updates-policy.ts": 1
+  },
+  "Couldn’t load devices.": {
+    "remote-settings.ts": 1
+  },
+  "Couldn’t load from GitHub": {
+    "github-hub.ts": 1
+  },
+  "Couldn’t load jobs: {0}": {
+    "github-actions.ts": 1
+  },
+  "Couldn’t load remote access.": {
+    "remote-settings.ts": 2
+  },
+  "Couldn’t load saved subagents. Live work will still appear here.": {
+    "subagents.ts": 1
+  },
+  "Couldn’t load team messages.": {
+    "team-messages.ts": 1
+  },
+  "Counts are observed from local usage records.": {
+    "capabilities-panel.ts": 1
+  },
+  "Cover display": {
+    "simulator.ts": 1
+  },
+  "Create": {
+    "bots-connect.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "Create Slack app": {
+    "bots-connect.ts": 1
+  },
+  "Create a Meta app with WhatsApp": {
+    "bots-connect.ts": 1
+  },
+  "Create a key at app.daytona.io → Keys. Sandboxes stop after 15 idle minutes.": {
+    "cloud-settings.ts": 1
+  },
+  "Create a key at {0}. Cloud agents run on machines in your own account.": {
+    "cloud-settings.ts": 1
+  },
+  "Create a machine": {
+    "vm-panel.ts": 1
+  },
+  "Create a merge commit": {
+    "github-pull.ts": 1
+  },
+  "Create a moodboard": {
+    "moodboards.ts": 2
+  },
+  "Create a moodboard first.": {
+    "moodboards.ts": 1
+  },
+  "Create a new web chat link?": {
+    "bots-connect.ts": 1
+  },
+  "Create an app-level token": {
+    "bots-connect.ts": 1
+  },
+  "Create an application": {
+    "bots-connect.ts": 1
+  },
+  "Create bot": {
+    "bots.ts": 1
+  },
+  "Create isolated worktree…": {
+    "changes-view.ts": 1
+  },
+  "Create moodboard": {
+    "moodboards.ts": 2
+  },
+  "Create the Slack app in one click": {
+    "bots-connect.ts": 1
+  },
+  "Create the bot": {
+    "bots-connect.ts": 1
+  },
+  "Create worktree": {
+    "main.ts": 1
+  },
+  "Create worktree task": {
+    "worktrees.ts": 1
+  },
+  "Creates ": {
+    "worktrees.ts": 1
+  },
+  "Creating a {0}…": {
+    "vm-panel.ts": 1
+  },
+  "Creating machine": {
+    "cloud-agents.ts": 1
+  },
+  "Current HEAD": {
+    "worktrees.ts": 1
+  },
+  "Current branch ({0})": {
+    "worktrees.ts": 1
+  },
+  "Current interface size": {
+    "ui-size.ts": 1
+  },
+  "Custom": {
+    "theme-settings.ts": 2
+  },
+  "Custom accent color": {
+    "theme-settings.ts": 1
+  },
+  "Custom setup": {
+    "team-profiles.ts": 1
+  },
+  "DM it or @mention it in a server": {
+    "bots-connect.ts": 1
+  },
+  "DM it or @mention it in channels": {
+    "bots-connect.ts": 1
+  },
+  "Daily at {0}": {
+    "bots-panels.ts": 1
+  },
+  "Daily cost": {
+    "usage-overview.ts": 1
+  },
+  "Daily token use": {
+    "usage-heatmap.ts": 1
+  },
+  "Dark": {
+    "theme-settings.ts": 1
+  },
+  "Day": {
+    "usage-overview.ts": 2
+  },
+  "Daytona desktop": {
+    "vm-machines.ts": 1
+  },
+  "Decision": {
+    "bots-panels.ts": 1
+  },
+  "Decision assistance": {
+    "jev.ts": 1
+  },
+  "Decision model": {
+    "jev.ts": 1
+  },
+  "Decision provider": {
+    "jev.ts": 1
+  },
+  "Decline": {
+    "agent-input.ts": 1
+  },
+  "Decrease interface size": {
+    "ui-size.ts": 1
+  },
+  "Decrease interface size ({0} −)": {
+    "ui-size.ts": 1
+  },
+  "DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.": {
+    "approval-modes.ts": 1
+  },
+  "Default": {
+    "bots.ts": 2,
+    "team-mode.ts": 1
+  },
+  "Default agent": {
+    "main.ts": 1
+  },
+  "Default always uses OpenCode’s own selection. Models and connected providers come from your OpenCode installation.": {
+    "opencode-model-settings.ts": 1
+  },
+  "Default branch {0}": {
+    "github.ts": 1
+  },
+  "Default effort": {
+    "agent-teams.ts": 1
+  },
+  "Default for new tasks": {
+    "team-profiles.ts": 1
+  },
+  "Default model": {
+    "main.ts": 1
+  },
+  "Default wallpaper": {
+    "wallpaper-settings.ts": 1
+  },
+  "Delete": {
+    "bots-panels.ts": 2,
+    "bots.ts": 2,
+    "design-canvas.ts": 1,
+    "moodboards.ts": 1,
+    "recipes.ts": 1,
+    "sketch.ts": 1
+  },
+  "Delete bot": {
+    "bots.ts": 1
+  },
+  "Delete cloud machine?": {
+    "main.ts": 1
+  },
+  "Delete comment": {
+    "design-canvas.ts": 1
+  },
+  "Delete machine": {
+    "cloud-agents.ts": 1
+  },
+  "Delete machine…": {
+    "cloud-agents.ts": 1
+  },
+  "Delete message": {
+    "message-queue.ts": 1
+  },
+  "Delete moodboard": {
+    "moodboards.ts": 2
+  },
+  "Delete profile": {
+    "team-profiles.ts": 1
+  },
+  "Delete rule {0}": {
+    "bots-panels.ts": 1
+  },
+  "Delete selection": {
+    "sketch.ts": 1
+  },
+  "Delete task…": {
+    "main.ts": 2
+  },
+  "Delete team": {
+    "agent-teams.ts": 1
+  },
+  "Delete this board and its images?": {
+    "moodboards.ts": 1
+  },
+  "Delete this task’s {0} machine? Its files there are lost; the task stays and creates a new machine with your next message.": {
+    "cloud-agents.ts": 1
+  },
+  "Delete {0}": {
+    "agent-teams.ts": 1,
+    "bots-panels.ts": 1,
+    "vm-panel.ts": 1
+  },
+  "Delete {0}?": {
+    "bots.ts": 1
+  },
+  "Deleted": {
+    "changes-view.ts": 1
+  },
+  "Deleted the cloud machine. Your next message creates a new one.": {
+    "main.ts": 1
+  },
+  "Deleted.": {
+    "recipes.ts": 2
+  },
+  "Deleting {0}…": {
+    "vm-panel.ts": 1
+  },
+  "Deny": {
+    "approval-bar.ts": 1,
+    "bots-panels.ts": 1
+  },
+  "Deny all": {
+    "approval-bar.ts": 1
+  },
+  "Deploy": {
+    "main.ts": 1
+  },
+  "Deploy to AWS": {
+    "deploy.ts": 1
+  },
+  "Deploy to Cloudflare": {
+    "deploy.ts": 1
+  },
+  "Deploy to Google Cloud": {
+    "deploy.ts": 1
+  },
+  "Deploy to Netlify": {
+    "deploy.ts": 1
+  },
+  "Deploy to Railway": {
+    "deploy.ts": 1
+  },
+  "Deploy to Vercel": {
+    "deploy.ts": 1
+  },
+  "Deploys by agents, preview and production.": {
+    "cloud-settings.ts": 1
+  },
+  "Deploys by agents: Cloud Run and Cloud Storage.": {
+    "cloud-settings.ts": 1
+  },
+  "Deploys by agents: servers, containers and databases.": {
+    "cloud-settings.ts": 1
+  },
+  "Deploys to Workers and Pages, and container sandboxes.": {
+    "cloud-settings.ts": 1
+  },
+  "Describe": {
+    "jj.ts": 1
+  },
+  "Describe a task…": {
+    "wallpaper-settings.ts": 1
+  },
+  "Describe the outcome, context, and anything the agent should know.": {
+    "main.ts": 1
+  },
+  "Describe this change…": {
+    "jj.ts": 1
+  },
+  "Describe what you want Jev to help with first.": {
+    "jev-assist.ts": 1
+  },
+  "Description": {
+    "github-pull.ts": 1,
+    "github.ts": 1,
+    "jj.ts": 1
+  },
+  "Design canvas": {
+    "design-canvas.ts": 1
+  },
+  "Design comments": {
+    "design-canvas.ts": 1
+  },
+  "Desktop": {
+    "jev.ts": 1,
+    "sketch.ts": 1
+  },
+  "Desktop ready.": {
+    "vm-panel.ts": 1
+  },
+  "Detached HEAD": {
+    "worktrees.ts": 2
+  },
+  "Details": {
+    "github-actions.ts": 1
+  },
+  "Device code": {
+    "remote-settings.ts": 1
+  },
+  "Device finish": {
+    "simulator.ts": 1
+  },
+  "Device finish: {0}": {
+    "simulator.ts": 1
+  },
+  "Devices": {
+    "remote-settings.ts": 1,
+    "simulator.ts": 1
+  },
+  "Devin’s Bypass Permissions mode: every tool runs without asking, unless your organization requires approval.": {
+    "approval-modes.ts": 1
+  },
+  "Devin’s Plan mode: it investigates and writes a plan; commands ask you, and edits wait until you approve the plan.": {
+    "approval-modes.ts": 1
+  },
+  "Diagram · Mermaid": {
+    "generative-ui-components.ts": 1
+  },
+  "Didn’t start": {
+    "github-actions.ts": 1
+  },
+  "Diff layout": {
+    "diff-viewer.ts": 1
+  },
+  "Disabled": {
+    "command-center.ts": 1
+  },
+  "Disconnect": {
+    "cloud-settings.ts": 2
+  },
+  "Discord": {
+    "bots-connect.ts": 1
+  },
+  "Discovered": {
+    "capabilities-panel.ts": 1
+  },
+  "Dismiss": {
+    "remote-progress.ts": 2,
+    "usage-limit.ts": 1
+  },
+  "Dismiss usage limit": {
+    "usage-limit.ts": 1
+  },
+  "Document view": {
+    "document-viewer.ts": 1
+  },
+  "Done": {
+    "agent-updates.ts": 1,
+    "command-center.ts": 1,
+    "generative-ui-components.ts": 1,
+    "github-hub.ts": 1,
+    "integrations.ts": 1,
+    "main.ts": 4,
+    "tray-popover.ts": 1
+  },
+  "Download progress": {
+    "remote-progress.ts": 1
+  },
+  "Downloading and checking Tart…": {
+    "vm-panel.ts": 1
+  },
+  "Downloading {0} (about {1} GB). This can take a while…": {
+    "vm-panel.ts": 1
+  },
+  "Downloading {0}{1}": {
+    "app-updates-policy.ts": 1,
+    "remote-progress.ts": 1
+  },
+  "Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.": {
+    "vm-panel.ts": 1
+  },
+  "Downloads about 2 GB with Homebrew": {
+    "simulator.ts": 1
+  },
+  "Draft": {
+    "github-pull.ts": 1
+  },
+  "Draft first, then production": {
+    "deploy.ts": 1
+  },
+  "Drag around the device to turn it, scroll to zoom, click the screen to tap, double-click to face forward.": {
+    "simulator.ts": 1
+  },
+  "Drag to draw {0} {1}. Hold Alt to ignore the grid.": {
+    "sketch.ts": 1
+  },
+  "Drag to draw. Double-click a component or text to edit its label.": {
+    "sketch.ts": 1
+  },
+  "Drag to move. Drag a handle to resize. Double-click a component or text to edit its label.": {
+    "sketch.ts": 1
+  },
+  "Drag to turn · Scroll to zoom · Click the screen to tap · Double-click to face forward": {
+    "simulator.ts": 1
+  },
+  "Draw and attach": {
+    "attachments.ts": 1
+  },
+  "Draw freely. Hold Alt to ignore the grid with other tools.": {
+    "sketch.ts": 1
+  },
+  "Draw something first.": {
+    "sketch.ts": 1
+  },
+  "Drawing tools": {
+    "sketch.ts": 1
+  },
+  "Drop images here, paste a screenshot, or choose files.": {
+    "moodboards.ts": 1
+  },
+  "Drop images or paste a screenshot": {
+    "moodboards.ts": 1
+  },
+  "Dry run for {0}": {
+    "recipes.ts": 1
+  },
+  "Duplicate (⌘D)": {
+    "sketch.ts": 1
+  },
+  "Duplicate · ⌘D": {
+    "sketch.ts": 1
+  },
+  "Duration": {
+    "github-actions.ts": 1
+  },
+  "EC2 Linux and Windows desktops, and AgentCore.": {
+    "cloud-settings.ts": 1
+  },
+  "Earlier activity will be available in saved history.": {
+    "main.ts": 1
+  },
+  "Earlier attempts": {
+    "github-actions.ts": 1
+  },
+  "Edit": {
+    "agent-teams.ts": 1,
+    "recipes.ts": 1
+  },
+  "Edit and resend": {
+    "message-actions.ts": 1
+  },
+  "Edit connection": {
+    "connections.ts": 1
+  },
+  "Edit message": {
+    "message-queue.ts": 1
+  },
+  "Edit mockup": {
+    "sketch.ts": 1
+  },
+  "Edit queued message": {
+    "message-queue.ts": 1
+  },
+  "Edit queued message {0}": {
+    "message-queue.ts": 1
+  },
+  "Edit sketch {0}": {
+    "attachments.ts": 1
+  },
+  "Edit {0}": {
+    "agent-teams.ts": 1
+  },
+  "Editing": {
+    "message-queue.ts": 1
+  },
+  "Edits files in its workspace without asking": {
+    "bots.ts": 1
+  },
+  "Element attached to your message.": {
+    "browser.ts": 1
+  },
+  "Element · {0}": {
+    "message-attachments.ts": 1
+  },
+  "Ellipse": {
+    "sketch.ts": 1
+  },
+  "Enable Jev and connect your providers to run browser tests.": {
+    "jev.ts": 1
+  },
+  "Enable decision assistance to run this check.": {
+    "jev-assist.ts": 1
+  },
+  "Enable quick launcher": {
+    "overlay-settings.ts": 1
+  },
+  "Enabled": {
+    "command-center.ts": 1
+  },
+  "Enter API key": {
+    "jev.ts": 2
+  },
+  "Enter URL or localhost port": {
+    "browser.ts": 1
+  },
+  "Enter a commit message.": {
+    "main.ts": 1
+  },
+  "Enter a full path or choose Browse.": {
+    "main.ts": 1
+  },
+  "Enter a valid value for “{0}”.": {
+    "agent-input.ts": 1
+  },
+  "Enter a website address or localhost port.": {
+    "browser.ts": 1
+  },
+  "Enter a whole token budget greater than zero.": {
+    "command-center.ts": 1
+  },
+  "Enter an HTTP or HTTPS app URL without embedded credentials.": {
+    "jev.ts": 1
+  },
+  "Enter an objective for the goal.": {
+    "command-center.ts": 1
+  },
+  "Enter the 6-digit code that the other computer shows under Pairing code. It gives this computer the access that computer chose.": {
+    "remote-settings.ts": 1
+  },
+  "Enter the {0}.": {
+    "cloud-settings.ts": 1
+  },
+  "Enter this code at": {
+    "remote-settings.ts": 1
+  },
+  "Environment": {
+    "cloud-settings.ts": 1,
+    "connections.ts": 1
+  },
+  "Error: {0}": {
+    "cloud-agents.ts": 1
+  },
+  "Estimated API cost": {
+    "usage-overview.ts": 2
+  },
+  "Estimated API cost ": {
+    "usage-overview.ts": 1
+  },
+  "Estimated API cost over time. {0}. Use the arrow keys to read each point.": {
+    "usage-cost-chart.ts": 1
+  },
+  "Estimated from token counts in {0} logs on this computer, read when this window opens. Only counts are kept and nothing is uploaded. Priced at standard API rates (batch, priority, and fast-mode pricing excluded); subscriptions bill differently.": {
+    "usage-overview.ts": 1
+  },
+  "Every (minutes)": {
+    "bots-panels.ts": 1
+  },
+  "Every 3 hours": {
+    "bots.ts": 1
+  },
+  "Every 30 minutes": {
+    "bots.ts": 1
+  },
+  "Every 6 hours": {
+    "bots.ts": 1
+  },
+  "Every day": {
+    "bots-panels.ts": 1
+  },
+  "Every few minutes or hours": {
+    "bots-panels.ts": 1
+  },
+  "Every hour": {
+    "bots.ts": 1
+  },
+  "Every {0}": {
+    "bots-panels.ts": 1
+  },
+  "Every {0} minutes": {
+    "bots-panels.ts": 1
+  },
+  "Evidence prepared locally. Run when you’re ready.": {
+    "jev-assist.ts": 1
+  },
+  "Evidence used": {
+    "jev-assist.ts": 1
+  },
+  "Evidence was truncated. Review the original task before deciding.": {
+    "jev-assist.ts": 1
+  },
+  "Excerpt": {
+    "jev-assist.ts": 1
+  },
+  "Executable": {
+    "connections.ts": 1
+  },
+  "Exit {0}": {
+    "generative-ui-components.ts": 1
+  },
+  "Expand all": {
+    "changes-view.ts": 1
+  },
+  "Expand {0}": {
+    "changes-view.ts": 1
+  },
+  "Expired": {
+    "github-actions.ts": 1
+  },
+  "Explore and plan changes before implementation.": {
+    "approval-modes.ts": 1
+  },
+  "Explore and plan: reads and web lookups run, even outside this project; edits wait for implementation and commands ask you.": {
+    "approval-modes.ts": 1
+  },
+  "Explore and plan: reads and web lookups run; reading outside this project asks you; edits and commands are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Export task": {
+    "main.ts": 1
+  },
+  "Extra arguments, one per line": {
+    "connections.ts": 1
+  },
+  "Face forward": {
+    "simulator.ts": 2
+  },
+  "Failed": {
+    "github-actions.ts": 2,
+    "jev.ts": 1,
+    "main.ts": 1,
+    "overlay.ts": 1,
+    "subagents.ts": 1,
+    "tray-popover.ts": 1
+  },
+  "Fallback": {
+    "recipes.ts": 1
+  },
+  "Fast service tier": {
+    "main.ts": 1
+  },
+  "File actions": {
+    "changes-view.ts": 1
+  },
+  "File already attached.": {
+    "main.ts": 1
+  },
+  "File changes": {
+    "diff-viewer.ts": 1
+  },
+  "File copied": {
+    "main.ts": 1
+  },
+  "File metadata changed. No line changes.": {
+    "diff-viewer.ts": 1
+  },
+  "File mode changed from {0} to {1}.": {
+    "diff-viewer.ts": 1
+  },
+  "Files": {
+    "github-pull.ts": 1,
+    "search-panel.ts": 1
+  },
+  "Files and GitHub": {
+    "file-mentions.ts": 1
+  },
+  "Files changed during this turn": {
+    "turn-changes.ts": 2
+  },
+  "Fill": {
+    "sketch.ts": 1
+  },
+  "Filter by label": {
+    "github.ts": 1
+  },
+  "Filter models": {
+    "agent-teams.ts": 1
+  },
+  "Filter models…": {
+    "agent-teams.ts": 1
+  },
+  "Filter projects": {
+    "main.ts": 1,
+    "task-board.ts": 1
+  },
+  "Filter repositories": {
+    "github-hub.ts": 2
+  },
+  "Filter runs by event": {
+    "github-actions.ts": 1
+  },
+  "Filter runs by pull request": {
+    "github-actions.ts": 1
+  },
+  "Final URL equals": {
+    "jev.ts": 1
+  },
+  "Final browser screenshot from this Jev test": {
+    "jev.ts": 1
+  },
+  "Final browser view": {
+    "jev.ts": 1
+  },
+  "Final browser view · read only": {
+    "jev-live.ts": 1
+  },
+  "Find a task": {
+    "overlay.ts": 1
+  },
+  "Find automatically": {
+    "jev.ts": 2
+  },
+  "Find context": {
+    "jev-assist.ts": 2
+  },
+  "Find in thread": {
+    "thread-find.ts": 2
+  },
+  "Find relevant excerpts from this task. Original messages stay intact.": {
+    "jev-assist.ts": 1
+  },
+  "Finding the project": {
+    "remote-progress.ts": 1
+  },
+  "Finding {0}": {
+    "remote-progress.ts": 1
+  },
+  "Finish": {
+    "simulator.ts": 2
+  },
+  "Finish setting up": {
+    "bots-connect.ts": 1
+  },
+  "Finished": {
+    "jev-live.ts": 1,
+    "main.ts": 1
+  },
+  "Finished tasks": {
+    "main.ts": 1
+  },
+  "Fit artboards": {
+    "design-canvas.ts": 2
+  },
+  "Fix": {
+    "github-actions.ts": 1
+  },
+  "Foldable · ": {
+    "simulator.ts": 1
+  },
+  "Foldable · creates a simulator": {
+    "simulator.ts": 1
+  },
+  "Follows the day of the week and your local time.": {
+    "wallpaper-settings.ts": 1
+  },
+  "Follows the system language until you pick one here.": {
+    "settings.ts": 1
+  },
+  "Forget": {
+    "bots-panels.ts": 1
+  },
+  "Forget conversations, memories and schedules": {
+    "bots.ts": 1
+  },
+  "Forget this memory": {
+    "bots-panels.ts": 1
+  },
+  "Forgotten": {
+    "bots-panels.ts": 1
+  },
+  "Fork": {
+    "github-hub.ts": 1
+  },
+  "Fork conversation": {
+    "command-center.ts": 1
+  },
+  "Fork from here": {
+    "message-actions.ts": 1
+  },
+  "Fork through this message into a new task in the same checkout": {
+    "message-actions.ts": 1
+  },
+  "Frees about {0} GB": {
+    "vm-panel.ts": 1
+  },
+  "From claude setup-token": {
+    "cloud-settings.ts": 1
+  },
+  "From the Files tab": {
+    "attachments.ts": 1
+  },
+  "From {0}": {
+    "bots-panels.ts": 1,
+    "subagents.ts": 2
+  },
+  "Full": {
+    "token-saver.ts": 1
+  },
+  "Full access": {
+    "approval-modes.ts": 1,
+    "bots.ts": 1
+  },
+  "Full access for remote tasks": {
+    "remote-settings.ts": 2
+  },
+  "Full wallpaper, 100 percent": {
+    "wallpaper-settings.ts": 1
+  },
+  "GPU type": {
+    "cloud-settings.ts": 1
+  },
+  "General": {
+    "settings-sections.ts": 2
+  },
+  "Getting ready": {
+    "jev-live.ts": 1
+  },
+  "Git status could not be loaded.": {
+    "main.ts": 1
+  },
+  "GitHub": {
+    "main.ts": 2,
+    "settings-sections.ts": 1
+  },
+  "GitHub couldn’t start this run. The workflow file is likely invalid (a YAML or schema error), uses an action or reusable workflow that doesn’t exist, or asks for a runner that isn’t available.": {
+    "github-actions.ts": 1
+  },
+  "GitHub integration": {
+    "github.ts": 1
+  },
+  "GitHub is behind this computer": {
+    "main.ts": 1
+  },
+  "GitHub is behind this computer: {0}.": {
+    "remote-target.ts": 1
+  },
+  "GitHub repositories": {
+    "github-hub.ts": 1
+  },
+  "GitHub repository": {
+    "about-settings.ts": 1
+  },
+  "Give Jev a goal and watch its actions in the sidebar. Tests use a separate Chrome profile and save reports locally.": {
+    "jev.ts": 1
+  },
+  "Give each worker profile a name.": {
+    "architect.ts": 1
+  },
+  "Give the browser a goal. Watch it explore your app.": {
+    "jev.ts": 1
+  },
+  "Give this team a name.": {
+    "agent-teams.ts": 1
+  },
+  "Give this team profile a name.": {
+    "team-profiles.ts": 1
+  },
+  "Give your agent a little inspiration.": {
+    "moodboards.ts": 1
+  },
+  "Gives {0} once. Expires at {1}.": {
+    "remote-settings.ts": 1
+  },
+  "Global": {
+    "recipes.ts": 1
+  },
+  "Go back": {
+    "browser.ts": 1
+  },
+  "Go forward": {
+    "browser.ts": 1
+  },
+  "Goal": {
+    "command-center.ts": 1
+  },
+  "Goal completed": {
+    "command-center.ts": 1
+  },
+  "Goal objective": {
+    "command-center.ts": 1
+  },
+  "Goal token budget": {
+    "command-center.ts": 1
+  },
+  "Goal updated: ": {
+    "main.ts": 1
+  },
+  "Gray": {
+    "sketch.ts": 1
+  },
+  "Green": {
+    "sketch.ts": 1,
+    "theme-settings.ts": 1
+  },
+  "Grid": {
+    "sketch.ts": 1
+  },
+  "Grok Build does not accept images yet. Describe them, or attach documents and folders instead.": {
+    "main.ts": 1
+  },
+  "Grok asks before edits and commands, whatever its own config says.": {
+    "approval-modes.ts": 1
+  },
+  "Guide": {
+    "agent-updates.ts": 1
+  },
+  "Harness": {
+    "bots.ts": 3,
+    "capabilities-panel.ts": 1,
+    "connections.ts": 1
+  },
+  "Harness and model": {
+    "model-picker.ts": 1
+  },
+  "Harnesses": {
+    "settings-sections.ts": 1
+  },
+  "Heading": {
+    "sketch.ts": 3
+  },
+  "Help & support": {
+    "settings.ts": 1
+  },
+  "Hermes works in this project. Asks you before terminal commands or dangerous actions.": {
+    "approval-modes.ts": 1
+  },
+  "History": {
+    "sketch.ts": 1
+  },
+  "Home": {
+    "simulator.ts": 2
+  },
+  "How it can work": {
+    "bots.ts": 1
+  },
+  "How to use": {
+    "bots-connect.ts": 2
+  },
+  "Ideas waiting to begin": {
+    "task-board.ts": 1
+  },
+  "Image": {
+    "cloud-settings.ts": 2,
+    "document-viewer.ts": 2,
+    "sketch.ts": 1
+  },
+  "Image preview": {
+    "moodboards.ts": 1
+  },
+  "Images": {
+    "moodboards.ts": 1
+  },
+  "Images, PDFs, documents": {
+    "attachments.ts": 1
+  },
+  "Import": {
+    "conversation-import.ts": 2,
+    "github.ts": 2
+  },
+  "Import #{0} {1}": {
+    "github.ts": 1
+  },
+  "Import .vsix…": {
+    "theme-settings.ts": 1
+  },
+  "Import a .vsix or install one by ID, such as": {
+    "theme-settings.ts": 1
+  },
+  "Import agent setup": {
+    "main.ts": 1
+  },
+  "Import conversation": {
+    "command-center.ts": 1
+  },
+  "Import conversations": {
+    "main.ts": 1
+  },
+  "Import from": {
+    "conversation-import.ts": 1
+  },
+  "Import from GitHub": {
+    "github.ts": 1,
+    "task-board.ts": 1
+  },
+  "Import selected": {
+    "command-center.ts": 1
+  },
+  "Import soul.md…": {
+    "bots.ts": 1
+  },
+  "Import up to {0} conversations at a time.": {
+    "conversation-import.ts": 1
+  },
+  "Import {0} conversation": {
+    "conversation-import.ts": 1
+  },
+  "Import {0} conversations": {
+    "conversation-import.ts": 1
+  },
+  "Import {0} issues": {
+    "github.ts": 1
+  },
+  "Imported 1 issue to Pending.": {
+    "github.ts": 1
+  },
+  "Imported VS Code themes keep their own.": {
+    "settings.ts": 1
+  },
+  "Imported {0} issues to Pending.": {
+    "github.ts": 1
+  },
+  "Imported {0} {1}": {
+    "main.ts": 1
+  },
+  "Imported {0}.": {
+    "skills-library.ts": 1
+  },
+  "Imported {0}. 1 safety finding to review.": {
+    "skills-library.ts": 1
+  },
+  "Imported {0}. {1} safety findings to review.": {
+    "skills-library.ts": 1
+  },
+  "Importing…": {
+    "conversation-import.ts": 1
+  },
+  "In PandaCode": {
+    "conversation-import.ts": 1
+  },
+  "In groups, add the bot and mention it or reply to it.": {
+    "bots-connect.ts": 1
+  },
+  "In progress": {
+    "github-actions.ts": 1,
+    "github-hub.ts": 1,
+    "task-board.ts": 1
+  },
+  "Include Command, Control, Option, or Shift.": {
+    "overlay-settings.ts": 1
+  },
+  "Include Control, Alt, Shift, or the {0} key.": {
+    "overlay-settings.ts": 1
+  },
+  "Include {0}": {
+    "agent-teams.ts": 1
+  },
+  "Increase interface size": {
+    "ui-size.ts": 1
+  },
+  "Increase interface size ({0} +)": {
+    "ui-size.ts": 1
+  },
+  "Ink": {
+    "sketch.ts": 1
+  },
+  "Inner display, flat": {
+    "simulator.ts": 1
+  },
+  "Inner display, half open": {
+    "simulator.ts": 1
+  },
+  "Input": {
+    "sketch.ts": 1,
+    "tool-activity.ts": 1
+  },
+  "Input needed": {
+    "agent-input.ts": 1
+  },
+  "Insert {0}": {
+    "terminal.ts": 2
+  },
+  "Insert {0} in the harness console": {
+    "terminal.ts": 2
+  },
+  "Inserted {0} for {1}": {
+    "attachments.ts": 1
+  },
+  "Inserted {0}s for {1} files": {
+    "attachments.ts": 1
+  },
+  "Inserted · press Enter": {
+    "terminal.ts": 1
+  },
+  "Inspect the page beside your conversation.": {
+    "browser.ts": 1
+  },
+  "Inspect the project. Block writes and permission escalation.": {
+    "approval-modes.ts": 1
+  },
+  "InstaBox machine image": {
+    "cloud-settings.ts": 1
+  },
+  "Install": {
+    "about-settings.ts": 1,
+    "bots-connect.ts": 3,
+    "theme-settings.ts": 1
+  },
+  "Install Jev runtime": {
+    "jev.ts": 1
+  },
+  "Install Tailscale on this computer and your phone and sign in to both. Then run this in Terminal:": {
+    "bots-connect.ts": 1
+  },
+  "Install Xcode to use the iOS Simulator.": {
+    "simulator.ts": 1
+  },
+  "Install and restart": {
+    "app-updates-policy.ts": 1
+  },
+  "Install command copied": {
+    "simulator.ts": 1
+  },
+  "Install it and copy the bot token": {
+    "bots-connect.ts": 1
+  },
+  "Install method: {0}.": {
+    "agent-updates.ts": 1
+  },
+  "Install the GitHub CLI (gh) to connect": {
+    "github.ts": 1
+  },
+  "Installed": {
+    "settings.ts": 1
+  },
+  "Installed agents": {
+    "agent-updates.ts": 1,
+    "settings.ts": 1
+  },
+  "Installed plugins": {
+    "main.ts": 1
+  },
+  "Installing Jev runtime": {
+    "jev.ts": 1
+  },
+  "Installing RTK with Homebrew…": {
+    "token-saver-panel.ts": 1
+  },
+  "Installing a desktop for agents (a few minutes). The console shows until it is ready; commands already work.": {
+    "vm-panel.ts": 1
+  },
+  "Installing the pinned Jev runtime… You can close this panel while it installs.": {
+    "jev.ts": 1
+  },
+  "Installing {0}": {
+    "cloud-agents.ts": 1
+  },
+  "Installing {0}…": {
+    "app-updates-policy.ts": 2,
+    "theme-settings.ts": 1
+  },
+  "Installing…": {
+    "token-saver-panel.ts": 1
+  },
+  "Instant": {
+    "bots-connect.ts": 1
+  },
+  "Instructions": {
+    "bots.ts": 2
+  },
+  "Integration discovery is unavailable. Check that Codex CLI is installed and try Refresh.": {
+    "integrations.ts": 1
+  },
+  "Integration request": {
+    "agent-input.ts": 1
+  },
+  "Interface size": {
+    "ui-size.ts": 2
+  },
+  "Interrupted": {
+    "main.ts": 1
+  },
+  "Invalid harness or model.": {
+    "overlay-client.ts": 1
+  },
+  "Issue": {
+    "github.ts": 2,
+    "main.ts": 1
+  },
+  "Issue {0}: {1} ({2})": {
+    "worktrees.ts": 1
+  },
+  "Issues": {
+    "about-settings.ts": 1,
+    "github-hub.ts": 1
+  },
+  "Its changes and files are on that computer, so review and commit them there.": {
+    "main.ts": 1
+  },
+  "Its registration is pruned and the task is settled.": {
+    "worktrees.ts": 1
+  },
+  "Its tasks are removed from PandaCode. The folder stays on disk.": {
+    "settings.ts": 1
+  },
+  "Its threads, pull requests and issues appear here.": {
+    "github-hub.ts": 1
+  },
+  "Its worktree has {0} uncommitted change{1}, so the checkout stays at ": {
+    "worktrees.ts": 1
+  },
+  "Its worktree is clean": {
+    "worktrees.ts": 1
+  },
+  "Jev": {
+    "settings.ts": 1
+  },
+  "Jev add-on": {
+    "jev.ts": 1
+  },
+  "Jev assistance": {
+    "jev-assist.ts": 1,
+    "main.ts": 1
+  },
+  "Jev assistance tools": {
+    "jev-assist.ts": 1
+  },
+  "Jev browser live view": {
+    "jev-live.ts": 1
+  },
+  "Jev is reviewing the prepared evidence…": {
+    "jev-assist.ts": 1
+  },
+  "Jev is unavailable. {0} Your task is unchanged.": {
+    "jev-assist.ts": 1
+  },
+  "Jev live browser": {
+    "jev-live.ts": 1
+  },
+  "Jev run": {
+    "jev-live.ts": 1
+  },
+  "Jev runs in the desktop app. This browser preview does not save keys or contact model providers.": {
+    "jev.ts": 1
+  },
+  "Jev {0}": {
+    "jev.ts": 1
+  },
+  "Jev · Optional add-on": {
+    "integrations.ts": 1
+  },
+  "Jev · {0}": {
+    "jev-activity.ts": 1
+  },
+  "Jobs": {
+    "github-actions.ts": 1
+  },
+  "Jujutsu change {0}: {1}": {
+    "jj.ts": 1
+  },
+  "Keep a favorite": {
+    "wallpaper-settings.ts": 1
+  },
+  "Keep board": {
+    "moodboards.ts": 1
+  },
+  "Keep the history; forget the checkout.": {
+    "worktrees.ts": 1
+  },
+  "Keep this terminal running?": {
+    "terminal-panel.ts": 1
+  },
+  "Keep working across turns until the objective is reached, paused, or a limit is reached.": {
+    "command-center.ts": 1
+  },
+  "Keeps this draft and task; isolates its changes.": {
+    "worktrees.ts": 1
+  },
+  "Kept across conversations. The bot adds its own as it learns.": {
+    "bots.ts": 1
+  },
+  "Key saved": {
+    "jev.ts": 1
+  },
+  "Keyboard shortcut": {
+    "overlay-settings.ts": 1
+  },
+  "Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.": {
+    "approval-modes.ts": 1
+  },
+  "LOCAL PREVIEW": {
+    "browser.ts": 1
+  },
+  "Label": {
+    "github.ts": 1,
+    "sketch.ts": 1
+  },
+  "Language": {
+    "settings.ts": 2
+  },
+  "Large diff — showing a limited plain text preview.": {
+    "diff-viewer.ts": 2
+  },
+  "Last message: {0}": {
+    "main.ts": 1
+  },
+  "Last saved setup": {
+    "team-profiles.ts": 2
+  },
+  "Last turn failed": {
+    "sidebar-bots.ts": 1
+  },
+  "Later": {
+    "agent-updates.ts": 1,
+    "app-updates.ts": 1
+  },
+  "Latest per pull request": {
+    "github-actions.ts": 1
+  },
+  "Lead": {
+    "agent-teams.ts": 1
+  },
+  "Lead effort": {
+    "agent-teams.ts": 2
+  },
+  "Lead guidance": {
+    "agent-teams.ts": 2
+  },
+  "Lead guidance cleared. Teams use the built-in rules.": {
+    "agent-teams.ts": 1
+  },
+  "Lead guidance saved. Every team follows it from its next turn.": {
+    "agent-teams.ts": 1
+  },
+  "Learned": {
+    "bots-panels.ts": 1
+  },
+  "Leave empty for the built-in rules. For example: you only lead; never edit files yourself.": {
+    "agent-teams.ts": 1
+  },
+  "Leave empty to use the harness's executable": {
+    "connections.ts": 1
+  },
+  "Left 1 edited file in place: {0}": {
+    "skills-library.ts": 1
+  },
+  "Left {0} edited files in place: {1}": {
+    "skills-library.ts": 1
+  },
+  "Less": {
+    "usage-heatmap.ts": 1
+  },
+  "Let Codex review approval requests. Keep the workspace sandbox.": {
+    "approval-modes.ts": 1
+  },
+  "Let it read messages": {
+    "bots-connect.ts": 1
+  },
+  "Let your agents test their apps": {
+    "jev.ts": 1
+  },
+  "Library skills and MCP servers this bot uses, by reference. Nothing is copied.": {
+    "bots.ts": 1
+  },
+  "License": {
+    "about-settings.ts": 1
+  },
+  "Lifecycle hooks": {
+    "main.ts": 1
+  },
+  "Light": {
+    "theme-settings.ts": 1
+  },
+  "Light / dark": {
+    "simulator.ts": 1
+  },
+  "Limit reached": {
+    "jev-live.ts": 1,
+    "jev.ts": 1
+  },
+  "Line": {
+    "sketch.ts": 1
+  },
+  "Line weight": {
+    "sketch.ts": 1
+  },
+  "Link": {
+    "github.ts": 1
+  },
+  "Link one from the branch menu.": {
+    "github-pull.ts": 1
+  },
+  "Link pull request": {
+    "github.ts": 1
+  },
+  "Link pull request…": {
+    "github.ts": 1
+  },
+  "Linked pull request #{0}": {
+    "github.ts": 1
+  },
+  "Linked pull request #{0}{1}": {
+    "main.ts": 1
+  },
+  "Linux desktops agents can see and control.": {
+    "cloud-settings.ts": 1
+  },
+  "Linux with a screen · billed by Daytona": {
+    "vm-machines.ts": 1
+  },
+  "Linux, commands only · your Cloudflare account": {
+    "vm-machines.ts": 1
+  },
+  "List": {
+    "sketch.ts": 1
+  },
+  "Listening": {
+    "browser.ts": 1
+  },
+  "Lite": {
+    "token-saver.ts": 1
+  },
+  "Live browser · read only": {
+    "jev-live.ts": 2
+  },
+  "Live preview": {
+    "wallpaper-settings.ts": 1
+  },
+  "Live status": {
+    "overlay.ts": 1
+  },
+  "Live updates unavailable. Refresh to read results. {0}": {
+    "jev.ts": 1
+  },
+  "Load more": {
+    "conversation-import.ts": 1
+  },
+  "Load more conversations": {
+    "command-center.ts": 1
+  },
+  "Loading Jev settings…": {
+    "main.ts": 1
+  },
+  "Loading OpenRouter models…": {
+    "jev.ts": 1
+  },
+  "Loading activity…": {
+    "bots-panels.ts": 1
+  },
+  "Loading app details…": {
+    "support-settings.ts": 1
+  },
+  "Loading bots…": {
+    "main.ts": 1
+  },
+  "Loading bot…": {
+    "bots.ts": 1
+  },
+  "Loading browser tests…": {
+    "main.ts": 1
+  },
+  "Loading changes…": {
+    "changes-view.ts": 1,
+    "main.ts": 1
+  },
+  "Loading commands…": {
+    "slash-commands.ts": 1
+  },
+  "Loading connections…": {
+    "main.ts": 1
+  },
+  "Loading conversation…": {
+    "main.ts": 1,
+    "overlay-thread.ts": 2
+  },
+  "Loading devices…": {
+    "remote-settings.ts": 1
+  },
+  "Loading diff viewer…": {
+    "main.ts": 1
+  },
+  "Loading diff…": {
+    "changes-view.ts": 2,
+    "diff-viewer.ts": 1,
+    "github-pull.ts": 1
+  },
+  "Loading display…": {
+    "simulator.ts": 1
+  },
+  "Loading files…": {
+    "main.ts": 1
+  },
+  "Loading file…": {
+    "main.ts": 1
+  },
+  "Loading goal…": {
+    "command-center.ts": 1
+  },
+  "Loading harnesses…": {
+    "overlay.ts": 3
+  },
+  "Loading images…": {
+    "cloud-settings.ts": 1
+  },
+  "Loading integrations…": {
+    "main.ts": 1
+  },
+  "Loading issues…": {
+    "github.ts": 1
+  },
+  "Loading jobs…": {
+    "github-actions.ts": 1
+  },
+  "Loading log…": {
+    "jj.ts": 1
+  },
+  "Loading machines…": {
+    "vm-panel.ts": 1
+  },
+  "Loading models from OpenCode…": {
+    "opencode-model-settings.ts": 2
+  },
+  "Loading models…": {
+    "agent-teams.ts": 1
+  },
+  "Loading moodboards…": {
+    "main.ts": 1
+  },
+  "Loading moodboard…": {
+    "moodboards.ts": 1
+  },
+  "Loading open pull requests…": {
+    "github.ts": 1
+  },
+  "Loading saved diff…": {
+    "change-review.ts": 1
+  },
+  "Loading scenes…": {
+    "main.ts": 1
+  },
+  "Loading settings…": {
+    "jev.ts": 1
+  },
+  "Loading skills…": {
+    "bots-panels.ts": 1
+  },
+  "Loading subagents…": {
+    "subagents.ts": 1
+  },
+  "Loading task details…": {
+    "task-board.ts": 1
+  },
+  "Loading tasks…": {
+    "overlay.ts": 1
+  },
+  "Loading team messages…": {
+    "team-messages.ts": 1
+  },
+  "Loading team setup…": {
+    "architect.ts": 1
+  },
+  "Loading themes…": {
+    "main.ts": 1
+  },
+  "Loading usage panel…": {
+    "main.ts": 1
+  },
+  "Loading worker…": {
+    "architect.ts": 1
+  },
+  "Loading…": {
+    "command-center.ts": 1,
+    "conversation-import.ts": 1,
+    "github-hub.ts": 1,
+    "main.ts": 2,
+    "model-picker.ts": 2,
+    "remote-settings.ts": 1,
+    "settings.ts": 3
+  },
+  "Local": {
+    "worktrees.ts": 1
+  },
+  "Local VMs need a Mac with Apple silicon.": {
+    "vm-panel.ts": 1
+  },
+  "Local branches load from the {0} checkout.": {
+    "worktrees.ts": 1
+  },
+  "Local database": {
+    "resource-usage-settings.ts": 1
+  },
+  "Local server": {
+    "browser.ts": 1
+  },
+  "Local servers": {
+    "browser.ts": 3,
+    "jev.ts": 1
+  },
+  "Local · {0} GB download · {1}": {
+    "vm-machines.ts": 1
+  },
+  "Locally, in the project checkout. Commit first.": {
+    "worktrees.ts": 1
+  },
+  "Location": {
+    "cloud-settings.ts": 1,
+    "settings.ts": 1
+  },
+  "Lock": {
+    "simulator.ts": 2
+  },
+  "Log": {
+    "jj.ts": 1
+  },
+  "MCP servers": {
+    "integrations.ts": 1
+  },
+  "MCP setup guide": {
+    "integrations.ts": 1
+  },
+  "Machine image": {
+    "cloud-settings.ts": 1
+  },
+  "Machines": {
+    "vm-panel.ts": 3
+  },
+  "Manage": {
+    "settings.ts": 1
+  },
+  "Manage goal": {
+    "main.ts": 1
+  },
+  "Manage task goal": {
+    "command-center.ts": 1
+  },
+  "Manage team profile": {
+    "team-profiles.ts": 1
+  },
+  "Manual": {
+    "github-actions.ts": 1,
+    "recipes.ts": 1
+  },
+  "Manual update": {
+    "agent-updates.ts": 1
+  },
+  "Mark all read": {
+    "sidebar-bots.ts": 1
+  },
+  "Mark as read": {
+    "main.ts": 1
+  },
+  "Mark as unread": {
+    "main.ts": 1
+  },
+  "Markdown, up to 64 KB": {
+    "bots.ts": 1
+  },
+  "Match case": {
+    "search-panel.ts": 1
+  },
+  "Match whole word": {
+    "search-panel.ts": 1
+  },
+  "Matching excerpts": {
+    "jev-assist.ts": 1
+  },
+  "Matching file names": {
+    "search-panel.ts": 1
+  },
+  "Maximum steps": {
+    "jev.ts": 1
+  },
+  "Memory": {
+    "bots.ts": 1
+  },
+  "Mention a file": {
+    "file-mentions.ts": 1
+  },
+  "Mention it in a channel, or open its profile and send a direct message.": {
+    "bots-connect.ts": 1
+  },
+  "Merge conflicts": {
+    "github-pull.ts": 1
+  },
+  "Merge into {0}": {
+    "worktrees.ts": 1
+  },
+  "Merge method": {
+    "github-pull.ts": 2
+  },
+  "Merge queue": {
+    "github-actions.ts": 1
+  },
+  "Merged": {
+    "github-pull.ts": 1
+  },
+  "Merged 1 commit from {0} into {1}{2}": {
+    "worktrees.ts": 1
+  },
+  "Merged pull request #{0}": {
+    "github-pull.ts": 1
+  },
+  "Merged {0} commits from {1} into {2}{3}": {
+    "worktrees.ts": 1
+  },
+  "Merging…": {
+    "github-pull.ts": 1
+  },
+  "Message actions": {
+    "message-actions.ts": 1
+  },
+  "Message copied": {
+    "message-actions.ts": 1
+  },
+  "Message injection": {
+    "capabilities-panel.ts": 1
+  },
+  "Message it from your phone": {
+    "bots-connect.ts": 1
+  },
+  "Message you when it finishes work you were not watching": {
+    "bots.ts": 1
+  },
+  "Message your WhatsApp business number from your phone.": {
+    "bots-connect.ts": 1
+  },
+  "Message your WhatsApp number": {
+    "bots-connect.ts": 1
+  },
+  "Message {0}…": {
+    "main.ts": 1
+  },
+  "Messages between teammates": {
+    "team-messages.ts": 1
+  },
+  "Meta delivers messages over HTTPS, so this computer needs a public address. The quickest is a free Cloudflare tunnel; run these in Terminal and keep the second one open:": {
+    "bots-connect.ts": 1
+  },
+  "Meta gives you a free test number.": {
+    "bots-connect.ts": 1
+  },
+  "Minimize instead": {
+    "terminal-panel.ts": 1
+  },
+  "Missing": {
+    "capabilities-panel.ts": 1
+  },
+  "Mobile": {
+    "jev.ts": 1
+  },
+  "Mobile check": {
+    "jev.ts": 1
+  },
+  "Mockup attached": {
+    "main.ts": 1
+  },
+  "Mockup canvas": {
+    "sketch.ts": 2
+  },
+  "Mockup updated": {
+    "main.ts": 1
+  },
+  "Mockup · ": {
+    "attachments.ts": 1,
+    "message-attachments.ts": 1
+  },
+  "Model": {
+    "bots.ts": 3,
+    "usage-overview.ts": 2
+  },
+  "Model routing": {
+    "settings-sections.ts": 1
+  },
+  "Modified": {
+    "changes-view.ts": 3,
+    "team-profiles.ts": 1
+  },
+  "Moodboard already attached.": {
+    "main.ts": 1
+  },
+  "Moodboard images. Paste or drop images here.": {
+    "moodboards.ts": 1
+  },
+  "Moodboard name": {
+    "moodboards.ts": 1
+  },
+  "Moodboards": {
+    "moodboards.ts": 1
+  },
+  "Moodboards can’t be sent to {0} yet. Remove them, or run on this computer.": {
+    "main.ts": 1
+  },
+  "More": {
+    "bots.ts": 2,
+    "usage-heatmap.ts": 1
+  },
+  "More actions": {
+    "changes-view.ts": 1
+  },
+  "More actions for #{0}": {
+    "github-hub.ts": 1
+  },
+  "More cloud machines": {
+    "cloud-settings.ts": 2
+  },
+  "More messages": {
+    "team-messages.ts": 1
+  },
+  "Morning digest": {
+    "bots-panels.ts": 1
+  },
+  "Move down": {
+    "main.ts": 1
+  },
+  "Move to project…": {
+    "main.ts": 1
+  },
+  "Move up": {
+    "main.ts": 1
+  },
+  "Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.": {
+    "approval-modes.ts": 1
+  },
+  "Name": {
+    "bots-panels.ts": 1,
+    "bots.ts": 1,
+    "connections.ts": 1
+  },
+  "Name your board": {
+    "moodboards.ts": 1
+  },
+  "Names may use letters, numbers, hyphens, underscores, and slashes.": {
+    "worktrees.ts": 1
+  },
+  "Native": {
+    "capabilities-panel.ts": 1
+  },
+  "Native core memory": {
+    "resource-usage-settings.ts": 1
+  },
+  "Native harness console. Type a command to continue.": {
+    "terminal.ts": 1
+  },
+  "Nav bar": {
+    "sketch.ts": 1
+  },
+  "Needs Xcode 27.1 or later": {
+    "simulator.ts": 1
+  },
+  "Needs approval": {
+    "main.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "Needs attention": {
+    "command-center.ts": 1,
+    "overlay.ts": 1
+  },
+  "Needs judgment": {
+    "jev-assist.ts": 1
+  },
+  "Needs your answer": {
+    "main.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "New": {
+    "jj.ts": 1
+  },
+  "New InstaBox machines start from this image. Snapshots are listed once they are ready; to run agents without the desktop tool agent-browser includes, make a snapshot as docs/cloud-agents.md describes.": {
+    "cloud-settings.ts": 1
+  },
+  "New VM": {
+    "vm-panel.ts": 1
+  },
+  "New bot": {
+    "bots.ts": 4,
+    "main.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "New bot or channel": {
+    "sidebar-bots.ts": 2
+  },
+  "New channel": {
+    "sidebar-bots.ts": 1
+  },
+  "New chat (no project)": {
+    "main.ts": 1
+  },
+  "New connection": {
+    "connections.ts": 1
+  },
+  "New link": {
+    "bots-connect.ts": 1,
+    "bots-panels.ts": 1
+  },
+  "New link copied": {
+    "bots-connect.ts": 1
+  },
+  "New link: pages opened with the old link stop working": {
+    "bots-panels.ts": 1
+  },
+  "New machine": {
+    "vm-panel.ts": 2
+  },
+  "New memory": {
+    "bots-panels.ts": 1
+  },
+  "New moodboard": {
+    "moodboards.ts": 2
+  },
+  "New recipe": {
+    "recipes.ts": 1
+  },
+  "New task": {
+    "main.ts": 2,
+    "overlay.ts": 1
+  },
+  "New task from {0}…": {
+    "main.ts": 1
+  },
+  "New task in a worktree": {
+    "worktrees.ts": 1
+  },
+  "New task in a worktree…": {
+    "main.ts": 1,
+    "worktrees.ts": 1
+  },
+  "New tasks will use a single agent. Saved profiles are kept.": {
+    "main.ts": 1
+  },
+  "New team": {
+    "agent-teams.ts": 1
+  },
+  "New thread": {
+    "github-hub.ts": 1
+  },
+  "New threads start with savers off": {
+    "token-saver-panel.ts": 1
+  },
+  "New threads start with these savers": {
+    "token-saver-panel.ts": 1
+  },
+  "Next match": {
+    "thread-find.ts": 1
+  },
+  "Next match (↩)": {
+    "thread-find.ts": 1
+  },
+  "No Android emulators. Add one in Android Studio → Device Manager.": {
+    "simulator.ts": 1
+  },
+  "No Git repository": {
+    "main.ts": 1
+  },
+  "No active goal": {
+    "command-center.ts": 1
+  },
+  "No activity recorded for this agent yet.": {
+    "agent-usage.ts": 1
+  },
+  "No agent reported a limit.": {
+    "usage-overview.ts": 1
+  },
+  "No agents running.": {
+    "tray-popover.ts": 1
+  },
+  "No agents working right now.": {
+    "overlay.ts": 1
+  },
+  "No approvals and no sandbox: Muse runs every tool without asking.": {
+    "approval-modes.ts": 1
+  },
+  "No apps were reported by this Codex installation.": {
+    "integrations.ts": 1
+  },
+  "No artifacts uploaded.": {
+    "github-actions.ts": 1
+  },
+  "No background jobs are running.": {
+    "command-center.ts": 1
+  },
+  "No bot": {
+    "main.ts": 2
+  },
+  "No bots yet.": {
+    "bots.ts": 1
+  },
+  "No browser image available": {
+    "jev-live.ts": 1
+  },
+  "No changes in this change": {
+    "jj.ts": 1
+  },
+  "No changes yet.": {
+    "jj.ts": 1
+  },
+  "No commands are available for this agent.": {
+    "slash-commands.ts": 1
+  },
+  "No commands, integrations, hooks, plugins, or skills were discovered.": {
+    "capabilities-panel.ts": 1
+  },
+  "No commits yet": {
+    "changes-view.ts": 1
+  },
+  "No commits.": {
+    "github-pull.ts": 1
+  },
+  "No computers with remote control on": {
+    "remote-settings.ts": 1
+  },
+  "No conversations match.": {
+    "conversation-import.ts": 1
+  },
+  "No conversations were found.": {
+    "command-center.ts": 1
+  },
+  "No conversations yet. Open chat to start one.": {
+    "bots-panels.ts": 1
+  },
+  "No description provided.": {
+    "github-pull.ts": 1
+  },
+  "No devices yet.": {
+    "remote-settings.ts": 1
+  },
+  "No editable preferences are available.": {
+    "command-center.ts": 1
+  },
+  "No files changed.": {
+    "github-pull.ts": 1
+  },
+  "No fill": {
+    "sketch.ts": 1
+  },
+  "No harnesses found. Check your agent connections in PandaCode.": {
+    "overlay-model-picker.ts": 1
+  },
+  "No harnesses on this computer": {
+    "model-picker.ts": 1
+  },
+  "No iOS simulators. Add one in Xcode → Window → Devices and Simulators.": {
+    "simulator.ts": 1
+  },
+  "No importable items were found.": {
+    "command-center.ts": 1
+  },
+  "No installed agents found.": {
+    "agent-updates.ts": 1
+  },
+  "No installed agents report models yet.": {
+    "agent-teams.ts": 1
+  },
+  "No installed harnesses were found.": {
+    "capabilities-panel.ts": 2
+  },
+  "No jobs ran.": {
+    "github-actions.ts": 2
+  },
+  "No lifecycle hooks are configured.": {
+    "command-center.ts": 1
+  },
+  "No limit": {
+    "command-center.ts": 1
+  },
+  "No line changes in this patch.": {
+    "diff-viewer.ts": 1
+  },
+  "No local servers found.": {
+    "browser.ts": 1
+  },
+  "No matches.": {
+    "command-center.ts": 1,
+    "github-hub.ts": 1
+  },
+  "No matching active agents.": {
+    "overlay.ts": 1
+  },
+  "No matching files in this project.": {
+    "file-mentions.ts": 1
+  },
+  "No matching issues.": {
+    "github-hub.ts": 1
+  },
+  "No matching models. Try another name or provider.": {
+    "opencode-model-settings.ts": 1
+  },
+  "No matching options.": {
+    "choice-menu.ts": 1
+  },
+  "No matching projects.": {
+    "project-picker.ts": 1
+  },
+  "No matching pull requests.": {
+    "github-hub.ts": 1
+  },
+  "No matching runs.": {
+    "github-actions.ts": 1
+  },
+  "No matching tasks or commands.": {
+    "main.ts": 1
+  },
+  "No matching threads.": {
+    "github-hub.ts": 1
+  },
+  "No memories yet.": {
+    "bots-panels.ts": 1
+  },
+  "No messages yet": {
+    "sidebar-bots.ts": 1
+  },
+  "No messages yet. Teammates can share questions and handoffs here.": {
+    "team-messages.ts": 1
+  },
+  "No models found. Connect a provider in OpenCode, then refresh.": {
+    "opencode-model-settings.ts": 1
+  },
+  "No open issues match these filters.": {
+    "github.ts": 1
+  },
+  "No open issues.": {
+    "github-hub.ts": 1
+  },
+  "No open pull requests.": {
+    "github-hub.ts": 1
+  },
+  "No open pull requests. Paste a number or URL above.": {
+    "github.ts": 1
+  },
+  "No options available.": {
+    "choice-menu.ts": 1
+  },
+  "No output was recorded.": {
+    "tool-activity.ts": 1
+  },
+  "No plugins are installed.": {
+    "command-center.ts": 1
+  },
+  "No project": {
+    "main.ts": 1
+  },
+  "No projects yet.": {
+    "project-picker.ts": 1,
+    "settings.ts": 1
+  },
+  "No prompt text or cache key is shown.": {
+    "capabilities-panel.ts": 1
+  },
+  "No prompts": {
+    "usage-heatmap.ts": 1
+  },
+  "No pull request": {
+    "github-pull.ts": 1
+  },
+  "No repositories yet.": {
+    "github-hub.ts": 1
+  },
+  "No rules. Reply \"always\" to an approval request to add one.": {
+    "bots-panels.ts": 1
+  },
+  "No sandbox: DeepSeek runs every tool without asking.": {
+    "approval-modes.ts": 1
+  },
+  "No saved evidence is available for this task yet.": {
+    "jev-assist.ts": 1
+  },
+  "No saved key": {
+    "jev.ts": 1
+  },
+  "No schedules yet. The bot can also schedule work for itself.": {
+    "bots-panels.ts": 1
+  },
+  "No servers were reported for this Codex configuration.": {
+    "integrations.ts": 1
+  },
+  "No simulators": {
+    "simulator.ts": 1
+  },
+  "No skills were reported for this project.": {
+    "integrations.ts": 1
+  },
+  "No staged changes": {
+    "changes-view.ts": 1
+  },
+  "No subagents have been reported for this task yet.": {
+    "main.ts": 1
+  },
+  "No subagents in this task yet.": {
+    "subagents.ts": 1
+  },
+  "No summary was returned.": {
+    "jev.ts": 1
+  },
+  "No task is open.": {
+    "generative-ui-components.ts": 1
+  },
+  "No task selected": {
+    "main.ts": 1
+  },
+  "No tasks match": {
+    "main.ts": 1
+  },
+  "No tests yet. Run a quick check before handing work back to your agent.": {
+    "jev.ts": 1
+  },
+  "No text changes to display.": {
+    "diff-viewer.ts": 1
+  },
+  "No text matches.": {
+    "search-panel.ts": 1
+  },
+  "No textual changes (binary or renamed file).": {
+    "github-pull.ts": 1
+  },
+  "No threads yet. Describe a task above to start one.": {
+    "github-hub.ts": 1
+  },
+  "No tokens": {
+    "usage-heatmap.ts": 1
+  },
+  "No tools were reported.": {
+    "integrations.ts": 1
+  },
+  "No unstaged changes": {
+    "changes-view.ts": 1
+  },
+  "No usage in this period": {
+    "usage-overview.ts": 1
+  },
+  "No usage in this period.": {
+    "usage-overview.ts": 1
+  },
+  "No usage information is available.": {
+    "command-center.ts": 1
+  },
+  "No workflow runs yet.": {
+    "github-actions.ts": 1
+  },
+  "No working-copy change": {
+    "jj.ts": 1
+  },
+  "No {0} logs were found on this computer.": {
+    "usage-overview.ts": 1
+  },
+  "No {0} usage in this period.": {
+    "usage-overview.ts": 1
+  },
+  "Noon – 6 pm": {
+    "wallpaper-settings.ts": 1
+  },
+  "Not a Git repository": {
+    "changes-view.ts": 1
+  },
+  "Not approved": {
+    "remote-settings.ts": 1
+  },
+  "Not available": {
+    "cloud-settings.ts": 2
+  },
+  "Not checked": {
+    "jev.ts": 1
+  },
+  "Not done": {
+    "generative-ui-components.ts": 1
+  },
+  "Not exposed": {
+    "capabilities-panel.ts": 4
+  },
+  "Not in the library": {
+    "bots-panels.ts": 1
+  },
+  "Not installed": {
+    "settings.ts": 1
+  },
+  "Not on this computer yet": {
+    "github-hub.ts": 1
+  },
+  "Not steered": {
+    "message-queue.ts": 1
+  },
+  "Not supported": {
+    "jev-assist.ts": 1
+  },
+  "Not taken by the agent · moved to the queue": {
+    "main.ts": 1
+  },
+  "Nothing yet.": {
+    "bots-panels.ts": 1
+  },
+  "Notifications": {
+    "bots.ts": 2
+  },
+  "Notify me": {
+    "about-settings.ts": 1
+  },
+  "Notify my phone": {
+    "remote-settings.ts": 2
+  },
+  "Number or URL": {
+    "github.ts": 1
+  },
+  "Objective": {
+    "command-center.ts": 1
+  },
+  "Observed": {
+    "capabilities-panel.ts": 2
+  },
+  "Off": {
+    "about-settings.ts": 1,
+    "bots-panels.ts": 1,
+    "bots.ts": 1,
+    "token-saver-panel.ts": 2,
+    "wallpaper-settings.ts": 1
+  },
+  "Off · no gh commands run": {
+    "github.ts": 1
+  },
+  "Off, sharp wallpaper": {
+    "wallpaper-settings.ts": 1
+  },
+  "Off, the thread shows a live sky that follows the time of day.": {
+    "settings.ts": 1
+  },
+  "Offline": {
+    "remote-settings.ts": 1
+  },
+  "On GitHub": {
+    "github.ts": 1
+  },
+  "On board": {
+    "github.ts": 1
+  },
+  "On each check-in the bot reviews its goals and memory using read-only steps, and messages you only when something needs attention.": {
+    "bots.ts": 1
+  },
+  "On this computer": {
+    "github-hub.ts": 2
+  },
+  "On this computer, that’s it.": {
+    "bots-connect.ts": 1
+  },
+  "Once": {
+    "bots-panels.ts": 2
+  },
+  "Once a day": {
+    "bots.ts": 1
+  },
+  "Once, {0}": {
+    "bots-panels.ts": 1
+  },
+  "One per line. Check-ins work toward these.": {
+    "bots.ts": 1
+  },
+  "One rule per line · up to 8 rules": {
+    "jev-assist.ts": 1
+  },
+  "Online": {
+    "remote-settings.ts": 1
+  },
+  "Only browser tests need Python 3.12+, Chrome, and a text model key. Decision assistance works without the browser runtime. Jev is installed separately and only runs when testing.": {
+    "jev.ts": 1
+  },
+  "Only the app version, platform, and architecture. Nothing is sent automatically.": {
+    "settings.ts": 1
+  },
+  "Open": {
+    "bots-panels.ts": 1,
+    "file-links.ts": 1,
+    "github-actions.ts": 1,
+    "github-pull.ts": 2,
+    "overlay-settings.ts": 1,
+    "simulator.ts": 1
+  },
+  "Open BotFather": {
+    "bots-connect.ts": 1
+  },
+  "Open BotFather in Telegram": {
+    "bots-connect.ts": 1
+  },
+  "Open Developer Portal": {
+    "bots-connect.ts": 1
+  },
+  "Open Jev browser test reports": {
+    "jev-activity.ts": 1
+  },
+  "Open Meta for Developers": {
+    "bots-connect.ts": 1
+  },
+  "Open Settings to check your installed agent CLIs.": {
+    "main.ts": 1
+  },
+  "Open Settings to check your installed agents.": {
+    "main.ts": 7
+  },
+  "Open Slack": {
+    "bots-connect.ts": 1
+  },
+  "Open URL": {
+    "browser.ts": 1
+  },
+  "Open VSX extension ID": {
+    "theme-settings.ts": 1
+  },
+  "Open a Git repository to review changes.": {
+    "main.ts": 1
+  },
+  "Open a project": {
+    "main.ts": 1
+  },
+  "Open a project before starting a terminal.": {
+    "main.ts": 1,
+    "terminal-panel.ts": 1
+  },
+  "Open a project in PandaCode to get started.": {
+    "overlay.ts": 1
+  },
+  "Open a project to add a task.": {
+    "main.ts": 1
+  },
+  "Open a project to browse files and review changes.": {
+    "main.ts": 1
+  },
+  "Open a project to check its connection": {
+    "github.ts": 1
+  },
+  "Open a project to create a moodboard.": {
+    "main.ts": 1
+  },
+  "Open a project to deploy it.": {
+    "main.ts": 1
+  },
+  "Open a project to get started.": {
+    "main.ts": 1
+  },
+  "Open a project to run it.": {
+    "run-project.ts": 1
+  },
+  "Open a project to see its designs.": {
+    "design-canvas.ts": 1
+  },
+  "Open a project to start a task.": {
+    "main.ts": 1
+  },
+  "Open a server, or enter any website above.": {
+    "browser.ts": 1
+  },
+  "Open a task to save browser test results.": {
+    "main.ts": 1
+  },
+  "Open an idle task in this project to attach a moodboard.": {
+    "main.ts": 1
+  },
+  "Open attempt {0} on GitHub": {
+    "github-actions.ts": 1
+  },
+  "Open browser": {
+    "main.ts": 1
+  },
+  "Open chat": {
+    "bots.ts": 1
+  },
+  "Open details": {
+    "github-pull.ts": 1
+  },
+  "Open diff": {
+    "turn-changes.ts": 1
+  },
+  "Open file": {
+    "changes-view.ts": 1
+  },
+  "Open harness console": {
+    "main.ts": 1
+  },
+  "Open in browser": {
+    "agent-input.ts": 1
+  },
+  "Open in thread": {
+    "github-hub.ts": 1
+  },
+  "Open issue #{0}": {
+    "github.ts": 1
+  },
+  "Open issues": {
+    "github.ts": 1
+  },
+  "Open issues in ": {
+    "github.ts": 1
+  },
+  "Open it on your phone; add it to your home screen to use it like an app.": {
+    "bots-connect.ts": 1
+  },
+  "Open job {0} on GitHub": {
+    "github-actions.ts": 1
+  },
+  "Open machine": {
+    "cloud-agents.ts": 1
+  },
+  "Open on GitHub": {
+    "github-hub.ts": 3,
+    "github-pull.ts": 2
+  },
+  "Open project": {
+    "main.ts": 2,
+    "task-board.ts": 1
+  },
+  "Open project…": {
+    "project-picker.ts": 1
+  },
+  "Open pull request #{0}": {
+    "github.ts": 1
+  },
+  "Open pull requests": {
+    "github.ts": 1
+  },
+  "Open repository on GitHub": {
+    "github.ts": 1
+  },
+  "Open saved diff": {
+    "jev-assist.ts": 1
+  },
+  "Open source (MIT-based). No account, no telemetry.": {
+    "about-settings.ts": 1
+  },
+  "Open terminals": {
+    "resource-usage-settings.ts": 1
+  },
+  "Open the browser in this task first.": {
+    "main.ts": 1
+  },
+  "Open this task while it is idle to add its test report.": {
+    "main.ts": 1
+  },
+  "Open this task while it is idle to add the report.": {
+    "main.ts": 1
+  },
+  "Open view": {
+    "main.ts": 1
+  },
+  "Open web chat": {
+    "bots-connect.ts": 1,
+    "bots-panels.ts": 1
+  },
+  "Open workers": {
+    "architect.ts": 1
+  },
+  "Open {0}": {
+    "message-attachments.ts": 1
+  },
+  "Open {0} in Telegram": {
+    "bots-connect.ts": 1
+  },
+  "OpenAI-compatible base URL": {
+    "jev.ts": 1
+  },
+  "OpenCode models": {
+    "settings.ts": 1
+  },
+  "OpenRouter": {
+    "jev.ts": 1
+  },
+  "OpenRouter API key": {
+    "jev.ts": 1
+  },
+  "Opened in your system browser. Linux cannot show pages inside this pane yet.": {
+    "browser.ts": 1
+  },
+  "Opened {0}": {
+    "main.ts": 2
+  },
+  "Opening support…": {
+    "main.ts": 2
+  },
+  "Opening…": {
+    "main.ts": 1,
+    "office-viewer.ts": 1,
+    "project-picker.ts": 1
+  },
+  "Optional": {
+    "cloud-settings.ts": 5
+  },
+  "Optional add-on for browser tests and decision assistance. Your agents work without it.": {
+    "settings.ts": 1
+  },
+  "Optional checks": {
+    "jev.ts": 1
+  },
+  "Optional reviews, project rules, context search, and worker suggestions.": {
+    "jev.ts": 1
+  },
+  "Optional · selected task evidence is sent to TypeSafe when you run. Provider usage charges apply. PandaCode works without Jev. Advice does not change files, models, or permissions.": {
+    "jev-assist.ts": 1
+  },
+  "Optional, such as us-central1": {
+    "cloud-settings.ts": 1
+  },
+  "Optional. Leave blank for no token limit.": {
+    "command-center.ts": 1
+  },
+  "Optional. Tone, values and conversational style, kept apart from the instructions. Importing copies the file once; later changes to the file do not change the bot. Personality never grants tools or permissions.": {
+    "bots.ts": 1
+  },
+  "Optional; for cloud agent VMs, such as us-central1-a": {
+    "cloud-settings.ts": 1
+  },
+  "Optional; for cloud agents": {
+    "cloud-settings.ts": 2
+  },
+  "Optional; needed for a workspace token": {
+    "cloud-settings.ts": 1
+  },
+  "Or": {
+    "bots-connect.ts": 1
+  },
+  "Orange": {
+    "theme-settings.ts": 1
+  },
+  "Organization ID": {
+    "cloud-settings.ts": 1
+  },
+  "Other": {
+    "github-hub.ts": 1
+  },
+  "Other answer": {
+    "agent-input.ts": 1
+  },
+  "Other branch…": {
+    "worktrees.ts": 1
+  },
+  "Other repositories": {
+    "github-hub.ts": 1
+  },
+  "Outline": {
+    "sketch.ts": 1
+  },
+  "Output": {
+    "tool-activity.ts": 1,
+    "usage-overview.ts": 1
+  },
+  "Overview": {
+    "agent-usage.ts": 1
+  },
+  "PDFs, documents": {
+    "attachments.ts": 1
+  },
+  "PNG, JPEG, WebP · up to 12 MB each": {
+    "moodboards.ts": 1
+  },
+  "PR #{0}": {
+    "worktrees.ts": 1
+  },
+  "Page contains text": {
+    "jev.ts": 1
+  },
+  "Page element": {
+    "message-attachments.ts": 1
+  },
+  "Page {0}": {
+    "office-viewer.ts": 1
+  },
+  "Pages opened with the current link stop working right away. Use this if the link was shared by mistake.": {
+    "bots-connect.ts": 1
+  },
+  "Pair": {
+    "remote-settings.ts": 1
+  },
+  "Pair with a code": {
+    "remote-settings.ts": 1
+  },
+  "Paired": {
+    "bots-panels.ts": 1
+  },
+  "Pairing code": {
+    "remote-settings.ts": 2
+  },
+  "Pairing code from the other computer": {
+    "remote-settings.ts": 1
+  },
+  "PandaCode Connect": {
+    "remote-settings.ts": 1
+  },
+  "PandaCode License": {
+    "about-settings.ts": 1
+  },
+  "PandaCode has no “{0}” view. Showing its data instead.": {
+    "generative-ui-components.ts": 1
+  },
+  "PandaCode quick launcher": {
+    "overlay.ts": 1
+  },
+  "PandaCode restarts when your agents are done and you step away.": {
+    "app-updates-policy.ts": 1
+  },
+  "PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it.": {
+    "vm-panel.ts": 1
+  },
+  "PandaCode tools": {
+    "integrations.ts": 1
+  },
+  "PandaCode uses it to check that messages really come from Meta.": {
+    "bots-connect.ts": 1
+  },
+  "PandaCode will restart to update when your agents finish.": {
+    "app-updates.ts": 1
+  },
+  "PandaCode {0} is available.": {
+    "app-updates-policy.ts": 1
+  },
+  "PandaCode {0} is available. Installs when your agents are done.": {
+    "app-updates-policy.ts": 1
+  },
+  "PandaCode {0} is available. Open GitHub Releases to update this copy.": {
+    "app-updates-policy.ts": 1
+  },
+  "PandaCode {0} is available. Updates for this copy are installed by its package or a new AppImage.": {
+    "app-updates-policy.ts": 1
+  },
+  "PandaCode {0} is ready. Restart now, or it restarts on its own when your agents are done.": {
+    "app-updates-policy.ts": 1
+  },
+  "Partial": {
+    "capabilities-panel.ts": 1
+  },
+  "Passed": {
+    "github-actions.ts": 2,
+    "jev.ts": 1
+  },
+  "Paste that https address": {
+    "bots-connect.ts": 2
+  },
+  "Paste the token BotFather sends back": {
+    "bots-connect.ts": 1
+  },
+  "Path and structure": {
+    "attachments.ts": 1
+  },
+  "Pattern": {
+    "bots-panels.ts": 1
+  },
+  "Pause": {
+    "bots.ts": 1,
+    "command-center.ts": 3
+  },
+  "Pause goal": {
+    "command-center.ts": 1
+  },
+  "Pause: stop work and hold schedules and messages": {
+    "bots.ts": 1
+  },
+  "Paused": {
+    "bots.ts": 2,
+    "command-center.ts": 1,
+    "main.ts": 1,
+    "overlay.ts": 1
+  },
+  "Paused after restart": {
+    "message-queue.ts": 1
+  },
+  "Paused after the run failed": {
+    "message-queue.ts": 1
+  },
+  "Paused after you stopped the run": {
+    "message-queue.ts": 1
+  },
+  "Paused since {0}": {
+    "sidebar-bots.ts": 1
+  },
+  "Paused until the usage limit resets": {
+    "message-queue.ts": 1
+  },
+  "Paused. Schedules and check-ins wait until you resume; new messages get a paused reply.": {
+    "bots.ts": 1
+  },
+  "Pen": {
+    "sketch.ts": 1
+  },
+  "Pending": {
+    "github-actions.ts": 1,
+    "github-hub.ts": 1,
+    "task-board.ts": 1,
+    "team-profiles.ts": 1
+  },
+  "People": {
+    "bots-panels.ts": 1
+  },
+  "Period": {
+    "agent-usage.ts": 1
+  },
+  "Permissions": {
+    "main.ts": 1
+  },
+  "Personality": {
+    "bots.ts": 1
+  },
+  "Phone": {
+    "sketch.ts": 1
+  },
+  "Phone link copied. Send it to yourself and open it on your phone.": {
+    "bots-connect.ts": 1
+  },
+  "Phone number ID": {
+    "bots-connect.ts": 2
+  },
+  "Pick one in the model picker.": {
+    "agent-teams.ts": 1
+  },
+  "Pin task": {
+    "main.ts": 2
+  },
+  "Pink": {
+    "theme-settings.ts": 1
+  },
+  "Pinned": {
+    "main.ts": 2
+  },
+  "Pinned tasks": {
+    "main.ts": 1
+  },
+  "Plain text patch": {
+    "diff-viewer.ts": 1
+  },
+  "Plan": {
+    "generative-ui-components.ts": 1
+  },
+  "Plan mode": {
+    "approval-modes.ts": 16,
+    "main.ts": 1
+  },
+  "Plan only": {
+    "bots.ts": 1
+  },
+  "Plan usage": {
+    "tray-popover.ts": 1
+  },
+  "Preparing Jev assistance…": {
+    "main.ts": 1
+  },
+  "Preparing checkout": {
+    "remote-progress.ts": 1
+  },
+  "Preparing saved evidence…": {
+    "jev-assist.ts": 1
+  },
+  "Preparing shortcut recorder…": {
+    "overlay-settings.ts": 1
+  },
+  "Preparing the deploy…": {
+    "cloud-settings.ts": 1
+  },
+  "Press ▶ to boot": {
+    "simulator.ts": 1
+  },
+  "Preview": {
+    "about-settings.ts": 1,
+    "file-links.ts": 1,
+    "jev-assist.ts": 1,
+    "jev.ts": 1
+  },
+  "Preview evidence": {
+    "jev-assist.ts": 1
+  },
+  "Preview first, then production": {
+    "deploy.ts": 1
+  },
+  "Preview in browser": {
+    "main.ts": 1
+  },
+  "Preview limited to 2,000 lines.": {
+    "document-viewer.ts": 1
+  },
+  "Preview shortened to keep the app responsive.": {
+    "diff-viewer.ts": 1
+  },
+  "Preview unavailable": {
+    "moodboards.ts": 1
+  },
+  "Previous match": {
+    "thread-find.ts": 1
+  },
+  "Previous match (⇧↩)": {
+    "thread-find.ts": 1
+  },
+  "Prices: LiteLLM public price list, updated {0}.": {
+    "agent-usage.ts": 1
+  },
+  "Prices: saved LiteLLM price list from {0}.": {
+    "agent-usage.ts": 1
+  },
+  "Prices: the list bundled with PandaCode (offline).": {
+    "agent-usage.ts": 1
+  },
+  "Privacy": {
+    "settings.ts": 1
+  },
+  "Private": {
+    "github-hub.ts": 1
+  },
+  "Private answer": {
+    "agent-input.ts": 1
+  },
+  "Private link copied. Anyone with it can talk to this bot.": {
+    "bots-connect.ts": 1
+  },
+  "Process exited. Close and reopen the terminal to start again.": {
+    "terminal.ts": 1
+  },
+  "Processed tokens": {
+    "usage-overview.ts": 1
+  },
+  "Processes are still running": {
+    "terminal-panel.ts": 1
+  },
+  "Profile": {
+    "bots.ts": 2
+  },
+  "Profile actions": {
+    "team-profiles.ts": 1
+  },
+  "Profile name": {
+    "team-profiles.ts": 2
+  },
+  "Progress": {
+    "generative-ui-components.ts": 2
+  },
+  "Project": {
+    "main.ts": 4,
+    "recipes.ts": 1,
+    "skills-library.ts": 3,
+    "task-board.ts": 2
+  },
+  "Project ID": {
+    "cloud-settings.ts": 2
+  },
+  "Project board": {
+    "task-board.ts": 1
+  },
+  "Project files": {
+    "attachments.ts": 1,
+    "file-mentions.ts": 3
+  },
+  "Project folder": {
+    "main.ts": 1
+  },
+  "Project path copied": {
+    "main.ts": 1,
+    "worktrees.ts": 1
+  },
+  "Project root": {
+    "file-mentions.ts": 1
+  },
+  "Project rules": {
+    "jev-assist.ts": 1
+  },
+  "Projects": {
+    "project-picker.ts": 1
+  },
+  "Pros": {
+    "generative-ui-components.ts": 1
+  },
+  "Providers": {
+    "settings-sections.ts": 1
+  },
+  "Public": {
+    "github-hub.ts": 1
+  },
+  "Pull request": {
+    "github-actions.ts": 1,
+    "github.ts": 2,
+    "main.ts": 1
+  },
+  "Pull request #{0}": {
+    "main.ts": 2
+  },
+  "Pull request #{0} opened": {
+    "github.ts": 1
+  },
+  "Pull request #{0} unlinked": {
+    "main.ts": 1
+  },
+  "Pull request opened": {
+    "github.ts": 1
+  },
+  "Pull request sections": {
+    "github-pull.ts": 1
+  },
+  "Pull request target": {
+    "github-actions.ts": 1
+  },
+  "Pull request {0}: {1} ({2})": {
+    "worktrees.ts": 1
+  },
+  "Pull requests": {
+    "github-hub.ts": 1
+  },
+  "Purple": {
+    "theme-settings.ts": 1
+  },
+  "Push": {
+    "github-actions.ts": 1
+  },
+  "Push & open pull request": {
+    "github.ts": 2
+  },
+  "Push & open pull request…": {
+    "github.ts": 1
+  },
+  "Pushes ": {
+    "github.ts": 1
+  },
+  "Pushes a generic notice when a hosted task needs approval or finishes. The relay never sees task content.": {
+    "remote-settings.ts": 1
+  },
+  "Python executable": {
+    "jev.ts": 1
+  },
+  "Queue saved steps": {
+    "main.ts": 1
+  },
+  "Queued": {
+    "github-actions.ts": 1,
+    "message-queue.ts": 1
+  },
+  "Queued message {0}: {1}": {
+    "message-queue.ts": 1
+  },
+  "Queued messages": {
+    "message-queue.ts": 1
+  },
+  "Queued messages with attachments are sent after the run.": {
+    "main.ts": 1
+  },
+  "Queued {0} message.": {
+    "recipes.ts": 1
+  },
+  "Queued {0} messages.": {
+    "recipes.ts": 1
+  },
+  "Quick launcher": {
+    "overlay-settings.ts": 1
+  },
+  "RTK is still not available": {
+    "token-saver-panel.ts": 1
+  },
+  "RTK {0} installed and on": {
+    "token-saver-panel.ts": 1
+  },
+  "Raw": {
+    "document-viewer.ts": 1
+  },
+  "Raw input and output": {
+    "tool-activity.ts": 1
+  },
+  "Read only": {
+    "approval-modes.ts": 1
+  },
+  "Read only · no writes": {
+    "architect.ts": 1
+  },
+  "Read-only diff": {
+    "diff-viewer.ts": 1
+  },
+  "Read-only metadata from local harness configs and recorded usage.": {
+    "capabilities-panel.ts": 1
+  },
+  "Read-only sandbox: DeepSeek cannot write files and proposes a plan; requests to escalate are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: Command Code researches and plans; edits and commands are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: Grok investigates and proposes a plan; edits and commands are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: Hermes researches and proposes a plan; edits and commands are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: Kilo investigates and plans; edits, commands and other state-changing tools are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: Muse cannot write files or run shell commands, and proposes a plan.": {
+    "approval-modes.ts": 1
+  },
+  "Read-only: {0} may use read-only tools; everything else is declined.": {
+    "approval-modes.ts": 1
+  },
+  "Reading cache alignment…": {
+    "capabilities-panel.ts": 1
+  },
+  "Reading conversations…": {
+    "conversation-import.ts": 1
+  },
+  "Reading local agent logs…": {
+    "usage-overview.ts": 1
+  },
+  "Reading local harness metadata…": {
+    "capabilities-panel.ts": 1
+  },
+  "Reads and plans, never changes anything": {
+    "bots.ts": 1
+  },
+  "Ready": {
+    "bots.ts": 2,
+    "cloud-agents.ts": 1,
+    "jev.ts": 1,
+    "main.ts": 1,
+    "overlay.ts": 1
+  },
+  "Ready for your feedback": {
+    "task-board.ts": 1
+  },
+  "Reasoning": {
+    "bots.ts": 3
+  },
+  "Rebase and merge": {
+    "github-pull.ts": 1
+  },
+  "Recent apps": {
+    "simulator.ts": 2
+  },
+  "Recent tests": {
+    "jev.ts": 1
+  },
+  "Recipe JSON": {
+    "recipes.ts": 1
+  },
+  "Recommended": {
+    "settings-sections.ts": 2
+  },
+  "Reconnecting…": {
+    "cloud-agents.ts": 1
+  },
+  "Record": {
+    "overlay-settings.ts": 2
+  },
+  "Recreate worktree": {
+    "worktrees.ts": 1
+  },
+  "Rectangle": {
+    "sketch.ts": 1
+  },
+  "Recurring or one-off work the bot starts on its own.": {
+    "bots.ts": 1
+  },
+  "Red": {
+    "sketch.ts": 1
+  },
+  "Redo (⇧⌘Z)": {
+    "sketch.ts": 1
+  },
+  "Redo · ⇧⌘Z": {
+    "sketch.ts": 1
+  },
+  "Refresh": {
+    "agent-usage.ts": 2,
+    "capabilities-panel.ts": 1,
+    "changes-view.ts": 1,
+    "command-center.ts": 1,
+    "github-hub.ts": 2,
+    "github-pull.ts": 1,
+    "integrations.ts": 1,
+    "jev.ts": 2,
+    "resource-usage-settings.ts": 1
+  },
+  "Refresh agents": {
+    "settings.ts": 2
+  },
+  "Refresh commands": {
+    "slash-commands.ts": 4
+  },
+  "Refresh from OpenCode": {
+    "opencode-model-settings.ts": 1
+  },
+  "Refresh local servers": {
+    "browser.ts": 1
+  },
+  "Refresh models": {
+    "opencode-model-settings.ts": 1
+  },
+  "Refresh pull request": {
+    "github-pull.ts": 1
+  },
+  "Refresh usage": {
+    "agent-usage.ts": 1,
+    "tray-popover.ts": 2
+  },
+  "Region": {
+    "cloud-settings.ts": 6
+  },
+  "Regular": {
+    "sketch.ts": 2
+  },
+  "Release": {
+    "github-actions.ts": 1
+  },
+  "Releases": {
+    "about-settings.ts": 1
+  },
+  "Reload artboards": {
+    "design-canvas.ts": 2
+  },
+  "Reload page": {
+    "browser.ts": 1
+  },
+  "Remember": {
+    "bots-panels.ts": 1
+  },
+  "Remembered": {
+    "bots-panels.ts": 1
+  },
+  "Remembered · single agent default": {
+    "team-profiles.ts": 1
+  },
+  "Remote access": {
+    "settings-sections.ts": 1
+  },
+  "Remote access is not configured in this build.": {
+    "remote-settings.ts": 1
+  },
+  "Remote checkout": {
+    "worktrees.ts": 1
+  },
+  "Remote prompts follow this computer’s approval settings; they get no more power than prompts typed here.": {
+    "remote-settings.ts": 1
+  },
+  "Remove": {
+    "bots-panels.ts": 3,
+    "bots.ts": 1,
+    "connections.ts": 1,
+    "jev.ts": 1,
+    "settings.ts": 1,
+    "theme-settings.ts": 1
+  },
+  "Remove a screenshot from your drafts before attaching another.": {
+    "main.ts": 1
+  },
+  "Remove and settle": {
+    "worktrees.ts": 1
+  },
+  "Remove image": {
+    "moodboards.ts": 1
+  },
+  "Remove project": {
+    "settings.ts": 1
+  },
+  "Remove queued message {0}": {
+    "message-queue.ts": 1
+  },
+  "Remove saved {0}": {
+    "jev.ts": 1
+  },
+  "Remove the bot and its channels": {
+    "bots.ts": 1
+  },
+  "Remove the worktree folder": {
+    "worktrees.ts": 1
+  },
+  "Remove this channel?": {
+    "bots-panels.ts": 1
+  },
+  "Remove variable": {
+    "connections.ts": 1
+  },
+  "Remove worktree": {
+    "worktrees.ts": 1
+  },
+  "Remove worktree…": {
+    "worktrees.ts": 1
+  },
+  "Remove {0}": {
+    "attachments.ts": 1,
+    "bots-panels.ts": 1,
+    "moodboards.ts": 1,
+    "theme-settings.ts": 1
+  },
+  "Removed": {
+    "bots-panels.ts": 1
+  },
+  "Removed channel": {
+    "bots-panels.ts": 1
+  },
+  "Removed the worktree and deleted {0}": {
+    "worktrees.ts": 1
+  },
+  "Removed the worktree; {0} is kept": {
+    "worktrees.ts": 1
+  },
+  "Removed.": {
+    "skills-library.ts": 1
+  },
+  "Removes it from your cloud account": {
+    "vm-panel.ts": 1
+  },
+  "Rename profile": {
+    "team-profiles.ts": 2
+  },
+  "Rename task": {
+    "main.ts": 1
+  },
+  "Renamed": {
+    "changes-view.ts": 1
+  },
+  "Renamed {0} to {1}. Contents unchanged.": {
+    "diff-viewer.ts": 1
+  },
+  "Rename…": {
+    "main.ts": 1
+  },
+  "Rendered": {
+    "document-viewer.ts": 1
+  },
+  "Reopen": {
+    "design-canvas.ts": 1,
+    "main.ts": 2
+  },
+  "Reopen comment": {
+    "design-canvas.ts": 1
+  },
+  "Reopen task": {
+    "main.ts": 2,
+    "task-board.ts": 1
+  },
+  "Reopen this settled task before attaching anything.": {
+    "main.ts": 1
+  },
+  "Repeat": {
+    "bots-panels.ts": 1
+  },
+  "Replace saved key": {
+    "jev.ts": 1
+  },
+  "Replied": {
+    "main.ts": 2
+  },
+  "Report bugs and follow development.": {
+    "about-settings.ts": 1
+  },
+  "Report saved. Review the advice before acting.": {
+    "jev-assist.ts": 1
+  },
+  "Reports": {
+    "jev-assist.ts": 1
+  },
+  "Repositories": {
+    "github-hub.ts": 1
+  },
+  "Repository": {
+    "github-hub.ts": 1
+  },
+  "Reset": {
+    "bots.ts": 3,
+    "ui-size.ts": 1
+  },
+  "Reset bot": {
+    "bots.ts": 1
+  },
+  "Reset interface size": {
+    "ui-size.ts": 1
+  },
+  "Reset interface size ({0} 0)": {
+    "ui-size.ts": 1
+  },
+  "Reset time not reported": {
+    "usage-limit.ts": 1
+  },
+  "Reset {0}?": {
+    "bots.ts": 1
+  },
+  "Resets {0}": {
+    "command-center.ts": 1,
+    "usage-limit.ts": 1
+  },
+  "Resolve": {
+    "design-canvas.ts": 1
+  },
+  "Resolve comment": {
+    "design-canvas.ts": 1
+  },
+  "Resolve the conflicts before merging.": {
+    "github-pull.ts": 1
+  },
+  "Resolve the merge conflicts first": {
+    "github-pull.ts": 1
+  },
+  "Resource usage": {
+    "resource-usage-settings.ts": 1
+  },
+  "Respond": {
+    "tray-popover.ts": 1
+  },
+  "Responded": {
+    "sidebar-bots.ts": 1
+  },
+  "Response copied": {
+    "main.ts": 1
+  },
+  "Restart now": {
+    "about-settings.ts": 1
+  },
+  "Restart to finish.": {
+    "app-updates-policy.ts": 1
+  },
+  "Restart to update": {
+    "app-updates-policy.ts": 2
+  },
+  "Resume": {
+    "bots.ts": 1,
+    "command-center.ts": 2,
+    "message-queue.ts": 1
+  },
+  "Resume a Codex task": {
+    "main.ts": 1
+  },
+  "Resume after this run": {
+    "message-queue.ts": 1
+  },
+  "Resume at reset": {
+    "usage-limit.ts": 1
+  },
+  "Resume conversation": {
+    "command-center.ts": 1
+  },
+  "Resume goal": {
+    "command-center.ts": 1
+  },
+  "Resume rotation": {
+    "wallpaper-settings.ts": 1
+  },
+  "Resume: schedules, check-ins and channels continue": {
+    "bots.ts": 1
+  },
+  "Retry": {
+    "changes-view.ts": 2,
+    "cloud-agents.ts": 1,
+    "remote-progress.ts": 1,
+    "task-board.ts": 1,
+    "team-messages.ts": 1
+  },
+  "Retry commands": {
+    "slash-commands.ts": 2
+  },
+  "Retry loading subagents": {
+    "subagents.ts": 1
+  },
+  "Retry task": {
+    "task-board.ts": 1
+  },
+  "Return to browser": {
+    "jev-live.ts": 2
+  },
+  "Return to the task to run this command.": {
+    "main.ts": 1
+  },
+  "Review": {
+    "github-hub.ts": 2,
+    "task-board.ts": 1
+  },
+  "Review focus (optional)": {
+    "jev-assist.ts": 1
+  },
+  "Review required": {
+    "github-hub.ts": 1,
+    "github-pull.ts": 1
+  },
+  "Review with Jev": {
+    "architect.ts": 1,
+    "change-review.ts": 1
+  },
+  "Review work": {
+    "jev-assist.ts": 1
+  },
+  "Reviewers": {
+    "agent-teams.ts": 1
+  },
+  "Revoke": {
+    "remote-settings.ts": 1
+  },
+  "Revoke {0}": {
+    "remote-settings.ts": 1
+  },
+  "Rewind to before this message in a new task and edit it there": {
+    "message-actions.ts": 1
+  },
+  "Rewound to before your message. Edit it and send.": {
+    "main.ts": 1
+  },
+  "Rule added": {
+    "bots-panels.ts": 1
+  },
+  "Rule deleted": {
+    "bots-panels.ts": 1
+  },
+  "Rules": {
+    "bots.ts": 4
+  },
+  "Rules for this project": {
+    "jev-assist.ts": 1
+  },
+  "Rules saved for this project. No model call was made.": {
+    "jev-assist.ts": 1
+  },
+  "Run": {
+    "bots-connect.ts": 1,
+    "recipes.ts": 1,
+    "run-project.ts": 2,
+    "terminal-panel.ts": 1,
+    "turn-changes.ts": 3
+  },
+  "Run Linux, macOS and Windows machines": {
+    "vm-panel.ts": 1
+  },
+  "Run `claude setup-token` and paste the long-lived token it prints. Without one, PandaCode copies this computer’s Claude Code login to the machine before each run.": {
+    "cloud-settings.ts": 1
+  },
+  "Run failed": {
+    "jev.ts": 1
+  },
+  "Run gh auth login to connect": {
+    "github.ts": 1
+  },
+  "Run gh auth login to connect · gh {0}": {
+    "github.ts": 1
+  },
+  "Run now": {
+    "bots-panels.ts": 1
+  },
+  "Run on": {
+    "main.ts": 1
+  },
+  "Run options": {
+    "jev.ts": 1
+  },
+  "Run pandacode-run.sh": {
+    "turn-changes.ts": 2
+  },
+  "Run project": {
+    "turn-changes.ts": 2
+  },
+  "Run terminal could not be started.": {
+    "terminal-panel.ts": 1
+  },
+  "Run test": {
+    "jev.ts": 1
+  },
+  "Run tools without approval prompts, including outside this project.": {
+    "approval-modes.ts": 1
+  },
+  "Run {0} now": {
+    "bots-panels.ts": 1
+  },
+  "Running": {
+    "cloud-agents.ts": 1,
+    "main.ts": 1,
+    "simulator.ts": 2,
+    "tray-popover.ts": 2,
+    "vm-machines.ts": 1
+  },
+  "Running elsewhere": {
+    "vm-machines.ts": 1
+  },
+  "Runs": {
+    "github-hub.ts": 1
+  },
+  "Runs anything without asking": {
+    "bots.ts": 1
+  },
+  "Runtime installation finished. Check the setup status above.": {
+    "jev.ts": 1
+  },
+  "Same harness and model, in an isolated checkout.": {
+    "worktrees.ts": 1
+  },
+  "Sample mode. Native memory measurements are available in the desktop app.": {
+    "resource-usage-settings.ts": 1
+  },
+  "Sandbox project ID": {
+    "cloud-settings.ts": 1
+  },
+  "Sandbox team ID": {
+    "cloud-settings.ts": 1
+  },
+  "Save": {
+    "agent-teams.ts": 1,
+    "bots-connect.ts": 3,
+    "main.ts": 1,
+    "message-queue.ts": 1,
+    "overlay-settings.ts": 1,
+    "recipes.ts": 1
+  },
+  "Save as…": {
+    "team-profiles.ts": 1
+  },
+  "Save changed paths before installing or checking the runtime. Custom providers must support the text model API.": {
+    "jev.ts": 1
+  },
+  "Save changes": {
+    "command-center.ts": 1
+  },
+  "Save connection": {
+    "connections.ts": 1
+  },
+  "Save details": {
+    "main.ts": 1
+  },
+  "Save goal": {
+    "command-center.ts": 1
+  },
+  "Save models": {
+    "opencode-model-settings.ts": 2
+  },
+  "Save profile": {
+    "team-profiles.ts": 2
+  },
+  "Save rules": {
+    "jev-assist.ts": 1
+  },
+  "Save settings": {
+    "jev.ts": 1
+  },
+  "Save team": {
+    "agent-teams.ts": 1
+  },
+  "Save token": {
+    "cloud-settings.ts": 1
+  },
+  "Saved": {
+    "bots-panels.ts": 1,
+    "team-profiles.ts": 1
+  },
+  "Saved Jev report": {
+    "jev-assist.ts": 1
+  },
+  "Saved Jev reports": {
+    "jev-assist.ts": 1
+  },
+  "Saved at turn completion": {
+    "change-review.ts": 1
+  },
+  "Saved file diff": {
+    "change-review.ts": 1
+  },
+  "Saved reports could not be loaded. You can still prepare a new check.": {
+    "jev-assist.ts": 1
+  },
+  "Saved · leave empty to keep": {
+    "connections.ts": 1
+  },
+  "Saved.": {
+    "recipes.ts": 1
+  },
+  "Saved. Jev features are disabled.": {
+    "jev.ts": 1
+  },
+  "Saved. New machines start from {0}.": {
+    "cloud-settings.ts": 1
+  },
+  "Saved. Your enabled Jev features are available for new runs.": {
+    "jev.ts": 1
+  },
+  "Saver": {
+    "token-saver-panel.ts": 1
+  },
+  "Saving project rules…": {
+    "jev-assist.ts": 1
+  },
+  "Saving…": {
+    "opencode-model-settings.ts": 1
+  },
+  "Schedule": {
+    "github-actions.ts": 1
+  },
+  "Schedule a wake-up…": {
+    "main.ts": 3
+  },
+  "Schedule added": {
+    "bots-panels.ts": 1
+  },
+  "Schedule deleted": {
+    "bots-panels.ts": 1
+  },
+  "Scheduled work": {
+    "bots-panels.ts": 1
+  },
+  "Schedules": {
+    "bots.ts": 1,
+    "settings-sections.ts": 2
+  },
+  "Screenshot": {
+    "main.ts": 1
+  },
+  "Screenshot attached to your message.": {
+    "browser.ts": 1
+  },
+  "Screenshot preview": {
+    "main.ts": 1
+  },
+  "Screenshot{0}": {
+    "message-attachments.ts": 1
+  },
+  "Scroll down": {
+    "jev.ts": 1
+  },
+  "Scroll up": {
+    "jev.ts": 1
+  },
+  "Search": {
+    "github-hub.ts": 1,
+    "search-panel.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "Search OpenCode models": {
+    "opencode-model-settings.ts": 1
+  },
+  "Search available imports": {
+    "command-center.ts": 1
+  },
+  "Search bots and channels": {
+    "sidebar-bots.ts": 1
+  },
+  "Search branches…": {
+    "worktrees.ts": 1
+  },
+  "Search conversations": {
+    "command-center.ts": 1,
+    "conversation-import.ts": 2
+  },
+  "Search file names and text in this project.": {
+    "search-panel.ts": 1
+  },
+  "Search harnesses and models": {
+    "model-picker.ts": 1
+  },
+  "Search in files": {
+    "search-panel.ts": 1
+  },
+  "Search issues": {
+    "github.ts": 1
+  },
+  "Search issues…": {
+    "github.ts": 1
+  },
+  "Search models or providers": {
+    "opencode-model-settings.ts": 1
+  },
+  "Search profiles…": {
+    "team-profiles.ts": 1
+  },
+  "Search projects": {
+    "project-picker.ts": 1
+  },
+  "Search projects…": {
+    "main.ts": 1,
+    "project-picker.ts": 1
+  },
+  "Search tasks": {
+    "overlay.ts": 1
+  },
+  "Search tasks and commands": {
+    "main.ts": 1
+  },
+  "Search tasks and commands…": {
+    "main.ts": 1
+  },
+  "Search this tab": {
+    "github-hub.ts": 1
+  },
+  "Searching…": {
+    "file-mentions.ts": 1,
+    "search-panel.ts": 1
+  },
+  "Secret": {
+    "connections.ts": 1
+  },
+  "Select": {
+    "jev.ts": 1,
+    "sketch.ts": 1
+  },
+  "Select a task before opening its harness console.": {
+    "terminal.ts": 1
+  },
+  "Select all": {
+    "conversation-import.ts": 1
+  },
+  "Select all shown conversations": {
+    "conversation-import.ts": 1
+  },
+  "Select the task again to change its permissions.": {
+    "main.ts": 2
+  },
+  "Select the task again to change its project.": {
+    "main.ts": 2
+  },
+  "Select the task again to change its reasoning effort.": {
+    "main.ts": 2
+  },
+  "Select the task again to sketch a mockup.": {
+    "main.ts": 1
+  },
+  "Select this task again to change its team.": {
+    "main.ts": 4
+  },
+  "Send": {
+    "bots-connect.ts": 2
+  },
+  "Send 1 comment to agent": {
+    "design-canvas.ts": 1
+  },
+  "Send comments to agent": {
+    "design-canvas.ts": 2
+  },
+  "Send into the running turn": {
+    "message-queue.ts": 1
+  },
+  "Send now": {
+    "message-queue.ts": 1
+  },
+  "Send now: {0}": {
+    "message-queue.ts": 1
+  },
+  "Send this now": {
+    "message-queue.ts": 1
+  },
+  "Send this to BotFather, then answer its two questions: a display name (for example “{0}”) and a username ending in “bot”.{1}{2}": {
+    "bots-connect.ts": 1
+  },
+  "Send {0} comments to agent": {
+    "design-canvas.ts": 1
+  },
+  "Sending next…": {
+    "message-queue.ts": 1
+  },
+  "Sending…": {
+    "agent-input.ts": 1
+  },
+  "Sends when the agent finishes": {
+    "message-queue.ts": 1
+  },
+  "Sends when this turn ends": {
+    "main.ts": 1
+  },
+  "Separate Chrome profile · local report": {
+    "jev.ts": 1
+  },
+  "Servers, containers and databases": {
+    "deploy.ts": 1
+  },
+  "Session": {
+    "usage-overview.ts": 1
+  },
+  "Session unavailable": {
+    "provider-readiness.ts": 1
+  },
+  "Sessions": {
+    "usage-overview.ts": 1
+  },
+  "Set by bot": {
+    "bots-panels.ts": 1
+  },
+  "Set up Android emulator…": {
+    "simulator.ts": 1
+  },
+  "Set up Jev": {
+    "integrations.ts": 1,
+    "jev-assist.ts": 1,
+    "jev.ts": 1,
+    "settings.ts": 1
+  },
+  "Set up VMs": {
+    "vm-panel.ts": 1
+  },
+  "Set up cloud providers…": {
+    "cloud-agents.ts": 1
+  },
+  "Set up other computers…": {
+    "remote-target.ts": 1
+  },
+  "Set up sandboxes": {
+    "cloud-settings.ts": 1
+  },
+  "Set {0} {1} as default": {
+    "wallpaper-settings.ts": 1
+  },
+  "Setting up Android…": {
+    "simulator.ts": 1
+  },
+  "Setting up the Android emulator…": {
+    "simulator.ts": 1
+  },
+  "Settings": {
+    "main.ts": 1,
+    "settings.ts": 2
+  },
+  "Settings sections": {
+    "settings.ts": 1
+  },
+  "Settings, memory, schedules and channels": {
+    "sidebar-bots.ts": 1
+  },
+  "Settle": {
+    "main.ts": 2
+  },
+  "Settle task": {
+    "main.ts": 2,
+    "worktrees.ts": 2
+  },
+  "Settled": {
+    "task-board.ts": 1
+  },
+  "Settled and done": {
+    "task-board.ts": 1
+  },
+  "Settles the task; refuses when work would be lost.": {
+    "worktrees.ts": 1
+  },
+  "Setup checked.": {
+    "jev.ts": 1
+  },
+  "Setup needed": {
+    "jev.ts": 1
+  },
+  "Share": {
+    "usage-overview.ts": 1
+  },
+  "Share project read-only at start": {
+    "vm-panel.ts": 1
+  },
+  "Share this project read-only when the VM starts": {
+    "vm-panel.ts": 1
+  },
+  "Shared checkout: only files reported by this task are listed; detected conflicts were omitted.": {
+    "turn-changes.ts": 1
+  },
+  "Sharp": {
+    "wallpaper-settings.ts": 1
+  },
+  "Sheets": {
+    "office-viewer.ts": 1
+  },
+  "Shell commands, file editing, image inspection, web search, and subagents are supplied by Codex when available under its configuration and your task permissions.": {
+    "integrations.ts": 1
+  },
+  "Shortcut format": {
+    "overlay-settings.ts": 1
+  },
+  "Show": {
+    "changes-view.ts": 1
+  },
+  "Show bots": {
+    "sidebar-bots.ts": 1
+  },
+  "Show less": {
+    "main.ts": 1
+  },
+  "Show more models": {
+    "opencode-model-settings.ts": 1
+  },
+  "Show more models · {0} remaining": {
+    "opencode-model-settings.ts": 1
+  },
+  "Show older": {
+    "bots-panels.ts": 1
+  },
+  "Show pairing code": {
+    "remote-settings.ts": 1
+  },
+  "Show runs for #{0}": {
+    "github-actions.ts": 1
+  },
+  "Show {0} more": {
+    "main.ts": 1
+  },
+  "Showing the first {0} rows and {1} columns.": {
+    "office-viewer.ts": 1
+  },
+  "Showing the first {0}.": {
+    "office-viewer.ts": 1
+  },
+  "Showing {0} of {1} options.": {
+    "choice-menu.ts": 1
+  },
+  "Showing {0} of {1} projects. Refine your search.": {
+    "project-picker.ts": 1
+  },
+  "Shows the pull request in this task’s inspector and on its card.": {
+    "github.ts": 1
+  },
+  "Shut down": {
+    "simulator.ts": 1
+  },
+  "Shut down simulator": {
+    "simulator.ts": 1
+  },
+  "Shutting down…": {
+    "simulator.ts": 1
+  },
+  "Sign in with GitHub": {
+    "remote-settings.ts": 1
+  },
+  "Sign in with GitHub to reach your other computers. Task content is end-to-end encrypted; the relay sees only ciphertext.": {
+    "remote-settings.ts": 2
+  },
+  "Sign out": {
+    "remote-settings.ts": 1
+  },
+  "Sign-in required": {
+    "provider-readiness.ts": 1
+  },
+  "Signed in": {
+    "remote-settings.ts": 1
+  },
+  "Signed in with GitHub": {
+    "remote-settings.ts": 1
+  },
+  "Simulator": {
+    "simulator.ts": 2
+  },
+  "Simulator controls": {
+    "simulator.ts": 1
+  },
+  "Sketch a mockup": {
+    "sketch.ts": 1
+  },
+  "Sketch a mockup…": {
+    "attachments.ts": 1
+  },
+  "Skills": {
+    "bots.ts": 1,
+    "integrations.ts": 1,
+    "settings-sections.ts": 1
+  },
+  "Skip approval prompts and sandbox limits. Allow file and network access.": {
+    "approval-modes.ts": 1
+  },
+  "Slack": {
+    "bots-connect.ts": 1
+  },
+  "Slash commands": {
+    "slash-commands.ts": 1
+  },
+  "Smoke test": {
+    "jev.ts": 1
+  },
+  "Soft": {
+    "wallpaper-settings.ts": 1
+  },
+  "Solid": {
+    "sketch.ts": 1,
+    "wallpaper-settings.ts": 1
+  },
+  "Solid background": {
+    "wallpaper-settings.ts": 1
+  },
+  "Solid background, 0 percent wallpaper": {
+    "wallpaper-settings.ts": 1
+  },
+  "Solve": {
+    "github-hub.ts": 1
+  },
+  "Some evidence is omitted or shortened. Results only cover what is shown here.": {
+    "jev-assist.ts": 1
+  },
+  "Someone": {
+    "github-pull.ts": 1
+  },
+  "Soul": {
+    "bots.ts": 2
+  },
+  "Source code": {
+    "about-settings.ts": 1
+  },
+  "Split": {
+    "diff-viewer.ts": 1
+  },
+  "Split diff": {
+    "diff-viewer.ts": 2
+  },
+  "Square": {
+    "sketch.ts": 1
+  },
+  "Squash and merge": {
+    "github-pull.ts": 1
+  },
+  "Stable instructions": {
+    "capabilities-panel.ts": 1
+  },
+  "Stage all": {
+    "changes-view.ts": 1
+  },
+  "Stage file": {
+    "changes-view.ts": 1,
+    "main.ts": 1
+  },
+  "Staged": {
+    "changes-view.ts": 1
+  },
+  "Standard": {
+    "approval-modes.ts": 1
+  },
+  "Standing goals": {
+    "bots.ts": 2
+  },
+  "Start": {
+    "bots-connect.ts": 1,
+    "task-board.ts": 1,
+    "vm-panel.ts": 3
+  },
+  "Start VM": {
+    "vm-panel.ts": 2
+  },
+  "Start a new task in an isolated checkout of {0}. It inherits this task's harness and model.": {
+    "worktrees.ts": 1
+  },
+  "Start a task": {
+    "main.ts": 1
+  },
+  "Start a task before attaching anything.": {
+    "attachments.ts": 2,
+    "main.ts": 1
+  },
+  "Start a task before attaching files.": {
+    "main.ts": 1
+  },
+  "Start a task before creating a worktree.": {
+    "worktrees.ts": 1
+  },
+  "Start from": {
+    "worktrees.ts": 1
+  },
+  "Start goal": {
+    "command-center.ts": 2
+  },
+  "Start new threads like this": {
+    "token-saver-panel.ts": 1
+  },
+  "Start task": {
+    "overlay.ts": 1,
+    "task-board.ts": 1
+  },
+  "Start tasks and check agents from any app.": {
+    "overlay-settings.ts": 1
+  },
+  "Start this task when you’re ready. Agent updates and your replies will appear here.": {
+    "main.ts": 1
+  },
+  "Start thread": {
+    "github-hub.ts": 1
+  },
+  "Start thread (Enter)": {
+    "github-hub.ts": 1
+  },
+  "Start your app in the terminal, then refresh.": {
+    "browser.ts": 1
+  },
+  "Started": {
+    "bots-panels.ts": 1
+  },
+  "Starting": {
+    "vm-panel.ts": 1
+  },
+  "Starting ACP…": {
+    "provider-readiness.ts": 1
+  },
+  "Starting agent": {
+    "remote-progress.ts": 1
+  },
+  "Starting an isolated browser test…": {
+    "jev.ts": 1
+  },
+  "Starting browser": {
+    "jev-live.ts": 1,
+    "jev.ts": 1
+  },
+  "Starting task…": {
+    "overlay.ts": 1
+  },
+  "Starting terminal…": {
+    "terminal-panel.ts": 1
+  },
+  "Starting update…": {
+    "agent-updates.ts": 1
+  },
+  "Starting…": {
+    "bots-panels.ts": 1,
+    "run-project.ts": 1
+  },
+  "Status": {
+    "recipes.ts": 1
+  },
+  "Steer": {
+    "message-queue.ts": 1
+  },
+  "Steer message": {
+    "message-queue.ts": 1
+  },
+  "Steer now: {0}": {
+    "message-queue.ts": 1
+  },
+  "Steering…": {
+    "main.ts": 1,
+    "message-queue.ts": 1
+  },
+  "Step": {
+    "recipes.ts": 1
+  },
+  "Step {0}": {
+    "jev-live.ts": 1
+  },
+  "Step {0} of {1}": {
+    "remote-progress.ts": 1
+  },
+  "Steps of {0}": {
+    "github-actions.ts": 1
+  },
+  "Stop": {
+    "command-center.ts": 1,
+    "jev.ts": 1,
+    "vm-panel.ts": 2
+  },
+  "Stop VM": {
+    "vm-panel.ts": 1
+  },
+  "Stop it, then start it here to see its screen.": {
+    "vm-panel.ts": 1
+  },
+  "Stop machine": {
+    "cloud-agents.ts": 1
+  },
+  "Stop test": {
+    "jev-live.ts": 1
+  },
+  "Stop the agent before deleting this task.": {
+    "main.ts": 2
+  },
+  "Stop the agent before editing a message.": {
+    "main.ts": 1
+  },
+  "Stop the run and send this next": {
+    "message-queue.ts": 1
+  },
+  "Stop this task before opening its harness console.": {
+    "main.ts": 1
+  },
+  "Stop {0}": {
+    "command-center.ts": 1
+  },
+  "Stopped": {
+    "cloud-agents.ts": 1,
+    "overlay.ts": 1,
+    "subagents.ts": 1,
+    "vm-machines.ts": 1
+  },
+  "Stopping": {
+    "vm-panel.ts": 1
+  },
+  "Stopping task…": {
+    "main.ts": 1
+  },
+  "Stopping the browser test…": {
+    "jev-live.ts": 2,
+    "jev.ts": 1
+  },
+  "Stopping the run to send this message…": {
+    "main.ts": 1
+  },
+  "Subagent": {
+    "overlay-thread.ts": 1,
+    "overlay.ts": 1
+  },
+  "Subagents": {
+    "subagents.ts": 4
+  },
+  "Submit answers": {
+    "agent-input.ts": 2
+  },
+  "Suggest a worker from your configured team for a specific assignment.": {
+    "jev-assist.ts": 1
+  },
+  "Suggest worker": {
+    "architect.ts": 1,
+    "jev-assist.ts": 1
+  },
+  "Suggested follow-ups": {
+    "generative-ui-components.ts": 1
+  },
+  "Suggested only. Your configured models stay unchanged.": {
+    "jev-assist.ts": 1
+  },
+  "Summary of {0}": {
+    "github-actions.ts": 1
+  },
+  "Super": {
+    "overlay-settings.ts": 1
+  },
+  "Supported": {
+    "capabilities-panel.ts": 1,
+    "jev-assist.ts": 1,
+    "recipes.ts": 1
+  },
+  "Suspend (frees memory)": {
+    "vm-panel.ts": 1
+  },
+  "Suspend VM": {
+    "vm-panel.ts": 1
+  },
+  "Suspending {0}…": {
+    "vm-panel.ts": 1
+  },
+  "Switch branch": {
+    "worktrees.ts": 1
+  },
+  "Switch to dark mode": {
+    "main.ts": 1
+  },
+  "Switch to light mode": {
+    "main.ts": 1
+  },
+  "Switch to {0}": {
+    "worktrees.ts": 1
+  },
+  "Switched to {0}": {
+    "worktrees.ts": 1
+  },
+  "Sync changes": {
+    "cloud-agents.ts": 1
+  },
+  "Syncing changes": {
+    "cloud-agents.ts": 1
+  },
+  "System default": {
+    "settings.ts": 1
+  },
+  "System users": {
+    "bots-connect.ts": 1
+  },
+  "Tab or ↵ insert": {
+    "slash-commands.ts": 1
+  },
+  "Tab or ↵ mention": {
+    "file-mentions.ts": 1
+  },
+  "Tablet": {
+    "sketch.ts": 1
+  },
+  "Tabs": {
+    "sketch.ts": 1
+  },
+  "Tabs need \"tabs\"": {
+    "generative-ui-components.ts": 1
+  },
+  "Talk to it from a browser, Telegram, Slack, Discord or WhatsApp.": {
+    "bots.ts": 1
+  },
+  "Tart is installed. Create a VM to begin.": {
+    "vm-panel.ts": 1
+  },
+  "Task": {
+    "main.ts": 3
+  },
+  "Task actions": {
+    "main.ts": 3
+  },
+  "Task added to Pending.": {
+    "main.ts": 1
+  },
+  "Task changed before the script could start.": {
+    "run-project.ts": 1
+  },
+  "Task deleted": {
+    "main.ts": 1
+  },
+  "Task description": {
+    "main.ts": 1
+  },
+  "Task details": {
+    "main.ts": 1
+  },
+  "Task exported": {
+    "main.ts": 1
+  },
+  "Task goal": {
+    "command-center.ts": 1
+  },
+  "Task name": {
+    "main.ts": 1
+  },
+  "Task pinned": {
+    "main.ts": 1
+  },
+  "Task project": {
+    "overlay.ts": 1
+  },
+  "Task started. You can keep working.": {
+    "overlay.ts": 1
+  },
+  "Task title": {
+    "main.ts": 1
+  },
+  "Task unpinned": {
+    "main.ts": 1
+  },
+  "Tasks": {
+    "main.ts": 1
+  },
+  "Teal": {
+    "theme-settings.ts": 1
+  },
+  "Team": {
+    "coordination-message.ts": 1,
+    "main.ts": 7
+  },
+  "Team messages": {
+    "team-messages.ts": 1
+  },
+  "Team models": {
+    "agent-teams.ts": 1
+  },
+  "Team name": {
+    "agent-teams.ts": 2
+  },
+  "Team opens Architect & workers.": {
+    "agent-teams.ts": 1
+  },
+  "Team profile": {
+    "team-profiles.ts": 1
+  },
+  "Team profiles": {
+    "team-profiles.ts": 1
+  },
+  "Team setup saved for this and new tasks.": {
+    "main.ts": 1
+  },
+  "Team slug": {
+    "cloud-settings.ts": 1
+  },
+  "Team status": {
+    "coordination-message.ts": 1
+  },
+  "Team switch queued for the next architect turn. Existing workers keep their models.": {
+    "main.ts": 1
+  },
+  "Telegram": {
+    "bots-connect.ts": 1
+  },
+  "Telegraphic": {
+    "token-saver.ts": 1
+  },
+  "Terminal": {
+    "generative-ui-components.ts": 1
+  },
+  "Terminal {0}": {
+    "terminal-panel.ts": 2
+  },
+  "Test": {
+    "bots-connect.ts": 1
+  },
+  "Test failed": {
+    "jev-live.ts": 1
+  },
+  "Test goal": {
+    "jev.ts": 1
+  },
+  "Test needs attention": {
+    "jev-activity.ts": 1
+  },
+  "Test presets": {
+    "jev.ts": 1
+  },
+  "Test runs": {
+    "jev.ts": 1
+  },
+  "Test runs for this task": {
+    "jev.ts": 1
+  },
+  "Test stopped": {
+    "jev-activity.ts": 1
+  },
+  "Test with Jev": {
+    "browser.ts": 1,
+    "jev.ts": 3
+  },
+  "Testing": {
+    "jev-live.ts": 1,
+    "jev.ts": 1
+  },
+  "Testing app…": {
+    "jev-activity.ts": 1
+  },
+  "Text": {
+    "attachments.ts": 1,
+    "message-attachments.ts": 1,
+    "search-panel.ts": 1,
+    "sketch.ts": 4
+  },
+  "Text matches": {
+    "search-panel.ts": 1
+  },
+  "Text model": {
+    "jev.ts": 1
+  },
+  "Text model API key": {
+    "jev.ts": 1
+  },
+  "That computer": {
+    "main.ts": 1,
+    "remote-target.ts": 1
+  },
+  "The agent is getting started…": {
+    "overlay-thread.ts": 1
+  },
+  "The average of each agent’s most-used limit window, such as a 5-hour or weekly window. Agents that do not report limits are left out.": {
+    "usage-overview.ts": 1
+  },
+  "The browser is working through your goal.": {
+    "jev.ts": 1
+  },
+  "The desktop could not be installed.": {
+    "vm-panel.ts": 1
+  },
+  "The image could not be decoded.": {
+    "office-viewer.ts": 1
+  },
+  "The most vivid color of the current wallpaper": {
+    "theme-settings.ts": 1
+  },
+  "The relay sends the phone a push that says only how many tasks need attention; approving still happens in the app over the end-to-end encrypted channel.": {
+    "remote-settings.ts": 1
+  },
+  "The script is running. Preview is not ready yet; click Run to check again.": {
+    "run-project.ts": 1
+  },
+  "The simplest fitting AWS service": {
+    "deploy.ts": 1
+  },
+  "The temporary token on API Setup works for 24 hours. For one that lasts, create a system user with WhatsApp permissions and generate its token.": {
+    "bots-connect.ts": 1
+  },
+  "The usage limit has reset": {
+    "usage-limit.ts": 1
+  },
+  "The worktree folder is already gone. {0}": {
+    "worktrees.ts": 1
+  },
+  "Theme": {
+    "settings.ts": 1
+  },
+  "There are no other local branches.": {
+    "worktrees.ts": 1
+  },
+  "There is no agent response to copy yet.": {
+    "main.ts": 1
+  },
+  "There is not enough room for this reference. Shorten your message first.": {
+    "file-mentions.ts": 1
+  },
+  "Thin": {
+    "sketch.ts": 2
+  },
+  "This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.": {
+    "agent-usage.ts": 1
+  },
+  "This app": {
+    "bots-panels.ts": 1
+  },
+  "This bot no longer exists.": {
+    "bots.ts": 1
+  },
+  "This browser test belongs to another task.": {
+    "jev-live.ts": 1
+  },
+  "This change has conflicts. Resolve them with ": {
+    "jj.ts": 1
+  },
+  "This command does not accept attachments. Remove them before running it.": {
+    "main.ts": 1
+  },
+  "This command is not available in PandaCode yet.": {
+    "main.ts": 1
+  },
+  "This command is not available in the app yet.": {
+    "slash-commands.ts": 1
+  },
+  "This computer": {
+    "remote-settings.ts": 1,
+    "remote-target.ts": 2
+  },
+  "This computer’s key": {
+    "remote-settings.ts": 1
+  },
+  "This deletes its conversations, memories, schedules and activity. Its instructions, channels and rules stay.": {
+    "bots.ts": 1
+  },
+  "This diff is too large to show here; open it on GitHub.": {
+    "github-pull.ts": 1
+  },
+  "This harness did not provide a response for this agent.": {
+    "subagents.ts": 1
+  },
+  "This harness has no agent-reviewed approvals. Choose another mode, or use Claude Code (or Codex’s Approve for me).": {
+    "approval-modes.ts": 1
+  },
+  "This harness has not reported context usage yet.": {
+    "main.ts": 1
+  },
+  "This image is no longer stored. Here is what was sent with it.": {
+    "main.ts": 1
+  },
+  "This input format is not supported.": {
+    "agent-input.ts": 1
+  },
+  "This input format is not supported. Cancel to let the agent continue.": {
+    "agent-input.ts": 1
+  },
+  "This integration asks for a form format that PandaCode cannot display yet. Cancel this request to continue.": {
+    "agent-input.ts": 1
+  },
+  "This message is no longer available.": {
+    "overlay-client.ts": 1
+  },
+  "This message is no longer available. Please reopen the conversation.": {
+    "message-actions.ts": 1
+  },
+  "This opens Slack with the name, permissions, events and Socket Mode filled in. Pick your workspace, review, then press ": {
+    "bots-connect.ts": 1
+  },
+  "This patch was shortened when recorded. Only available changes are shown.": {
+    "diff-viewer.ts": 1
+  },
+  "This patch was shortened when recorded. Showing the available plain text patch.": {
+    "diff-viewer.ts": 1
+  },
+  "This profile is no longer available.": {
+    "team-profiles.ts": 1
+  },
+  "This project": {
+    "main.ts": 1
+  },
+  "This question contains an unsupported option.": {
+    "agent-input.ts": 1
+  },
+  "This question format is not supported. Cancel to let the agent continue.": {
+    "agent-input.ts": 2
+  },
+  "This question has too many options to display.": {
+    "agent-input.ts": 1
+  },
+  "This removes the bot, its conversations and its channel connections. Its workspace folder stays on disk.": {
+    "bots.ts": 1
+  },
+  "This repository has no main branch.": {
+    "worktrees.ts": 1
+  },
+  "This request does not contain a supported web address.": {
+    "agent-input.ts": 1
+  },
+  "This section couldn’t load. Close Settings and try again.": {
+    "settings.ts": 1
+  },
+  "This subagent is no longer available.": {
+    "subagents.ts": 1
+  },
+  "This task is no longer available.": {
+    "overlay-client.ts": 2
+  },
+  "This task keeps its draft, harness, and model, and its changes stay in an isolated checkout beside {0}.": {
+    "worktrees.ts": 1
+  },
+  "This task runs on a {0} cloud machine. {1}.": {
+    "cloud-agents.ts": 1
+  },
+  "This task runs on {0}. Start a new task to use another computer.": {
+    "remote-target.ts": 1
+  },
+  "This view could not be shown.": {
+    "generative-ui-components.ts": 1
+  },
+  "This view is larger than 64 KB.": {
+    "generative-ui-components.ts": 1
+  },
+  "This view is not valid JSON.": {
+    "generative-ui-components.ts": 1
+  },
+  "This web preview does not run model API calls.": {
+    "jev.ts": 1
+  },
+  "This worker is no longer available.": {
+    "architect.ts": 1
+  },
+  "Those issues are already on the board.": {
+    "github.ts": 1
+  },
+  "Thread": {
+    "github-hub.ts": 2
+  },
+  "Threads": {
+    "github-hub.ts": 1
+  },
+  "Time": {
+    "bots-panels.ts": 1
+  },
+  "Time limit (seconds)": {
+    "jev.ts": 1
+  },
+  "Tint": {
+    "sketch.ts": 1
+  },
+  "Tinted fill": {
+    "sketch.ts": 1
+  },
+  "Title": {
+    "github.ts": 1
+  },
+  "Title contains": {
+    "jev.ts": 1
+  },
+  "Toggle": {
+    "sketch.ts": 1
+  },
+  "Toggle dark appearance": {
+    "simulator.ts": 1
+  },
+  "Toggle grid": {
+    "sketch.ts": 1
+  },
+  "Toggle terminal": {
+    "main.ts": 1
+  },
+  "Token": {
+    "cloud-settings.ts": 1
+  },
+  "Token ID": {
+    "cloud-settings.ts": 1
+  },
+  "Token budget": {
+    "command-center.ts": 1
+  },
+  "Token budget reached": {
+    "command-center.ts": 1
+  },
+  "Token saver": {
+    "token-saver-panel.ts": 1
+  },
+  "Token saver: off": {
+    "token-saver-panel.ts": 1
+  },
+  "Token saver: {0} on, about {1}% fewer tokens": {
+    "token-saver-panel.ts": 1
+  },
+  "Token secret": {
+    "cloud-settings.ts": 1
+  },
+  "Tokens": {
+    "usage-overview.ts": 2
+  },
+  "Tokens go straight to your system keychain. The agent never sees them.": {
+    "bots-connect.ts": 1
+  },
+  "Tool activity": {
+    "tool-activity.ts": 1
+  },
+  "Tool {0}": {
+    "tool-activity.ts": 1
+  },
+  "Tools": {
+    "settings-sections.ts": 1,
+    "sketch.ts": 1
+  },
+  "Tools & integrations": {
+    "integrations.ts": 1,
+    "settings.ts": 1
+  },
+  "Top {0} files": {
+    "file-mentions.ts": 1
+  },
+  "Totals": {
+    "usage-overview.ts": 1
+  },
+  "Touch and typing need": {
+    "simulator.ts": 1
+  },
+  "Trend from {0} to {1}": {
+    "generative-ui-components.ts": 1
+  },
+  "Try again": {
+    "cloud-settings.ts": 2,
+    "github-hub.ts": 2,
+    "settings.ts": 1
+  },
+  "Try again.": {
+    "remote-settings.ts": 1
+  },
+  "Try the interaction": {
+    "browser.ts": 1
+  },
+  "Turn all off": {
+    "token-saver-panel.ts": 1
+  },
+  "Turn on comment mode and click an element to comment on it.": {
+    "design-canvas.ts": 1
+  },
+  "Turn on web chat": {
+    "bots-connect.ts": 1
+  },
+  "Type @ to mention a project file.": {
+    "main.ts": 1
+  },
+  "Type text": {
+    "jev.ts": 1
+  },
+  "TypeSafe (default)": {
+    "jev.ts": 1
+  },
+  "TypeSafe API key": {
+    "jev.ts": 1
+  },
+  "Ubuntu on EC2 · billed while running": {
+    "vm-machines.ts": 1
+  },
+  "Ultra": {
+    "token-saver.ts": 1
+  },
+  "Unable to format this diff. Showing the recorded patch.": {
+    "diff-viewer.ts": 2
+  },
+  "Unable to load changes": {
+    "main.ts": 1
+  },
+  "Unable to load diff": {
+    "changes-view.ts": 1
+  },
+  "Unable to load usage. Close this window and try again.": {
+    "main.ts": 1
+  },
+  "Unable to open bot settings. Close this window and try again.": {
+    "main.ts": 1
+  },
+  "Unable to open bots. Close this window and try again.": {
+    "main.ts": 1
+  },
+  "Unable to open the browser. The guide is at developers.openai.com/codex/mcp/.": {
+    "integrations.ts": 1
+  },
+  "Unable to open the importer. Close this window and try again.": {
+    "main.ts": 1
+  },
+  "Unable to read folder": {
+    "main.ts": 1
+  },
+  "Unable to stage file": {
+    "changes-view.ts": 1
+  },
+  "Unable to stage files": {
+    "changes-view.ts": 1
+  },
+  "Unable to unstage file": {
+    "changes-view.ts": 1
+  },
+  "Unable to unstage files": {
+    "changes-view.ts": 1
+  },
+  "Unavailable": {
+    "agent-updates.ts": 1,
+    "command-center.ts": 1,
+    "conversation-import.ts": 1
+  },
+  "Unblock": {
+    "bots-panels.ts": 1
+  },
+  "Uncached input": {
+    "usage-overview.ts": 1
+  },
+  "Uncertain": {
+    "jev-assist.ts": 3
+  },
+  "Uncommitted changes come along when they don’t conflict.": {
+    "worktrees.ts": 1
+  },
+  "Undo (⌘Z)": {
+    "sketch.ts": 1
+  },
+  "Undo · ⌘Z": {
+    "sketch.ts": 1
+  },
+  "Unified": {
+    "diff-viewer.ts": 1
+  },
+  "Unified diff": {
+    "diff-viewer.ts": 1
+  },
+  "Unknown": {
+    "agent-updates.ts": 1
+  },
+  "Unknown app action.": {
+    "main.ts": 1
+  },
+  "Unknown command /{0}. Refresh commands or edit the name.": {
+    "slash-commands.ts": 1
+  },
+  "Unknown folder": {
+    "conversation-import.ts": 1
+  },
+  "Unknown launcher command: {0}": {
+    "overlay-client.ts": 1
+  },
+  "Unknown senders get a four-digit code. Approve it here to let them talk to the bot. Blocked senders are ignored.": {
+    "bots-panels.ts": 1
+  },
+  "Unlimited at once": {
+    "team-profiles.ts": 1
+  },
+  "Unlink from this task": {
+    "github-pull.ts": 1
+  },
+  "Unlink pull request": {
+    "github-pull.ts": 1
+  },
+  "Unpin task": {
+    "main.ts": 2
+  },
+  "Unread": {
+    "main.ts": 2
+  },
+  "Unstage all": {
+    "changes-view.ts": 1
+  },
+  "Unstage file": {
+    "changes-view.ts": 1,
+    "main.ts": 1
+  },
+  "Unstaged": {
+    "changes-view.ts": 1
+  },
+  "Untitled task": {
+    "tray-popover.ts": 1
+  },
+  "Untracked": {
+    "changes-view.ts": 1
+  },
+  "Up to date": {
+    "agent-updates.ts": 1
+  },
+  "Up to date · checked {0}": {
+    "app-updates-policy.ts": 1
+  },
+  "Update": {
+    "agent-updates.ts": 1
+  },
+  "Update mockup": {
+    "sketch.ts": 1
+  },
+  "Update mode": {
+    "about-settings.ts": 2
+  },
+  "Update profile": {
+    "team-profiles.ts": 1
+  },
+  "Update task": {
+    "github.ts": 1
+  },
+  "Update {0}": {
+    "agent-updates.ts": 1
+  },
+  "Updates": {
+    "about-settings.ts": 1
+  },
+  "Updates are installed by the desktop app.": {
+    "app-updates-policy.ts": 1
+  },
+  "Updating…": {
+    "agent-updates.ts": 1,
+    "command-center.ts": 2
+  },
+  "Uploading checkout": {
+    "cloud-agents.ts": 1
+  },
+  "Usage is billed by your providers": {
+    "jev.ts": 1
+  },
+  "Usage limit": {
+    "usage-limit.ts": 1
+  },
+  "Usage limit reached": {
+    "command-center.ts": 1
+  },
+  "Usage limit reached · {0}": {
+    "usage-limit.ts": 1
+  },
+  "Usage limit · {0}": {
+    "main.ts": 1,
+    "sidebar-bots.ts": 2
+  },
+  "Usage views": {
+    "agent-usage.ts": 1
+  },
+  "Use /fast, /fast on, or /fast off.": {
+    "main.ts": 1
+  },
+  "Use /usage, /usage daily, /usage weekly, or /usage cumulative.": {
+    "main.ts": 1
+  },
+  "Use CommandOrControl, Shift, Alt, and a key separated by +.": {
+    "overlay-settings.ts": 2
+  },
+  "Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.": {
+    "approval-modes.ts": 1
+  },
+  "Use Copilot Agent mode with Allow All on. Copilot automatically approves tool, path, and URL requests.": {
+    "approval-modes.ts": 1
+  },
+  "Use Copilot Plan mode. Read, search, fetch, and think requests are allowed; other permission requests are declined.": {
+    "approval-modes.ts": 1
+  },
+  "Use MCP server {0}": {
+    "bots-panels.ts": 1
+  },
+  "Use a new task to switch the architect harness.": {
+    "architect.ts": 1
+  },
+  "Use a shortcut such as CommandOrControl+Shift+Space.": {
+    "overlay-client.ts": 1
+  },
+  "Use a single slash command without control characters.": {
+    "terminal.ts": 1
+  },
+  "Use a worktree": {
+    "worktrees.ts": 1
+  },
+  "Use an HTTP or HTTPS URL without embedded credentials.": {
+    "overlay-client.ts": 1
+  },
+  "Use an HTTP or HTTPS address without embedded credentials.": {
+    "browser.ts": 1
+  },
+  "Use an account token, or a workspace token with its workspace ID. Agents run the Railway CLI with it (fetched on first use if it is not installed); it never enters their prompts.": {
+    "cloud-settings.ts": 1
+  },
+  "Use from my phone and other devices": {
+    "bots-connect.ts": 1
+  },
+  "Use letters, numbers, hyphens, underscores, and slashes.": {
+    "worktrees.ts": 1
+  },
+  "Use other answer": {
+    "agent-input.ts": 1
+  },
+  "Use regular expression": {
+    "search-panel.ts": 1
+  },
+  "Use report in prompt": {
+    "jev-assist.ts": 1
+  },
+  "Use the existing branch instead of creating one": {
+    "worktrees.ts": 1
+  },
+  "Use the harness’s advertised MCP commands. Refresh the slash-command menu to sync the current list.": {
+    "main.ts": 1
+  },
+  "Use the harness’s normal rules. Ask you when approval is needed.": {
+    "approval-modes.ts": 1
+  },
+  "Use this agent’s package manager to update it.": {
+    "agent-updates.ts": 1
+  },
+  "Use up to 8 rules, with no more than 500 characters per rule.": {
+    "jev-assist.ts": 1
+  },
+  "Use {0}": {
+    "bots-panels.ts": 1,
+    "settings.ts": 1
+  },
+  "User": {
+    "skills-library.ts": 3
+  },
+  "User journey": {
+    "jev.ts": 1
+  },
+  "Username idea": {
+    "bots-connect.ts": 1
+  },
+  "Uses Kimi’s saved permissions. Review them in the console before pressing Enter.": {
+    "terminal.ts": 1
+  },
+  "Uses your AWS CLI sign-in (run `aws login` first). Desktops have no open ports; PandaCode reaches them through Systems Manager, which needs the Session Manager plugin for screens.": {
+    "cloud-settings.ts": 1
+  },
+  "Uses your installed gcloud CLI and its sign-in (run `gcloud auth login` first); PandaCode downloads nothing and stores only the project, region and zone.": {
+    "cloud-settings.ts": 1
+  },
+  "VM controls": {
+    "vm-panel.ts": 1
+  },
+  "VM screen": {
+    "vm-panel.ts": 1
+  },
+  "VM screen. Click to use it; type while it is focused.": {
+    "vm-panel.ts": 1
+  },
+  "VS Code theme": {
+    "theme-settings.ts": 1
+  },
+  "Value": {
+    "connections.ts": 1
+  },
+  "Variable name": {
+    "connections.ts": 1
+  },
+  "Verify the result": {
+    "jev.ts": 1
+  },
+  "Verify token": {
+    "bots-connect.ts": 1
+  },
+  "Verifying…": {
+    "agent-updates.ts": 1
+  },
+  "Version": {
+    "settings.ts": 1
+  },
+  "Version not reported": {
+    "agent-updates.ts": 1
+  },
+  "Version unavailable": {
+    "about-settings.ts": 1
+  },
+  "Version {0}": {
+    "about-settings.ts": 1
+  },
+  "Version …": {
+    "about-settings.ts": 1
+  },
+  "Via Meta’s Cloud API and a tunnel": {
+    "bots-connect.ts": 1
+  },
+  "View account": {
+    "agent-usage.ts": 1
+  },
+  "View all agents": {
+    "agent-updates.ts": 1
+  },
+  "View diff for {0}": {
+    "change-review.ts": 1,
+    "turn-changes.ts": 2
+  },
+  "View pull request #{0}": {
+    "github.ts": 1
+  },
+  "View subagent work": {
+    "subagents.ts": 2
+  },
+  "View {0}": {
+    "moodboards.ts": 1
+  },
+  "Viewport": {
+    "jev.ts": 1
+  },
+  "Views nest at most {0} deep.": {
+    "generative-ui-components.ts": 1
+  },
+  "Visual references": {
+    "moodboards.ts": 1
+  },
+  "Wait": {
+    "jev.ts": 1
+  },
+  "Wait for the agent to finish.": {
+    "worktrees.ts": 3
+  },
+  "Waiting": {
+    "subagents.ts": 1
+  },
+  "Waiting for a dependency": {
+    "worker-scheduling.ts": 1
+  },
+  "Waiting for an available worker slot": {
+    "worker-scheduling.ts": 1
+  },
+  "Waiting for the browser…": {
+    "jev-live.ts": 2
+  },
+  "Waiting for the first update…": {
+    "subagents.ts": 1
+  },
+  "Waiting for the harness to start…": {
+    "slash-commands.ts": 1
+  },
+  "Waiting for the worker’s first response.": {
+    "architect.ts": 1
+  },
+  "Waiting for tool details…": {
+    "tool-activity.ts": 1
+  },
+  "Waiting for you to approve in the browser… The code expires at {0}.": {
+    "remote-settings.ts": 1
+  },
+  "Waiting for {0} to finish editing shared files": {
+    "worker-scheduling.ts": 1
+  },
+  "Waiting – {0} is working": {
+    "message-queue.ts": 1
+  },
+  "Wake this thread later": {
+    "main.ts": 2
+  },
+  "Wallpaper": {
+    "theme-settings.ts": 1,
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpaper blur": {
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpaper preview": {
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpaper set": {
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpaper sets": {
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpaper visibility": {
+    "wallpaper-settings.ts": 1
+  },
+  "Wallpapers": {
+    "settings.ts": 2
+  },
+  "Watch Jev": {
+    "browser.ts": 1
+  },
+  "Watch in browser": {
+    "jev.ts": 1
+  },
+  "Web chat": {
+    "bots-connect.ts": 1
+  },
+  "Weekdays": {
+    "bots-panels.ts": 1
+  },
+  "Weekdays at {0}": {
+    "bots-panels.ts": 1
+  },
+  "Weekly cost": {
+    "usage-overview.ts": 1
+  },
+  "What": {
+    "recipes.ts": 1
+  },
+  "What are you looking for?": {
+    "jev-assist.ts": 1
+  },
+  "What changed and why.": {
+    "github.ts": 1
+  },
+  "What needs to be done?": {
+    "main.ts": 1
+  },
+  "What should it do?": {
+    "bots-panels.ts": 1
+  },
+  "What should it test?": {
+    "jev.ts": 1
+  },
+  "What should the agent accomplish?": {
+    "command-center.ts": 1
+  },
+  "What should the agent notice?": {
+    "moodboards.ts": 1
+  },
+  "What should we build in ": {
+    "main.ts": 1
+  },
+  "What should we work on?": {
+    "overlay.ts": 1
+  },
+  "WhatsApp": {
+    "bots-connect.ts": 3
+  },
+  "What’s on your mind?": {
+    "main.ts": 1
+  },
+  "When off, your other computers cannot start or switch a task here to Full access (no approvals); a remote task without a mode starts in Ask.": {
+    "remote-settings.ts": 1
+  },
+  "When the console is ready, insert the command and press Enter.": {
+    "terminal.ts": 1
+  },
+  "Where this task runs": {
+    "remote-target.ts": 1
+  },
+  "White fill": {
+    "sketch.ts": 1
+  },
+  "Who the bot is, how it works and what runs it.": {
+    "bots.ts": 1
+  },
+  "Why": {
+    "recipes.ts": 1
+  },
+  "Widen the panel to use a split diff": {
+    "diff-viewer.ts": 1
+  },
+  "Will be removed on save": {
+    "jev.ts": 1
+  },
+  "Windows": {
+    "overlay-settings.ts": 1
+  },
+  "Windows Server on EC2 · about 10 min to set up": {
+    "vm-machines.ts": 1
+  },
+  "Work freely inside the sandbox. Muse asks only to leave it.": {
+    "approval-modes.ts": 1
+  },
+  "Work happens here": {
+    "task-board.ts": 1
+  },
+  "Work in a new worktree": {
+    "worktrees.ts": 1
+  },
+  "Work in a new worktree…": {
+    "main.ts": 1,
+    "worktrees.ts": 1
+  },
+  "Work in this project. Ask you when an action needs extra permission.": {
+    "approval-modes.ts": 1
+  },
+  "Work review": {
+    "jev-assist.ts": 1
+  },
+  "Worked for {0}": {
+    "main.ts": 1
+  },
+  "Worker": {
+    "overlay-thread.ts": 1,
+    "overlay.ts": 1,
+    "team-messages.ts": 2
+  },
+  "Worker effort for {0}": {
+    "agent-teams.ts": 1
+  },
+  "Worker {0}": {
+    "architect.ts": 1
+  },
+  "Workers Scripts, Pages and Containers: Edit": {
+    "cloud-settings.ts": 1
+  },
+  "Workers, static assets or Pages": {
+    "deploy.ts": 1
+  },
+  "Workflow recipes": {
+    "main.ts": 1,
+    "recipes.ts": 1
+  },
+  "Workflow recipes…": {
+    "main.ts": 1
+  },
+  "Workflow runs for #{0}": {
+    "github-hub.ts": 1
+  },
+  "Working": {
+    "bots.ts": 1,
+    "github-hub.ts": 1,
+    "main.ts": 1,
+    "overlay.ts": 1,
+    "sidebar-bots.ts": 1,
+    "subagents.ts": 1
+  },
+  "Working directory": {
+    "main.ts": 1
+  },
+  "Working for {0}": {
+    "main.ts": 4
+  },
+  "Working in {0}": {
+    "worktrees.ts": 1
+  },
+  "Working toward goal": {
+    "command-center.ts": 1
+  },
+  "Working tree clean": {
+    "changes-view.ts": 1
+  },
+  "Working…": {
+    "bots-panels.ts": 1,
+    "bots.ts": 1
+  },
+  "Works — connects as ": {
+    "bots-connect.ts": 1
+  },
+  "Workspace": {
+    "cloud-settings.ts": 1
+  },
+  "Workspace ID": {
+    "cloud-settings.ts": 1
+  },
+  "Workspace name": {
+    "cloud-settings.ts": 1
+  },
+  "Workspace only": {
+    "bots.ts": 1
+  },
+  "Worktree": {
+    "main.ts": 1,
+    "worktrees.ts": 1
+  },
+  "Worktree missing": {
+    "worktrees.ts": 3
+  },
+  "Worktree path copied": {
+    "main.ts": 1,
+    "worktrees.ts": 1
+  },
+  "Worktree registration pruned": {
+    "worktrees.ts": 1
+  },
+  "Worktree restored on {0}": {
+    "worktrees.ts": 1
+  },
+  "Worktree task created": {
+    "worktrees.ts": 1
+  },
+  "Wrap": {
+    "diff-viewer.ts": 1,
+    "document-viewer.ts": 1
+  },
+  "Wrap lines": {
+    "diff-viewer.ts": 1
+  },
+  "Write a description before committing.": {
+    "jj.ts": 1
+  },
+  "Write scope: shared checkout": {
+    "architect.ts": 1
+  },
+  "Write scope: {0}": {
+    "architect.ts": 1
+  },
+  "Xcode needed": {
+    "simulator.ts": 1
+  },
+  "Yellow": {
+    "sketch.ts": 1
+  },
+  "Yesterday": {
+    "sidebar-bots.ts": 1
+  },
+  "You": {
+    "overlay-thread.ts": 1
+  },
+  "You are editing a queued message. Save or cancel the edit to let it run.": {
+    "message-queue.ts": 1
+  },
+  "You: ": {
+    "sidebar-bots.ts": 1
+  },
+  "Your accessibility settings keep the workspace solid. Your wallpaper choices are saved.": {
+    "wallpaper-settings.ts": 1
+  },
+  "Your answer": {
+    "agent-input.ts": 1
+  },
+  "Your app, right here.": {
+    "browser.ts": 1
+  },
+  "Your configured providers handle model requests.": {
+    "jev.ts": 1
+  },
+  "Your other signed-in computers can see and drive tasks here.": {
+    "remote-settings.ts": 1
+  },
+  "Your reports will appear here and stay on this device.": {
+    "jev-assist.ts": 1
+  },
+  "Your task or message changed while commands were loading. Send it again.": {
+    "main.ts": 1
+  },
+  "Your visual starting point.": {
+    "moodboards.ts": 2
+  },
+  "ZCode does not accept images yet. Describe them, or attach documents and folders instead.": {
+    "main.ts": 1
+  },
+  "ZCode’s build mode: it works in this project and asks you when an action needs permission.": {
+    "approval-modes.ts": 1
+  },
+  "ZCode’s plan mode: it investigates and proposes a plan; implementation waits for your approval.": {
+    "approval-modes.ts": 1
+  },
+  "Zone": {
+    "cloud-settings.ts": 1
+  },
+  "Zoom in": {
+    "design-canvas.ts": 2
+  },
+  "Zoom out": {
+    "design-canvas.ts": 2
+  },
+  "approved": {
+    "github-pull.ts": 2
+  },
+  "asks for access": {
+    "remote-settings.ts": 1
+  },
+  "attachment": {
+    "message-queue.ts": 1
+  },
+  "attachments": {
+    "message-queue.ts": 1
+  },
+  "branch {0} not pushed": {
+    "remote-target.ts": 1
+  },
+  "check-in {0}": {
+    "bots.ts": 1
+  },
+  "checks": {
+    "jev-assist.ts": 1
+  },
+  "cloud": {
+    "cloud-agents.ts": 1
+  },
+  "cloud machine": {
+    "vm-panel.ts": 1
+  },
+  "code": {
+    "generative-ui-components.ts": 1
+  },
+  "commented": {
+    "github-pull.ts": 1
+  },
+  "commit": {
+    "remote-target.ts": 1
+  },
+  "commits": {
+    "remote-target.ts": 1
+  },
+  "connected": {
+    "remote-settings.ts": 1
+  },
+  "connecting…": {
+    "remote-settings.ts": 1
+  },
+  "conversation": {
+    "main.ts": 1
+  },
+  "conversations": {
+    "main.ts": 1
+  },
+  "dark": {
+    "settings.ts": 1
+  },
+  "disabled": {
+    "main.ts": 1
+  },
+  "e.g. Add keyboard navigation to the settings panel": {
+    "jev-assist.ts": 1
+  },
+  "e.g. Failed approaches to the login bug": {
+    "jev-assist.ts": 1
+  },
+  "e.g. Game over": {
+    "jev.ts": 1
+  },
+  "e.g. Minesweeper": {
+    "jev.ts": 1
+  },
+  "e.g. Missing tests or unsupported completion claims": {
+    "jev-assist.ts": 1
+  },
+  "element": {
+    "main.ts": 1
+  },
+  "enabled": {
+    "main.ts": 1
+  },
+  "esc to close": {
+    "main.ts": 1
+  },
+  "excludes {0} unpriced tokens": {
+    "usage-overview.ts": 1
+  },
+  "file": {
+    "attachments.ts": 1,
+    "change-review.ts": 1,
+    "diff-viewer.ts": 1,
+    "search-panel.ts": 1,
+    "turn-changes.ts": 3
+  },
+  "files": {
+    "attachments.ts": 1,
+    "change-review.ts": 1,
+    "search-panel.ts": 1,
+    "turn-changes.ts": 3
+  },
+  "folder": {
+    "attachments.ts": 1
+  },
+  "folders": {
+    "attachments.ts": 1
+  },
+  "git status*": {
+    "bots-panels.ts": 1
+  },
+  "hour": {
+    "bots-panels.ts": 1
+  },
+  "iOS Simulator. Click the screen to tap, drag on it to swipe, type to enter text. Drag around the device to turn it.": {
+    "simulator.ts": 1
+  },
+  "iPhone Duo pose": {
+    "simulator.ts": 1
+  },
+  "iPhone Duo pose: Closed": {
+    "simulator.ts": 1
+  },
+  "iPhone Duo pose: {0}": {
+    "simulator.ts": 1
+  },
+  "image": {
+    "moodboards.ts": 1
+  },
+  "images": {
+    "moodboards.ts": 1
+  },
+  "item": {
+    "jev-assist.ts": 1
+  },
+  "items": {
+    "jev-assist.ts": 1
+  },
+  "its branch": {
+    "worktrees.ts": 2
+  },
+  "just now": {
+    "app-updates-policy.ts": 1,
+    "github-pull.ts": 1,
+    "tray-popover.ts": 1
+  },
+  "key": {
+    "remote-settings.ts": 2
+  },
+  "light": {
+    "settings.ts": 1
+  },
+  "main branch": {
+    "worktrees.ts": 1
+  },
+  "model": {
+    "main.ts": 2,
+    "overlay.ts": 1
+  },
+  "models": {
+    "main.ts": 2,
+    "overlay.ts": 1
+  },
+  "my-feature": {
+    "worktrees.ts": 1
+  },
+  "name": {
+    "attachments.ts": 1
+  },
+  "new line": {
+    "overlay.ts": 1
+  },
+  "now": {
+    "main.ts": 1
+  },
+  "on {0}": {
+    "cloud-agents.ts": 1,
+    "remote-target.ts": 1
+  },
+  "page": {
+    "office-viewer.ts": 1
+  },
+  "pages": {
+    "office-viewer.ts": 1
+  },
+  "past year": {
+    "usage-heatmap.ts": 1
+  },
+  "past {0} months": {
+    "usage-heatmap.ts": 1
+  },
+  "path": {
+    "attachments.ts": 1
+  },
+  "project": {
+    "worktrees.ts": 1
+  },
+  "remote control off": {
+    "remote-settings.ts": 1
+  },
+  "remote control on": {
+    "remote-settings.ts": 1
+  },
+  "requested changes": {
+    "github-pull.ts": 1
+  },
+  "reset due": {
+    "tray-popover.ts": 1
+  },
+  "resets in {0}": {
+    "tray-popover.ts": 1
+  },
+  "resets {0}": {
+    "tray-popover.ts": 1
+  },
+  "result": {
+    "search-panel.ts": 1
+  },
+  "results": {
+    "search-panel.ts": 1
+  },
+  "review dismissed": {
+    "github-pull.ts": 1
+  },
+  "reviewed": {
+    "github-pull.ts": 2
+  },
+  "root": {
+    "jj.ts": 1
+  },
+  "running processes": {
+    "terminal-panel.ts": 1
+  },
+  "screenshot": {
+    "main.ts": 1
+  },
+  "showing the first 2,000": {
+    "search-panel.ts": 1
+  },
+  "start task": {
+    "overlay.ts": 1
+  },
+  "step": {
+    "jev.ts": 1
+  },
+  "steps": {
+    "jev.ts": 1
+  },
+  "stopped": {
+    "vm-panel.ts": 1
+  },
+  "stopped or suspended": {
+    "vm-panel.ts": 1
+  },
+  "the callback URL appears here after you save the address": {
+    "bots-connect.ts": 1
+  },
+  "the current branch": {
+    "github.ts": 1
+  },
+  "the machine could not be prepared": {
+    "cloud-agents.ts": 1
+  },
+  "the other computer did not answer": {
+    "remote-progress.ts": 3
+  },
+  "the repository": {
+    "remote-progress.ts": 1
+  },
+  "theme": {
+    "theme-settings.ts": 1
+  },
+  "tool": {
+    "overlay-thread.ts": 2
+  },
+  "tools": {
+    "overlay-thread.ts": 1
+  },
+  "uncommitted changes": {
+    "remote-target.ts": 1
+  },
+  "unknown": {
+    "diff-viewer.ts": 1,
+    "jj.ts": 1
+  },
+  "unknown branch": {
+    "worktrees.ts": 1
+  },
+  "unpriced": {
+    "usage-overview.ts": 2
+  },
+  "updated {0}": {
+    "github.ts": 1
+  },
+  "word": {
+    "document-viewer.ts": 1
+  },
+  "words": {
+    "document-viewer.ts": 1
+  },
+  "workers": {
+    "jev-assist.ts": 1
+  },
+  "worktree": {
+    "worktrees.ts": 1
+  },
+  "{0} + / − to resize · {1} 0 to reset": {
+    "ui-size.ts": 1
+  },
+  "{0} Saves {1}.{2}": {
+    "token-saver-panel.ts": 1
+  },
+  "{0} accent": {
+    "theme-settings.ts": 1
+  },
+  "{0} active": {
+    "overlay.ts": 1
+  },
+  "{0} active days": {
+    "usage-heatmap.ts": 1
+  },
+  "{0} ago": {
+    "tray-popover.ts": 1
+  },
+  "{0} already has everything from {1}": {
+    "worktrees.ts": 1
+  },
+  "{0} approvals needed": {
+    "approval-bar.ts": 2
+  },
+  "{0} at once": {
+    "team-profiles.ts": 1
+  },
+  "{0} available": {
+    "app-updates-policy.ts": 1
+  },
+  "{0} can’t run on a cloud machine yet. Choose Claude Code, GLM, MiMo, Codex or OpenCode.": {
+    "cloud-agents.ts": 1
+  },
+  "{0} changed files": {
+    "jj.ts": 1
+  },
+  "{0} changed {1}": {
+    "change-review.ts": 1,
+    "turn-changes.ts": 2
+  },
+  "{0} command": {
+    "slash-commands.ts": 1
+  },
+  "{0} commands": {
+    "slash-commands.ts": 1
+  },
+  "{0} comments": {
+    "github-hub.ts": 1
+  },
+  "{0} connected": {
+    "bots-connect.ts": 1
+  },
+  "{0} console": {
+    "terminal-panel.ts": 1
+  },
+  "{0} context": {
+    "opencode-model-settings.ts": 1
+  },
+  "{0} conversations could not be imported: {1}": {
+    "conversation-import.ts": 1
+  },
+  "{0} created. Cloud machines can take a minute or more to be ready.": {
+    "vm-panel.ts": 1
+  },
+  "{0} daily prompts": {
+    "agent-usage.ts": 1
+  },
+  "{0} daily tokens": {
+    "agent-usage.ts": 1
+  },
+  "{0} details, {1}": {
+    "settings.ts": 1
+  },
+  "{0} doesn’t have {1}. Using {2}.": {
+    "main.ts": 1
+  },
+  "{0} estimated. ": {
+    "usage-overview.ts": 1
+  },
+  "{0} evidence {1}": {
+    "jev-assist.ts": 1
+  },
+  "{0} file": {
+    "file-mentions.ts": 1
+  },
+  "{0} files": {
+    "changes-view.ts": 1,
+    "file-mentions.ts": 1
+  },
+  "{0} files · {1} folders": {
+    "message-attachments.ts": 1
+  },
+  "{0} folder": {
+    "file-mentions.ts": 1
+  },
+  "{0} folders": {
+    "file-mentions.ts": 1
+  },
+  "{0} found": {
+    "conversation-import.ts": 1
+  },
+  "{0} has no GitHub remote, so it can’t run on another computer.": {
+    "main.ts": 1
+  },
+  "{0} has no screen": {
+    "vm-panel.ts": 1
+  },
+  "{0} has no skill files; PandaCode adds this to its messages.": {
+    "skills-library.ts": 1
+  },
+  "{0} hours": {
+    "bots-panels.ts": 1
+  },
+  "{0} image added.": {
+    "moodboards.ts": 2
+  },
+  "{0} images added.": {
+    "moodboards.ts": 2
+  },
+  "{0} is already attached.": {
+    "attachments.ts": 1
+  },
+  "{0} is deleted.": {
+    "vm-panel.ts": 1
+  },
+  "{0} is larger than 64 KB. Shorten it and try again.": {
+    "bots.ts": 1
+  },
+  "{0} is not UTF-8 text. Save it as UTF-8 Markdown and try again.": {
+    "bots.ts": 1
+  },
+  "{0} is not a text document. Attach it with the picker instead.": {
+    "attachments.ts": 1
+  },
+  "{0} is not installed on this computer.": {
+    "conversation-import.ts": 1
+  },
+  "{0} is off for {1}.": {
+    "skills-library.ts": 1
+  },
+  "{0} is ready. {1}": {
+    "app-updates-policy.ts": 1
+  },
+  "{0} is running outside PandaCode": {
+    "vm-panel.ts": 1
+  },
+  "{0} is starting.": {
+    "vm-panel.ts": 1
+  },
+  "{0} is still starting this task; the message stays queued.": {
+    "main.ts": 1
+  },
+  "{0} is suspended and uses no memory.": {
+    "vm-panel.ts": 1
+  },
+  "{0} is {1}": {
+    "vm-panel.ts": 1
+  },
+  "{0} leads": {
+    "agent-teams.ts": 1
+  },
+  "{0} local branches": {
+    "worktrees.ts": 1
+  },
+  "{0} messages": {
+    "conversation-import.ts": 1
+  },
+  "{0} min read": {
+    "document-viewer.ts": 1
+  },
+  "{0} model · led by {1}": {
+    "team-mode.ts": 1
+  },
+  "{0} models": {
+    "agent-teams.ts": 1
+  },
+  "{0} models support JSON output.": {
+    "jev.ts": 1
+  },
+  "{0} models · led by {1}": {
+    "team-mode.ts": 1
+  },
+  "{0} needs a checkout on this computer. Run it in a local task, or ask the remote agent in plain text.": {
+    "main.ts": 1
+  },
+  "{0} of cost": {
+    "usage-overview.ts": 1
+  },
+  "{0} on": {
+    "bots-panels.ts": 2
+  },
+  "{0} on GitHub": {
+    "file-mentions.ts": 1
+  },
+  "{0} paused": {
+    "bots.ts": 1
+  },
+  "{0} percent wallpaper": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} pixels of blur": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} prompts": {
+    "usage-heatmap.ts": 2
+  },
+  "{0} resumed": {
+    "bots.ts": 1
+  },
+  "{0} running": {
+    "subagents.ts": 1
+  },
+  "{0} runs every tool without asking.": {
+    "approval-modes.ts": 1
+  },
+  "{0} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.": {
+    "approval-modes.ts": 1
+  },
+  "{0} scenes follow your local time, every day.": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} selected": {
+    "conversation-import.ts": 1,
+    "github.ts": 1,
+    "opencode-model-settings.ts": 1
+  },
+  "{0} sessions": {
+    "usage-overview.ts": 2
+  },
+  "{0} settings": {
+    "main.ts": 1,
+    "sidebar-bots.ts": 1
+  },
+  "{0} shape": {
+    "sketch.ts": 1
+  },
+  "{0} shapes": {
+    "sketch.ts": 1
+  },
+  "{0} stops listening on {1}, and its saved tokens are deleted.": {
+    "bots-panels.ts": 1
+  },
+  "{0} subagents": {
+    "subagents.ts": 1
+  },
+  "{0} themes from {1}": {
+    "theme-settings.ts": 1
+  },
+  "{0} tokens": {
+    "usage-heatmap.ts": 2,
+    "usage-overview.ts": 1
+  },
+  "{0} turned off · PandaCode {1}": {
+    "main.ts": 1
+  },
+  "{0} unpushed {1}": {
+    "remote-target.ts": 1
+  },
+  "{0} unread": {
+    "sidebar-bots.ts": 2
+  },
+  "{0} update details": {
+    "agent-updates.ts": 1
+  },
+  "{0} update guide": {
+    "agent-updates.ts": 1
+  },
+  "{0} usage": {
+    "command-center.ts": 1
+  },
+  "{0} wallpaper set": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} was deleted": {
+    "bots.ts": 1
+  },
+  "{0} was dropped from a browser, so its location is unknown.": {
+    "main.ts": 1
+  },
+  "{0} was reset": {
+    "bots.ts": 1
+  },
+  "{0} with a label.": {
+    "generative-ui-components.ts": 1
+  },
+  "{0} worker models · {1}": {
+    "team-profiles.ts": 1
+  },
+  "{0} {1}": {
+    "cloud-settings.ts": 1,
+    "main.ts": 1,
+    "team-messages.ts": 1
+  },
+  "{0} {1} is your default. It stays until you change it.": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} {1} wallpaper": {
+    "wallpaper-settings.ts": 1
+  },
+  "{0} {1} will start from GitHub’s {2}.": {
+    "remote-target.ts": 1
+  },
+  "{0} {1} · {2} · {3}": {
+    "jev.ts": 1
+  },
+  "{0} {1}…": {
+    "vm-panel.ts": 1
+  },
+  "{0} · Currently unavailable": {
+    "opencode-model-settings.ts": 1
+  },
+  "{0} · VS Code theme": {
+    "theme-settings.ts": 1
+  },
+  "{0} · no GitHub remote here": {
+    "github.ts": 1
+  },
+  "{0} · point to read values": {
+    "usage-cost-chart.ts": 1
+  },
+  "{0} · {1}": {
+    "github.ts": 1,
+    "jev-live.ts": 2,
+    "jev.ts": 1,
+    "team-mode.ts": 1,
+    "theme-settings.ts": 1,
+    "wallpaper-settings.ts": 1
+  },
+  "{0} · {1} {2}": {
+    "jev-assist.ts": 1
+  },
+  "{0} → {1}": {
+    "team-messages.ts": 1
+  },
+  "{0}% of limit used": {
+    "usage-overview.ts": 1
+  },
+  "{0}% probability": {
+    "jev-assist.ts": 1
+  },
+  "{0}% used": {
+    "command-center.ts": 1
+  },
+  "{0}+ found": {
+    "conversation-import.ts": 1
+  },
+  "{0}, {1}": {
+    "jev.ts": 1
+  },
+  "{0}: {1}": {
+    "skills-library.ts": 1
+  },
+  "{0}: {1}{2}": {
+    "main.ts": 1
+  },
+  "{0}d ago": {
+    "github-pull.ts": 1
+  },
+  "{0}h ago": {
+    "app-updates-policy.ts": 1,
+    "github-pull.ts": 1
+  },
+  "{0}m ago": {
+    "app-updates-policy.ts": 1,
+    "github-pull.ts": 1
+  },
+  "{0}{1} tokens": {
+    "command-center.ts": 1
+  },
+  "↑ ↓ navigate": {
+    "file-mentions.ts": 1,
+    "slash-commands.ts": 1
+  },
+  "↑ ↓ to navigate": {
+    "main.ts": 1
+  },
+  "↵ to open": {
+    "main.ts": 1
+  }
+}

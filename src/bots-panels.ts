@@ -64,7 +64,7 @@ export function describeSchedule(schedule: Pick<Schedule, 'kind' | 'intervalMinu
     case 'interval': { const minutes = schedule.intervalMinutes ?? 0; return minutes % 60 === 0 ? t`Every ${minutes / 60 === 1 ? t('hour') : t`${minutes / 60} hours`}` : t`Every ${minutes} minutes`; }
     case 'daily': return t`Daily at ${schedule.timeOfDay}`;
     case 'weekdays': return t`Weekdays at ${schedule.timeOfDay}`;
-    default: return schedule.nextRunAt ? t`${t('Once')}, ${new Date(schedule.nextRunAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : t('Once');
+    default: return schedule.nextRunAt ? t`Once, ${new Date(schedule.nextRunAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : t('Once');
   }
 }
 

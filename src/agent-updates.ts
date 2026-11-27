@@ -120,7 +120,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       const button = row.querySelector<HTMLButtonElement>('.agent-update-button')!;
       const canUpdate = entry.status === 'available' && entry.canUpdate;
       button.hidden = !canUpdate && !progress; button.disabled = Boolean(pending.size || checking);
-      button.setAttribute('aria-label', t`${t('Update')} ${entry.name}`); button.setAttribute('aria-busy', String(Boolean(progress)));
+      button.setAttribute('aria-label', t`Update ${entry.name}`); button.setAttribute('aria-busy', String(Boolean(progress)));
       button.textContent = progress ? progress.phase === 'verifying' ? t('Verifying…') : t('Updating…') : t('Update');
       const state = row.querySelector<HTMLElement>('.agent-update-state')!;
       state.hidden = Boolean(canUpdate || progress);

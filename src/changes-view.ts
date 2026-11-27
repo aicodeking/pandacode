@@ -203,7 +203,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     let adds = 0, dels = 0;
     for (const entry of entries.values()) if (entry.load === 'loaded') { adds += entry.adds; dels += entry.dels; }
     const n = entries.size;
-    filesLabel.textContent = n ? `${n} file${n === 1 ? '' : 's'}` : '';
+    filesLabel.textContent = n ? (n === 1 ? t`1 file` : t`${n} files`) : '';
     addsLabel.textContent = n ? `+${adds}` : '';
     delsLabel.textContent = n ? `-${dels}` : '';
     const allFolded = n > 0 && [...entries.keys()].every(p => collapsed.has(p));
@@ -262,7 +262,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     entry.el.classList.toggle('collapsed', folded);
     const toggle = entry.el.querySelector<HTMLElement>('.cv-toggle')!;
     toggle.setAttribute('aria-expanded', String(!folded));
-    toggle.setAttribute('aria-label', `${folded ? 'Expand' : 'Collapse'} ${entry.path}`);
+    toggle.setAttribute('aria-label', folded ? t`Expand ${entry.path}` : t`Collapse ${entry.path}`);
     entry.body.hidden = folded;
   }
 

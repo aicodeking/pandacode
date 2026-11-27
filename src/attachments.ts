@@ -45,7 +45,9 @@ function id(): string { return crypto.randomUUID(); }
 function baseName(path: string): string { return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path; }
 /** A path the agent can open itself, quoted when it holds spaces. */
 export function quotePath(path: string): string { return /\s/.test(path) ? `"${path.replace(/"/g, '\\"')}"` : path; }
-const alreadyAttached = (error: unknown) => String(error instanceof Error ? error.message : error).includes('is already attached');
+/** A translated "already attached" error, flagged so `alreadyAttached` never matches on message text. */
+const duplicate = (name: string): Error => Object.assign(new Error(t`${name} is already attached.`), { duplicate: true });
+const alreadyAttached = (error: unknown) => Boolean((error as { duplicate?: boolean })?.duplicate);
 function formatSize(bytes: number): string { return bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`; }
 function documentLabel(document: PromptDocument): string {
   const ext = document.name.split('.').pop()?.toUpperCase();
@@ -64,13 +66,13 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     if (attachment.kind === 'image') {
       const unsupported = host.imagesUnsupported?.(taskId);
       if (unsupported) throw new Error(unsupported);
-      if (attachment.path && current.some(a => a.kind === 'image' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
+      if (attachment.path && current.some(a => a.kind === 'image' && a.path === attachment.path)) throw duplicate(attachment.name);
       if (current.filter(a => a.kind === 'image').length + host.otherImages(taskId) >= MAX_IMAGES) throw new Error(t`Attach up to ${MAX_IMAGES} images per message, including browser screenshots.`);
     } else if (attachment.kind === 'document') {
-      if (current.some(a => a.kind === 'document' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
+      if (current.some(a => a.kind === 'document' && a.path === attachment.path)) throw duplicate(attachment.name);
       if (current.filter(a => a.kind === 'document').length >= MAX_DOCUMENTS) throw new Error(t`Attach up to ${MAX_DOCUMENTS} documents per message.`);
     } else {
-      if (current.some(a => a.kind === 'folder' && a.path === attachment.path)) throw new Error(`${attachment.name} is already attached.`);
+      if (current.some(a => a.kind === 'folder' && a.path === attachment.path)) throw duplicate(attachment.name);
       if (current.filter(a => a.kind === 'folder').length >= MAX_FOLDERS) throw new Error(t`Attach up to ${MAX_FOLDERS} folders per message.`);
     }
     set(taskId, [...current, attachment]);
@@ -88,7 +90,7 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     // Refuse what cannot be sent before the native import writes a copy.
     const unsupported = host.imagesUnsupported?.(taskId);
     if (unsupported) throw new Error(unsupported);
-    if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw new Error(`${baseName(source.path)} is already attached.`);
+    if (source.path && list(taskId).some(a => a.kind === 'image' && a.path === source.path)) throw duplicate(baseName(source.path));
     const imported = await call<{ id: string; name: string; width: number; height: number; thumbnail: string }>('import_prompt_image', { path: source.path, dataUrl: source.dataUrl, name: source.name });
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
     const image: PromptImage = { kind: 'image', ...imported, source: source.origin, path: source.path, sketchId: source.sketchId };
@@ -127,7 +129,8 @@ export function mountPromptAttachments(host: AttachmentsHost) {
    * agent can still open them. Returns false when there was no prompt to take them. */
   function insertInstead(lines: string[], what: string): boolean {
     if (!lines.length || !host.insertText(lines.join('\n'))) return false;
-    host.notify(lines.length === 1 ? `Inserted ${what} for ${what === 'path' ? baseName(lines[0].replace(/^"|"$/g, '')) : lines[0].split(' (')[0]}` : `Inserted ${what}s for ${lines.length} files`);
+    const label = what === 'path' ? t('path') : t('name');
+    host.notify(lines.length === 1 ? t`Inserted ${label} for ${what === 'path' ? baseName(lines[0].replace(/^"|"$/g, '')) : lines[0].split(' (')[0]}` : t`Inserted ${label}s for ${lines.length} files`);
     return true;
   }
 

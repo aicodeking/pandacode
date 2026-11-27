@@ -63,8 +63,12 @@ export function mountTeamProfiles(host: HTMLElement, options: {
     if (menu) { menu(); return; }
     // Named agent teams live in Settings and the model picker, not among classic profiles.
     const profiles = library.profiles.filter(profile => !profile.setup.config.rosterOnly);
-    const items = profiles.map(profile => ({ id: profile.id, label: profile.name, provider: profile.setup.architect.provider,
-      description: `${profile.setup.config.workers.length} worker model${profile.setup.config.workers.length === 1 ? '' : 's'} · ${profile.setup.config.maxParallel === 0 ? t('Unlimited at once') : t`${profile.setup.config.maxParallel} at once`}`, selected: selected === profile.id }));
+    const items = profiles.map(profile => {
+      const size = profile.setup.config.workers.length;
+      const atOnce = profile.setup.config.maxParallel === 0 ? t('Unlimited at once') : t`${profile.setup.config.maxParallel} at once`;
+      return { id: profile.id, label: profile.name, provider: profile.setup.architect.provider,
+        description: size === 1 ? t`1 worker model · ${atOnce}` : t`${size} worker models · ${atOnce}`, selected: selected === profile.id };
+    });
     if (library.lastSetup) items.unshift({ id: 'last-saved', label: t('Last saved setup'), provider: library.lastSetup.architect.provider,
       description: library.enabled ? t('Default for new tasks') : t('Remembered · single agent default'), selected: !selected && sameTeamSetup(library.lastSetup, options.read()) });
     menu = openChoiceMenu({ anchor: picker, title: t('Team profiles'), items, width: 310,

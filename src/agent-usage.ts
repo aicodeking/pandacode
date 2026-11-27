@@ -245,7 +245,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       const slot = card.querySelector<HTMLElement>('.usage-card-calendar')!;
       const calendar = calendarFor(id, ledger, prompts);
       if (!calendar) { slot.innerHTML = ledger || prompts ? `<p class="usage-calendar-empty">${t('No activity recorded for this agent yet.')}</p>` : ''; continue; }
-      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: `${nameOf(id)} daily ${calendar.unit}` });
+      const heatmap = usageHeatmap(calendar.daily, { unit: calendar.unit, label: calendar.unit === 'prompts' ? t`${nameOf(id)} daily prompts` : t`${nameOf(id)} daily tokens` });
       if (calendar.unit === 'prompts') heatmap.querySelector('.heatmap-heading h3')?.insertAdjacentHTML('beforeend', ` ${infoMark(t('This agent does not keep token logs PandaCode can read, so the calendar counts prompts you sent from PandaCode.'), t('About this calendar'))}`);
       slot.replaceChildren(heatmap);
     }

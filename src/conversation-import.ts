@@ -71,8 +71,8 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     all.indeterminate = chosen > 0 && chosen < choices.length;
     all.disabled = !choices.length || importing;
     commit.disabled = !selected.size || importing;
-    commit.textContent = importing ? t('Importing…') : selected.size ? `${t('Import')} ${selected.size} ${selected.size === 1 ? 'conversation' : 'conversations'}` : t('Import');
-    count.textContent = loading ? t('Loading…') : items.length ? `${items.length}${cursor ? '+' : ''} found${selected.size ? ` · ${t`${selected.size} selected`}` : ''}` : '';
+    commit.textContent = importing ? t('Importing…') : selected.size ? selected.size === 1 ? t`Import ${selected.size} conversation` : t`Import ${selected.size} conversations` : t('Import');
+    count.textContent = loading ? t('Loading…') : items.length ? `${cursor ? t`${items.length}+ found` : t`${items.length} found`}${selected.size ? ` · ${t`${selected.size} selected`}` : ''}` : '';
   }
   function row(item: Importable): string {
     const meta = [escape(folderName(item.folder) || t('Unknown folder')), item.messages ? t`${item.messages} messages` : '', age(item.updatedAt)].filter(Boolean).join(' · ');
