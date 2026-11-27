@@ -17,6 +17,8 @@ fn config(provider: &str, prompt: &str) -> crate::providers::RunConfig {
         codex_settings: None,
         images: Vec::new(),
         no_fresh_resume_fallback: false,
+        team_environment: Default::default(),
+        team_use_global_environment: true,
     }
 }
 

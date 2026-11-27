@@ -900,6 +900,8 @@ fn config() -> TeamConfig {
         summary_limit: 2000,
         lead_guidance: None,
         council: None,
+        environment: Default::default(),
+        use_global_environment: true,
     }
 }
 fn fixture() -> (Store, TeamSnapshot) {
@@ -6124,4 +6126,31 @@ fn a_thread_without_a_team_cannot_dispatch_full_access_workers_mid_turn() {
     assert!(!leads_team(&store, &plain).unwrap(), "no team was created");
     let workers: i64 = store.db.query_row("SELECT COUNT(*) FROM architect_workers WHERE parent_session_id=?1", [&plain], |r| r.get(0)).unwrap();
     assert_eq!(workers, 0, "no worker was started");
+}
+
+#[cfg(unix)]
+#[test]
+fn team_environment_reaches_worker_spawn_and_events_are_redacted() {
+    let (state, sid) = state_fixture();
+    {
+        let store = state.store.lock().unwrap();
+        let mut team = load(&store, &sid).unwrap().unwrap();
+        team.config.environment.insert("PANDACODE_TEAM_FIXTURE".into(), "worker-private-value".into());
+        team.config.use_global_environment = false;
+        save(&store, &mut team).unwrap();
+    }
+    let (worker, _) = running_worker(&state, &sid, "env-worker", "src");
+    assert!(worker.team_worker);
+    assert!(!worker.config.team_use_global_environment);
+    assert_eq!(worker.config.team_environment.get("PANDACODE_TEAM_FIXTURE").unwrap(), "worker-private-value");
+    let mut command = crate::providers::provider_command(&worker.config.provider, std::path::Path::new("/bin/sh"), false).unwrap();
+    crate::provider_settings::apply_team_environment(&worker.config.team_environment, &mut command);
+    command.args(["-c", "printf %s \"$PANDACODE_TEAM_FIXTURE\""]);
+    let output = command.into_std().output().unwrap();
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8(output.stdout).unwrap(), "worker-private-value");
+    let team = load(&state.store.lock().unwrap(), &sid).unwrap().unwrap();
+    let event = redact_team(&event_payload(&team));
+    assert!(!event.to_string().contains("worker-private-value"));
+    assert_eq!(event["environmentNames"], json!(["PANDACODE_TEAM_FIXTURE"]));
 }

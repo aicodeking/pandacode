@@ -381,3 +381,22 @@ test('the model filter is a full-height field, not a collapsed line', async ({ p
   expect(filterBox.width).toBeGreaterThan(300);
 });
 });
+
+test('named team environment stays editable and values are write-only', async ({ page }) => {
+  await install(page);
+  await openAgents(page);
+  await createTeam(page, 'Env team');
+  await settings(page).getByRole('button', { name: 'Edit Env team', exact: true }).click();
+  const environment = settings(page).getByRole('region', { name: 'Team environment', exact: true });
+  await expect(environment).toBeVisible();
+  await environment.getByRole('textbox', { name: 'Variable name', exact: true }).fill('TEAM_TOKEN');
+  await environment.getByRole('textbox', { name: 'Variable value', exact: true }).fill('fixture-private-value');
+  await environment.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(environment.locator('code')).toHaveText('TEAM_TOKEN');
+  await expect(environment.getByRole('textbox', { name: 'Variable value', exact: true })).toHaveValue('');
+  await environment.getByRole('checkbox', { name: 'Use global environment variables', exact: true }).uncheck();
+  await expect.poll(async () => (await calls(page, 'architect_set_team_use_global_environment')).length).toBe(1);
+  const library = await page.evaluate(() => (window as any).__teamInvoke('architect_profiles', {}));
+  expect(JSON.stringify(library)).not.toContain('fixture-private-value');
+  expect(library.profiles.find((profile: any) => profile.name === 'Env team')).toMatchObject({ environmentNames: ['TEAM_TOKEN'], useGlobalEnvironment: false });
+});

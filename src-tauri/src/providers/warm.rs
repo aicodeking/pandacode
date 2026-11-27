@@ -65,6 +65,11 @@ fn key_with_disabled(
         "connection": format!("{:?}", crate::provider_settings::claude_connection_mode()),
         // A saved environment variable change starts the next turn cold.
         "environment": crate::provider_settings::environment_fingerprint(&config.provider),
+        // So does a team environment: one team's warm agent is never adopted by a
+        // run with another team's variables, and a changed global-inheritance
+        // choice starts cold too.
+        "teamEnvironment": serde_json::to_string(&config.team_environment).unwrap_or_default(),
+        "teamUseGlobalEnvironment": config.team_use_global_environment,
         // So do the telemetry opt-outs (`privacy.rs`).
         "telemetryOff": super::privacy::telemetry_off(),
         // So does a saved executable location.
@@ -129,7 +134,9 @@ pub fn discard(session_id: &str) {
 /// Start the next turn's agent for a task. `tools` is the catalog its last turn used; the
 /// placeholder server answers the agent's startup listing and is rebound on adoption.
 pub async fn prewarm(config: RunConfig, tools: Vec<Value>, approval_tools: HashSet<String>, launch: u64) -> Result<(), String> {
-    let result = start(config, tools, approval_tools, launch).await;
+    let values = super::team_secret_values(&config);
+    let result = start(config, tools, approval_tools, launch).await
+        .map_err(|error| super::redact_team_text(&error, &values));
     if let Err(error) = &result {
         eprintln!("Could not prepare a warm Claude agent: {error}");
     }
@@ -166,7 +173,9 @@ async fn start(mut config: RunConfig, tools: Vec<Value>, approval_tools: HashSet
     })
     .await?;
     let mut command = command(&path)?;
-    crate::provider_settings::apply_environment(&config.provider, &mut command);
+    crate::provider_settings::apply_provider_environment(&config.provider, config.team_use_global_environment, &mut command);
+    // The team's own variables, after the provider's saved ones so they win.
+    crate::provider_settings::apply_team_environment(&config.team_environment, &mut command);
     configure_command_with_skills(&mut command, &config, &disabled);
     if let Some(connection) = &connection {
         connection.apply(&mut command);
@@ -316,6 +325,23 @@ mod tests {
         assert_eq!(on, key_with_disabled(&config, &[], "", &none, &colab("colab-mcp")));
         assert_ne!(on, key_with_disabled(&config, &[], "", &none, &colab("other")));
         assert_eq!(miss(true, &off, &on, Duration::from_secs(1)).as_deref(), Some("changed: stdioMcp"));
+    }
+
+    #[test]
+    fn warm_key_distinguishes_team_environments() {
+        let base = crate::providers::tests::config("claude");
+        let tools = vec![json!({"type":"function","name":"pandacode_title"})];
+        let original = key(&base, &tools);
+        assert_eq!(original, key(&base.clone(), &tools));
+        let with_team = |vars: &[(&str, &str)]| RunConfig {
+            team_environment: vars.iter().map(|(name, value)| ((*name).to_string(), (*value).to_string())).collect(),
+            ..base.clone()
+        };
+        // A warm process spawned with one team's environment is never adopted by a
+        // run with another team's environment; equal environments keep matching keys.
+        assert_ne!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), original);
+        assert_ne!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), key(&with_team(&[("TEAM_MODE", "ship")]), &tools));
+        assert_eq!(key(&with_team(&[("TEAM_MODE", "review")]), &tools), key(&with_team(&[("TEAM_MODE", "review")]), &tools));
     }
 
     #[test]

@@ -4230,6 +4230,8 @@ mod tests {
                 summary_limit: 2000,
                 lead_guidance: None,
                 council: None,
+                environment: Default::default(),
+                use_global_environment: true,
             },
             status: "running".into(),
             round: 3,

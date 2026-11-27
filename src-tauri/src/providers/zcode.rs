@@ -455,7 +455,7 @@ async fn discover_attempt(
     path: &Path,
     deadline: tokio::time::Instant,
 ) -> Result<Vec<ModelInfo>, DiscoveryReport> {
-    let mut command = super::provider_command("zcode", path).map_err(|message| DiscoveryReport {
+    let mut command = super::provider_command("zcode", path, true).map_err(|message| DiscoveryReport {
         failure: DiscoveryFailure::Spawn(message),
         exit_status: None,
         stderr: String::new(),

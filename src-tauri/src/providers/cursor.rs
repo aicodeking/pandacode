@@ -168,7 +168,7 @@ fn scratch() -> PathBuf {
 /// session: nothing lands in Cursor's chat history and the CLI's saved model
 /// stays as it was. No prompt is sent.
 async fn list(path: &Path) -> Result<Value, String> {
-    let mut command = super::provider_command("cursor", path)?;
+    let mut command = super::provider_command("cursor", path, true)?;
     configure(&mut command);
     let cwd = scratch();
     let mut pipe = Pipe::spawn(command, &cwd, STARTUP)

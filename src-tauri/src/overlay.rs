@@ -1923,6 +1923,8 @@ mod tests {
                 summary_limit: 1500,
                 lead_guidance: None,
                 council: None,
+                environment: Default::default(),
+                use_global_environment: true,
             }),
             Some(ModelSelection {
                 provider: "claude".into(),
