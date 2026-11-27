@@ -164,7 +164,7 @@ fn reasoning_and_context_reset_only_for_changed_model_or_provider() {
             None,
             Some("sonnet".into()),
             Some("plan".into()),
-        )
+         None,)
         .unwrap();
     let renamed = store.session(&session.id).unwrap();
     assert_eq!(renamed.reasoning_effort.as_deref(), Some("high"));
@@ -179,7 +179,7 @@ fn reasoning_and_context_reset_only_for_changed_model_or_provider() {
         .unwrap();
     store.record_context_usage(&session.id, &usage).unwrap();
     store
-        .update(&session.id, None, None, Some("sonnet".into()), None)
+        .update(&session.id, None, None, Some("sonnet".into()), None, None)
         .unwrap();
     let updated_model = store.session(&session.id).unwrap();
     assert!(updated_model.reasoning_effort.is_none());
@@ -493,7 +493,7 @@ fn user_prompt_activity_is_saved_before_any_agent_response() {
     store.finish_task_turn(&session.id, true, false).unwrap();
     store.begin_task_turn_with_kind(&session.id, "Internal worker check", Some(crate::architect::internal_turns::CoordinationKind::WorkerUpdate)).unwrap();
     store.message(&session.id, "tool", "Tool output").unwrap();
-    store.update(&session.id, Some("Renamed".into()), None, None, None).unwrap();
+    store.update(&session.id, Some("Renamed".into()), None, None, None, None).unwrap();
     let saved = serde_json::to_value(store.sessions().unwrap().remove(0)).unwrap();
     assert_eq!(saved["lastPromptAt"], prompt_at);
 }
@@ -552,7 +552,7 @@ fn last_response_does_not_move_on_metadata_edits() {
             Some(true),
             Some("opus".into()),
             Some("ask".into()),
-        )
+         None,)
         .unwrap();
     store
         .configure(&session.id, "claude", "haiku", None)

@@ -1443,23 +1443,84 @@ async fn set_reasoning_effort(
         .map_err(|e| e.to_string())?
         .set_reasoning_effort(&session_id, reasoning_effort.as_deref())
 }
+#[derive(Debug, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionUpdate {
+    title: Option<String>,
+    archived: Option<bool>,
+    model: Option<String>,
+    mode: Option<String>,
+    auto_writes: Option<bool>,
+}
+
+#[cfg(test)]
+mod session_update_tests {
+    use super::SessionUpdate;
+
+    #[test]
+    fn auto_writes_update_accepts_the_existing_flat_command_payload() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "title": "Title", "archived": false,
+            "model": "model", "mode": "review", "autoWrites": true,
+        })).unwrap();
+        assert_eq!(update, SessionUpdate {
+            title: Some("Title".into()), archived: Some(false),
+            model: Some("model".into()), mode: Some("review".into()),
+            auto_writes: Some(true),
+        });
+    }
+
+    #[test]
+    fn auto_writes_update_preserves_false_and_absent_fields() {
+        let update: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "autoWrites": false,
+        })).unwrap();
+        assert_eq!(update, SessionUpdate {
+            auto_writes: Some(false), ..SessionUpdate::default()
+        });
+        let empty: SessionUpdate = serde_json::from_value(serde_json::json!({
+            "sessionId": "task-1", "autoWrites": null,
+        })).unwrap();
+        assert_eq!(empty, SessionUpdate::default());
+        assert!(serde_json::from_value::<SessionUpdate>(serde_json::json!({
+            "autoWrites": "false",
+        })).is_err());
+    }
+}
+
 #[tauri::command]
 async fn update_session(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
-    title: Option<String>,
-    archived: Option<bool>,
-    model: Option<String>,
-    mode: Option<String>,
+    request: tauri::ipc::Request<'_>,
 ) -> Result<()> {
+    // Read the options from the whole payload to keep the existing flat IPC
+    // contract (including autoWrites), rather than requiring a nested object.
+    let tauri::ipc::InvokeBody::Json(body) = request.body() else {
+        return Err("Expected JSON session update options.".into());
+    };
+    let update = serde_json::from_value(body.clone()).map_err(|e| e.to_string())?;
+    update_session_options(app, state, session_id, update).await
+}
+
+async fn update_session_options(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    update: SessionUpdate,
+) -> Result<()> {
+    let SessionUpdate { title, archived, model, mode, auto_writes } = update;
     // A mirror's permissions are its host's; the local row follows below.
     if let Some(mode) = &mode {
         remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"mode": mode})).await?;
     }
+    if let Some(auto_writes) = auto_writes {
+        remote::route(&app, &state, &session_id, "task.configure", serde_json::json!({"autoWrites": auto_writes})).await?;
+    }
     if let Some(title) = title
         .as_deref()
-        .filter(|_| model.is_none() && mode.is_none() && archived.is_none())
+        .filter(|_| model.is_none() && mode.is_none() && archived.is_none() && auto_writes.is_none())
     {
         let task = state
             .store
@@ -1471,15 +1532,19 @@ async fn update_session(
         }
     }
     let agents = lock_agents(&state.agents).map_err(|e| e.to_string())?;
-    if (model.is_some() || mode.is_some()) && agents.contains_key(&session_id) {
+    if (model.is_some() || mode.is_some() || auto_writes.is_some()) && agents.contains_key(&session_id) {
         return Err("Stop the agent before changing its model or permissions.".into());
     }
+    let discard_warm = model.is_some() || mode.is_some() || auto_writes.is_some();
     let restored = archived == Some(false);
     state
         .store
         .lock()
         .map_err(|e| e.to_string())?
-        .update(&session_id, title, archived, model, mode)?;
+        .update(&session_id, title, archived, model, mode, auto_writes)?;
+    if discard_warm {
+        providers::discard_warm_agent(&session_id);
+    }
     drop(agents);
     if restored {
         remote::orchestrate::retry(&app, &session_id);
@@ -2294,6 +2359,7 @@ fn prepare_task_run_in_project(
         skill,
         goal: admission.goal,
         codex_settings: session.codex_settings,
+        auto_writes: session.auto_writes,
         no_fresh_resume_fallback: false,
     };
     // Read before `mark_started`, and restored like it, so a failure leaves no started mark.
@@ -2349,6 +2415,7 @@ fn prepare_cloud_attach(
         model: session.model,
         reasoning_effort: session.reasoning_effort,
         mode: session.mode,
+        auto_writes: session.auto_writes,
         cwd,
         resume_id: session.resume_id,
         prompt: String::new(),

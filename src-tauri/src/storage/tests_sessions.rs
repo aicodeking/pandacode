@@ -276,7 +276,7 @@ fn usage_limits_record_resets_schedule_resumes_and_clear_on_new_work() {
 #[test]
 fn task_search_matches_titles_and_messages_within_the_project() {
     let (store, task) = empty_session();
-    store.update(&task.id, Some("Fix the login redirect".into()), None, None, None).unwrap();
+    store.update(&task.id, Some("Fix the login redirect".into()), None, None, None, None).unwrap();
     let other = store.create_session(&task.project_id, "codex", "gpt-5", "full").unwrap();
     store.message(&other.id, "user", "Please make the billing page load 100% faster").unwrap();
     store.message(&other.id, "assistant", "I will profile the billing page first.").unwrap();
@@ -411,7 +411,7 @@ fn configure_empty_task_can_switch_provider_and_preserves_permissions() {
             Some(true),
             None,
             None,
-        )
+         None,)
         .unwrap();
     store
         .db
@@ -451,7 +451,7 @@ fn configure_empty_task_project_switch_preserves_identity_and_survives_reopen() 
             .create_session(&source.id, "claude", "sonnet", "auto")
             .unwrap();
         store
-            .update(&task.id, Some("Draft task".into()), None, None, None)
+            .update(&task.id, Some("Draft task".into()), None, None, None, None)
             .unwrap();
         store
             .db
@@ -691,7 +691,7 @@ fn narrow_session_lookups_keep_the_missing_task_error() {
 fn task_search_keeps_title_matches_order_excerpts_and_limit() {
     let (store, first) = empty_session();
     let project = first.project_id.clone();
-    store.update(&first.id, Some("Deploy notes".into()), None, None, None).unwrap();
+    store.update(&first.id, Some("Deploy notes".into()), None, None, None, None).unwrap();
     let second = store.create_session(&project, "claude", "sonnet", "auto").unwrap();
     store.message(&second.id, "user", "an old deploy question").unwrap();
     store.message(&second.id, "assistant", "the newest deploy answer").unwrap();
@@ -700,7 +700,7 @@ fn task_search_keeps_title_matches_order_excerpts_and_limit() {
     store.message(&third.id, "tool", "deploy").unwrap();
     let draft = store.create_session(&project, "claude", "sonnet", "auto").unwrap();
     store.mark_draft(&draft.id).unwrap();
-    store.update(&draft.id, Some("deploy draft".into()), None, None, None).unwrap();
+    store.update(&draft.id, Some("deploy draft".into()), None, None, None, None).unwrap();
     for (at, sid) in [(1, &first.id), (2, &second.id), (3, &third.id), (4, &draft.id)] {
         store.db.execute("UPDATE sessions SET updated_at=?2 WHERE id=?1", params![sid, at]).unwrap();
     }
@@ -767,14 +767,14 @@ fn approval_behavior_cannot_change_during_a_running_turn() {
                 None,
                 None,
                 Some("full".into())
-            )
+            , None)
             .unwrap_err()
             .contains("Stop the agent"));
         let unchanged = store.session(&session.id).unwrap();
         assert_eq!(unchanged.mode, "ask");
         assert_eq!(unchanged.title, "New conversation");
         store
-            .update(&session.id, Some("Renamed task".into()), None, None, None)
+            .update(&session.id, Some("Renamed task".into()), None, None, None, None)
             .unwrap();
         store
             .update(
@@ -783,16 +783,17 @@ fn approval_behavior_cannot_change_during_a_running_turn() {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
     }
     store.status(&session.id, "idle").unwrap();
     store
-        .update(&session.id, None, None, None, Some("plan".into()))
+        .update(&session.id, None, None, None, Some("plan".into()), None)
         .unwrap();
     assert_eq!(store.session(&session.id).unwrap().mode, "plan");
     assert!(store
-        .update(&session.id, None, None, None, Some("invalid".into()))
+        .update(&session.id, None, None, None, Some("invalid".into()), None)
         .is_err());
     assert_eq!(store.session(&session.id).unwrap().mode, "plan");
 }

@@ -81,7 +81,7 @@ fn successful_runs_go_to_review_but_errors_and_stops_stay_in_progress() {
     store.begin_task_turn(&task.id, "More feedback").unwrap();
     store.finish_task_turn(&task.id, true, false).unwrap();
     store
-        .update(&task.id, None, Some(true), None, None)
+        .update(&task.id, None, Some(true), None, None, None)
         .unwrap();
     assert!(store
         .begin_task_turn(&task.id, "Cannot run archived")
@@ -324,7 +324,7 @@ fn reasoning_and_model_changes_are_blocked_while_active_but_context_can_update()
                 None,
                 Some("opus".into()),
                 None
-            )
+            , None)
             .is_err());
         let before = store.session(&session.id).unwrap();
         assert_eq!(before.reasoning_effort.as_deref(), Some("high"));

@@ -218,6 +218,7 @@ fn soft_instructions_are_idempotent_on_resumes_and_claude_uses_only_tools() {
             codex_settings: None,
             images: Vec::new(),
             no_fresh_resume_fallback: false,
+            auto_writes: false,
         };
         config.resume_id = Some("existing".into());
         config.prompt = "User prompt".into();

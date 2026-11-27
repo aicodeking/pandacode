@@ -231,6 +231,7 @@ impl Store {
             provider: r.get(3)?,
             model: r.get(4)?,
             mode: r.get(5)?,
+            auto_writes: r.get(31)?,
             status: r.get(6)?,
             created_at: r.get(7)?,
             updated_at: r.get(8)?,
@@ -749,6 +750,7 @@ impl Store {
         archived: Option<bool>,
         model: Option<String>,
         mode: Option<String>,
+        auto_writes: Option<bool>,
     ) -> Result<()> {
         crate::architect::check_manual(self, sid)?;
         let status: String = self.session_columns("SELECT status FROM sessions WHERE id=?1", sid, |r| r.get(0))?;
@@ -764,17 +766,18 @@ impl Store {
         if mode.as_ref().is_some_and(|s| !valid_permission_mode(s)) {
             return Err("Unknown permission mode.".into());
         }
-        if (model.is_some() || mode.is_some())
+        if (model.is_some() || mode.is_some() || auto_writes.is_some())
             && matches!(status.as_str(), "running" | "waiting")
         {
             return Err("Stop the agent before changing its model or approval behavior.".into());
         }
         let changed = self.db.execute("UPDATE sessions SET title=COALESCE(?2,title),title_origin=CASE WHEN ?2 IS NOT NULL THEN 'manual' ELSE title_origin END,archived=COALESCE(?3,archived),model=COALESCE(?4,model),mode=COALESCE(?5,mode),
+            auto_writes=COALESCE(?7,auto_writes),
             completed_at=CASE WHEN archived=1 AND ?3=0 AND task_stage='completed' THEN ?6 ELSE completed_at END,
             reasoning_effort=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE reasoning_effort END,
             context_used_tokens=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE context_used_tokens END,
             context_window=CASE WHEN model<>COALESCE(?4,model) THEN NULL ELSE context_window END,
-            updated_at=?6 WHERE id=?1 AND ((?4 IS NULL AND ?5 IS NULL) OR status NOT IN ('running','waiting'))",params![sid,title,archived,model,mode,now()]).map_err(|e|e.to_string())?;
+            updated_at=?6 WHERE id=?1 AND ((?4 IS NULL AND ?5 IS NULL AND ?7 IS NULL) OR status NOT IN ('running','waiting'))",params![sid,title,archived,model,mode,now(),auto_writes]).map_err(|e|e.to_string())?;
         if changed == 0 {
             return Err("Stop the agent before changing its model or approval behavior.".into());
         }

@@ -165,6 +165,7 @@ fn skill_manager_ask_only_reminder_skips_slash_command_turns() {
         codex_settings: None,
         images: Vec::new(),
         no_fresh_resume_fallback: false,
+        auto_writes: false,
     };
     for prompt in ["/compact", "  /review src"] {
         let mut slash = config("kimi", prompt);

@@ -701,11 +701,11 @@ fn mutate_task(
     }
     match name {
         "pandacode_rename_task" => {
-            store.update(id, Some(string(args, "title")), None, None, None)?;
+            store.update(id, Some(string(args, "title")), None, None, None, None)?;
             Ok(json!({"renamed":true}))
         }
         "pandacode_archive_task" => {
-            store.update(id, None, args["archived"].as_bool(), None, None)?;
+            store.update(id, None, args["archived"].as_bool(), None, None, None)?;
             Ok(json!({"updated":true}))
         }
         "pandacode_set_task_stage" => {
@@ -1245,7 +1245,7 @@ for await (const line of createInterface({input: process.stdin})) {
                 });
                 let config = RunConfig { session_id: uuid::Uuid::new_v4().to_string(), provider: provider.into(), mode: mode.into(),
                     model: "default".into(), reasoning_effort: None, cwd: root.clone(), resume_id: None, prompt: "Check tools".into(),
-                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![], no_fresh_resume_fallback: false };
+                    instructions: String::new(), skill: None, goal: None, codex_settings: None, images: vec![], no_fresh_resume_fallback: false, auto_writes: false };
                 tokio::time::timeout(Duration::from_secs(20), crate::providers::run_with_tools(config, sink, receive, Some(host), Default::default()))
                     .await.expect(&context).unwrap_or_else(|error| panic!("{context}: {error}"));
                 let report: Value = serde_json::from_slice(&std::fs::read(root.join("report.json")).unwrap()).unwrap();
