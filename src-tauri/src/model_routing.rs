@@ -29,6 +29,9 @@ const DOWNLOAD_WAIT: Duration = Duration::from_secs(20);
 const RETRY_AFTER: Duration = Duration::from_secs(600);
 const STALE_PART: Duration = Duration::from_secs(24 * 60 * 60);
 const LANGUAGES_TTL: Duration = Duration::from_secs(600);
+/// A harness's login is re-read at most this often: a sign-in shows up in routing within a minute.
+#[cfg(not(test))]
+const LOGIN_TTL: Duration = Duration::from_secs(60);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(600);
 const MAX_ASSET_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -326,8 +329,57 @@ pub fn allowed(provider: &str, model: &str) -> bool {
     RUNTIME.get().is_none_or(|rt| rt.exclusions.lock().unwrap_or_else(|e| e.into_inner()).allowed(provider, model))
 }
 
+#[cfg(test)]
+thread_local!(static TEST_LOGIN: std::cell::RefCell<Option<HashMap<String, Option<bool>>>> = const { std::cell::RefCell::new(None) });
+
+#[cfg(test)]
+pub(crate) fn with_login<T>(states: HashMap<String, Option<bool>>, f: impl FnOnce() -> T) -> T {
+    struct Reset(Option<HashMap<String, Option<bool>>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            TEST_LOGIN.with(|slot| *slot.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(TEST_LOGIN.with(|slot| slot.replace(Some(states))));
+    f()
+}
+
+/// Whether a harness's own setup has a saved login. `None` means the probe cannot tell, and the
+/// harness is kept then (fail open): a false negative silently removes a working harness, which is
+/// worse than offering one whose runs may fail. Tests read only `with_login`, so an uninjected
+/// harness is "cannot tell" and stays.
+fn login_state(provider: &str) -> Option<bool> {
+    #[cfg(test)]
+    {
+        TEST_LOGIN.with(|slot| slot.borrow().as_ref().and_then(|states| states.get(provider).copied().flatten()))
+    }
+    #[cfg(not(test))]
+    {
+        // Once per provider, not once per model: the probe reads login files on disk.
+        type Cache = HashMap<String, (Instant, Option<bool>)>;
+        static CACHE: LazyLock<Mutex<Cache>> = LazyLock::new(Default::default);
+        if let Some((at, state)) = CACHE.lock().ok().and_then(|cache| cache.get(provider).copied()) {
+            if at.elapsed() < LOGIN_TTL {
+                return state;
+            }
+        }
+        let state = crate::account_pool::default_signed_in(provider);
+        if let Ok(mut cache) = CACHE.lock() {
+            cache.insert(provider.to_owned(), (Instant::now(), state));
+        }
+        state
+    }
+}
+
 fn available(pool: Vec<PoolModel>) -> Vec<PoolModel> {
-    crate::model_health::healthy(pool.into_iter().filter(|m| allowed(&m.provider, &m.model)).collect())
+    // Each provider's login is resolved once per pool, never once per model.
+    let mut logins: HashMap<String, Option<bool>> = HashMap::new();
+    let pool = pool
+        .into_iter()
+        .filter(|m| allowed(&m.provider, &m.model))
+        .filter(|m| *logins.entry(m.provider.clone()).or_insert_with(|| login_state(&m.provider)) != Some(false))
+        .collect();
+    crate::model_health::healthy(pool)
 }
 
 #[tauri::command]
@@ -980,6 +1032,54 @@ mod tests {
         std::fs::write(&path, "invalid").unwrap();
         assert_eq!(read_exclusions(&path), Exclusions::default());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_harness_installed_but_not_signed_in_is_not_offered() {
+        let pool = || pool_from([("claude", "sonnet", "Sonnet"), ("codex", "gpt-5.6-luna", "Luna")]);
+        with_login(HashMap::from([("claude".to_string(), Some(false))]), || {
+            let offered: Vec<_> = available(pool()).into_iter().map(|m| m.provider).collect();
+            assert_eq!(offered, ["codex"]);
+            assert!(!available(pool()).iter().any(|m| m.provider == "claude"));
+        });
+    }
+
+    #[test]
+    fn a_login_probe_that_cannot_tell_keeps_the_harness() {
+        let pool = || pool_from([("claude", "sonnet", "Sonnet"), ("codex", "gpt-5.6-luna", "Luna")]);
+        // A probe that errors or is inconclusive (`None`) must not drop the provider.
+        with_login(HashMap::from([("claude".to_string(), Some(false)), ("codex".to_string(), None)]), || {
+            let offered: Vec<_> = available(pool()).into_iter().map(|m| m.provider).collect();
+            assert_eq!(offered, ["codex"]);
+        });
+        // With no injectable answer the probe is inconclusive too, so everything stays.
+        let offered: Vec<_> = available(pool()).into_iter().map(|m| m.provider).collect();
+        assert_eq!(offered, ["claude", "codex"]);
+    }
+
+    #[test]
+    fn user_exclusions_stay_authoritative_over_a_signed_in_login() {
+        let exclusions = Exclusions { providers: vec!["commandcode".into()], models: vec![] }.validated().unwrap();
+        with_exclusions(exclusions, || {
+            with_login(
+                HashMap::from([
+                    ("commandcode".to_string(), Some(true)),
+                    ("claude".to_string(), Some(true)),
+                    ("codex".to_string(), Some(false)),
+                ]),
+                || {
+                    let offered: Vec<_> = available(pool_from([
+                        ("commandcode", "opus", "Opus"),
+                        ("claude", "sonnet", "Sonnet"),
+                        ("codex", "gpt-5.6-luna", "Luna"),
+                    ]))
+                    .into_iter()
+                    .map(|m| m.provider)
+                    .collect();
+                    assert_eq!(offered, ["claude"]);
+                },
+            );
+        });
     }
 
     #[test]

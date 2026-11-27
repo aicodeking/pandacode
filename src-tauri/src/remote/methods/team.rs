@@ -13,7 +13,7 @@ use crate::architect::{self, profiles, TeamConfig, WorkerProfile};
 use crate::remote::start::{self, Cancel, Start};
 use crate::{AppState, Result};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
 
@@ -144,13 +144,36 @@ pub(crate) fn auto_config(harnesses: &[Harness], last: Option<&TeamConfig>) -> T
     }
 }
 
+/// Whether an installed harness stays in an automatic team's catalog. `signed_in: None` is an
+/// inconclusive login check and keeps it, so a harness this app cannot read a login for is never
+/// dropped.
+pub(crate) fn keeps_harness(installed: bool, signed_in: Option<bool>) -> bool {
+    installed && signed_in != Some(false)
+}
+
 /// Installed harnesses that can work in a team, each with its models: the harness's discovered
-/// list, or its built-in one when discovery fails.
+/// list, or its built-in one when discovery fails. A harness that is installed but certainly not
+/// signed in is left out, so an automatic team never staffs a worker that can only fail.
 async fn installed_harnesses(discover: bool) -> Vec<Harness> {
     // Ids, names and models only: no version, so no `--version` probe is waited on or started.
     let providers = crate::installed_providers().await;
+    let ids: Vec<String> = providers
+        .iter()
+        .filter(|p| p.installed && architect::HARNESSES.contains(&p.id.as_str()))
+        .map(|p| p.id.clone())
+        .collect();
+    // One blocking read of every candidate's login; a probe that cannot tell answers `None` and
+    // keeps that harness (an API-key harness may have no login file).
+    let logins: HashMap<String, Option<bool>> = tauri::async_runtime::spawn_blocking(move || {
+        ids.into_iter().map(|id| { let state = crate::account_pool::default_signed_in(&id); (id, state) }).collect()
+    })
+    .await
+    .unwrap_or_default();
     let mut harnesses = Vec::new();
-    for provider in providers.into_iter().filter(|p| p.installed && architect::HARNESSES.contains(&p.id.as_str())) {
+    for provider in providers
+        .into_iter()
+        .filter(|p| architect::HARNESSES.contains(&p.id.as_str()) && keeps_harness(p.installed, logins.get(&p.id).copied().flatten()))
+    {
         let models = if discover {
             match crate::local_provider_models(&provider.id, false).await {
                 Ok(models) if !models.is_empty() => models,
@@ -500,6 +523,16 @@ mod tests {
         let config = auto_config(&harnesses, None);
         assert!(config.auto && config.workspace == "shared" && config.max_parallel == 0);
         assert_eq!(config.workers, roster);
+    }
+
+    #[test]
+    fn only_an_installed_harness_certainly_signed_out_is_left_out() {
+        assert!(keeps_harness(true, Some(true)), "a signed-in harness stays");
+        assert!(keeps_harness(true, None), "an inconclusive probe keeps the harness");
+        assert!(!keeps_harness(true, Some(false)), "installed but signed out is left out");
+        assert!(!keeps_harness(false, Some(true)), "a missing executable is left out");
+        assert!(!keeps_harness(false, None));
+        assert!(!keeps_harness(false, Some(false)));
     }
 
     #[test]

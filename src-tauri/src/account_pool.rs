@@ -350,6 +350,31 @@ fn signed_in_files(provider: &str, env: &[(String, String)]) -> Option<bool> {
     Some(dir.join(".credentials.json").is_file() || crate::account_identity::claude_json(env).is_some_and(|file| crate::account_identity::claude_signed_in(&file)))
 }
 
+/// Whether the harness's own setup (the one routing launches when a task has no connection) has a
+/// saved login. `None` when that cannot be told: only Claude Code and Codex keep a login this code
+/// can read, Claude Code may keep credentials in protected storage (e.g. the macOS Keychain) that
+/// this code does not read, and an unreadable home folder is no answer. Callers keep the harness
+/// then, so a probe that cannot tell never drops a working one.
+pub(crate) fn default_signed_in(provider: &str) -> Option<bool> {
+    if !POOLED.contains(&provider) {
+        return None;
+    }
+    let env = crate::account_config::environment(provider, &[]);
+    default_signed_in_env(provider, &env)
+}
+
+fn default_signed_in_env(provider: &str, env: &[(String, String)]) -> Option<bool> {
+    if !POOLED.contains(&provider) {
+        return None;
+    }
+    match default_login(provider, env) {
+        // Claude Code on macOS may keep its OAuth login in the Keychain without local files, so
+        // missing files cannot prove the user is signed out.
+        Some(false) if provider == "claude" => None,
+        other => other,
+    }
+}
+
 fn signed_in_connection(provider: &str, connection: &Connection) -> bool {
     if owns_credentials(provider, connection) {
         return true;
@@ -658,9 +683,11 @@ mod tests {
         std::fs::write(&auth, codex_auth(unix_now() - 3600)).unwrap();
         assert!(!signed_in_member("codex", DEFAULT, None, Some(&env)), "the harness's own expired login is skipped like any other");
         assert_eq!(default_login("codex", &env), Some(false));
+        assert_eq!(default_signed_in_env("codex", &env), Some(false));
         std::fs::write(&auth, codex_auth(unix_now() + 3600)).unwrap();
         assert!(signed_in_member("codex", DEFAULT, None, Some(&env)));
         assert_eq!(default_login("codex", &env), Some(true));
+        assert_eq!(default_signed_in_env("codex", &env), Some(true));
         // A key in the harness's environment still authenticates it without a live token.
         std::fs::write(&auth, "{}").unwrap();
         let mut keyed = env.to_vec();
@@ -677,6 +704,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".claude")).unwrap();
         let env = [("HOME".to_string(), root.to_string_lossy().into_owned()), ("USERPROFILE".into(), root.to_string_lossy().into_owned()), ("CLAUDE_CONFIG_DIR".into(), String::new())];
         assert!(signed_in_member("claude", DEFAULT, None, Some(&env)));
+        assert_eq!(default_signed_in_env("claude", &env), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 
