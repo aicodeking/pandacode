@@ -166,7 +166,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
 ${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', options.compact)}${switchRow('expand-tool-activity', 'Expand tool activity', '', options.activityExpanded)}</div>
       <h3 class="settings-heading">Quick launcher</h3><div id="launcher-settings"></div><h3 class="settings-heading">Running agents widget</h3><div id="agents-dock-settings"></div><h3 class="settings-heading">Crash recovery</h3>${crashRestartSettingsHtml()}${options.projects ? '<h3 class="settings-heading">Projects</h3><div id="projects-settings" class="settings-group"></div>' : ''}`;
     case 'appearance': return `<div class="settings-group">
-        ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? t('light') : t('dark')}</button>`, 'Imported VS Code themes keep their own.')}
+        ${settingRow(t('Theme'), `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}${t`Use ${options.theme === 'dark' ? t('light') : t('dark')}`}</button>`, t('Imported VS Code themes keep their own.'))}
         ${switchRow('daily-wallpapers', t('Wallpapers'), t('Off, the thread shows a live sky that follows the time of day.'), options.wallpapers)}
         ${switchRow('still-sky', 'Still sky', 'Keep the live sky as a still frame without animating clouds or pointer motion.', stillSkyEnabled())}
         ${settingRow('Reading width', readingWidthControl(), 'Comfortable keeps thread lines near 100 characters. Wide fits more code and tables, at longer lines.')}
@@ -183,13 +183,13 @@ ${uiSizeControls()}${switchRow('compact-mode', 'Compact conversation', '', optio
       <div class="settings-provider-status" role="status" hidden></div>
       <div class="provider-diagnostics settings-group"></div>
       ${options.preview ? `<p class="settings-preview-note">${t('Browser preview · sample agent availability.')}</p>` : ''}
-      ${fold('Advanced', `<h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`)}`;
+      ${fold(t('Advanced'), `<h3 class="settings-heading">${t('Privacy')}</h3><div class="settings-embed" data-embed="harnessPrivacy"></div><h3 class="settings-heading">${t('OpenCode models')}</h3><div class="settings-embed" data-embed="openCodeModels"></div>`)}`;
     case 'providers': return '<div class="settings-embed" data-embed="providerConnections"></div>';
     case 'teams': return '<div id="agent-teams-settings"></div>';
     case 'routing': return '<div id="model-routing-settings"></div>';
     case 'tools': return `<div class="settings-group">
         <div class="setting-row"><div><strong>${t('Tools & integrations')}</strong></div><button type="button" class="secondary-button" data-action="agent-integrations">${t('Manage')}</button></div>
-        ${settingRow('Jev', `<button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button>`, 'Optional add-on for browser tests and decision assistance. Your agents work without it.')}
+        ${settingRow(t('Jev'), `<button type="button" class="secondary-button" data-action="jev-settings">${t('Set up Jev')}</button>`, t('Optional add-on for browser tests and decision assistance. Your agents work without it.'))}
       </div>
       ${fold(t('Capabilities and cache'), '<div id="capabilities-settings"></div>')}`;
     case 'schedules': return '<div id="schedules-settings"></div>';

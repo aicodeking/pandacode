@@ -44,21 +44,21 @@ function steps(kind: ChannelKind, botName: string): Step[] {
       { title: t('Paste the token BotFather sends back'), body: 'It looks like <code>123456789:AAE…</code>. Anyone with it can control the bot, so keep it private.', field: { name: 'token', label: t('Bot token'), secret: true, placeholder: '123456789:AAE…' } },
     ];
     case 'slack': return [
-      { title: t('Create the Slack app in one click'), body: `This opens Slack with the name, permissions, events and Socket Mode filled in. Pick your workspace, review, then press <b>${t('Create')}</b>. ${link(slackCreateUrl(botName), t('Create Slack app'), true)} <button type="button" class="bots-text-button" data-copy="${escape(JSON.stringify(slackManifest(botName), null, 2))}">${t('Copy manifest instead')}</button>` },
-      { title: t('Install it and copy the bot token'), body: 'In the app’s page, open <b>Install App</b> → <b>Install to Workspace</b> → <b>Allow</b>. Copy the <b>Bot User OAuth Token</b>.', field: { name: 'token', label: t('Bot token'), secret: true, placeholder: 'xoxb-…' } },
+      { title: t('Create the Slack app in one click'), body: `${t('This opens Slack with the name, permissions, events and Socket Mode filled in. Pick your workspace, review, then press ')}<b>${t('Create')}</b>. ${link(slackCreateUrl(botName), t('Create Slack app'), true)} <button type="button" class="bots-text-button" data-copy="${escape(JSON.stringify(slackManifest(botName), null, 2))}">${t('Copy manifest instead')}</button>` },
+      { title: t('Install it and copy the bot token'), body: `In the app’s page, open <b>${t('Install')} App</b> → <b>${t('Install')} to Workspace</b> → <b>Allow</b>. Copy the <b>Bot User OAuth Token</b>.`, field: { name: 'token', label: t('Bot token'), secret: true, placeholder: 'xoxb-…' } },
       { title: t('Create an app-level token'), body: 'Open <b>Basic Information</b> → <b>App-Level Tokens</b> → <b>Generate Token and Scopes</b>. Name it anything, add the scope <code>connections:write</code>, generate, and copy it.', field: { name: 'app_token', label: t('App-level token'), secret: true, placeholder: 'xapp-…' } },
     ];
     case 'discord': return [
       { title: t('Create an application'), body: `Press <b>New Application</b>, name it “${escape(botName)}”, and accept the terms. ${link('https://discord.com/developers/applications', t('Open Developer Portal'), true)}` },
-      { title: t('Let it read messages'), body: 'Open the <b>Bot</b> tab, turn on <b>Message Content Intent</b> under Privileged Gateway Intents, and press <b>Save Changes</b>.' },
+      { title: t('Let it read messages'), body: `Open the <b>Bot</b> tab, turn on <b>Message Content Intent</b> under Privileged Gateway Intents, and press <b>${t('Save')} Changes</b>.` },
       { title: t('Copy the bot token'), body: 'Still on the Bot tab, press <b>Reset Token</b>, confirm, and copy it. (The Client Secret and Public Key are different values.)', field: { name: 'token', label: t('Bot token'), secret: true, placeholder: 'MTA…' } },
       { title: t('Add it to your server'), body: 'After you connect, an <b>Add to server</b> button appears here with the right permissions already chosen.' },
     ];
     case 'whatsapp': return [
-      { title: t('Create a Meta app with WhatsApp'), body: `Choose <b>Other</b> → <b>Business</b>, then add the <b>WhatsApp</b> product. Meta gives you a free test number. ${link('https://developers.facebook.com/apps/creation/', t('Open Meta for Developers'), true)}` },
-      { title: t('Copy the phone number ID'), body: 'In <b>WhatsApp</b> → <b>API Setup</b>, copy the <b>Phone number ID</b> (a long number, not the phone number itself). Add your own phone under <b>To</b> so the test number may message you.', field: { name: 'phoneNumberId', label: t('Phone number ID'), secret: false, placeholder: '123456789012345', config: true } },
-      { title: t('Copy an access token'), body: `The temporary token on API Setup works for 24 hours. For one that lasts, create a system user with WhatsApp permissions and generate its token. ${link('https://business.facebook.com/settings/system-users', t('System users'))}`, field: { name: 'access_token', label: t('Access token'), secret: true, placeholder: 'EAAG…' } },
-      { title: t('Copy the app secret'), body: 'Open <b>App settings</b> → <b>Basic</b> → <b>App secret</b> → <b>Show</b>. PandaCode uses it to check that messages really come from Meta.', field: { name: 'signing_secret', label: t('App secret'), secret: true, placeholder: t('32 characters') } },
+      { title: t('Create a Meta app with WhatsApp'), body: `Choose <b>Other</b> → <b>Business</b>, then add the <b>${t('WhatsApp')}</b> product. ${t('Meta gives you a free test number.')} ${link('https://developers.facebook.com/apps/creation/', t('Open Meta for Developers'), true)}` },
+      { title: t('Copy the phone number ID'), body: `In <b>${t('WhatsApp')}</b> → <b>API Setup</b>, copy the <b>${t('Phone number ID')}</b> (a long number, not the phone number itself). Add your own phone under <b>To</b> so the test number may message you.`, field: { name: 'phoneNumberId', label: t('Phone number ID'), secret: false, placeholder: '123456789012345', config: true } },
+      { title: t('Copy an access token'), body: `${t('The temporary token on API Setup works for 24 hours. For one that lasts, create a system user with WhatsApp permissions and generate its token.')} ${link('https://business.facebook.com/settings/system-users', t('System users'))}`, field: { name: 'access_token', label: t('Access token'), secret: true, placeholder: 'EAAG…' } },
+      { title: t('Copy the app secret'), body: `Open <b>App settings</b> → <b>Basic</b> → <b>${t('App secret')}</b> → <b>Show</b>. ${t('PandaCode uses it to check that messages really come from Meta.')}`, field: { name: 'signing_secret', label: t('App secret'), secret: true, placeholder: t('32 characters') } },
       { title: t('Connect, then point Meta at this computer'), body: t('After you connect, the steps for the webhook (with everything to copy) appear on the channel.') },
     ];
     default: return [];
@@ -102,8 +102,8 @@ export function connectSection(detail: BotDetail): string {
   const list = steps(kind, detail.bot.name).map((step, index) => `<li><span class="bots-step-number" aria-hidden="true">${index + 1}</span><div><b>${escape(step.title)}</b><p>${step.body}</p>${step.field ? `<label class="bots-field"><span>${escape(step.field.label)}</span><input name="${step.field.name}" ${step.field.secret ? 'type="password" spellcheck="false"' : 'inputmode="numeric"'} autocomplete="off" placeholder="${escape(step.field.placeholder)}" value="${escape(values.get(`${kind}:${step.field.name}`) ?? '')}"></label>` : ''}</div></li>`).join('');
   return `${chooser}<form class="bots-connect" data-kind="${kind}"><ol class="bots-steps">${list}</ol>
     ${result()}
-    <small class="bots-hint">${icon('unlock')}Tokens go straight to your system keychain. The agent never sees them.</small>
-    <div class="dialog-footer"><button type="button" class="secondary-button" data-add-kind="">${t('Cancel')}</button><button type="button" class="secondary-button" data-test-channel>${t('Test')}</button><button type="submit" class="primary-button">Connect ${escape(kindLabel(kind))}</button></div></form>`;
+    <small class="bots-hint">${icon('unlock')}${t('Tokens go straight to your system keychain. The agent never sees them.')}</small>
+    <div class="dialog-footer"><button type="button" class="secondary-button" data-add-kind="">${t('Cancel')}</button><button type="button" class="secondary-button" data-test-channel>${t('Test')}</button><button type="submit" class="primary-button">${t`Connect ${escape(kindLabel(kind))}`}</button></div></form>`;
 }
 
 /** What to do next, shown on each connected channel. */
@@ -112,7 +112,7 @@ export function channelGuide(detail: BotDetail, channel: Channel): string {
   const port = detail.serverPort || PORT_DEFAULT;
   const warnings = (identity?.warnings ?? []).map(warning => `<p class="bots-warning">${icon('alert')}${escape(warning)}</p>`).join('');
   const paired = detail.pairings.some(pairing => pairing.channelId === channel.id && pairing.status === 'approved');
-  const pairStep = paired ? '' : '<li>Send it any message. It replies with a four-digit code, which also appears under <b>People</b> below. Press <b>Approve</b> and you’re talking.</li>';
+  const pairStep = paired ? '' : `<li>${t('Send')} it any message. It replies with a four-digit code, which also appears under <b>People</b> below. Press <b>Approve</b> and you’re talking.</li>`;
   const publicUrl = String(channel.config.publicUrl ?? '');
   // What the user is typing into the address field survives a background refresh.
   const typedUrl = values.get(`public:${channel.id}`) ?? publicUrl;
@@ -127,17 +127,17 @@ export function channelGuide(detail: BotDetail, channel: Channel): string {
     case 'whatsapp': {
       const callback = publicUrl ? `${publicUrl}/whatsapp/${channel.id}` : '';
       body = `<ol>
-        <li><b>Give Meta a way in.</b> Meta delivers messages over HTTPS, so this computer needs a public address. The quickest is a free Cloudflare tunnel; run these in Terminal and keep the second one open:${copy('brew install cloudflared', t('Copy'), t('Install'))}${copy(`cloudflared tunnel --url http://127.0.0.1:${port}`, t('Copy'), t('Start'))}It prints an address ending in <code>trycloudflare.com</code>. That address changes each time the tunnel starts; for a fixed one, use Tailscale Funnel instead:${copy(`tailscale funnel --bg ${port}`, t('Copy'), t('Or'))}</li>
+        <li><b>Give Meta a way in.</b> ${t('Meta delivers messages over HTTPS, so this computer needs a public address. The quickest is a free Cloudflare tunnel; run these in Terminal and keep the second one open:')}${copy('brew install cloudflared', t('Copy'), t('Install'))}${copy(`cloudflared tunnel --url http://127.0.0.1:${port}`, t('Copy'), t('Start'))}It prints an address ending in <code>trycloudflare.com</code>. That address changes each time the tunnel starts; for a fixed one, use Tailscale Funnel instead:${copy(`tailscale funnel --bg ${port}`, t('Copy'), t('Or'))}</li>
         <li><label class="bots-field"><span>${t('Paste that https address')}</span><span class="bots-inline-form"><input data-public-url="${escape(channel.id)}" placeholder="https://….trycloudflare.com" value="${escape(typedUrl)}" autocomplete="off" spellcheck="false"><button type="button" class="secondary-button" data-save-public="${escape(channel.id)}">${t('Save')}</button></span></label></li>
-        <li><b>In Meta</b>, open WhatsApp → <b>Configuration</b> → Webhook → <b>Edit</b> and paste:${callback ? `${copy(callback, t('Copy'), t('Callback URL'))}` : ' <i>(the callback URL appears here after you save the address)</i>'}${copy(String(channel.config.verifyToken ?? ''), t('Copy'), t('Verify token'))}Press <b>Verify and save</b>, then under Webhook fields press <b>Manage</b> and subscribe to <b>messages</b>. The status above turns to “Webhook verified”.</li>
+        <li><b>In Meta</b>, open WhatsApp → <b>Configuration</b> → Webhook → <b>Edit</b> and paste:${callback ? `${copy(callback, t('Copy'), t('Callback URL'))}` : ` <i>(${t('the callback URL appears here after you save the address')})</i>`}${copy(String(channel.config.verifyToken ?? ''), t('Copy'), t('Verify token'))}Press <b>Verify and save</b>, then under Webhook fields press <b>Manage</b> and subscribe to <b>messages</b>. The status above turns to “Webhook verified”.</li>
         <li>${identity?.link ? link(identity.link, t('Message your WhatsApp number')) : t('Message your WhatsApp business number from your phone.')}</li>${pairStep}</ol>`; break;
     }
     case 'web':
-      body = `<ol><li><button type="button" class="primary-button bots-step-button" data-web-open="${escape(channel.id)}">${t('Open web chat')}</button> On this computer, that’s it.</li>
+      body = `<ol><li><button type="button" class="primary-button bots-step-button" data-web-open="${escape(channel.id)}">${t('Open web chat')}</button> ${t('On this computer, that’s it.')}</li>
         <li><label class="bots-switch-row"><input type="checkbox" class="bots-switch" data-remote="${escape(channel.id)}" ${channel.config.remote ? 'checked' : ''}><span><b>${t('Use from my phone and other devices')}</b><small>${t('Allows the page through a private tunnel. The link still works only with its token.')}</small></span></label></li>
-        ${channel.config.remote ? `<li>Install Tailscale on this computer and your phone and sign in to both. Then run this in Terminal:${copy(`tailscale serve --bg ${port}`, t('Copy'), t('Run'))}It shows an address like <code>https://your-mac.tailnet.ts.net</code>.</li>
+        ${channel.config.remote ? `<li>${t('Install Tailscale on this computer and your phone and sign in to both. Then run this in Terminal:')}${copy(`tailscale serve --bg ${port}`, t('Copy'), t('Run'))}It shows an address like <code>https://your-mac.tailnet.ts.net</code>.</li>
         <li><label class="bots-field"><span>${t('Paste that https address')}</span><span class="bots-inline-form"><input data-public-url="${escape(channel.id)}" placeholder="https://your-mac.tailnet.ts.net" value="${escape(typedUrl)}" autocomplete="off" spellcheck="false"><button type="button" class="secondary-button" data-save-public="${escape(channel.id)}">${t('Save')}</button></span></label></li>
-        ${publicUrl ? `<li><button type="button" class="primary-button bots-step-button" data-phone-link="${escape(channel.id)}">${t('Copy link for my phone')}</button> Open it on your phone; add it to your home screen to use it like an app.</li>` : ''}` : ''}</ol>`; break;
+        ${publicUrl ? `<li><button type="button" class="primary-button bots-step-button" data-phone-link="${escape(channel.id)}">${t('Copy link for my phone')}</button> ${t('Open it on your phone; add it to your home screen to use it like an app.')}</li>` : ''}` : ''}</ol>`; break;
   }
   const fallback = channel.kind === 'web' ? Boolean(channel.config.remote) : !paired;
   const open = guides.get(channel.id) ?? fallback;

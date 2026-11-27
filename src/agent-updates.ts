@@ -83,7 +83,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       popup.className = 'agent-updates-popup floating-menu';
       popup.dataset.browserOverlay = 'true'; popup.dataset.placement = 'above';
       popup.setAttribute('role', 'region'); popup.setAttribute('aria-label', t('Agent updates'));
-      popup.innerHTML = `<header><strong>${t('Agent updates')}</strong><button type="button" class="agent-update-later">${t('Later')}</button></header><ul class="agent-updates-list"></ul><button type="button" class="agent-updates-details">View all agents ${icon('forward')}</button>`;
+      popup.innerHTML = `<header><strong>${t('Agent updates')}</strong><button type="button" class="agent-update-later">${t('Later')}</button></header><ul class="agent-updates-list"></ul><button type="button" class="agent-updates-details">${t('View all agents')} ${icon('forward')}</button>`;
       popupFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
       popup.addEventListener('click', onClick);
       popup.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); later(); } });
@@ -106,7 +106,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       let row = rows.get(entry.provider);
       if (!row) {
         row = document.createElement('li'); row.className = 'agent-update-row'; row.dataset.provider = entry.provider;
-        row.innerHTML = `<div class="agent-update-main">${providerLogo(entry.provider)}<div class="agent-update-copy"><strong></strong><span class="agent-update-version"></span><span class="agent-update-details"></span></div><span class="agent-update-state"></span><button type="button" class="secondary-button agent-update-button"></button><button type="button" class="agent-update-guide" data-action="open-url">Guide ${icon('forward')}</button></div><p class="agent-update-message" hidden></p>`;
+        row.innerHTML = `<div class="agent-update-main">${providerLogo(entry.provider)}<div class="agent-update-copy"><strong></strong><span class="agent-update-version"></span><span class="agent-update-details"></span></div><span class="agent-update-state"></span><button type="button" class="secondary-button agent-update-button"></button><button type="button" class="agent-update-guide" data-action="open-url">${t('Guide')} ${icon('forward')}</button></div><p class="agent-update-message" hidden></p>`;
       }
       const progress = pending.get(entry.provider), failure = failures.get(entry.provider);
       row.querySelector('strong')!.textContent = entry.name;
@@ -120,7 +120,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
       const button = row.querySelector<HTMLButtonElement>('.agent-update-button')!;
       const canUpdate = entry.status === 'available' && entry.canUpdate;
       button.hidden = !canUpdate && !progress; button.disabled = Boolean(pending.size || checking);
-      button.setAttribute('aria-label', t`Update ${entry.name}`); button.setAttribute('aria-busy', String(Boolean(progress)));
+      button.setAttribute('aria-label', t`${t('Update')} ${entry.name}`); button.setAttribute('aria-busy', String(Boolean(progress)));
       button.textContent = progress ? progress.phase === 'verifying' ? t('Verifying…') : t('Updating…') : t('Update');
       const state = row.querySelector<HTMLElement>('.agent-update-state')!;
       state.hidden = Boolean(canUpdate || progress);
@@ -206,7 +206,7 @@ export function initializeAgentUpdates(host: AgentUpdatesHost): AgentUpdatesCont
   async function show(): Promise<void> {
     if (disposed) return;
     manualRevision++; allowPopup = false; hidePopup();
-    const dialog = host.modal('Agent updates', `<section class="agent-updates"><div class="agent-updates-toolbar"><span>${t('Installed agents')}</span><button type="button" class="secondary-button agent-updates-check">${icon('refresh')}Check updates</button></div><ul class="agent-updates-list"></ul><p class="agent-updates-status" role="status"></p><div class="dialog-footer"><button type="button" class="secondary-button agent-updates-close">${t('Done')}</button></div></section>`, 'agent-updates-dialog');
+    const dialog = host.modal(t('Agent updates'), `<section class="agent-updates"><div class="agent-updates-toolbar"><span>${t('Installed agents')}</span><button type="button" class="secondary-button agent-updates-check">${icon('refresh')}${t('Check updates')}</button></div><ul class="agent-updates-list"></ul><p class="agent-updates-status" role="status"></p><div class="dialog-footer"><button type="button" class="secondary-button agent-updates-close">${t('Done')}</button></div></section>`, 'agent-updates-dialog');
     dialogBody = dialog.querySelector<HTMLElement>('.agent-updates')!;
     dialogBody.addEventListener('click', onClick); render();
     dialogBody.querySelector<HTMLButtonElement>('.agent-updates-check')!.focus({ preventScroll: true });

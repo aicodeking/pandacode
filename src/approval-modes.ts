@@ -15,11 +15,11 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
   // omp is a Pi fork driven through the same bridge, so it shares Pi's policy.
   const pi = provider === 'pi' || provider === 'omp' ? (provider === 'omp' ? 'omp' : 'Pi') : '';
   const standard: ApprovalMode = { id: 'ask', label: t('Standard'), icon: 'shield', description: provider === 'codex'
-    ? 'Work in this project. Ask you when an action needs extra permission.'
+    ? t('Work in this project. Ask you when an action needs extra permission.')
     : provider === 'github-copilot'
-    ? 'Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.'
+    ? t('Use Copilot Agent mode with Allow All off. PandaCode asks before permission requests.')
     : provider === 'grok'
-    ? 'Grok asks before edits and commands, whatever its own config says.'
+    ? t('Grok asks before edits and commands, whatever its own config says.')
     : provider === 'devin'
     ? 'Devin’s Code mode: edits inside this project apply; commands it does not judge safe ask you.'
     : provider === 'cursor'
@@ -27,20 +27,20 @@ export function approvalModes(provider: ProviderId, current?: Mode): ApprovalMod
     : pi
     ? t`${pi} runs without its own approvals; PandaCode asks before edits, commands and other non-read tools.`
     : provider === 'deepseek'
-    ? 'DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.'
+    ? t('DeepSeek edits and runs commands inside this project freely; it asks you before going outside it.')
     : provider === 'cline'
-    ? 'Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.'
+    ? t('Cline acts; reads and searches run, PandaCode asks before edits, commands and other tools.')
     : provider === 'kilo'
-    ? 'Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.'
+    ? t('Kilo runs read-only tools; PandaCode asks before edits, commands and other tools.')
     : provider === 'muse'
-    ? 'Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.'
+    ? t('Muse asks before actions its rules do not allow. Its own reviewer may approve low-risk ones.')
     : provider === 'zcode'
-    ? 'ZCode’s build mode: it works in this project and asks you when an action needs permission.'
+    ? t('ZCode’s build mode: it works in this project and asks you when an action needs permission.')
     : provider === 'hermes'
-    ? 'Hermes works in this project. Asks you before terminal commands or dangerous actions.'
+    ? t('Hermes works in this project. Asks you before terminal commands or dangerous actions.')
     : provider === 'antigravity'
     ? 'Antigravity’s Default mode: works in this project and asks you before edits, commands and other actions that need permission.'
-    : 'Use the harness’s normal rules. Ask you when approval is needed.' };
+    : t('Use the harness’s normal rules. Ask you when approval is needed.') };
   const full: ApprovalMode = { id: 'full', label: t('Full access'), icon: 'unlock', description: provider === 'antigravity'
     ? 'Antigravity’s Auto mode (when offered) with every permission request approved: runs tools without asking. Server restrictions still apply.'
     : provider === 'codex'

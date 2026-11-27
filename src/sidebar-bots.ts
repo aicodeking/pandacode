@@ -104,7 +104,7 @@ export function messageTime(at: number, now = Date.now()): string {
 
 export function botsBarHtml(view: SidebarView, count: number, unread: number): string {
   const open = view === 'bots';
-  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? t('Back to tasks') : t('Show bots')}">${icon('bot')}<span>${t('Bots')}</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${unread} unread"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
+  return `<button type="button" class="sidebar-bots-bar" data-action="toggle-bots-view" aria-pressed="${open}" title="${open ? t('Back to tasks') : t('Show bots')}">${icon('bot')}<span>${t('Bots')}</span>${unread ? `<span class="sidebar-bots-unread" aria-label="${t`${unread} unread`}"></span>` : ''}<small>${count || ''}</small>${icon('chevron')}</button>`;
 }
 
 export function botsPanelHeadHtml(): string {
@@ -151,11 +151,11 @@ function rowHtml(bot: Bot, context: BotsListContext, pinned: boolean, group: 'ne
   const role = bot.role && bot.role !== preview && !meta && [...bot.role].length <= ROLE_TAG ? `<span class="bot-role-tag">${escape(bot.role)}</span>` : '';
   const state = [bot.paused ? 'paused' : '', status ? statusLabel(status) : ''].filter(Boolean).join(', ');
   return `<div class="bot-row bot-card${selected ? ' selected' : ''}${bot.paused ? ' paused' : ''}${pinned ? ' pinned' : ''}" role="listitem" draggable="${group === 'pinned' || group === 'bots'}" data-bot-group="${group}" data-bot-row="${escape(bot.id)}">
-      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="Chat with ${escape(bot.name)}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
+      <button type="button" class="bot-row-open" data-action="open-bot" data-bot="${escape(bot.id)}" aria-label="${t`Chat with ${escape(bot.name)}${state ? ` (${escape(state)})` : ''}`}" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" title="${t`Chat with ${escape(bot.name)}`}; Alt+Arrow keys reorder within this group" ${selected ? 'aria-current="page"' : ''}>
         <span class="bot-card-avatar">${botAvatarHtml(bot.avatar, bot.name, 'bot-card-face', bot.color)}${badgeHtml(status)}</span>
         <span class="bot-card-text"><span class="bot-card-head"><span class="bot-row-name">${escape(bot.name)}</span>${role}${meta}</span><span class="bot-card-preview">${escape(preview)}</span></span>
       </button>
-      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${escape(bot.name)} settings" title="${t('Settings, memory, schedules and channels')}">${icon('settings')}</button>
+      <button type="button" class="icon-button bot-row-settings" data-action="bot-settings" data-bot="${escape(bot.id)}" aria-label="${t`${escape(bot.name)} settings`}" title="${t('Settings, memory, schedules and channels')}">${icon('settings')}</button>
     </div>`;
 }
 
@@ -191,14 +191,14 @@ export function botsListHtml(context: BotsListContext, query: string): string {
   const hiddenOpen = context.hiddenOpen || hidden.some(bot => bot.projectId === context.selectedProject);
   const botGroups = (waiting.length ? groupHtml('Needs you', rows(waiting, 'needs-you'), true) : '')
     + (pinned.length ? groupHtml('Pinned', rows(pinned, 'pinned'), true) : '')
-    + (rest.length ? groupHtml('Bots', rows(rest, 'bots'), labelled, 'Other bots') : '')
+    + (rest.length ? groupHtml(t('Bots'), rows(rest, 'bots'), labelled, 'Other bots') : '')
     + (hidden.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Hidden"><button type="button" class="bots-group-label bots-group-toggle" data-action="toggle-hidden-bots" aria-expanded="${hiddenOpen}">${icon('chevron')}<span>Hidden (${hidden.length})</span></button>${hiddenOpen ? `<div role="list">${rows(hidden, 'hidden')}</div>` : ''}</div>` : '');
   const activeChannels = matchingChannels.filter(channel => !channel.archived);
   const deletedChannels = matchingChannels.filter(channel => channel.archived);
   const channelRows = (items: SharedChannelSummary[]) => items.map(channel => `<button type="button" class="channel-row${context.selectedChannel === channel.id ? ' selected' : ''}"${context.selectedChannel === channel.id ? ' aria-current="page"' : ''} data-action="open-shared-channel" data-channel="${escape(channel.id)}" aria-label="#${escape(channel.name)}">${channelFaceCluster(channel.memberIds, context.bots)}<span>#${escape(channel.name)}</span></button>`).join('');
   const channelGroups = (activeChannels.length ? `<div class="bots-group bots-group-channels" role="group" aria-label="Channels"><h3 class="bots-group-label">Channels</h3><div role="list">${channelRows(activeChannels)}</div></div>` : '')
     + (deletedChannels.length ? `<div class="bots-group bots-hidden" role="group" aria-label="Deleted channels"><h3 class="bots-group-label">Deleted channels</h3><div role="list">${channelRows(deletedChannels)}</div></div>` : '');
-  const empty = !bots.length && !channels.length ? `<div class="bots-panel-start"><p>No bots yet</p><button type="button" class="secondary-button" data-action="new-bot-menu">${icon('plus')}<span>New bot or channel</span></button></div>` : '';
+  const empty = !bots.length && !channels.length ? `<div class="bots-panel-start"><p>No bots yet</p><button type="button" class="secondary-button" data-action="new-bot-menu">${icon('plus')}<span>${t('New bot or channel')}</span></button></div>` : '';
   const noMatch = Boolean((context.bots.length || channels.length) && !bots.length && !matchingChannels.length) ? '<p class="bots-panel-empty">No bots or channels match.</p>' : '';
   return `${empty}${botGroups}${channelGroups}${noMatch}`;
 }

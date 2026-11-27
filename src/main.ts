@@ -447,7 +447,7 @@ function teamState(s: Session): { id: string; label: string } {
   const team = teams.get(s.id);
   if (!team) return { id: 'off', label: t('Team') };
   if (team.config.rosterOnly) return { id: 'named', label: team.config.name?.trim() || t('Team') };
-  if (!team.config.auto) return { id: 'classic', label: 'Team' };
+  if (!team.config.auto) return { id: 'classic', label: t('Team') };
   const kind = routing?.enabled ? TEAM_KINDS.find(k => k.id === routing?.mode) : undefined;
   return kind ?? { id: 'lead', label: t('Team') };
 }
@@ -500,7 +500,7 @@ function syncTeamButton(): void {
     classic.setAttribute('aria-pressed', String(on));
     if (pendingMenuOpen?.anchor !== classic) classic.setAttribute('aria-busy', String(toggling));
     classic.disabled = toggling;
-    classic.dataset.tip = `Architect & workers: ${on ? 'on' : 'off'}`;
+    classic.dataset.tip = `${t('Architect & workers')}: ${on ? 'on' : 'off'}`;
   }
   const send = document.querySelector<HTMLButtonElement>('#composer button[type="submit"].send-button');
   if (send) send.disabled = toggling;
@@ -587,14 +587,14 @@ async function showTeamMenu(anchor: HTMLElement): Promise<void> {
   const items = [
     { id: 'off', label: 'No team', description: 'A single agent', leading: icon('bot') },
     ...(current === 'named' && !selectedProfile ? [{ id: 'named', label, description: 'Agent team', leading: toned(icon('team'), 'team') }] : []),
-    ...(!routed || current === 'lead' ? [{ id: 'lead', label: 'Team', description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
+    ...(!routed || current === 'lead' ? [{ id: 'lead', label: t('Team'), description: 'The lead picks models', leading: toned(icon('team'), 'team') }] : []),
     ...TEAM_KINDS.map((k, index) => ({ id: k.id, label: k.label, description: note || k.description, leading: toned(k.leading, 'team'), heading: index ? undefined : routed ? TEAM_KINDS_HINT : TEAM_KINDS_OFF_HINT })),
     ...(classicTeamSetup() ? [{ id: 'setup', label: 'Architect & workers…', leading: icon('team'), separator: true }] : []),
     ...profiles.map((profile, index) => ({ id: `profile:${profile.id}`, label: profile.name, description: profile.setup.config.rosterOnly ? 'Agent team' : pickerTeamDetail(profile), leading: toned(icon('team'), 'team'), heading: index ? undefined : 'Saved teams' })),
   ].map(item => ({ ...item, selected: item.id === selected }));
   // A team turned on here redraws the composer once the menu closes, so a routing error can still show in it.
   let turnedOn = false, openSetup = false;
-  await showChoices(live, { title: 'Team', width: 320, items, searchPlaceholder: items.length > 100 ? 'Find a team…' : undefined, afterClose: () => {
+  await showChoices(live, { title: t('Team'), width: 320, items, searchPlaceholder: items.length > 100 ? 'Find a team…' : undefined, afterClose: () => {
     if (!canChange()) return;
     if (openSetup) { const trigger = liveAnchor(live); if (trigger) run(showArchitectSetup(trigger)); }
     if (turnedOn) { renderComposer(); renderHeader(); }
@@ -2672,7 +2672,7 @@ function turnCardHtml(turn: TranscriptTurn, sessionId: string, thread: Thread): 
   const decoded = turn.activity.map(message => message.role === 'tool' ? decodeToolActivity(message.content) : undefined);
   const tools = decoded.filter((tool): tool is ToolActivity => Boolean(tool)), steps = decoded.every(Boolean);
   const time = timeHtml(turn.durationMs);
-  const label = tools.length ? foldedLabelHtml(tools) : escape(turn.final ? 'Replied' : turn.errors.length || (turn as ShownTurn).errorsDismissed ? 'Stopped' : 'Worked');
+  const label = tools.length ? foldedLabelHtml(tools) : escape(turn.final ? t('Replied') : turn.errors.length || (turn as ShownTurn).errorsDismissed ? 'Stopped' : 'Worked');
   const head = turn.activity.length
     ? activityHtml(turn.key, label, savedActivityHtml(turn.activity, steps || activityExpanded(), thread, true), { steps, meta: time })
     : `<div class="turn-card-head"><span class="turn-activity-label">${label}</span>${time}</div>`;
@@ -6749,7 +6749,7 @@ function onAgent(event: AgentEvent): void {
     if (s) { s.limitedAt = Date.now(); s.limitedUntil = until; s.resumeAtReset = false; }
     runEndings.set(event.sessionId, 'limited');
     // A bot's limit already shows as its sidebar chip and above its composer.
-    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? 'Task'}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
+    if (!sidebarBots.some(bot => bot.projectId === s?.projectId)) notify(`${s?.title ?? t('Task')}: ${event.text}${until ? ` · ${resetLabel(until)}` : ''}`);
     renderNavigation(); if (event.sessionId === state.sessionId) renderComposer();
     scheduleLimitResumes();
     return;
@@ -6804,7 +6804,7 @@ function onAgent(event: AgentEvent): void {
     if (event.text === 'Stopping agent') clearAgentInputs(current);
   }
   if (event.kind === 'error') { if (runEndings.get(event.sessionId) !== 'limited') runEndings.set(event.sessionId, 'failed'); addLiveError(current, event.sessionId, event.text, savedErrorId(event.data)); }
-  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
+  if (event.kind === 'approval' && event.requestId) { current.approvals.set(event.requestId, event.text); current.revision++; updateStreamStatus(current, 'Waiting for approval'); if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? t('Task')).replace(/ · You$/, '')} needs approval`, undefined, { important: true }); }
   if (event.kind === 'approval_cancelled' && event.requestId && current.approvals.delete(event.requestId)) {
     current.revision++; if (!current.approvals.size && current.status === 'Waiting for approval') updateStreamStatus(current, 'Continuing task');
   }
@@ -6818,7 +6818,7 @@ function onAgent(event: AgentEvent): void {
       scheduleNavigation();
     }, Boolean(s?.remoteDevice)));
     current.revision++; updateStreamStatus(current, 'Waiting for your answer');
-    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? 'Task').replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
+    if (event.sessionId !== state.sessionId) notify(`${(s?.title ?? t('Task')).replace(/ · You$/, '')} needs your answer`, undefined, { important: true });
   }
   if (event.kind === 'input_cancelled' && event.requestId) {
     current.inputs.get(event.requestId)?.dispose(); current.inputs.delete(event.requestId); current.revision++;

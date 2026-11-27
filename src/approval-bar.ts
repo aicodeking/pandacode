@@ -36,8 +36,8 @@ export function approvalBarHtml(approvals: PendingApproval[], options: { busy: (
     return `<section class="approval-bar" aria-label="${t('Approval needed')}"><ul class="approval-list">${row(only, options.busy(only.id), options.details.has(only.id))}</ul></section>`;
   }
   const busy = approvals.some(approval => options.busy(approval.id));
-  return `<section class="approval-bar is-group${options.expanded ? ' is-expanded' : ''}" aria-label="${approvals.length} approvals needed">
-    <div class="approval-line approval-group">${icon('lock', 'approval-mark')}<button type="button" class="approval-summary" data-action="approval-group" aria-expanded="${options.expanded}"><strong>${approvals.length} approvals needed</strong><span>${escape(approvalSummary(approvals[0].text))}${approvals.length > 1 ? t` and ${approvals.length - 1} more` : ''}</span>${icon('chevron', 'approval-chevron')}</button>
+  return `<section class="approval-bar is-group${options.expanded ? ' is-expanded' : ''}" aria-label="${t`${approvals.length} approvals needed`}">
+    <div class="approval-line approval-group">${icon('lock', 'approval-mark')}<button type="button" class="approval-summary" data-action="approval-group" aria-expanded="${options.expanded}"><strong>${t`${approvals.length} approvals needed`}</strong><span>${escape(approvalSummary(approvals[0].text))}${approvals.length > 1 ? t` and ${approvals.length - 1} more` : ''}</span>${icon('chevron', 'approval-chevron')}</button>
       <span class="approval-actions"><button type="button" class="approval-deny" data-action="approval-deny-all" ${busy ? 'disabled' : ''}>${t('Deny all')}</button><button type="button" class="approval-allow" data-action="approval-allow-all" ${busy ? 'disabled' : ''}>${t('Approve all')}</button></span></div>
     ${options.expanded ? `<ul class="approval-list">${approvals.map(approval => row(approval, options.busy(approval.id), options.details.has(approval.id))).join('')}</ul>` : ''}
   </section>`;

@@ -167,14 +167,14 @@ export function mountDesignCanvas(root: HTMLElement, host: DesignHost) {
   function renderComments(): void {
     const open = comments.filter(c => c.status === 'open');
     tool('send').disabled = !open.length;
-    tool('send').textContent = open.length ? `Send ${open.length} comment${open.length === 1 ? '' : 's'} to agent` : 'Send comments to agent';
-    const form = pick ? `<form class="design-new"><label class="sr-only" for="design-comment-text">Comment on ${escape(pick.selector)}</label>
-      <textarea id="design-comment-text" rows="2" maxlength="4000" placeholder="Comment on ${escape(pick.selector)}"></textarea>
+    tool('send').textContent = open.length ? (open.length === 1 ? t('Send 1 comment to agent') : t`Send ${open.length} comments to agent`) : t('Send comments to agent');
+    const form = pick ? `<form class="design-new"><label class="sr-only" for="design-comment-text">${t`Comment on ${escape(pick.selector)}`}</label>
+      <textarea id="design-comment-text" rows="2" maxlength="4000" placeholder="${t`Comment on ${escape(pick.selector)}`}"></textarea>
       <div><button type="button" class="secondary-button" data-design="cancel">${t('Cancel')}</button><button type="submit" class="primary-button">${t('Add comment')}</button></div></form>` : '';
     const rows = comments.map((c, i) => `<li class="design-comment${c.status === 'resolved' ? ' resolved' : ''}" data-comment="${escape(c.id)}">
       <span class="design-comment-number">${c.status === 'open' ? open.indexOf(c) + 1 : icon('check')}</span>
       <div><p>${escape(c.text)}</p><small>${escape(c.artboard)} · <code>${escape(c.selector)}</code></small>${c.note ? `<small class="design-note">${escape(c.note)}</small>` : ''}</div>
-      <button type="button" class="icon-button" data-design="toggle" data-index="${i}" aria-label="${c.status === 'open' ? t('Resolve') : t('Reopen')} comment" title="${c.status === 'open' ? t('Resolve') : t('Reopen')}">${icon(c.status === 'open' ? 'check' : 'refresh')}</button>
+      <button type="button" class="icon-button" data-design="toggle" data-index="${i}" aria-label="${c.status === 'open' ? t('Resolve comment') : t('Reopen comment')}" title="${c.status === 'open' ? t('Resolve') : t('Reopen')}">${icon(c.status === 'open' ? 'check' : 'refresh')}</button>
       <button type="button" class="icon-button" data-design="delete" data-index="${i}" aria-label="${t('Delete comment')}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('');
     list.innerHTML = form + (rows ? `<ol>${rows}</ol>` : commenting || pick ? '' : `<p class="design-hint">${t('Turn on comment mode and click an element to comment on it.')}</p>`);
     list.querySelector('textarea')?.focus();

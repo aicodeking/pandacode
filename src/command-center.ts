@@ -242,7 +242,7 @@ export function showCommandCenter(dialog: HTMLDialogElement, options: CommandCen
       for (const job of panel.jobs) {
         const item = node('div', 'command-row command-job'); item.dataset.itemId = job.id;
         item.append(row({ id: job.id, title: job.title, description: job.detail }), node('span', 'command-status', job.status));
-        if (job.canStop) { const stop = button(t('Stop')); stop.setAttribute('aria-label', t`Stop ${job.title}`); stop.addEventListener('click', () => { void execute('stop', { id: job.id }); }); item.append(stop); }
+        if (job.canStop) { const stop = button(t('Stop')); stop.setAttribute('aria-label', t`${t('Stop')} ${job.title}`); stop.addEventListener('click', () => { void execute('stop', { id: job.id }); }); item.append(stop); }
         view.content.append(item);
       }
     } else if (panel.kind === 'imports' || panel.kind === 'conversations') {

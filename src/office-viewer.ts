@@ -43,7 +43,7 @@ async function renderPdf(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() =>
   const first = (await doc.getPage(1)).getViewport({ scale: 1 });
   const count = Math.min(doc.numPages, PDF_PAGES);
   viewer.dataset.kind = 'pdf';
-  viewer.innerHTML = `<div class="office-bar">${doc.numPages.toLocaleString()} page${doc.numPages === 1 ? '' : 's'}${count < doc.numPages ? `<span>Showing the first ${count.toLocaleString()}.</span>` : ''}</div><div class="pdf-pages"></div>`;
+  viewer.innerHTML = `<div class="office-bar">${doc.numPages.toLocaleString()} ${doc.numPages === 1 ? t('page') : t('pages')}${count < doc.numPages ? `<span>${t`Showing the first ${count.toLocaleString()}.`}</span>` : ''}</div><div class="pdf-pages"></div>`;
   const pages = viewer.querySelector<HTMLElement>('.pdf-pages')!;
   // Pages draw as they come near the screen, so a long PDF opens as fast as a short one.
   const observer = new IntersectionObserver(entries => {
@@ -109,7 +109,7 @@ async function renderSheet(viewer: HTMLElement, bytes: ArrayBuffer): Promise<() 
     const tabs = book.SheetNames.map((sheetName, i) => `<button type="button" data-sheet="${i}" aria-pressed="${i === index}">${escape(sheetName)}</button>`).join('');
     // sheetRows trims !ref while parsing; !fullref keeps the real size.
     const full = utils.decode_range(String(sheet['!fullref'] ?? sheet['!ref'] ?? 'A1'));
-    const more = full.e.r - full.s.r + 1 > SHEET_ROWS || full.e.c - full.s.c + 1 > SHEET_COLUMNS ? `<span>Showing the first ${SHEET_ROWS.toLocaleString()} rows and ${SHEET_COLUMNS} columns.</span>` : '';
+    const more = full.e.r - full.s.r + 1 > SHEET_ROWS || full.e.c - full.s.c + 1 > SHEET_COLUMNS ? `<span>${t`Showing the first ${SHEET_ROWS.toLocaleString()} rows and ${SHEET_COLUMNS} columns.`}</span>` : '';
     viewer.innerHTML = `<div class="office-bar sheet-tabs" role="group" aria-label="${t('Sheets')}">${tabs}${more}</div><div class="sheet-scroll"><table class="sheet-grid" aria-label="${escape(name)}"><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
   };
   viewer.addEventListener('click', event => {

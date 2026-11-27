@@ -223,7 +223,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     el.dataset.path = path;
     el.innerHTML = `
       <div class="cv-file-header">
-        <button type="button" class="cv-toggle" data-cv-action="toggle" aria-expanded="true" aria-label="Collapse ${escape(path)}">${icon('chevron', 'cv-chevron')}</button>
+        <button type="button" class="cv-toggle" data-cv-action="toggle" aria-expanded="true" aria-label="${t`Collapse ${escape(path)}`}">${icon('chevron', 'cv-chevron')}</button>
         <span class="cv-file-icon">${fileIcon(name, false)}</span>
         <button type="button" class="cv-file-name" data-cv-action="toggle" title="${escape(path)}"><span class="cv-name">${escape(name)}</span>${dir ? `<span class="cv-dir" data-dir="${escape(dir)}" title="${escape(dir)}">${escape(dir)}</span>` : ''}</button>
         ${iconButton('copy', t('Copy path'), icon('copy'), 'tabindex="-1"').replace('cv-icon', 'cv-icon cv-copy')}
@@ -254,7 +254,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
 
   function paint(entry: Entry, code: string): void {
     entry.code = code;
-    const label = STATUS[code] ?? 'Modified';
+    const label = STATUS[code] ?? t('Modified');
     const pill = entry.el.querySelector<HTMLElement>('.cv-pill')!;
     pill.textContent = label;
     pill.dataset.status = label.toLowerCase();
@@ -470,7 +470,7 @@ export function mountChangesView(host: HTMLElement, deps: ChangesViewDeps): Chan
     const path = target.closest<HTMLElement>('.cv-file')?.dataset.path ?? '';
     switch (target.dataset.cvAction) {
       case 'scope':
-        deps.choose(target, 'Show', (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
+        deps.choose(target, t('Show'), (Object.keys(SCOPES) as Scope[]).map(id => ({ id, label: SCOPES[id], selected: id === scope })), id => {
           if (id === scope || !(id in SCOPES)) return;
           scope = id as Scope;
           render();

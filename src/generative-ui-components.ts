@@ -355,7 +355,7 @@ async function view(spec: View, baseCss: string): Promise<HTMLElement> {
 const codeView = (label: string | undefined, code: string) => h('figure', { class: 'gu-code' }, codeHead(label, code), h('pre', {}, h('code', {}, code)));
 
 function codeHead(label: string | undefined, text: string): HTMLElement {
-  const copy = h('button', { type: 'button', class: 'gu-copy', 'aria-label': t`Copy ${label ?? t('code')}` }, t('Copy'));
+  const copy = h('button', { type: 'button', class: 'gu-copy', 'aria-label': t`${t('Copy')} ${label ?? t('code')}` }, t('Copy'));
   copy.addEventListener('click', () => void navigator.clipboard?.writeText(text).then(() => { copy.textContent = t('Copied'); }, () => { copy.textContent = t('Copy failed'); }));
   return h('figcaption', { class: 'gu-code-head' }, h('span', {}, label ?? ''), copy);
 }

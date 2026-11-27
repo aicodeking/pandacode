@@ -52,7 +52,7 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
   root.innerHTML = `<div class="sim-stage-wrap"><button type="button" class="sim-reset" data-sim="reset" aria-label="${t('Face forward')}" title="${t('Face forward')}">${icon('reset')}</button><div class="sim-stage" tabindex="0" role="application" aria-label="${t('iOS Simulator. Click the screen to tap, drag on it to swipe, type to enter text. Drag around the device to turn it.')}" aria-describedby="sim-hint" title="${t('Drag to turn · Scroll to zoom · Click the screen to tap · Double-click to face forward')}"></div></div>
     <p class="sr-only" id="sim-hint">${t('Drag around the device to turn it, scroll to zoom, click the screen to tap, double-click to face forward.')}</p>
     <p class="sim-status" role="status" hidden></p>
-    <div class="sim-axe" role="note" hidden><span>Touch and typing need <strong>AXe</strong>.</span><code></code><button type="button" class="secondary-button" data-sim="copy-axe">${icon('copy')}Copy</button></div>
+    <div class="sim-axe" role="note" hidden><span>${t('Touch and typing need')} <strong>AXe</strong>.</span><code></code><button type="button" class="secondary-button" data-sim="copy-axe">${icon('copy')}${t('Copy')}</button></div>
     <div class="sim-dock">
       <button type="button" class="sim-device" data-sim="device" aria-haspopup="menu" aria-label="${t('Choose simulator')}">${icon('phone')}<span class="sim-device-name">${t('Simulator')}</span><small class="sim-device-runtime"></small>${icon('down')}</button>
       <div class="sim-actions" role="toolbar" aria-label="${t('Simulator controls')}">
@@ -133,10 +133,10 @@ export function mountSimulator(root: HTMLElement, host: SimulatorHost) {
     button('back').hidden = !android; button('recents').hidden = !android;
     button('appearance').innerHTML = icon(appearance === 'dark' ? 'sun' : 'moon');
     const pose = button('pose'), shown = poseName(status?.pose);
-    pose.hidden = !chosen?.duo; pose.setAttribute('aria-label', t`iPhone Duo pose: ${shown}`); pose.title = shown; pose.disabled = !booted() || busy;
+    pose.hidden = !chosen?.duo; pose.setAttribute('aria-label', t`${t('iPhone Duo pose')}: ${shown}`); pose.title = shown; pose.disabled = !booted() || busy;
     const look = chosenFinish(spec());
     button('finish').style.setProperty('--finish', look.color);
-    button('finish').setAttribute('aria-label', t`Device finish: ${look.name}`); button('finish').title = look.name;
+    button('finish').setAttribute('aria-label', t`${t('Device finish')}: ${look.name}`); button('finish').title = look.name;
     button('finish').disabled = !chosen;
     const axeNote = root.querySelector<HTMLElement>('.sim-axe')!;
     axeNote.hidden = !status || !status.available || status.axe;

@@ -48,7 +48,7 @@ export function stageText(stage: CloudStage, detail: string | null | undefined, 
     case 'reconnecting': return t('Reconnecting…');
     case 'syncing': return t('Syncing changes');
     case 'stopped': return t('Stopped');
-    case 'error': return `Error: ${detail || t('the machine could not be prepared')}`;
+    case 'error': return t`Error: ${detail || t('the machine could not be prepared')}`;
   }
 }
 export const busyStage = (stage: CloudStage): boolean => BUSY.has(stage);
@@ -56,7 +56,7 @@ export const busyStage = (stage: CloudStage): boolean => BUSY.has(stage);
 /** The context bar's computer control for a cloud task: fixed, like a Connect mirror's. */
 export function cloudChip(session: Session): string {
   const cloud = session.cloud!, label = escape(cloud.label), stage = escape(stageText(cloud.stage, cloud.detail, session.provider));
-  return `<span class="composer-computer composer-computer-fixed" data-remote="cloud" role="img" tabindex="0" aria-label="Computer: ${label} cloud machine (fixed for this task) · ${stage}" data-tip="This task runs on a ${label} cloud machine. ${stage}.">${CLOUD_ICON}<span class="sr-only">on ${label}</span></span>`;
+  return `<span class="composer-computer composer-computer-fixed" data-remote="cloud" role="img" tabindex="0" aria-label="${t`Computer: ${label} cloud machine (fixed for this task) · ${stage}`}" data-tip="${t`This task runs on a ${label} cloud machine. ${stage}.`}">${CLOUD_ICON}<span class="sr-only">${t`on ${label}`}</span></span>`;
 }
 
 /** The status strip above a cloud task's composer. */
@@ -79,5 +79,5 @@ export function cloudActionItems(session: Session) {
 }
 
 export function deleteMachineDialog(session: Session): string {
-  return `<form id="cloud-delete-form"><p class="dialog-description">Delete this task’s ${escape(session.cloud?.label ?? t('cloud'))} machine? Its files there are lost; the task stays and creates a new machine with your next message.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="submit" class="secondary-button delete-task-confirm">${t('Delete machine')}</button></div></form>`;
+  return `<form id="cloud-delete-form"><p class="dialog-description">${t`Delete this task’s ${escape(session.cloud?.label ?? t('cloud'))} machine? Its files there are lost; the task stays and creates a new machine with your next message.`}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="submit" class="secondary-button delete-task-confirm">${t('Delete machine')}</button></div></form>`;
 }

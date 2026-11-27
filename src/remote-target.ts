@@ -33,7 +33,7 @@ export function computerControl(session: Session, fresh: boolean, targets: Remot
     const name = escape(session.remoteDevice.name), target = targets.find(item => item.deviceId === session.remoteDevice!.id);
     const offline = target && !target.online;
     const status = offline ? ` · ${escape(offlineText(target))}` : '';
-    return `<span class="composer-computer composer-computer-fixed" data-remote="${offline ? 'offline' : 'on'}" role="img" tabindex="0" aria-label="Computer: ${name} (fixed for this task)${status}" data-tip="This task runs on ${name}. Start a new task to use another computer.${status}">${icon('monitor')}<span class="sr-only">on ${name}${offline ? t(' · Offline') : ''}</span></span>`;
+    return `<span class="composer-computer composer-computer-fixed" data-remote="${offline ? 'offline' : 'on'}" role="img" tabindex="0" aria-label="${t`Computer: ${name} (fixed for this task)`}${status}" data-tip="${t`This task runs on ${name}. Start a new task to use another computer.`}${status}">${icon('monitor')}<span class="sr-only">${t`on ${name}`}${offline ? t(' · Offline') : ''}</span></span>`;
   }
   if (!fresh) return '';
   const cloud = clouds.find(item => item.provider === cloudProvider(chosen));
@@ -43,7 +43,7 @@ export function computerControl(session: Session, fresh: boolean, targets: Remot
   const name = cloud ? t`Cloud · ${cloud.label}` : target?.name ?? (missing ? chosenName ?? t('That computer') : t('This computer'));
   const status = offline ? ` · ${escape(offlineText(target))}` : missing ? t(' · Not paired') : '';
   const remote = chosen === LOCAL ? '' : ` data-remote="${offline || missing ? 'offline' : 'on'}"`;
-  return `<button type="button" id="composer-computer" class="composer-computer"${remote} data-action="computer-menu" aria-label="Computer: ${escape(name)}${status}" aria-haspopup="menu" aria-expanded="false" data-tip="Runs on: ${escape(name)}${status}">${icon('monitor')}<span class="sr-only">${escape(name)}${offline ? t(' · Offline') : missing ? t(' · Not paired') : ''}</span>${icon('down')}</button>`;
+  return `<button type="button" id="composer-computer" class="composer-computer"${remote} data-action="computer-menu" aria-label="${t`Computer: ${escape(name)}`}${status}" aria-haspopup="menu" aria-expanded="false" data-tip="${t('Where this task runs')}: ${escape(name)}${status}">${icon('monitor')}<span class="sr-only">${escape(name)}${offline ? t(' · Offline') : missing ? t(' · Not paired') : ''}</span>${icon('down')}</button>`;
 }
 
 export function computerItems(targets: RemoteTarget[], chosen: string, clouds: CloudTarget[] = []) {
@@ -66,5 +66,5 @@ export function behindText(check: RemoteRepoCheck): string {
 }
 
 export function behindDialog(name: string, check: RemoteRepoCheck): string {
-  return `<form id="remote-behind-form"><p class="dialog-description">${escape(behindText(check))} ${escape(name)} will start from GitHub’s ${escape(check.branch)}.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="submit" class="primary-button">${t('Continue')}</button></div></form>`;
+  return `<form id="remote-behind-form"><p class="dialog-description">${t`${escape(behindText(check))} ${escape(name)} will start from GitHub’s ${escape(check.branch)}.`}</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="submit" class="primary-button">${t('Continue')}</button></div></form>`;
 }

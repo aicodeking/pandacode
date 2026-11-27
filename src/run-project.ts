@@ -50,7 +50,7 @@ export class ProjectRunner {
     if (this.revisions.get(id) !== revision) return;
     this.scripts.set(id, script); this.paint();
     // Tell the user once per distinct failure, not on every task selection.
-    if (failure && this.failures.get(id) !== failure) this.fail(`Run is unavailable: ${failure}`);
+    if (failure && this.failures.get(id) !== failure) this.fail(`${t('Run')} is unavailable: ${failure}`);
     if (failure) this.failures.set(id, failure); else this.failures.delete(id);
   }
   async run(requestId?: string, active?: () => Promise<void>): Promise<{ started: boolean; previewPending: boolean }> {

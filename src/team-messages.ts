@@ -40,7 +40,7 @@ export class TeamMessages {
   private name(id: string): string {
     if (id === 'architect') return t('Architect');
     const index = this.team.workers.findIndex(worker => worker.id === id);
-    return index < 0 ? t('Worker') : this.team.workers[index].name || t`Worker ${index + 1}`;
+    return index < 0 ? t('Worker') : this.team.workers[index].name || t`${t('Worker')} ${index + 1}`;
   }
 
   private async load(force = false): Promise<void> {

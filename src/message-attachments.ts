@@ -43,7 +43,7 @@ function parseBlock(block: string): MessageAttachment[] {
     return [{ kind: 'document', ...document, detail: `${ext && ext.length <= 8 ? ext : t('Text')}${block.includes('\n[Context truncated at 32 KiB]') ? t(' · first 32 KB') : ''}` }];
   }
   if ((match = head.match(/^Folder context: (.+) \((\d+) files, (\d+) folders(, partial listing)?\)$/))) {
-    return [{ kind: 'folder', name: baseName(match[1]) + '/', path: match[1], detail: `${match[2]} files · ${match[3]} folders${match[4] ? t(' · partial') : ''}` }];
+    return [{ kind: 'folder', name: baseName(match[1]) + '/', path: match[1], detail: `${t`${match[2]} files · ${match[3]} folders`}${match[4] ? t(' · partial') : ''}` }];
   }
   const imageId = block.match(IMAGE_ID)?.[1];
   if ((match = head.match(/^Attached (image|mockup): (.+) \((\d+) × (\d+)\)/))) {
@@ -90,6 +90,6 @@ export function attachmentChips(items: MessageAttachment[], messageId: number, i
       ? `<img data-prompt-image="${escape(item.imageId)}" ${thumbnail ? `src="${escape(thumbnail)}"` : ''} alt="" width="36" height="36"${thumbnail ? '' : ' hidden'}>${thumbnail ? '' : icon('camera')}`
       : icon(item.kind === 'github' && item.detail.startsWith('Pull') ? 'pull' : ICONS[item.kind]);
     const title = 'path' in item ? ` title="${escape(item.path)}"` : item.kind === 'github' ? ` title="${escape(item.url)}"` : '';
-    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" aria-label="Open ${escape(item.name)}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
+    return `<button type="button" class="prompt-chip prompt-chip-${item.kind === 'image' ? 'image' : item.kind}" data-action="open-message-attachment" data-message-id="${messageId}" data-index="${index}" aria-label="${t`Open ${escape(item.name)}`}"${title}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(item.detail)}</small></span></button>`;
   }).join('')}</div>`;
 }

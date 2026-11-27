@@ -32,7 +32,7 @@ export type CloudSettingsHost = {
 type Field = { name: string; label: string; placeholder: string; secret?: boolean; optional?: boolean; sparse?: boolean };
 /* Sandbox providers that connect with one API key (docs/cloud-agents.md → Provider settings). */
 const KEYED = {
-  digitalocean: { name: 'DigitalOcean', key: 'API token', docs: 'cloud.digitalocean.com/account/api/tokens', fields: [] },
+  digitalocean: { name: 'DigitalOcean', key: t('API token'), docs: 'cloud.digitalocean.com/account/api/tokens', fields: [] },
   vultr: { name: 'Vultr', key: t('API key'), docs: 'my.vultr.com/settings → API', fields: [{ name: 'region', label: t('Region'), placeholder: 'Optional, e.g. ewr', optional: true }] },
   hetzner: { name: 'Hetzner', key: t('API token'), docs: 'console.hetzner.cloud → Security → API tokens', fields: [{ name: 'location', label: t('Location'), placeholder: 'Optional, e.g. fsn1', optional: true }] },
   runpod: { name: 'RunPod', key: t('API key'), docs: 'runpod.io → Settings → API Keys', fields: [{ name: 'gpu', label: t('GPU type'), placeholder: 'Optional, e.g. NVIDIA RTX 3090', optional: true }, { name: 'image', label: t('Image'), placeholder: 'Optional, an image with SSH built in', optional: true }] },
@@ -154,14 +154,14 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="images">${t('Try again')}</button></div>
       </div>` : ''}${id === 'digitalocean' ? `
       <div class="cloud-image" data-do-options hidden>
-        <div class="cloud-image-row"><label><span>Region</span><select data-do="region" aria-label="DigitalOcean region" disabled></select></label></div>
+        <div class="cloud-image-row"><label><span>${t('Region')}</span><select data-do="region" aria-label="DigitalOcean region" disabled></select></label></div>
         <div class="cloud-image-row"><label><span>Machine size</span><select data-do="size" aria-label="DigitalOcean machine size" disabled></select></label></div>
-        <div class="cloud-image-row" data-do-custom hidden><label><span data-do-custom-label>Region</span><input data-do="custom" type="text" autocomplete="off" spellcheck="false" aria-label="Custom DigitalOcean region"></label><button type="button" class="secondary-button" data-cloud="do-apply">Apply</button><button type="button" class="secondary-button" data-cloud="do-cancel">${t('Cancel')}</button></div>
+        <div class="cloud-image-row" data-do-custom hidden><label><span data-do-custom-label>${t('Region')}</span><input data-do="custom" type="text" autocomplete="off" spellcheck="false" aria-label="Custom DigitalOcean region"></label><button type="button" class="secondary-button" data-cloud="do-apply">Apply</button><button type="button" class="secondary-button" data-cloud="do-cancel">${t('Cancel')}</button></div>
         <p class="cloud-image-status" role="status" hidden></p>
         <p class="cloud-image-error" role="alert" hidden></p>
         <div class="cloud-actions" hidden><button type="button" class="secondary-button" data-cloud="do-retry">${t('Try again')}</button></div>
       </div>` : ''}
-      <form class="cloud-form" hidden novalidate aria-label="${escape(t`Connect ${provider.name}`)}">
+      <form class="cloud-form" hidden novalidate aria-label="${escape(t`${t('Connect')} ${provider.name}`)}">
         ${fields.map(field => `<label><span>${escape(field.label)}</span><input name="${field.name}" type="${field.secret ? 'password' : 'text'}" autocomplete="off" spellcheck="false" placeholder="${escape(field.placeholder)}" aria-label="${escape(`${provider.name} ${field.label}`)}" ${field.optional ? '' : 'required'}></label>`).join('')}
         <p class="cloud-note">${escape(provider.note)}</p>
         <p class="cloud-progress" role="status" hidden></p>
@@ -217,7 +217,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
       const setup = root.querySelector<HTMLButtonElement>('[data-cloud="sandboxes"]');
       if (setup) { setup.hidden = !connection?.connected || Boolean(connection.sandboxes); setup.disabled = Boolean(busy); }
       if (id === 'colab') {
-        toggle.textContent = connection?.connected ? 'Disconnect' : 'Sign in with Google';
+        toggle.textContent = connection?.connected ? t('Disconnect') : 'Sign in with Google';
         // The name contains the visible text (WCAG 2.5.3, label in name).
         toggle.setAttribute('aria-label', connection?.connected ? 'Disconnect Google Colab' : 'Sign in with Google for Google Colab');
       } else {
@@ -469,13 +469,13 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
     const retry = box.querySelector<HTMLElement>('.cloud-actions')!, custom = box.querySelector<HTMLElement>('[data-do-custom]')!;
     box.hidden = !connections.find(c => c.provider === 'digitalocean')?.connected;
     custom.hidden = !customFor;
-    const label = customFor === 'size' ? 'Machine size' : 'Region';
+    const label = customFor === 'size' ? 'Machine size' : t('Region');
     custom.querySelector<HTMLElement>('[data-do-custom-label]')!.textContent = label;
     custom.querySelector<HTMLInputElement>('input')!.setAttribute('aria-label', `Custom DigitalOcean ${label.toLowerCase()}`);
     error.textContent = catalogError; error.hidden = !catalogError;
     retry.hidden = Boolean(catalog) || catalogLoading || !catalogError;
     if (!catalog) {
-      const loading = catalogLoading ? 'Loading…' : 'Not available';
+      const loading = catalogLoading ? 'Loading…' : t('Not available');
       region.innerHTML = `<option value="">${loading}</option>`;
       size.innerHTML = `<option value="">${loading}</option>`;
       status.hidden = true;

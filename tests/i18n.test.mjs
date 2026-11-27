@@ -187,13 +187,18 @@ test('en-GB only respells known source keys, and stays partial', () => {
 test('every wrapped t() key in src/ is present in every full catalog', () => {
   const files = readdirSync(srcDir).filter(name => name.endsWith('.ts') && !/^(preview|locales|i18n\.ts|entry\.ts)/.test(name));
   const missing = [];
+  const referenced = new Set();
   for (const file of files) {
     for (const key of extractKeys(readFileSync(`${srcDir}/${file}`, 'utf8'))) {
+      referenced.add(key);
       for (const [name, catalog] of FULL_CATALOGS) {
         if (catalog[key] === undefined) missing.push(`${name}: ${JSON.stringify(key)} (${file})`);
       }
     }
   }
+  // These catalog-backed calls were lost in the rebase; guard the reverse direction too.
+  const restored = JSON.parse(readFileSync(new URL('./fixtures/i18n-restored-static-keys.json', import.meta.url), 'utf8'));
+  for (const key of restored) assert.ok(referenced.has(key), `translation call removed: ${JSON.stringify(key)}`);
   assert.equal(missing.length, 0, `untranslated keys (add them to src/locales):\n${missing.slice(0, 20).join('\n')}`);
 });
 
@@ -241,7 +246,7 @@ test('t() translates statics and substitutes tagged values in one pass', async (
   // setActiveLocale touches <html lang>; the shim stands in for the DOM.
   globalThis.document ??= { documentElement: { lang: 'en' } };
   const i18n = await import('../src/i18n.ts');
-  i18n.registerCatalog('zh-Hans', { 'New task': '新任务', 'Copied {0}': '已复制 {0}', 'Remove {0}?': '移除 {0}？' });
+  i18n.registerCatalog('zh-Hans', { 'New task': '新任务', 'Copied {0}': '已复制 {0}', 'Remove {0}?': '移除 {0}？', 'Sending next…': '正在发送下一条…' });
   i18n.setActiveLocale('zh-Hans');
   try {
     assert.equal(i18n.t('New task'), '新任务');
@@ -249,6 +254,10 @@ test('t() translates statics and substitutes tagged values in one pass', async (
     const name = 'a {0} sneaky {1} value';
     assert.equal(i18n.t`Copied ${name}`, '已复制 a {0} sneaky {1} value');
     assert.equal(i18n.t`Remove ${'我的文件'}?`, '移除 我的文件？');
+    // A catalog-only check misses a deleted call. Keep this previously lost call referenced.
+    const queueKeys = extractKeys(readFileSync(`${srcDir}/message-queue.ts`, 'utf8'));
+    assert.ok(queueKeys.has('Sending next…'), 'the sending status must retain its translation call');
+    assert.equal(i18n.t('Sending next…'), '正在发送下一条…');
   } finally {
     i18n.setActiveLocale('en-US');
   }

@@ -210,11 +210,11 @@ export function mountPromptAttachments(host: AttachmentsHost) {
 
   function chips(taskId: string): string {
     return list(taskId).map(item => {
-      const remove = `<button type="button" data-action="detach-prompt" data-id="${escape(item.id)}" aria-label="Remove ${escape(item.name)}">${icon('close')}</button>`;
+      const remove = `<button type="button" data-action="detach-prompt" data-id="${escape(item.id)}" aria-label="${t`Remove ${escape(item.name)}`}">${icon('close')}</button>`;
       const missing = item.missing === true;
       const mark = missing ? ' data-missing="true"' : '';
       if (item.kind === 'image') {
-        const edit = !missing && item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="Edit sketch ${escape(item.name)}">${icon('edit')}</button>` : '';
+        const edit = !missing && item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="${t`Edit sketch ${escape(item.name)}`}">${icon('edit')}</button>` : '';
         const lead = missing ? icon('alert') : `<img src="${escape(item.thumbnail)}" alt="" width="36" height="36">`;
         const detail = missing ? 'File missing' : `${item.source === 'sketch' ? t('Mockup · ') : ''}${item.width} × ${item.height}`;
         return `<span class="prompt-chip prompt-chip-image" data-attachment-id="${escape(item.id)}" data-source="${item.source}"${mark}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${detail}</small></span>${edit}${remove}</span>`;

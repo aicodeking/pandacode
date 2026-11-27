@@ -34,7 +34,7 @@ export function setDocumentView(path: string, view: DocumentView): void {
 function stats(content: string): string {
   const words = content.match(/\S+/g)?.length ?? 0;
   const minutes = Math.max(1, Math.round(words / WORDS_PER_MINUTE));
-  return `${words.toLocaleString()} word${words === 1 ? '' : 's'} · ${minutes} min read`;
+  return `${words.toLocaleString()} ${words === 1 ? t('word') : t('words')} · ${t`${minutes} min read`}`;
 }
 
 function codeLines(content: string): string {

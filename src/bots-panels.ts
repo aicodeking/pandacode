@@ -64,7 +64,7 @@ export function describeSchedule(schedule: Pick<Schedule, 'kind' | 'intervalMinu
     case 'interval': { const minutes = schedule.intervalMinutes ?? 0; return minutes % 60 === 0 ? t`Every ${minutes / 60 === 1 ? t('hour') : t`${minutes / 60} hours`}` : t`Every ${minutes} minutes`; }
     case 'daily': return t`Daily at ${schedule.timeOfDay}`;
     case 'weekdays': return t`Weekdays at ${schedule.timeOfDay}`;
-    default: return schedule.nextRunAt ? t`Once, ${new Date(schedule.nextRunAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : t('Once');
+    default: return schedule.nextRunAt ? t`${t('Once')}, ${new Date(schedule.nextRunAt).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : t('Once');
   }
 }
 
@@ -79,11 +79,11 @@ function schedulesPanel(detail: BotDetail): string {
       ${field(['daily', 'weekdays'], `<label class="bots-field"><span>${t('Time')}</span><input type="time" name="timeOfDay" value="09:00"></label>`)}
       ${field(['interval'], `<label class="bots-field"><span>${t('Every (minutes)')}</span><input type="number" name="intervalMinutes" min="5" max="10080" step="5" value="60"></label>`)}
       ${field(['once'], `<label class="bots-field"><span>${t('At')}</span><input type="datetime-local" name="runAt" value="${local}"></label>`)}</div>
-      <div class="dialog-footer"><button type="submit" class="secondary-button">${icon('plus')}Add schedule</button></div></form>
+      <div class="dialog-footer"><button type="submit" class="secondary-button">${icon('plus')}${t('Add schedule')}</button></div></form>
     ${detail.schedules.length ? `<ul class="bots-items">${detail.schedules.map(schedule => `<li class="${schedule.enabled ? '' : 'off'}"><span class="bots-item-main"><b>${escape(schedule.title)}${schedule.createdBy === 'bot' ? ` <span class="bots-chip">${t('Set by bot')}</span>` : ''}</b><small>${escape(describeSchedule(schedule))}${schedule.enabled && schedule.nextRunAt ? t` · next ${escape(age(schedule.nextRunAt))}` : schedule.enabled ? '' : t(' · off')}</small></span>
-      <input type="checkbox" class="bots-switch" data-schedule-toggle="${escape(schedule.id)}" ${schedule.enabled ? 'checked' : ''} aria-label="${escape(schedule.title)} on">
-      <button type="button" class="icon-button" data-run-schedule="${escape(schedule.id)}" aria-label="Run ${escape(schedule.title)} now" title="${t('Run now')}">${icon('play')}</button>
-      <button type="button" class="icon-button" data-delete-schedule="${escape(schedule.id)}" aria-label="Delete ${escape(schedule.title)}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="bots-empty-note">${t('No schedules yet. The bot can also schedule work for itself.')}</p>`}`;
+      <input type="checkbox" class="bots-switch" data-schedule-toggle="${escape(schedule.id)}" ${schedule.enabled ? 'checked' : ''} aria-label="${t`${escape(schedule.title)} on`}">
+      <button type="button" class="icon-button" data-run-schedule="${escape(schedule.id)}" aria-label="${t`Run ${escape(schedule.title)} now`}" title="${t('Run now')}">${icon('play')}</button>
+      <button type="button" class="icon-button" data-delete-schedule="${escape(schedule.id)}" aria-label="${t`Delete ${escape(schedule.title)}`}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="bots-empty-note">${t('No schedules yet. The bot can also schedule work for itself.')}</p>`}`;
 }
 
 function channelCard(detail: BotDetail, channel: Channel): string {
@@ -91,14 +91,14 @@ function channelCard(detail: BotDetail, channel: Channel): string {
   const actions = channel.kind === 'web' ? `<button type="button" class="secondary-button" data-web-copy="${escape(channel.id)}">${t('Copy link')}</button><button type="button" class="icon-button" data-web-rotate="${escape(channel.id)}" aria-label="${t('New link')}" title="${t('New link: pages opened with the old link stop working')}">${icon('refresh')}</button>` : '';
   const identity = (channel.config.identity as { name?: string } | undefined)?.name;
   return `<li class="bots-channel ${channel.enabled ? '' : 'off'}" data-kind="${channel.kind}"><div class="bots-channel-row"><span class="bots-kind" data-kind="${channel.kind}" aria-hidden="true">${escape(label.slice(0, 1))}</span><span class="bots-item-main"><b>${escape(channel.label || label)}${identity && channel.kind !== 'web' ? ` <small class="bots-identity">${escape(identity)}</small>` : ''}</b><small>${escape(channel.enabled ? channel.status || t('Starting…') : t('Off'))}</small></span>${actions}
-    <input type="checkbox" class="bots-switch" data-channel-toggle="${escape(channel.id)}" ${channel.enabled ? 'checked' : ''} aria-label="${escape(channel.label || label)} on">
-    <button type="button" class="icon-button" data-remove-channel="${escape(channel.id)}" aria-label="Remove ${escape(channel.label || label)}" title="${t('Remove')}">${icon('trash')}</button></div>${channel.enabled ? channelGuide(detail, channel) : ''}</li>`;
+    <input type="checkbox" class="bots-switch" data-channel-toggle="${escape(channel.id)}" ${channel.enabled ? 'checked' : ''} aria-label="${t`${escape(channel.label || label)} on`}">
+    <button type="button" class="icon-button" data-remove-channel="${escape(channel.id)}" aria-label="${t`Remove ${escape(channel.label || label)}`}" title="${t('Remove')}">${icon('trash')}</button></div>${channel.enabled ? channelGuide(detail, channel) : ''}</li>`;
 }
 
 function pairingsList(detail: BotDetail): string {
   if (!detail.pairings.length) return '';
   const label = (channelId: string) => kindLabel(detail.channels.find(channel => channel.id === channelId)?.kind);
-  return `<h4>People ${infoMark(t('Unknown senders get a four-digit code. Approve it here to let them talk to the bot. Blocked senders are ignored.'), t('About pairing'))}</h4><ul class="bots-items">${detail.pairings.map(pairing => {
+  return `<h4>${t('People')} ${infoMark(t('Unknown senders get a four-digit code. Approve it here to let them talk to the bot. Blocked senders are ignored.'), t('About pairing'))}</h4><ul class="bots-items">${detail.pairings.map(pairing => {
     const id = `data-channel="${escape(pairing.channelId)}" data-sender="${escape(pairing.senderId)}"`;
     const actions = pairing.status === 'pending' ? `<button type="button" class="primary-button" data-pairing="approved" ${id}>${t('Approve')}</button><button type="button" class="secondary-button" data-pairing="blocked" ${id}>${t('Block')}</button>`
       : `<button type="button" class="secondary-button" data-pairing="removed" ${id}>${pairing.status === 'blocked' ? t('Unblock') : t('Remove')}</button>`;
@@ -113,7 +113,7 @@ function channelsPanel(detail: BotDetail): string {
 
 function rulesPanel(detail: BotDetail): string {
   return `<form class="bots-inline-form bots-rule"><input name="pattern" maxlength="200" placeholder="${t('git status*')}" aria-label="${t('Pattern')}" autocomplete="off"><select name="decision" aria-label="${t('Decision')}"><option value="allow">${t('Allow')}</option><option value="ask">${t('Ask')}</option><option value="deny">${t('Deny')}</option></select><button type="submit" class="secondary-button">${t('Add rule')}</button></form>
-    ${detail.rules.length ? `<ul class="bots-items">${detail.rules.map(rule => `<li><span class="bots-chip ${rule.decision}">${rule.decision}</span><span class="bots-item-main"><code>${escape(rule.pattern)}</code></span><button type="button" class="icon-button" data-delete-rule="${escape(rule.id)}" aria-label="Delete rule ${escape(rule.pattern)}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="bots-empty-note">${t('No rules. Reply "always" to an approval request to add one.')}</p>`}`;
+    ${detail.rules.length ? `<ul class="bots-items">${detail.rules.map(rule => `<li><span class="bots-chip ${rule.decision}">${rule.decision}</span><span class="bots-item-main"><code>${escape(rule.pattern)}</code></span><button type="button" class="icon-button" data-delete-rule="${escape(rule.id)}" aria-label="${t`Delete rule ${escape(rule.pattern)}`}" title="${t('Delete')}">${icon('trash')}</button></li>`).join('')}</ul>` : `<p class="bots-empty-note">${t('No rules. Reply "always" to an approval request to add one.')}</p>`}`;
 }
 
 function activityPanel(detail: BotDetail, context: PanelContext): string {
@@ -163,13 +163,13 @@ function skillsPanel(detail: BotDetail, context: PanelContext): string {
   const skills = [...capabilities.skills, ...bot.skills.filter(id => !known.has(id)).map(id => ({ id, name: id, description: '' }))];
   const skillRow = (skill: { id: string; name: string; description: string }) => {
     const on = bot.skills.includes(skill.id), missing = !known.has(skill.id);
-    return `<li><span class="bots-item-main"><b>${escape(skill.name)}</b><small>${missing ? t('Not in the library') : on ? escape(delivery) : escape(skill.description)}</small></span><input type="checkbox" class="bots-switch" data-bot-skill="${escape(skill.id)}" ${on ? 'checked' : ''} aria-label="Use ${escape(skill.name)}"></li>`;
+    return `<li><span class="bots-item-main"><b>${escape(skill.name)}</b><small>${missing ? t('Not in the library') : on ? escape(delivery) : escape(skill.description)}</small></span><input type="checkbox" class="bots-switch" data-bot-skill="${escape(skill.id)}" ${on ? 'checked' : ''} aria-label="${t`Use ${escape(skill.name)}`}"></li>`;
   };
   const names = [...new Set([...capabilities.mcp.map(entry => entry.name), ...bot.mcp])];
   const mcpRow = (name: string) => {
     const own = capabilities!.mcp.find(entry => entry.name === name && entry.harness === bot.provider);
     const status = own ? t`From ${own.source}` : `Unsupported for this bot's harness`;
-    return `<li class="${own ? '' : 'off'}"><span class="bots-item-main"><b>${escape(name)}</b><small data-mcp-status>${escape(status)}</small></span><input type="checkbox" class="bots-switch" data-bot-mcp="${escape(name)}" ${bot.mcp.includes(name) ? 'checked' : ''} aria-label="Use MCP server ${escape(name)}"></li>`;
+    return `<li class="${own ? '' : 'off'}"><span class="bots-item-main"><b>${escape(name)}</b><small data-mcp-status>${escape(status)}</small></span><input type="checkbox" class="bots-switch" data-bot-mcp="${escape(name)}" ${bot.mcp.includes(name) ? 'checked' : ''} aria-label="${t`Use MCP server ${escape(name)}`}"></li>`;
   };
   return `<h4>Skills ${infoMark('Chosen skills are turned on only in this bot\'s workspace, or for a project task started with this bot, where they ride in its brief. Switches in Settings → Tools → Skills also apply to bots: a skill switched off there stays off here.', 'About bot skills')}</h4>
     ${skills.length ? `<ul class="bots-items bots-skills">${skills.map(skillRow).join('')}</ul>` : '<p class="bots-empty-note">The skills library is empty. Add skills in Settings → Tools → Skills → Add skill, with Install to set to Bot library.</p>'}

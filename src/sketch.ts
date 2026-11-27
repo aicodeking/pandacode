@@ -33,7 +33,7 @@ const TOOLS: { id: Tool; label: string; key: string; icon: string }[] = [
   { id: 'ellipse', label: t('Ellipse'), key: 'O', icon: 'circle' }, { id: 'line', label: t('Line'), key: 'L', icon: 'line' }, { id: 'arrow', label: t('Arrow'), key: 'A', icon: 'arrow-right' }, { id: 'text', label: t('Text'), key: 'T', icon: 'text' },
 ];
 const STENCILS: { id: Stencil; label: string; w: number; h: number; text?: string }[] = [
-  { id: 'heading', label: t('Heading'), w: 320, h: 44, text: 'Heading' }, { id: 'button', label: t('Button'), w: 140, h: 40, text: 'Button' }, { id: 'input', label: t('Input'), w: 260, h: 40, text: 'Placeholder' },
+  { id: 'heading', label: t('Heading'), w: 320, h: 44, text: t('Heading') }, { id: 'button', label: t('Button'), w: 140, h: 40, text: t('Button') }, { id: 'input', label: t('Input'), w: 260, h: 40, text: 'Placeholder' },
   { id: 'checkbox', label: t('Checkbox'), w: 180, h: 28, text: 'Option' }, { id: 'toggle', label: t('Toggle'), w: 180, h: 28, text: 'Setting' }, { id: 'image', label: t('Image'), w: 220, h: 150 },
   { id: 'card', label: t('Card'), w: 260, h: 160, text: 'Card title' }, { id: 'navbar', label: t('Nav bar'), w: 720, h: 56, text: 'Logo' }, { id: 'avatar', label: t('Avatar'), w: 48, h: 48 },
   { id: 'tabs', label: t('Tabs'), w: 320, h: 40, text: 'Overview, Activity, Settings' }, { id: 'list', label: t('List'), w: 280, h: 120, text: 'First item\nSecond item\nThird item' },
@@ -133,7 +133,7 @@ function drawShape(context: CanvasRenderingContext2D, shape: Shape): void {
     }
     case 'text': {
       context.fillStyle = shape.stroke; context.font = `500 ${shape.fontSize}px ${FONT}`; context.textBaseline = 'top';
-      const lines = wrapText(context, shape.text || 'Text', Math.max(20, b.w));
+      const lines = wrapText(context, shape.text || t('Text'), Math.max(20, b.w));
       lines.forEach((line, index) => context.fillText(line, b.x, b.y + index * shape.fontSize * 1.3));
       break;
     }
@@ -147,8 +147,8 @@ function drawStencil(context: CanvasRenderingContext2D, shape: Shape, b: { x: nu
   const box = (r: number, f: string | null = fill) => { roundRect(context, b.x, b.y, b.w, b.h, r); if (f) { context.fillStyle = f; context.fill(); } context.stroke(); };
   const line = (x1: number, y1: number, x2: number, y2: number) => { context.beginPath(); context.moveTo(x1, y1); context.lineTo(x2, y2); context.stroke(); };
   switch (shape.stencil) {
-    case 'heading': label(context, text || 'Heading', b.x, b.y, b.w, b.h, Math.max(size, Math.min(b.h * 0.7, 40)), shape.stroke, 'left', 700); break;
-    case 'button': box(8, fill ?? tint(shape.stroke, 0.12)); label(context, text || 'Button', b.x, b.y, b.w, b.h, size, shape.stroke); break;
+    case 'heading': label(context, text || t('Heading'), b.x, b.y, b.w, b.h, Math.max(size, Math.min(b.h * 0.7, 40)), shape.stroke, 'left', 700); break;
+    case 'button': box(8, fill ?? tint(shape.stroke, 0.12)); label(context, text || t('Button'), b.x, b.y, b.w, b.h, size, shape.stroke); break;
     case 'input': box(8, fill ?? '#ffffff'); label(context, text || 'Placeholder', b.x + 12, b.y, b.w - 24, b.h, size, muted, 'left', 500); break;
     case 'checkbox': { const s = Math.min(20, b.h); roundRect(context, b.x, b.y + (b.h - s) / 2, s, s, 2); context.stroke(); context.beginPath(); context.moveTo(b.x + s * 0.25, b.y + b.h / 2); context.lineTo(b.x + s * 0.45, b.y + b.h / 2 + s * 0.2); context.lineTo(b.x + s * 0.78, b.y + b.h / 2 - s * 0.25); context.stroke(); label(context, text || 'Option', b.x + s + 10, b.y, b.w - s - 10, b.h, size, shape.stroke, 'left', 500); break; }
     case 'toggle': { const h = Math.min(24, b.h), w = h * 1.8; roundRect(context, b.x, b.y + (b.h - h) / 2, w, h, h / 2); context.fillStyle = tint(shape.stroke, 0.18); context.fill(); context.stroke(); context.beginPath(); context.arc(b.x + w - h / 2, b.y + b.h / 2, h / 2 - 3, 0, Math.PI * 2); context.fillStyle = shape.stroke; context.fill(); label(context, text || 'Setting', b.x + w + 10, b.y, b.w - w - 10, b.h, size, shape.stroke, 'left', 500); break; }
@@ -236,8 +236,8 @@ export function showSketch(options: SketchOptions): void {
         <div class="sketch-group sketch-group-end" role="group" aria-label="${t('History')}"><button type="button" class="icon-button" data-history="undo" aria-label="${t('Undo (⌘Z)')}" title="${t('Undo · ⌘Z')}" disabled>${icon('undo')}</button><button type="button" class="icon-button" data-history="redo" aria-label="${t('Redo (⇧⌘Z)')}" title="${t('Redo · ⇧⌘Z')}" disabled>${icon('redo')}</button><button type="button" class="icon-button" data-edit="duplicate" aria-label="${t('Duplicate (⌘D)')}" title="${t('Duplicate · ⌘D')}" disabled>${icon('copy')}</button><button type="button" class="icon-button" data-edit="delete" aria-label="${t('Delete selection')}" title="${t('Delete')}" disabled>${icon('trash')}</button></div>
       </div>
       <div class="sketch-toolbar sketch-toolbar-secondary">
-        <div class="sketch-group" role="group" aria-label="${t('Add a component')}"><span class="sketch-group-label">${icon('widget')}Add</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="Add ${s.label.toLowerCase()}" title="Add ${s.label.toLowerCase()}">${s.label}</button>`).join('')}</div>
-        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('Canvas')}"><label class="sketch-select">${t('Canvas')}<select aria-label="${t('Canvas size')}">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="${t('Toggle grid')}">${icon('grid')}Grid</button><button type="button" class="sketch-option" data-edit="clear" title="${t('Clear the canvas')}">${t('Clear')}</button></div>
+        <div class="sketch-group" role="group" aria-label="${t('Add a component')}"><span class="sketch-group-label">${icon('widget')}${t('Add')}</span>${STENCILS.map(s => `<button type="button" class="sketch-option sketch-stencil" data-stencil="${s.id}" aria-label="${t`Add ${s.label.toLowerCase()}`}" title="${t`Add ${s.label.toLowerCase()}`}">${s.label}</button>`).join('')}</div>
+        <div class="sketch-group sketch-group-end" role="group" aria-label="${t('Canvas')}"><label class="sketch-select">${t('Canvas')}<select aria-label="${t('Canvas size')}">${PRESETS.map(p => `<option value="${p.id}">${p.label} · ${p.width} × ${p.height}</option>`).join('')}</select></label><button type="button" class="sketch-option" data-grid aria-pressed="true" title="${t('Toggle grid')}">${icon('grid')}${t('Grid')}</button><button type="button" class="sketch-option" data-edit="clear" title="${t('Clear the canvas')}">${t('Clear')}</button></div>
       </div>
       <div class="sketch-stage"><div class="sketch-paper"><canvas role="img" aria-label="${t('Mockup canvas')}"></canvas></div></div>
       <div class="dialog-footer sketch-footer"><span class="sketch-hint" role="status">${t('Drag to draw. Double-click a component or text to edit its label.')}</span><button type="button" class="secondary-button" data-action="close-dialog">${t('Cancel')}</button><button type="button" class="primary-button sketch-attach">${options.existing ? t('Update mockup') : t('Attach to message')}</button></div>
@@ -268,7 +268,7 @@ export function showSketch(options: SketchOptions): void {
     editor.querySelector<HTMLButtonElement>('[data-history=undo]')!.disabled = !history.length;
     editor.querySelector<HTMLButtonElement>('[data-history=redo]')!.disabled = !future.length;
     for (const button of editor.querySelectorAll<HTMLButtonElement>('[data-edit=duplicate],[data-edit=delete]')) button.disabled = !shape;
-    canvas.setAttribute('aria-label', `Mockup canvas, ${scene.shapes.length} ${scene.shapes.length === 1 ? 'shape' : 'shapes'}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
+    canvas.setAttribute('aria-label', `${t('Mockup canvas')}, ${scene.shapes.length} ${scene.shapes.length === 1 ? 'shape' : 'shapes'}${shape ? t`, ${shape.type === 'stencil' ? shape.stencil : shape.type} selected` : ''}`);
     editor.dataset.tool = tool; editor.dataset.selection = shape ? 'true' : 'false';
     drafts.set(options.taskId, clone(scene));
   }
@@ -321,7 +321,7 @@ export function showSketch(options: SketchOptions): void {
       if (shape.type === 'text' && tool === 'text') setTool('select');
       if (cancel) { if (shape.type === 'text' && !shape.text) { scene.shapes = scene.shapes.filter(s => s !== shape); selected = ''; } render(); return; }
       if (shape.type === 'text' && !value.trim()) { scene.shapes = scene.shapes.filter(s => s !== shape); selected = ''; commit(); return; }
-      if (value !== shape.text) { shape.text = value; if (shape.type === 'text') { context.font = `500 ${shape.fontSize}px ${FONT}`; const lines = wrapText(context, value || 'Text', Math.max(20, bounds(shape).w)); shape.h = Math.max(shape.fontSize * 1.3, lines.length * shape.fontSize * 1.3); } commit(); } else render();
+      if (value !== shape.text) { shape.text = value; if (shape.type === 'text') { context.font = `500 ${shape.fontSize}px ${FONT}`; const lines = wrapText(context, value || t('Text'), Math.max(20, bounds(shape).w)); shape.h = Math.max(shape.fontSize * 1.3, lines.length * shape.fontSize * 1.3); } commit(); } else render();
     };
     area.addEventListener('keydown', event => {
       if (event.key === 'Escape' && !isImeKey(event)) {

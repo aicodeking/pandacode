@@ -175,7 +175,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
       <form class="skills-import" aria-label="Import a rule" novalidate>
         <div class="skills-import-row">
           <label class="skills-field"><span>Source</span><select name="source"><option value="folder" ${source === 'folder' ? 'selected' : ''}>Local file</option><option value="github" ${source === 'github' ? 'selected' : ''}>GitHub repository</option></select></label>
-          ${list.length ? `<label class="skills-field"><span>Project scope</span><select name="project"><option value="">User scope only</option>${list.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></label>` : ''}
+          ${list.length ? `<label class="skills-field"><span>${t('Project')} scope</span><select name="project"><option value="">${t('User')} scope only</option>${list.map(p => `<option value="${escape(p.id)}" ${p.id === projectId ? 'selected' : ''}>${escape(p.name)}</option>`).join('')}</select></label>` : ''}
         </div>
         ${source === 'folder'
           ? '<input name="path" aria-label="File path" placeholder="/path/to/rule.md" spellcheck="false" autocomplete="off">'
@@ -232,7 +232,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
-      return `Imported ${item.name}.${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
+      return `${t`Imported ${item.name}.`}${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
     });
   }
 

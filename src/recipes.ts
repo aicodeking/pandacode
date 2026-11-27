@@ -50,7 +50,7 @@ export function mountRecipes(root: HTMLElement, host: RecipesHost): void {
     }).join('');
     const blocked = !plan || plan.steps.some(s => s.status === 'blocked');
     return `<h3>${escape(selected.name)}</h3><p class="recipe-description">${escape(selected.description)}</p>
-      <table class="recipe-steps" aria-label="Dry run for ${escape(selected.name)}"><thead><tr><th>#</th><th>${t('Step')}</th><th>${t('What')}</th><th>${t('Status')}</th><th>${t('Why')}</th></tr></thead><tbody>${rows}</tbody></table>
+      <table class="recipe-steps" aria-label="${t`Dry run for ${escape(selected.name)}`}"><thead><tr><th>#</th><th>${t('Step')}</th><th>${t('What')}</th><th>${t('Status')}</th><th>${t('Why')}</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="recipe-actions"><button type="button" class="secondary-button" data-action="recipe-delete">${t('Delete')}</button><button type="button" class="secondary-button" data-action="recipe-edit">${t('Edit')}</button><button type="button" class="primary-button" data-action="recipe-run" ${blocked || busy ? 'disabled' : ''}>${t('Run')}</button></div>`;
   }
 

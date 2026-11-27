@@ -32,7 +32,7 @@ const RECENT_LIMIT = 5;
 const WIDTH = 520;
 const HEIGHT = 440;
 /** The harness list row while `loadProviders` is out; the search field then says "Loading models…". */
-const PROVIDERS_LOADING = 'Loading…';
+const PROVIDERS_LOADING = t('Loading…');
 const recentKey = (provider: ProviderId) => `pandacode.recent-models.${provider}`;
 function storedRecent(provider: ProviderId): string[] {
   try {
@@ -292,7 +292,7 @@ export function openModelPicker(options: ModelPickerOptions) {
       if (group) {
         const visible = shortList(group.provider.id, models(group));
         total = visible.length;
-        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>Loading…</span>`;
+        const status = group.locked ? '<span>New task required</span>' : group.failure ? `<span data-tip="${escape(group.failure)}">Unavailable</span>` : group.unavailable ? '<span>Unavailable</span>' : `<span data-catalog-loading="${group.provider.id}" hidden>${t('Loading…')}</span>`;
         markup = heading(providerLogo(group.provider.id), group.name, status) + visible.map(model => modelRow({ group, model }, false, '')).join('');
       }
     }

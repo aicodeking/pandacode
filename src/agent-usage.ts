@@ -123,7 +123,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       <button type="button" class="icon-button usage-refresh" aria-label="${t('Refresh usage')}" title="${t('Refresh')}">${icon('refresh')}</button></div>
     <div class="usage-panel usage-overview" role="tabpanel" id="usage-panel-overview" aria-labelledby="usage-tab-overview">
       <div class="usage-heroes"><div class="usage-hero usage-cost-hero"></div><div class="usage-hero usage-limit-hero"></div></div>
-      <div class="usage-range-row"><span class="usage-caption">Agents ${infoMark(help, t('About agent usage'))}</span><div class="usage-segmented usage-range" role="group" aria-label="${t('Period')}">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
+      <div class="usage-range-row"><span class="usage-caption">${t('Agents ')}${infoMark(help, t('About agent usage'))}</span><div class="usage-segmented usage-range" role="group" aria-label="${t('Period')}">${RANGES.map(([id, label]) => `<button type="button" data-range="${id}" aria-pressed="${id === range}">${label}</button>`).join('')}</div></div>
       <div class="usage-agents"></div><div class="usage-cost-details"></div>
     </div><p class="usage-footer" role="status"></p>${preview ? `<p class="usage-preview">${t('Browser preview · sample limits and costs')}</p>` : ''}`;
   const toolbarTabs = [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
@@ -351,7 +351,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
     const connection = named.find(item => item.id === scope.dataset.connection);
     if (connection) { await loadConnection(provider, connection, named, true); return; }
     // The connection is gone: nothing to read, so the card is as it was.
-    button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = 'Refresh';
+    button.disabled = false; button.removeAttribute('aria-busy'); button.textContent = t('Refresh');
     delete body.dataset.loading;
   }
   async function loadLedger(force: boolean): Promise<void> {
@@ -367,7 +367,7 @@ export function mountAgentUsage(host: HTMLElement, providers: Provider[]): () =>
       ledger = nextLedger; prompts = nextPrompts; ledgerError = null;
     } catch (cause) {
       if (disposed) return;
-      ledgerError = ledger ? null : reason(cause, 'Could not read local agent logs.');
+      ledgerError = ledger ? null : reason(cause, t('Could not read local agent logs.'));
     } finally { ledgerPending = false; }
     renderOverview(); renderCalendars();
   }
@@ -520,6 +520,6 @@ function dashboardLink(value?: string | null): string {
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password) return '';
-    return `<button type="button" class="usage-dashboard" data-action="open-url" data-url="${escape(url.href)}">View account ${icon('forward')}</button>`;
+    return `<button type="button" class="usage-dashboard" data-action="open-url" data-url="${escape(url.href)}">${t('View account')} ${icon('forward')}</button>`;
   } catch { return ''; }
 }

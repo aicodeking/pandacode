@@ -71,12 +71,12 @@ export function mountConversationImport(host: HTMLElement, options: ImportOption
     all.indeterminate = chosen > 0 && chosen < choices.length;
     all.disabled = !choices.length || importing;
     commit.disabled = !selected.size || importing;
-    commit.textContent = importing ? 'Importing…' : selected.size ? `Import ${selected.size} ${selected.size === 1 ? 'conversation' : 'conversations'}` : 'Import';
-    count.textContent = loading ? 'Loading…' : items.length ? `${items.length}${cursor ? '+' : ''} found${selected.size ? ` · ${selected.size} selected` : ''}` : '';
+    commit.textContent = importing ? t('Importing…') : selected.size ? `${t('Import')} ${selected.size} ${selected.size === 1 ? 'conversation' : 'conversations'}` : t('Import');
+    count.textContent = loading ? t('Loading…') : items.length ? `${items.length}${cursor ? '+' : ''} found${selected.size ? ` · ${t`${selected.size} selected`}` : ''}` : '';
   }
   function row(item: Importable): string {
     const meta = [escape(folderName(item.folder) || t('Unknown folder')), item.messages ? t`${item.messages} messages` : '', age(item.updatedAt)].filter(Boolean).join(' · ');
-    const state = item.importedTaskId ? `<button type="button" class="import-open" data-open="${escape(item.importedTaskId)}">In PandaCode${icon('forward')}</button>`
+    const state = item.importedTaskId ? `<button type="button" class="import-open" data-open="${escape(item.importedTaskId)}">${t('In PandaCode')}${icon('forward')}</button>`
       : item.unavailable ? `<span class="import-unavailable" title="${escape(item.unavailable)}">${t('Unavailable')}</span>` : '';
     const disabled = Boolean(item.importedTaskId || item.unavailable);
     return `<label class="import-row ${disabled ? 'disabled' : ''}" data-id="${escape(item.id)}" title="${escape(item.folder)}"><input type="checkbox" value="${escape(item.id)}" ${selected.has(item.id) ? 'checked' : ''} ${disabled || importing ? 'disabled' : ''}>

@@ -65,14 +65,14 @@ export function mountVmPanel(root: HTMLElement, host: VmHost) {
     const vm = current();
     if (!vm) {
       if (all().length) return `<p>${t('Choose a machine below.')}</p>`;
-      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">${t('Set up VMs')}</button><small>Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.</small>` : '';
+      const setup = status.supported && !status.installed ? `<button type="button" class="primary-button" data-vm="setup">${t('Set up VMs')}</button><small>${t("Downloads Tart from Cirrus Labs and checks Apple's notarization. Free for personal and small-team use.")}</small>` : '';
       const options = createOptions(status, connections);
       const local = status.supported ? t("PandaCode runs Linux and macOS VMs on Apple's Virtualization framework: headless, and only the memory you give it.") : t('Local VMs need a Mac with Apple silicon.');
-      return `<strong>${options.length ? t('Create a machine') : t('Run Linux, macOS and Windows machines')}</strong><p>Agents can see, click, type and run commands in an isolated machine. ${local}${anyCloud() ? '' : ' Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.'}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
+      return `<strong>${options.length ? t('Create a machine') : t('Run Linux, macOS and Windows machines')}</strong><p>${t('Agents can see, click, type and run commands in an isolated machine.')} ${local}${anyCloud() ? '' : ` ${t('Cloud sandboxes from Daytona, Cloudflare and AWS connect in Settings → Agents.')}`}</p>${setup}${options.length ? `<div class="vm-images">${options.map(option => `<button type="button" class="secondary-button" data-vm-create="${escape(option.id)}">${escape(option.label)}<small>${escape(option.description)}</small></button>`).join('')}</div>` : ''}`;
     }
-    if (vm.elsewhere) return `<strong>${escape(vm.name)} is running outside PandaCode</strong><p>${t('Stop it, then start it here to see its screen.')}</p><button type="button" class="secondary-button" data-vm="power">${t('Stop')}</button>`;
-    if (!vm.running) return `<strong>${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? t('stopped or suspended') : t('stopped')}</strong><p>${escape(vm.detail)}</p>${vm.canStart ? `<button type="button" class="primary-button" data-vm="power">${t('Start')}</button>` : ''}`;
-    if (!vm.desktop) return `<strong>${escape(vm.name)} has no screen</strong><p>Agents use it with commands (vm_exec). ${escape(vm.detail)}</p>`;
+    if (vm.elsewhere) return `<strong>${t`${escape(vm.name)} is running outside PandaCode`}</strong><p>${t('Stop it, then start it here to see its screen.')}</p><button type="button" class="secondary-button" data-vm="power">${t('Stop')}</button>`;
+    if (!vm.running) return `<strong>${t`${escape(vm.name)} is ${vm.os === 'darwin' && !vm.cloud ? t('stopped or suspended') : t('stopped')}`}</strong><p>${escape(vm.detail)}</p>${vm.canStart ? `<button type="button" class="primary-button" data-vm="power">${t('Start')}</button>` : ''}`;
+    if (!vm.desktop) return `<strong>${t`${escape(vm.name)} has no screen`}</strong><p>${t('Agents use it with commands (vm_exec).')} ${escape(vm.detail)}</p>`;
     return `<p>${t('Connecting to the screen…')}</p>`;
   }
   function render(): void {

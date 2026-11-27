@@ -110,7 +110,7 @@ export function createPullView(host: PullHost) {
     } catch (error) {
       if (mounted !== view || view.request !== request) return;
       const url = view.session.pullRequest?.url ?? '';
-      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(errorText(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}Open on GitHub</button>` : ''}</div></div>`;
+      view.root.innerHTML = `<div class="inspector-empty" role="alert">${icon('alert')}<h3>Unable to load the pull request</h3><p class="pull-error">${escape(errorText(error))}</p><div class="pull-error-actions"><button class="secondary-button" data-pull-action="refresh">${icon('refresh')}Retry</button>${url ? `<button class="secondary-button" data-pull-action="open" data-url="${escape(url)}">${icon('globe')}${t('Open')} on GitHub</button>` : ''}</div></div>`;
     } finally { if (mounted === view && view.request === request) view.root.removeAttribute('aria-busy'); }
   }
 

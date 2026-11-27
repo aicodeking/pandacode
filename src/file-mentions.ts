@@ -148,7 +148,7 @@ export function mountFileMentions(textarea: HTMLTextAreaElement, options: Option
     list.setAttribute('aria-busy', String(loading));
     const references = files.filter(file => file.mention).length, folders = files.filter(file => file.isDir && !file.mention).length, plain = files.length - references - folders;
     panel.querySelector('header strong')!.textContent = references ? t('Files and GitHub') : t('Project files');
-    status.textContent = loading ? 'Searching…' : error || (!files.length ? 'No matching files in this project.' : [plain ? `${plain === 40 ? 'Top ' : ''}${plain} file${plain === 1 ? '' : 's'}` : '', folders ? `${folders} folder${folders === 1 ? '' : 's'}` : '', references ? t`${references} on GitHub` : ''].filter(Boolean).join(' · '));
+    status.textContent = loading ? t('Searching…') : error || (!files.length ? t('No matching files in this project.') : [plain ? `${plain === 40 ? 'Top ' : ''}${t`${plain} file`}${plain === 1 ? '' : 's'}` : '', folders ? `${t`${folders} folder`}${folders === 1 ? '' : 's'}` : '', references ? t`${references} on GitHub` : ''].filter(Boolean).join(' · '));
     position();
   }
   async function search(value: string, ticket: number, key: string): Promise<void> {

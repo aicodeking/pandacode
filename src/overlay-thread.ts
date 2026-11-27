@@ -94,7 +94,7 @@ export class OverlayThreadView {
   constructor(private host: HTMLElement, private back: () => void, private opened?: (task: OverlayTask) => void) {
     host.className = 'launcher-thread'; host.hidden = true;
     host.setAttribute('aria-label', 'Agent conversation');
-    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="Back to active agents">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="Conversation"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">Loading conversation…</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>Retry loading conversation</button></div><div class="launcher-thread-undo" hidden><span role="status"></span><button type="button" aria-keyshortcuts="Meta+Z Control+Z">Undo</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">Open in app ${icon('forward')}</button></footer>`;
+    host.innerHTML = `<header class="launcher-thread-heading"><button class="launcher-thread-back" aria-label="Back to active agents">${icon('back')}</button><span class="launcher-thread-provider"></span><div><h2></h2><p></p></div></header><div class="launcher-thread-scroll" tabindex="0" aria-label="Conversation"><div class="launcher-thread-history"></div><p class="launcher-thread-empty" role="status">${t('Loading conversation…')}</p><p class="launcher-thread-notice" role="status" hidden></p><button class="launcher-thread-retry" hidden>Retry loading conversation</button></div><div class="launcher-thread-undo" hidden><span role="status"></span><button type="button" aria-keyshortcuts="Meta+Z Control+Z">Undo</button></div><footer class="launcher-thread-footer"><span class="launcher-thread-status" role="status"></span><button class="launcher-thread-app">Open in app ${icon('forward')}</button></footer>`;
     this.scroll = host.querySelector('.launcher-thread-scroll')!;
     this.history = host.querySelector('.launcher-thread-history')!;
     this.notice = host.querySelector('.launcher-thread-notice')!;
@@ -333,7 +333,7 @@ export class OverlayThreadView {
       const toolKey = (message: Message) => {
         if (message.role !== 'tool' || message.content === 'Tool finished') return;
         const tool = decodeToolActivity(message.content);
-        return tool ? `tool:${tool.id}` : `message:${message.id}`;
+        return tool ? `${t('tool')}:${tool.id}` : `message:${message.id}`;
       };
       const running = last && ['running','waiting','coordinating'].includes(this.latest?.subagent?.status || this.latest?.status || this.task!.status);
       const runs = groupToolRuns(turn.activity,toolKey);

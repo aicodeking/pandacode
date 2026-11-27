@@ -437,7 +437,7 @@ export function mountDiffViewer(host: HTMLElement, input: DiffViewerInput): Diff
     if (disposed || !renderers.length) return;
     cancelAnimationFrame(rerenderFrame);
     const scrollTop = scroller.scrollTop;
-    const failed = () => showFallback('Unable to format this diff. Showing the recorded patch.');
+    const failed = () => showFallback(t('Unable to format this diff. Showing the recorded patch.'));
     const apply = ({ view, header }: { view: FileDiff; header: boolean }) => { view.setOptions(options(header)); view.rerender(); };
     try {
       updateControls();

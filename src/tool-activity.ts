@@ -36,7 +36,7 @@ function bounded(value: string, limit = MAX_DETAIL): string {
 
 function section(kind: 'input' | 'output', content: string): string {
   const label = kind === 'input' ? t('Input') : t('Output');
-  return `<section class="tool-activity-section" data-tool-section="${kind}"><h4>${label}</h4><pre tabindex="0" aria-label="Tool ${kind}">${escape(bounded(content))}</pre></section>`;
+  return `<section class="tool-activity-section" data-tool-section="${kind}"><h4>${label}</h4><pre tabindex="0" aria-label="${t`Tool ${kind}`}">${escape(bounded(content))}</pre></section>`;
 }
 
 /** The row's verb already says a call is running or done; a note appears only when nothing else would explain an empty body. */

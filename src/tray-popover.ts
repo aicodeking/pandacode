@@ -113,7 +113,7 @@ function render(): void {
   const usage = withAsking(snapshot.usage, Boolean(snapshot.askingClaude));
   const parts = [running.length && `${running.length} running`, (waiting.length + finished.length) && `${waiting.length + finished.length} to review`].filter(Boolean);
   summary.textContent = parts.length ? parts.join(' · ') : 'All quiet';
-  const sections = ([['Running', running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
+  const sections = ([[t('Running'), running, 'running'], ['Needs you', waiting, 'waiting'], ['Finished', finished, 'finished']] as const)
     .filter(([t, tasks]) => tasks.length)
     .map(([label, tasks, kind]) => `<section class="tray-section"><h2>${label}</h2>${tasks.map(task => row(task, kind)).join('')}</section>`).join('');
   const usageBody = usage.length ? usage.map(item => usageBlock(item, Boolean(snapshot!.askingClaude))).join('') : `<p class="tray-quiet">${checking ? 'Checking plan limits…' : 'No plan limits reported.'}</p>`;

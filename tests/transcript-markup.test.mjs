@@ -24,7 +24,7 @@ const PINNED = {
   'src/transcript-host.ts': ['lastHandoff', 'turnMessages', 'markupShared'],
 };
 // The language choice reloads the window, so translated markup cannot share a cache across locales.
-const RECORDED = '1cc821b236d68185';
+const RECORDED = 'ff1e43a35d9eddf4';
 
 /** A top-level function's text in `file`, from its declaration to the next top-level statement. */
 function functionText(file, name) {
