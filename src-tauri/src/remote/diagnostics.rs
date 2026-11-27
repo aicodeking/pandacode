@@ -99,6 +99,12 @@ pub(crate) fn scrub(text: &str) -> String {
     scrub_with(text, home().as_deref())
 }
 
+/// The same secret, query, address and path removal as [`scrub`] without the length cut, for
+/// text that is bounded by its caller (a task export) rather than by a log line.
+pub(crate) fn redact_text(text: &str) -> String {
+    redact(text, home().as_deref())
+}
+
 fn record_at(log: &mut Log, at: i64, kind: &str, detail: String) {
     let detail = scrub(&detail);
     match kind {

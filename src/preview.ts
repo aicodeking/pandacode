@@ -1938,6 +1938,12 @@ export async function invoke<T>(command: string, args: Record<string, any>): Pro
     }
     case 'archive_codex_task': { const task = codexTask(args.sessionId); assertIdle(task); task.archived = true; task.updatedAt = Date.now(); break; }
     case 'export_task': { const task = session(args.sessionId); result = `# ${task.title}\n\n` + (messages[task.id] ?? []).map(message => `## ${message.role}\n\n${message.content}\n\n`).join(''); break; }
+    case 'export_debug_bundle': {
+      const task = session(args.sessionId), note = String(args.note ?? '').trim();
+      result = `# Debug: ${task.title}\n\n- Session: ${task.id}\n- Messages: ${(messages[task.id] ?? []).length}\n- Provider: ${task.provider}\n- Note: ${note || '(none)'}\n- Tool output: ${args.includeOutput ? 'included' : 'omitted'}\n- Changed files: ${args.includeChanges ? 'included' : 'omitted'}\n`;
+      break;
+    }
+    case 'save_debug_bundle': { session(args.sessionId); result = undefined; break; }
     // Rows as `list_subagents` sends them: no tools and a short preview; the full one is `get_subagent`.
     case 'list_subagents': return [...(mirrorSubagents.get(String(args.sessionId))?.values() ?? [])].map(saved => { const { tools, ...row } = saved as { prompt?: string; response?: string; tools?: unknown[] }; return { ...row, prompt: String(row.prompt ?? '').slice(0, 1025), response: String(row.response ?? '').slice(0, 1025), toolCount: tools?.length ?? 0 }; }) as T;
     case 'get_subagent': return structuredClone(mirrorSubagents.get(String(args.sessionId))?.get(String(args.agentId)) ?? null) as T;

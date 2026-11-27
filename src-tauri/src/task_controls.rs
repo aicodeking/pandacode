@@ -680,6 +680,48 @@ pub(super) async fn save_task_export(
     blocking(move || std::fs::write(path, text).map_err(|e| e.to_string())).await
 }
 
+#[tauri::command]
+pub(super) async fn export_debug_bundle(
+    state: State<'_, AppState>,
+    session_id: String,
+    note: Option<String>,
+    include_output: Option<bool>,
+    include_changes: Option<bool>,
+) -> Result<String> {
+    let store = state.store.lock().map_err(|e| e.to_string())?;
+    let options = crate::debug_bundle::Options {
+        note,
+        include_output: include_output.unwrap_or(true),
+        include_changes: include_changes.unwrap_or(true),
+    };
+    crate::debug_bundle::build(&store, &session_id, &options)
+}
+
+#[tauri::command]
+pub(super) async fn save_debug_bundle(
+    state: State<'_, AppState>,
+    session_id: String,
+    note: Option<String>,
+    include_output: Option<bool>,
+    include_changes: Option<bool>,
+    path: String,
+) -> Result<()> {
+    let path = PathBuf::from(path);
+    if !path.is_absolute()
+        || !matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("md" | "txt")
+        )
+    {
+        return Err("Choose a Markdown or text file for the export.".into());
+    }
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file() || m.file_type().is_symlink()) {
+        return Err("Choose a regular file for the export.".into());
+    }
+    let text = export_debug_bundle(state, session_id, note, include_output, include_changes).await?;
+    blocking(move || std::fs::write(path, text).map_err(|e| e.to_string())).await
+}
+
 pub(super) async fn rename_task(state: &AppState, sid: &str, title: &str) -> Result<()> {
     if title.trim().is_empty() || title.len() > 200 || title.chars().any(char::is_control) {
         return Err("Choose a task name of 1–200 characters.".into());
