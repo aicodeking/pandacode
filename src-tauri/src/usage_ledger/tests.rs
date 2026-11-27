@@ -1,5 +1,5 @@
 use super::parse::{self, CodexState, Record};
-use super::pricing::{parse_prices, PriceBook};
+use super::pricing::{download, parse_prices, snapshot_json, PriceBook};
 use super::*;
 use serde_json::json;
 use std::io::Write;
@@ -449,4 +449,22 @@ fn price_lookup_strips_relay_prefixes() {
     assert!(book.find("acme:example-model").is_some());
     assert!(book.find("relay:acme:example-model-20260101").is_some());
     assert!(book.find("nope").is_none());
+}
+
+#[test]
+#[ignore]
+fn regenerate_price_snapshot() {
+    let document: serde_json::Value = match std::env::var("PRICE_LIST_FILE") {
+        Ok(path) => serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap(),
+        Err(_) => tokio::runtime::Runtime::new().unwrap().block_on(download()).unwrap(),
+    };
+    let prices = parse_prices(&document);
+    let snapshot = snapshot_json(&prices);
+    println!("{} models", prices.len());
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/usage_ledger/prices.json");
+    if std::env::var("UPDATE_PRICE_SNAPSHOT").as_deref() == Ok("1") {
+        std::fs::write(&path, &snapshot).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert!(committed == snapshot, "src/usage_ledger/prices.json is out of date with pricing.rs; regenerate it with UPDATE_PRICE_SNAPSHOT=1 cargo test --lib regenerate_price_snapshot -- --ignored");
 }
