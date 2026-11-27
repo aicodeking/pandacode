@@ -48,7 +48,7 @@
 .cloud-provider summary::-webkit-details-marker{display:none}
 .cloud-provider summary:hover{background:var(--ds-row-hover)}
 .cloud-provider summary:focus-visible{outline:2px solid var(--focus);outline-offset:-3px}
-.cloud-provider summary>strong{font-size:var(--type-body);font-weight:var(--weight-medium);min-width:0}
+.cloud-provider summary>strong{font-size:var(--type-subheading);font-weight:var(--type-subheading-weight);line-height:var(--type-subheading-leading);min-width:0}
 .cloud-provider summary .cloud-detail{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cloud-provider summary .provider-availability{display:inline-flex;align-items:center}
 .cloud-provider summary>.icon{width:.8rem;height:.8rem;color:var(--muted);flex:none;transition:rotate 130ms var(--ds-ease-out)}
