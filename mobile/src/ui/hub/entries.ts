@@ -74,9 +74,12 @@ export function botRows(bots: readonly Bot[] | undefined): { id: string; title: 
     .map(bot => ({ id: bot.id, title: bot.name || 'Bot', subtitle: bot.paused ? 'Paused' : bot.state === 'working' ? 'Working' : 'Ready', bot }));
 }
 
-/** The app version line: "PandaCode 0.3.102", "Older PandaCode" or nothing until known. */
-export function versionLine(caps: HostCapabilities | undefined): string {
-  if (!caps) return '';
-  if (caps.kind === 'legacy') return 'An older PandaCode: update it to use more from the phone';
-  return caps.appVersion ? `PandaCode ${caps.appVersion}` : 'PandaCode';
+/** The app version line: "PandaCode 0.3.102", "Older PandaCode" or nothing until known.
+ * `current` (host.updateStatus's currentVersion) wins where there is one: it is what the computer
+ * says about itself now, which may be newer than the host.hello this phone still holds. */
+export function versionLine(caps: HostCapabilities | undefined, current?: string): string {
+  if (caps?.kind === 'legacy') return 'An older PandaCode: update it to use more from the phone';
+  const version = current?.trim() || (caps?.kind === 'hello' ? caps.appVersion : '');
+  if (!caps && !version) return '';
+  return version ? `PandaCode ${version}` : 'PandaCode';
 }

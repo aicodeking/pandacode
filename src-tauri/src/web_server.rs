@@ -2023,7 +2023,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "model_routing_configure", "model_routing_prepare", "model_routing_route", "model_routing_tiers",
     "model_routing_set_tiers", "model_routing_tier_models", "model_health_list", "model_health_clear",
     "crash_recovery_take", "crash_recovery_shown", "crash_restart_enabled", "set_crash_restart_enabled",
-    "sessions_missing", "app_update_install_supported", "check_agent_updates", "update_agent",
+    "sessions_missing", "app_update_install_supported", "app_update_publish", "check_agent_updates", "update_agent",
     "list_moodboards", "create_moodboard", "read_moodboard", "rename_moodboard", "delete_moodboard",
     "add_moodboard_image", "import_moodboard_images", "update_moodboard_image", "remove_moodboard_image",
     "moodboard_image", "remote_status", "remote_sign_in_start", "remote_sign_in_finish",

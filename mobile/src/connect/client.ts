@@ -35,6 +35,7 @@ import * as secrets from './secrets.ts';
 import { isLegacyHelloError, legacy as legacyCapabilities, parseHello, supports } from './api/hello.ts';
 import { attachLimits, uploadImages, type ImageChunk, type SendImage } from '../store/attach.ts';
 import { capabilitiesOf, forgetCapabilities, markMissing, refusalMeansStale, setCapabilities } from './api/capabilities.ts';
+import { RESTART_HINT_MS, wentOffline } from '../store/host-update.ts';
 import { AppState } from 'react-native';
 import { RelaySocket, type ConnectionQuality, type QualityListener } from './socket.ts';
 import { markCurrent, markStartup } from './perf.ts';
@@ -331,11 +332,29 @@ async function refreshIfDue() {
 const validDevice = (d: any): d is Device =>
   d && typeof d.id === 'string' && /^[\x21-\x7e]{1,200}$/.test(d.id) && typeof d.name === 'string' && typeof d.publicKey === 'string';
 
+/** Hosts presence last listed as online: a host in here that a presence frame no longer lists
+ * online has just gone down (or is mid-restart), so its waiting calls are failed at once. */
+const onlineHosts = new Set<string>();
+
 /** Every device signed in to the same GitHub account is the user's: presence is the whole list. */
 function applyDevices(list: unknown[]) {
   const devices = list.filter(validDevice).slice(0, 64);
   for (const id of keys.keys()) if (!devices.some(d => d.id === id && d.publicKey === keys.get(id)!.publicKey)) keys.delete(id);
   for (const map of [watched, glanced]) for (const id of map.keys()) if (!devices.some(d => d.id === id)) map.delete(id);
+  // A host that just left the list or went offline dropped its socket, as Update and restart does.
+  // A call already on its way there is never answered and no `undeliverable` comes (the relay had
+  // forwarded it), so it would wait out its 20 s timeout. Fail it now, with LOST like a closed
+  // socket: the request may have reached the host, so a prompt stays "Unconfirmed" rather than
+  // being dropped as never sent (`promptMaybeRan`).
+  for (const id of wentOffline(onlineHosts, devices)) {
+    onlineHosts.delete(id);
+    pending.fail(id, undefined, LOST);
+  }
+  for (const d of devices) if (d.online) onlineHosts.add(d.id);
+  // Listed online again: whatever restart it announced has finished, so the card stops saying it is.
+  if (Object.keys(state().restarting).some(id => onlineHosts.has(id))) {
+    patch(s => ({ restarting: Object.fromEntries(Object.entries(s.restarting).filter(([id]) => !onlineHosts.has(id))) }));
+  }
   patch({ devices });
   discoverAll();
 }
@@ -536,6 +555,23 @@ function frame(text: string) {
     }
   }
   else if (message?.type === 'event' && message.name === 'run.finished') void finished(from, message.data);
+  // The computer is about to restart to install an update (host_methods.rs `tell_viewers`). The reply
+  // to host.updateAndRestart already marks the phone that asked; this is for every OTHER phone
+  // watching, which would otherwise only see the computer vanish and come back. Presence clears it
+  // once the computer is listed online again, so it never outlives the restart it describes.
+  else if (message?.type === 'event' && message.name === 'host.restarting') {
+    const version = typeof message.data?.version === 'string' ? message.data.version.slice(0, 40) : '';
+    if (version) {
+      const hint = { version, at: Date.now() };
+      patch(s => ({ restarting: { ...s.restarting, [from]: hint } }));
+      // A hint, not a fact (RESTART_HINT_MS): the host says this before it installs, so a FAILED
+      // install leaves it online and it never restarts — the card must stop saying "Restarting…"
+      // and go back to showing the failure. Expire it here so reading it stays pure for render.
+      setTimeout(() => patch(s => (s.restarting[from]?.at === hint.at
+        ? { restarting: Object.fromEntries(Object.entries(s.restarting).filter(([id]) => id !== from)) }
+        : {})), RESTART_HINT_MS);
+    }
+  }
 }
 
 const active = (status?: string) => status === 'running' || status === 'waiting';
@@ -918,6 +954,9 @@ function schedulePrefetch() {
 /** Sign-out and account deletion: nothing of any thread stays in memory or on disk. */
 function forgetThreads() {
   helloed.clear();
+  onlineHosts.clear();
+  // A sign-out leaves nothing of another account behind, including a restart it announced.
+  patch({ restarting: {} });
   forgetCapabilities();
   forgetResends();
   prefetch.replace([]);

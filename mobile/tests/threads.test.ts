@@ -15,7 +15,7 @@ const tasks = (...list: TaskSummary[]): ConnectState['tasks'] => ({ mac: { tasks
 
 function host() {
   let state = {
-    configured: false, ready: true, signedIn: true, connected: true, account: null, deviceId: 'phone', error: null, demo: true, older: {}, teams: {},
+    configured: false, ready: true, signedIn: true, connected: true, account: null, deviceId: 'phone', error: null, demo: true, older: {}, teams: {}, restarting: {},
     devices: [{ id: 'mac', name: 'Mac', platform: 'macos', publicKey: 'k', host: true, online: true, lastSeen: 0 }],
     tasks: tasks(task('a', { title: 'Fix login' }), task('w', { status: 'running' })),
     messages: { 'mac/a': [

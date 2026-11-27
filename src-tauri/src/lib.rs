@@ -4982,6 +4982,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         crash_guard::commands::crash_report_reveal,
         sessions_missing,
         app_updates::app_update_install_supported,
+        app_updates::app_update_publish,
         agent_updates::check_agent_updates,
         agent_updates::update_agent,
         moodboards::list_moodboards,
