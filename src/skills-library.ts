@@ -13,13 +13,18 @@ import { harnessName, requestAddSkill, SKILLS_CHANGED_EVENT, type SkillInventory
 export type SkillKind = 'skill' | 'rule';
 export type SkillScope = 'user' | 'project';
 export type SkillFinding = { rule: 'secret' | 'approvals' | 'pipe-to-shell'; file: string; line: number; excerpt: string };
-export type SkillActivation = { harness: string; scope: SkillScope; project: string | null; surface: 'folder' | 'block' | 'prompt'; sha256: string; files: { path: string; sha256: string }[] };
+export type SkillActivation = { harness: string; scope: SkillScope; project: string | null; surface: 'folder' | 'block' | 'prompt' | 'link'; sha256: string; files: { path: string; sha256: string }[] };
 /** `folder`: the library's own copy, an absolute path (skills only; 'Install for agents…' hands it to Add skill). */
 export type SkillItem = {
   id: string; name: string; kind: SkillKind; description: string; sha256: string; importedAt: number; folder?: string;
   /** `skills`: added through Skills → Add skill → Bot library from a non-folder source (location: that source). */
-  source: { kind: 'folder' | 'github' | 'skills'; location: string; gitRef: string | null; commit: string | null };
+  source: { kind: 'folder' | 'github' | 'skills' | 'link'; location: string; gitRef: string | null; commit: string | null };
   acknowledged: string | null; activations: SkillActivation[]; files: string[]; findings: SkillFinding[];
+};
+/** A skill folder another harness reads, found by the local scan (`skills_found`). */
+export type SkillFound = {
+  name: string; description: string; sha256: string; inLibrary: boolean; libraryId: string | null;
+  locations: { label: string; path: string }[];
 };
 export type SkillCell = { id: string; scope: SkillScope; status: 'active' | 'outdated' | 'drifted' | 'missing' | 'prompt' | 'off'; surface: string };
 export type SkillMatrix = {
@@ -34,6 +39,7 @@ export type SkillsLibraryHost = {
 
 export const FINDING_LABELS: Record<SkillFinding['rule'], string> = { secret: 'Secret-shaped value', approvals: 'Turns off approvals or the sandbox', 'pipe-to-shell': 'Download piped into a shell' };
 const STATUS_LABELS: Record<SkillCell['status'], string> = { active: 'Active', outdated: 'Older version', drifted: 'Edited on disk', missing: 'Missing on disk', prompt: 'Via prompt', off: '—' };
+const SURFACE_HINTS: Record<SkillActivation['surface'], string> = { folder: '', block: '', prompt: '', link: 'Linked skill: the source folder changed or cannot be read. Re-import it to review the new content.' };
 const listText = (items: readonly string[]) => items.length < 2 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 const message = (error: unknown) => errorText(error);
 /** The page's one line about what is on it (rules; the bot library, read-only, when it has skills) and where skills
@@ -58,6 +64,7 @@ const offTagHtml = (name: string, where: string) =>
 export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost): () => void {
   let items: SkillItem[] = [];
   let matrix: SkillMatrix = { project: null, harnesses: [] };
+  let found: SkillFound[] = [];
   let projectId = '';
   let source: 'folder' | 'github' = 'folder';
   let pending: { id: string; harness: string; scope: SkillScope } | null = null;
@@ -86,6 +93,8 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         readManager(),
       ]);
     } catch (failure) { error = message(failure); }
+    // The found scan is local and advisory; a failure never blanks the panel.
+    found = await options.call<SkillFound[]>('skills_found').catch(() => []);
     if (!disposed) draw();
   }
   const onManagerChange = () => { void readManager().then(next => { if (disposed) return; managerOff = next; draw(); }); };
@@ -118,8 +127,28 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
    * part wider than the line ellipsizes (whole in the title). */
   const wrapPath = (from: string): string => from.split(' @ ').map((piece, i) => (i ? `@ ${piece}` : piece).split(/(?<=[/\\])/)
     .map(part => `<span class="skills-source-part">${escape(part)}</span>`).join('')).join(' ');
+  function foundHtml(): string {
+    if (!found.length) return '';
+    const rows = found.map(skill => {
+      const locations = skill.locations.map(l => `<code>${escape(l.label)}/${escape(l.path.split('/').filter(Boolean).pop() ?? '')}</code>`).join(' ');
+      const library = skill.inLibrary
+        ? '<small>In the library</small>'
+        : skill.libraryId ? '<small class="skills-conflict">In the library (another version)</small>' : '';
+      const actions = skill.inLibrary ? '' : `<div class="skills-confirm">
+        <button type="button" class="secondary-button" data-action="found-import" data-path="${escape(skill.locations[0].path)}" aria-label="${escape(`Copy ${skill.name} into the library`)}" ${busy ? 'disabled' : ''}>Copy</button>
+        <button type="button" class="secondary-button" data-action="found-import" data-path="${escape(skill.locations[0].path)}" data-link="link" aria-label="${escape(`Link ${skill.name} without copying`)}" ${busy ? 'disabled' : ''}>Link</button>
+      </div>`;
+      return `<li class="skills-item skills-found" data-id="${escape(skill.locations[0].path)}">
+        <div class="skills-item-head"><div><strong>${escape(skill.name)}</strong><span class="skills-kind">Skill</span>${locations}<small>${escape(skill.description)}</small>${library}</div>${actions}</div>
+      </li>`;
+    }).join('');
+    return `<h3 class="settings-heading">Found on this computer</h3>
+      <ul class="settings-group skills-list" aria-label="Skills found on this computer">${rows}</ul>
+      <p class="skills-note">Skills other harnesses read in their own folders. Copy takes a snapshot into the library; Link points the library at the source folder, which stays the only copy.</p>`;
+  }
+
   function itemHtml(item: SkillItem): string {
-    const from = item.source.kind === 'github' ? `GitHub · ${item.source.location}${item.source.commit ? ` @ ${item.source.commit.slice(0, 7)}` : ''}` : item.source.location;
+    const from = item.source.kind === 'github' ? `GitHub · ${item.source.location}${item.source.commit ? ` @ ${item.source.commit.slice(0, 7)}` : ''}` : item.source.kind === 'link' ? `Linked · ${item.source.location}` : item.source.location;
     const findings = item.findings.length ? `<ul class="skills-findings" aria-label="${escape(`Safety findings for ${item.name}`)}">${item.findings.map(f =>
       `<li><strong>${escape(FINDING_LABELS[f.rule])}</strong> <span>${escape(f.file)}:${f.line}</span><code>${escape(f.excerpt)}</code></li>`).join('')}</ul>` : '';
     return `<li class="skills-item" data-id="${escape(item.id)}"${item.kind === 'skill' ? ' data-kind="skill"' : ''}>
@@ -158,7 +187,8 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     const body = rules.map(item => `<tr><th scope="row">${escape(item.name)}</th>${columns.map(({ row, scope }) => {
       const cell = row.cells.find(c => c.id === item.id && c.scope === scope);
       const status = cell?.status ?? 'off';
-      return `<td class="skills-status" data-status="${status}" title="${escape(cell?.surface ?? '')}">${STATUS_LABELS[status]}</td>`;
+      const hint = item.source.kind === 'link' && (status === 'drifted' || status === 'missing') ? ` ${SURFACE_HINTS.link}` : '';
+      return `<td class="skills-status" data-status="${status}" title="${escape((cell?.surface ?? '') + hint)}">${STATUS_LABELS[status]}</td>`;
     }).join('')}</tr>`).join('');
     const unmanaged = rows.flatMap(row => row.unmanaged.filter(u => u.kind === 'rule').map(u => `<li><strong>${escape(harnessName(row.harness))}</strong> <code>${escape(u.path)}</code> <span>${escape(u.detail)}</span></li>`)).join('');
     const prompt = rows.some(row => row.prompt) ? '<p class="skills-note">Harnesses marked “prompt” have no skill files; PandaCode adds these rules to their messages.</p>' : '';
@@ -168,7 +198,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
 
   function draw(): void {
     const list = projects();
-    const values = clearFields ? {} : Object.fromEntries([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('form [name]')].map(field => [field.name, field.value]));
+    const values = clearFields ? {} : Object.fromEntries([...host.querySelectorAll<HTMLInputElement | HTMLSelectElement>('form [name]')].map(field => [field.name, field instanceof HTMLInputElement && field.type === 'checkbox' ? (field.checked ? 'checked' : '') : field.value]));
     const rules = items.filter(item => item.kind === 'rule'), library = items.filter(item => item.kind === 'skill');
     host.innerHTML = `<p class="skills-note skills-crosslink">${escape(introText(library.length > 0))} <button type="button" class="skills-link" data-section="skills">Skills</button>.</p><h3 class="settings-heading">Import a rule</h3><div class="settings-group skills-library" aria-label="Skills and rules">
       <form class="skills-import" aria-label="Import a rule" novalidate>
@@ -183,6 +213,7 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
         ${error ? `<div class="message-error error-row skills-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary skills-error" role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-dismiss-error aria-label="Dismiss error">${icon('close')}</button></div></div>` : ''}
       </form>
     </div>
+    ${foundHtml()}
     <h3 class="settings-heading">Rules</h3>
     ${rules.length ? `<ul class="settings-group skills-list" aria-label="Rules">${rules.map(itemHtml).join('')}</ul>` : '<p class="skills-empty">No rules yet. Import one above: a single Markdown file.</p>'}
     ${library.length ? `<div class="settings-heading"><h3>Bot library</h3>${infoMark(BOT_LIBRARY_HELP, 'About the bot library')}<span class="sr-only">${BOT_LIBRARY_HELP}</span></div>
@@ -190,7 +221,9 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     <h3 class="settings-heading">By harness</h3>${matrixHtml()}`;
     for (const [name, value] of Object.entries(values)) {
       const field = host.querySelector<HTMLInputElement | HTMLSelectElement>(`form [name="${name}"]`);
-      if (field && name !== 'source' && name !== 'project') field.value = value;
+      if (!field || name === 'source' || name === 'project') continue;
+      if (field instanceof HTMLInputElement && field.type === 'checkbox') field.checked = value === 'checked';
+      else field.value = value;
     }
     clearFields = false;
   }
@@ -228,10 +261,10 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if (source === 'github' && !text('repo')) { error = 'Enter the repository as owner/name.'; draw(); return; }
     void run(async () => {
       const item = source === 'folder'
-        ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind })
+        ? await options.call<SkillItem>('skills_import_folder', { path: text('path'), kind, link: data.get('link') === 'on' })
         : await options.call<SkillItem>('skills_import_github', { repo: text('repo'), path: text('repoPath'), gitRef: text('ref') || null, kind });
       clearFields = true;
-      return `Imported ${item.name}.${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
+      return `Imported ${item.name}.${item.source.kind === 'link' ? ' The source folder stays the only copy.' : ''}${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
     });
   }
 
@@ -254,6 +287,15 @@ export function mountSkillsLibrary(host: HTMLElement, options: SkillsLibraryHost
     if ((event.target as HTMLElement).closest('[data-dismiss-error]')) { error = ''; draw(); host.querySelector<HTMLElement>('.skills-import [type=submit]')?.focus(); return; }
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
     if (!button) return;
+    if (button.dataset.action === 'found-import' && button.dataset.path) {
+      const path = button.dataset.path;
+      const link = button.dataset.link === 'link';
+      void run(async () => {
+        const item = await options.call<SkillItem>('skills_import_folder', { path, kind: 'skill', link });
+        return `Imported ${item.name}.${link ? ' The source folder stays the only copy.' : ''}${item.findings.length ? ` ${item.findings.length} safety finding${item.findings.length === 1 ? '' : 's'} to review.` : ''}`;
+      });
+      return;
+    }
     const id = button.closest<HTMLElement>('.skills-item')?.dataset.id;
     if (button.dataset.action === 'remove' && id) void run(async () => { await options.call('skills_remove', { id }); return 'Removed.'; });
     if (button.dataset.action === 'acknowledge' && pending) void activate(pending.id, pending.harness, pending.scope, true);

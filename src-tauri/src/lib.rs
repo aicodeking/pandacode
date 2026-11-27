@@ -5318,6 +5318,7 @@ pub(crate) fn main_invoke_handler(invoke: tauri::ipc::Invoke<tauri::Wry>) -> boo
         skill_manager::skill_manager_add,
         skill_manager::skill_manager_add_library,
         skills::skills_list,
+        skills::skills_found,
         skills::skills_import_folder,
         skills::skills_import_github,
         skills::skills_activate,
