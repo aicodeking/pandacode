@@ -3709,7 +3709,11 @@ mod tests {
         let mut c = Command::new("opencode");
         let mut cfg = config("opencode");
         cfg.mode = "plan".into();
-        configure(&mut c, &cfg);
+        c.env_remove("OPENCODE_CONFIG_CONTENT")
+            .env_remove("OPENCODE_PERMISSION")
+            .env_remove("OPENCODE_CONFIG")
+            .env_remove("OPENCODE_CONFIG_DIR");
+        super::super::configure_command(&mut c, &cfg);
         assert_eq!(
             c.as_std().get_args().collect::<Vec<_>>(),
             [std::ffi::OsStr::new("acp")]
