@@ -6,6 +6,7 @@ import { escape, icon } from './dom';
 import { infoMark } from './tooltip';
 import { providerLogo } from './provider-logos';
 import { uiSizeControls } from './ui-size';
+import { mountReadingWidthControl, readingWidthControl } from './reading-width';
 import type { Project, Provider, ProviderId } from './types';
 import { mountOverlaySettings } from './overlay-settings';
 import { mountVoiceSettings } from './voice-settings';
@@ -164,6 +165,7 @@ function sectionHtml(id: SettingsPage, options: SettingsOptions): string {
         ${settingRow('Theme', `<button type="button" class="secondary-button" data-action="toggle-theme">${icon(options.theme === 'dark' ? 'sun' : 'moon')}Use ${options.theme === 'dark' ? 'light' : 'dark'}</button>`, 'Imported VS Code themes keep their own.')}
         ${switchRow('daily-wallpapers', 'Wallpapers', 'Off, the thread shows a live sky that follows the time of day.', options.wallpapers)}
         ${switchRow('still-sky', 'Still sky', 'Keep the live sky as a still frame without animating clouds or pointer motion.', stillSkyEnabled())}
+        ${settingRow('Reading width', readingWidthControl(), 'Comfortable keeps thread lines near 100 characters. Wide fits more code and tables, at longer lines.')}
       </div>
       <h3 class="settings-heading">Colors</h3><div class="settings-embed settings-colors" data-embed="colors"></div>
       <div class="settings-wallpapers" ${options.wallpapers ? '' : 'hidden'}><h3 class="settings-heading">Wallpapers</h3><div class="settings-embed" data-embed="wallpapers"></div></div>`;
@@ -382,6 +384,7 @@ export function mountSettings(host: HTMLElement, options: SettingsOptions): Sett
       syncVisibility();
       cleanups.push(() => observer.disconnect());
       stillSky.addEventListener('change', () => setStillSkyEnabled(stillSky.checked));
+      cleanups.push(mountReadingWidthControl(panel));
     }
     if (id === 'general') {
       // The global shortcut belongs to the desktop app; a browser tab would only show preview data.
