@@ -333,6 +333,15 @@ verify its plan, quota, expiry, or access to a particular model. See Claude's
 [authentication precedence](https://code.claude.com/docs/en/authentication#authentication-precedence)
 and [environment variable reference](https://code.claude.com/docs/en/env-vars).
 
+## Model selections in task exports
+
+The desktop task export includes the harness, requested model ID and requested effort for
+turns run after this update. An export for a team lead also includes turns run
+by its managed workers. The export adds the last model ID reported in the
+Claude response for each turn, when one is available. A turn without a reported
+ID is marked as unreported. Older turns have no model selection history.
+The model section excludes connection credentials and account details.
+
 ## Conversation continuity
 
 An idle task can switch harnesses from the model picker without changing its

@@ -2751,6 +2751,12 @@ async fn launch_operation_admitted(
             if e.kind == "done" || e.kind == providers::HEARTBEAT {
                 return;
             }
+            if e.kind == storage::model_audit::REPORTED_MODEL_EVENT {
+                if store_sink.lock().is_ok_and(|db| db.record_reported_model(turn_message_id, &e.text).is_err()) {
+                    eprintln!("Could not save the reported model for this turn.");
+                }
+                return;
+            }
             if e.kind == "limited" {
                 limited_sink.store(true, Ordering::SeqCst);
             }
@@ -2951,6 +2957,11 @@ async fn launch_operation_admitted(
                     .into(),
             )
         } else {
+            if !cloud_attach && store.lock().is_ok_and(|db| {
+                db.record_requested_model(turn_message_id, &config.provider, &config.model, config.reasoning_effort.as_deref()).is_err()
+            }) {
+                eprintln!("Could not save the requested model for this turn.");
+            }
             providers::run_with_tools_reporting(config, sink, rx, host, reached_harness.clone(), loop_took_stop.clone()).await
         };
         flush_coalesced(&app, &coalescer);
