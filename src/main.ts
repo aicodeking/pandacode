@@ -1203,7 +1203,7 @@ async function exportDebugBundle(task: Session, anchor?: HTMLElement): Promise<v
   }));
   start.addEventListener('click', () => runAction(async () => {
     const text = await call<string>('export_debug_bundle', request());
-    const created = await call<Session>('create_session', { projectId: task.projectId, provider: task.provider, model: task.model, mode: 'full', draft: true });
+    const created = await call<Session>('create_session', { projectId: task.projectId, provider: task.provider, model: task.model, mode: task.mode, draft: true });
     const bundle = text.length > DEBUG_BUNDLE_LIMIT ? text.slice(0, DEBUG_BUNDLE_LIMIT) + '\n\n[Bundle truncated — use Save .md for the full log.]' : text;
     const draft = `${DEBUG_FIX_PREAMBLE}\n\n${bundle}`;
     closeModal();

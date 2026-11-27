@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 // field by field, on the way back out: local storage is user-writable.
 const { MAX_STORED_ATTACHMENTS, MAX_STORED_ATTACHMENT_BYTES, toStored, fromStored, attachmentsBytes } = await import('../src/draft-attachments.ts');
 
-const image = (id, extra = {}) => ({ kind: 'image', id, name: `${id}.png`, width: 2, height: 3, thumbnail: `thumb:${id}`, source: 'file', ...extra });
+const image = (id, extra = {}) => ({ kind: 'image', id, name: `${id}.png`, width: 2, height: 3, thumbnail: `data:image/png;base64,${id}`, source: 'file', ...extra });
 const documentAttachment = (id, extra = {}) => ({ kind: 'document', id, path: `/tmp/${id}.txt`, name: `${id}.txt`, size: 12, text: 'file text', truncated: false, method: 'text', ...extra });
 const folderAttachment = (id, extra = {}) => ({ kind: 'folder', id, path: `/tmp/${id}`, name: id, files: 2, folders: 1, listing: 'a.txt\nb/', truncated: false, ...extra });
 
@@ -31,11 +31,12 @@ test('toStored caps the count, keeping the first MAX_STORED_ATTACHMENTS that sur
 });
 
 test('toStored skips an attachment over the per-item byte cap and keeps the ones that fit', () => {
-  const shape = image('fits', { thumbnail: '' });
-  const fits = image('fits', { thumbnail: 'x'.repeat(MAX_STORED_ATTACHMENT_BYTES / 2 - JSON.stringify(shape).length) });
+  const prefix = 'data:image/png;base64,';
+  const shape = image('fits', { thumbnail: prefix });
+  const fits = image('fits', { thumbnail: prefix + 'x'.repeat(MAX_STORED_ATTACHMENT_BYTES / 2 - JSON.stringify(shape).length) });
   assert.equal(JSON.stringify(fits).length * 2, MAX_STORED_ATTACHMENT_BYTES, 'exactly at the cap is kept');
-  const overShape = image('too-big', { thumbnail: '' });
-  const tooBig = image('too-big', { thumbnail: 'x'.repeat(MAX_STORED_ATTACHMENT_BYTES / 2 - JSON.stringify(overShape).length + 1) });
+  const overShape = image('too-big', { thumbnail: prefix });
+  const tooBig = image('too-big', { thumbnail: prefix + 'x'.repeat(MAX_STORED_ATTACHMENT_BYTES / 2 - JSON.stringify(overShape).length + 1) });
   assert.ok(JSON.stringify(tooBig).length * 2 > MAX_STORED_ATTACHMENT_BYTES);
   assert.deepEqual(toStored([tooBig, fits]), [fits]);
   assert.equal(toStored([tooBig]), undefined);
@@ -118,6 +119,25 @@ test('attachmentsBytes counts the UTF-16 bytes of the list, and nothing for an e
   const items = [image('i1'), documentAttachment('d1')];
   assert.equal(attachmentsBytes(items), JSON.stringify(items).length * 2);
   assert.ok(attachmentsBytes(items) > 0);
+});
+
+test('fromStored and toStored drop image thumbnails that are not data:image/ URLs', () => {
+  const unsafe = [
+    'https://example.com/a.png',
+    'http://example.com/a.png',
+    'javascript:alert(1)',
+    'data:text/html,<script>alert(1)</script>',
+    'data:text/plain;base64,QQ==',
+    'file:///etc/passwd',
+    'thumb:i1',
+  ];
+  for (const thumbnail of unsafe) {
+    assert.deepEqual(fromStored([image('bad', { thumbnail })]), [], thumbnail);
+    assert.equal(toStored([image('bad', { thumbnail })]), undefined, thumbnail);
+  }
+  const ok = image('ok', { thumbnail: 'data:image/jpeg;base64,/9j/4AAQ' });
+  assert.deepEqual(fromStored([ok]), [ok]);
+  assert.deepEqual(toStored([ok]), [ok]);
 });
 
 test('hostile values never throw and never leak unknown or prototype keys', () => {

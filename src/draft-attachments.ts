@@ -16,6 +16,7 @@ export type StoredAttachment = PromptAttachment;
 const IMAGE_SOURCES: readonly PromptImage['source'][] = ['file', 'paste', 'drop', 'sketch'];
 const isText = (value: unknown): value is string => typeof value === 'string';
 const isFilled = (value: unknown): value is string => isText(value) && value.length > 0;
+const isImageDataUrl = (value: unknown): value is string => isFilled(value) && value.startsWith('data:image/');
 const isMeasure = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const isSource = (value: unknown): value is PromptImage['source'] => isText(value) && (IMAGE_SOURCES as readonly string[]).includes(value);
 
@@ -25,7 +26,7 @@ function fields(value: unknown): Record<string, unknown> | undefined {
 
 function imageFields(value: Record<string, unknown>): PromptImage | undefined {
   const { id, name, thumbnail, width, height, source, path, sketchId, missing } = value;
-  if (!isFilled(id) || !isFilled(name) || !isFilled(thumbnail) || !isMeasure(width) || !isMeasure(height) || !isSource(source)) return undefined;
+  if (!isFilled(id) || !isFilled(name) || !isImageDataUrl(thumbnail) || !isMeasure(width) || !isMeasure(height) || !isSource(source)) return undefined;
   if (path !== undefined && !isText(path)) return undefined;
   if (sketchId !== undefined && !isText(sketchId)) return undefined;
   // A missing-file marker is launch-time state: validated when present, but not stored.

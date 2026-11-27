@@ -964,7 +964,7 @@ test('drafts are flushed when the window is hidden and on pagehide; main.ts flus
 // Attachments ride in the draft record beside the text, under the same age, budget, Keep draft,
 // Clear drafts, New-task key and deletion rules (issue #413: images used to vanish at restart).
 
-const image = (id, extra = {}) => ({ kind: 'image', id, name: `${id}.png`, width: 2, height: 3, thumbnail: `thumb:${id}`, source: 'file', ...extra });
+const image = (id, extra = {}) => ({ kind: 'image', id, name: `${id}.png`, width: 2, height: 3, thumbnail: `data:image/png;base64,${id}`, source: 'file', ...extra });
 const documentAttachment = (id, extra = {}) => ({ kind: 'document', id, path: `/tmp/${id}.txt`, name: `${id}.txt`, size: 12, text: 'file text', truncated: false, method: 'text', ...extra });
 const folderAttachment = (id, extra = {}) => ({ kind: 'folder', id, path: `/tmp/${id}`, name: id, files: 2, folders: 1, listing: 'a.txt\nb/', truncated: false, ...extra });
 const withAttachments = (items, { t = NOW, text = 'prompt' } = {}) => JSON.stringify({ t, text, a: items });
@@ -1160,7 +1160,7 @@ test('stored attachments count toward DRAFTS_BYTE_BUDGET', () => {
   const store = memory();
   let clock = NOW;
   const drafts = new PersistedDrafts(store, () => clock);
-  const text = 'x'.repeat(40_000), thumbnail = 'y'.repeat(50_000);
+  const text = 'x'.repeat(40_000), thumbnail = 'data:image/png;base64,' + 'y'.repeat(50_000);
   const count = 9;
   for (let index = 0; index < count; index++) {
     clock++;
@@ -1177,7 +1177,8 @@ test('stored attachments count toward DRAFTS_BYTE_BUDGET', () => {
   assert.deepEqual(drafts.attachments('t0'), [image('i0', { thumbnail })], 'but stays for this launch');
   // An attachments-only draft fits and is kept like any other.
   clock++;
-  drafts.setAttachments('image-only', [image('last', { thumbnail: 'z'.repeat(1000) })]);
-  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'image-only')).a, [image('last', { thumbnail: 'z'.repeat(1000) })]);
+  const onlyThumb = 'data:image/png;base64,' + 'z'.repeat(1000);
+  drafts.setAttachments('image-only', [image('last', { thumbnail: onlyThumb })]);
+  assert.deepEqual(JSON.parse(store.getItem(DRAFT_PREFIX + 'image-only')).a, [image('last', { thumbnail: onlyThumb })]);
   assert.equal(decodeDraft(store.getItem(DRAFT_PREFIX + 'image-only')).text, '');
 });
