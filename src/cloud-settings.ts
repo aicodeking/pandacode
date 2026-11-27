@@ -374,6 +374,7 @@ export function mountCloudSettings(host: HTMLElement, options: CloudSettingsHost
   }
   async function colabSignIn(authMode: 'oauth2' | 'adc', oauthConfigPath = ''): Promise<void> {
     const root = section('colab');
+    (root as HTMLDetailsElement).open = true;
     colabPending = true; colabEarly = []; colabSignInId = null; colabSigning = null;
     rowStatus(root, authMode === 'adc' ? 'Signing in with gcloud application-default credentials…' : 'Starting Google sign-in…');
     say(root, 'error', ''); render();

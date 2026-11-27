@@ -76,6 +76,8 @@ test('every harness has environment settings, and all but GLM, MiMo and Alibaba 
   await expect(codex.locator('h3')).toContainText('Codex');
   await expect(codex.locator('.connection-state')).toHaveText(/Installed/);
   await codex.locator('summary').first().click();
+  await codex.getByRole('button', { name: 'Test Codex', exact: true }).click();
+  await expect(codex.locator('.provider-test [role="status"]')).toContainText('Working');
   await codex.locator('details.connection-env > summary').click();
   await expect(codex.getByRole('checkbox', { name: 'Use global environment variables' })).toBeChecked();
   await codex.getByLabel('Variable name').fill('CODEX_EXTRA');
