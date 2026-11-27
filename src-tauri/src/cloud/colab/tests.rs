@@ -489,3 +489,141 @@ fn truncated_assignment_refusals_preserve_the_status_and_do_not_retry() {
         assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST"]);
     }
 }
+
+fn recovers_committed_https_assignment(dropped_reply: &'static [u8]) {
+    let requests = AtomicUsize::new(0);
+    let (base, seen) = mock::serve_https_raw(move |request, _| {
+        assert_eq!(request.path.split('?').next(), Some("/tun/m/assign"));
+        match requests.fetch_add(1, Ordering::SeqCst) {
+            0 => raw_reply(r#"{"token":"initial"}"#),
+            1 => dropped_reply.to_vec(),
+            _ => raw_reply(ASSIGNMENT),
+        }
+    });
+    let client = colab(&base, &sessions()).with_root_cert(mock::loopback_root_cert());
+    let machine = client.create_with("pc-train", "T4", false).unwrap();
+    assert_eq!(machine.id, "colab:gpu-t4-s-new");
+    let log = seen.lock().unwrap();
+    assert_eq!(log.iter().map(|r| r.method.as_str()).collect::<Vec<_>>(), ["GET", "POST", "GET"]);
+    assert!(log.iter().all(|r| r.path == log[0].path));
+}
+
+#[test]
+fn https_pre_header_drop_without_close_notify_reconciles_runtime() {
+    recovers_committed_https_assignment(b"");
+}
+
+#[test]
+fn https_mid_body_truncation_without_close_notify_reconciles_runtime() {
+    recovers_committed_https_assignment(
+        b"HTTP/1.1 200 OK\r\nContent-Length: 200\r\nConnection: close\r\n\r\n0123456789",
+    );
+}
+
+#[test]
+fn stalled_error_bodies_hitting_deadline_preserve_status_without_retrying() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    let spawn_stalled = |status: u16| -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let methods = Arc::new(Mutex::new(Vec::new()));
+        let recorded = methods.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let recorded = recorded.clone();
+                std::thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 512];
+                    loop {
+                        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                        let Ok(n) = stream.read(&mut chunk) else { return };
+                        if n == 0 {
+                            return;
+                        }
+                        buf.extend_from_slice(&chunk[..n]);
+                    }
+                    let line = String::from_utf8_lossy(&buf);
+                    let method = line.split_whitespace().next().unwrap_or("").to_string();
+                    recorded.lock().unwrap().push(method.clone());
+                    if method == "POST" {
+                        let headers = format!(
+                            "HTTP/1.1 {status} Stalled\r\nContent-Length: 200\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(headers.as_bytes());
+                        let _ = stream.flush();
+                        // Hold the socket open past the client's assignment deadline so the body stalls.
+                        let mut drain = [0u8; 16];
+                        let _ = stream.read(&mut drain);
+                    } else {
+                        let _ = stream.write_all(&raw_reply(r#"{"token":"xsrf"}"#));
+                        let _ = stream.flush();
+                    }
+                });
+            }
+        });
+        (base, methods)
+    };
+
+    let (base_412, methods_412) = spawn_stalled(412);
+    let (base_500, methods_500) = spawn_stalled(500);
+    let client_412 = colab(&base_412, &sessions());
+    let client_500 = colab(&base_500, &sessions());
+
+    // Run both concurrently so the MIN_POST_BUDGET deadline expires in ~5.2s total.
+    let (err_412, err_500) = block(async {
+        let deadline = tokio::time::Instant::now() + RECONCILE_RESERVE + MIN_POST_BUDGET + Duration::from_millis(250);
+        let (r412, r500) = tokio::join!(
+            client_412.assign_until("T4", false, deadline),
+            client_500.assign_until("T4", false, deadline),
+        );
+        (r412.unwrap_err(), r500.unwrap_err())
+    });
+
+    assert_eq!(
+        err_412,
+        "Google Colab refused the runtime: too many active Colab sessions, or a usage or capacity limit. Stop a runtime, wait and retry, or pick other hardware."
+    );
+    assert_eq!(err_500, "Google Colab returned HTTP 500.");
+    assert_eq!(*methods_412.lock().unwrap(), vec!["GET", "POST"]);
+    assert_eq!(*methods_500.lock().unwrap(), vec!["GET", "POST"]);
+}
+
+#[test]
+fn retryable_fails_closed_on_tls_and_non_retryable_statuses() {
+    let fail = |status, timed_out, transport, tls| Failure {
+        status,
+        timed_out,
+        transport,
+        tls,
+        message: String::new(),
+    };
+
+    // TLS errors always fail closed, even on 502..=504 or pre-header drops.
+    for status in [None, Some(200), Some(502), Some(503), Some(504)] {
+        assert!(!retryable(&fail(status, false, true, true)));
+        assert!(!retryable(&fail(status, true, false, true)));
+    }
+
+    // 3xx, 4xx, 500, 501, 505 never retry, even on body timeout or truncation.
+    for status in [302, 400, 401, 403, 412, 500, 501, 505] {
+        assert!(!retryable(&fail(Some(status), true, false, false)), "status {status} timed_out");
+        assert!(!retryable(&fail(Some(status), false, true, false)), "status {status} transport");
+    }
+
+    // Pre-header drops/timeouts, truncated/timed-out 2xx bodies, and 502..=504 retry.
+    assert!(retryable(&fail(None, true, false, false)));
+    assert!(retryable(&fail(None, false, true, false)));
+    assert!(!retryable(&fail(None, false, false, false)));
+    assert!(retryable(&fail(Some(200), true, false, false)));
+    assert!(retryable(&fail(Some(200), false, true, false)));
+    assert!(!retryable(&fail(Some(200), false, false, false)));
+    for status in [502, 503, 504] {
+        assert!(retryable(&fail(Some(status), false, false, false)));
+    }
+}

@@ -28,6 +28,7 @@ enum Command {
     SignOut,
     FullAccess { enabled: bool },
     ExportBots { path: PathBuf },
+    Version,
 }
 
 /// Flags that ride along with serving (or a first-run sign-in) rather than being an op.
@@ -38,17 +39,26 @@ struct Modifiers {
     web_port: Option<u16>,
     /// `--host`: the web UI's address (default 127.0.0.1).
     web_host: Option<IpAddr>,
+    /// `--allowed-host` (repeatable): extra `Host` names the web UI answers to, for a TLS
+    /// terminator such as Tailscale Serve in front of a loopback bind.
+    web_allowed_hosts: Vec<String>,
 }
 
-/// `pandacode serve …`: true when the argument was handled; the process then serves until
-/// it is stopped (or exits after a settings command). Everything else is the desktop app.
+/// `pandacode … serve …`: true when the argument was handled; the process then serves
+/// until it is stopped (or exits after a settings command). Everything else is the desktop
+/// app. `serve` may sit anywhere in argv, so `pandacode --port 8787 serve` is a host launch
+/// and not a desktop one.
 pub fn handle() -> bool {
     // A crash guard relaunch adds its mark (crash_guard.rs); no command takes it.
     let args: Vec<String> = std::env::args().skip(1).filter(|arg| !crate::crash_guard::is_restart_flag(arg)).collect();
-    if args.first().map(String::as_str) != Some("serve") {
+    if !is_serve(&args) {
         return false;
     }
-    match parse(&args[1..]) {
+    match parse(&serve_args(&args)) {
+        Ok((Command::Version, _)) => {
+            print_version();
+            std::process::exit(0)
+        }
         Ok((command, modifiers)) => {
             SERVE.store(true, Ordering::Relaxed);
             // A server has no Secret Service agent: the 0600 file backend is serve's default.
@@ -65,9 +75,37 @@ pub fn handle() -> bool {
     }
 }
 
+/// The args that belong to `serve`: everything but the `serve` token itself, wherever it
+/// sits. Flags before `serve` count too, so `pandacode --port 8787 serve` hosts with the
+/// web UI instead of silently dropping `--port`.
+fn serve_args(args: &[String]) -> Vec<String> {
+    args.iter().filter(|arg| arg.as_str() != "serve").cloned().collect()
+}
+
+/// Whether this launch is a `serve` one at all.
+fn is_serve(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "serve")
+}
+
+/// `serve --version`/`-V`: the host prints its version and exits instead of starting.
+fn print_version() {
+    println!("pandacode {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// `pandacode --version`/`-V` as the whole command line: true when it was handled, so a
+/// server can be asked what it runs over SSH without starting a GUI or needing a display.
+pub fn handle_version() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).filter(|arg| !crate::crash_guard::is_restart_flag(arg)).collect();
+    if args.len() != 1 || !matches!(args[0].as_str(), "--version" | "-V") {
+        return false;
+    }
+    print_version();
+    true
+}
+
 /// Builds the app with no window and runs it until an explicit exit. Never returns.
 fn serve(command: Command, modifiers: Modifiers) -> ! {
-    let Modifiers { import, web_port, web_host } = modifiers;
+    let Modifiers { import, web_port, web_host, web_allowed_hosts } = modifiers;
     #[allow(unused_mut)]
     let mut context = crate::app_context();
     if web_port.is_some() {
@@ -82,7 +120,7 @@ fn serve(command: Command, modifiers: Modifiers) -> ! {
             let dir = crate::setup_common(app).unwrap_or_else(|error| startup_failed(&error));
             match web_port {
                 // The web UI's calls run through the main webview, so it stays: hidden, blank.
-                Some(port) => start_web(app.handle(), port, web_host),
+                Some(port) => start_web(app.handle(), port, web_host, web_allowed_hosts),
                 // No window on a server: close the one from tauri.conf.json right away; the
                 // run loop keeps the process alive (see on_run_event). Users watch from their
                 // devices, never from here.
@@ -126,8 +164,8 @@ fn keep_hidden_main(context: &mut tauri::Context<tauri::Wry>) {
 }
 
 /// Starts the web UI for this run, or exits: a host asked to serve it must not run without it.
-fn start_web(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>) {
-    let status = crate::web_server::start_from_cli(app, port, host).unwrap_or_else(|error| startup_failed(&error));
+fn start_web(app: &tauri::AppHandle, port: u16, host: Option<IpAddr>, allowed_hosts: Vec<String>) {
+    let status = crate::web_server::start_from_cli(app, port, host, &allowed_hosts).unwrap_or_else(|error| startup_failed(&error));
     crate::web_server::print_start_notice(&status, host);
 }
 
@@ -143,6 +181,8 @@ fn startup_failed(error: &dyn std::fmt::Display) -> ! {
 /// `web`: the web UI is serving, so a plain `serve` runs even without Connect.
 fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import: Option<PathBuf>, web: bool) {
     match command {
+        // `handle` prints the version and exits before the app is built.
+        Command::Version => unreachable!("serve --version exits before the app starts"),
         Command::ExportBots { path } => match crate::headless_bots::run_export(app, &path) {
             Ok(()) => {
                 println!("Bot configuration written to {}.", path.display());
@@ -285,7 +325,7 @@ fn start_services(app: tauri::AppHandle) {
                     None,
                     None,
                 );
-                match finish_limit_resume(&session_id, send, |id, reason| hold_queue(&limits, id, reason)).await {
+                match finish_limit_resume(&session_id, send, |id, reason| emit_queue_hold(&limits, id, reason)).await {
                     Ok(true) => {
                         let _ = limits.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": false }));
                         drain_queue(limits.clone(), session_id);
@@ -333,14 +373,14 @@ pub(crate) fn run_end_hold_reason(successful: bool, stopped: bool, limited: bool
 async fn finish_limit_resume(
     session_id: &str,
     send: impl Future<Output = crate::Result<()>>,
-    hold: impl FnOnce(&str, &str),
+    notify: impl FnOnce(&str, &str),
 ) -> crate::Result<bool> {
     // Keep the hold until the continuation takes its place ahead of any queued follow-up.
     match send.await {
         Ok(()) => Ok(clear_resumable_hold(session_id)),
         Err(error) => {
-            if !message_queue::is_queue_held(session_id) {
-                hold(session_id, "failed");
+            if message_queue::hold_queue_if_unheld(session_id, "failed") {
+                notify(session_id, "failed");
             }
             Err(error)
         }
@@ -348,24 +388,24 @@ async fn finish_limit_resume(
 }
 
 fn clear_resumable_hold(session_id: &str) -> bool {
-    if !matches!(message_queue::queue_hold_reason(session_id).as_deref(), Some("limited" | "reset" | "restart")) {
+    message_queue::clear_queue_hold_if(session_id, &["limited", "reset", "restart"])
+}
+
+pub(crate) fn release_limited_hold_to_reset(session_id: &str, notify: impl FnOnce(&str, &str)) -> bool {
+    if !message_queue::transition_queue_hold_reason(session_id, "limited", "reset") {
         return false;
     }
-    message_queue::set_queue_hold_state(session_id, false, None);
+    notify(session_id, "reset");
     true
 }
 
-pub(crate) fn release_limited_hold_to_reset(session_id: &str, hold: impl FnOnce(&str, &str)) -> bool {
-    if message_queue::queue_hold_reason(session_id).as_deref() != Some("limited") {
-        return false;
-    }
-    hold(session_id, "reset");
-    true
+pub(crate) fn emit_queue_hold(app: &tauri::AppHandle, session_id: &str, reason: &str) {
+    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
 }
 
 pub(crate) fn hold_queue(app: &tauri::AppHandle, session_id: &str, reason: &str) {
     message_queue::set_queue_hold_state(session_id, true, Some(reason));
-    let _ = app.emit("queue-changed", serde_json::json!({ "sessionId": session_id, "held": true, "reason": reason }));
+    emit_queue_hold(app, session_id, reason);
 }
 
 static DRAINING: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Default::default);
@@ -507,6 +547,10 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     while index < args.len() {
         match args[index].as_str() {
             "--help" | "-h" => return Err(help()),
+            "--version" | "-V" => {
+                command = Command::Version;
+                ops += 1;
+            }
             "--sign-in" => {
                 sign_in = true;
                 ops += 1;
@@ -548,6 +592,13 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
                 modifiers.web_host = Some(crate::web_server::parse_host(value).map_err(|error| format!("{error}\n\n{}", help()))?);
                 index += 1;
             }
+            "--allowed-host" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| format!("--allowed-host needs a host name.\n\n{}", help()))?;
+                modifiers.web_allowed_hosts.push(value.clone());
+                index += 1;
+            }
             "--device-name" => {
                 let value = args
                     .get(index + 1)
@@ -561,7 +612,7 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     }
     if ops > 1 {
         return Err(format!(
-            "Choose one: --sign-in, --sign-out, --full-access, --no-full-access, --export-bots.\n\n{}",
+            "Choose one: --sign-in, --sign-out, --full-access, --no-full-access, --export-bots, --version.\n\n{}",
             help()
         ));
     }
@@ -575,19 +626,24 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     if modifiers.import.is_some() && !serving {
         return Err(format!("--import-bots only works with serve or --sign-in.\n\n{}", help()));
     }
-    if (modifiers.web_port.is_some() || modifiers.web_host.is_some()) && !serving {
-        return Err(format!("--port and --host only work with serve or --sign-in.\n\n{}", help()));
+    if (modifiers.web_port.is_some() || modifiers.web_host.is_some() || !modifiers.web_allowed_hosts.is_empty()) && !serving {
+        return Err(format!("--port, --host and --allowed-host only work with serve or --sign-in.\n\n{}", help()));
     }
     if modifiers.web_host.is_some() && modifiers.web_port.is_none() {
         return Err(format!("--host needs --port.\n\n{}", help()));
     }
+    if !modifiers.web_allowed_hosts.is_empty() && modifiers.web_port.is_none() {
+        return Err(format!("--allowed-host needs --port.\n\n{}", help()));
+    }
+    modifiers.web_allowed_hosts = crate::web_server::validate_allowed_hosts(&modifiers.web_allowed_hosts)
+        .map_err(|error| format!("{error}\n\n{}", help()))?;
     Ok((command, modifiers))
 }
 
 fn help() -> String {
     "PandaCode headless host (docs/headless.md)
 
-Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>]]
+Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>] [--allowed-host <name>]...] [--version]
 
 Runs this computer as an always-on PandaCode Connect host: your devices see it as a
 computer and can start, watch, steer and approve tasks on it. Linux servers run it
@@ -606,7 +662,12 @@ under `xvfb-run -a pandacode serve …` (a display is required to start, none is
   --host <addr>          The web UI's address (default 127.0.0.1). Anything but loopback is
                          plain HTTP: prefer 127.0.0.1 with SSH port forwarding
                          (ssh -L <port>:127.0.0.1:<port> <server>), or bind a private
-                         Tailscale/WireGuard interface IP."
+                         Tailscale/WireGuard interface IP.
+  --allowed-host <name>  Also answer requests whose Host is this name (repeatable; needs
+                         --port). Use it for a name in front of a loopback bind, such as
+                         Tailscale Serve, which terminates HTTPS. The bearer token is still
+                         required and Origin must still match Host.
+  --version, -V          Print `pandacode <version>` and exit 0 without starting the host."
         .into()
 }
 
@@ -646,9 +707,25 @@ mod tests {
             parsed("--export-bots bots.json"),
             Ok(Command::ExportBots { path: PathBuf::from("bots.json") })
         );
+        assert_eq!(parsed("--version"), Ok(Command::Version));
+        assert_eq!(parsed("-V"), Ok(Command::Version));
         assert!(parsed("--wat").is_err());
         assert!(parsed("--device-name").is_err());
         assert!(parsed("--export-bots").is_err());
+        assert!(parsed("--version --port 1").is_err());
+        assert!(parsed("--sign-in --version").is_err());
+    }
+
+    #[test]
+    fn serve_may_appear_anywhere_in_the_arguments() {
+        assert!(is_serve(&argv("serve")));
+        // A flag before `serve` still belongs to serve, so it is parsed rather than dropped.
+        assert_eq!(serve_args(&argv("--port 1 serve")), argv("--port 1"));
+        assert_eq!(serve_args(&argv("serve --port 1")), argv("--port 1"));
+        assert_eq!(serve_args(&argv("--port 1 serve --host 127.0.0.1")), argv("--port 1 --host 127.0.0.1"));
+        // No serve token at all: the desktop app gets this launch.
+        assert!(!is_serve(&argv("--port 1")));
+        assert!(!is_serve(&argv("")));
     }
 
     #[test]
@@ -674,6 +751,9 @@ mod tests {
             "--port",
             "-p",
             "--host",
+            "--allowed-host",
+            "--version",
+            "-V",
             "xvfb-run",
         ] {
             assert!(text.contains(flag), "{flag}");
@@ -756,16 +836,32 @@ mod tests {
             ("failed", false),
         ] {
             set_hold(&session_id, reason);
+            let mut notified = Vec::new();
             let send = async {
                 assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), Some(reason));
                 assert!(!can_drain(&session_id, false, Some(500), Some(1000), 1000));
                 Ok(())
             };
-            assert_eq!(finish_limit_resume(&session_id, send, set_hold).await, Ok(cleared));
+            assert_eq!(
+                finish_limit_resume(&session_id, send, |id, reason| {
+                    notified.push((id.to_owned(), reason.to_owned()));
+                })
+                .await,
+                Ok(cleared)
+            );
+            assert!(notified.is_empty());
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), (!cleared).then_some(reason));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
-        assert_eq!(finish_limit_resume(&session_id, async { Ok(()) }, set_hold).await, Ok(false));
+        let mut notified = Vec::new();
+        assert_eq!(
+            finish_limit_resume(&session_id, async { Ok(()) }, |id, reason| {
+                notified.push((id.to_owned(), reason.to_owned()));
+            })
+            .await,
+            Ok(false)
+        );
+        assert!(notified.is_empty());
     }
 
     #[tokio::test]
@@ -773,13 +869,22 @@ mod tests {
         let session_id = crate::storage::id();
         for reason in [None, Some("limited"), Some("reset"), Some("restart"), Some("stopped"), Some("failed")] {
             message_queue::set_queue_hold_state(&session_id, reason.is_some(), reason);
+            let mut notified = Vec::new();
             let send = async { Err("send failed".to_owned()) };
             let result = finish_limit_resume(&session_id, send, |id, reason| {
-                assert!(!message_queue::is_queue_held(id));
-                set_hold(id, reason);
+                assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
+                notified.push((id.to_owned(), reason.to_owned()));
             })
             .await;
             assert_eq!(result, Err("send failed".to_owned()));
+            assert_eq!(
+                notified,
+                if reason.is_none() {
+                    vec![(session_id.clone(), "failed".to_owned())]
+                } else {
+                    Vec::new()
+                }
+            );
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), reason.or(Some("failed")));
         }
         message_queue::set_queue_hold_state(&session_id, false, None);
@@ -797,10 +902,24 @@ mod tests {
             (None, None),
         ] {
             message_queue::set_queue_hold_state(&session_id, before.is_some(), before);
-            assert_eq!(release_limited_hold_to_reset(&session_id, set_hold), before != after);
+            let mut notified = Vec::new();
+            let transitioned = release_limited_hold_to_reset(&session_id, |id, reason| {
+                assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
+                notified.push((id.to_owned(), reason.to_owned()));
+            });
+            assert_eq!(transitioned, before != after);
+            assert_eq!(
+                notified,
+                if before != after {
+                    vec![(session_id.clone(), "reset".to_owned())]
+                } else {
+                    Vec::new()
+                }
+            );
             assert_eq!(message_queue::queue_hold_reason(&session_id).as_deref(), after);
             assert_eq!(can_drain(&session_id, false, None, None, 1000), after.is_none());
         }
+        message_queue::set_queue_hold_state(&session_id, false, None);
     }
 
     #[test]
@@ -827,7 +946,12 @@ mod tests {
         assert_eq!(parse(&argv("--port 8080")).unwrap().0, Command::Serve);
         assert_eq!(parse(&argv("--sign-in --port 8080")).unwrap().0, Command::SignIn { name: None });
         assert_eq!(modifiers("").web_port, None);
-        // Bad values, missing values, a host alone, and the exiting ops all refuse.
+        // Trusted names are repeatable modifiers that need the port, in any order.
+        let parsed = modifiers("--allowed-host My-Mac.Tail.ts.net --port 8080 --allowed-host box.local");
+        assert_eq!(parsed.web_allowed_hosts, ["my-mac.tail.ts.net", "box.local"]);
+        assert_eq!(modifiers("--allowed-host box.local -p 0").web_allowed_hosts, ["box.local"]);
+        assert_eq!(parse(&argv("--allowed-host box.local --port 1")).unwrap().0, Command::Serve);
+        // Bad values, missing values, a host or trusted name alone, and the exiting ops all refuse.
         for flags in [
             "--port",
             "--port abc",
@@ -836,10 +960,15 @@ mod tests {
             "--host",
             "--host nope --port 1",
             "--host 127.0.0.1",
+            "--allowed-host",
+            "--allowed-host box.local",
+            "--allowed-host bad/name --port 1",
+            "--port 1 --allowed-host a.ts.net --allowed-host A.ts.net",
             "--sign-out --port 8080",
             "--full-access --port 8080",
             "--no-full-access -p 1",
             "--export-bots x.json --port 1",
+            "--sign-out --allowed-host box.local",
         ] {
             assert!(parse(&argv(flags)).is_err(), "{flags}");
         }

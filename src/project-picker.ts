@@ -9,11 +9,13 @@ type ProjectPickerOptions = {
   onSelect: (projectId: string) => Promise<void>;
   onNewProject: () => void;
   onClose: () => void;
+  onRemove?: (projectId: string) => Promise<boolean>;
+  canRemove?: (project: Project) => boolean;
 };
 
 /** A transient project chooser. It owns no application state or global actions. */
 export function openProjectPicker(options: ProjectPickerOptions): () => void {
-  const { anchor, currentProjectId, onSelect, onNewProject, onClose } = options;
+  const { anchor, currentProjectId, onSelect, onNewProject, onClose, onRemove, canRemove } = options;
   const projects = options.projects.map(project => ({ ...project }));
   const panel = document.createElement('section');
   panel.className = 'project-menu floating-menu';
@@ -81,9 +83,9 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     if (event?.target instanceof Node && panel.contains(event.target)) return;
     if (!closed && !positionFrame) positionFrame = requestAnimationFrame(position);
   }
-  function choices(): HTMLButtonElement[] { return [...list.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]; }
+  function choices(): HTMLButtonElement[] { return [...list.querySelectorAll<HTMLButtonElement>('.project-menu-option:not(:disabled)')]; }
   function setActive(button?: HTMLButtonElement, focus = false): void {
-    list.querySelectorAll<HTMLButtonElement>('button').forEach(option => {
+    list.querySelectorAll<HTMLButtonElement>('.project-menu-option').forEach(option => {
       option.classList.toggle('project-menu-active', option === button);
       option.tabIndex = option === button ? 0 : -1;
     });
@@ -95,7 +97,10 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
     const query = search.value.trim().toLowerCase();
     const matches = projects.filter(project => `${project.name}\n${project.path}`.toLowerCase().includes(query));
     const visible = matches.slice(0, 100);
-    list.innerHTML = visible.map(project => `<button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>`).join('');
+    list.innerHTML = visible.map(project => {
+      const removable = Boolean(onRemove) && (canRemove ? canRemove(project) : true);
+      return `<div class="project-menu-row" role="none"><button type="button" role="option" class="project-menu-option" data-project-id="${escape(project.id)}" aria-label="${escape(project.name + ' — ' + project.path)}" aria-selected="${project.id === currentProjectId}" tabindex="-1" ${pending ? 'disabled' : ''}>${icon('folder')}<span class="project-menu-label"><span class="project-menu-name">${escape(project.name)}</span><span class="project-menu-path" title="${escape(project.path)}">${escape(project.path)}</span></span>${project.id === currentProjectId ? icon('check') : ''}</button>${removable ? `<button type="button" class="project-menu-remove" data-remove-project-id="${escape(project.id)}" aria-label="${escape(`Remove ${project.name} from list`)}" title="Remove from list" ${pending ? 'disabled' : ''}>${icon('trash')}</button>` : ''}</div>`;
+    }).join('');
     empty.hidden = visible.length > 0;
     empty.textContent = projects.length ? 'No matching projects.' : 'No projects yet.';
     count.hidden = matches.length <= visible.length;
@@ -136,6 +141,17 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
 
   search.addEventListener('input', () => { activeId = ''; error.hidden = true; renderChoices(); });
   list.addEventListener('click', event => {
+    const removeButton = (event.target as Element).closest<HTMLButtonElement>('.project-menu-remove');
+    if (removeButton) {
+      if (pending || closed || removeButton.disabled || !onRemove) return;
+      const id = removeButton.dataset.removeProjectId;
+      if (!id) return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      void onRemove(id);
+      return;
+    }
     const button = (event.target as Element).closest<HTMLButtonElement>('.project-menu-option');
     if (button) void select(button);
   });
@@ -143,13 +159,20 @@ export function openProjectPicker(options: ProjectPickerOptions): () => void {
   panel.addEventListener('keydown', event => {
     if (isImeKey(event)) return;
     const buttons = choices();
-    const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
+    const active = document.activeElement as Element | null;
+    const currentButton = active?.matches('.project-menu-option')
+      ? active as HTMLButtonElement
+      : active?.closest('.project-menu-row')?.querySelector<HTMLButtonElement>('.project-menu-option:not(:disabled)') ?? null;
+    const index = currentButton ? buttons.indexOf(currentButton) : -1;
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
+      if (!buttons.length) return;
       const next = index < 0 ? event.key === 'ArrowDown' ? 0 : buttons.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
       setActive(buttons[next], true);
     } else if ((event.key === 'Home' || event.key === 'End') && document.activeElement !== search) {
-      event.preventDefault(); setActive(buttons[event.key === 'Home' ? 0 : buttons.length - 1], true);
+      event.preventDefault();
+      if (!buttons.length) return;
+      setActive(buttons[event.key === 'Home' ? 0 : buttons.length - 1], true);
     } else if (event.key === 'Enter' && document.activeElement === search) {
       event.preventDefault();
       const button = buttons.find(button => button.dataset.projectId === activeId);

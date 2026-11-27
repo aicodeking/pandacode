@@ -4,13 +4,14 @@
  * wrapped continuation lines, **bold**, `code` and [links](https://…) (http/https only). The signing boilerplate repeated on every release is dropped here
  * and stated once on the page. */
 import dates from '../data/release-dates.json';
+import { bundledInVersion, publishedReleaseSummary } from './changelog-meta';
 
 export type Item = { html: string; children: readonly string[] };
 export type Block =
   | { kind: 'heading'; level: 2 | 3; html: string }
   | { kind: 'paragraph'; html: string }
   | { kind: 'list'; items: readonly Item[] };
-export type Release = { version: string; date?: string; title?: string; blocks: readonly Block[] };
+export type Release = { version: string; date?: string; bundledIn?: string; title?: string; blocks: readonly Block[] };
 
 const sources = import.meta.glob('../../../releases/*.md', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 const BOILERPLATE = /^This is an (?:Apple silicon )?Alpha preview\b/;
@@ -67,9 +68,18 @@ export function parse(source: string): { title?: string; blocks: Block[] } {
 export const releases: readonly Release[] = Object.entries(sources)
   .map(([path, source]) => {
     const version = path.match(/(\d+\.\d+\.\d+)\.md$/)?.[1] ?? '';
-    return { version, date: (dates as Record<string, string>)[version], ...parse(source) };
+    const bundledIn = bundledInVersion(version);
+    return {
+      version,
+      date: (dates as Record<string, string>)[version],
+      ...(bundledIn ? { bundledIn } : {}),
+      ...parse(source),
+    };
   })
   .filter(release => release.version)
   .sort((a, b) => compare(b.version, a.version));
+
+const { latest: latestPublished, publishedCount: publishedReleaseCount } = publishedReleaseSummary(releases);
+export { latestPublished, publishedReleaseCount };
 
 export const formatDate = (date: string) => new Date(`${date}T12:00:00Z`).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' });

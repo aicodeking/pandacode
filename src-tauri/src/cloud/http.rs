@@ -22,6 +22,22 @@ pub fn client(timeout: Duration) -> Result<reqwest::Client, String> {
         .map_err(|e| format!("Could not prepare a network client: {e}"))
 }
 
+#[cfg(test)]
+pub(crate) fn client_with_root(timeout: Duration, root: reqwest::Certificate) -> Result<reqwest::Client, String> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    reqwest::Client::builder()
+        .https_only(true)
+        .tls_certs_only([root])
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .user_agent(concat!("PandaCode/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("Could not prepare a network client: {e}"))
+}
+
 /// The service's own message from an error body, else the status.
 pub fn error_message(service: &str, status: u16, body: &str) -> String {
     let parsed: Option<Value> = serde_json::from_str(body).ok();
@@ -63,25 +79,56 @@ pub(crate) fn body_transport_error(service: &str, status: u16, err: &reqwest::Er
     }
 }
 
+fn next_cause<'a>(cause: &'a (dyn std::error::Error + 'static)) -> Option<&'a (dyn std::error::Error + 'static)> {
+    // Hyper may wrap an I/O error whose source skips its inner Rustls error.
+    cause
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+        .map(|inner| inner as &(dyn std::error::Error + 'static))
+        .or_else(|| cause.source())
+}
+
 pub(crate) fn is_tls_error(err: &reqwest::Error) -> bool {
     use std::error::Error;
 
+    // Pass 1: real rustls errors (handshake, certificate, protocol, fatal alerts) always fail closed.
     let mut source = err.source();
     while let Some(cause) = source {
-        if cause.is::<rustls::Error>() {
-            return true;
-        }
-        let message = cause.to_string().to_ascii_lowercase();
-        if ["tls", "handshake", "certificate", "received fatal alert"]
-            .iter().any(|phrase| message.contains(phrase))
+        if cause.is::<rustls::Error>()
+            || cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::get_ref)
+                .is_some_and(|inner| inner.is::<rustls::Error>())
         {
             return true;
         }
-        // Hyper may wrap an I/O error whose source skips its inner Rustls error.
-        source = cause.downcast_ref::<std::io::Error>()
-            .and_then(std::io::Error::get_ref)
-            .map(|inner| inner as &(dyn Error + 'static))
-            .or_else(|| cause.source());
+        source = next_cause(cause);
+    }
+
+    // Pass 2: an unclean TCP EOF (such as rustls missing close_notify) without any rustls::Error
+    // is a dropped transport connection, not a fatal TLS error.
+    let mut source = err.source();
+    while let Some(cause) = source {
+        if cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::UnexpectedEof)
+        {
+            return false;
+        }
+        source = next_cause(cause);
+    }
+
+    // Pass 3: fallback phrase check in case a non-rustls TLS error occurs.
+    let mut source = err.source();
+    while let Some(cause) = source {
+        let message = cause.to_string().to_ascii_lowercase();
+        if ["tls", "handshake", "certificate", "received fatal alert"]
+            .iter()
+            .any(|phrase| message.contains(phrase))
+        {
+            return true;
+        }
+        source = next_cause(cause);
     }
     false
 }
@@ -147,7 +194,7 @@ fn transport_detail(err: &reqwest::Error, eof: &'static str) -> Option<&'static 
         if detail.is_some() {
             return detail;
         }
-        source = cause.source();
+        source = next_cause(cause);
     }
     None
 }
@@ -179,13 +226,45 @@ pub fn block<T>(future: impl std::future::Future<Output = T>) -> T {
 
 #[cfg(test)]
 pub mod mock {
-    //! A loopback HTTP server that answers from a routing function and records requests.
+    //! A loopback HTTP/HTTPS server that answers from a routing function and records requests.
+    use base64::Engine;
     use std::{
-        io::{BufRead, BufReader, Read, Write},
+        io::{Read, Write},
         net::TcpListener,
         sync::{Arc, Mutex},
         thread,
+        time::Duration,
     };
+
+    // Test-only self-signed loopback CA (CN=PandaCode Test Loopback CA) and leaf certificate
+    // (CN=127.0.0.1, SAN=IP:127.0.0.1, ECDSA P-256, valid 2020-01-01 to 2120-01-01) plus leaf
+    // PKCS#8 key in base64-encoded DER. Never a real secret; used only by #[cfg(test)] servers.
+    const TEST_LOOPBACK_CA_CERT_DER_B64: &str = "MIIBXzCCAQSgAwIBAgIBATAKBggqhkjOPQQDAjAlMSMwIQYDVQQDDBpQYW5kYUNvZGUgVGVzdCBMb29wYmFjayBDQTAgFw0yMDAxMDEwMDAwMDBaGA8yMTIwMDEwMTAwMDAwMFowJTEjMCEGA1UEAwwaUGFuZGFDb2RlIFRlc3QgTG9vcGJhY2sgQ0EwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATJDIwjNuyLysPAbkw1FeJoqtgsOS3W/Y5lfTqr+9bxDFNJUhDzHmO1Gj5yggsE6Vh9EIlx7rkWQWiQzWciaFIaoyMwITAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBBjAKBggqhkjOPQQDAgNJADBGAiEAqC7OHZBhIKjknDDJHw/HafRxxqkQSkSnLd9chJZuj8ACIQD6CbWKnsbJkL9/WlujYOTmVTUQuT50QzZVVRfx6txtLA==";
+    const TEST_LOOPBACK_LEAF_CERT_DER_B64: &str = "MIIBcDCCARagAwIBAgIBAjAKBggqhkjOPQQDAjAlMSMwIQYDVQQDDBpQYW5kYUNvZGUgVGVzdCBMb29wYmFjayBDQTAgFw0yMDAxMDEwMDAwMDBaGA8yMTIwMDEwMTAwMDAwMFowFDESMBAGA1UEAwwJMTI3LjAuMC4xMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEA0owfIyikd12iBLToGePKIJdNm/RrZ3NehGzbNwATEclmsXggFug8w+YyAIR4oCMCgUQ7+J8yrt/cKbEqfQv2KNGMEQwDAYDVR0TAQH/BAIwADAOBgNVHQ8BAf8EBAMCB4AwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDwYDVR0RBAgwBocEfwAAATAKBggqhkjOPQQDAgNIADBFAiEA1EPVZ8LFJgrB/QErkwjmDxnRyDbBeMPb03fj5gk9ZCACIGRWJCYmCp/I0bz5y/Ml/swnbRylZxxg1CUlnXG8I4XP";
+    const TEST_LOOPBACK_LEAF_KEY_PKCS8_DER_B64: &str = "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgQNnSTHC0twYNMK/IuvqCfwvdVlUTFBdC2Wc2jzrsO1ShRANCAAQDSjB8jKKR3XaIEtOgZ48ogl02b9Gtnc16EbNs3ABMRyWaxeCAW6DzD5jIAhHigIwKBRDv4nzKu39wpsSp9C/Y";
+
+    fn loopback_ca_cert_der() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(TEST_LOOPBACK_CA_CERT_DER_B64)
+            .expect("valid test loopback CA cert DER")
+    }
+
+    fn loopback_leaf_cert_der() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(TEST_LOOPBACK_LEAF_CERT_DER_B64)
+            .expect("valid test loopback leaf cert DER")
+    }
+
+    fn loopback_leaf_key_der() -> Vec<u8> {
+        base64::engine::general_purpose::STANDARD
+            .decode(TEST_LOOPBACK_LEAF_KEY_PKCS8_DER_B64)
+            .expect("valid test loopback leaf key DER")
+    }
+
+    /// The test-only root certificate trusted by loopback HTTPS tests.
+    pub fn loopback_root_cert() -> reqwest::Certificate {
+        reqwest::Certificate::from_der(&loopback_ca_cert_der()).expect("valid test root cert")
+    }
 
     #[derive(Clone, Debug)]
     pub struct Request {
@@ -196,6 +275,53 @@ pub mod mock {
         pub body: String,
     }
     pub type Seen = Arc<Mutex<Vec<Request>>>;
+
+    fn read_request(stream: &mut impl Read) -> Option<Request> {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        let header_end = loop {
+            if let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            let n = stream.read(&mut chunk).ok()?;
+            if n == 0 {
+                return None;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+        };
+        let header_text = String::from_utf8_lossy(&buf[..header_end - 4]);
+        let mut lines = header_text.split("\r\n");
+        let first = lines.next()?;
+        let mut parts = first.split_whitespace();
+        let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
+        let mut headers = Vec::new();
+        let mut length = 0usize;
+        for line in lines {
+            if let Some((name, value)) = line.split_once(':') {
+                let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_string());
+                if name == "content-length" {
+                    length = value.parse().unwrap_or(0);
+                }
+                headers.push((name, value));
+            }
+        }
+        let mut body = buf[header_end..].to_vec();
+        if body.len() < length {
+            let start = body.len();
+            body.resize(length, 0);
+            stream.read_exact(&mut body[start..]).ok()?;
+        } else {
+            body.truncate(length);
+        }
+        let authorization = headers.iter().find(|(n, _)| n == "authorization").map(|(_, v)| v.clone());
+        Some(Request {
+            authorization,
+            method,
+            path,
+            headers,
+            body: String::from_utf8_lossy(&body).into_owned(),
+        })
+    }
 
     /// Serve until the test ends; `route` gets each request and the server's base URL
     /// and returns (status, body).
@@ -219,30 +345,58 @@ pub mod mock {
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
-                let mut reader = BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                if reader.read_line(&mut line).is_err() || line.is_empty() { continue; }
-                let mut parts = line.split_whitespace();
-                let (method, path) = (parts.next().unwrap_or("").to_string(), parts.next().unwrap_or("").to_string());
-                let mut headers = Vec::new();
-                let mut length = 0;
-                loop {
-                    let mut header = String::new();
-                    reader.read_line(&mut header).unwrap();
-                    let header = header.trim_end();
-                    if header.is_empty() { break; }
-                    if let Some((name, value)) = header.split_once(':') {
-                        let (name, value) = (name.trim().to_ascii_lowercase(), value.trim().to_string());
-                        if name == "content-length" { length = value.parse().unwrap_or(0); }
-                        headers.push((name, value));
-                    }
-                }
-                let mut body = vec![0; length];
-                reader.read_exact(&mut body).unwrap();
-                let request = Request { authorization: headers.iter().find(|(n, _)| n == "authorization").map(|(_, v)| v.clone()), method, path, headers, body: String::from_utf8_lossy(&body).into_owned() };
+                let Some(request) = read_request(&mut stream) else { continue };
                 let reply = route(&request, &own);
                 log.lock().unwrap().push(request);
                 let _ = stream.write_all(&reply);
+            }
+        });
+        (base, seen)
+    }
+
+    /// Serve real HTTPS over loopback using rustls, writing the exact response bytes and then
+    /// dropping the TCP socket without sending a TLS `close_notify` alert.
+    pub fn serve_https_raw(route: impl Fn(&Request, &str) -> Vec<u8> + Send + Sync + 'static) -> (String, Seen) {
+        let cert = rustls::pki_types::CertificateDer::from(loopback_leaf_cert_der());
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
+            rustls::pki_types::PrivatePkcs8KeyDer::from(loopback_leaf_key_der()),
+        );
+        let config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap(),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("https://{}", listener.local_addr().unwrap());
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let own = base.clone();
+        let route = Arc::new(route);
+        thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { return };
+                let config = config.clone();
+                let log = log.clone();
+                let own = own.clone();
+                let route = route.clone();
+                thread::spawn(move || {
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+                    let Ok(conn) = rustls::ServerConnection::new(config) else { return };
+                    let mut tls = rustls::StreamOwned::new(conn, stream);
+                    let Some(request) = read_request(&mut tls) else { return };
+                    let reply = route(&request, &own);
+                    log.lock().unwrap().push(request);
+                    if !reply.is_empty() {
+                        let _ = tls.write_all(&reply);
+                        let _ = tls.flush();
+                    }
+                    // Intentionally drop without calling send_close_notify() to reproduce
+                    // unclean HTTPS EOFs (rustls ErrorKind::UnexpectedEof).
+                });
             }
         });
         (base, seen)
@@ -278,6 +432,57 @@ mod tests {
             response.bytes().await.unwrap_err()
         });
         assert_eq!(body_transport_error("Sandbox", 200, &error), "Sandbox request failed (connection closed while reading response).");
+    }
+
+    #[test]
+    fn https_pre_header_drop_without_close_notify_is_not_a_tls_error() {
+        let (base, _) = mock::serve_https_raw(|_, _| Vec::new());
+        let error = block(async {
+            client_with_root(Duration::from_secs(5), mock::loopback_root_cert())
+                .unwrap()
+                .post(format!("{base}/private?token=private-query"))
+                .bearer_auth("private-header")
+                .send()
+                .await
+                .unwrap_err()
+        });
+        assert!(!is_tls_error(&error));
+        assert_eq!(transport_error("Sandbox", &error), "Sandbox request failed (connection closed before response).");
+    }
+
+    #[test]
+    fn https_mid_body_truncation_without_close_notify_is_not_a_tls_error() {
+        let (base, _) = mock::serve_https_raw(|_, _| {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 200\r\nConnection: close\r\n\r\n0123456789".to_vec()
+        });
+        let error = block(async {
+            let response = client_with_root(Duration::from_secs(5), mock::loopback_root_cert())
+                .unwrap()
+                .get(format!("{base}/private?token=private-query"))
+                .send()
+                .await
+                .unwrap();
+            response.bytes().await.unwrap_err()
+        });
+        assert!(!is_tls_error(&error));
+        assert_eq!(body_transport_error("Sandbox", 200, &error), "Sandbox request failed (connection closed while reading response).");
+    }
+
+    #[test]
+    fn https_untrusted_self_signed_certificate_is_still_a_tls_error() {
+        let (base, _) = mock::serve_https_raw(|_, _| {
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec()
+        });
+        let error = block(async {
+            client(Duration::from_secs(5))
+                .unwrap()
+                .get(format!("{base}/private?token=private-query"))
+                .send()
+                .await
+                .unwrap_err()
+        });
+        assert!(is_tls_error(&error));
+        assert_eq!(transport_error("Sandbox", &error), "Could not reach Sandbox. Check your connection.");
     }
 
     #[test]

@@ -1,8 +1,8 @@
 ---
 /* Every release, newest first, from releases/X.Y.Z.md (lib/changelog.ts). */
 import Page from '../layouts/Page.astro';
-import { releases, formatDate } from '../lib/changelog';
-const [latest] = releases;
+import { releases, latestPublished, publishedReleaseCount, formatDate } from '../lib/changelog';
+const latest = latestPublished ?? releases[0];
 const id = (version: string) => `v${version.replace(/\./g, '-')}`;
 const months = releases.reduce<{ label: string; versions: string[] }[]>((groups, release) => {
   const label = release.date ? new Date(`${release.date}T12:00:00Z`).toLocaleDateString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' }) : 'Earlier';
@@ -12,23 +12,30 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
 ---
 <Page title="Changelog" current="changelog" eyebrow="LITTLE BY LITTLE"
   heading="What’s new in PandaCode."
-  description={`Every PandaCode release, newest first. Latest: ${latest.version}${latest.date ? `, ${formatDate(latest.date)}` : ''}.`}
-  lede={`${releases.length} releases and counting. Every release is published on GitHub, with its source.`}>
-  <div slot="hero" class="changelog-latest page-rise">
-    <span class="live-dot" aria-hidden="true"></span>Latest <a href={`#${id(latest.version)}`}>{latest.version}</a>{latest.date && <> · <time datetime={latest.date}>{formatDate(latest.date)}</time></>}
-  </div>
+  description={latest ? `Every PandaCode release, newest first. Latest: ${latest.version}${latest.date ? `, ${formatDate(latest.date)}` : ''}.` : 'Every PandaCode release, newest first.'}
+  lede={`${publishedReleaseCount} published releases and counting. Published releases are on GitHub, with their source.`}>
+  {latest && (
+    <div slot="hero" class="changelog-latest page-rise">
+      <span class="live-dot" aria-hidden="true"></span>Latest <a href={`#${id(latest.version)}`}>{latest.version}</a>{latest.date && <> · <time datetime={latest.date}>{formatDate(latest.date)}</time></>}
+    </div>
+  )}
 
   <div class="changelog-layout section-width">
     <nav class="changelog-rail" aria-label="Releases">
       {months.map(month => <div class="rail-month"><p>{month.label}</p><ul>{month.versions.map(version => <li><a href={`#${id(version)}`} data-rail={id(version)}>{version}</a></li>)}</ul></div>)}
     </nav>
     <ol class="changelog-list">
-      {releases.map((release, index) => (
+      {releases.map(release => (
         <li class="release reveal" id={id(release.version)} aria-labelledby={`${id(release.version)}-title`}>
           <div class="release-marker" aria-hidden="true"><span></span></div>
           <div class="release-meta">
             <h2 id={`${id(release.version)}-title`}><a href={`#${id(release.version)}`}>{release.version}</a></h2>
-            {index === 0 && <span class="release-badge">Latest</span>}
+            {latest && release.version === latest.version && <span class="release-badge">Latest</span>}
+            {release.bundledIn && (
+              <span class="release-badge release-badge-bundled">
+                Shipped in <a href={`#${id(release.bundledIn)}`}>{release.bundledIn}</a> (not published separately)
+              </span>
+            )}
             {release.date && <time datetime={release.date}>{formatDate(release.date)}</time>}
           </div>
           <div class="release-body">
@@ -53,5 +60,28 @@ const months = releases.reduce<{ label: string; versions: string[] }[]>((groups,
     margin: 0;
     font: inherit;
     font-weight: bold;
+  }
+  .release-badge-bundled {
+    padding: 4px 10px;
+    border-radius: 10px;
+    background: #eef2e4;
+    box-shadow: inset 0 0 0 1px #dce2d3;
+    color: #50604a;
+    font-size: 11px;
+    font-weight: 550;
+    letter-spacing: 0;
+    line-height: 1.4;
+    text-transform: none;
+  }
+  .release-badge-bundled a {
+    color: var(--ink);
+    font-weight: 650;
+    text-decoration: underline;
+    text-decoration-color: #a9c47f;
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 2px;
+  }
+  .release-badge-bundled a:hover {
+    color: #647a43;
   }
 </style>

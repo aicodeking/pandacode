@@ -33,6 +33,35 @@ pub fn set_queue_hold_state(session_id: &str, held: bool, reason: Option<&str>) 
     }
 }
 
+pub fn transition_queue_hold_reason(session_id: &str, from: &str, to: &str) -> bool {
+    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(current) = queues.get_mut(session_id) {
+        if current == from {
+            *current = normalize_hold_reason(Some(to)).to_owned();
+            return true;
+        }
+    }
+    false
+}
+
+pub fn clear_queue_hold_if(session_id: &str, reasons: &[&str]) -> bool {
+    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    if queues.get(session_id).is_some_and(|r| reasons.contains(&r.as_str())) {
+        queues.remove(session_id);
+        return true;
+    }
+    false
+}
+
+pub fn hold_queue_if_unheld(session_id: &str, reason: &str) -> bool {
+    let mut queues = HELD_QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    if !queues.contains_key(session_id) {
+        queues.insert(session_id.to_owned(), normalize_hold_reason(Some(reason)).to_owned());
+        return true;
+    }
+    false
+}
+
 #[allow(dead_code)]
 pub fn set_queue_held(session_id: &str, held: bool) {
     set_queue_hold_state(session_id, held, None);
@@ -612,6 +641,59 @@ mod tests {
         set_queue_held(&session_id, true);
         assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
         set_queue_held(&session_id, false);
+        assert!(!is_queue_held(&session_id));
+    }
+
+    #[test]
+    fn atomic_queue_hold_transitions_respect_current_state() {
+        let session_id = crate::storage::id();
+
+        // Unheld: transition and conditional clear are no-ops; hold_queue_if_unheld succeeds.
+        assert!(!transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert_eq!(queue_hold_reason(&session_id), None);
+        assert!(!clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+        assert_eq!(queue_hold_reason(&session_id), None);
+
+        assert!(hold_queue_if_unheld(&session_id, "limited"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
+        // Already held: hold_queue_if_unheld leaves existing reason untouched.
+        assert!(!hold_queue_if_unheld(&session_id, "failed"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
+
+        // Non-matching `from` leaves the hold unchanged.
+        assert!(!transition_queue_hold_reason(&session_id, "failed", "reset"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("limited"));
+
+        // Matching `from` transitions to normalized `to`.
+        assert!(transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("reset"));
+        assert!(!transition_queue_hold_reason(&session_id, "limited", "reset"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("reset"));
+
+        // Unknown target reason normalizes to "stopped".
+        assert!(transition_queue_hold_reason(&session_id, "reset", "unknown"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+
+        // clear_queue_hold_if ignores non-matching reasons and empty slices.
+        assert!(!clear_queue_hold_if(&session_id, &[]));
+        assert!(!clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+
+        // Matching reason clears the hold.
+        for reason in ["limited", "reset", "restart"] {
+            set_queue_hold_state(&session_id, true, Some(reason));
+            assert!(clear_queue_hold_if(&session_id, &["limited", "reset", "restart"]));
+            assert!(!is_queue_held(&session_id));
+            assert_eq!(queue_hold_reason(&session_id), None);
+        }
+
+        // hold_queue_if_unheld normalizes unknown reasons to "stopped".
+        assert!(hold_queue_if_unheld(&session_id, "unknown"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+        assert!(!hold_queue_if_unheld(&session_id, "failed"));
+        assert_eq!(queue_hold_reason(&session_id).as_deref(), Some("stopped"));
+
+        set_queue_hold_state(&session_id, false, None);
         assert!(!is_queue_held(&session_id));
     }
 

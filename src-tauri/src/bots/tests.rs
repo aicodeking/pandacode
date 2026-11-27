@@ -637,6 +637,92 @@ fn upgrade_adds_profile_columns_to_older_bot_tables() {
 }
 
 #[test]
+fn has_bot_column_and_upgrade_schema_are_case_insensitive() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL, COLOR TEXT NOT NULL DEFAULT '', PROJECT_ID TEXT);
+         INSERT INTO bots VALUES('b', 'Old', '#112233', 'proj');",
+    ).unwrap();
+    assert!(has_bot_column(&db, "color").unwrap());
+    assert!(has_bot_column(&db, "COLOR").unwrap());
+    assert!(has_bot_column(&db, "Color").unwrap());
+    assert!(has_bot_column(&db, "project_id").unwrap());
+    assert!(!has_bot_column(&db, "notify").unwrap());
+
+    upgrade_schema(&db).unwrap();
+    upgrade_schema(&db).unwrap();
+    upgrade(&db).unwrap();
+
+    for (column, _) in ADDED_COLUMNS {
+        assert!(has_bot_column(&db, column).unwrap(), "missing bots.{column}");
+    }
+    let color: String = db.query_row("SELECT color FROM bots WHERE id='b'", [], |r| r.get(0)).unwrap();
+    assert_eq!(color, "#112233");
+    let has_project_index: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name='bots_project')",
+        [],
+        |r| r.get(0),
+    ).unwrap();
+    assert!(has_project_index, "bots_project created when PROJECT_ID exists in uppercase");
+}
+
+#[test]
+fn partial_v25_bot_activity_does_not_block_added_columns() {
+    // Direct upgrade_schema + upgrade on a partial-v25 DB lacking bot_activity.bot_id
+    // and lacking all 7 ADDED_COLUMNS on bots.
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(
+        "CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE bot_activity(id INTEGER PRIMARY KEY);
+         INSERT INTO bots VALUES('b', 'Legacy');
+         INSERT INTO bot_activity VALUES(1);",
+    ).unwrap();
+
+    upgrade_schema(&db).unwrap();
+    for (column, _) in ADDED_COLUMNS {
+        assert!(has_bot_column(&db, column).unwrap(), "upgrade_schema missing bots.{column}");
+    }
+    upgrade(&db).unwrap();
+    for (column, _) in ADDED_COLUMNS {
+        assert!(has_bot_column(&db, column).unwrap(), "upgrade missing bots.{column}");
+    }
+    for index in ["bot_memories_bot", "bot_schedules_due", "bot_messages_target", "bot_shared_channel_deliveries_message"] {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)", [index], |r| r.get(0)).unwrap();
+        assert!(exists, "buildable index {index} should be created");
+    }
+    for blocked in ["bot_activity_bot", "bot_activity_model_switch"] {
+        let exists: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)", [blocked], |r| r.get(0)).unwrap();
+        assert!(!exists, "blocked index {blocked} should be skipped without failing");
+    }
+
+    // startup_prepare on a Store with the same partial-v25 shape preserves all 7 ADDED_COLUMNS
+    // in the committed transaction even though bot_activity_bot / bot_activity_model_switch fail.
+    let store = Store::open(std::path::Path::new(":memory:")).unwrap();
+    store.db.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         DROP TABLE bots;
+         CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL);
+         DROP TABLE bot_activity;
+         CREATE TABLE bot_activity(id INTEGER PRIMARY KEY);
+         DROP INDEX IF EXISTS bot_memories_bot;
+         DROP INDEX IF EXISTS bot_shared_channel_deliveries_message;
+         PRAGMA foreign_keys=ON;",
+    ).unwrap();
+    startup_prepare(&store).unwrap();
+    for (column, _) in ADDED_COLUMNS {
+        assert!(has_bot_column(&store.db, column).unwrap(), "startup_prepare missing bots.{column}");
+    }
+    for index in ["bot_memories_bot", "bot_shared_channel_deliveries_message"] {
+        let exists: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)", [index], |r| r.get(0)).unwrap();
+        assert!(exists, "startup_prepare should create buildable index {index}");
+    }
+    for blocked in ["bot_activity_bot", "bot_activity_model_switch"] {
+        let exists: bool = store.db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1)", [blocked], |r| r.get(0)).unwrap();
+        assert!(!exists, "startup_prepare should skip blocked index {blocked}");
+    }
+}
+
+#[test]
 fn shared_channel_routing_uses_lead_and_limits_mentions_to_two_members() {
     let members = vec!["scout".to_owned(), "writer".to_owned(), "ledger".to_owned()];
     assert_eq!(shared_channels::route_recipients(&members, Some("scout"), &[]).unwrap(), ["scout"]);

@@ -394,3 +394,116 @@ fn future_schema_with_incompatible_recovery_tables_and_columns_opens_without_ddl
         assert_eq!(scalar::<String>(&reopened.db, "SELECT status FROM sessions WHERE id='lead'"), "running");
     }
 }
+
+#[test]
+fn subagent_recovery_handles_mixed_empty_null_missing_and_non_array_tools() {
+    let (fixture, db) = TestDatabase::v37();
+    batch(&db, "INSERT INTO projects(id,name,path) VALUES('project','Migration Lab','/work/pandacode');
+        INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at)
+        VALUES('task','project','Subagent tools edge cases','codex','gpt-5','auto','running',1,1);");
+    let cases = [
+        ("mixed", r#"{"id":"mixed","status":"running","updatedAt":1,"tools":["x",1,null,true,false,["nested"],{"id":"t1","status":"running"},{"id":"t2","status":"waiting"},{"id":"t3","status":"done"}]}"#),
+        ("empty", r#"{"id":"empty","status":"running","updatedAt":1,"tools":[]}"#),
+        ("null-tools", r#"{"id":"null-tools","status":"waiting","updatedAt":1,"tools":null}"#),
+        ("missing-tools", r#"{"id":"missing-tools","status":"running","updatedAt":1}"#),
+        ("object-tools", r#"{"id":"object-tools","status":"running","updatedAt":1,"tools":{"id":"t0","status":"running"}}"#),
+    ];
+    for (id, content) in cases {
+        db.execute(
+            "INSERT INTO subagents(session_id,id,content,updated_at) VALUES('task',?1,?2,1)",
+            params![id, content],
+        ).unwrap();
+    }
+    drop(db);
+
+    let store = Store::open(&fixture.path()).unwrap();
+    assert_eq!(scalar::<i64>(&store.db, "SELECT count(*) FROM running_subagents"), 0);
+    let parsed = |id: &str| -> serde_json::Value {
+        let raw: String = store.db.query_row(
+            "SELECT content FROM subagents WHERE session_id='task' AND id=?1",
+            [id],
+            |row| row.get(0),
+        ).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    };
+    for (id, _) in cases {
+        assert_eq!(parsed(id)["status"], "stopped", "{id}");
+    }
+    assert_eq!(
+        parsed("mixed")["tools"],
+        serde_json::json!(["x", 1, null, true, false, ["nested"], {"id":"t1","status":"failed"}, {"id":"t2","status":"failed"}, {"id":"t3","status":"done"}]),
+    );
+    assert_eq!(parsed("empty")["tools"], serde_json::json!([]));
+    assert_eq!(parsed("null-tools").get("tools"), Some(&serde_json::Value::Null));
+    assert_eq!(parsed("missing-tools").get("tools"), None);
+    assert_eq!(parsed("object-tools")["tools"], serde_json::json!({"id":"t0","status":"running"}));
+}
+
+#[test]
+fn json5_running_team_snapshot_is_tracked_interrupted_and_unblocks_guards() {
+    let (fixture, db) = TestDatabase::v37();
+    batch(&db, "INSERT INTO projects(id,name,path) VALUES('project','Migration Lab','/work/pandacode');
+        INSERT INTO sessions(id,project_id,title,provider,model,mode,status,created_at,updated_at) VALUES
+          ('team-cutoff','project','JSON5 team','codex','gpt-5','auto','running',1,1),
+          ('team-direct','project','JSON5 direct','codex','gpt-5','auto','waiting',1,1),
+          ('team-null','project','JSON5 null workers','codex','gpt-5','auto','running',1,1),
+          ('team-missing','project','JSON5 missing workers','codex','gpt-5','auto','running',1,1);
+        INSERT INTO messages(session_id,role,content,created_at) VALUES('team-cutoff','user','hello',1);");
+    let teams = [
+        ("team-cutoff", "{status:'running',generation:1,revision:1,workers:[{id:'w1',status:'running'}]}"),
+        ("team-direct", "{status:'waiting',legacyPromptThroughId:0,generation:2,revision:3,workers:[{id:'w2',status:'waiting'},{id:'w3',status:'completed'}],}"),
+        ("team-null", "{status:'running',legacyPromptThroughId:0,workers:null}"),
+        ("team-missing", "{status:'running',legacyPromptThroughId:0}"),
+    ];
+    for (sid, content) in teams {
+        db.execute("INSERT INTO architect_teams(session_id,content) VALUES(?1,?2)", params![sid, content]).unwrap();
+    }
+    drop(db);
+
+    let store = Store::open_with_before_recovery(&fixture.path(), || {
+        let before = Connection::open(fixture.path()).unwrap();
+        let meta = |sid: &str| -> (Option<String>, i64, i64) {
+            before.query_row(
+                "SELECT status,valid_json,needs_legacy_cutoff FROM architect_team_meta WHERE session_id=?1",
+                [sid],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).unwrap()
+        };
+        assert_eq!(meta("team-cutoff"), (Some("running".into()), 1, 1));
+        assert_eq!(meta("team-direct"), (Some("waiting".into()), 1, 0));
+        assert_eq!(meta("team-null"), (Some("running".into()), 1, 0));
+        assert_eq!(meta("team-missing"), (Some("running".into()), 1, 0));
+    }).unwrap();
+
+    let parsed = |sid: &str| -> serde_json::Value {
+        let raw: String = store.db.query_row("SELECT content FROM architect_teams WHERE session_id=?1", [sid], |row| row.get(0)).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    };
+    let cutoff = parsed("team-cutoff");
+    assert_eq!(cutoff["status"], "interrupted");
+    assert_eq!(cutoff["generation"], 2);
+    assert_eq!(cutoff["revision"], 2);
+    assert_eq!(cutoff["legacyPromptThroughId"], 1);
+    assert_eq!(cutoff["workers"], serde_json::json!([{"id":"w1","status":"stopped"}]));
+    let direct = parsed("team-direct");
+    assert_eq!(direct["status"], "interrupted");
+    assert_eq!(direct["generation"], 3);
+    assert_eq!(direct["revision"], 4);
+    assert_eq!(direct["workers"], serde_json::json!([{"id":"w2","status":"stopped"},{"id":"w3","status":"completed"}]));
+    assert_eq!(parsed("team-null").get("workers"), Some(&serde_json::Value::Null));
+    assert_eq!(parsed("team-missing").get("workers"), None);
+    for (sid, _) in teams {
+        let meta: (Option<String>, i64, i64) = store.db.query_row(
+            "SELECT status,valid_json,needs_legacy_cutoff FROM architect_team_meta WHERE session_id=?1",
+            [sid],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(meta, (Some("interrupted".into()), 1, 0), "{sid}");
+    }
+
+    let (state, _) = crate::concurrent_task_tests::test_state();
+    *state.store.lock().unwrap() = store;
+    drop(crate::agent_updates::reserve_install(&state).expect("recovered JSON5 teams no longer block installs"));
+    let store = state.store.lock().unwrap();
+    crate::remove_project_with_team_check(&store, "project").expect("recovered JSON5 teams no longer block project removal");
+}

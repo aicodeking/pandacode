@@ -1,5 +1,6 @@
 /* Settings → Connections → Remote access → Web access: serve this live PandaCode session to a browser on a
- * chosen port. The server binds to 127.0.0.1 and every link carries a secret access token. */
+ * chosen port and bind address. The server binds to 127.0.0.1 by default, optional trusted host names let a
+ * named address (a Tailscale MagicDNS name) reach it, and every link carries a secret access token. */
 import './web-server-settings.css';
 import { escape, icon, isImeKey, morph } from './dom';
 import { errorText } from './error-text';
@@ -13,6 +14,10 @@ export interface WebServerStatus {
   port: number;
   /** The saved port (default 47322; 0 = pick an open port automatically). */
   configuredPort: number;
+  /** The saved bind address; 127.0.0.1 when never set. */
+  configuredHost: string;
+  /** The saved trusted host names, lowercase, possibly empty. */
+  allowedHosts: string[];
   url: string | null;
   tokenUrl: string | null;
   clients: number;
@@ -30,11 +35,17 @@ export interface WebServerHost {
 }
 
 export type PortParse = { ok: true; port: number } | { ok: false; error: string };
+export type HostParse = { ok: true; host: string } | { ok: false; error: string };
+export type AllowedHostsParse = { ok: true; hosts: string[] } | { ok: false; error: string };
 
 export const MAX_PORT = 65535;
+export const MAX_ALLOWED_HOSTS = 8;
 const PORT_RANGE_ERROR = `Enter a port between 0 and ${MAX_PORT} (0 picks an open port automatically).`;
-const SERVE_TIP = 'Serves this live PandaCode session to a browser with a secret access token. By default it listens only on 127.0.0.1; to reach it from another machine, forward the port over an SSH tunnel.';
+const SERVE_TIP = 'Serves this live PandaCode session to a browser with a secret access token. By default it listens only on 127.0.0.1; to reach it from another machine, forward the port over an SSH tunnel or add a trusted host name.';
 const PORT_TIP = 'Any open port from 1 to 65535, or 0 to let the system choose one. A browser tab that applies the change moves to the new port; other connected browsers disconnect and need the new link.';
+const HOST_TIP = 'The IP address the web server binds to. 127.0.0.1 accepts connections from this computer only; 0.0.0.0 or a private Tailscale address lets other machines reach it. The secret access token is still required.';
+const ALLOWED_HOSTS_TIP = 'Host names the server accepts in a browser address, such as a Tailscale MagicDNS name (my-mac.tail1234.ts.net). Enter up to 8, lowercase, separated by commas. With a loopback bind, the session link uses https://<first name> and still needs the access token.';
+const BROWSER_HOST_NOTE = 'The bind address and trusted host names can only be changed on the PandaCode machine.';
 const MOVE_DETAIL = 'This tab will try to open the new port. If you connected through an SSH tunnel or port forward, update it to point to the new port.';
 const STOP_TITLE = 'Stop the web server?';
 /** How to get the server back, for the desktop app and headless `pandacode serve` alike. */
@@ -44,7 +55,7 @@ const LOOPBACK_HOSTS = new Set(['', '::1', '[::1]', '0:0:0:0:0:0:0:1', 'localhos
 /** Any address in 127.0.0.0/8, as Rust's `IpAddr::is_loopback()` counts it. */
 const LOOPBACK_V4 = /^127(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 const LOCAL_HOST = '127.0.0.1';
-type Target = '' | 'enabled' | 'port' | 'link';
+type Target = '' | 'enabled' | 'port' | 'host' | 'hosts' | 'link';
 
 /** Whether `host` only accepts connections from this computer. */
 export function isLoopbackHost(host: string): boolean {
@@ -102,10 +113,90 @@ export function parsePortInput(raw: string): PortParse {
   return { ok: true, port };
 }
 
+/** Any IPv4 literal, with no leading zeros (Rust's `Ipv4Addr` rejects those too). */
+const IPV4 = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+const IPV6_CHARS = /^[0-9a-f:.]+$/i;
+const NOT_AN_IP = 'is not an IP address (for example 127.0.0.1 or ::1).';
+
+/** A bare IPv6 literal; the URL parser knows compression, embedded IPv4 and group counts. */
+function looksLikeIpv6(text: string): boolean {
+  if (!IPV6_CHARS.test(text) || !text.includes(':')) return false;
+  try { new URL(`http://[${text}]/`); return true; } catch { return false; }
+}
+
+/** Validates the bind-address field: an IPv4 or IPv6 literal (brackets around IPv6 are accepted), or
+ *  empty for the 127.0.0.1 default. The backend takes an IP, so a host name is rejected here. */
+export function parseHostInput(raw: string): HostParse {
+  if (typeof raw !== 'string') return { ok: false, error: `Enter an IP address (for example ${LOCAL_HOST} or ::1).` };
+  let text = raw.trim();
+  if (!text) return { ok: true, host: LOCAL_HOST };
+  const original = text;
+  if (text.startsWith('[') || text.endsWith(']')) {
+    if (!(text.startsWith('[') && text.endsWith(']'))) return { ok: false, error: `“${original.slice(0, 47)}” ${NOT_AN_IP}` };
+    text = text.slice(1, -1).trim();
+  }
+  const host = text.toLowerCase();
+  if (IPV4.test(host) || looksLikeIpv6(host)) return { ok: true, host };
+  return { ok: false, error: `“${original.slice(0, 47)}” ${NOT_AN_IP}` };
+}
+
+/** Why `entry` cannot be a trusted host name, or '' when it can. Bracketed IPv6 is the one literal that
+ *  may contain a colon; a colon anywhere else means a port was typed. */
+function allowedHostProblem(entry: string): string {
+  const shown = entry.slice(0, 64);
+  if (entry.includes('://')) return `“${shown}” is a URL, not a host name.`;
+  if (/[/\\?#@]/.test(entry)) return `“${shown}” is not a host name. Enter a name like my-mac.tail1234.ts.net.`;
+  if (entry.startsWith('[') || entry.endsWith(']')) {
+    const inner = entry.startsWith('[') && entry.endsWith(']') ? entry.slice(1, -1) : '';
+    if (!looksLikeIpv6(inner)) return `“${shown}” is not a host name.`;
+    return '';
+  }
+  if (entry.includes(':')) return `“${shown}” includes a port. Enter the host name without a port.`;
+  return '';
+}
+
+/** Validates the trusted-host-names field: comma/whitespace separated, lowercase, trimmed, de-duplicated
+ *  and capped. Empty is allowed (no trusted names). */
+export function parseAllowedHostsInput(raw: string): AllowedHostsParse {
+  if (typeof raw !== 'string') return { ok: false, error: 'Enter trusted host names, separated by commas.' };
+  const hosts: string[] = [];
+  for (const entry of raw.split(/[\s,]+/)) {
+    const text = entry.trim().toLowerCase();
+    if (!text) continue;
+    const problem = allowedHostProblem(text);
+    if (problem) return { ok: false, error: problem };
+    if (hosts.includes(text)) continue;
+    hosts.push(text);
+    if (hosts.length > MAX_ALLOWED_HOSTS) return { ok: false, error: `Enter at most ${MAX_ALLOWED_HOSTS} trusted host names.` };
+  }
+  return { ok: true, hosts };
+}
+
+/** The saved bind address, with the default when a legacy reply omits it. */
+function configuredHostOf(status: WebServerStatus | undefined): string {
+  const text = typeof status?.configuredHost === 'string' ? status.configuredHost.trim() : '';
+  return text || LOCAL_HOST;
+}
+
+/** The saved trusted names, lowercase and de-duplicated. */
+function allowedHostsOf(status: WebServerStatus | undefined): string[] {
+  if (!Array.isArray(status?.allowedHosts)) return [];
+  const names: string[] = [];
+  for (const raw of status.allowedHosts) {
+    const text = String(raw ?? '').trim().toLowerCase();
+    if (text && !names.includes(text)) names.push(text);
+  }
+  return names;
+}
+
+const allowedHostsText = (status: WebServerStatus | undefined) => allowedHostsOf(status).join(', ');
+
 export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): () => void {
   let status: WebServerStatus | undefined, loading = true, loadError = '';
   let error = '', errorTarget: Target = '', saving = false, disposed = false;
   let portDraft = '', portDirty = false;
+  let hostDraft = '', hostDirty = false;
+  let allowedHostsDraft = '', allowedHostsDirty = false;
   /** The switch's value while a toggle is saving, so the redraw does not flip it back before the reply. */
   let pendingEnabled: boolean | undefined;
   /** Asking before a browser tab stops the server that serves it. */
@@ -133,11 +224,16 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     return String(live ? status.port : status.configuredPort);
   };
   const sessionLink = (s: WebServerStatus) => reachableSessionUrl(s.tokenUrl ?? '', location.origin, inWebBrowser());
+  /** The saved bind address the field stands for. */
+  const hostSaved = () => configuredHostOf(status);
   const fail = (e: unknown, target: Target) => { error = errorText(e); errorTarget = target; render(); };
+  /** The field whose inline error this target belongs to, for aria-describedby. */
+  const errorId = (target: Target) => target === 'port' ? 'web-server-port-error' : target === 'host' ? 'web-server-host-error' : target === 'hosts' ? 'web-server-allowed-hosts-error' : '';
 
   function banner(): string {
     if (!error) return '';
-    return `<div class="message-error error-row remote-error-row web-server-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary remote-error"${errorTarget === 'port' ? ' id="web-server-port-error"' : ''} role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-dismiss-error aria-label="Dismiss error">${icon('close')}</button></div></div>`;
+    const id = errorId(errorTarget);
+    return `<div class="message-error error-row remote-error-row web-server-error-row"><div class="error-row-head"><span class="error-row-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span class="error-row-summary remote-error"${id ? ` id="${id}"` : ''} role="alert">${escape(error)}</span><button type="button" class="error-row-button error-row-dismiss" data-dismiss-error aria-label="Dismiss error">${icon('close')}</button></div></div>`;
   }
   const after = (target: Target) => errorTarget === target ? banner() : '';
 
@@ -152,11 +248,21 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
   function portRow(): string {
     return `<div class="setting-row web-server-row" data-row="port"><div><strong>Port</strong><small>Any open port (1–65535), or 0 for automatic</small></div><span class="web-server-port-controls"><input type="text" id="web-server-port" class="web-server-port-input" inputmode="numeric" autocomplete="off" maxlength="5" aria-label="Web server port" value="${escape(portDraft)}"${error && errorTarget === 'port' ? ' aria-invalid="true" aria-describedby="web-server-port-error"' : ''} ${saving ? 'disabled' : ''}><button type="button" class="secondary-button" data-web-apply ${saving || !portDirty ? 'disabled' : ''}>Apply</button></span>${infoMark(PORT_TIP, 'About the web server port')}</div>`;
   }
+  function hostRow(): string {
+    return `<div class="setting-row web-server-row" data-row="host"><div><strong>Bind address</strong><small>IP address to listen on (default ${LOCAL_HOST})</small></div><span class="web-server-port-controls"><input type="text" id="web-server-host" class="web-server-port-input web-server-host-input" inputmode="url" autocomplete="off" spellcheck="false" maxlength="47" aria-label="Web server bind address" placeholder="${LOCAL_HOST}" value="${escape(hostDraft)}"${error && errorTarget === 'host' ? ' aria-invalid="true" aria-describedby="web-server-host-error"' : ''} ${saving ? 'disabled' : ''}><button type="button" class="secondary-button" data-web-apply-host ${saving || !hostDirty ? 'disabled' : ''}>Apply</button></span>${infoMark(HOST_TIP, 'About the web server bind address')}</div>`;
+  }
+  function allowedHostsRow(): string {
+    return `<div class="setting-row web-server-row" data-row="allowed-hosts"><div><strong>Trusted host names</strong><small>Comma-separated names a browser may use, e.g. my-mac.tail1234.ts.net</small></div><span class="web-server-port-controls"><input type="text" id="web-server-allowed-hosts" class="web-server-port-input web-server-allowed-hosts-input" inputmode="url" autocomplete="off" spellcheck="false" maxlength="512" aria-label="Trusted host names" value="${escape(allowedHostsDraft)}"${error && errorTarget === 'hosts' ? ' aria-invalid="true" aria-describedby="web-server-allowed-hosts-error"' : ''} ${saving ? 'disabled' : ''}><button type="button" class="secondary-button" data-web-apply-hosts ${saving || !allowedHostsDirty ? 'disabled' : ''}>Apply</button></span>${infoMark(ALLOWED_HOSTS_TIP, 'About trusted host names')}</div>`;
+  }
+  /** A browser tab cannot edit the bind address or trusted names: show the rule instead of the inputs. */
+  function browserHostNote(): string {
+    return `<div class="setting-row web-server-row" data-row="host-readonly"><div><strong>Bind address &amp; trusted host names</strong><small>${BROWSER_HOST_NOTE}</small></div></div>`;
+  }
   function linkBlock(s: WebServerStatus): string {
     if (!(s.running && s.url)) return '';
     // Events carry no token link; until web_server_status returns it, Open and Copy wait.
     const linkWait = s.tokenUrl ? '' : 'disabled aria-busy="true"';
-    return `<div class="web-server-link" data-row="link"><div class="web-server-link-head"><code class="web-server-url">${escape(reachableDisplayUrl(s.url, location.origin, inWebBrowser()))}</code><span class="remote-badge">Token in link</span></div><div class="web-server-link-actions"><button type="button" class="primary-button" data-web-open ${linkWait}>Open</button><button type="button" class="secondary-button" data-web-copy ${linkWait}>${icon('copy')}Copy link</button><button type="button" class="secondary-button" data-web-rotate ${saving ? 'disabled' : ''}>New token</button></div>${reachNote(s)}</div>`;
+    return `<div class="web-server-link" data-row="link"><div class="web-server-link-head"><code class="web-server-url">${escape(reachableDisplayUrl(s.url, location.origin, inWebBrowser()))}</code><span class="remote-badge">Token in link</span></div><div class="web-server-link-actions"><button type="button" class="primary-button" data-web-open ${linkWait}>Open</button><button type="button" class="secondary-button" data-web-copy ${linkWait}>${icon('copy')}Copy link</button><button type="button" class="secondary-button" data-web-rotate ${saving ? 'disabled' : ''}>New token</button></div>${reachNote(s)}${trustedNote(s)}</div>`;
   }
   function reachNote(s: WebServerStatus): string {
     const displayHost = escape(formatHost(s.host || LOCAL_HOST));
@@ -164,6 +270,13 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     const machine = inWebBrowser() ? 'the PandaCode machine' : 'this computer';
     if (isLoopbackHost(s.host)) return `<p class="web-server-note">Only reachable from ${machine} (${displayHost}). From another machine, forward with <code>ssh -L ${s.port}:${displayHost}:${s.port} &lt;host&gt;</code>.</p>`;
     return `<p class="web-server-note web-server-note-warn"><span class="web-server-note-icon" data-state-tone="warn" aria-hidden="true">${icon('alert')}</span><span>Listening on ${escape(formatHost(s.host))} over plain HTTP — traffic and the access token are unencrypted unless on a private Tailscale/WireGuard network. Prefer 127.0.0.1 with an SSH tunnel.</span></p>`;
+  }
+  /** With trusted names saved, say which names they are and, on loopback, that the link uses the first one. */
+  function trustedNote(s: WebServerStatus): string {
+    const names = allowedHostsOf(s);
+    if (!names.length) return '';
+    const https = !inWebBrowser() && isLoopbackHost(s.host) ? ` The link below uses <code>https://${escape(names[0])}</code>.` : '';
+    return `<p class="web-server-note">Trusted host names: <code>${escape(names.join(', '))}</code>.${https} A trusted name still needs the access token.</p>`;
   }
   /** Desktop: who a stop or port change would cut off. */
   const clientsNote = (s: WebServerStatus) => `${s.clients} ${s.clients === 1 ? 'browser is' : 'browsers are'} currently connected and will be disconnected.`;
@@ -200,7 +313,10 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
       if (loading) return '<p class="dialog-loading" role="status">Loading…</p>';
       return `<div class="remote-load-error" role="alert"><span class="web-server-state-icon" data-state-tone="danger" aria-hidden="true">${icon('alert')}</span><span><strong>Couldn’t load web access.</strong><small>${escape(loadError || 'Try again.')}</small></span><button type="button" class="secondary-button" data-web-retry>Retry</button></div>`;
     }
-    return `${serveRow(status)}${stopConfirm()}${after('enabled')}${portRow()}${portConfirm()}${after('port')}${linkBlock(status)}${rotateConfirm()}${after('link')}${errorTarget === '' ? banner() : ''}`;
+    const hostRows = inWebBrowser()
+      ? browserHostNote()
+      : `${hostRow()}${after('host')}${allowedHostsRow()}${after('hosts')}`;
+    return `${serveRow(status)}${stopConfirm()}${after('enabled')}${portRow()}${portConfirm()}${after('port')}${hostRows}${linkBlock(status)}${rotateConfirm()}${after('link')}${errorTarget === '' ? banner() : ''}`;
   }
 
   /** Redraws by morphing, so unchanged nodes keep focus, caret and the switch's data-armed. */
@@ -209,22 +325,38 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     morph(root, `<div class="settings-group web-server-settings">${body()}</div>`, 8);
     const toggle = root.querySelector<HTMLInputElement>('#web-server-enabled');
     if (toggle && status) toggle.checked = shownEnabled();
-    const port = root.querySelector<HTMLInputElement>('#web-server-port');
-    if (port && port.value !== portDraft) {
-      const focused = document.activeElement === port, caret = port.selectionStart;
-      port.value = portDraft;
-      if (focused && caret !== null) port.setSelectionRange(Math.min(caret, portDraft.length), Math.min(caret, portDraft.length));
-    }
+    syncField('#web-server-port', portDraft);
+    syncField('#web-server-host', hostDraft);
+    syncField('#web-server-allowed-hosts', allowedHostsDraft);
+  }
+  /** Keeps a focused field's caret where the user left it while `morph()` may have re-created the node. */
+  function syncField(selector: string, draft: string): void {
+    const input = root.querySelector<HTMLInputElement>(selector);
+    if (!input || input.value === draft) return;
+    const focused = document.activeElement === input, caret = input.selectionStart;
+    input.value = draft;
+    if (focused && caret !== null) input.setSelectionRange(Math.min(caret, draft.length), Math.min(caret, draft.length));
   }
   function apply(next: WebServerStatus): void {
-    status = next;
+    status = {
+      ...next,
+      // Older/partial replies (and test events) predate these fields: keep the last known saved values.
+      configuredHost: typeof next.configuredHost === 'string' && next.configuredHost.trim() ? next.configuredHost.trim() : hostSaved(),
+      allowedHosts: Array.isArray(next.allowedHosts) ? allowedHostsOf(next) : allowedHostsOf(status),
+    };
     // A stopped server (here or elsewhere) has nothing left to confirm.
     if (!next.running) { confirmingStop = false; confirmingRotate = false; confirmingPort = null; }
     if (!portDirty) portDraft = portSaved();
+    if (!hostDirty) hostDraft = hostSaved();
+    if (!allowedHostsDirty) allowedHostsDraft = allowedHostsText(status);
   }
   function refreshApply(): void {
-    const button = root.querySelector<HTMLButtonElement>('[data-web-apply]');
-    if (button) button.disabled = saving || !portDirty;
+    const port = root.querySelector<HTMLButtonElement>('[data-web-apply]');
+    if (port) port.disabled = saving || !portDirty;
+    const bind = root.querySelector<HTMLButtonElement>('[data-web-apply-host]');
+    if (bind) bind.disabled = saving || !hostDirty;
+    const names = root.querySelector<HTMLButtonElement>('[data-web-apply-hosts]');
+    if (names) names.disabled = saving || !allowedHostsDirty;
   }
 
   /** Runs one native change; controls disable while it runs and focus returns to the control that started it. */
@@ -246,6 +378,8 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
   function focusSelector(active: Element | null): string {
     if (!(active instanceof HTMLElement) || !root.contains(active)) return '';
     if (active.id) return `#${CSS.escape(active.id)}`;
+    if (active.hasAttribute('data-web-apply-host')) return '#web-server-host';
+    if (active.hasAttribute('data-web-apply-hosts')) return '#web-server-allowed-hosts';
     if (active.hasAttribute('data-web-apply')) return '#web-server-port';
     if (active.hasAttribute('data-web-rotate')) return '[data-web-rotate]';
     if (active.hasAttribute('data-web-stop-confirm')) return '#web-server-enabled';
@@ -259,7 +393,26 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     if (!parsed.ok) { fail(parsed.error, 'port'); return null; }
     return parsed.port;
   }
-  const settle = () => { portDirty = false; };
+  /** The typed bind address when it differs from the saved one; undefined when unchanged; null after an error. */
+  function draftHost(): string | undefined | null {
+    if (!hostDirty) return undefined;
+    const parsed = parseHostInput(hostDraft);
+    if (!parsed.ok) { fail(parsed.error, 'host'); return null; }
+    return parsed.host;
+  }
+  /** The typed trusted names when they differ from the saved ones; undefined when unchanged; null after an error. */
+  function draftAllowedHosts(): string[] | undefined | null {
+    if (!allowedHostsDirty) return undefined;
+    const parsed = parseAllowedHostsInput(allowedHostsDraft);
+    if (!parsed.ok) { fail(parsed.error, 'hosts'); return null; }
+    return parsed.hosts;
+  }
+  const settlePort = () => { portDirty = false; };
+  const settleAll = () => { portDirty = false; hostDirty = false; allowedHostsDirty = false; };
+  /** A one-off CLI session (`--port`/`--host` without the saved setting) stays one-off: restart it without saving. */
+  function configureArgs(extra: Record<string, unknown>): Record<string, unknown> {
+    return status?.running && !status.enabled ? { ...extra, enabled: true, persist: false } : { ...extra, enabled: Boolean(status?.running) };
+  }
 
   function applyPort(): void {
     if (!status || saving) return;
@@ -272,6 +425,18 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     }
     changePort(port);
   }
+  function applyHost(): void {
+    if (!status || saving) return;
+    const next = draftHost();
+    if (next === null || next === undefined) return;
+    void save('web_server_configure', configureArgs({ host: next }), 'host', () => { hostDirty = false; });
+  }
+  function applyAllowedHosts(): void {
+    if (!status || saving) return;
+    const next = draftAllowedHosts();
+    if (next === null || next === undefined) return;
+    void save('web_server_configure', configureArgs({ allowedHosts: next }), 'hosts', () => { allowedHostsDirty = false; });
+  }
   function cancelPortChange(): void {
     confirmingPort = null; render();
     root.querySelector<HTMLElement>('#web-server-port')?.focus();
@@ -280,9 +445,7 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     if (!status || saving) return;
     confirmingPort = null;
     const before = status.running ? status.port : 0;
-    // A one-off CLI session (`--port` without the saved setting) stays one-off: restart it without saving.
-    const args = status.running && !status.enabled ? { enabled: true, port, persist: false } : { enabled: status.running, port };
-    void save('web_server_configure', args, 'port', next => { settle(); followPort(before, next); });
+    void save('web_server_configure', configureArgs({ port }), 'port', next => { settlePort(); followPort(before, next); });
   }
   /** A browser tab served on the old port follows the server to the new one. */
   function followPort(before: number, next: WebServerStatus): void {
@@ -318,8 +481,14 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     }
     const port = enabled ? draftPort() : undefined;
     if (port === null) { input.checked = status.running; return; }
+    const hostValue = enabled ? draftHost() : undefined;
+    if (hostValue === null) { input.checked = status.running; return; }
     pendingEnabled = enabled;
-    void save('web_server_configure', port === undefined ? { enabled } : { enabled, port }, port === undefined ? 'enabled' : 'port', port === undefined ? undefined : settle);
+    const args: Record<string, unknown> = { enabled };
+    if (port !== undefined) args.port = port;
+    if (hostValue !== undefined) args.host = hostValue;
+    const target: Target = hostValue !== undefined ? 'host' : port !== undefined ? 'port' : 'enabled';
+    void save('web_server_configure', args, target, enabled ? settleAll : undefined);
   }
   async function load(): Promise<void> {
     loading = true; loadError = ''; render();
@@ -357,12 +526,14 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
     const button = (event.target as HTMLElement).closest<HTMLButtonElement>('button');
     if (!button || button.disabled) return;
     if (button.hasAttribute('data-dismiss-error')) {
-      const back = errorTarget === 'enabled' ? '#web-server-enabled' : errorTarget === 'port' ? '#web-server-port' : errorTarget === 'link' ? '[data-web-rotate]' : '';
+      const back = errorTarget === 'enabled' ? '#web-server-enabled' : errorTarget === 'port' ? '#web-server-port' : errorTarget === 'host' ? '#web-server-host' : errorTarget === 'hosts' ? '#web-server-allowed-hosts' : errorTarget === 'link' ? '[data-web-rotate]' : '';
       error = ''; errorTarget = ''; render();
       ((back ? root.querySelector<HTMLElement>(back) : null) ?? root.querySelector<HTMLElement>('input:not([disabled]),button:not([disabled])'))?.focus();
     }
     else if (button.hasAttribute('data-web-retry')) void load();
     else if (button.hasAttribute('data-web-apply')) applyPort();
+    else if (button.hasAttribute('data-web-apply-host')) applyHost();
+    else if (button.hasAttribute('data-web-apply-hosts')) applyAllowedHosts();
     else if (button.hasAttribute('data-web-open') && status?.tokenUrl) void host.openUrl(sessionLink(status)).catch(e => fail(e, 'link'));
     else if (button.hasAttribute('data-web-copy')) copyLink();
     else if (button.hasAttribute('data-web-rotate')) {
@@ -381,12 +552,21 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
   };
   const onInput = (event: Event) => {
     const input = event.target as HTMLInputElement;
-    if (input.id !== 'web-server-port') return;
-    portDraft = input.value;
-    if (confirmingPort !== null) { confirmingPort = null; render(); }
-    // A port error clears as soon as the field holds a valid port again.
-    if (error && errorTarget === 'port' && parsePortInput(portDraft).ok) { error = ''; errorTarget = ''; render(); }
-    portDirty = portDraft.trim() !== portSaved();
+    if (input.id === 'web-server-port') {
+      portDraft = input.value;
+      if (confirmingPort !== null) { confirmingPort = null; render(); }
+      // A port error clears as soon as the field holds a valid port again.
+      if (error && errorTarget === 'port' && parsePortInput(portDraft).ok) { error = ''; errorTarget = ''; render(); }
+      portDirty = portDraft.trim() !== portSaved();
+    } else if (input.id === 'web-server-host') {
+      hostDraft = input.value;
+      if (error && errorTarget === 'host' && parseHostInput(hostDraft).ok) { error = ''; errorTarget = ''; render(); }
+      hostDirty = hostDraft.trim() !== hostSaved();
+    } else if (input.id === 'web-server-allowed-hosts') {
+      allowedHostsDraft = input.value;
+      if (error && errorTarget === 'hosts' && parseAllowedHostsInput(allowedHostsDraft).ok) { error = ''; errorTarget = ''; render(); }
+      allowedHostsDirty = allowedHostsDraft.trim() !== allowedHostsText(status);
+    } else return;
     refreshApply();
   };
   /** Escape cancels an open confirmation wherever focus is in Settings, before Settings' own Escape sees it. */
@@ -408,6 +588,26 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
   const onKeydown = (event: KeyboardEvent) => {
     const input = event.target as HTMLInputElement;
     if (isImeKey(event)) return;
+    if (input.id === 'web-server-host') {
+      if (event.key === 'Enter') { event.preventDefault(); applyHost(); }
+      else if (event.key === 'Escape' && hostDirty) {
+        event.preventDefault(); event.stopPropagation();
+        hostDraft = hostSaved(); hostDirty = false;
+        if (errorTarget === 'host') { error = ''; errorTarget = ''; }
+        render();
+      }
+      return;
+    }
+    if (input.id === 'web-server-allowed-hosts') {
+      if (event.key === 'Enter') { event.preventDefault(); applyAllowedHosts(); }
+      else if (event.key === 'Escape' && allowedHostsDirty) {
+        event.preventDefault(); event.stopPropagation();
+        allowedHostsDraft = allowedHostsText(status); allowedHostsDirty = false;
+        if (errorTarget === 'hosts') { error = ''; errorTarget = ''; }
+        render();
+      }
+      return;
+    }
     if (input.id !== 'web-server-port') return;
     if (event.key === 'Enter') { event.preventDefault(); applyPort(); }
     else if (event.key === 'Escape' && portDirty) {
@@ -430,8 +630,9 @@ export function mountWebServerSettings(root: HTMLElement, host: WebServerHost): 
   const unlisten = host.listen('web-server-changed', payload => {
     if (!payload || typeof payload !== 'object' || typeof (payload as WebServerStatus).enabled !== 'boolean') return;
     const next = payload as WebServerStatus;
-    // A new token generation means a rotation (here or in another window): the held link is retired.
-    const same = Boolean(status?.running && status.tokenUrl && status.port === next.port && status.host === next.host && status.tokenGeneration === next.tokenGeneration);
+    // A new token generation means a rotation (here or in another window): the held link is retired. A
+    // changed URL (a new bind address or trusted name) retires it too, since the token travels in that link.
+    const same = Boolean(status?.running && status.tokenUrl && status.port === next.port && status.host === next.host && status.url === next.url && status.tokenGeneration === next.tokenGeneration);
     if (next.running && !next.tokenUrl && same) apply({ ...next, tokenUrl: status!.tokenUrl });
     else apply(next);
     if (!saving) render();

@@ -58,11 +58,12 @@ macro_rules! running_subagent {
 }
 
 /// The `architect_team_meta` columns derived from a team snapshot (`NEW.content` or bare
-/// `content`): its status (NULL for unparsable content), whether it is JSON, and whether it still
-/// lacks its `legacyPromptThroughId` watermark (valid JSON whose key is missing or JSON `null`).
+/// `content`): its status (NULL for unparsable content), whether it is JSON/JSON5, and whether it
+/// still lacks its `legacyPromptThroughId` watermark (valid JSON/JSON5 whose key is missing or
+/// JSON `null`).
 macro_rules! team_meta_values {
     ($c:literal) => {
-        concat!("CASE WHEN json_valid(", $c, ") THEN json_extract(", $c, ",'$.status') END,json_valid(", $c, "),CASE WHEN json_valid(", $c, ") AND COALESCE(json_type(", $c, ",'$.legacyPromptThroughId'),'null')='null' THEN 1 ELSE 0 END,0")
+        concat!("CASE WHEN json_valid(", $c, ",6) THEN json_extract(", $c, ",'$.status') END,json_valid(", $c, ",6),CASE WHEN json_valid(", $c, ",6) AND COALESCE(json_type(", $c, ",'$.legacyPromptThroughId'),'null')='null' THEN 1 ELSE 0 END,0")
     };
 }
 macro_rules! team_meta_upsert {
@@ -473,10 +474,13 @@ macro_rules! settle_tool_set {
 }
 macro_rules! settle_subagent_set {
     () => {
-        "UPDATE subagents SET content=json_set(content,'$.status',?2,'$.updatedAt',?3,
-        '$.tools',json((SELECT json_group_array(json(CASE
-            WHEN json_extract(value,'$.status') IN ('running','waiting') THEN json_set(value,'$.status','failed')
-            ELSE value END)) FROM json_each(content,'$.tools')))),updated_at=?3 WHERE "
+        "UPDATE subagents SET content=CASE WHEN json_type(content,'$.tools')='array' THEN json_set(content,'$.status',?2,'$.updatedAt',?3,
+        '$.tools',json((SELECT json_group_array(CASE
+            WHEN type='object' AND json_extract(value,'$.status') IN ('running','waiting') THEN json(json_set(value,'$.status','failed'))
+            WHEN type IN ('object','array') THEN json(value)
+            WHEN type IN ('true','false') THEN json(type)
+            ELSE value END) FROM json_each(content,'$.tools'))))
+        ELSE json_set(content,'$.status',?2,'$.updatedAt',?3) END,updated_at=?3 WHERE "
     };
 }
 // Settling rewrites each row's status, so the stop triggers empty the trackers as it goes.

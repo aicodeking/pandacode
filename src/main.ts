@@ -103,6 +103,8 @@ import { Subagents } from './subagents';
 import { JevActivity } from './jev-activity';
 import { initializeSidebarResizing } from './sidebar-resize';
 import { changeUiScale, initializeUiSizing, setUiScale } from './ui-size';
+// Applies the saved reading width before Settings (a lazy import) ever renders it.
+import './reading-width';
 import { approvalBarHtml } from './approval-bar';
 import { decorateTranscript, initOrchestration, lineageSource, syncOrchestration } from './machine-orchestration';
 import { createThreadFind } from './thread-find';
@@ -1058,6 +1060,11 @@ const attachments = mountPromptAttachments({
     return true;
   },
   rerender: taskId => { if (taskId === state.sessionId) renderAttachmentBar(); },
+  // Every change to a thread's prompt attachments is written with its draft, so a restart brings them back.
+  changed: taskId => {
+    if (deletedSessions.has(taskId)) return;
+    state.drafts.setAttachments(taskId, attachments.list(taskId));
+  },
   menu: (anchor, items, onSelect) => showChoices(anchor, { title: 'Attach', width: 340, actions: true, items: [...items, { id: 'recipes', label: 'Workflow recipes…', description: 'Queue saved steps', icon: 'play' }, { id: 'wake', label: 'Schedule a wake-up…', description: 'Wake this thread later', icon: 'clock' }], onSelect: id => { closeChoiceMenu(); if (id === 'wake') openWakeComposer(anchor); else run(id === 'recipes' ? openRecipes() : onSelect(id)); } }),
   projectFiles: () => { inspectorSuppressed = false; state.inspector = chooseInspector(true); state.inspectorTab = 'files'; state.selectedKind = ''; renderInspector(); },
   sketch: (taskId, existing) => run(openSketch(taskId, existing)),
@@ -1159,6 +1166,54 @@ async function exportTask(task: Session, name?: string): Promise<void> {
   const text = await call<string>('export_task', { sessionId: task.id });
   const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
   const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+/** A fix thread carries a readable bundle, not an unbounded log; Save .md keeps the whole thing. */
+const DEBUG_BUNDLE_LIMIT = 40000;
+const DEBUG_FIX_PREAMBLE = 'This thread is a fix for a problem in an earlier session. The debug bundle from that session is below. Reproduce the problem, find the root cause, and fix it. Ask me if you need more context or the full logs.';
+/** The debug bundle for this session: a redacted report of what happened, plus a fix thread seeded with it. */
+async function exportDebugBundle(task: Session, anchor?: HTMLElement): Promise<void> {
+  // The task export's safe, short name, prefixed so debug bundles stand apart in a folder.
+  const fileName = `debug-${task.title.replace(/[^a-z0-9 -]/gi, '').trim().slice(0, 60) || 'task'}.md`;
+  // Closing the dialog returns focus to the row or dock button that opened it, not to a closed menu.
+  if (anchor?.isConnected) anchor.focus({ preventScroll: true });
+  const dialog = modal('Export debug session', `<p class="dialog-description">Save this session’s debug bundle as Markdown, or start a fix thread with the bundle already in the composer.</p><label class="field-label" for="debug-note">What went wrong? (optional)</label><textarea id="debug-note" rows="4" placeholder="Describe the problem and any steps that reproduce it."></textarea><div class="debug-export-options"><label><input type="checkbox" id="debug-include-output" checked> Include tool call output</label><label><input type="checkbox" id="debug-include-changes" checked> Include changed files</label></div><div class="dialog-footer"><button type="button" class="secondary-button" id="debug-save">${icon('download')}Save .md</button><button type="button" class="primary-button" id="debug-start-fix">Start fix thread</button></div>`);
+  const note = dialog.querySelector<HTMLTextAreaElement>('#debug-note')!;
+  const includeOutput = dialog.querySelector<HTMLInputElement>('#debug-include-output')!;
+  const includeChanges = dialog.querySelector<HTMLInputElement>('#debug-include-changes')!;
+  const save = dialog.querySelector<HTMLButtonElement>('#debug-save')!;
+  const start = dialog.querySelector<HTMLButtonElement>('#debug-start-fix')!;
+  // Both actions read the fields when clicked; trimming the note keeps an untouched box empty.
+  const request = () => ({ sessionId: task.id, note: note.value.trim(), includeOutput: includeOutput.checked, includeChanges: includeChanges.checked });
+  // One in-flight action at a time: a second click must not save twice or start two fix threads.
+  const runAction = async (work: () => Promise<void>): Promise<void> => {
+    if (save.disabled) return;
+    save.disabled = start.disabled = true;
+    try { await work(); } catch (error) { report(error); }
+    finally { if (save.isConnected) save.disabled = start.disabled = false; }
+  };
+  save.addEventListener('click', () => runAction(async () => {
+    if (nativeDesktop) {
+      const path = await (await import('@tauri-apps/plugin-dialog')).save({ title: 'Export debug session', defaultPath: fileName, filters: [{ name: 'Markdown', extensions: ['md'] }] });
+      if (path) { await call<void>('save_debug_bundle', { ...request(), path }); notify('Debug bundle saved'); }
+      return;
+    }
+    const text = await call<string>('export_debug_bundle', request());
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }));
+  start.addEventListener('click', () => runAction(async () => {
+    const text = await call<string>('export_debug_bundle', request());
+    const created = await call<Session>('create_session', { projectId: task.projectId, provider: task.provider, model: task.model, mode: task.mode, draft: true });
+    const bundle = text.length > DEBUG_BUNDLE_LIMIT ? text.slice(0, DEBUG_BUNDLE_LIMIT) + '\n\n[Bundle truncated — use Save .md for the full log.]' : text;
+    const draft = `${DEBUG_FIX_PREAMBLE}\n\n${bundle}`;
+    closeModal();
+    if (!state.sessions.some(item => item.id === created.id)) state.sessions.unshift(created);
+    await selectSession(created.id, true);
+    state.drafts.set(created.id, draft);
+    const prompt = document.querySelector<HTMLTextAreaElement>('#prompt');
+    if (prompt?.dataset.sessionId === created.id) { prompt.value = draft; resizePrompt(); }
+    notify('Fix thread started');
+  }));
 }
 
 const disposeMessageActions = bindMessageActions($('#transcript'), {
@@ -4048,6 +4103,23 @@ function renderAttachmentBar(): void {
   const s = session(), bar = document.querySelector<HTMLElement>('#attachments');
   if (s && bar) bar.innerHTML = attachmentBar(s); else renderComposer();
 }
+/** Brings back a thread's kept prompt attachments when it is shown, so a restart returns the draft whole.
+ * A capture pruned since it was attached can no longer be sent: its chip says so until it is removed. */
+function hydrateDraftAttachments(s: Session): void {
+  if (attachments.list(s.id).length) return;
+  const restored = state.drafts.attachments(s.id);
+  if (!restored.length) return;
+  attachments.hydrate(s.id, restored);
+  const images = restored.filter((item): item is PromptImage => item.kind === 'image');
+  if (!images.length) return;
+  void Promise.all(images.map(item => call<string | null>('prompt_image', { id: item.id })
+    .then(url => ({ id: item.id, present: Boolean(url?.startsWith('data:image/')) }))
+    .catch(() => ({ id: item.id, present: true }))))
+    .then(results => {
+      if (state.sessionId !== s.id) return;
+      attachments.markMissing(s.id, results.filter(item => !item.present).map(item => item.id));
+    });
+}
 /** Pending approvals for the open task, in the bar directly above the prompt. */
 /** Tasks whose grouped approval bar is expanded (the main bar and the By the way panel's are separate). */
 const approvalGroupsOpen = new Set<string>();
@@ -4975,6 +5047,7 @@ async function openThread(id: string, focusComposer: boolean, initialScroll?: In
   // A bot's conversation lives in the Bots section; it never re-points the project filter.
   if (state.projectFilter && state.projectFilter !== s.projectId && !botProjects.has(s.projectId) && !chatTask(s)) setProjectFilter(s.projectId);
   state.sessionId = s.id; markTraySeen(s.id); activateProject(s.projectId, false); if (changingTask) restoreThreadPanel(s); state.attachments = [];
+  hydrateDraftAttachments(s);
   // Marked until it has painted, however it is opened: one that takes the app down is held back at the next boot.
   beginThreadRestore(localStorage, id);
   // The thread boot kept closed is open now, by the crash notice's button or any other way.
@@ -5134,19 +5207,31 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
       const reconciledIds = new Set<string>();
       if (reconcileStreams) {
         // A missed done or offline deletion can leave a live card behind. Events received since the request win over the snapshot.
+        const isLiveStatus = (task: Session | undefined) => Boolean(task && ['running', 'starting', 'waiting', 'waiting_approval'].includes(task.status));
         for (const [id, live] of Array.from(state.streams.entries())) {
           const s = sessionById.get(id);
-          if (s && ['running', 'starting', 'waiting', 'waiting_approval'].includes(s.status)) continue;
+          if (isLiveStatus(s)) continue;
           if ((streamEventVersion.get(id) ?? 0) > resyncAt) continue;
           clearAgentInputs(live);
           state.streams.delete(id);
           runEndings.delete(id);
+          sendFirst.delete(id);
           for (const [steerId, item] of steers) if (item.sessionId === id) steers.delete(steerId);
           if (s) subagents.runEnded(id); else subagents.forget(id);
           tilePages.delete(id);
           queueMicrotask(() => btwPanel.event(id, 'done'));
           queueMicrotask(() => tiles.event(id));
           reconciledIds.add(id);
+        }
+        // A tab connected mid-run may hold runEndings or a stopping sendFirst without a state.streams entry.
+        for (const id of Array.from(runEndings.keys())) {
+          if (isLiveStatus(sessionById.get(id)) || (streamEventVersion.get(id) ?? 0) > resyncAt) continue;
+          runEndings.delete(id);
+        }
+        for (const [id, first] of Array.from(sendFirst.entries())) {
+          const s = sessionById.get(id);
+          if (isLiveStatus(s) || (!first.stopping && s) || (streamEventVersion.get(id) ?? 0) > resyncAt) continue;
+          sendFirst.delete(id);
         }
         reconciled = true;
         if (reconciledIds.size) updateWorkTimer();
@@ -5171,7 +5256,9 @@ async function loadSessions({ reconcileStreams }: { reconcileStreams: boolean })
         const context = state.streams.get(s.id)?.contextUsage;
         if (context) s.contextUsage = context;
       }
-      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && reconciledIds.has(state.sessionId)) {
+      if (state.sessionId && !selected && !deletedSessions.has(state.sessionId) && (reconciledIds.has(state.sessionId) || (reconcileStreams && selectedId === state.sessionId && detailResult.status === 'rejected'))) {
+        const vanishedId = state.sessionId;
+        subagents.forget(vanishedId); tilePages.delete(vanishedId); sendFirst.delete(vanishedId);
         ++state.generation; ++overlayOpenRequest;
         closeMenus(); subagents.close(false); architectView?.close();
         clearOpenSession(); state.messages = []; state.messagesLoading = false; state.messagesError = '';
@@ -5201,6 +5288,7 @@ function removeDeletedSessions(ids: string[]): void {
     setQueueHold(id); passedLimitResets.delete(id);
     const live = state.streams.get(id); if (live) clearAgentInputs(live);
     state.streams.delete(id); streamEventVersion.delete(id); finishingStreams.delete(id); teams.delete(id);
+    runEndings.delete(id); sendFirst.delete(id);
     state.drafts.delete(id); state.browserAttachments.delete(id); state.moodboardAttachments.delete(id);
     attachments.clear(id); pendingPromptActivity.delete(id);
     subagents.forget(id);
@@ -5436,7 +5524,8 @@ function setQueueHold(sessionId: string, reason?: HoldReason): void {
 }
 function composerPayload(s: Session): { text: string; items: QueuedMessage['attachments'] } {
   const text = document.querySelector<HTMLTextAreaElement>('#prompt')?.value.trim() ?? '';
-  return { text, items: [...attachments.list(s.id), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
+  // A restored attachment whose file is gone is shown, but never travels with a message.
+  return { text, items: [...attachments.list(s.id).filter(item => !item.missing), ...state.attachments.map(path => ({ kind: 'path' as const, path }))] as QueuedMessage['attachments'] };
 }
 async function botMessageFromComposer(s: Session, bot: import('./bots').Bot, text: string, promptItems: ReturnType<typeof attachments.list>, paths: string[], browserItems: BrowserAttachment[], moodboardItems: { id: string; projectId: string; name: string }[], forceQueue = false): Promise<void> {
   const contexts = await Promise.all(paths.map(path => fileContext(s, path)));
@@ -7366,6 +7455,11 @@ async function showProjectPicker(anchor: HTMLElement): Promise<void> {
       await changeTaskProject(projectId);
     },
     onNewProject: () => { if (selected.id === state.sessionId && generation === state.generation) showOpenProject(true); },
+    canRemove: project => project.id !== NO_PROJECT,
+    onRemove: async projectId => {
+      const target = state.projects.find(p => p.id === projectId);
+      return target ? showRemoveProject(target) : false;
+    },
   });
 }
 /** One line for the picker: the lead's model, then the worker count. */
@@ -7757,6 +7851,7 @@ async function showTaskMenu(anchor: HTMLElement): Promise<void> {
     taskStage(s) === 'completed' ? { id: 'board-reopen', label: 'Reopen task', icon: 'undo' } : { id: 'board-complete', label: 'Settle task', icon: 'check', disabled: isRunning(s.id) || configuringSession(s.id) },
     ...s.provider === 'codex' ? [{ id: 'goal', label: 'Manage goal', icon: 'spark' }, { id: 'jobs', label: 'Background commands', icon: 'terminal' }, { id: 'usage', label: 'Codex usage', icon: 'activity' }] : [],
     { id: 'harness-console', label: 'Open harness console', icon: 'terminal' },
+    { id: 'export-debug', label: 'Export debug session…', icon: 'download' },
     { id: 'copy-path', label: s.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy' },
     ...s.worktreePath ? [] : [{ id: 'worktree', label: newTaskView() ? 'Work in a new worktree…' : 'New task in a worktree…', icon: 'worktree' }],
     { id: 'delete-task', label: 'Delete task…', icon: 'trash', danger: true, disabled: isRunning(s.id) || configuringSession(s.id) || finishingStreams.has(s.id), description: isRunning(s.id) ? 'Stop the agent before deleting this task.' : undefined },
@@ -7837,6 +7932,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
     ...branch ? [{ id: 'copy-branch', label: 'Copy branch name', icon: 'copy', separator: true }] : [],
     ...path ? [{ id: 'copy-path', label: task.worktreePath ? 'Copy worktree path' : 'Copy project path', icon: 'copy', separator: !branch }] : [],
     { id: 'copy-id', label: 'Copy task ID', icon: 'copy', separator: !branch && !path },
+    { id: 'export-debug', label: 'Export debug session…', icon: 'download' },
     { id: 'stage', label: done ? 'Reopen' : 'Settle', icon: done ? 'undo' : 'check', disabled: busy, separator: true },
     { id: 'delete', label: 'Delete task…', icon: 'trash', danger: true, disabled: busy || finishingStreams.has(id), description: isRunning(id) ? 'Stop the agent before deleting this task.' : undefined },
   ], onSelect: async choice => {
@@ -7853,6 +7949,7 @@ async function showSidebarTaskMenu(anchor: HTMLElement, point?: { x: number; y: 
       if (unread) seen.delete(id); else seen.add(id);
       saveUnreviewed(); renderNavigation(); return;
     }
+    if (choice === 'export-debug') { await exportDebugBundle(task, anchor); return; }
     if (choice === 'copy-branch' || choice === 'copy-path' || choice === 'copy-id') {
       await navigator.clipboard.writeText(choice === 'copy-branch' ? branch : choice === 'copy-path' ? path : id);
       notify(choice === 'copy-branch' ? 'Branch name copied' : choice === 'copy-path' ? 'Path copied' : 'Task ID copied'); return;
@@ -7888,8 +7985,31 @@ async function showFolderMenu(heading: HTMLElement, point?: { x: number; y: numb
     state.collapsedFolders.delete(id); saveCollapsedFolders(); renderNavigation();
   } });
 }
-function showRemoveProject(project: Project): void {
-  modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+function showRemoveProject(project: Project): Promise<boolean> {
+  const dialog = modal(`Remove ${project.name}?`, `<form id="remove-project-form" data-project-id="${escape(project.id)}"><p class="dialog-description">Its tasks are removed from PandaCode. The folder stays on disk.</p><div class="dialog-footer"><button type="button" class="secondary-button" data-action="close-dialog">Cancel</button><button type="submit" class="primary-button danger">Remove project</button></div></form>`, 'compact-dialog');
+  const form = dialog.querySelector<HTMLFormElement>('#remove-project-form')!;
+  form.querySelector<HTMLButtonElement>('[data-action="close-dialog"]')!.focus();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = (removed: boolean): void => { if (!settled) { settled = true; resolve(removed); } };
+    dialog.addEventListener('close', () => finish(false), { once: true });
+    form.addEventListener('submit', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const submitter = form.querySelector<HTMLButtonElement>('[type="submit"]');
+      if (submitter?.disabled) return;
+      if (submitter) submitter.disabled = true;
+      run((async () => {
+        try {
+          await removeProject(project.id);
+          finish(true);
+          if (dialog.open && form.isConnected) closeModal();
+        } finally {
+          if (submitter?.isConnected) submitter.disabled = false;
+        }
+      })());
+    });
+  });
 }
 /** Projects: Manual. Saves the dragged folder order; projects not in it lead, newest first. */
 function reorderFolders(ids: string[], focus: string): void {
@@ -9094,7 +9214,7 @@ const settingsPageCommands = () => SECTIONS.flatMap(section => section.pages.map
 /** Every whitespace-separated word of the query appears somewhere in the text (case-insensitive). */
 const matchesWords = (text: string, query: string): boolean => { const hay = text.toLowerCase(); return query.toLowerCase().split(/\s+/).filter(Boolean).every(word => hay.includes(word)); };
 function renderCommands(query: string): void {
-  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
+  const commands = [{ action: 'new-task', label: 'New task', icon: 'plus', shortcut: shortcut('N') }, { action: 'new-chat', label: 'New chat (no project)', icon: 'chat', shortcut: '' }, { action: 'add-project', label: 'Open project', icon: 'folder', shortcut: '' }, { action: 'browser', label: 'Open browser', icon: 'globe', shortcut: '' }, { action: 'terminal', label: 'Toggle terminal', icon: 'terminal', shortcut: shortcut('J') }, { action: 'settings', label: 'Settings', icon: 'settings', shortcut: shortcut(',') }, { action: 'agent-usage', label: 'Agent usage', icon: 'activity', shortcut: '' }, { action: 'bots', label: 'Bots', icon: 'bot', shortcut: '' }, { action: 'import-conversations', label: 'Import conversations', icon: 'download', shortcut: '' }, { action: 'worktree', label: 'Create worktree', icon: 'branch', shortcut: '' }, { action: 'conversation-view', label: 'Conversation', icon: 'thread', shortcut: '' }, { action: 'board-view', label: 'Board', icon: 'kanban', shortcut: '' }, ...(session() && !session()!.archived ? [{ action: 'wake-later', label: 'Schedule a wake-up…', icon: 'clock', shortcut: '' }] : []), ...(session() ? [{ action: 'export-debug', label: 'Export debug session…', icon: 'download', shortcut: '' }] : []), ...(githubEnabled() ? [{ action: 'github-view', label: 'GitHub', icon: 'github', shortcut: '' }] : []), ...(query ? settingsPageCommands() : [])].filter(c => matchesWords(`${c.label} ${'keywords' in c ? c.keywords : ''}`, query));
   const tasks = listedSessions().filter(s => matchesWords(s.title, query)).slice(0, 12);
   $('#command-results').innerHTML = `${commands.length ? '<div class="command-section">Commands</div>' : ''}${commands.map(c => `<button data-action="${c.action}"${'page' in c ? ` data-id="${c.page}"` : ''} data-command="true">${icon(c.icon)}<span>${c.label}</span><kbd>${c.shortcut}</kbd></button>`).join('')}${tasks.length ? '<div class="command-section">Tasks</div>' : ''}${tasks.map(s => `<button data-action="select-task" data-id="${escape(s.id)}" data-command="true">${providerLogo(s.provider)}<span>${escape(s.title)}<small>${escape(state.projects.find(p => p.id === s.projectId)?.name)} · ${shortProvider(s.provider)}</small></span></button>`).join('')}${!commands.length && !tasks.length ? '<div class="inspector-empty">No matching tasks or commands.</div>' : ''}`;
   $('#command-results').querySelector('button')?.classList.add('command-selected');
@@ -9214,6 +9334,7 @@ async function action(name: string, element: HTMLElement): Promise<void> {
     case 'harness-console': if (session()) await openHarnessConsole(session()!); break;
     case 'task-menu': await showTaskMenu(element); break;
     case 'pin-task': if (session()) await pinTask(session()!.id); break;
+    case 'export-debug': if (session()) await exportDebugBundle(session()!, element); break;
     case 'rename': showRename(); break;
     case 'worktree': worktrees.openDialog(newTaskView() ? 'attach' : 'new'); break;
     case 'branch-menu': await worktrees.showMenu(element); break;
@@ -9373,7 +9494,6 @@ document.addEventListener('submit', event => {
       else if (form.id === 'open-project-form') {
         const path = String(data.get('path') || '').trim(); if (!path) return; await addProject(path);
       } else if (form.id === 'rename-form') { const title = String(data.get('title') || '').trim(); if (!title) return; await call('update_session', { sessionId: form.dataset.sessionId || state.sessionId, title }); closeModal(); await reloadSessions(); }
-      else if (form.id === 'remove-project-form') { await removeProject(form.dataset.projectId!); closeModal(); }
       else if (form.id.startsWith('worktree-')) { await worktrees.submit(form, data); }
       else if (form.id.startsWith('github-')) { await github.submit(form, data); }
       else if (form.id === 'commit-form') { const message = document.querySelector<HTMLTextAreaElement>('#commit-message')!.value.trim(); if (!message) { notify('Enter a commit message.'); return; } const result = await call<string>('git_commit', { ...workspaceContext(), message }); await refreshInspector(); notify(result || 'Changes committed'); }

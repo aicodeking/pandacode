@@ -4,10 +4,12 @@ import { escape, icon } from './dom';
 import { isMac } from './platform';
 
 /** Inputs the user adds to one message: images travel as native image blocks,
- * documents and folders as bounded text context. Kept per task until sent. */
-export type PromptImage = { kind: 'image'; id: string; name: string; width: number; height: number; thumbnail: string; source: 'file' | 'paste' | 'drop' | 'sketch'; path?: string; sketchId?: string };
-export type PromptDocument = { kind: 'document'; id: string; path: string; name: string; size: number; text: string; truncated: boolean; method: string };
-export type PromptFolder = { kind: 'folder'; id: string; path: string; name: string; files: number; folders: number; listing: string; truncated: boolean };
+ * documents and folders as bounded text context. Kept per task until sent.
+ * On any of the three, `missing` marks a restored draft attachment whose file is
+ * gone: its chip says so and it is left out of what is sent. */
+export type PromptImage = { kind: 'image'; id: string; name: string; width: number; height: number; thumbnail: string; source: 'file' | 'paste' | 'drop' | 'sketch'; path?: string; sketchId?: string; missing?: boolean };
+export type PromptDocument = { kind: 'document'; id: string; path: string; name: string; size: number; text: string; truncated: boolean; method: string; missing?: boolean };
+export type PromptFolder = { kind: 'folder'; id: string; path: string; name: string; files: number; folders: number; listing: string; truncated: boolean; missing?: boolean };
 export type PromptAttachment = PromptImage | PromptDocument | PromptFolder;
 
 type MenuItem = { id: string; label: string; description?: string; icon?: string };
@@ -24,6 +26,8 @@ export type AttachmentsHost = {
   /** Puts text at the composer's caret; false when there is no prompt to type into. */
   insertText(text: string): boolean;
   rerender(taskId: string): void;
+  /** The task's attachment list changed; persist it with the draft. */
+  changed?(taskId: string): void;
   menu(anchor: HTMLElement, items: MenuItem[], onSelect: (id: string) => Promise<void>): Promise<void>;
   projectFiles(): void;
   sketch(taskId: string, existing?: PromptImage): void;
@@ -51,7 +55,7 @@ function documentLabel(document: PromptDocument): string {
 export function mountPromptAttachments(host: AttachmentsHost) {
   const items = new Map<string, PromptAttachment[]>();
   const list = (taskId: string): PromptAttachment[] => items.get(taskId) ?? [];
-  const set = (taskId: string, next: PromptAttachment[]): void => { if (next.length) items.set(taskId, next); else items.delete(taskId); };
+  const set = (taskId: string, next: PromptAttachment[], persist = true): void => { if (next.length) items.set(taskId, next); else items.delete(taskId); if (persist) host.changed?.(taskId); };
 
   function add(taskId: string, attachment: PromptAttachment): void {
     const reason = host.blocked(taskId); if (reason) throw new Error(reason);
@@ -206,18 +210,23 @@ export function mountPromptAttachments(host: AttachmentsHost) {
   function chips(taskId: string): string {
     return list(taskId).map(item => {
       const remove = `<button type="button" data-action="detach-prompt" data-id="${escape(item.id)}" aria-label="Remove ${escape(item.name)}">${icon('close')}</button>`;
+      const missing = item.missing === true;
+      const mark = missing ? ' data-missing="true"' : '';
       if (item.kind === 'image') {
-        const edit = item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="Edit sketch ${escape(item.name)}">${icon('edit')}</button>` : '';
-        return `<span class="prompt-chip prompt-chip-image" data-attachment-id="${escape(item.id)}" data-source="${item.source}"><img src="${escape(item.thumbnail)}" alt="" width="36" height="36"><span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${item.source === 'sketch' ? 'Mockup · ' : ''}${item.width} × ${item.height}</small></span>${edit}${remove}</span>`;
+        const edit = !missing && item.source === 'sketch' ? `<button type="button" class="prompt-chip-edit" data-action="edit-sketch" data-id="${escape(item.id)}" aria-label="Edit sketch ${escape(item.name)}">${icon('edit')}</button>` : '';
+        const lead = missing ? icon('alert') : `<img src="${escape(item.thumbnail)}" alt="" width="36" height="36">`;
+        const detail = missing ? 'File missing' : `${item.source === 'sketch' ? 'Mockup · ' : ''}${item.width} × ${item.height}`;
+        return `<span class="prompt-chip prompt-chip-image" data-attachment-id="${escape(item.id)}" data-source="${item.source}"${mark}>${lead}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${detail}</small></span>${edit}${remove}</span>`;
       }
-      if (item.kind === 'document') return `<span class="prompt-chip prompt-chip-document" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}">${icon('file')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${escape(documentLabel(item))}</small></span>${remove}</span>`;
-      return `<span class="prompt-chip prompt-chip-folder" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}">${icon('folder')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}/</span><small>${item.files} ${item.files === 1 ? 'file' : 'files'} · ${item.folders} ${item.folders === 1 ? 'folder' : 'folders'}${item.truncated ? ' · partial' : ''}</small></span>${remove}</span>`;
+      if (item.kind === 'document') return `<span class="prompt-chip prompt-chip-document" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}"${mark}>${missing ? icon('alert') : icon('file')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}</span><small>${missing ? 'File missing' : escape(documentLabel(item))}</small></span>${remove}</span>`;
+      const detail = `${item.files} ${item.files === 1 ? 'file' : 'files'} · ${item.folders} ${item.folders === 1 ? 'folder' : 'folders'}${item.truncated ? ' · partial' : ''}`;
+      return `<span class="prompt-chip prompt-chip-folder" data-attachment-id="${escape(item.id)}" title="${escape(item.path)}"${mark}>${missing ? icon('alert') : icon('folder')}<span class="prompt-chip-text"><span class="prompt-chip-name">${escape(item.name)}/</span><small>${missing ? 'File missing' : detail}</small></span>${remove}</span>`;
     }).join('');
   }
 
   /** Text that travels with the message so every harness sees documents and folders. */
   function contextFor(attachments: PromptAttachment[]): string {
-    return attachments.map(item => {
+    return attachments.filter(item => !item.missing).map(item => {
       if (item.kind === 'image') return item.source === 'sketch'
         ? `\n\nAttached mockup: ${item.name} (${item.width} × ${item.height}). A rough sketch drawn by the user; read its boxes and labels as layout intent, not as finished design.\nImage ID: ${item.id}`
         : `\n\nAttached image: ${item.name} (${item.width} × ${item.height})\nImage ID: ${item.id}`;
@@ -234,13 +243,22 @@ export function mountPromptAttachments(host: AttachmentsHost) {
     attachFiles,
     addImage,
     find: (taskId: string, attachmentId: string) => list(taskId).find(a => a.id === attachmentId),
-    clear: (taskId: string): void => { items.delete(taskId); },
+    clear: (taskId: string): void => { set(taskId, []); },
     remove(taskId: string, attachmentId: string): void { set(taskId, list(taskId).filter(a => a.id !== attachmentId)); host.rerender(taskId); },
     /** Drop the attachments that went out with a message; `restore` returns them if the send fails. */
     consume(taskId: string, sent: PromptAttachment[]): void { const ids = new Set(sent.map(a => a.id)); set(taskId, list(taskId).filter(a => !ids.has(a.id))); },
     restore(taskId: string, attachments: PromptAttachment[]): void { if (attachments.length) { set(taskId, [...attachments, ...list(taskId)]); host.rerender(taskId); } },
+    /** Installs a launch-restored draft's attachments without writing them back: they came from storage. */
+    hydrate(taskId: string, attachments: PromptAttachment[]): void { if (attachments.length && !list(taskId).length) set(taskId, attachments, false); },
+    /** Marks attachments whose file is gone (a pruned capture), so their chips say so and they are not sent. */
+    markMissing(taskId: string, ids: Iterable<string>): void {
+      const gone = new Set(ids);
+      if (!gone.size) return;
+      const current = list(taskId), next = current.map(item => gone.has(item.id) ? { ...item, missing: true } : item);
+      if (next.some((item, index) => item !== current[index])) { set(taskId, next, false); host.rerender(taskId); }
+    },
     contextFor,
-    imageIds: (attachments: PromptAttachment[]) => attachments.filter((a): a is PromptImage => a.kind === 'image').map(a => a.id),
+    imageIds: (attachments: PromptAttachment[]) => attachments.filter((a): a is PromptImage => a.kind === 'image' && !a.missing).map(a => a.id),
     images: (taskId: string) => list(taskId).filter((a): a is PromptImage => a.kind === 'image').length,
     /** Clipboard images pasted into the composer become attachments instead of nothing. */
     handlePaste(event: ClipboardEvent): boolean {

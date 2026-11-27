@@ -36,8 +36,8 @@ html .drawer-heading{border-bottom:0}
 .message>.message-meta{position:absolute;width:1px;height:1px;padding:0;margin:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 .message{position:relative;margin-bottom:26px}
 .message>.message-content{padding-left:0}
-/* Flush with the right edge of the centered 830px column, not centered within it. */
-html .transcript>.user-message{width:fit-content;max-width:min(78%,640px);margin-left:auto;margin-right:max(0px,calc((100% - 830px) / 2))}
+/* Flush with the right edge of the centered reading column, not centered within it. */
+html .transcript>.user-message{width:fit-content;max-width:min(78%,640px);margin-left:auto;margin-right:max(0px,calc((100% - var(--reading-width)) / 2))}
 .user-message>.message-content{text-align:left;padding:9px 14px;border-radius:var(--ds-card-radius);background:color-mix(in srgb,var(--text) 7%,transparent)}
 .user-message>.message-content .message-attachments{margin-top:6px}
 /* Rows that once lined up with the author avatar now start at the column edge, like replies. */

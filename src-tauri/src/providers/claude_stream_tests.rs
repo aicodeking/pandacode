@@ -17,6 +17,28 @@ fn text(events: &[AgentEvent]) -> String {
 }
 
 #[test]
+fn model_reports_are_explicit_distinct_and_scoped_to_the_run() {
+    use crate::storage::model_audit::REPORTED_MODEL_EVENT;
+    let mut config = config("claude");
+    config.model = "claude-sonnet-5-5".into();
+    let mut protocol = Protocol::new(config);
+    let start = |model: &str, parent: Value| json!({
+        "type":"stream_event", "parent_tool_use_id":parent,
+        "event":{"type":"message_start","message":{"model":model}}
+    });
+    let observed = [
+        start("claude-sonnet-5-5", Value::Null),
+        start("claude-sonnet-5-5", Value::Null),
+        start("claude-haiku-5-5", json!("child-tool")),
+        start("claude-opus-5-5", Value::Null),
+    ].into_iter().flat_map(|frame| protocol.receive(frame).unwrap().events)
+        .filter(|event| event.kind == REPORTED_MODEL_EVENT)
+        .map(|event| event.text)
+        .collect::<Vec<_>>();
+    assert_eq!(observed, ["claude-sonnet-5-5", "claude-opus-5-5"]);
+}
+
+#[test]
 fn parent_stream_excludes_subagent_transcripts_without_losing_final_suffix() {
     let events = events(&[
         json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"main"}}}),

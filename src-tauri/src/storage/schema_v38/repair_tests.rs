@@ -333,24 +333,23 @@ fn repair_skips_incompatible_tracker_rebuild_on_newer_schema() {
 
 #[test]
 fn repair_bot_indexes_restores_indexes_even_when_upgrade_alter_fails() {
-    // A legacy `bots` table missing the columns `bots::upgrade` adds, except `color` spelled
-    // `COLOR`: `bots::upgrade` looks the name up case-sensitively, but SQLite column names are
-    // not, so its `ALTER TABLE bots ADD COLUMN color` fails as a duplicate column.
+    // An index named `bot_rules` makes `bots::upgrade` fail before adding columns or indexes;
+    // `repair_bot_indexes` still restores every bot index individually.
     let (_directory, path) = current_database("bots-alter-fails");
     let mut db = Connection::open(&path).unwrap();
-    db.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE bots; CREATE TABLE bots(id TEXT PRIMARY KEY, name TEXT NOT NULL, project_id TEXT, COLOR TEXT);
-        CREATE INDEX bots_project ON bots(project_id); DROP INDEX bot_activity_model_switch;").unwrap();
+    db.execute_batch("ALTER TABLE bots DROP COLUMN color; DROP TABLE IF EXISTS bot_rules; CREATE INDEX bot_rules ON projects(id);").unwrap();
+    for index in V38_BOT_INDEXES { db.execute_batch(&format!("DROP INDEX {index};")).unwrap(); }
     let legacy = bot_columns(&db);
     {
         let probe = db.unchecked_transaction().unwrap();
-        let error = crate::bots::upgrade(&probe).expect_err("bots::upgrade fails at its ALTER TABLE");
-        assert!(error.contains("duplicate column"), "{error}");
+        let error = crate::bots::upgrade(&probe).expect_err("bots::upgrade fails at SCHEMA_TABLES");
+        assert!(error.contains("there is already an index named bot_rules"), "{error}");
         assert!(!probe.is_autocommit(), "the failure left the transaction open");
     }
-    assert!(!has_object(&db, "bot_activity_model_switch"));
+    assert_eq!(v38_counts(&db).2, 0);
     repair_v38_objects(&mut db, SCHEMA_VERSION).unwrap();
-    assert_eq!(bot_columns(&db), legacy, "the ALTER TABLE failed");
-    assert!(has_object(&db, "bot_activity_model_switch"), "bot_activity_model_switch is restored");
+    assert_eq!(bot_columns(&db), legacy, "bots::upgrade rolled back before adding color");
+    for index in V38_BOT_INDEXES { verify_index(&db, index); }
     assert_eq!(v38_counts(&db), HEALTHY);
 }
 
