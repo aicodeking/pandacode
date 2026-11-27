@@ -929,7 +929,7 @@ impl Run for ClearLimit {
             // Waking a held lead dispatches workers, which run in full access.
             allow_remote_team_for(&state, &self.session_id, ctx.full_access).await?;
             state.store.lock().map_err(|e| e.to_string())?.clear_limited(&self.session_id)?;
-            crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::hold_queue(ctx.app, id, reason));
+            crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::emit_queue_hold(ctx.app, id, reason));
             crate::architect::wake(ctx.app.clone());
             let _ = ctx.app.emit("sessions-changed", ());
             Ok(json!({}))
@@ -1501,7 +1501,7 @@ mod tests {
     fn clear_limit_transitions_only_a_limited_hold_to_reset() {
         let body = source_of("impl Run for ClearLimit");
         let clear = body.find("state.store.lock().map_err(|e| e.to_string())?.clear_limited(&self.session_id)?;").unwrap();
-        let release = body.find("crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::hold_queue(ctx.app, id, reason));").unwrap();
+        let release = body.find("crate::headless::release_limited_hold_to_reset(&self.session_id, |id, reason| crate::headless::emit_queue_hold(ctx.app, id, reason));").unwrap();
         let wake = body.find("crate::architect::wake(ctx.app.clone());").unwrap();
         assert!(clear < release && release < wake, "hold transition runs after dropping the store lock and before waking");
         assert!(!body.contains("queue_changed("), "clearing a limit must not auto-send queued messages");
@@ -1513,8 +1513,8 @@ mod tests {
             let mut hold_calls = Vec::new();
             store.clear_limited(&task).unwrap();
             let transitioned = crate::headless::release_limited_hold_to_reset(&task, |id, reason| {
+                assert_eq!(message_queue::queue_hold_reason(id).as_deref(), Some(reason));
                 hold_calls.push((id.to_owned(), reason.to_owned()));
-                message_queue::set_queue_hold_state(id, true, Some(reason));
             });
             assert_eq!(store.session(&task).unwrap().limited_until, None);
             (transitioned, hold_calls)
