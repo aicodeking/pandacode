@@ -101,6 +101,7 @@ mod headless_bots;
 pub use usage_keychain::handle_usage_keychain_helper;
 pub use cloud_agents::handle_cloud_bridge;
 pub use headless::handle as handle_serve;
+pub use headless::handle_version;
 pub use crash_guard::handle as handle_crash_guard;
 pub use voice::local::handle_speech_worker;
 

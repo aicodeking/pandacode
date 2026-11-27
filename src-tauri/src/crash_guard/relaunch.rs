@@ -74,12 +74,19 @@ pub fn restart_mark(args: impl IntoIterator<Item = String>) -> Option<u64> {
     args.into_iter().find_map(|arg| arg.strip_prefix(&format!("{RESTART_FLAG}="))?.parse().ok())
 }
 
+/// Flags that say *how* a `serve` hosts, kept with their values across a guard restart: a
+/// host started with `--port 8787` must come back serving the web UI, not as a plain host.
+const SERVE_VALUE_FLAGS: &[&str] = &["--port", "-p", "--host", "--device-name", "--allowed-host"];
+
+/// Ops that exit after doing their work once, so a restart must never replay them.
+const SERVE_ONE_SHOT: &[&str] = &["--sign-in", "--sign-out", "--full-access", "--no-full-access", "--export-bots"];
+
 /// The args (after argv[0]) a relaunch passes on: the desktop keeps what it was given minus
-/// one-shot flags and old restart marks; `serve` restarts as a plain host (sign-in, import
-/// and settings commands are one-shot).
+/// one-shot flags and old restart marks; `serve` keeps its serving modifiers (port, host,
+/// device name, allowed hosts) and drops the one-shot ops, `--import-bots` and old marks.
 pub fn relaunch_args(mode: Mode, original: &[String], crashed_at: u64) -> Vec<String> {
     let mut args: Vec<String> = match mode {
-        Mode::Serve => vec!["serve".into()],
+        Mode::Serve => serve_args_to_restart(original),
         Mode::Desktop => original
             .iter()
             .filter(|arg| !is_restart_flag(arg) && arg.as_str() != "--local-sign" && !arg.starts_with("-psn_"))
@@ -88,6 +95,42 @@ pub fn relaunch_args(mode: Mode, original: &[String], crashed_at: u64) -> Vec<St
     };
     args.push(format!("{RESTART_FLAG}={crashed_at}"));
     args
+}
+
+/// `serve` followed by the serving modifiers of the original launch, in their original order.
+/// Everything else is dropped: one-shot ops (`--import-bots` and its file included), old
+/// restart marks, a `serve` token wherever it sat, and flags this build does not know — so a
+/// restart can neither replay an op nor die on a flag the current `serve` refuses. A value
+/// flag with no value (or with another flag where its value should be) is skipped rather
+/// than turned into a usage error.
+fn serve_args_to_restart(original: &[String]) -> Vec<String> {
+    let mut kept = vec!["serve".to_string()];
+    let mut index = 0;
+    while index < original.len() {
+        let arg = original[index].as_str();
+        if arg == "serve" || is_restart_flag(arg) || SERVE_ONE_SHOT.contains(&arg) {
+            index += 1;
+            continue;
+        }
+        if SERVE_VALUE_FLAGS.contains(&arg) {
+            if let Some(value) = original.get(index + 1).filter(|value| !value.starts_with('-')) {
+                kept.push(arg.to_owned());
+                kept.push(value.to_owned());
+            }
+            index += 2;
+            continue;
+        }
+        if arg == "--import-bots" {
+            // Bot import is one-shot: it already ran at the original start.
+            index += 1;
+            if original.get(index).is_some_and(|value| !value.starts_with('-')) {
+                index += 1;
+            }
+            continue;
+        }
+        index += 1;
+    }
+    kept
 }
 
 /// What to start: the AppImage when this process really runs from it (its mount vanishes
@@ -315,9 +358,45 @@ mod tests {
     }
 
     #[test]
-    fn serve_relaunches_as_a_plain_host() {
-        let original = strings(&["serve", "--sign-in", "--device-name", "box", "--import-bots", "/tmp/b.json"]);
-        assert_eq!(relaunch_args(Mode::Serve, &original, 7), strings(&["serve", "--crash-restart=7"]));
+    fn serve_relaunch_keeps_the_serving_modifiers_with_their_values() {
+        let original = strings(&["serve", "--port", "8787", "--host", "0.0.0.0", "--device-name", "box"]);
+        assert_eq!(
+            relaunch_args(Mode::Serve, &original, 7),
+            strings(&["serve", "--port", "8787", "--host", "0.0.0.0", "--device-name", "box", "--crash-restart=7"])
+        );
+        // The short form, a `serve` that was not argv[1], and `--allowed-host` all keep order.
+        let original = strings(&["-p", "9000", "--allowed-host", "*.internal", "serve"]);
+        assert_eq!(
+            relaunch_args(Mode::Serve, &original, 8),
+            strings(&["serve", "-p", "9000", "--allowed-host", "*.internal", "--crash-restart=8"])
+        );
+        // A pre-serve flag a launcher supplied survives too.
+        let original = strings(&["--port", "1", "serve"]);
+        assert_eq!(relaunch_args(Mode::Serve, &original, 9), strings(&["serve", "--port", "1", "--crash-restart=9"]));
+    }
+
+    #[test]
+    fn serve_relaunch_drops_one_shot_ops_and_bot_imports() {
+        let original = strings(&[
+            "serve", "--sign-in", "--sign-out", "--full-access", "--no-full-access", "--export-bots", "export.json",
+            "--import-bots", "bots.json", "--port", "1",
+        ]);
+        assert_eq!(relaunch_args(Mode::Serve, &original, 9), strings(&["serve", "--port", "1", "--crash-restart=9"]));
+        // Missing/malformed values and unknown flags are dropped, never a panic.
+        assert_eq!(relaunch_args(Mode::Serve, &strings(&["serve", "--port"]), 9), strings(&["serve", "--crash-restart=9"]));
+        assert_eq!(
+            relaunch_args(Mode::Serve, &strings(&["serve", "--port", "--sign-in"]), 9),
+            strings(&["serve", "--crash-restart=9"])
+        );
+        assert_eq!(relaunch_args(Mode::Serve, &strings(&["serve", "--import-bots"]), 9), strings(&["serve", "--crash-restart=9"]));
+        assert_eq!(relaunch_args(Mode::Serve, &strings(&["serve", "--unknown", "x"]), 9), strings(&["serve", "--crash-restart=9"]));
+        assert_eq!(relaunch_args(Mode::Serve, &[], 9), strings(&["serve", "--crash-restart=9"]));
+    }
+
+    #[test]
+    fn serve_relaunch_replaces_old_restart_marks() {
+        let original = strings(&["serve", "--crash-restart=5", "--port", "8787", "--crash-restart"]);
+        assert_eq!(relaunch_args(Mode::Serve, &original, 10), strings(&["serve", "--port", "8787", "--crash-restart=10"]));
     }
 
     #[test]

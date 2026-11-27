@@ -1803,17 +1803,20 @@ fn web_blocked_command(command: &str) -> bool {
 }
 
 /// Every command the main window registers (in `main_invoke_handler`) that was reviewed
-/// as fine from a browser tab. Default-deny: [`invoke`] refuses anything not listed here
-/// (and everything `web_blocked_command` names), so a new command can't reach tabs unreviewed.
-/// `every_main_window_command_is_reviewed_for_web` keeps the two lists covering every command.
+/// as fine from a browser tab, by the WIRE name a tab invokes. A `#[tauri::command(rename = "...")]`
+/// exposes its wire name to the frontend, not the Rust function name, so both this list and
+/// `web_blocked_command` must use the wire name. Default-deny: [`invoke`] refuses anything not
+/// listed here (and everything `web_blocked_command` names), so a new command can't reach tabs
+/// unreviewed. `every_main_window_command_is_reviewed_for_web` resolves the renames and keeps
+/// the two lists covering every command.
 const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "bot_set_capabilities", "bot_assign_task", "bot_task_links",
     "voice_configuration", "voice_save_profile", "voice_select_profile", "voice_delete_profile",
     "voice_local_catalog", "voice_local_download", "voice_local_cancel_download", "voice_local_delete",
     "voice_local_select", "voice_local_test_model", "voice_preferences", "voice_update_preferences",
     "agents_dock_snapshot", "agents_dock_preferences", "agents_dock_save_preferences", "support_details",
-    "model_routing_status_command", "model_routing_exclusions", "model_routing_set_exclusions",
-    "model_routing_configure_command", "model_routing_prepare", "model_routing_route", "model_routing_tiers",
+    "model_routing_status", "model_routing_exclusions", "model_routing_set_exclusions",
+    "model_routing_configure", "model_routing_prepare", "model_routing_route", "model_routing_tiers",
     "model_routing_set_tiers", "model_routing_tier_models", "model_health_list", "model_health_clear",
     "crash_recovery_take", "crash_recovery_shown", "crash_restart_enabled", "set_crash_restart_enabled",
     "sessions_missing", "app_update_install_supported", "check_agent_updates", "update_agent",
@@ -1863,7 +1866,7 @@ const WEB_ALLOWED_COMMANDS: &[&str] = &[
     "list_projects", "add_project", "remove_project", "relink_project", "list_sessions", "pin_session",
     "dismiss_error_messages", "reorder_sessions", "get_task", "create_session", "create_board_task",
     "update_task_details", "set_task_stage", "start_task", "configure_session", "set_reasoning_effort",
-    "update_session", "delete_session_with_attachment_cleanup", "chat_create", "chat_cleanup", "get_messages",
+    "update_session", "delete_session", "chat_create", "chat_cleanup", "get_messages",
     "turn_change_diff", "turn_change_summary", "list_subagents", "get_subagent", "send_message",
     "list_slash_commands", "recipes_list", "recipes_save", "recipes_delete", "recipes_dry_run",
     "provider_check_connection", "resolve_slash_command", "stop_session", "respond_approval",
@@ -3609,10 +3612,193 @@ mod tests {
             .collect()
     }
 
+    /// The wire name each `#[tauri::command(rename = "...")]` exposes, keyed by the Rust
+    /// function name after it. A browser tab invokes the wire name, so the allowlists must
+    /// carry that, not the Rust name. This is a pure source scan: Tauri expands the macro at
+    /// compile time and `main_invoke_handler` only names the Rust functions.
+    fn command_renames() -> std::collections::BTreeMap<String, String> {
+        use std::collections::BTreeMap;
+        use std::path::{Path, PathBuf};
+
+        fn rust_files(dir: &Path, found: &mut Vec<PathBuf>) {
+            let Ok(entries) = std::fs::read_dir(dir) else { return };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    rust_files(&path, found);
+                } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+                    found.push(path);
+                }
+            }
+        }
+
+        /// End (exclusive) of the `#[...]` attribute starting at `start`, skipping string
+        /// literals so a `]` inside one does not end it early.
+        fn attribute_end(source: &str, start: usize) -> Option<usize> {
+            let bytes = source.as_bytes();
+            let mut depth = 0usize;
+            let mut in_string = false;
+            let mut escaped = false;
+            let mut at = start;
+            while at < bytes.len() {
+                let byte = bytes[at];
+                if in_string {
+                    if escaped {
+                        escaped = false;
+                    } else if byte == b'\\' {
+                        escaped = true;
+                    } else if byte == b'"' {
+                        in_string = false;
+                    }
+                } else {
+                    match byte {
+                        b'"' => in_string = true,
+                        b'[' => depth += 1,
+                        b']' => {
+                            depth = depth.checked_sub(1)?;
+                            if depth == 0 {
+                                return Some(at + 1);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                at += 1;
+            }
+            None
+        }
+
+        fn skip_whitespace(source: &str, mut at: usize) -> usize {
+            while at < source.len() && source.as_bytes()[at].is_ascii_whitespace() {
+                at += 1;
+            }
+            at
+        }
+
+        /// Whitespace, comments and further attributes between the command attribute and
+        /// the `fn` it decorates.
+        fn skip_trivia(source: &str, mut at: usize) -> usize {
+            loop {
+                at = skip_whitespace(source, at);
+                if source[at..].starts_with("//") {
+                    at = source[at..].find('\n').map_or(source.len(), |offset| at + offset + 1);
+                } else if source[at..].starts_with("/*") {
+                    at = source[at + 2..].find("*/").map_or(source.len(), |offset| at + 2 + offset + 2);
+                } else if source[at..].starts_with('#') {
+                    // `#` and `[` are separate tokens; whitespace between them is legal.
+                    let bracket = skip_whitespace(source, at + 1);
+                    if source[bracket..].starts_with('[') {
+                        at = attribute_end(source, at).unwrap_or(source.len());
+                    } else {
+                        at += 1;
+                    }
+                } else {
+                    return at;
+                }
+            }
+        }
+
+        /// Name of the `fn` this attribute decorates (`pub async fn` and friends included).
+        fn decorated_fn(source: &str, attribute_end: usize) -> Option<String> {
+            let limit = (attribute_end + 64 * 1024).min(source.len());
+            let mut at = attribute_end;
+            loop {
+                at = skip_trivia(source, at);
+                if at >= limit {
+                    return None;
+                }
+                let first = source[at..].chars().next()?;
+                if !(first.is_ascii_alphabetic() || first == '_') {
+                    at += first.len_utf8();
+                    continue;
+                }
+                let start = at;
+                while at < source.len() {
+                    let c = source[at..].chars().next()?;
+                    if c.is_ascii_alphanumeric() || c == '_' {
+                        at += c.len_utf8();
+                    } else {
+                        break;
+                    }
+                }
+                if &source[start..at] == "fn" {
+                    let name = skip_trivia(source, at);
+                    let mut end = name;
+                    while end < source.len() {
+                        let c = source[end..].chars().next()?;
+                        if c.is_ascii_alphanumeric() || c == '_' {
+                            end += c.len_utf8();
+                        } else {
+                            break;
+                        }
+                    }
+                    return (end > name).then(|| source[name..end].to_owned());
+                }
+            }
+        }
+
+        /// `rename = "..."` from a `#[tauri::command(...)]` attribute body.
+        fn renamed_to(attribute: &str) -> Option<String> {
+            fn word(c: Option<char>) -> bool {
+                c.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+            }
+            let mut at = 0;
+            while let Some(offset) = attribute[at..].find("rename") {
+                let start = at + offset;
+                at = start + "rename".len();
+                let before = attribute[..start].chars().next_back();
+                let after = attribute[at..].chars().next();
+                if word(before) || word(after) || before == Some(':') || after == Some(':') {
+                    continue;
+                }
+                let equals = skip_whitespace(attribute, at);
+                if attribute.as_bytes().get(equals) != Some(&b'=') {
+                    continue;
+                }
+                let quote = skip_whitespace(attribute, equals + 1);
+                if attribute.as_bytes().get(quote) != Some(&b'"') {
+                    continue;
+                }
+                let mut value = String::new();
+                let mut chars = attribute[quote + 1..].chars();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '"' => return Some(value),
+                        '\\' => value.push(chars.next()?),
+                        _ => value.push(c),
+                    }
+                }
+                return None;
+            }
+            None
+        }
+
+        let mut files = Vec::new();
+        rust_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let mut renames = BTreeMap::new();
+        for path in files {
+            let Ok(source) = std::fs::read_to_string(&path) else { continue };
+            let mut at = 0;
+            while let Some(offset) = source[at..].find("#[tauri::command") {
+                let start = at + offset;
+                let Some(end) = attribute_end(&source, start) else { break };
+                at = end;
+                let Some(wire) = renamed_to(&source[start..end]) else { continue };
+                let Some(name) = decorated_fn(&source, end) else { continue };
+                renames.insert(name, wire);
+            }
+        }
+        renames
+    }
+
     #[test]
     fn every_main_window_command_is_reviewed_for_web() {
-        let commands = main_window_commands();
-        assert!(commands.len() > 300, "parsed only {} commands", commands.len());
+        let rust_commands = main_window_commands();
+        assert!(rust_commands.len() > 300, "parsed only {} commands", rust_commands.len());
+        assert!(rust_commands.iter().all(|name| name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')), "{rust_commands:?}");
+        // Review the wire name a tab sends, not the Rust name Tauri registers.
+        let renames = command_renames();
+        let commands: Vec<String> = rust_commands.iter().map(|name| renames.get(name).cloned().unwrap_or_else(|| name.clone())).collect();
         assert!(commands.iter().all(|name| name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')), "{commands:?}");
         let unreviewed: Vec<_> = commands
             .iter()
@@ -3621,8 +3807,20 @@ mod tests {
         assert!(unreviewed.is_empty(), "review these for web tabs (allow in WEB_ALLOWED_COMMANDS or block in web_blocked_command): {unreviewed:?}");
         let contradictory: Vec<_> = WEB_ALLOWED_COMMANDS.iter().filter(|name| web_blocked_command(name)).collect();
         assert!(contradictory.is_empty(), "allowed and blocked: {contradictory:?}");
-        let stale: Vec<_> = WEB_ALLOWED_COMMANDS.iter().filter(|name| !commands.iter().any(|command| command == *name)).collect();
+        let stale: Vec<_> = WEB_ALLOWED_COMMANDS.iter().filter(|name| !commands.iter().any(|command| command.as_str() == **name)).collect();
         assert!(stale.is_empty(), "no longer registered: {stale:?}");
+        // The shipped renames must resolve, and the allowlist must carry the wire name, so
+        // reverting any one of these three to its Rust name fails here.
+        for (rust, wire) in [
+            ("delete_session_with_attachment_cleanup", "delete_session"),
+            ("model_routing_status_command", "model_routing_status"),
+            ("model_routing_configure_command", "model_routing_configure"),
+        ] {
+            assert_eq!(renames.get(rust).map(String::as_str), Some(wire), "wire name for {rust}");
+            assert!(commands.iter().any(|command| command == wire), "{wire} is not registered");
+            assert!(WEB_ALLOWED_COMMANDS.contains(&wire), "{wire} must be allowed for web tabs");
+            assert!(!WEB_ALLOWED_COMMANDS.contains(&rust), "{rust} is a Rust name, not a wire name");
+        }
         // Spot checks on the review itself.
         for name in ["browser_inspect", "voice_start", "overlay_toggle", "reveal_path"] {
             assert!(commands.iter().any(|command| command == name) && web_blocked_command(name), "{name}");

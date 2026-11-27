@@ -28,6 +28,7 @@ enum Command {
     SignOut,
     FullAccess { enabled: bool },
     ExportBots { path: PathBuf },
+    Version,
 }
 
 /// Flags that ride along with serving (or a first-run sign-in) rather than being an op.
@@ -40,15 +41,21 @@ struct Modifiers {
     web_host: Option<IpAddr>,
 }
 
-/// `pandacode serve …`: true when the argument was handled; the process then serves until
-/// it is stopped (or exits after a settings command). Everything else is the desktop app.
+/// `pandacode … serve …`: true when the argument was handled; the process then serves
+/// until it is stopped (or exits after a settings command). Everything else is the desktop
+/// app. `serve` may sit anywhere in argv, so `pandacode --port 8787 serve` is a host launch
+/// and not a desktop one.
 pub fn handle() -> bool {
     // A crash guard relaunch adds its mark (crash_guard.rs); no command takes it.
     let args: Vec<String> = std::env::args().skip(1).filter(|arg| !crate::crash_guard::is_restart_flag(arg)).collect();
-    if args.first().map(String::as_str) != Some("serve") {
+    if !is_serve(&args) {
         return false;
     }
-    match parse(&args[1..]) {
+    match parse(&serve_args(&args)) {
+        Ok((Command::Version, _)) => {
+            print_version();
+            std::process::exit(0)
+        }
         Ok((command, modifiers)) => {
             SERVE.store(true, Ordering::Relaxed);
             // A server has no Secret Service agent: the 0600 file backend is serve's default.
@@ -63,6 +70,34 @@ pub fn handle() -> bool {
             std::process::exit(2)
         }
     }
+}
+
+/// The args that belong to `serve`: everything but the `serve` token itself, wherever it
+/// sits. Flags before `serve` count too, so `pandacode --port 8787 serve` hosts with the
+/// web UI instead of silently dropping `--port`.
+fn serve_args(args: &[String]) -> Vec<String> {
+    args.iter().filter(|arg| arg.as_str() != "serve").cloned().collect()
+}
+
+/// Whether this launch is a `serve` one at all.
+fn is_serve(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "serve")
+}
+
+/// `serve --version`/`-V`: the host prints its version and exits instead of starting.
+fn print_version() {
+    println!("pandacode {}", env!("CARGO_PKG_VERSION"));
+}
+
+/// `pandacode --version`/`-V` as the whole command line: true when it was handled, so a
+/// server can be asked what it runs over SSH without starting a GUI or needing a display.
+pub fn handle_version() -> bool {
+    let args: Vec<String> = std::env::args().skip(1).filter(|arg| !crate::crash_guard::is_restart_flag(arg)).collect();
+    if args.len() != 1 || !matches!(args[0].as_str(), "--version" | "-V") {
+        return false;
+    }
+    print_version();
+    true
 }
 
 /// Builds the app with no window and runs it until an explicit exit. Never returns.
@@ -143,6 +178,8 @@ fn startup_failed(error: &dyn std::fmt::Display) -> ! {
 /// `web`: the web UI is serving, so a plain `serve` runs even without Connect.
 fn start(app: &tauri::AppHandle, dir: &std::path::Path, command: Command, import: Option<PathBuf>, web: bool) {
     match command {
+        // `handle` prints the version and exits before the app is built.
+        Command::Version => unreachable!("serve --version exits before the app starts"),
         Command::ExportBots { path } => match crate::headless_bots::run_export(app, &path) {
             Ok(()) => {
                 println!("Bot configuration written to {}.", path.display());
@@ -507,6 +544,10 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     while index < args.len() {
         match args[index].as_str() {
             "--help" | "-h" => return Err(help()),
+            "--version" | "-V" => {
+                command = Command::Version;
+                ops += 1;
+            }
             "--sign-in" => {
                 sign_in = true;
                 ops += 1;
@@ -561,7 +602,7 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
     }
     if ops > 1 {
         return Err(format!(
-            "Choose one: --sign-in, --sign-out, --full-access, --no-full-access, --export-bots.\n\n{}",
+            "Choose one: --sign-in, --sign-out, --full-access, --no-full-access, --export-bots, --version.\n\n{}",
             help()
         ));
     }
@@ -587,7 +628,7 @@ fn parse(args: &[String]) -> Result<(Command, Modifiers), String> {
 fn help() -> String {
     "PandaCode headless host (docs/headless.md)
 
-Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>]]
+Usage: pandacode serve [--sign-in [--device-name <name>]] [--sign-out] [--full-access | --no-full-access] [--export-bots <file>] [--import-bots <file>] [--port|-p <port> [--host <addr>]] [--version]
 
 Runs this computer as an always-on PandaCode Connect host: your devices see it as a
 computer and can start, watch, steer and approve tasks on it. Linux servers run it
@@ -606,7 +647,8 @@ under `xvfb-run -a pandacode serve …` (a display is required to start, none is
   --host <addr>          The web UI's address (default 127.0.0.1). Anything but loopback is
                          plain HTTP: prefer 127.0.0.1 with SSH port forwarding
                          (ssh -L <port>:127.0.0.1:<port> <server>), or bind a private
-                         Tailscale/WireGuard interface IP."
+                         Tailscale/WireGuard interface IP.
+  --version, -V          Print `pandacode <version>` and exit 0 without starting the host."
         .into()
 }
 
@@ -646,9 +688,25 @@ mod tests {
             parsed("--export-bots bots.json"),
             Ok(Command::ExportBots { path: PathBuf::from("bots.json") })
         );
+        assert_eq!(parsed("--version"), Ok(Command::Version));
+        assert_eq!(parsed("-V"), Ok(Command::Version));
         assert!(parsed("--wat").is_err());
         assert!(parsed("--device-name").is_err());
         assert!(parsed("--export-bots").is_err());
+        assert!(parsed("--version --port 1").is_err());
+        assert!(parsed("--sign-in --version").is_err());
+    }
+
+    #[test]
+    fn serve_may_appear_anywhere_in_the_arguments() {
+        assert!(is_serve(&argv("serve")));
+        // A flag before `serve` still belongs to serve, so it is parsed rather than dropped.
+        assert_eq!(serve_args(&argv("--port 1 serve")), argv("--port 1"));
+        assert_eq!(serve_args(&argv("serve --port 1")), argv("--port 1"));
+        assert_eq!(serve_args(&argv("--port 1 serve --host 127.0.0.1")), argv("--port 1 --host 127.0.0.1"));
+        // No serve token at all: the desktop app gets this launch.
+        assert!(!is_serve(&argv("--port 1")));
+        assert!(!is_serve(&argv("")));
     }
 
     #[test]
@@ -674,6 +732,8 @@ mod tests {
             "--port",
             "-p",
             "--host",
+            "--version",
+            "-V",
             "xvfb-run",
         ] {
             assert!(text.contains(flag), "{flag}");
