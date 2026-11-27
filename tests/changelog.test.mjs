@@ -41,11 +41,15 @@ test('releases/0.3.155.md has no dead v0.3.155 URLs and documents shipping bundl
 });
 
 test('bundledInVersion identifies unpublished rolled-up release notes only', async () => {
+  assert.equal(bundledInVersion('0.3.160'), '0.3.161');
+  assert.equal(bundledInVersion('0.3.159'), '0.3.161');
   assert.equal(bundledInVersion('0.3.155'), '0.3.156');
   assert.equal(bundledInVersion('0.3.153'), '0.3.154');
   assert.equal(bundledInVersion('0.3.143'), '0.3.144');
   assert.equal(bundledInVersion('0.3.141'), '0.3.142');
 
+  assert.equal(bundledInVersion('0.3.162'), undefined);
+  assert.equal(bundledInVersion('0.3.161'), undefined);
   assert.equal(bundledInVersion('0.3.156'), undefined);
   assert.equal(bundledInVersion('0.3.154'), undefined);
   assert.equal(bundledInVersion('0.3.144'), undefined);
@@ -69,6 +73,13 @@ test('bundledInVersion identifies unpublished rolled-up release notes only', asy
       [],
       `releases/${unpublished}.md must not link to unpublished v${unpublished} release assets`,
     );
+    if (unpublished !== '0.3.153') {
+      assert.deepEqual(
+        urls.filter(url => url.includes(`/blob/v${unpublished}/`)),
+        [],
+        `releases/${unpublished}.md must not link to untagged v${unpublished} blob URLs`,
+      );
+    }
   }
 });
 

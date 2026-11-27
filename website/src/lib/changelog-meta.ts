@@ -3,6 +3,8 @@
 
 /** Release notes that were not published as standalone GitHub Releases, mapped to the release they shipped in. */
 export const UNPUBLISHED_BUNDLED_IN: Record<string, string> = {
+  '0.3.160': '0.3.161',
+  '0.3.159': '0.3.161',
   '0.3.155': '0.3.156',
   '0.3.153': '0.3.154',
   '0.3.143': '0.3.144',
