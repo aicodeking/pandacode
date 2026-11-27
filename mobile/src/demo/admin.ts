@@ -101,6 +101,86 @@ export const handlers: DemoHandlers = {
     saveDetail(ctx, botId, d => ({ ...d, schedules: d.schedules.map(s => (s.id === params.scheduleId ? { ...s, lastRunAt: ctx.host.now() } : s)) }));
     return {};
   },
+  // ---- managing a bot (the `bots` group) ----
+  // The demo keeps activity in the bot's detail state so a reset visibly clears it.
+  'bot.activity': (ctx, params) => {
+    const botId = botIdOf(params);
+    const detail = detailOf(ctx, botId);
+    const all = (detail as { activity?: unknown[] }).activity as { id: number; kind: string; summary: string; detail: unknown; at: number }[] | undefined
+      ?? [{ id: 3, kind: 'message', summary: 'Replied in Telegram', detail: {}, at: ctx.host.now() - 6 * MIN },
+          { id: 2, kind: 'schedule', summary: 'Ran "Morning brief"', detail: {}, at: ctx.host.now() - 52 * MIN },
+          { id: 1, kind: 'rule', summary: 'Rule: deny "rm -rf"', detail: {}, at: ctx.host.now() - 3 * HOUR }];
+    const before = Number(params?.before);
+    const limit = Math.min(Math.max(Number(params?.limit) || 50, 1), 200);
+    const rows = (before ? all.filter(row => row.id < before) : all).slice(0, limit);
+    return { activity: rows, truncated: rows.length < (before ? all.filter(row => row.id < before) : all).length };
+  },
+  'bot.edit': (ctx, params) => {
+    const botId = botIdOf(params);
+    if (params?.instructions !== undefined || params?.goals !== undefined || params?.soul !== undefined) {
+      throw new Error("The bot's brief is edited on the computer, not from a phone.");
+    }
+    saveDetail(ctx, botId, d => ({
+      ...d,
+      bot: {
+        ...d.bot,
+        ...(params?.name !== undefined && { name: String(params.name) }),
+        ...(params?.role !== undefined && { role: String(params.role) }),
+        ...(params?.model !== undefined && { model: String(params.model) }),
+        ...(params?.mode !== undefined && { mode: String(params.mode) }),
+        ...(params?.heartbeatMinutes !== undefined && { heartbeatMinutes: Number(params.heartbeatMinutes) }),
+      },
+    }));
+    return { bot: detailOf(ctx, botId).bot };
+  },
+  'bot.reset': (ctx, params) => {
+    const botId = botIdOf(params);
+    saveDetail(ctx, botId, d => ({ ...d, memories: [], schedules: [], rules: [], activity: [] } as typeof d));
+    return { bot: detailOf(ctx, botId).bot };
+  },
+  'bot.delete': (ctx, params) => {
+    const botId = botIdOf(params);
+    ctx.host.set(next => ({ ...next, bots: { ...next.bots, [ctx.deviceId]: (next.bots[ctx.deviceId] ?? []).filter(bot => bot.id !== botId) } }));
+    return {};
+  },
+  'bot.ruleAdd': (ctx, params) => {
+    const botId = botIdOf(params);
+    const pattern = String(params?.pattern ?? '').trim();
+    if (pattern.length < 2) throw new Error('A rule needs a pattern of at least two characters.');
+    if (!['allow', 'ask', 'deny'].includes(params?.decision)) throw new Error('A rule allows, asks or denies.');
+    const rule = { id: `r-${ctx.host.now().toString(36)}`, pattern, decision: params.decision, createdAt: ctx.host.now() };
+    saveDetail(ctx, botId, d => ({ ...d, rules: [...d.rules, rule] }));
+    return rule;
+  },
+  'bot.ruleDelete': (ctx, params) => {
+    const botId = botIdOf(params);
+    saveDetail(ctx, botId, d => ({ ...d, rules: d.rules.filter(r => r.id !== params?.ruleId) }));
+    return {};
+  },
+  'bot.scheduleCreate': (ctx, params) => {
+    const botId = botIdOf(params);
+    const prompt = String(params?.prompt ?? '').trim();
+    if (!prompt) throw new Error('A schedule needs a prompt: what should the bot do?');
+    const schedule = {
+      id: `s-${ctx.host.now().toString(36)}`, botId, title: String(params?.title ?? '') || prompt.slice(0, 40), prompt,
+      kind: String(params?.kind ?? 'daily'), intervalMinutes: params?.intervalMinutes ?? null, timeOfDay: params?.timeOfDay ?? null,
+      nextRunAt: ctx.host.now() + HOUR, lastRunAt: null, enabled: true, createdBy: 'user',
+    };
+    saveDetail(ctx, botId, d => ({ ...d, schedules: [...d.schedules, schedule] }));
+    return schedule;
+  },
+  'bot.scheduleSetEnabled': (ctx, params) => {
+    const botId = botIdOf(params);
+    saveDetail(ctx, botId, d => ({ ...d, schedules: d.schedules.map(s => (s.id === params?.scheduleId ? { ...s, enabled: !!params?.enabled } : s)) }));
+    const found = detailOf(ctx, botId).schedules.find(s => s.id === params?.scheduleId);
+    if (!found) throw new Error('This schedule no longer exists.');
+    return found;
+  },
+  'bot.scheduleDelete': (ctx, params) => {
+    const botId = botIdOf(params);
+    saveDetail(ctx, botId, d => ({ ...d, schedules: d.schedules.filter(s => s.id !== params?.scheduleId) }));
+    return {};
+  },
   'bot.pairingDecide': (ctx, params) => {
     const botId = botIdOf(params);
     const { channelId, senderId, decision } = params ?? {};

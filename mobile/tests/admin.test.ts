@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   agentLine, botCadence, chosenCloud, cloudChoice, cloudHarnessRefusal, cloudProviderOf, cloudTaskForm, RUN_HERE, runOnChoices, cloudStartBlock, cloudStartIssue, cloudStartParams, harnessLabel, initialCloudForm, normalizeTargets, channelLine, channelTone, failoverLine, linkChoices, memoryError, normalizeDetail, pendingCount, pendingPairings, readFrame,
   routingLine, scheduleLine, sortVms, stageTone, untilText, vmLine, withMemory, withoutFailover, withoutMemory, withoutPairing,
+  activityLine, activityTone, changedPatch, fullModeNote, normalizeActivity, patchEmpty, type BotProfile,
   type BotChannel, type BotDetail, type CloudTargets, type BotSchedule, type FramePage, type MachinesList, type VmStatus,
 } from '../src/store/admin.ts';
 
@@ -237,4 +238,58 @@ test('a cloud agent start keeps the project the host named, even when its reply 
     status: async () => { throw new Error('not asked'); },
   }, form, 'k3');
   assert.deepEqual(direct, { sessionId: 's3', projectId: 'direct-project' });
+});
+
+// ---- Managing a bot: the `bots` group's pure parts ----
+
+const profile = (extra: Partial<BotProfile> = {}): BotProfile => ({
+  id: 'b1', name: 'Leo', role: 'Chief of staff', avatar: '', color: '', provider: 'claude', model: 'opus', mode: 'ask',
+  paused: false, heartbeatMinutes: 60, nextHeartbeatAt: null, projectId: 'p1', ...extra,
+});
+
+test('an edit sends only the settings that actually changed', () => {
+  const before = profile();
+  // Unchanged keys are dropped, so the host never rewrites what the user did not touch.
+  assert.deepEqual(changedPatch(before, { model: 'opus', name: 'Leo' }), {});
+  assert.deepEqual(changedPatch(before, { model: 'sonnet' }), { model: 'sonnet' });
+  assert.deepEqual(changedPatch(before, { model: 'sonnet', mode: 'edit' }), { model: 'sonnet', mode: 'edit' });
+  // A blank field is "leave it", not "set it to empty".
+  assert.deepEqual(changedPatch(before, { name: '', model: 'sonnet' }), { model: 'sonnet' });
+  assert.equal(patchEmpty(changedPatch(before, { name: 'Leo' })), true);
+  assert.equal(patchEmpty(changedPatch(before, { name: 'Ada' })), false);
+});
+
+test('raising a bot to full access needs the computer switch', () => {
+  assert.match(fullModeNote('full', false)!, /Full access for remote tasks/);
+  assert.equal(fullModeNote('full', true), null, 'with the switch on it is allowed');
+  assert.equal(fullModeNote('ask', false), null, 'other modes are unaffected');
+  assert.equal(fullModeNote('edit', false), null);
+});
+
+test('an activity page drops malformed rows rather than failing the screen', () => {
+  const page = normalizeActivity({ activity: [
+    { id: 3, kind: 'message', summary: 'Replied', detail: { text: 'hi' }, at: NOW },
+    { id: 'nope', kind: 'message', summary: 'bad id' },
+    null,
+    { id: 1, kind: 42, summary: 'Schedule ran', at: 0 },
+  ], truncated: true });
+  assert.equal(page.truncated, true);
+  assert.deepEqual(page.activity.map(row => row.id), [3, 1]);
+  // A non-string kind reads as empty, and a zero time as unknown, rather than crashing a row.
+  assert.deepEqual(page.activity[1], { id: 1, kind: '', summary: 'Schedule ran', detail: null, at: 0 });
+  assert.deepEqual(normalizeActivity(null), { activity: [], truncated: false });
+  assert.deepEqual(normalizeActivity('junk'), { activity: [], truncated: false });
+});
+
+test('an activity row reads as kind and summary, with failures toned', () => {
+  const row = (kind: string, summary: string) => ({ id: 1, kind, summary, detail: null, at: NOW });
+  assert.equal(activityLine(row('schedule', 'Ran "Morning brief"')), 'schedule · Ran "Morning brief"');
+  assert.equal(activityLine(row('', 'Something')), 'Something', 'no kind reads as the summary alone');
+  assert.equal(activityLine(row('reset', '')), 'reset');
+  assert.equal(activityLine(row('', '')), 'Activity');
+  // Whitespace is collapsed so a multi-line payload stays one line.
+  assert.equal(activityLine(row('message', 'two\n  lines')), 'message · two lines');
+  assert.equal(activityTone(row('error', '')), 'danger');
+  assert.equal(activityTone(row('rule', '')), 'warning');
+  assert.equal(activityTone(row('message', '')), 'muted');
 });

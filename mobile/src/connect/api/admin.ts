@@ -8,7 +8,7 @@ import { followStart, unsentFields, type FollowDeps } from '../start-retry.ts';
 import { hostCallOnce } from './github.ts';
 import { registerMethods, START_TIMEOUT_MS, type Method } from '../rpc.ts';
 import {
-  cloudStartParams, normalizeDetail, normalizeTargets, readFrame, type BotDetail, type CloudStartForm, type CloudTargets, type BotMemory, type CloudAgent, type CloudMachine, type FramePage, type MachinesList, type RoutingStatus,
+  cloudStartParams, normalizeActivity, normalizeDetail, normalizeTargets, readFrame, type BotDetail, type BotEditPatch, type BotProfile, type CloudStartForm, type CloudTargets, type BotMemory, type CloudAgent, type CloudMachine, type FramePage, type MachinesList, type RoutingStatus,
 } from '../../store/admin.ts';
 import { decodeDeployTargets, type DeployTargetState } from '../../ui/new-task-projects.ts';
 
@@ -21,6 +21,8 @@ const hostCallBackgroundOnce = async <T>(deviceId: string, method: Method, param
 
 export const ADMIN_METHODS = registerMethods([
   'bot.detail', 'bot.remember', 'bot.forget', 'bot.runSchedule', 'bot.pairingDecide', 'bot.failoverDecide',
+  'bot.activity', 'bot.edit', 'bot.reset', 'bot.delete', 'bot.ruleAdd', 'bot.ruleDelete',
+  'bot.scheduleCreate', 'bot.scheduleSetEnabled', 'bot.scheduleDelete',
   'machines.list', 'cloud.machines', 'cloudAgents.list', 'cloudAgents.targets', 'cloudAgents.start', 'vm.frame', 'vm.start', 'vm.stop', 'orchestration.respond', 'routing.status', 'deploy.targets',
 ] as const);
 
@@ -41,6 +43,37 @@ export const decidePairing = (deviceId: string, botId: string, channelId: string
   hostCall<object>(deviceId, 'bot.pairingDecide', { botId, channelId, senderId, decision });
 export const decideFailover = (deviceId: string, sessionId: string, action: 'send' | 'wait', always = false) =>
   hostCall<object>(deviceId, 'bot.failoverDecide', { sessionId, action, always });
+
+// ---- Managing a bot (the `bots` group; every write needs full access for remote tasks) ----
+//
+// The brief (`instructions`, `goals`, `soul`) is deliberately not here: it is edited on the computer.
+// `editBot` sends only the keys that changed, and the host keeps everything it did not name.
+
+/** The bot's audit trail, newest first; `before` pages older rows. */
+export const botActivity = (deviceId: string, botId: string, before?: number, limit = 50) =>
+  hostCall<unknown>(deviceId, 'bot.activity', { botId, ...(before ? { before } : {}), limit }).then(normalizeActivity);
+
+/** A partial change: only the keys present are applied. */
+export const editBot = (deviceId: string, botId: string, patch: BotEditPatch) =>
+  hostCall<{ bot?: BotProfile }>(deviceId, 'bot.edit', { botId, ...patch }).then(reply => {
+    if (!reply?.bot) throw new Error('The computer sent no bot.');
+    return reply.bot;
+  });
+
+export const resetBot = (deviceId: string, botId: string) => hostCall<object>(deviceId, 'bot.reset', { botId });
+export const deleteBot = (deviceId: string, botId: string) => hostCall<object>(deviceId, 'bot.delete', { botId });
+export type RuleDecision = 'allow' | 'ask' | 'deny';
+export const addBotRule = (deviceId: string, botId: string, pattern: string, decision: RuleDecision) =>
+  hostCall<{ id?: string }>(deviceId, 'bot.ruleAdd', { botId, pattern, decision });
+export const deleteBotRule = (deviceId: string, botId: string, ruleId: string) => hostCall<object>(deviceId, 'bot.ruleDelete', { botId, ruleId });
+
+export interface BotScheduleInput { title: string; prompt: string; kind: 'once' | 'interval' | 'daily' | 'weekdays'; intervalMinutes?: number; timeOfDay?: string; runAt?: number }
+export const createBotSchedule = (deviceId: string, botId: string, input: BotScheduleInput) =>
+  hostCall<{ id?: string }>(deviceId, 'bot.scheduleCreate', { botId, ...input });
+export const setBotScheduleEnabled = (deviceId: string, botId: string, scheduleId: string, enabled: boolean) =>
+  hostCall<{ id?: string }>(deviceId, 'bot.scheduleSetEnabled', { botId, scheduleId, enabled });
+export const deleteBotSchedule = (deviceId: string, botId: string, scheduleId: string) =>
+  hostCall<object>(deviceId, 'bot.scheduleDelete', { botId, scheduleId });
 
 export async function listMachines(deviceId: string): Promise<MachinesList> {
   const reply = await hostCall<Partial<MachinesList>>(deviceId, 'machines.list', {});
