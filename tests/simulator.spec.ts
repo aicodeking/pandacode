@@ -64,6 +64,23 @@ test('the simulator opens in the inspector with a live 3D device', async ({ page
   expect(await page.evaluate(() => (window as any).__simFrames)).toBeLessThanOrEqual(before + 1);
 });
 
+test('simulator controls use an opaque fill with solid surfaces on', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('pandacode.solidSurfaces', '1'));
+  await open(page);
+  await showSimulator(page);
+  const controls = page.locator('.sim-actions');
+  await expect(controls).toHaveCSS('backdrop-filter', 'none');
+  const opaque = await controls.evaluate(node => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--panel)';
+    node.append(probe);
+    const color = getComputedStyle(probe).color;
+    probe.remove();
+    return color;
+  });
+  await expect(controls).toHaveCSS('background-color', opaque);
+});
+
 test('clicks and drags on the display become taps and swipes in points; elsewhere they turn the device', async ({ page }) => {
   await open(page);
   await showSimulator(page);

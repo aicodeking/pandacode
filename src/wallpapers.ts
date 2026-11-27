@@ -1,3 +1,5 @@
+import { SOLID_SURFACES_CHANGE, solidSurfacesEnabled } from './solid-surfaces.ts';
+
 export const wallpaperSets = [
   { id: 'mon', label: 'Monday' }, { id: 'tue', label: 'Tuesday' },
   { id: 'wed', label: 'Wednesday' }, { id: 'thu', label: 'Thursday' },
@@ -88,6 +90,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
   sceneHost.prepend(layer);
   const contrast = matchMedia('(prefers-contrast: more)');
   const transparency = matchMedia('(prefers-reduced-transparency: reduce)');
+  const accessibilityOverride = () => contrast.matches || transparency.matches || solidSurfacesEnabled();
   let preferences = Object.freeze(readPreferences());
   const listeners = new Set<() => void>();
   let disposed = false, generation = 0, timer = 0, pendingId = '';
@@ -162,7 +165,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
   function refresh(): void {
     window.clearTimeout(timer);
     if (disposed) return;
-    if (!preferences.enabled || !preferences.visibility || contrast.matches || transparency.matches) { clear(); emit(); return; }
+    if (!preferences.enabled || !preferences.visibility || accessibilityOverride()) { clear(); emit(); return; }
     if (document.hidden) { emit(); return; }
     const now = new Date(), id = wallpaperAt(now, preferences);
     // Returning to the visible scene must invalidate any different scene still decoding.
@@ -203,6 +206,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
     contrast.removeEventListener('change', refresh);
     transparency.removeEventListener('change', refresh);
     window.removeEventListener('focus', refresh);
+    window.removeEventListener(SOLID_SURFACES_CHANGE, refresh);
     document.removeEventListener('visibilitychange', refresh);
     window.removeEventListener('pagehide', dispose);
     window.removeEventListener('storage', synchronize);
@@ -211,6 +215,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
   contrast.addEventListener('change', refresh);
   transparency.addEventListener('change', refresh);
   window.addEventListener('focus', refresh);
+  window.addEventListener(SOLID_SURFACES_CHANGE, refresh);
   document.addEventListener('visibilitychange', refresh);
   window.addEventListener('pagehide', dispose, { once: true });
   window.addEventListener('storage', synchronize);
@@ -220,7 +225,7 @@ export function mountWallpapers(host: HTMLElement, sceneHost: HTMLElement = host
     get preferences() { return preferences; },
     get enabled() { return preferences.enabled && preferences.visibility > 0; },
     get currentId() { return host.dataset.wallpaper; },
-    get accessibilityOverride() { return contrast.matches || transparency.matches; },
+    get accessibilityOverride() { return accessibilityOverride(); },
     update, setEnabled,
     subscribe(listener) { listeners.add(listener); return () => { listeners.delete(listener); }; },
     dispose,

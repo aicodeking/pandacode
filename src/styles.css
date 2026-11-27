@@ -891,6 +891,7 @@ html[data-theme="dark"]:is([data-native-material="liquidGlass"],[data-native-mat
 .project-board::before,.browser-home::before{content:"";position:absolute;pointer-events:none;z-index:-1;width:210px;height:350px;right:-24px;bottom:0;background:var(--bamboo);opacity:var(--bamboo-art-opacity);-webkit-mask:url('/bamboo-grove.svg') right bottom/contain no-repeat;mask:url('/bamboo-grove.svg') right bottom/contain no-repeat}
 .project-board::before{width:280px;height:450px;right:20px;bottom:35px}
 #resource-status>.icon{color:var(--bamboo)}
+html[data-solid-surfaces] :is(.project-board,.browser-home)::before{display:none}
 @media(prefers-contrast:more){.project-board::before,.browser-home::before{display:none}}
 
 

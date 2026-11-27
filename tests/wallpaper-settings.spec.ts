@@ -37,6 +37,22 @@ async function customize(page: Page): Promise<void> {
   await expect(slider(page)).toBeVisible();
 }
 
+test('solid surfaces clears the active wallpaper, keeps its choices, and restores it when switched off', async ({ page }) => {
+  await open(page);
+  await expect(workspace(page)).toHaveAttribute('data-scene', 'wallpaper');
+  const before = await preferences(page);
+  await customize(page);
+  const solid = settings(page).getByRole('checkbox', { name: 'Solid surfaces', exact: true });
+  await solid.check();
+  await expect(sceneImages(page)).toHaveCount(0);
+  await expect(workspace(page)).not.toHaveAttribute('data-scene', /.+/);
+  await expect(settings(page).getByText('Solid background', { exact: true })).toBeVisible();
+  expect(await preferences(page)).toEqual(before);
+  await solid.uncheck();
+  await expect(workspace(page)).toHaveAttribute('data-scene', 'wallpaper');
+  expect(await preferences(page)).toEqual(before);
+});
+
 async function timeTo(page: Page, time: string): Promise<void> {
   await page.clock.setSystemTime(new Date(time));
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));

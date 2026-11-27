@@ -85,6 +85,7 @@ import { describeTool, kindIcon, summarizeTools, toolKind, traceRowHtml } from '
 import { choreograph, enterHeader, enterText, foldTurn, foldWait, readingTrace, revealRow } from './trace-motion';
 import { groupTurns, normalizeCardTurns, mergeLeadTurns, splitLiveExchange, combineChanges, formatDuration, turnLabel, type TranscriptTurn } from './turn-activity';
 import { initializeNativeAppearance } from './appearance';
+import { restoreSolidSurfaces, solidSurfacesEnabled } from './solid-surfaces';
 import { currentTheme, setTheme } from './theme';
 import { palette, SKY_SCENE } from './palette';
 import { contextSummary, fallbackModel, parseContextUsage } from './model-catalog';
@@ -684,6 +685,7 @@ async function setTeam(task: Session, on: boolean, render = true): Promise<boole
 const ACTIVITY_WINDOW = 24 * 60 * 60 * 1000;
 /** Sort arrows for the sidebar's sort and view menu. */
 const SORT_ICON = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 4v16m-3-3 3 3 3-3M17 20V4m-3 3 3-3 3 3"/></svg>';
+restoreSolidSurfaces();
 const $app = document.querySelector<HTMLDivElement>('#app')!;
 $app.innerHTML = `<div class="workspace" data-tauri-drag-region>
   <aside id="workspace-sidebar" class="sidebar" aria-label="Projects and tasks">
@@ -1586,8 +1588,9 @@ $('#transcript').before(jevActivity.host);
 mountAgents($('#agents-toggle') as HTMLButtonElement, $('#agents-flyout'), () => architectView ? [architectView, subagents, lineageSource] : [subagents, lineageSource]);
 // The thread is a window: the wallpaper (when the Wallpapers switch is on) or the sky shows inside the main pane.
 const wallpapers = mountWallpapers($('.workspace'), $('.main-pane'));
+const showSky = () => !solidSurfacesEnabled() && !wallpapers.preferences.enabled;
 const sky = mountSky($('.main-pane'), $('.workspace'), {
-  wanted: () => !wallpapers.preferences.enabled,
+  wanted: showSky,
   fixedMinutes: preview ? parseSkyTime(new URLSearchParams(location.search).get('sky')) : null,
   expose: preview,
   pinnedScene: preview ? new URLSearchParams(location.search).get('scene') : null,
@@ -1609,7 +1612,7 @@ const tiles = mountThreadTiles({
   focusPrompt: () => document.querySelector<HTMLTextAreaElement>('#prompt')?.focus(),
   draw: (id, rows, scroller) => drawTile(id, rows, scroller),
   more: (id, rows, scroller) => tileWindows.showMore(id, rows, scroller),
-  scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: () => !wallpapers.preferences.enabled, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
+  scene: (tile, id) => { const scene = mountSky(tile, $('.workspace'), { wanted: showSky, fixedMinutes: skyTime, tileRoot: $('.work-area') }); scene.setThread(id); return scene; },
   notify,
 });
 wallpapers.subscribe(() => tiles.refreshScenes());

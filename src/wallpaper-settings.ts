@@ -30,7 +30,7 @@ export function mountWallpaperSettings(host: HTMLElement, controller: WallpaperC
       <input id="wallpaper-blur" class="wallpaper-range-slider" type="range" min="0" max="24" step="1" aria-describedby="wallpaper-blur-endpoints">
       <div id="wallpaper-blur-endpoints" class="wallpaper-range-endpoints"><span>Sharp</span><span>Soft</span></div>
     </div>
-    <p class="wallpaper-accessibility-note" hidden>Your accessibility settings keep the workspace solid. Your wallpaper choices are saved.</p>
+    <p class="wallpaper-accessibility-note" hidden>Your appearance or accessibility settings keep the workspace solid. Your wallpaper choices are saved.</p>
     </div>
     </div>
     <section aria-labelledby="wallpaper-set-heading">
