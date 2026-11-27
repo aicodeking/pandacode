@@ -298,9 +298,13 @@ rest of the roster (Codex and Kimi Code today) gets a generated card with an
 executable location and these environment settings.
 
 A saved executable location must be an absolute path to an existing executable
-file; it is started directly, never through a shell. GLM Coding Plan and MiMo
-Token Plan run the Claude executable, so they have no location of their own and
-use the one on the Claude Code card.
+file; it is started directly, never through a shell. The path is stored exactly
+as entered, so a symlink stays a link: its target is checked for existence and
+the executable bit, not substituted into the setting. An upgrade that repoints
+the link (a Homebrew Caskroom link or a Volta shim, say) therefore keeps working
+without editing the setting. GLM Coding Plan and MiMo Token Plan run the Claude
+executable, so they have no location of their own and use the one on the Claude
+Code card.
 
 ## GitHub Copilot CLI
 

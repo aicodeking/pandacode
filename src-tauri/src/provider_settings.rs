@@ -541,15 +541,19 @@ fn validated_executable(provider: &str, path: &str) -> Result<Option<String>> {
     }
     validated_executable_path(path)
 }
-/// An absolute path to an existing executable file, canonicalized.
+/// An absolute path to an existing executable file, kept exactly as given.
+///
+/// The path is not rewritten (no symlink resolution, no lexical normalisation):
+/// a symlinked path stays a symlink so a package upgrade can repoint it. The
+/// resolved target is only used to prove the file exists and is executable.
 pub(crate) fn validated_executable_path(path: &str) -> Result<Option<String>> {
     if path.len() > 4096 || path.chars().any(char::is_control) || !Path::new(path).is_absolute() {
         return Err("Choose an absolute path to the installed executable.".into());
     }
-    let path = Path::new(path)
+    let resolved = Path::new(path)
         .canonicalize()
         .map_err(|_| "The executable could not be found.".to_string())?;
-    let meta = path.metadata().map_err(|e| e.to_string())?;
+    let meta = resolved.metadata().map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("Choose an executable file, not a folder.".into());
     }
@@ -560,7 +564,7 @@ pub(crate) fn validated_executable_path(path: &str) -> Result<Option<String>> {
             return Err("This file is not executable.".into());
         }
     }
-    Ok(Some(path.to_string_lossy().into_owned()))
+    Ok(Some(path.to_owned()))
 }
 fn save_executable(provider: &str, path: &str) -> Result<()> {
     let path = validated_executable(provider, path)?;
@@ -1644,11 +1648,66 @@ mod tests {
             let path = file.to_str().unwrap();
             assert!(validated_executable("codex", path).is_err(), "a file without the executable bit");
             std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
-            let canonical = file.canonicalize().unwrap().to_string_lossy().into_owned();
-            assert_eq!(validated_executable("codex", path).unwrap(), Some(canonical.clone()));
-            assert_eq!(validated_executable("claude", path).unwrap(), Some(canonical));
+            // The typed path comes back unchanged: temp_dir() is /var/... on macOS while
+            // canonicalize() yields /private/var/..., so this proves nothing resolved it.
+            assert_eq!(
+                validated_executable("codex", path).unwrap(),
+                Some(path.to_owned())
+            );
+            assert_eq!(
+                validated_executable("claude", path).unwrap(),
+                Some(path.to_owned())
+            );
             std::fs::remove_file(file).unwrap();
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn keeps_a_symlinked_executable_as_the_saved_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory =
+            std::env::temp_dir().join(format!("pandacode-symlink-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let real = directory.join("codex-real");
+        std::fs::write(&real, "").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = directory.join("codex-link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let link_path = link.to_str().unwrap();
+        // A symlink stays a symlink, so a package upgrade repoints it without re-saving.
+        assert_eq!(
+            validated_executable("codex", link_path).unwrap(),
+            Some(link_path.to_owned())
+        );
+        assert_ne!(
+            link_path,
+            real.to_str().unwrap(),
+            "the target differs from the link, so nothing resolved it"
+        );
+        // The check runs against the resolved target: a link to a non-executable file fails.
+        let plain = directory.join("not-executable");
+        std::fs::write(&plain, "").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let plain_link = directory.join("not-executable-link");
+        std::os::unix::fs::symlink(&plain, &plain_link).unwrap();
+        assert_eq!(
+            validated_executable("codex", plain_link.to_str().unwrap()).unwrap_err(),
+            "This file is not executable."
+        );
+        // A broken symlink is refused exactly like a missing file.
+        let dangling = directory.join("dangling");
+        std::os::unix::fs::symlink(directory.join("missing"), &dangling).unwrap();
+        assert_eq!(
+            validated_executable("codex", dangling.to_str().unwrap()).unwrap_err(),
+            "The executable could not be found."
+        );
+        // The saved value is handed on unchanged; executable_override() only wraps this in a PathBuf.
+        let mut settings = Settings::default();
+        settings
+            .executable_paths
+            .insert("codex".into(), link_path.to_owned());
+        assert_eq!(saved_executable(&settings, "codex").unwrap(), link_path);
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn glm_and_mimo_follow_the_claude_location_and_nothing_else_does() {
